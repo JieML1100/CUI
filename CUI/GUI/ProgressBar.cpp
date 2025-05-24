@@ -36,7 +36,7 @@ void ProgressBar::Update()
 			this->RenderImage();
 		}
 		d2d->FillRect(abslocation.x, abslocation.y, size.cx * this->PercentageValue, size.cy, this->ForeColor);
-		//d2d->DrawRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BolderColor, this->Boder);
+		
 	}
 	if (!this->Enable)
 	{

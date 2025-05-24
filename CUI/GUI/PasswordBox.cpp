@@ -256,13 +256,13 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 	}
 	break;
-	case WM_MOUSEWHEEL://mouse wheel
+	case WM_MOUSEWHEEL:
 	{
 		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
 		this->OnMouseWheel(this, event_obj);
 	}
 	break;
-	case WM_MOUSEMOVE://mouse move
+	case WM_MOUSEMOVE:
 	{
 		this->ParentForm->UnderMouse = this;
 		if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) && this->ParentForm->Selected == this)
@@ -278,7 +278,7 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		this->OnMouseMove(this, event_obj);
 	}
 	break;
-	case WM_LBUTTONDOWN://mouse down
+	case WM_LBUTTONDOWN:
 	case WM_RBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 	{
@@ -300,7 +300,7 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		this->PostRender();
 	}
 	break;
-	case WM_LBUTTONUP://mouse up
+	case WM_LBUTTONUP:
 	case WM_RBUTTONUP:
 	case WM_MBUTTONUP:
 	{
@@ -316,7 +316,7 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		this->PostRender();
 	}
 	break;
-	case WM_LBUTTONDBLCLK://mouse double click
+	case WM_LBUTTONDBLCLK:
 	{
 		this->ParentForm->Selected = this;
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
@@ -324,7 +324,7 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		this->PostRender();
 	}
 	break;
-	case WM_KEYDOWN://keyboard down
+	case WM_KEYDOWN:
 	{
 		auto pos = this->AbsLocation;
 		HIMC hImc = ImmGetContext(this->ParentForm->Handle);
@@ -442,19 +442,19 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	case WM_CHAR:
 	{
 		wchar_t ch = (wchar_t)(wParam);
-		if (ch >= 32 && ch <= 126)//input char
+		if (ch >= 32 && ch <= 126)
 		{
 			const wchar_t c[] = { ch,L'\0' };
 			this->InputText(c);
 			UpdateScroll();
 		}
-		else if (ch == 1)//ctrl+a
+		else if (ch == 1)
 		{
 			this->SelectionStart = 0;
 			this->SelectionEnd = this->Text.size();
 			UpdateScroll();
 		}
-		else if (ch == 8)//back
+		else if (ch == 8)
 		{
 			if (this->Text.size() > 0)
 			{
@@ -462,7 +462,7 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 				UpdateScroll();
 			}
 		}
-		else if (ch == 22)//crlt+v
+		else if (ch == 22)
 		{
 			if (OpenClipboard(this->ParentForm->Handle))
 			{
@@ -483,7 +483,7 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		this->PostRender();
 	}
 	break;
-	case WM_IME_COMPOSITION://imm action
+	case WM_IME_COMPOSITION:
 	{
 		if (lParam & GCS_RESULTSTR)
 		{
@@ -512,7 +512,7 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 	}
 	break;
-	case WM_KEYUP://keyboard up
+	case WM_KEYUP:
 	{
 		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
 		this->OnKeyUp(this, event_obj);

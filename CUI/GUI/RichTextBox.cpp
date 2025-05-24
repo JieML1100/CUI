@@ -398,7 +398,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 	}
 	break;
-	case WM_MOUSEWHEEL://mouse wheel
+	case WM_MOUSEWHEEL:
 	{
 		if (GET_WHEEL_DELTA_WPARAM(wParam) > 0)
 		{
@@ -426,7 +426,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		this->OnMouseWheel(this, event_obj);
 	}
 	break;
-	case WM_MOUSEMOVE://mouse move
+	case WM_MOUSEMOVE:
 	{
 		this->ParentForm->UnderMouse = this;
 		if (isDraggingScroll) {
@@ -444,7 +444,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		this->OnMouseMove(this, event_obj);
 	}
 	break;
-	case WM_LBUTTONDOWN://mouse down
+	case WM_LBUTTONDOWN:
 	case WM_RBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 	{
@@ -471,7 +471,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		this->PostRender();
 	}
 	break;
-	case WM_LBUTTONUP://mouse up
+	case WM_LBUTTONUP:
 	case WM_RBUTTONUP:
 	case WM_MBUTTONUP:
 	{
@@ -489,7 +489,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		this->PostRender();
 	}
 	break;
-	case WM_LBUTTONDBLCLK://mouse double click
+	case WM_LBUTTONDBLCLK:
 	{
 		this->ParentForm->Selected = this;
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
@@ -497,7 +497,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		this->PostRender();
 	}
 	break;
-	case WM_KEYDOWN://keyboard down
+	case WM_KEYDOWN:
 	{
 		auto pos = this->AbsLocation;
 		pos.x += this->selectedPos.x;
@@ -647,26 +647,26 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	case WM_CHAR:
 	{
 		wchar_t ch = (wchar_t)(wParam);
-		if (ch >= 32 && ch <= 126)//input char
+		if (ch >= 32 && ch <= 126)
 		{
 			const wchar_t c[] = { ch,L'\0' };
 			this->InputText(c);
 			UpdateScroll();
 		}
-		else if (ch == 13 && this->AllowMultiLine)//Enter
+		else if (ch == 13 && this->AllowMultiLine)
 		{
 			const wchar_t c[] = { L'\n',L'\0' };
 			this->InputText(c);
 			UpdateScroll();
 		}
-		else if (ch == 1)//ctrl+a
+		else if (ch == 1)
 		{
 			this->SelectionStart = 0;
 			this->SelectionEnd = this->Text.size();
 			UpdateScroll();
 			UpdateSelRange();
 		}
-		else if (ch == 8)//back
+		else if (ch == 8)
 		{
 			if (this->Text.size() > 0)
 			{
@@ -674,7 +674,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 				UpdateScroll();
 			}
 		}
-		else if (ch == 22)//crlt+v
+		else if (ch == 22)
 		{
 			if (OpenClipboard(this->ParentForm->Handle))
 			{
@@ -692,7 +692,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 				}
 			}
 		}
-		else if (ch == 3)//crlt+c
+		else if (ch == 3)
 		{
 			std::string s = Convert::wstring_to_string(this->GetSelectedString().c_str());
 			if (s.size() > 0 && OpenClipboard(this->ParentForm->Handle))
@@ -706,7 +706,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 				CloseClipboard();
 			}
 		}
-		else if (ch == 24)//crlt+x
+		else if (ch == 24)
 		{
 			std::string s = Convert::wstring_to_string(this->GetSelectedString().c_str());
 			if (s.size() > 0 && OpenClipboard(this->ParentForm->Handle))
@@ -724,7 +724,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		this->PostRender();
 	}
 	break;
-	case WM_IME_COMPOSITION://imm action
+	case WM_IME_COMPOSITION:
 	{
 		if (lParam & GCS_RESULTSTR)
 		{
@@ -754,7 +754,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 	}
 	break;
-	case WM_KEYUP://keyboard up
+	case WM_KEYUP:
 	{
 		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
 		this->OnKeyUp(this, event_obj);

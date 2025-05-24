@@ -18,5 +18,5 @@ Taskbar::~Taskbar()
 {
     pTaskbarList->SetProgressState(Handle, TBPF_NOPROGRESS);
     pTaskbarList->Release();
-    //CoUninitialize();
+    
 }

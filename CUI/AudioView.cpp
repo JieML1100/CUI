@@ -1,6 +1,5 @@
 ﻿#include "AudioView.h"
 #include "imgs.h"
-#include "BG.h"
 
 void label1_OnMouseWheel(class Control* sender, MouseEventArgs e)
 {
@@ -203,7 +202,6 @@ AudioView::AudioView() : Form(L"", { 0,0 }, { 1280,600 })
 		ingButton->OnMouseClick += iconButton_OnMouseClick;
 	}
 
-	this->Image = this->Render->CreateBitmap((BYTE*)BG, sizeof(BG));
 	this->BackColor = Colors::grey31;
 	this->SizeMode = ImageSizeMode::StretchIamge;
 }

@@ -6,7 +6,7 @@
 #include <dwmapi.h>
 #include <windowsx.h>
 #pragma comment(lib, "Dwmapi.lib")
-
+#include "../FunctionHelper.h"
 GET_CPP(Form, POINT, Location)
 {
 	if (this->Handle)
@@ -170,8 +170,9 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 		NULL,
 		GetModuleHandleW(0),
 		0);
-	SetWindowLongPtrW(this->Handle, GWLP_USERDATA, (LONG_PTR)this ^ 0xFFFFFFFFFFFFFFFF);
-	DragAcceptFiles(this->Handle, TRUE);
+	RELOC_CALL(SetWindowLongPtrW,this->Handle, GWLP_USERDATA, (LONG_PTR)this ^ 0xFFFFFFFFFFFFFFFF);
+	
+	RELOC_CALL(DragAcceptFiles, this->Handle, TRUE);
 
 
 	Application::Forms.Add(this->Handle, this);
@@ -182,30 +183,30 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 	_maxBox = (Button*)this->AddControl(new Button(L"⬜", xtmp, 0.0f, this->HeadHeight, this->HeadHeight));
 	xtmp += this->HeadHeight;
 	_closeBox = (Button*)this->AddControl(new Button(L"✕", xtmp, 0.0f, this->HeadHeight, this->HeadHeight));
-// Add event handlers for the buttons
+
 	_minBox->OnMouseClick += [](class Control* sender, MouseEventArgs)
 		{
-			ShowWindow(((Button*)sender)->ParentForm->Handle, SW_MINIMIZE); // Minimize the window
+			ShowWindow(((Button*)sender)->ParentForm->Handle, SW_MINIMIZE); 
 		};
 	_maxBox->OnMouseClick += [](class Control* sender, MouseEventArgs)
 		{
 			if (IsZoomed(((Button*)sender)->ParentForm->Handle))
-				((Button*)sender)->ParentForm->Handle; // Get the handle of the parent form
-			if (IsZoomed(((Button*)sender)->ParentForm->Handle)) // Check if the window is maximized
+				((Button*)sender)->ParentForm->Handle; 
+			if (IsZoomed(((Button*)sender)->ParentForm->Handle)) 
 			{
-				((Button*)sender)->Text = L"⬜"; // Change button text to "□"
-				ShowWindow(((Button*)sender)->ParentForm->Handle, SW_RESTORE); // Restore the window to normal size
+				((Button*)sender)->Text = L"⬜"; 
+				ShowWindow(((Button*)sender)->ParentForm->Handle, SW_RESTORE); 
 			}
 			else
 			{
-				((Button*)sender)->Text = L"❐"; // Change button text to "☐"
-				ShowWindow(((Button*)sender)->ParentForm->Handle, SW_MAXIMIZE); // Maximize the window
+				((Button*)sender)->Text = L"❐"; 
+				ShowWindow(((Button*)sender)->ParentForm->Handle, SW_MAXIMIZE); 
 			}
 		};
 	_closeBox->OnMouseClick += [](class Control* sender, MouseEventArgs)
 		{
 			((Button*)sender)->ParentForm->Close();
-			((Button*)sender)->ParentForm->Close(); // Close the form
+			((Button*)sender)->ParentForm->Close(); 
 		};
 	_minBox->Boder = 0.0f; _minBox->Round = 0.0f; _minBox->BackColor = D2D1_COLOR_F{ 0.0f,0.0f,0.0f,0.0f };
 	_maxBox->Boder = 0.0f; _maxBox->Round = 0.0f; _maxBox->BackColor = D2D1_COLOR_F{ 0.0f,0.0f,0.0f,0.0f };
@@ -377,7 +378,7 @@ bool Form::Update(bool force)
 			fc->Update();
 		}
 		this->OnPaint(this);
-		//this->Render->SetZoom(1.0f);
+		
 		this->Render->EndRender();
 		this->ControlChanged = false;
 		return true;
@@ -612,7 +613,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	break;
 	case WM_PAINT:
 	{
-		//this->ControlChanged = true;
+		
 	}
 	break;
 	case WM_CHAR:
@@ -828,11 +829,11 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 		{
 			form->OnFormClosed(form);
 			Application::Forms.Remove(form->Handle);
-			//if (Application::Forms.Count() == 0)
-			//{
-			//	//PostQuitMessage(0);
-			//	exit(0);
-			//}
+			
+			
+			
+			
+			
 		}
 		break;
 		case (WM_USER + 1):
@@ -848,7 +849,7 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 						0, mouseLocation.x, mouseLocation.y, 0
 					));
 
-					// 如果是右键点击，显示右键菜单
+					
 					if (lParam == WM_RBUTTONDOWN)
 					{
 						NotifyIcon::Instance->ShowContextMenu(mouseLocation.x, mouseLocation.y);

@@ -71,7 +71,7 @@ public:
 	FormDropFileEvent OnDropFile;
 	FormClosingEvent OnFormClosing;
 	FormClosedEvent OnFormClosed;
-	//菜单事件,id表示菜单项的id,info表示菜单项的信息
+	
 	CommandEvent OnCommand;
 
 	HWND Handle = NULL;
@@ -148,7 +148,7 @@ public:
 	D2D1_RECT_F ChildRect();
 	Control* LastChild();
 	static bool DoEvent();
-	//如果需要实现动画效果或者存在循环刷新绘制的控件请使用DoEvent,因为WaiteEvent会阻塞线程直到新消息到达
+	
 	static bool WaiteEvent();
 	static LRESULT CALLBACK WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 };

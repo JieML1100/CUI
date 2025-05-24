@@ -179,7 +179,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		}
 	}
 	break;
-	case WM_MOUSEWHEEL://mouse wheel
+	case WM_MOUSEWHEEL:
 	{
 		if (this->Expand)
 		{
@@ -227,7 +227,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		this->OnMouseWheel(this, event_obj);
 	}
 	break;
-	case WM_MOUSEMOVE://mouse move
+	case WM_MOUSEMOVE:
 	{
 		this->ParentForm->UnderMouse = this;
 		if (this->Expand)
@@ -263,7 +263,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		this->OnMouseMove(this, event_obj);
 	}
 	break;
-	case WM_LBUTTONDOWN://mouse down
+	case WM_LBUTTONDOWN:
 	case WM_RBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 	{
@@ -278,7 +278,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		this->OnMouseDown(this, event_obj);
 	}
 	break;
-	case WM_LBUTTONUP://mouse up
+	case WM_LBUTTONUP:
 	case WM_RBUTTONUP:
 	case WM_MBUTTONUP:
 	{
@@ -337,19 +337,19 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		this->PostRender();
 	}
 	break;
-	case WM_LBUTTONDBLCLK://mouse double click
+	case WM_LBUTTONDBLCLK:
 	{
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 		this->OnMouseDoubleClick(this, event_obj);
 	}
 	break;
-	case WM_KEYDOWN://keyboard down
+	case WM_KEYDOWN:
 	{
 		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
 		this->OnKeyDown(this, event_obj);
 	}
 	break;
-	case WM_KEYUP://keyboard up
+	case WM_KEYUP:
 	{
 		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
 		this->OnKeyUp(this, event_obj);

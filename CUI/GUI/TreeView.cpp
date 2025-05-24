@@ -25,14 +25,14 @@ static void renderNodes(TreeView* tree, D2DGraphics* d2d, float x, float y, floa
 			{
 				d2d->DrawRect(renderLeft, exTop, itemHeight * 0.6f, itemHeight * 0.6f, foreColor);
 
-				// -
+				
 				d2d->DrawLine(
 					{ renderLeft + (itemHeight * 0.1f), exTop + (itemHeight * 0.3f) },
 					{ renderLeft + (itemHeight * 0.5f), exTop + (itemHeight * 0.3f) },
 					foreColor);
 				if (!c->Expand)
 				{
-					// +
+					
 					d2d->DrawLine(
 						{ renderLeft + (itemHeight * 0.3f), exTop + (itemHeight * 0.1f) },
 						{ renderLeft + (itemHeight * 0.3f), exTop + (itemHeight * 0.5f) },
@@ -187,7 +187,7 @@ void TreeView::Update()
 		{
 			this->RenderImage();
 		}
-		//draw entities
+		
 		{
 			int curr = 0;
 			renderNodes(this, d2d, abslocation.x, abslocation.y, size.cx, size.cy, font->FontHeight, ScrollIndex, curr, 0, this->Root->Children);
@@ -232,7 +232,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		}
 	}
 	break;
-	case WM_MOUSEWHEEL://mouse wheel
+	case WM_MOUSEWHEEL:
 	{
 		bool need_update = false;
 		if (GET_WHEEL_DELTA_WPARAM(wParam) < 0)
@@ -262,7 +262,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		this->OnMouseWheel(this, event_obj);
 	}
 	break;
-	case WM_MOUSEMOVE://mouse move
+	case WM_MOUSEMOVE:
 	{
 		this->ParentForm->UnderMouse = this;
 		if (isDraggingScroll) {
@@ -281,7 +281,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		this->OnMouseMove(this, event_obj);
 	}
 	break;
-	case WM_LBUTTONDOWN://mouse down
+	case WM_LBUTTONDOWN:
 	case WM_RBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 	{
@@ -324,7 +324,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		this->PostRender();
 	}
 	break;
-	case WM_LBUTTONUP://mouse up
+	case WM_LBUTTONUP:
 	case WM_RBUTTONUP:
 	case WM_MBUTTONUP:
 	{
@@ -344,7 +344,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		this->PostRender();
 	}
 	break;
-	case WM_LBUTTONDBLCLK://mouse double click
+	case WM_LBUTTONDBLCLK:
 	{
 		this->ParentForm->Selected = this;
 		auto font = this->Font;
@@ -369,7 +369,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		this->PostRender();
 	}
 	break;
-	case WM_KEYDOWN://keyboard down
+	case WM_KEYDOWN:
 	{
 		auto pos = this->AbsLocation;
 		HIMC hImc = ImmGetContext(this->ParentForm->Handle);
@@ -383,7 +383,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		this->PostRender();
 	}
 	break;
-	case WM_KEYUP://keyboard up
+	case WM_KEYUP:
 	{
 		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
 		this->OnKeyUp(this, event_obj);

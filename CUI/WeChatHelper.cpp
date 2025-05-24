@@ -84,7 +84,7 @@ WeChatHelper::WeChatHelper()
 void WeChatHelper::SendTextMessage(std::wstring wxIdstr, std::wstring msgstr)
 {
 	ULONG64 ProcessHeap = op->CallRemote((ULONG64)GetProcessHeap, 0);
-	//远程构造id和消息结构
+	
 	ULONG64 wxid = op->CallRemote((ULONG64)HeapAlloc, ProcessHeap, 0, wxIdstr.size() * 2);
 	op->Write(wxid, (void*)wxIdstr.data(), wxIdstr.size() * 2);
 	ULONG64 msg = op->CallRemote((ULONG64)HeapAlloc, ProcessHeap, 0, msgstr.size() * 2);
@@ -100,12 +100,12 @@ void WeChatHelper::SendTextMessage(std::wstring wxIdstr, std::wstring msgstr)
 	op->Write(msg_struct, msg);
 	op->Write(msg_struct + 8 + 0, msgstr.size());
 	op->Write(msg_struct + 8 + 4, msgstr.size());
-	//远程构造消息缓存
+	
 	ULONG64 chat_msg = op->AllocateMemory(0x1000);
-	//call
+	
 	op->CallRemote(SendTextMsg, chat_msg, wxid_struct, msg_struct, 0, 1, 1, 0, 0);
 	op->CallRemote(FreeChatMsg, chat_msg);
-	//释放远程内存
+	
 	op->FreeMemory(chat_msg);
 	op->CallRemote((ULONG64)HeapFree, ProcessHeap, 0, wxid_struct);
 	op->CallRemote((ULONG64)HeapFree, ProcessHeap, 0, msg_struct);

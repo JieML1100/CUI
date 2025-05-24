@@ -3,7 +3,7 @@
 #include <vector>
 #include "Utils/Event.h"
 
-// 菜单项类
+
 class NotifyIconMenuItem
 {
 public:
@@ -20,7 +20,7 @@ public:
     }
 
     static NotifyIconMenuItem CreateSeparator();
-    // 添加子菜单项
+    
     void AddSubItem(const NotifyIconMenuItem& item);
 };
 class NotifyIcon
@@ -50,15 +50,15 @@ public:
     void EnableMenuItem(int id, bool enable);
     void SetMenuItemText(int id, const std::string& text);
 
-    // 新增子菜单相关方法
+    
     NotifyIconMenuItem* CreateSubMenu(const std::string& text);
     void AddSubMenuItem(int parentId, const NotifyIconMenuItem& item);
 
-    // 查找菜单项方法（内部使用）
+    
     NotifyIconMenuItem* FindMenuItem(int id, std::vector<NotifyIconMenuItem>& items);
     NotifyIconMenuItem* FindMenuItem(int id);
 
-    // 事件定义
+    
     typedef Event<void(class NotifyIcon*, MouseEventArgs)> NotifyIconMouseDownEvent;
     NotifyIconMouseDownEvent OnNotifyIconMouseDown;
 

@@ -211,33 +211,33 @@ void GridView::SetScrollByPos(float yof)
 	const int renderCount = GetGridViewRenderRowCount(this);
 	const int maxScroll = rowCount - renderCount;
 
-	// 计算滚动区域的高度
+	
 	const float renderingWidth = this->Width - 8.0f;
 	const float renderingHeight = this->Height;
 
-	// 行高计算
+	
 	float rowHeight = font->FontHeight + 2.0f;
 	if (RowHeight != 0.0f)
 		rowHeight = RowHeight;
 
-	// 头部高度
+	
 	const auto headFont = HeadFont ? HeadFont : font;
 	const float headHeight = (this->HeadHeight == 0.0f) ? headFont->FontHeight : this->HeadHeight;
 	const float contentHeight = renderingHeight - headHeight;
 
-	// 计算可显示行数
+	
 	const int visibleRowsCount = static_cast<int>(contentHeight / rowHeight);
 
 	if (visibleRowsCount < rowCount)
 	{
-		// 滚动块高度计算
+		
 		const float scrollBlockHeight = max(static_cast<float>(renderingHeight * 0.1f),
 			(renderingHeight * renderCount) / static_cast<float>(rowCount));
 
 		const float topPosition = scrollBlockHeight * 0.5f;
 		const float bottomPosition = renderingHeight - topPosition;
 
-		// 计算滚动比例
+		
 		if (bottomPosition > topPosition)
 		{
 			const float percent = (yof - topPosition) / (bottomPosition - topPosition);
@@ -245,7 +245,7 @@ void GridView::SetScrollByPos(float yof)
 		}
 	}
 
-	// 确保滚动位置在有效范围内
+	
 	this->ScrollRowPosition = max(min(this->ScrollRowPosition, static_cast<float>(rowCount -
 		renderCount)), 0.0f);
 
@@ -857,7 +857,7 @@ void GridView::HandleLeftButtonUp(int xof, int yof)
 }
 void GridView::HandleKeyDown(WPARAM wParam)
 {
-	// 处理键盘导航
+	
 	switch (wParam)
 	{
 	case VK_RIGHT:
@@ -915,7 +915,7 @@ bool GridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 			yof <= (input_location.y + size.cy)) && c->Visible;
 	}
 
-	// 处理消息
+	
 	switch (message)
 	{
 	case WM_DROPFILES:
@@ -950,7 +950,7 @@ bool GridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		break;
 	}
 
-	// 如果点击在编辑控件上，传递消息
+	
 	if (hitEdit && c)
 	{
 		c->ProcessMessage(message, wParam, lParam, xof - input_location.x, yof - input_location.y);

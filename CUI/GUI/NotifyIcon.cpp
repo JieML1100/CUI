@@ -37,7 +37,7 @@ void NotifyIconMenuItem::AddSubItem(const NotifyIconMenuItem& item)
 }
 NotifyIconMenuItem* NotifyIcon::CreateSubMenu(const std::string& text)
 {
-    // 创建没有ID的子菜单（子菜单本身不需要ID，只有子菜单项需要）
+    
     NotifyIconMenuItem* subMenu = new NotifyIconMenuItem(text, 0);
     subMenu->HasSubMenu = true;
     subMenu->SubMenu = CreatePopupMenu();
@@ -83,7 +83,7 @@ NotifyIcon::NotifyIcon()
     NotifyIconData.uID = 0;
     NotifyIconData.uVersion = NOTIFYICON_VERSION;
 
-    // 初始化右键菜单
+    
     popupMenu = CreatePopupMenu();
 }
 
@@ -138,7 +138,7 @@ void NotifyIcon::ShowBalloonTip(const char* title, const char* text, int timeout
     Shell_NotifyIconA(NIM_MODIFY, &NotifyIconData);
 }
 
-// 右键菜单相关方法实现
+
 void NotifyIcon::AddMenuItem(const NotifyIconMenuItem& item)
 {
     if (item.Separator)
@@ -167,20 +167,20 @@ void NotifyIcon::AddMenuSeparator()
 
 void NotifyIcon::ShowContextMenu(int x, int y)
 {
-    // 确保窗口处于前台
+    
     SetForegroundWindow(hWnd);
 
-    // 显示菜单
+    
     UINT flags = TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_RETURNCMD;
     int cmdId = TrackPopupMenu(popupMenu, flags, x, y, 0, hWnd, NULL);
 
-    // 处理菜单点击事件
+    
     if (cmdId > 0)
     {
         OnNotifyIconMenuClick(this, cmdId);
     }
 
-    // 解决菜单消失后窗口失去焦点的问题
+    
     PostMessage(hWnd, WM_NULL, 0, 0);
 }
 
@@ -198,7 +198,7 @@ void NotifyIcon::EnableMenuItem(int id, bool enable)
     UINT flags = enable ? MF_ENABLED : MF_GRAYED;
     ::EnableMenuItem(popupMenu, id, flags);
 
-    // 更新内部菜单项状态
+    
     for (auto& item : menuItems)
     {
         if (item.ID == id)
@@ -218,7 +218,7 @@ void NotifyIcon::SetMenuItemText(int id, const std::string& text)
 
     SetMenuItemInfoA(popupMenu, id, FALSE, &info);
 
-    // 更新内部菜单项文本
+    
     for (auto& item : menuItems)
     {
         if (item.ID == id)

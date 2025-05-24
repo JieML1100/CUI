@@ -76,19 +76,19 @@ bool Panel::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, 
 		}
 	}
 	break;
-	case WM_MOUSEWHEEL://mouse wheel
+	case WM_MOUSEWHEEL:
 	{
 		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
 		this->OnMouseWheel(this, event_obj);
 	}
 	break;
-	case WM_MOUSEMOVE://mouse move
+	case WM_MOUSEMOVE:
 	{
 		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
 		this->OnMouseMove(this, event_obj);
 	}
 	break;
-	case WM_LBUTTONDOWN://mouse down
+	case WM_LBUTTONDOWN:
 	case WM_RBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 	{
@@ -96,7 +96,7 @@ bool Panel::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, 
 		this->OnMouseDown(this, event_obj);
 	}
 	break;
-	case WM_LBUTTONUP://mouse up
+	case WM_LBUTTONUP:
 	case WM_RBUTTONUP:
 	case WM_MBUTTONUP:
 	{
@@ -104,19 +104,19 @@ bool Panel::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, 
 		this->OnMouseUp(this, event_obj);
 	}
 	break;
-	case WM_LBUTTONDBLCLK://mouse double click
+	case WM_LBUTTONDBLCLK:
 	{
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 		this->OnMouseDoubleClick(this, event_obj);
 	}
 	break;
-	case WM_KEYDOWN://keyboard down
+	case WM_KEYDOWN:
 	{
 		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
 		this->OnKeyDown(this, event_obj);
 	}
 	break;
-	case WM_KEYUP://keyboard up
+	case WM_KEYUP:
 	{
 		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
 		this->OnKeyUp(this, event_obj);

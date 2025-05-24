@@ -236,7 +236,6 @@
     <ClInclude Include="..\..\CppUtils\Utils\zlib\zlib.h" />
     <ClInclude Include="..\..\CppUtils\Utils\zlib\zutil.h" />
     <ClInclude Include="AudioView.h" />
-    <ClInclude Include="BG.h" />
     <ClInclude Include="CustomControls.h" />
     <ClInclude Include="GUI\Application.h" />
     <ClInclude Include="GUI\Button.h" />
@@ -259,8 +258,8 @@
     <ClInclude Include="GUI\Taskbar.h" />
     <ClInclude Include="GUI\TextBox.h" />
     <ClInclude Include="GUI\TreeView.h" />
+    <ClInclude Include="hde\hde64.h" />
     <ClInclude Include="imgs.h" />
-    <ClInclude Include="RSA.h" />
     <ClInclude Include="WeChatHelper.h" />
   </ItemGroup>
   <ItemGroup>
@@ -331,8 +330,8 @@
     <ClCompile Include="GUI\Taskbar.cpp" />
     <ClCompile Include="GUI\TextBox.cpp" />
     <ClCompile Include="GUI\TreeView.cpp" />
+    <ClCompile Include="hde\hde64.cpp" />
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="RSA.cpp" />
     <ClCompile Include="WeChatHelper.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

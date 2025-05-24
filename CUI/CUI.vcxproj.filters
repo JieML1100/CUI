@@ -34,6 +34,9 @@
     <Filter Include="Utils\sqlite">
       <UniqueIdentifier>{70d0b0cb-1f66-4a0c-808e-aada927be581}</UniqueIdentifier>
     </Filter>
+    <Filter Include="hde">
+      <UniqueIdentifier>{937107ba-5512-4e56-ac07-381476bc310e}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GUI\Control.h">
@@ -246,9 +249,6 @@
     <ClInclude Include="AudioView.h">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="BG.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\CppUtils\Media\AudioFile.h">
       <Filter>Media</Filter>
     </ClInclude>
@@ -264,14 +264,14 @@
     <ClInclude Include="..\..\CppUtils\Utils\SHA256.h">
       <Filter>Utils</Filter>
     </ClInclude>
-    <ClInclude Include="RSA.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\CppUtils\Utils\sqlite\sqlite3.h">
       <Filter>Utils\sqlite</Filter>
     </ClInclude>
     <ClInclude Include="..\..\CppUtils\Utils\httplib.h">
       <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="hde\hde64.h">
+      <Filter>hde</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -479,11 +479,11 @@
     <ClCompile Include="..\..\CppUtils\Utils\SHA256.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
-    <ClCompile Include="RSA.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\CppUtils\Utils\sqlite\sqlite3.c">
       <Filter>Utils\sqlite</Filter>
+    </ClCompile>
+    <ClCompile Include="hde\hde64.cpp">
+      <Filter>hde</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>
