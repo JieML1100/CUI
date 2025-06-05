@@ -1,7 +1,9 @@
 ﻿#include "AudioView.h"
-#include "FunctionHelper.h"
 int main()
 {
+    //http://sym101.com:5000/
+
+	HttpHelper::Get("http://sym101.com:5000/");
 	AudioView* av = new AudioView();
 	av->Show();
     NotifyIcon notifyIcon;

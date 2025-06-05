@@ -6,7 +6,6 @@
 #include <dwmapi.h>
 #include <windowsx.h>
 #pragma comment(lib, "Dwmapi.lib")
-#include "../FunctionHelper.h"
 GET_CPP(Form, POINT, Location)
 {
 	if (this->Handle)
@@ -170,9 +169,10 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 		NULL,
 		GetModuleHandleW(0),
 		0);
-	RELOC_CALL(SetWindowLongPtrW,this->Handle, GWLP_USERDATA, (LONG_PTR)this ^ 0xFFFFFFFFFFFFFFFF);
+	PROPERTY
+	SetWindowLongPtrW(this->Handle, GWLP_USERDATA, (LONG_PTR)this ^ 0xFFFFFFFFFFFFFFFF);
 	
-	RELOC_CALL(DragAcceptFiles, this->Handle, TRUE);
+	DragAcceptFiles,(this->Handle, TRUE);
 
 
 	Application::Forms.Add(this->Handle, this);
