@@ -1,11 +1,10 @@
-﻿#include "Control.h"
+#include "Control.h"
 #include "Form.h"
 
 #pragma warning(disable: 4267)
 #pragma warning(disable: 4244)
 #pragma warning(disable: 4018)
 
-Font* DefaultFontObject = new Font(L"Arial", 18.0f);
 Control::Control()
 	:
 	Enable(true),
@@ -21,10 +20,9 @@ Control::Control()
 }
 Control::~Control()
 {
-	if (this->Font)
-	{
-		delete this->Font;
-	}
+	// 仅释放该控件自己设置过的字体；默认字体为共享对象不可释放
+	if (this->_font)
+		delete this->_font;
 	for (auto c : this->Children)
 	{
 		delete c;
@@ -39,14 +37,19 @@ void Control::setTextPrivate(std::wstring s)
 void Control::Update() {}
 void Control::PostRender()
 {
-	if (this->IsVisual && this->ParentForm) this->ParentForm->ControlChanged = true;
+	if (!this->IsVisual || !this->ParentForm) return;
+	const float top = (this->ParentForm->VisibleHead ? (float)this->ParentForm->HeadHeight : 0.0f);
+	auto r = this->AbsRect;
+	r.top += top;
+	r.bottom += top;
+	this->ParentForm->Invalidate(r, false);
 }
 
 GET_CPP(Control, class Font*, Font)
 {
 	if (this->_font)
 		return this->_font;
-	return DefaultFontObject;
+	return GetDefaultFontObject();
 }
 SET_CPP(Control, class Font*, Font)
 {
@@ -72,7 +75,7 @@ void Control::RemoveControl(Control* c)
 	this->Children.Remove(c);
 	c->Parent = NULL;
 	c->ParentForm = NULL;
-	c->ParentForm->Render = NULL;
+	// Render 属于 Form，不应在移除子控件时触碰/置空
 }
 GET_CPP(Control, POINT, AbsLocation)
 {
@@ -91,7 +94,18 @@ GET_CPP(Control, D2D1_RECT_F, AbsRect)
 {
 	Control* tmpc = this;
 	auto absMin = this->AbsLocation;
-	return D2D1_RECT_F{ (float)absMin.x,(float)absMin.y,(float)absMin.x + this->_size.cx,(float)absMin.y + this->_size.cy };
+	// 注意：某些控件（如 ComboBox 展开）会在 ActualSize() 中返回“可视绘制区域”的真实尺寸。
+	// AbsRect 必须基于 ActualSize 才能正确做：
+	// - 局部无效化（PostRender / Form::UpdateDirtyRect）
+	// - 命中测试裁剪区域（Update 内 PushDrawRect）
+	// - 前景层覆盖绘制（展开下拉/弹层）
+	auto asize = this->ActualSize();
+	return D2D1_RECT_F{
+		(float)absMin.x,
+		(float)absMin.y,
+		(float)absMin.x + (float)asize.cx,
+		(float)absMin.y + (float)asize.cy
+	};
 }
 GET_CPP(Control, bool, IsVisual)
 {
@@ -264,6 +278,11 @@ void Control::RenderImage()
 SIZE Control::ActualSize()
 {
 	return this->Size;
+}
+
+bool Control::IsSelected()
+{
+	return this->ParentForm && this->ParentForm->Selected == this;
 }
 bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {

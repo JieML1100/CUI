@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "RoundTextBox.h"
 #include "TextBox.h"
 #include "Form.h"
@@ -16,12 +16,14 @@ void RoundTextBox::Update()
 	auto font = this->Font;
 	float render_height = Height - (TextMargin * 2.0f);
 	textSize = font->GetTextSize(Text, FLT_MAX, render_height);
-	float OffsetY = max((Height - textSize.height) * 0.5f, 0.0f);
+	float OffsetY = std::max((Height - textSize.height) * 0.5f, 0.0f);
 
 	auto abslocation = AbsLocation;
 	auto size = ActualSize();
 	auto absRect = AbsRect;
 	bool isSelected = ParentForm->Selected == this;
+	// 默认：本帧不缓存光标区域（只有“选中且无选区”才会更新缓存）
+	this->_caretRectCacheValid = false;
 
 	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
 	{
@@ -42,8 +44,18 @@ void RoundTextBox::Update()
 				{
 					d2d->FillRect(sr.left + abslocation.x + TextMargin - OffsetX, (sr.top + abslocation.y) + OffsetY, sr.width, sr.height, this->SelectedBackColor);
 				}
-				if ((GetTickCount64() / 200) % 2 == 0)
-					d2d->DrawLine({ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y) - OffsetY },
+				// 光标区域缓存（用于 WM_TIMER 局部无效化）
+				if (selLen == 0 && !selRange.empty())
+				{
+					const auto caret = selRange[0];
+					const float cx = caret.left + (float)abslocation.x + TextMargin - OffsetX;
+					const float cy = caret.top + (float)abslocation.y + OffsetY;
+					const float ch = caret.height > 0 ? caret.height : font->FontHeight;
+					this->_caretRectCache = { cx - 2.0f, cy - 2.0f, cx + 2.0f, cy + ch + 2.0f };
+					this->_caretRectCacheValid = true;
+				}
+				if (selLen == 0 && !selRange.empty() && (GetTickCount64() / 200) % 2 == 0)
+					d2d->DrawLine({ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y) + OffsetY },
 						{ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y + selRange[0].height) + OffsetY }, Colors::Black);
 				auto lot = Factory::CreateStringLayout(this->Text, FLT_MAX, render_height, font->FontObject);
 				d2d->DrawStringLayoutEffect(lot,
@@ -64,8 +76,15 @@ void RoundTextBox::Update()
 				lot->Release();
 			}
 		}
-		else if (isSelected && (GetTickCount64() / 100) % 2 == 0)
+		else if (isSelected)
 		{
+			// 空文本时也需要缓存光标区域
+			const float cx = (float)TextMargin + (float)abslocation.x - OffsetX;
+			const float cy = (float)abslocation.y + OffsetY;
+			const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
+			this->_caretRectCache = { cx - 2.0f, cy - 2.0f, cx + 2.0f, cy + ch + 2.0f };
+			this->_caretRectCacheValid = true;
+			if ((GetTickCount64() / 100) % 2 == 0)
 			d2d->DrawLine({ (float)TextMargin + (float)abslocation.x - OffsetX, (float)abslocation.y + OffsetY },
 				{ (float)TextMargin + (float)abslocation.x - OffsetX, (float)abslocation.y + OffsetY + 16.0f }, Colors::Black);
 		}

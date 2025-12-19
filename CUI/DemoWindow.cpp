@@ -1,17 +1,21 @@
-﻿#include "DemoWindow.h"
+#include "DemoWindow.h"
 #include "imgs.h"
 #include "nanosvg.h"
-ID2D1Bitmap* ToBitmapFromSvg(const char* data) {
+ID2D1Bitmap* ToBitmapFromSvg(D2DGraphics* g, const char* data) {
+	if (!g || !data) return NULL;
 	int len = strlen(data) + 1;
 	char* svg_text = new char[len];
 	memcpy(svg_text, data, len);
 	NSVGimage* image = nsvgParse(svg_text, "px", 96.0f);
+	delete[] svg_text;
+	if (!image) return NULL;
 	float percen = 1.0f;
 	if (image->width > 4096 || image->height > 4096) {
 		float maxv = image->width > image->height ? image->width : image->height;
 		percen = 4096.0f / maxv;
 	}
-	auto subg = new D2DGraphics(image->width * percen, image->height * percen);
+	auto renderSource = BitmapSource::CreateEmpty(image->width * percen, image->height * percen);
+	auto subg = new D2DGraphics(renderSource.get());
 	NSVGshape* shape;
 	NSVGpath* path;
 	subg->BeginRender();
@@ -82,8 +86,12 @@ ID2D1Bitmap* ToBitmapFromSvg(const char* data) {
 	}
 	nsvgDelete(image);
 	subg->EndRender();
-	auto result = (ID2D1Bitmap*)subg->GetSharedBitmap();
+
+
+	auto result = g->CreateBitmap(renderSource);
+	renderSource->GetWicBitmap()->Release();
 	delete subg;
+
 	return result;
 }
 void label1_OnMouseWheel(class Control* sender, MouseEventArgs e)
@@ -129,15 +137,17 @@ void bt2_OnMouseClick(class Control* sender, MouseEventArgs e)
 		if (file.Extension() == ".svg" || file.Extension() == ".SVG")
 		{
 			auto bytes = File::ReadAllBytes(ofd.SelectedPaths[0]);
-			picturebox1->Image = form->Image = ToBitmapFromSvg((char*)bytes.data());
+			picturebox1->Image = form->Image = ToBitmapFromSvg(form->Render,(char*)bytes.data());
 			picturebox1->PostRender();
 		}
 		else
 		{
 			auto bytes = File::ReadAllBytes(ofd.SelectedPaths[0]);
-			picturebox1->Image = form->Image = form->Render->CreateBitmap(bytes.data(), bytes.size());
+			auto img = BitmapSource::FromBuffer(bytes.data(), bytes.size());
+			picturebox1->Image = form->Image = form->Render->CreateBitmap(img->GetWicBitmap());
 			picturebox1->PostRender();
 		}
+		form->Invalidate();
 	}
 }
 void sw1_OnMouseClick(class Control* sender, MouseEventArgs e)
@@ -155,26 +165,25 @@ void iconButton_OnMouseClick(class Control* sender, MouseEventArgs e)
 }
 DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,600 })
 {
+	bmps[0] = ToBitmapFromSvg(this->Render,_0_ico);
+	bmps[1] = ToBitmapFromSvg(this->Render, _1_ico);
+	bmps[2] = ToBitmapFromSvg(this->Render, _2_ico);
+	bmps[3] = ToBitmapFromSvg(this->Render, _3_ico);
+	bmps[4] = ToBitmapFromSvg(this->Render, _4_ico);
+	bmps[5] = ToBitmapFromSvg(this->Render, _5_ico);
+	bmps[6] = ToBitmapFromSvg(this->Render, _6_ico);
+	bmps[7] = ToBitmapFromSvg(this->Render, _7_ico);
+	bmps[8] = ToBitmapFromSvg(this->Render, _8_ico);
+	bmps[9] = ToBitmapFromSvg(this->Render, _9_ico);
+	icos[0] = ToBitmapFromSvg(this->Render, icon0);
+	icos[1] = ToBitmapFromSvg(this->Render, icon1);
+	icos[2] = ToBitmapFromSvg(this->Render, icon2);
+	icos[3] = ToBitmapFromSvg(this->Render, icon3);
+	icos[4] = ToBitmapFromSvg(this->Render, icon4);
 
-	bmps[0] = ToBitmapFromSvg(_0_ico);
-	bmps[1] = ToBitmapFromSvg(_1_ico);
-	bmps[2] = ToBitmapFromSvg(_2_ico);
-	bmps[3] = ToBitmapFromSvg(_3_ico);
-	bmps[4] = ToBitmapFromSvg(_4_ico);
-	bmps[5] = ToBitmapFromSvg(_5_ico);
-	bmps[6] = ToBitmapFromSvg(_6_ico);
-	bmps[7] = ToBitmapFromSvg(_7_ico);
-	bmps[8] = ToBitmapFromSvg(_8_ico);
-	bmps[9] = ToBitmapFromSvg(_9_ico);
-	icos[0] = ToBitmapFromSvg(icon0);
-	icos[1] = ToBitmapFromSvg(icon1);
-	icos[2] = ToBitmapFromSvg(icon2);
-	icos[3] = ToBitmapFromSvg(icon3);
-	icos[4] = ToBitmapFromSvg(icon4);
-
-	label1 = this->AddControl(new Label(L"Label", 10, this->HeadHeight + 10));
+	label1 = this->AddControl(new Label(L"Label", 10, 10));
 	label1->OnMouseWheel += label1_OnMouseWheel;
-	clabel1 = this->AddControl(new CustomLabel1(L"Custom Label", 400, this->HeadHeight + 10));
+	clabel1 = this->AddControl(new CustomLabel1(L"Custom Label", 400, 10));
 	button1 = this->AddControl(new Button(L"BUTTON1", 10, this->LastChild()->Bottom + 5, 120, 24));
 	button1->OnMouseClick += button1_OnMouseClick;
 	textbox0 = this->AddControl(new TextBox(L"TextBox", 10, this->LastChild()->Bottom + 5, 120, 20));
@@ -219,14 +228,17 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,600 })
 		auto sub = new TreeNode(StringHelper::Format(L"item%d", i), bmps[1]);
 		sub->Expand = true;
 		tree->Root->Children.push_back(sub);
+		sub->Tag = i;
 		for (int j = 0; j < 3; j++)
 		{
 			auto ssub = new TreeNode(StringHelper::Format(L"item%d-%d", i, j), bmps[2]);
 			sub->Children.push_back(ssub);
+			ssub->Tag = i * j;
 			for (int n = 0; n < 10; n++)
 			{
 				auto sssub = new TreeNode(StringHelper::Format(L"item%d-%d-%d", i, j, n), bmps[3]);
 				ssub->Children.push_back(sssub);
+				sssub->Tag = i * j * n;
 			}
 		}
 	}
@@ -234,7 +246,8 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,600 })
 	panel1->AddControl(new Label(L"图片框", 10, 10));
 	picturebox1 = panel1->AddControl(new PictureBox(120, 10, 260, 120));
 	picturebox1->Image = this->Image;
-	picturebox1->OnDropFile += [](class Control* sender, List<std::wstring> files)
+	picturebox1->SizeMode = ImageSizeMode::StretchIamge;
+	picturebox1->OnDropFile += [&](class Control* sender, List<std::wstring> files)
 		{
 			if (sender->Image)
 			{
@@ -244,12 +257,13 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,600 })
 			FileInfo file(Convert::wstring_to_string(files[0]));
 			if (file.Extension() == ".svg" || file.Extension() == ".SVG")
 			{
-				sender->Image = ToBitmapFromSvg((char*)File::ReadAllBytes(Convert::wstring_to_string(files[0]).c_str()).data());
+				sender->Image = ToBitmapFromSvg(this->Render, (char*)File::ReadAllBytes(Convert::wstring_to_string(files[0]).c_str()).data());
 				sender->PostRender();
 			}
 			else
 			{
-				sender->Image = sender->ParentForm->Render->CreateBitmap(files[0].c_str());
+				auto img = BitmapSource::FromFile(files[0]);
+				sender->Image = sender->ParentForm->Render->CreateBitmap(img->GetWicBitmap());
 				sender->PostRender();
 			}
 		};

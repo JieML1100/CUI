@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "TextBox.h"
 #include "Form.h"
 #pragma comment(lib, "Imm32.lib")
@@ -171,6 +171,8 @@ void TextBox::Update()
 	auto size = this->ActualSize();
 	auto absRect = this->AbsRect;
 	bool isSelected = this->ParentForm->Selected == this;
+	// 默认：本帧不缓存光标区域（只有“选中且无选区”才会更新缓存）
+	this->_caretRectCacheValid = false;
 	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
 	{
 		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, isSelected ? this->FocusedColor : this->BackColor);
@@ -200,11 +202,20 @@ void TextBox::Update()
 				}
 				else
 				{
-					if ((GetTickCount64() / 200) % 2 == 0)
+					// 光标区域缓存（用于 WM_TIMER 局部无效化）
+					if (!selRange.empty())
+					{
+						const auto caret = selRange[0];
+						const float cx = caret.left + (float)abslocation.x + TextMargin - OffsetX;
+						const float cy = caret.top + (float)abslocation.y + OffsetY;
+						const float ch = caret.height > 0 ? caret.height : font->FontHeight;
+						this->_caretRectCache = { cx - 2.0f, cy - 2.0f, cx + 2.0f, cy + ch + 2.0f };
+						this->_caretRectCacheValid = true;
 						d2d->DrawLine(
-							{ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y) - OffsetY },
+							{ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y) + OffsetY },
 							{ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y + selRange[0].height) + OffsetY },
 							Colors::Black);
+					}
 				}
 				auto lot = Factory::CreateStringLayout(this->Text, FLT_MAX, render_height, font->FontObject);
 				d2d->DrawStringLayoutEffect(lot,
@@ -226,11 +237,19 @@ void TextBox::Update()
 		}
 		else
 		{
-			if (isSelected && (GetTickCount64() / 100) % 2 == 0)
+			if (isSelected)
+			{
+				// 空文本时也需要缓存光标区域
+				const float cx = (float)TextMargin + (float)abslocation.x - OffsetX;
+				const float cy = (float)abslocation.y + OffsetY;
+				const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
+				this->_caretRectCache = { cx - 2.0f, cy - 2.0f, cx + 2.0f, cy + ch + 2.0f };
+				this->_caretRectCacheValid = true;
 				d2d->DrawLine(
 					{ (float)TextMargin + (float)abslocation.x - OffsetX, (float)abslocation.y + OffsetY },
 					{ (float)TextMargin + (float)abslocation.x - OffsetX, (float)abslocation.y + OffsetY + 16.0f },
 					Colors::Black);
+			}
 		}
 		d2d->DrawRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BolderColor, this->Boder);
 		if (!this->Enable)
@@ -243,6 +262,16 @@ void TextBox::Update()
 		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	d2d->PopDrawRect();
+}
+
+bool TextBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
+{
+	// 仅在“自身被选中 + 无选区”时，返回缓存的光标区域
+	if (!this->IsSelected()) return false;
+	if (this->SelectionStart != this->SelectionEnd) return false;
+	if (!this->_caretRectCacheValid) return false;
+	outRect = this->_caretRectCache;
+	return true;
 }
 bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {

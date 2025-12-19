@@ -1,11 +1,15 @@
-﻿#pragma once
+#pragma once
 #include "RichTextBox.h"
 #include "Form.h"
+#include <algorithm>
 #pragma comment(lib, "Imm32.lib")
 UIClass RichTextBox::Type() { return UIClass::UI_RichTextBox; }
 RichTextBox::RichTextBox(std::wstring text, int x, int y, int width, int height)
 {
+	// 用 Control::Text 初始化一次（保持外部一致），内部后续尽量走 buffer 避免整串复制
 	this->Text = text;
+	this->buffer = text;
+	this->bufferSyncedFromControl = true;
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
 	this->BackColor = Colors::LightGray;
@@ -13,8 +17,42 @@ RichTextBox::RichTextBox(std::wstring text, int x, int y, int width, int height)
 	UpdateLayout();
 }
 
+void RichTextBox::SyncBufferFromControlIfNeeded()
+{
+	if (!this->bufferSyncedFromControl || this->TextChanged)
+	{
+		this->buffer = this->Text;
+		this->bufferSyncedFromControl = true;
+	}
+}
+
+void RichTextBox::SyncControlTextFromBuffer(const std::wstring& oldText)
+{
+	this->setTextPrivate(this->buffer);
+	this->TextChanged = true;
+	this->OnTextChanged(this, oldText, this->buffer);
+}
+
+void RichTextBox::TrimToMaxLength()
+{
+	if (this->MaxTextLength == 0) return;
+	if (this->buffer.size() <= this->MaxTextLength) return;
+
+	const size_t removeCount = this->buffer.size() - this->MaxTextLength;
+	if (removeCount == 0) return;
+
+	this->buffer = this->buffer.substr(removeCount);
+
+	this->SelectionStart = std::max(0, this->SelectionStart - (int)removeCount);
+	this->SelectionEnd = std::max(0, this->SelectionEnd - (int)removeCount);
+	if (this->SelectionStart > (int)this->buffer.size()) this->SelectionStart = (int)this->buffer.size();
+	if (this->SelectionEnd > (int)this->buffer.size()) this->SelectionEnd = (int)this->buffer.size();
+}
+
 void RichTextBox::UpdateSelRange()
 {
+	if (!this->layOutCache) 
+		return;
 	auto d2d = this->ParentForm->Render;
 	auto font = this->Font;
 	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
@@ -24,10 +62,49 @@ void RichTextBox::UpdateSelRange()
 
 	this->layOutCache->SetDrawingEffect(NULL, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
 	this->layOutCache->SetDrawingEffect(d2d->GetBackColorBrush(this->SelectedForeColor), DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen });
+	this->selRangeDirty = false;
 }
 void RichTextBox::UpdateLayout()
 {
-	if (this->TextChanged && this->ParentForm)
+	if (!this->ParentForm)
+		return;
+	SyncBufferFromControlIfNeeded();
+
+	// 选择是否进入虚拟化模式
+	this->virtualMode = (this->EnableVirtualization && this->AllowMultiLine && this->buffer.size() >= this->VirtualizeThreshold);
+	if (this->virtualMode)
+	{
+		// 虚拟化模式下不使用单一 layOutCache
+		if (this->layOutCache)
+		{
+			this->layOutCache->Release();
+			this->layOutCache = NULL;
+		}
+
+		float renderWidth = this->Width - (TextMargin * 2.0f);
+		float renderHeight = this->Height - (TextMargin * 2.0f);
+
+		// 文本变化或控件尺寸变化：重建 blocks（仅切分，不立即为每块创建 layout）
+		if (this->TextChanged || this->lastLayoutSize.cx != this->Width || this->lastLayoutSize.cy != this->Height || this->blocksDirty)
+		{
+			RebuildBlocks();
+			this->lastLayoutSize = SIZE{ this->Width, this->Height };
+			this->TextChanged = false;
+		}
+
+		// 计算总高度/滚动条（按块 layout 的高度累加）
+		EnsureAllBlockMetrics(renderWidth, renderHeight);
+		this->textSize.height = this->virtualTotalHeight;
+		this->textSize.width = renderWidth;
+		this->selRangeDirty = true;
+		return;
+	}
+
+	// 非虚拟化：使用单一 layout cache
+	ReleaseBlocks();
+
+	// 文本变化或控件尺寸变化时重建 Layout（IDWriteTextLayout 不支持直接换文本）
+	if ((this->TextChanged || this->lastLayoutSize.cx != this->Width || this->lastLayoutSize.cy != this->Height) && this->ParentForm)
 	{
 		if (this->layOutCache)this->layOutCache->Release();
 		auto d2d = this->ParentForm->Render;
@@ -36,18 +113,199 @@ void RichTextBox::UpdateLayout()
 			auto font = this->Font;
 			float render_width = this->Width - (TextMargin * 2.0f);
 			float render_height = this->Height - (TextMargin * 2.0f);
+
+			// 首次创建先不减滚动条宽度，算出高度后如需显示滚动条再复建一次（避免用旧 textSize 误判）
+			this->layOutCache = d2d->CreateStringLayout(this->buffer, render_width, render_height, font);
+			textSize = font->GetTextSize(layOutCache);
 			if (textSize.height > render_height)
 			{
-				render_width -= 8.0f;
+				if (this->layOutCache) this->layOutCache->Release();
+				this->layOutCache = d2d->CreateStringLayout(this->buffer, render_width - 8.0f, render_height, font);
+				textSize = font->GetTextSize(layOutCache);
 			}
-			this->layOutCache = d2d->CreateStringLayout(this->Text, render_width, render_height, font);
-			textSize = font->GetTextSize(layOutCache);
 			if (this->layOutCache)
 			{
 				TextChanged = false;
+				this->lastLayoutSize = SIZE{ this->Width, this->Height };
+				this->selRangeDirty = true;
 			}
 		}
 	}
+}
+
+void RichTextBox::ReleaseBlocks()
+{
+	for (auto& b : this->blocks)
+	{
+		if (b.layout)
+		{
+			b.layout->Release();
+			b.layout = NULL;
+		}
+	}
+	this->blocks.clear();
+	this->blockTops.clear();
+	this->blocksDirty = true;
+	this->blockMetricsDirty = true;
+	this->virtualTotalHeight = 0.0f;
+	this->layoutWidthHasScrollBar = false;
+	this->cachedRenderWidth = 0.0f;
+}
+
+void RichTextBox::RebuildBlocks()
+{
+	ReleaseBlocks();
+	this->blocksDirty = false;
+	this->blockMetricsDirty = true;
+
+	const size_t n = this->buffer.size();
+	if (n == 0) return;
+
+	const size_t blockSize = std::max((size_t)256, this->BlockCharCount);
+	size_t i = 0;
+	while (i < n)
+	{
+		size_t len = std::min(blockSize, n - i);
+		// 避免把 UTF-16 surrogate pair 截断
+		if (i + len < n)
+		{
+			wchar_t last = this->buffer[i + len - 1];
+			wchar_t next = this->buffer[i + len];
+			bool lastHigh = (last >= 0xD800 && last <= 0xDBFF);
+			bool nextLow = (next >= 0xDC00 && next <= 0xDFFF);
+			if (lastHigh && nextLow)
+			{
+				len += 1;
+			}
+		}
+		TextBlock b;
+		b.start = i;
+		b.len = len;
+		this->blocks.push_back(b);
+		i += len;
+	}
+}
+
+void RichTextBox::EnsureBlockLayout(int idx, float renderWidth, float renderHeight)
+{
+	if (idx < 0 || idx >= (int)this->blocks.size()) return;
+	auto& b = this->blocks[idx];
+	if (b.layout && b.height >= 0.0f) return;
+
+	auto d2d = this->ParentForm->Render;
+	auto font = this->Font;
+
+	std::wstring s = this->buffer.substr(b.start, b.len);
+	b.layout = d2d->CreateStringLayout(s, renderWidth, FLT_MAX, font);
+	auto sz = font->GetTextSize(b.layout);
+	b.height = sz.height;
+	if (b.height < font->FontHeight) b.height = font->FontHeight;
+}
+
+void RichTextBox::EnsureAllBlockMetrics(float renderWidth, float renderHeight)
+{
+	// 如果宽度变化或滚动条状态变化，需要重新算高度
+	if (!this->blockMetricsDirty && this->cachedRenderWidth == renderWidth)
+		return;
+
+	this->cachedRenderWidth = renderWidth;
+	this->virtualTotalHeight = 0.0f;
+	this->blockTops.resize(this->blocks.size());
+
+	// 先按“无滚动条宽度”计算；如果发现总高度超过视口，再按“减去 8px”重算一次
+	auto compute = [&](float w) {
+		// 释放旧 layout（宽度变了必须重建）
+		for (auto& b : this->blocks)
+		{
+			if (b.layout)
+			{
+				b.layout->Release();
+				b.layout = NULL;
+			}
+			b.height = -1.0f;
+		}
+		float y = 0.0f;
+		for (int i = 0; i < (int)this->blocks.size(); i++)
+		{
+			this->blockTops[i] = y;
+			EnsureBlockLayout(i, w, renderHeight);
+			y += this->blocks[i].height;
+		}
+		return y;
+	};
+
+	float total = compute(renderWidth);
+	bool needScrollBar = total > renderHeight;
+	if (needScrollBar)
+	{
+		total = compute(std::max(0.0f, renderWidth - 8.0f));
+		this->layoutWidthHasScrollBar = true;
+	}
+	else
+	{
+		this->layoutWidthHasScrollBar = false;
+	}
+	this->virtualTotalHeight = total;
+	this->blockMetricsDirty = false;
+}
+
+int RichTextBox::HitTestGlobalIndex(float x, float y)
+{
+	if (!this->virtualMode || this->blocks.empty()) return 0;
+	float renderHeight = this->Height - (TextMargin * 2.0f);
+	float renderWidth = this->Width - (TextMargin * 2.0f);
+	if (this->layoutWidthHasScrollBar) renderWidth -= 8.0f;
+
+	float contentY = (y + this->OffsetY) - this->TextMargin;
+	if (contentY < 0) contentY = 0;
+
+	// 找到所在 block
+	int idx = 0;
+	for (int i = 0; i < (int)this->blockTops.size(); i++)
+	{
+		if (contentY >= this->blockTops[i])
+			idx = i;
+		else
+			break;
+	}
+	EnsureBlockLayout(idx, renderWidth, renderHeight);
+	float yInBlock = contentY - this->blockTops[idx];
+	float xInBlock = x - this->TextMargin;
+	if (xInBlock < 0) xInBlock = 0;
+
+	int local = this->Font->HitTestTextPosition(this->blocks[idx].layout, xInBlock, yInBlock);
+	int global = (int)this->blocks[idx].start + local;
+	global = std::clamp(global, 0, (int)this->buffer.size());
+	return global;
+}
+
+bool RichTextBox::GetCaretMetrics(int caretIndex, float& outX, float& outY, float& outH)
+{
+	outX = outY = outH = 0.0f;
+	if (!this->virtualMode || this->blocks.empty()) return false;
+
+	float renderHeight = this->Height - (TextMargin * 2.0f);
+	float renderWidth = this->Width - (TextMargin * 2.0f);
+	if (this->layoutWidthHasScrollBar) renderWidth -= 8.0f;
+
+	caretIndex = std::clamp(caretIndex, 0, (int)this->buffer.size());
+	int blockIdx = 0;
+	for (int i = 0; i < (int)this->blocks.size(); i++)
+	{
+		if (caretIndex >= (int)this->blocks[i].start && caretIndex <= (int)(this->blocks[i].start + this->blocks[i].len))
+		{
+			blockIdx = i;
+			break;
+		}
+	}
+	EnsureBlockLayout(blockIdx, renderWidth, renderHeight);
+	int local = caretIndex - (int)this->blocks[blockIdx].start;
+	auto hit = this->Font->HitTestTextRange(this->blocks[blockIdx].layout, (UINT32)local, (UINT32)0);
+	if (hit.empty()) return false;
+	outX = hit[0].left + this->TextMargin;
+	outY = (this->blockTops[blockIdx] + hit[0].top) - this->OffsetY + this->TextMargin;
+	outH = hit[0].height;
+	return true;
 }
 void RichTextBox::DrawScroll()
 {
@@ -80,13 +338,12 @@ void RichTextBox::DrawScroll()
 
 void RichTextBox::ScrollToEnd()
 {
-	if (!this->layOutCache)
-		this->UpdateLayout();
+	this->UpdateLayout();
 	float _render_height = this->Height - (TextMargin * 2.0f);
 	int max_scroll = textSize.height - _render_height;
 	this->OffsetY = max_scroll;
 	if (this->OffsetY < 0)this->OffsetY = 0;
-	this->SelectionEnd = this->SelectionStart = this->Text.size();
+	this->SelectionEnd = this->SelectionStart = (int)this->buffer.size();
 	this->PostRender();
 }
 void RichTextBox::UpdateScrollDrag(float posY) {
@@ -115,184 +372,210 @@ void RichTextBox::UpdateScrollDrag(float posY) {
 }
 void RichTextBox::SetScrollByPos(float yof)
 {
-	auto d2d = this->ParentForm->Render;
-	auto abslocation = this->AbsLocation;
-	auto font = this->Font;
-	auto size = this->ActualSize();
-	float _render_width = this->Width - (TextMargin * 2.0f);
-	float _render_height = this->Height - (TextMargin * 2.0f);
-	if (textSize.height > _render_height)
-	{
-		yof -= this->Top;
-		yof -= this->TextMargin;
-		float per = yof / _render_height;
-	}
-	else
+	// yof: 控件局部坐标（与 ProcessMessage 传入一致）
+	const float renderHeight = this->Height - (TextMargin * 2.0f);
+	if (renderHeight <= 0.0f || textSize.height <= 0.0f)
 	{
 		this->OffsetY = 0.0f;
+		return;
 	}
+
+	if (textSize.height <= renderHeight)
+	{
+		this->OffsetY = 0.0f;
+		return;
+	}
+
+	const float maxScroll = std::max(0.0f, textSize.height - renderHeight);
+
+	// 计算滚动块高度：比例 = 可视高度 / 总高度
+	float scrollBlockHeight = (renderHeight / textSize.height) * renderHeight;
+	if (scrollBlockHeight < this->Height * 0.1f) scrollBlockHeight = this->Height * 0.1f;
+	if (scrollBlockHeight > this->Height) scrollBlockHeight = this->Height;
+
+	// 用“点击位置对应滚动块中心”来映射（与 GridView 行为一致）
+	const float topPosition = scrollBlockHeight * 0.5f;
+	const float bottomPosition = this->Height - topPosition;
+	if (bottomPosition > topPosition)
+	{
+		const float percent = std::clamp((yof - topPosition) / (bottomPosition - topPosition), 0.0f, 1.0f);
+		this->OffsetY = maxScroll * percent;
+	}
+	this->OffsetY = std::clamp(this->OffsetY, 0.0f, maxScroll);
 }
 void RichTextBox::InputText(std::wstring input)
 {
+	SyncBufferFromControlIfNeeded();
+	TrimToMaxLength();
 	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
 	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
-	if (sele >= this->Text.size() && sels >= this->Text.size())
+
+	std::wstring oldText = this->buffer;
+	sels = std::clamp(sels, 0, (int)this->buffer.size());
+	sele = std::clamp(sele, 0, (int)this->buffer.size());
+
+	// 快路径：末尾插入（日志/持续输入场景）
+	if (sels == sele && sels == (int)this->buffer.size())
 	{
-		this->Text += input;
-		SelectionEnd = SelectionStart = this->Text.size();
+		this->buffer.append(input);
+		SelectionEnd = SelectionStart = (int)this->buffer.size();
 	}
 	else
 	{
-		List<wchar_t> tmp = List<wchar_t>();
-		tmp.AddRange((wchar_t*)this->Text.c_str(), this->Text.size());
 		if (sele > sels)
-		{
-			int sublen = sele - sels;
-			for (int i = 0; i < sublen; i++)
-			{
-				tmp.RemoveAt(sels);
-			}
-			for (int i = 0; i < input.size(); i++)
-			{
-				tmp.Insert(sels + i, input[i]);
-			}
-			SelectionEnd = SelectionStart = sels + (input.size());
-			tmp.Add(L'\0');
-			this->Text = std::wstring(tmp.data());
-		}
-		else if (sele == sels && sele >= 0)
-		{
-			for (int i = 0; i < input.size(); i++)
-			{
-				tmp.Insert(sels + i, input[i]);
-			}
-			SelectionEnd += input.size();
-			SelectionStart += input.size();
-			tmp.Add(L'\0');
-			this->Text = std::wstring(tmp.data());
-		}
-		else
-		{
-			this->Text += input;
-			SelectionEnd = SelectionStart = this->Text.size();
-		}
+			this->buffer.erase((size_t)sels, (size_t)(sele - sels));
+		this->buffer.insert((size_t)sels, input);
+		SelectionEnd = SelectionStart = sels + (int)input.size();
 	}
+
 	if (!this->AllowMultiLine)
 	{
-		List<wchar_t> tmp = List<wchar_t>();
-		tmp.AddRange((wchar_t*)this->Text.c_str(), this->Text.size() + 1);
-		for (int i = 0; i < tmp.Count; i++)
+		for (auto& ch : this->buffer)
 		{
-			if (tmp[i] == L'\r' || tmp[i] == L'\n')
+			if (ch == L'\r' || ch == L'\n')
 			{
-				tmp[i] = L' ';
+				ch = L' ';
 			}
 		}
-		this->Text = std::wstring(tmp.data());
 	}
-	this->UpdateLayout();
-	UpdateSelRange();
-	this->TextChanged = true;
+	TrimToMaxLength();
+	this->selRangeDirty = true;
+	this->blocksDirty = true;
+	SyncControlTextFromBuffer(oldText);
 }
 void RichTextBox::InputBack()
 {
+	SyncBufferFromControlIfNeeded();
 	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
 	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
 	int selLen = sele - sels;
+	std::wstring oldText = this->buffer;
+	sels = std::clamp(sels, 0, (int)this->buffer.size());
+	sele = std::clamp(sele, 0, (int)this->buffer.size());
+	selLen = sele - sels;
+
 	if (selLen > 0)
 	{
-		List<wchar_t> tmp = List<wchar_t>((wchar_t*)this->Text.c_str(), this->Text.size());
-		tmp.RemoveAt(sels, selLen);
-		tmp.Add(L'\0');
 		this->SelectionStart = this->SelectionEnd = sels;
-		this->Text = tmp.data();
+		this->buffer.erase((size_t)sels, (size_t)selLen);
 	}
-	else
+	else if (sels > 0)
 	{
-		if (sels > 0)
-		{
-			List<wchar_t> tmp = List<wchar_t>((wchar_t*)this->Text.c_str(), this->Text.size());
-			tmp.RemoveAt(sels - 1);
-			tmp.Add(L'\0');
-			this->SelectionStart = this->SelectionEnd = sels - 1;
-			this->Text = tmp.data();
-		}
+		this->buffer.erase((size_t)sels - 1, 1);
+		this->SelectionStart = this->SelectionEnd = sels - 1;
 	}
-	this->UpdateLayout();
-	UpdateSelRange();
-	this->TextChanged = true;
+	this->selRangeDirty = true;
+	this->blocksDirty = true;
+	SyncControlTextFromBuffer(oldText);
 }
 void RichTextBox::InputDelete()
 {
+	SyncBufferFromControlIfNeeded();
 	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
 	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
 	int selLen = sele - sels;
+	std::wstring oldText = this->buffer;
+	sels = std::clamp(sels, 0, (int)this->buffer.size());
+	sele = std::clamp(sele, 0, (int)this->buffer.size());
+	selLen = sele - sels;
+
 	if (selLen > 0)
 	{
-		List<wchar_t> tmp = List<wchar_t>((wchar_t*)this->Text.c_str(), this->Text.size());
-		tmp.RemoveAt(sels, selLen);
-		tmp.Add(L'\0');
 		this->SelectionStart = this->SelectionEnd = sels;
-		this->Text = tmp.data();
+		this->buffer.erase((size_t)sels, (size_t)selLen);
 	}
-	else
+	else if (sels < (int)this->buffer.size())
 	{
-		if (sels < this->Text.size())
-		{
-			List<wchar_t> tmp = List<wchar_t>((wchar_t*)this->Text.c_str(), this->Text.size());
-			tmp.RemoveAt(sels);
-			tmp.Add(L'\0');
-			this->SelectionStart = this->SelectionEnd = sels;
-			this->Text = tmp.data();
-		}
+		this->buffer.erase((size_t)sels, 1);
+		this->SelectionStart = this->SelectionEnd = sels;
 	}
-	this->UpdateLayout();
-	UpdateSelRange();
-	this->TextChanged = true;
+	this->selRangeDirty = true;
+	this->blocksDirty = true;
+	SyncControlTextFromBuffer(oldText);
 }
 void RichTextBox::UpdateScroll(bool arrival)
 {
+	// 关键：滚动计算依赖最新的 layout/textSize。
+	// 如果此时刚输入（TextChanged=true），但还没进入下一帧 Update() 重建 layout，
+	// 那么使用旧 layOutCache 做 HitTest 会导致“末端换行/自动换行时无法滚到最底部”。
+	if (this->TextChanged || (this->virtualMode && (this->blocksDirty || this->blockMetricsDirty)) || (!this->virtualMode && this->layOutCache == NULL))
+	{
+		this->UpdateLayout();
+	}
+
+	if (this->virtualMode)
+	{
+		float cx, cy, ch;
+		if (GetCaretMetrics(this->SelectionEnd, cx, cy, ch))
+		{
+			float render_height = this->Height - (TextMargin * 2.0f);
+			float caretTopContent = (cy - this->TextMargin) + this->OffsetY;
+			float caretBottomContent = caretTopContent + ch;
+			// arrival==true：用于“末端追加/换行”等场景，强制贴底（避免 caret HitTest 在尾部换行时返回偏小）
+			if (arrival && this->SelectionEnd >= (int)this->buffer.size())
+			{
+				const float maxScroll = std::max(0.0f, this->textSize.height - render_height);
+				this->OffsetY = maxScroll;
+			}
+			else if (caretBottomContent - this->OffsetY > render_height)
+			{
+				this->OffsetY = caretBottomContent - render_height;
+			}
+			if (caretTopContent - this->OffsetY < 0.0f)
+				this->OffsetY = caretTopContent;
+			if (this->OffsetY < 0) this->OffsetY = 0;
+		}
+		return;
+	}
 	float render_width = this->Width - (TextMargin * 2.0f);
 	float render_height = this->Height - (TextMargin * 2.0f);
 	if (textSize.height > render_height)
 		render_width -= 8.0f;
 	auto font = this->Font;
-	auto lastSelect = font->HitTestTextRange(this->layOutCache, (UINT32)SelectionEnd, (UINT32)0)[0];
-	if ((lastSelect.top + lastSelect.height) - OffsetY > render_height)
+	auto selected = font->HitTestTextRange(this->layOutCache, (UINT32)SelectionEnd, (UINT32)0);
+	if (selected.size() > 0)
 	{
-		OffsetY = (lastSelect.top + lastSelect.height) - render_height;
-	}
-	if (lastSelect.top - OffsetY < 0.0f)
-	{
-		OffsetY = lastSelect.top;
+		auto lastSelect = selected[0];
+		// arrival==true：末端输入/追加时强制贴底，更符合“聊天/日志”预期
+		if (arrival && this->SelectionEnd >= (int)this->buffer.size())
+		{
+			const float maxScroll = std::max(0.0f, this->textSize.height - render_height);
+			OffsetY = maxScroll;
+		}
+		else if ((lastSelect.top + lastSelect.height) - OffsetY > render_height)
+		{
+			OffsetY = (lastSelect.top + lastSelect.height) - render_height;
+		}
+		if (lastSelect.top - OffsetY < 0.0f)
+		{
+			OffsetY = lastSelect.top;
+		}
 	}
 }
 void RichTextBox::AppendText(std::wstring str)
 {
-	this->SelectionStart = this->SelectionEnd = this->Text.size();
+	SyncBufferFromControlIfNeeded();
+	this->SelectionStart = this->SelectionEnd = (int)this->buffer.size();
 	this->InputText(str);
-	this->TextChanged = true;
-	UpdateSelRange();
+	this->selRangeDirty = true;
 }
 void RichTextBox::AppendLine(std::wstring str)
 {
-	this->SelectionStart = this->SelectionEnd = this->Text.size();
+	SyncBufferFromControlIfNeeded();
+	this->SelectionStart = this->SelectionEnd = (int)this->buffer.size();
 	this->InputText(str + L"\r");
-	this->TextChanged = true;
-	UpdateSelRange();
+	this->selRangeDirty = true;
 }
 std::wstring RichTextBox::GetSelectedString()
 {
+	SyncBufferFromControlIfNeeded();
 	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
 	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
 	if (sele > sels)
 	{
-		std::wstring s = L"";
-		for (int i = sels; i < sele; i++)
-		{
-			s += this->Text[i];
-		}
-		return s;
+		sels = std::clamp(sels, 0, (int)this->buffer.size());
+		sele = std::clamp(sele, 0, (int)this->buffer.size());
+		return this->buffer.substr((size_t)sels, (size_t)(sele - sels));
 	}
 	return L"";
 }
@@ -307,6 +590,9 @@ void RichTextBox::Update()
 	auto size = this->ActualSize();
 	auto absRect = this->AbsRect;
 	bool isSelected = this->ParentForm->Selected == this;
+	// 默认：本帧不缓存光标区域（只有“选中且无选区”才会更新缓存）
+	this->_caretRectCacheValid = false;
+
 	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
 	{
 		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, isSelected ? this->FocusedColor : this->BackColor);
@@ -314,11 +600,97 @@ void RichTextBox::Update()
 		{
 			this->RenderImage();
 		}
-		if (this->Text.size() > 0)
+		if (this->buffer.size() > 0)
 		{
 			auto font = this->Font;
-			if (isSelected)
+			if (this->virtualMode)
 			{
+				// 只绘制可视 blocks
+				float renderWidth = this->Width - (TextMargin * 2.0f);
+				float renderHeight = this->Height - (TextMargin * 2.0f);
+				if (this->layoutWidthHasScrollBar) renderWidth -= 8.0f;
+
+				int sels = std::min(SelectionStart, SelectionEnd);
+				int sele = std::max(SelectionStart, SelectionEnd);
+				int selLen = sele - sels;
+
+				// caret
+				float cx, cy, ch;
+				if (isSelected && selLen == 0 && GetCaretMetrics(this->SelectionEnd, cx, cy, ch))
+				{
+					selectedPos = { (int)(cx), (int)(cy) };
+					// 光标区域缓存（用于 WM_TIMER 局部无效化）
+					{
+						const float ax = (float)abslocation.x + cx;
+						const float ay = (float)abslocation.y + cy;
+						const float ah = (ch > 0.0f) ? ch : font->FontHeight;
+						this->_caretRectCache = { ax - 2.0f, ay - 2.0f, ax + 2.0f, ay + ah + 2.0f };
+						this->_caretRectCacheValid = true;
+					}
+					d2d->DrawLine(
+						{ (float)abslocation.x + cx, (float)abslocation.y + cy },
+						{ (float)abslocation.x + cx, (float)abslocation.y + cy + ch },
+						Colors::Black);
+				}
+
+				// 计算可视范围
+				float viewTop = this->OffsetY;
+				float viewBottom = this->OffsetY + renderHeight;
+
+				// 找到第一个可视 block
+				int first = 0;
+				for (int i = 0; i < (int)this->blockTops.size(); i++)
+				{
+					if (this->blockTops[i] + this->blocks[i].height >= viewTop)
+					{
+						first = i;
+						break;
+					}
+				}
+
+				for (int i = first; i < (int)this->blocks.size(); i++)
+				{
+					float top = this->blockTops[i];
+					float bottom = top + this->blocks[i].height;
+					if (top > viewBottom) break;
+
+					EnsureBlockLayout(i, renderWidth, renderHeight);
+					float drawY = ((float)abslocation.y + TextMargin) + (top - this->OffsetY);
+					float drawX = (float)abslocation.x + TextMargin;
+
+					// selection rects (per block)
+					if (isSelected && selLen != 0)
+					{
+						int blockStart = (int)this->blocks[i].start;
+						int blockEnd = (int)(this->blocks[i].start + this->blocks[i].len);
+						int is = std::max(sels, blockStart);
+						int ie = std::min(sele, blockEnd);
+						if (ie > is)
+						{
+							int localStart = is - blockStart;
+							int localLen = ie - is;
+							auto ranges = font->HitTestTextRange(this->blocks[i].layout, (UINT32)localStart, (UINT32)localLen);
+							for (auto r : ranges)
+							{
+								d2d->FillRect(
+									r.left + drawX,
+									r.top + drawY,
+									r.width,
+									r.height,
+									this->SelectedBackColor);
+							}
+						}
+					}
+
+					d2d->DrawStringLayout(this->blocks[i].layout, drawX, drawY, this->ForeColor);
+				}
+			}
+			else if (isSelected)
+			{
+				if (isSelected && this->selRangeDirty)
+				{
+					UpdateSelRange();
+				}
 				int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
 				int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
 				int selLen = sele - sels;
@@ -336,17 +708,28 @@ void RichTextBox::Update()
 				}
 				else
 				{
-					if ((GetTickCount64() / 200) % 2 == 0)
+					if (selLen == 0 && !selRange.empty())
+					{
+						const auto caret = selRange[0];
+						const float ax = caret.left + (float)abslocation.x + TextMargin;
+						const float ay = (caret.top + (float)abslocation.y + TextMargin) - this->OffsetY;
+						const float ah = caret.height > 0 ? caret.height : font->FontHeight;
+						this->_caretRectCache = { ax - 2.0f, ay - 2.0f, ax + 2.0f, ay + ah + 2.0f };
+						this->_caretRectCacheValid = true;
+					}
+					if (!selRange.empty())
 						d2d->DrawLine(
 							{ selRange[0].left + abslocation.x + TextMargin,(selRange[0].top + abslocation.y + TextMargin) - this->OffsetY },
 							{ selRange[0].left + abslocation.x + TextMargin,(selRange[0].top + abslocation.y + selRange[0].height + TextMargin) - this->OffsetY },
 							Colors::Black);
 				}
-				selectedPos = { (int)selRange[0].left , (int)selRange[0].top };
-				selectedPos.y -= this->OffsetY;
-				selectedPos.y += this->TextMargin;
-				selectedPos.x += this->TextMargin;
-
+				if (!selRange.empty())
+				{
+					selectedPos = { (int)selRange[0].left , (int)selRange[0].top };
+					selectedPos.y -= this->OffsetY;
+					selectedPos.y += this->TextMargin;
+					selectedPos.x += this->TextMargin;
+				}
 				d2d->DrawStringLayout(this->layOutCache,
 					(float)abslocation.x + TextMargin, ((float)abslocation.y + TextMargin) - this->OffsetY,
 					this->ForeColor);
@@ -360,11 +743,19 @@ void RichTextBox::Update()
 		}
 		else
 		{
-			if (isSelected && (GetTickCount64() / 100) % 2 == 0)
+			if (isSelected)
+			{
+				// 空文本时也需要缓存光标区域
+				const float ax = (float)TextMargin + (float)abslocation.x;
+				const float ay = (float)abslocation.y;
+				const float ah = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
+				this->_caretRectCache = { ax - 2.0f, ay - 2.0f, ax + 2.0f, ay + ah + 2.0f };
+				this->_caretRectCacheValid = true;
 				d2d->DrawLine(
 					{ (float)TextMargin + (float)abslocation.x , (float)abslocation.y },
 					{ (float)TextMargin + (float)abslocation.x , (float)abslocation.y + 16.0f },
 					Colors::Black);
+			}
 		}
 		this->DrawScroll();
 		d2d->DrawRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BolderColor, this->Boder);
@@ -374,6 +765,15 @@ void RichTextBox::Update()
 		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	d2d->PopDrawRect();
+}
+
+bool RichTextBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
+{
+	if (!this->IsSelected()) return false;
+	if (this->SelectionStart != this->SelectionEnd) return false;
+	if (!this->_caretRectCacheValid) return false;
+	outRect = this->_caretRectCache;
+	return true;
 }
 bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {
@@ -435,10 +835,13 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) && this->ParentForm->Selected == this && !isDraggingScroll)
 		{
 			auto font = this->Font;
-			SelectionEnd = font->HitTestTextPosition(this->layOutCache, xof - TextMargin, (yof + this->OffsetY) - TextMargin);
+			if (this->virtualMode)
+				SelectionEnd = HitTestGlobalIndex((float)xof, (float)yof);
+			else
+				SelectionEnd = font->HitTestTextPosition(this->layOutCache, xof - TextMargin, (yof + this->OffsetY) - TextMargin);
 			UpdateScroll();
 			this->PostRender();
-			UpdateSelRange();
+			this->selRangeDirty = true;
 		}
 		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
 		this->OnMouseMove(this, event_obj);
@@ -456,14 +859,21 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 				this->ParentForm->Selected = this;
 				if (lse) lse->PostRender();
 			}
-			if (xof >= Width - 8 && xof <= Width) {
+			if (xof >= Width - 8 && xof <= Width)
+			{
+				// 点击滚动条轨道：立即定位到相对位置（无需先拖拽）
+				this->SetScrollByPos((float)yof);
 				isDraggingScroll = true;
+				this->PostRender();
 			}
 			else
 			{
 				auto font = this->Font;
-				this->SelectionStart = this->SelectionEnd = font->HitTestTextPosition(this->layOutCache, xof - TextMargin, (yof + this->OffsetY) - TextMargin);
-				UpdateSelRange();
+				if (this->virtualMode)
+					this->SelectionStart = this->SelectionEnd = HitTestGlobalIndex((float)xof, (float)yof);
+				else
+					this->SelectionStart = this->SelectionEnd = font->HitTestTextPosition(this->layOutCache, xof - TextMargin, (yof + this->OffsetY) - TextMargin);
+				this->selRangeDirty = true;
 			}
 		}
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
@@ -481,8 +891,11 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		else if (this->ParentForm->Selected == this)
 		{
 			auto font = this->Font;
-			SelectionEnd = font->HitTestTextPosition(this->layOutCache, xof - TextMargin, (yof + this->OffsetY) - TextMargin);
-			UpdateSelRange();
+			if (this->virtualMode)
+				SelectionEnd = HitTestGlobalIndex((float)xof, (float)yof);
+			else
+				SelectionEnd = font->HitTestTextPosition(this->layOutCache, xof - TextMargin, (yof + this->OffsetY) - TextMargin);
+			this->selRangeDirty = true;
 		}
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 		this->OnMouseUp(this, event_obj);
@@ -526,7 +939,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 				{
 					this->SelectionEnd = this->Text.size();
 				}
-				UpdateSelRange();
+				this->selRangeDirty = true;
 				UpdateScroll();
 			}
 		}
@@ -543,15 +956,24 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 				{
 					this->SelectionEnd = 0;
 				}
-				UpdateSelRange();
+				this->selRangeDirty = true;
 				UpdateScroll();
 			}
 		}
 		else if (wParam == VK_UP)
 		{
 			auto font = this->Font;
-			auto hit = font->HitTestTextRange(this->layOutCache, (UINT32)this->SelectionEnd, (UINT32)0);
-			this->SelectionEnd = font->HitTestTextPosition(this->layOutCache, hit[0].left, hit[0].top - (font->FontHeight * 0.5f));
+			if (this->virtualMode)
+			{
+				float cx, cy, ch;
+				if (GetCaretMetrics(this->SelectionEnd, cx, cy, ch))
+					this->SelectionEnd = HitTestGlobalIndex(cx, cy - font->FontHeight);
+			}
+			else
+			{
+				auto hit = font->HitTestTextRange(this->layOutCache, (UINT32)this->SelectionEnd, (UINT32)0);
+				this->SelectionEnd = font->HitTestTextPosition(this->layOutCache, hit[0].left, hit[0].top - (font->FontHeight * 0.5f));
+			}
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 			{
 				this->SelectionStart = this->SelectionEnd;
@@ -560,14 +982,23 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			{
 				this->SelectionEnd = 0;
 			}
-			UpdateSelRange();
+			this->selRangeDirty = true;
 			UpdateScroll();
 		}
 		else if (wParam == VK_DOWN)
 		{
 			auto font = this->Font;
-			auto hit = font->HitTestTextRange(this->layOutCache, (UINT32)this->SelectionEnd, (UINT32)0);
-			this->SelectionEnd = font->HitTestTextPosition(this->layOutCache, hit[0].left, hit[0].top + (font->FontHeight * 1.5f));
+			if (this->virtualMode)
+			{
+				float cx, cy, ch;
+				if (GetCaretMetrics(this->SelectionEnd, cx, cy, ch))
+					this->SelectionEnd = HitTestGlobalIndex(cx, cy + font->FontHeight);
+			}
+			else
+			{
+				auto hit = font->HitTestTextRange(this->layOutCache, (UINT32)this->SelectionEnd, (UINT32)0);
+				this->SelectionEnd = font->HitTestTextPosition(this->layOutCache, hit[0].left, hit[0].top + (font->FontHeight * 1.5f));
+			}
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 			{
 				this->SelectionStart = this->SelectionEnd;
@@ -576,7 +1007,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			{
 				this->SelectionEnd = this->Text.size();
 			}
-			UpdateSelRange();
+			this->selRangeDirty = true;
 			UpdateScroll();
 		}
 		else if (wParam == VK_HOME)
@@ -590,7 +1021,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			{
 				this->SelectionEnd = 0;
 			}
-			UpdateSelRange();
+			this->selRangeDirty = true;
 			UpdateScroll();
 		}
 		else if (wParam == VK_END)
@@ -604,14 +1035,23 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			{
 				this->SelectionStart = this->SelectionEnd;
 			}
-			UpdateSelRange();
+			this->selRangeDirty = true;
 			UpdateScroll();
 		}
 		else if (wParam == VK_PRIOR)
 		{
 			auto font = this->Font;
-			auto hit = font->HitTestTextRange(this->layOutCache, (UINT32)this->SelectionEnd, (UINT32)0);
-			this->SelectionEnd = font->HitTestTextPosition(this->layOutCache, hit[0].left, hit[0].top - this->Height);
+			if (this->virtualMode)
+			{
+				float cx, cy, ch;
+				if (GetCaretMetrics(this->SelectionEnd, cx, cy, ch))
+					this->SelectionEnd = HitTestGlobalIndex(cx, cy - this->Height);
+			}
+			else
+			{
+				auto hit = font->HitTestTextRange(this->layOutCache, (UINT32)this->SelectionEnd, (UINT32)0);
+				this->SelectionEnd = font->HitTestTextPosition(this->layOutCache, hit[0].left, hit[0].top - this->Height);
+			}
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 			{
 				this->SelectionStart = this->SelectionEnd;
@@ -620,14 +1060,23 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			{
 				this->SelectionEnd = 0;
 			}
-			UpdateSelRange();
+			this->selRangeDirty = true;
 			UpdateScroll(true);
 		}
 		else if (wParam == VK_NEXT)
 		{
 			auto font = this->Font;
-			auto hit = font->HitTestTextRange(this->layOutCache, (UINT32)this->SelectionEnd, (UINT32)0);
-			this->SelectionEnd = font->HitTestTextPosition(this->layOutCache, hit[0].left, hit[0].top + this->Height);
+			if (this->virtualMode)
+			{
+				float cx, cy, ch;
+				if (GetCaretMetrics(this->SelectionEnd, cx, cy, ch))
+					this->SelectionEnd = HitTestGlobalIndex(cx, cy + this->Height);
+			}
+			else
+			{
+				auto hit = font->HitTestTextRange(this->layOutCache, (UINT32)this->SelectionEnd, (UINT32)0);
+				this->SelectionEnd = font->HitTestTextPosition(this->layOutCache, hit[0].left, hit[0].top + this->Height);
+			}
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 			{
 				this->SelectionStart = this->SelectionEnd;
@@ -636,7 +1085,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			{
 				this->SelectionEnd = this->Text.size();
 			}
-			UpdateSelRange();
+			this->selRangeDirty = true;
 			UpdateScroll(true);
 		}
 		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
@@ -651,24 +1100,26 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		{
 			const wchar_t c[] = { ch,L'\0' };
 			this->InputText(c);
-			UpdateScroll();
+			// 输入发生后，滚动需要使用“最新布局”才能正确跟随末端换行/自动换行
+			UpdateScroll(this->SelectionEnd >= (int)this->buffer.size());
 		}
 		else if (ch == 13 && this->AllowMultiLine)
 		{
 			const wchar_t c[] = { L'\n',L'\0' };
 			this->InputText(c);
-			UpdateScroll();
+			// 回车换行：按“贴底”逻辑滚动到最底部
+			UpdateScroll(true);
 		}
 		else if (ch == 1)
 		{
 			this->SelectionStart = 0;
-			this->SelectionEnd = this->Text.size();
+			this->SelectionEnd = (int)this->buffer.size();
 			UpdateScroll();
-			UpdateSelRange();
+			this->selRangeDirty = true;
 		}
 		else if (ch == 8)
 		{
-			if (this->Text.size() > 0)
+			if (this->buffer.size() > 0)
 			{
 				this->InputBack();
 				UpdateScroll();
@@ -678,15 +1129,15 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		{
 			if (OpenClipboard(this->ParentForm->Handle))
 			{
-				if (IsClipboardFormatAvailable(CF_TEXT))
+				if (IsClipboardFormatAvailable(CF_UNICODETEXT))
 				{
-					HANDLE hClip;
-					char* pBuf;
-					hClip = GetClipboardData(CF_TEXT);
-					pBuf = (char*)GlobalLock(hClip);
-					GlobalUnlock(hClip);
-					auto wc = Convert::string_to_wstring(pBuf);
-					this->InputText(wc);
+					HANDLE hClip = GetClipboardData(CF_UNICODETEXT);
+					const wchar_t* pBuf = (const wchar_t*)GlobalLock(hClip);
+					if (pBuf)
+					{
+						this->InputText(std::wstring(pBuf));
+						GlobalUnlock(hClip);
+					}
 					UpdateScroll();
 					CloseClipboard();
 				}
@@ -694,29 +1145,31 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 		else if (ch == 3)
 		{
-			std::string s = Convert::wstring_to_string(this->GetSelectedString().c_str());
+			std::wstring s = this->GetSelectedString();
 			if (s.size() > 0 && OpenClipboard(this->ParentForm->Handle))
 			{
 				EmptyClipboard();
-				HANDLE hData = GlobalAlloc(GMEM_MOVEABLE, s.size() + 1);
-				char* pData = (char*)GlobalLock(hData);
-				lstrcpyA(pData, s.c_str());
+				const size_t bytes = (s.size() + 1) * sizeof(wchar_t);
+				HANDLE hData = GlobalAlloc(GMEM_MOVEABLE, bytes);
+				wchar_t* pData = (wchar_t*)GlobalLock(hData);
+				memcpy(pData, s.c_str(), bytes);
 				GlobalUnlock(hData);
-				SetClipboardData(CF_TEXT, hData);
+				SetClipboardData(CF_UNICODETEXT, hData);
 				CloseClipboard();
 			}
 		}
 		else if (ch == 24)
 		{
-			std::string s = Convert::wstring_to_string(this->GetSelectedString().c_str());
+			std::wstring s = this->GetSelectedString();
 			if (s.size() > 0 && OpenClipboard(this->ParentForm->Handle))
 			{
 				EmptyClipboard();
-				HANDLE hData = GlobalAlloc(GMEM_MOVEABLE, s.size() + 1);
-				char* pData = (char*)GlobalLock(hData);
-				lstrcpyA(pData, s.c_str());
+				const size_t bytes = (s.size() + 1) * sizeof(wchar_t);
+				HANDLE hData = GlobalAlloc(GMEM_MOVEABLE, bytes);
+				wchar_t* pData = (wchar_t*)GlobalLock(hData);
+				memcpy(pData, s.c_str(), bytes);
 				GlobalUnlock(hData);
-				SetClipboardData(CF_TEXT, hData);
+				SetClipboardData(CF_UNICODETEXT, hData);
 				CloseClipboard();
 			}
 			this->InputBack();
@@ -728,26 +1181,24 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	{
 		if (lParam & GCS_RESULTSTR)
 		{
-			HIMC hIMC;
-			DWORD dwSize;
-			hIMC = ImmGetContext(this->ParentForm->Handle);
-			dwSize = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, NULL, 0);
-			dwSize += sizeof(WCHAR);
-			wchar_t* input = new wchar_t[dwSize];
-			memset(input, 0, dwSize);
-			ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, input, dwSize);
-			List<wchar_t> tmp;
-			for (int i = 0; i < dwSize - 2; i++)
+			HIMC hIMC = ImmGetContext(this->ParentForm->Handle);
+			DWORD bytes = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, NULL, 0);
+			if (bytes > 0)
 			{
-				if (input[i] > 255)
+				std::wstring buffer;
+				buffer.resize(bytes / sizeof(wchar_t));
+				ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, buffer.data(), bytes);
+				std::wstring filtered;
+				filtered.reserve(buffer.size());
+				for (wchar_t c : buffer)
 				{
-					tmp.Add(input[i]);
+					if (c > 255) filtered.push_back(c);
 				}
-				if (!input[i]) break;
+				if (!filtered.empty())
+				{
+					this->InputText(filtered);
+				}
 			}
-			delete[] input;
-			tmp.Add(L'\0');
-			this->InputText(tmp.data());
 			ImmReleaseContext(this->ParentForm->Handle, hIMC);
 			UpdateScroll();
 			this->PostRender();

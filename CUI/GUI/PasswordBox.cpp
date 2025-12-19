@@ -1,8 +1,9 @@
-﻿#pragma once
+#pragma once
 #include "PasswordBox.h"
 #include "Form.h"
+#include <CppUtils/Graphics/Factory.h>
 #pragma comment(lib, "Imm32.lib")
-UIClass PasswordBox::Type() { return UIClass::UI_TextBox; }
+UIClass PasswordBox::Type() { return UIClass::UI_PasswordBox; }
 PasswordBox::PasswordBox(std::wstring text, int x, int y, int width, int height)
 {
 	this->Text = text;
@@ -167,9 +168,11 @@ void PasswordBox::Update()
 	auto size = this->ActualSize();
 	auto absRect = this->AbsRect;
 	bool isSelected = this->ParentForm->Selected == this;
+	// 默认：本帧不缓存光标区域（只有“选中且无选区”才会更新缓存）
+	this->_caretRectCacheValid = false;
 	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
 	{
-		std::wstring MaskText(this->Text.size(), L'*');
+		// MaskText 已在上面构造，避免重复分配
 		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, isSelected ? this->FocusedColor : this->BackColor);
 		if (this->Image)
 		{
@@ -188,16 +191,26 @@ void PasswordBox::Update()
 				{
 					for (auto sr : selRange)
 					{
-						d2d->FillRect(sr.left + abslocation.x + TextMargin - OffsetX, (sr.top + abslocation.y) - OffsetY, sr.width, sr.height, this->SelectedBackColor);
+						// 选区 Y 偏移与 TextBox 保持一致：+OffsetY
+						d2d->FillRect(sr.left + abslocation.x + TextMargin - OffsetX, (sr.top + abslocation.y) + OffsetY, sr.width, sr.height, this->SelectedBackColor);
 					}
 				}
 				else
 				{
-					if ((GetTickCount64() / 200) % 2 == 0)
+					// 光标区域缓存（用于 WM_TIMER 局部无效化）
+					if (!selRange.empty())
+					{
+						const auto caret = selRange[0];
+						const float cx = caret.left + (float)abslocation.x + TextMargin - OffsetX;
+						const float cy = caret.top + (float)abslocation.y + OffsetY;
+						const float ch = caret.height > 0 ? caret.height : font->FontHeight;
+						this->_caretRectCache = { cx - 2.0f, cy - 2.0f, cx + 2.0f, cy + ch + 2.0f };
+						this->_caretRectCacheValid = true;
 						d2d->DrawLine(
-							{ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y) - OffsetY },
+							{ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y) + OffsetY },
 							{ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y + selRange[0].height) + OffsetY },
 							Colors::Black);
+					}
 				}
 				auto lot = Factory::CreateStringLayout(MaskText, FLT_MAX, render_height, font->FontObject);
 				d2d->DrawStringLayoutEffect(lot,
@@ -219,11 +232,19 @@ void PasswordBox::Update()
 		}
 		else
 		{
-			if (isSelected && (GetTickCount64() / 100) % 2 == 0)
+			if (isSelected)
+			{
+				// 空文本时也需要缓存光标区域
+				const float cx = (float)TextMargin + (float)abslocation.x - OffsetX;
+				const float cy = (float)abslocation.y + OffsetY;
+				const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
+				this->_caretRectCache = { cx - 2.0f, cy - 2.0f, cx + 2.0f, cy + ch + 2.0f };
+				this->_caretRectCacheValid = true;
 				d2d->DrawLine(
 					{ (float)TextMargin + (float)abslocation.x - OffsetX, (float)abslocation.y + OffsetY },
 					{ (float)TextMargin + (float)abslocation.x - OffsetX, (float)abslocation.y + OffsetY + 16.0f },
 					Colors::Black);
+			}
 		}
 		d2d->DrawRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BolderColor, this->Boder);
 	}
@@ -232,6 +253,15 @@ void PasswordBox::Update()
 		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	d2d->PopDrawRect();
+}
+
+bool PasswordBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
+{
+	if (!this->IsSelected()) return false;
+	if (this->SelectionStart != this->SelectionEnd) return false;
+	if (!this->_caretRectCacheValid) return false;
+	outRect = this->_caretRectCache;
+	return true;
 }
 bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {
@@ -332,7 +362,11 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		form.dwStyle = CFS_RECT;
 		form.ptCurrentPos = pos;
 		form.rcArea = RECT{ pos.x, pos.y + this->Height, pos.x + 300, pos.y + 240 };
-		ImmSetCompositionWindow(hImc, &form);
+		if (hImc)
+		{
+			ImmSetCompositionWindow(hImc, &form);
+			ImmReleaseContext(this->ParentForm->Handle, hImc);
+		}
 		if (wParam == VK_DELETE)
 		{
 			this->InputDelete();
@@ -442,7 +476,7 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	case WM_CHAR:
 	{
 		wchar_t ch = (wchar_t)(wParam);
-		if (ch >= 32 && ch <= 126)
+		if (ch >= 32 && ch != 127)
 		{
 			const wchar_t c[] = { ch,L'\0' };
 			this->InputText(c);
@@ -466,18 +500,18 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		{
 			if (OpenClipboard(this->ParentForm->Handle))
 			{
-				if (IsClipboardFormatAvailable(CF_TEXT))
+				if (IsClipboardFormatAvailable(CF_UNICODETEXT))
 				{
-					HANDLE hClip;
-					char* pBuf;
-					hClip = GetClipboardData(CF_TEXT);
-					pBuf = (char*)GlobalLock(hClip);
-					GlobalUnlock(hClip);
-					auto wc = Convert::string_to_wstring(pBuf);
-					this->InputText(wc);
-					UpdateScroll();
-					CloseClipboard();
+					HANDLE hClip = GetClipboardData(CF_UNICODETEXT);
+					const wchar_t* pBuf = hClip ? (const wchar_t*)GlobalLock(hClip) : nullptr;
+					if (pBuf)
+					{
+						this->InputText(pBuf);
+						UpdateScroll();
+						GlobalUnlock(hClip);
+					}
 				}
+				CloseClipboard();
 			}
 		}
 		this->PostRender();
@@ -487,26 +521,20 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	{
 		if (lParam & GCS_RESULTSTR)
 		{
-			HIMC hIMC;
-			DWORD dwSize;
-			hIMC = ImmGetContext(this->ParentForm->Handle);
-			dwSize = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, NULL, 0);
-			dwSize += sizeof(WCHAR);
-			wchar_t* input = new wchar_t[dwSize];
-			memset(input, 0, dwSize);
-			ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, input, dwSize);
-			List<wchar_t> tmp;
-			for (int i = 0; i < dwSize - 2; i++)
+			HIMC hIMC = ImmGetContext(this->ParentForm->Handle);
+			if (hIMC)
 			{
-				if (input[i] > 255)
+				LONG bytes = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, NULL, 0);
+				if (bytes > 0)
 				{
-					tmp.Add(input[i]);
+					int wcharCount = bytes / (int)sizeof(wchar_t);
+					std::wstring buffer;
+					buffer.resize(wcharCount);
+					ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, buffer.data(), bytes);
+					this->InputText(buffer);
 				}
-				if (!input[i]) break;
+				ImmReleaseContext(this->ParentForm->Handle, hIMC);
 			}
-			tmp.Add(L'\0');
-			this->InputText(tmp.data());
-			ImmReleaseContext(this->ParentForm->Handle, hIMC);
 			UpdateScroll();
 			this->PostRender();
 		}

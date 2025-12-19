@@ -2,7 +2,7 @@
 #include <string>
 #include <vector>
 #include <CppUtils/Utils/Event.h>
-
+#include <Shellapi.h>
 
 class NotifyIconMenuItem
 {

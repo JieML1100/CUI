@@ -166,7 +166,7 @@
       <PrecompiledHeaderOutputFile />
       <EnableModules>false</EnableModules>
       <BuildStlModules>true</BuildStlModules>
-      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FavorSizeOrSpeed>Size</FavorSizeOrSpeed>
     </ClCompile>
     <Link>

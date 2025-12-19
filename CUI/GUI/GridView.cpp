@@ -1,28 +1,28 @@
-﻿#pragma once
+#pragma once
 #include "GridView.h"
 #include "Form.h"
-#include "TextBox.h"
+#include <CppUtils/Graphics/Factory.h>
 #pragma comment(lib, "Imm32.lib")
 
-CellValue::CellValue() : str(L"")
+CellValue::CellValue() : Text(L"")
 {}
-CellValue::CellValue(std::wstring s) : str(s), Tag(NULL), Image(NULL)
+CellValue::CellValue(std::wstring s) : Text(s), Tag(NULL), Image(NULL)
 {}
-CellValue::CellValue(wchar_t* s) :str(s), Tag(NULL), Image(NULL)
+CellValue::CellValue(wchar_t* s) :Text(s), Tag(NULL), Image(NULL)
 {}
-CellValue::CellValue(const wchar_t* s) : str(s), Tag(NULL), Image(NULL)
+CellValue::CellValue(const wchar_t* s) : Text(s), Tag(NULL), Image(NULL)
 {}
-CellValue::CellValue(ID2D1Bitmap* img) : str(L""), Tag(NULL), Image(img)
+CellValue::CellValue(ID2D1Bitmap* img) : Text(L""), Tag(NULL), Image(img)
 {}
-CellValue::CellValue(__int64 tag) : str(L""), Tag(tag), Image(NULL)
+CellValue::CellValue(__int64 tag) : Text(L""), Tag(tag), Image(NULL)
 {}
-CellValue::CellValue(bool tag) : str(L""), Tag(tag), Image(NULL)
+CellValue::CellValue(bool tag) : Text(L""), Tag(tag), Image(NULL)
 {}
-CellValue::CellValue(__int32 tag) : str(L""), Tag(tag), Image(NULL)
+CellValue::CellValue(__int32 tag) : Text(L""), Tag(tag), Image(NULL)
 {}
-CellValue::CellValue(unsigned __int32 tag) : str(L""), Tag(tag), Image(NULL)
+CellValue::CellValue(unsigned __int32 tag) : Text(L""), Tag(tag), Image(NULL)
 {}
-CellValue::CellValue(unsigned __int64 tag) : str(L""), Tag(tag), Image(NULL)
+CellValue::CellValue(unsigned __int64 tag) : Text(L""), Tag(tag), Image(NULL)
 {}
 CellValue& GridViewRow::operator[](int idx)
 {
@@ -59,7 +59,7 @@ std::wstring& GridView::SelectedValue()
 	static std::wstring default_;
 	if (this->SelectedRowIndex >= 0 && this->SelectedRowIndex < this->Rows.Count)
 	{
-		return this->Rows[this->SelectedRowIndex].Cells[SelectedColumnIndex].str;
+		return this->Rows[this->SelectedRowIndex].Cells[SelectedColumnIndex].Text;
 	}
 	return default_;
 }
@@ -231,7 +231,7 @@ void GridView::SetScrollByPos(float yof)
 	if (visibleRowsCount < rowCount)
 	{
 		
-		const float scrollBlockHeight = max(static_cast<float>(renderingHeight * 0.1f),
+		const float scrollBlockHeight = std::max(static_cast<float>(renderingHeight * 0.1f),
 			(renderingHeight * renderCount) / static_cast<float>(rowCount));
 
 		const float topPosition = scrollBlockHeight * 0.5f;
@@ -246,7 +246,7 @@ void GridView::SetScrollByPos(float yof)
 	}
 
 	
-	this->ScrollRowPosition = max(min(this->ScrollRowPosition, static_cast<float>(rowCount -
+	this->ScrollRowPosition = std::max(std::min(static_cast<float>(this->ScrollRowPosition), static_cast<float>(rowCount -
 		renderCount)), 0.0f);
 
 	this->ScrollChanged(this);
@@ -281,12 +281,18 @@ void GridView::Update()
 			}
 			float text_top = (row_height - font_height) * 0.5f;
 			if (text_top < 0) text_top = 0;
-			if (ScrollRowPosition < 0)
-				ScrollRowPosition = 0;
-			if (ScrollRowPosition >= this->Rows.Count)
-				ScrollRowPosition = this->Rows.Count - 1;
-			unsigned int s_x = 0;
-			unsigned int s_y = this->ScrollRowPosition;
+			// Clamp scroll position，避免 Rows.Count==0 时出现 -1/unsigned wrap
+			if (this->Rows.Count <= 0)
+			{
+				this->ScrollRowPosition = 0;
+			}
+			else
+			{
+				if (ScrollRowPosition < 0) ScrollRowPosition = 0;
+				if (ScrollRowPosition >= this->Rows.Count) ScrollRowPosition = this->Rows.Count - 1;
+			}
+			int s_x = 0;
+			int s_y = this->ScrollRowPosition;
 			float head_height = this->HeadHeight == 0.0f ? head_font_height : this->HeadHeight;
 			float yf = head_height;
 			float xf = 0.0f;
@@ -321,7 +327,7 @@ void GridView::Update()
 			}
 			xf = 0;
 			i = 0;
-			for (uint32_t r = s_y; r < this->Rows.Count && i < (int)(_render_height / row_height); r++, i++)
+			for (int r = s_y; r < this->Rows.Count && i < (int)(_render_height / row_height); r++, i++)
 			{
 				GridViewRow& row = this->Rows[r];
 				float xf = 0.0f;
@@ -340,17 +346,91 @@ void GridView::Update()
 							{
 							case ColumnType::Text:
 							{
-								float _size = c_width < row_height ? c_width : row_height;
 								if (c == this->SelectedColumnIndex && r == this->SelectedRowIndex)
 								{
-									d2d->FillRect(abslocation.x + xf, abslocation.y + yf, c_width, _r_height, this->SelectedItemBackColor);
-									d2d->DrawRect(abslocation.x + xf, abslocation.y + yf, c_width, _r_height, this->SelectedItemForeColor,
-										r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
-									if (row.Cells.Count > c)
-										d2d->DrawString(row.Cells[c].str,
-											abslocation.x + xf + 1.0f,
-											abslocation.y + yf + text_top,
-											this->SelectedItemForeColor, font);
+									// 编辑状态：在单元格内绘制编辑器（选区/光标/文本）
+									if (this->Editing && this->EditingColumnIndex == c && this->EditingRowIndex == r && this->ParentForm->Selected == this)
+									{
+										D2D1_RECT_F cellLocal{};
+										if (!TryGetCellRectLocal(c, r, cellLocal))
+										{
+											// 当前编辑单元格已不可见：提交并退出编辑，避免“看不见但仍在输入”
+											SaveCurrentEditingCell(true);
+											this->Editing = false;
+										}
+										else
+										{
+											float renderHeight = _r_height - (this->EditTextMargin * 2.0f);
+											if (renderHeight < 0.0f) renderHeight = 0.0f;
+
+											EditEnsureSelectionInRange();
+											EditUpdateScroll(c_width);
+
+											auto textSize = font->GetTextSize(this->EditingText, FLT_MAX, renderHeight);
+											float offsetY = (_r_height - textSize.height) * 0.5f;
+											if (offsetY < 0.0f) offsetY = 0.0f;
+
+											d2d->FillRect(abslocation.x + xf, abslocation.y + yf, c_width, _r_height, this->EditBackColor);
+											d2d->DrawRect(abslocation.x + xf, abslocation.y + yf, c_width, _r_height, this->SelectedItemForeColor,
+												r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
+
+											int sels = EditSelectionStart <= EditSelectionEnd ? EditSelectionStart : EditSelectionEnd;
+											int sele = EditSelectionEnd >= EditSelectionStart ? EditSelectionEnd : EditSelectionStart;
+											int selLen = sele - sels;
+											auto selRange = font->HitTestTextRange(this->EditingText, (UINT32)sels, (UINT32)selLen);
+
+											if (selLen != 0)
+											{
+												for (auto sr : selRange)
+												{
+													d2d->FillRect(
+														sr.left + abslocation.x + xf + this->EditTextMargin - this->EditOffsetX,
+														(sr.top + abslocation.y + yf) + offsetY,
+														sr.width, sr.height,
+														this->EditSelectedBackColor);
+												}
+											}
+											else
+											{
+												if (!selRange.empty() && (GetTickCount64() / 200) % 2 == 0)
+												{
+													d2d->DrawLine(
+														{ selRange[0].left + abslocation.x + xf + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + abslocation.y + yf) - offsetY },
+														{ selRange[0].left + abslocation.x + xf + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + abslocation.y + yf + selRange[0].height) + offsetY },
+														Colors::Black);
+												}
+											}
+
+											auto lot = Factory::CreateStringLayout(this->EditingText, FLT_MAX, renderHeight, font->FontObject);
+											if (selLen != 0)
+											{
+												d2d->DrawStringLayoutEffect(lot,
+													(float)abslocation.x + xf + this->EditTextMargin - this->EditOffsetX, ((float)abslocation.y + yf) + offsetY,
+													this->EditForeColor,
+													DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
+													this->EditSelectedForeColor,
+													font);
+											}
+											else
+											{
+												d2d->DrawStringLayout(lot,
+													(float)abslocation.x + xf + this->EditTextMargin - this->EditOffsetX, ((float)abslocation.y + yf) + offsetY,
+													this->EditForeColor);
+											}
+											lot->Release();
+										}
+									}
+									else
+									{
+										d2d->FillRect(abslocation.x + xf, abslocation.y + yf, c_width, _r_height, this->SelectedItemBackColor);
+										d2d->DrawRect(abslocation.x + xf, abslocation.y + yf, c_width, _r_height, this->SelectedItemForeColor,
+											r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
+										if (row.Cells.Count > c)
+											d2d->DrawString(row.Cells[c].Text,
+												abslocation.x + xf + 1.0f,
+												abslocation.y + yf + text_top,
+												this->SelectedItemForeColor, font);
+									}
 								}
 								else if (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex)
 								{
@@ -358,7 +438,7 @@ void GridView::Update()
 									d2d->DrawRect(abslocation.x + xf, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemForeColor,
 										r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
 									if (row.Cells.Count > c)
-										d2d->DrawString(row.Cells[c].str,
+										d2d->DrawString(row.Cells[c].Text,
 											abslocation.x + xf + 1.0f,
 											abslocation.y + yf + text_top,
 											this->UnderMouseItemForeColor, font);
@@ -368,7 +448,7 @@ void GridView::Update()
 									d2d->DrawRect(abslocation.x + xf, abslocation.y + yf, c_width, _r_height, this->ForeColor,
 										r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
 									if (row.Cells.Count > c)
-										d2d->DrawString(row.Cells[c].str,
+										d2d->DrawString(row.Cells[c].Text,
 											abslocation.x + xf + 1.0f,
 											abslocation.y + yf + text_top,
 											this->ForeColor, font);
@@ -502,100 +582,13 @@ void GridView::Update()
 		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	d2d->PopDrawRect();
-	if (this->Count == 0)
-	{
-		this->AddControl(new TextBox(L"", 10, 10))->Visible = true;
-		this->get(0)->Tag = 0xFFFFFFFFFFFFFFFF;
-		this->get(0)->OnTextChanged += [](class Control* sender, std::wstring o, std::wstring n)
-			{
-				GridView* gd = (GridView*)sender->Parent;
-				int xx = sender->Tag >> 32;
-				int yy = sender->Tag & 0xffffffff;
-				if (xx >= 0 && yy >= 0)
-				{
-					std::wstring str = sender->Text.c_str();
-					gd->Rows[yy].Cells[xx] = str;
-				}
-
-			};
-		this->get(0)->OnKeyDown += [](class Control* sender, KeyEventArgs e)
-			{
-				GridView* gd = (GridView*)sender->Parent;
-				if (e.KeyData == Keys::Return)
-				{
-					if (gd->SelectedRowIndex < gd->Rows.Count - 1)
-					{
-						TextBox* tb = (TextBox*)sender;
-						gd->ChangeEditionSelected(gd->SelectedColumnIndex, gd->SelectedRowIndex + 1);
-						tb->SelectionStart = 0;
-						tb->SelectionEnd = tb->Text.length();
-						if (tb->Bottom > gd->Height)
-						{
-							gd->ScrollRowPosition += 1;
-						}
-					}
-				}
-			};
-	}
-	TextBox* c = (TextBox*)this->get(0);
-	if (this->UpdateEdit() && (isSelected || this->ParentForm->Selected == c))
-	{
-		c->Update();
-	}
 }
 void GridView::ReSizeRows(int count)
 {
-	if (this->Rows.Count < count)
-	{
-		for (int i = 0; i < (count - this->Rows.Count); i++)
-			this->Rows.Add(GridViewRow());
-	}
-	else if (count < this->Rows.Count)
-	{
-		for (int i = count; i < this->Rows.Count; i++)
-		{
-			this->Rows[i].Cells.~List<CellValue>();
-		}
-		this->Rows.resize(count);
-	}
-}
-bool GridView::UpdateEdit()
-{
-	TextBox* c = (TextBox*)this->get(0);
-	if (this->SelectedColumnIndex >= 0 &&
-		this->Columns[this->SelectedColumnIndex].Type == ColumnType::Text &&
-		this->Columns[this->SelectedColumnIndex].CanEdit)
-	{
-		if (this->SelectedRowIndex >= 0)
-		{
-
-			int topIndex = this->ScrollRowPosition;
-			int drawIndex = this->SelectedRowIndex - topIndex;
-			auto d2d = this->ParentForm->Render;
-			auto font = this->Font;
-			float font_height = font->FontHeight;
-			float row_height = font_height + 2.0f;
-
-			float renderLeft = 0.0f;
-			for (int i = 0; i < this->SelectedColumnIndex; i++)
-			{
-				renderLeft += this->Columns[i].Width;
-			}
-			auto head_font = HeadFont ? HeadFont : font;
-			float head_height = this->HeadHeight == 0.0f ? head_font->FontHeight : this->HeadHeight;
-			float rendertop = head_height + (row_height * drawIndex);
-			if (rendertop >= head_height && rendertop <= this->Height)
-			{
-				c->Location = POINT{ (int)renderLeft ,(int)rendertop };
-				c->Size = SIZE{ (int)this->Columns[this->SelectedColumnIndex].Width ,(int)row_height };
-				c->Visible = true;
-				return true;
-			}
-			return false;
-		}
-	}
-	c->Visible = false;
-	return false;
+	// List<GridViewRow> 基于 std::vector，缩容时会自动析构元素；
+	// 这里手工调用 Cells 的析构会导致双重析构/内存破坏。
+	if (count < 0) count = 0;
+	this->Rows.resize((size_t)count);
 }
 void GridView::AutoSizeColumn(int col)
 {
@@ -617,7 +610,7 @@ void GridView::AutoSizeColumn(int col)
 			{
 				if (this->Columns[col].Type == ColumnType::Text)
 				{
-					auto width = font->GetTextSize(r.Cells[col].str.c_str()).width;
+					auto width = font->GetTextSize(r.Cells[col].Text.c_str()).width;
 					if (column.Width < width)
 					{
 						column.Width = width;
@@ -639,50 +632,73 @@ void GridView::ToggleCheckState(int col, int row)
 }
 void GridView::StartEditingCell(int col, int row)
 {
-	if (this->SelectedColumnIndex != col || this->SelectedRowIndex != row)
+	if (col < 0 || row < 0) return;
+	if (col >= this->Columns.Count || row >= this->Rows.Count) return;
+
+	// 切换编辑单元格时，先提交上一格
+	if (this->Editing && (this->EditingColumnIndex != col || this->EditingRowIndex != row))
 	{
-		SaveCurrentEditingCell();
+		SaveCurrentEditingCell(true);
+	}
 
-		if (this->Columns[col].Type == ColumnType::Text && this->Columns[col].CanEdit)
-		{
-			TextBox* tb = static_cast<TextBox*>(this->get(0));
-			tb->Visible = true;
-			tb->Tag = (static_cast<ULONG64>(col) << 32) | static_cast<ULONG64>(row);
-			tb->Text = this->Rows[row].Cells[col].str;
-			tb->SelectionStart = 0;
-			this->ParentForm->Selected = tb;
-		}
+	this->SelectedColumnIndex = col;
+	this->SelectedRowIndex = row;
+	this->SelectionChanged(this);
 
-		this->SelectedColumnIndex = col;
-		this->SelectedRowIndex = row;
-		this->SelectionChanged(this);
+	if (IsEditableTextCell(col, row))
+	{
+		this->Editing = true;
+		this->EditingColumnIndex = col;
+		this->EditingRowIndex = row;
+		this->EditingText = this->Rows[row].Cells[col].Text;
+		this->EditingOriginalText = this->EditingText;
+		this->EditSelectionStart = 0;
+		this->EditSelectionEnd = (int)this->EditingText.size();
+		this->EditOffsetX = 0.0f;
+		this->ParentForm->Selected = this;
+		EditSetImeCompositionWindow();
+	}
+	else
+	{
+		this->Editing = false;
+		this->EditingColumnIndex = -1;
+		this->EditingRowIndex = -1;
 	}
 }
-void GridView::CancelEditing()
+void GridView::CancelEditing(bool revert)
 {
-	TextBox* c = static_cast<TextBox*>(this->get(0));
-	if (c && c->Visible)
+	if (this->Editing)
 	{
-		SaveCurrentEditingCell();
-		c->Visible = false;
-		this->ParentForm->Selected = this;
+		if (revert && this->EditingRowIndex >= 0 && this->EditingColumnIndex >= 0 &&
+			this->EditingRowIndex < this->Rows.Count && this->EditingColumnIndex < this->Columns.Count)
+		{
+			// 恢复原始内容
+			this->Rows[this->EditingRowIndex].Cells[this->EditingColumnIndex].Text = this->EditingOriginalText;
+		}
+		else
+		{
+			SaveCurrentEditingCell(true);
+		}
 	}
-
+	this->Editing = false;
+	this->EditingColumnIndex = -1;
+	this->EditingRowIndex = -1;
+	this->EditingText.clear();
+	this->EditingOriginalText.clear();
+	this->EditSelectionStart = this->EditSelectionEnd = 0;
+	this->EditOffsetX = 0.0f;
+	this->ParentForm->Selected = this;
 	this->SelectedColumnIndex = -1;
 	this->SelectedRowIndex = -1;
 }
-void GridView::SaveCurrentEditingCell()
+void GridView::SaveCurrentEditingCell(bool commit)
 {
-	TextBox* c = static_cast<TextBox*>(this->get(0));
-	if (c && c->Visible)
-	{
-		int oldCol = c->Tag >> 32;
-		int oldRow = c->Tag & 0xFFFFFFFF;
-		if (oldCol >= 0 && oldRow >= 0)
-		{
-			this->Rows[oldRow].Cells[oldCol].str = c->Text;
-		}
-	}
+	if (!this->Editing) return;
+	if (!commit) return;
+	if (this->EditingColumnIndex < 0 || this->EditingRowIndex < 0) return;
+	if (this->EditingRowIndex >= this->Rows.Count) return;
+	if (this->EditingColumnIndex >= this->Columns.Count) return;
+	this->Rows[this->EditingRowIndex].Cells[this->EditingColumnIndex].Text = this->EditingText;
 }
 void GridView::AdjustScrollPosition()
 {
@@ -710,28 +726,11 @@ void GridView::UpdateUnderMouseIndices(int xof, int yof)
 }
 void GridView::ChangeEditionSelected(int col, int row)
 {
-	if (this->get(0)->Visible)
+	if (this->Editing)
 	{
-		int oldx = this->get(0)->Tag >> 32;
-		int oldy = this->get(0)->Tag & 0xffffffff;
-		if (oldx >= 0 && oldy >= 0)
-		{
-			std::wstring str = this->get(0)->Text.c_str();
-			this->Rows[oldy].Cells[oldx] = str;
-		}
+		SaveCurrentEditingCell(true);
 	}
-	if (this->Columns[col].Type == ColumnType::Text && this->Columns[col].CanEdit)
-	{
-		TextBox* tb = (TextBox*)this->get(0);
-		tb->Visible = true;
-		tb->Tag = (ULONG64)col << 32 | (ULONG64)row;
-		tb->Text = this->Rows[row].Cells[col].str;
-		tb->SelectionStart = 0;
-		this->ParentForm->Selected = tb;
-	}
-	this->SelectedColumnIndex = col;
-	this->SelectedRowIndex = row;
-	this->SelectionChanged(this);
+	StartEditingCell(col, row);
 }
 void GridView::HandleDropFiles(WPARAM wParam)
 {
@@ -797,6 +796,21 @@ void GridView::HandleMouseMove(int xof, int yof)
 	}
 	else
 	{
+		// 编辑状态下，按住左键拖动可更新选区
+		if (this->Editing && this->ParentForm->Selected == this && (GetAsyncKeyState(VK_LBUTTON) & 0x8000))
+		{
+			D2D1_RECT_F rect{};
+			if (TryGetCellRectLocal(this->EditingColumnIndex, this->EditingRowIndex, rect))
+			{
+				float cellWidth = rect.right - rect.left;
+				float cellHeight = rect.bottom - rect.top;
+				float lx = (float)xof - rect.left;
+				float ly = (float)yof - rect.top;
+				this->EditSelectionEnd = EditHitTestTextPosition(cellWidth, cellHeight, lx, ly);
+				EditUpdateScroll(cellWidth);
+				needUpdate = true;
+			}
+		}
 		POINT undermouseIndex = GetGridViewUnderMouseItem(xof, yof, this);
 		if (this->UnderMouseColumnIndex != undermouseIndex.x ||
 			this->UnderMouseRowIndex != undermouseIndex.y)
@@ -815,7 +829,7 @@ void GridView::HandleMouseMove(int xof, int yof)
 		this->PostRender();
 	}
 }
-void GridView::HandleLeftButtonDown(int xof, int yof, bool hitEdit)
+void GridView::HandleLeftButtonDown(int xof, int yof)
 {
 	auto lastSelected = this->ParentForm->Selected;
 	this->ParentForm->Selected = this;
@@ -831,11 +845,29 @@ void GridView::HandleLeftButtonDown(int xof, int yof, bool hitEdit)
 		if (undermouseIndex.y >= 0 && undermouseIndex.x >= 0 &&
 			undermouseIndex.y < this->Rows.Count && undermouseIndex.x < this->Columns.Count)
 		{
-			HandleCellClick(undermouseIndex.x, undermouseIndex.y);
+			// 如果点击的是当前编辑单元格，则仅移动光标/更新选区
+			if (this->Editing && undermouseIndex.x == this->EditingColumnIndex && undermouseIndex.y == this->EditingRowIndex)
+			{
+				D2D1_RECT_F rect{};
+				if (TryGetCellRectLocal(this->EditingColumnIndex, this->EditingRowIndex, rect))
+				{
+					float cellWidth = rect.right - rect.left;
+					float cellHeight = rect.bottom - rect.top;
+					float lx = (float)xof - rect.left;
+					float ly = (float)yof - rect.top;
+					int pos = EditHitTestTextPosition(cellWidth, cellHeight, lx, ly);
+					this->EditSelectionStart = this->EditSelectionEnd = pos;
+					EditUpdateScroll(cellWidth);
+				}
+			}
+			else
+			{
+				HandleCellClick(undermouseIndex.x, undermouseIndex.y);
+			}
 		}
 		else
 		{
-			CancelEditing();
+			CancelEditing(true);
 		}
 	}
 	else
@@ -857,7 +889,92 @@ void GridView::HandleLeftButtonUp(int xof, int yof)
 }
 void GridView::HandleKeyDown(WPARAM wParam)
 {
-	
+	if (this->Editing && this->ParentForm->Selected == this)
+	{
+		EditSetImeCompositionWindow();
+		EditEnsureSelectionInRange();
+
+		if (wParam == VK_ESCAPE)
+		{
+			CancelEditing(true);
+			this->PostRender();
+			return;
+		}
+		if (wParam == VK_RETURN)
+		{
+			SaveCurrentEditingCell(true);
+			// 回车：同列下移一行继续编辑（保持原有交互）
+			if (this->SelectedRowIndex < this->Rows.Count - 1)
+			{
+				int nextRow = this->SelectedRowIndex + 1;
+				StartEditingCell(this->SelectedColumnIndex, nextRow);
+				this->EditSelectionStart = 0;
+				this->EditSelectionEnd = (int)this->EditingText.size();
+				AdjustScrollPosition();
+			}
+			else
+			{
+				this->Editing = false;
+				this->EditingColumnIndex = -1;
+				this->EditingRowIndex = -1;
+			}
+			this->PostRender();
+			return;
+		}
+
+		if (wParam == VK_DELETE)
+		{
+			EditInputDelete();
+			this->PostRender();
+			return;
+		}
+		if (wParam == VK_RIGHT)
+		{
+			if (this->EditSelectionEnd < (int)this->EditingText.size())
+			{
+				this->EditSelectionEnd += 1;
+				if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
+					this->EditSelectionStart = this->EditSelectionEnd;
+			}
+			this->PostRender();
+			return;
+		}
+		if (wParam == VK_LEFT)
+		{
+			if (this->EditSelectionEnd > 0)
+			{
+				this->EditSelectionEnd -= 1;
+				if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
+					this->EditSelectionStart = this->EditSelectionEnd;
+			}
+			this->PostRender();
+			return;
+		}
+		if (wParam == VK_HOME)
+		{
+			this->EditSelectionEnd = 0;
+			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
+				this->EditSelectionStart = this->EditSelectionEnd;
+			this->PostRender();
+			return;
+		}
+		if (wParam == VK_END)
+		{
+			this->EditSelectionEnd = (int)this->EditingText.size();
+			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
+				this->EditSelectionStart = this->EditSelectionEnd;
+			this->PostRender();
+			return;
+		}
+
+		// 其它按键交给 GridView 的 KeyDown 事件（不做单元格移动）
+		KeyEventArgs event_obj(static_cast<Keys>(wParam));
+		this->OnKeyDown(this, event_obj);
+		this->PostRender();
+		return;
+	}
+
+	// 非编辑状态：方向键移动选中单元格
 	switch (wParam)
 	{
 	case VK_RIGHT:
@@ -886,6 +1003,126 @@ void GridView::HandleKeyUp(WPARAM wParam)
 	KeyEventArgs event_obj(static_cast<Keys>(wParam));
 	this->OnKeyUp(this, event_obj);
 }
+void GridView::HandleCharInput(WPARAM wParam)
+{
+	if (!this->Enable || !this->Visible) return;
+	wchar_t ch = (wchar_t)wParam;
+
+	// Ctrl+A / Ctrl+C / Ctrl+V / Ctrl+X / Backspace 等
+	if (!this->Editing)
+	{
+		// 在非编辑状态直接输入字符时，自动进入编辑
+		// 注意：IME 开启时 WM_CHAR 可能会发 VK_PROCESSKEY(229) 等“过程键”，这里与 TextBox 保持一致：只对 ASCII 可见字符启动编辑。
+		if (ch >= 32 && ch <= 126 && this->SelectedColumnIndex >= 0 && this->SelectedRowIndex >= 0)
+		{
+			if (IsEditableTextCell(this->SelectedColumnIndex, this->SelectedRowIndex))
+			{
+				StartEditingCell(this->SelectedColumnIndex, this->SelectedRowIndex);
+				this->EditSelectionStart = this->EditSelectionEnd = 0;
+			}
+		}
+	}
+
+	if (!this->Editing || this->ParentForm->Selected != this) return;
+
+	// 与 TextBox 行为对齐：WM_CHAR 只处理 ASCII 可见字符，中文等由 WM_IME_COMPOSITION(GCS_RESULTSTR) 提交。
+	if (ch >= 32 && ch <= 126)
+	{
+		const wchar_t buf[2] = { ch, L'\0' };
+		EditInputText(buf);
+	}
+	else if (ch == 1) // Ctrl+A
+	{
+		this->EditSelectionStart = 0;
+		this->EditSelectionEnd = (int)this->EditingText.size();
+	}
+	else if (ch == 8) // Backspace
+	{
+		EditInputBack();
+	}
+	else if (ch == 22) // Ctrl+V
+	{
+		if (OpenClipboard(this->ParentForm->Handle))
+		{
+			if (IsClipboardFormatAvailable(CF_UNICODETEXT))
+			{
+				HANDLE hClip = GetClipboardData(CF_UNICODETEXT);
+				if (hClip)
+				{
+					const wchar_t* pBuf = (const wchar_t*)GlobalLock(hClip);
+					if (pBuf)
+					{
+						EditInputText(std::wstring(pBuf));
+						GlobalUnlock(hClip);
+					}
+				}
+			}
+			CloseClipboard();
+		}
+	}
+	else if (ch == 3 || ch == 24) // Ctrl+C / Ctrl+X
+	{
+		std::wstring s = EditGetSelectedString();
+		if (!s.empty() && OpenClipboard(this->ParentForm->Handle))
+		{
+			EmptyClipboard();
+			size_t bytes = (s.size() + 1) * sizeof(wchar_t);
+			HGLOBAL hData = GlobalAlloc(GMEM_MOVEABLE, bytes);
+			if (hData)
+			{
+				wchar_t* pData = (wchar_t*)GlobalLock(hData);
+				if (pData)
+				{
+					memcpy(pData, s.c_str(), bytes);
+					GlobalUnlock(hData);
+					SetClipboardData(CF_UNICODETEXT, hData);
+				}
+			}
+			CloseClipboard();
+		}
+		if (ch == 24) // Ctrl+X
+		{
+			EditInputBack();
+		}
+	}
+
+	this->PostRender();
+}
+void GridView::HandleImeComposition(LPARAM lParam)
+{
+	if (!this->Editing || this->ParentForm->Selected != this) return;
+	if (lParam & GCS_RESULTSTR)
+	{
+		HIMC hIMC = ImmGetContext(this->ParentForm->Handle);
+		if (hIMC)
+		{
+			LONG bytes = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, NULL, 0);
+			if (bytes > 0)
+			{
+				int wcharCount = bytes / (int)sizeof(wchar_t);
+				std::wstring buffer;
+				buffer.resize(wcharCount);
+				ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, buffer.data(), bytes);
+
+				// 关键：IME 开启时，某些输入（如半角数字/字母）会同时触发 WM_CHAR 和 GCS_RESULTSTR。
+				// 为避免重复插入，这里只接受“非 ASCII”结果（中文/全角字符等）。该策略与 TextBox 原实现一致。
+				std::wstring filtered;
+				filtered.reserve(buffer.size());
+				for (wchar_t c : buffer)
+				{
+					if (c > 0xFF)
+						filtered.push_back(c);
+				}
+				if (!filtered.empty())
+				{
+					EditInputText(filtered);
+				}
+			}
+			ImmReleaseContext(this->ParentForm->Handle, hIMC);
+		}
+		this->PostRender();
+	}
+}
 void GridView::HandleCellClick(int col, int row)
 {
 	if (this->Columns[col].Type == ColumnType::Check)
@@ -900,22 +1137,6 @@ void GridView::HandleCellClick(int col, int row)
 bool GridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {
 	if (!this->Enable || !this->Visible) return true;
-
-	TextBox* c = static_cast<TextBox*>(this->get(0));
-	POINT input_location = { 0, 0 };
-	bool hitEdit = false;
-
-	if (c)
-	{
-		input_location = c->Location;
-		auto size = c->ActualSize();
-		hitEdit = (xof >= input_location.x &&
-			yof >= input_location.y &&
-			xof <= (input_location.x + size.cx) &&
-			yof <= (input_location.y + size.cy)) && c->Visible;
-	}
-
-	
 	switch (message)
 	{
 	case WM_DROPFILES:
@@ -931,7 +1152,7 @@ bool GridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		break;
 
 	case WM_LBUTTONDOWN:
-		HandleLeftButtonDown(xof, yof, hitEdit);
+		HandleLeftButtonDown(xof, yof);
 		break;
 
 	case WM_LBUTTONUP:
@@ -946,16 +1167,205 @@ bool GridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		HandleKeyUp(wParam);
 		break;
 
+	case WM_CHAR:
+		HandleCharInput(wParam);
+		break;
+
+	case WM_IME_COMPOSITION:
+		HandleImeComposition(lParam);
+		break;
+
 	default:
 		break;
 	}
+	return true;
+}
 
-	
-	if (hitEdit && c)
+float GridView::GetRowHeightPx()
+{
+	auto font = this->Font;
+	float rowHeight = font->FontHeight + 2.0f;
+	if (this->RowHeight != 0.0f) rowHeight = this->RowHeight;
+	return rowHeight;
+}
+float GridView::GetHeadHeightPx()
+{
+	auto font = this->Font;
+	auto headFont = this->HeadFont ? this->HeadFont : font;
+	float headHeight = (this->HeadHeight == 0.0f) ? headFont->FontHeight : this->HeadHeight;
+	return headHeight;
+}
+bool GridView::TryGetCellRectLocal(int col, int row, D2D1_RECT_F& outRect)
+{
+	if (col < 0 || row < 0) return false;
+	if (col >= this->Columns.Count || row >= this->Rows.Count) return false;
+
+	float renderWidth = (float)this->Width - 8.0f;
+	float rowHeight = GetRowHeightPx();
+	float headHeight = GetHeadHeightPx();
+
+	int drawIndex = row - this->ScrollRowPosition;
+	if (drawIndex < 0) return false;
+	float top = headHeight + (rowHeight * (float)drawIndex);
+	if (top < headHeight || top > (float)this->Height) return false;
+
+	float left = 0.0f;
+	for (int i = 0; i < col; i++) left += this->Columns[i].Width;
+	float width = this->Columns[col].Width;
+	if (left >= renderWidth) return false;
+	if (left + width > renderWidth) width = renderWidth - left;
+	if (width <= 0.0f) return false;
+
+	outRect = D2D1_RECT_F{ left, top, left + width, top + rowHeight };
+	return true;
+}
+bool GridView::IsEditableTextCell(int col, int row)
+{
+	if (col < 0 || row < 0) return false;
+	if (col >= this->Columns.Count || row >= this->Rows.Count) return false;
+	return this->Columns[col].Type == ColumnType::Text && this->Columns[col].CanEdit;
+}
+void GridView::EditEnsureSelectionInRange()
+{
+	if (this->EditSelectionStart < 0) this->EditSelectionStart = 0;
+	if (this->EditSelectionEnd < 0) this->EditSelectionEnd = 0;
+	int maxLen = (int)this->EditingText.size();
+	if (this->EditSelectionStart > maxLen) this->EditSelectionStart = maxLen;
+	if (this->EditSelectionEnd > maxLen) this->EditSelectionEnd = maxLen;
+}
+void GridView::EditInputText(const std::wstring& input)
+{
+	if (!this->Editing) return;
+	std::wstring old = this->EditingText;
+
+	EditEnsureSelectionInRange();
+	int sels = (this->EditSelectionStart <= this->EditSelectionEnd) ? this->EditSelectionStart : this->EditSelectionEnd;
+	int sele = (this->EditSelectionEnd >= this->EditSelectionStart) ? this->EditSelectionEnd : this->EditSelectionStart;
+	int selLen = sele - sels;
+
+	if (selLen > 0)
 	{
-		c->ProcessMessage(message, wParam, lParam, xof - input_location.x, yof - input_location.y);
+		this->EditingText.erase((size_t)sels, (size_t)selLen);
+	}
+	this->EditingText.insert((size_t)sels, input);
+	this->EditSelectionStart = this->EditSelectionEnd = sels + (int)input.size();
+
+	for (auto& ch : this->EditingText)
+	{
+		if (ch == L'\r' || ch == L'\n') ch = L' ';
 	}
 
-	return true;
+	// 编辑过程中实时同步到数据（与旧实现一致）
+	if (this->EditingRowIndex >= 0 && this->EditingColumnIndex >= 0 &&
+		this->EditingRowIndex < this->Rows.Count && this->EditingColumnIndex < this->Columns.Count)
+	{
+		this->Rows[this->EditingRowIndex].Cells[this->EditingColumnIndex].Text = this->EditingText;
+	}
+}
+void GridView::EditInputBack()
+{
+	if (!this->Editing) return;
+	EditEnsureSelectionInRange();
+	int sels = (this->EditSelectionStart <= this->EditSelectionEnd) ? this->EditSelectionStart : this->EditSelectionEnd;
+	int sele = (this->EditSelectionEnd >= this->EditSelectionStart) ? this->EditSelectionEnd : this->EditSelectionStart;
+	int selLen = sele - sels;
+
+	if (selLen > 0)
+	{
+		this->EditingText.erase((size_t)sels, (size_t)selLen);
+		this->EditSelectionStart = this->EditSelectionEnd = sels;
+	}
+	else if (sels > 0)
+	{
+		this->EditingText.erase((size_t)sels - 1, 1);
+		this->EditSelectionStart = this->EditSelectionEnd = sels - 1;
+	}
+
+	if (this->EditingRowIndex >= 0 && this->EditingColumnIndex >= 0 &&
+		this->EditingRowIndex < this->Rows.Count && this->EditingColumnIndex < this->Columns.Count)
+	{
+		this->Rows[this->EditingRowIndex].Cells[this->EditingColumnIndex].Text = this->EditingText;
+	}
+}
+void GridView::EditInputDelete()
+{
+	if (!this->Editing) return;
+	EditEnsureSelectionInRange();
+	int sels = (this->EditSelectionStart <= this->EditSelectionEnd) ? this->EditSelectionStart : this->EditSelectionEnd;
+	int sele = (this->EditSelectionEnd >= this->EditSelectionStart) ? this->EditSelectionEnd : this->EditSelectionStart;
+	int selLen = sele - sels;
+
+	if (selLen > 0)
+	{
+		this->EditingText.erase((size_t)sels, (size_t)selLen);
+		this->EditSelectionStart = this->EditSelectionEnd = sels;
+	}
+	else if (sels < (int)this->EditingText.size())
+	{
+		this->EditingText.erase((size_t)sels, 1);
+		this->EditSelectionStart = this->EditSelectionEnd = sels;
+	}
+
+	if (this->EditingRowIndex >= 0 && this->EditingColumnIndex >= 0 &&
+		this->EditingRowIndex < this->Rows.Count && this->EditingColumnIndex < this->Columns.Count)
+	{
+		this->Rows[this->EditingRowIndex].Cells[this->EditingColumnIndex].Text = this->EditingText;
+	}
+}
+void GridView::EditUpdateScroll(float cellWidth)
+{
+	if (!this->Editing) return;
+	float renderWidth = cellWidth - (this->EditTextMargin * 2.0f);
+	if (renderWidth <= 1.0f) return;
+
+	EditEnsureSelectionInRange();
+	auto font = this->Font;
+	auto hit = font->HitTestTextRange(this->EditingText, (UINT32)this->EditSelectionEnd, (UINT32)0);
+	if (hit.empty()) return;
+	auto caret = hit[0];
+	if ((caret.left + caret.width) - this->EditOffsetX > renderWidth)
+	{
+		this->EditOffsetX = (caret.left + caret.width) - renderWidth;
+	}
+	if (caret.left - this->EditOffsetX < 0.0f)
+	{
+		this->EditOffsetX = caret.left;
+	}
+	if (this->EditOffsetX < 0.0f) this->EditOffsetX = 0.0f;
+}
+int GridView::EditHitTestTextPosition(float cellWidth, float cellHeight, float x, float y)
+{
+	auto font = this->Font;
+	float renderHeight = cellHeight - (this->EditTextMargin * 2.0f);
+	if (renderHeight < 0.0f) renderHeight = 0.0f;
+	return font->HitTestTextPosition(this->EditingText, FLT_MAX, renderHeight, (x - this->EditTextMargin) + this->EditOffsetX, y - this->EditTextMargin);
+}
+std::wstring GridView::EditGetSelectedString()
+{
+	int sels = (this->EditSelectionStart <= this->EditSelectionEnd) ? this->EditSelectionStart : this->EditSelectionEnd;
+	int sele = (this->EditSelectionEnd >= this->EditSelectionStart) ? this->EditSelectionEnd : this->EditSelectionStart;
+	if (sele > sels && sels >= 0 && sele <= (int)this->EditingText.size())
+	{
+		return this->EditingText.substr((size_t)sels, (size_t)(sele - sels));
+	}
+	return L"";
+}
+void GridView::EditSetImeCompositionWindow()
+{
+	if (!this->ParentForm || !this->ParentForm->Handle) return;
+	if (!this->Editing) return;
+	D2D1_RECT_F rect{};
+	if (!TryGetCellRectLocal(this->EditingColumnIndex, this->EditingRowIndex, rect)) return;
+
+	auto pos = this->AbsLocation;
+	POINT pt{ pos.x + (int)rect.left, pos.y + (int)rect.top };
+	HIMC hImc = ImmGetContext(this->ParentForm->Handle);
+	if (!hImc) return;
+	COMPOSITIONFORM form;
+	form.dwStyle = CFS_RECT;
+	form.ptCurrentPos = pt;
+	form.rcArea = RECT{ pt.x, pt.y + (LONG)(rect.bottom - rect.top), pt.x + 400, pt.y + 240 };
+	ImmSetCompositionWindow(hImc, &form);
+	ImmReleaseContext(this->ParentForm->Handle, hImc);
 }
 #pragma endregion

@@ -1,10 +1,10 @@
-﻿#pragma once
+#pragma once
 #include "Control.h"
 class TreeNode
 {
 public:
 	ULONG64 Tag = NULL;
-	class ID2D1Bitmap* Image = NULL;
+	ID2D1Bitmap* Image = NULL;
 	std::wstring Text = L"";
 	List<TreeNode*> Children;
 	bool Expand = false; 

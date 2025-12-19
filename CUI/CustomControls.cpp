@@ -52,11 +52,10 @@ void CustomTextBox1::Update()
 				}
 				else
 				{
-					if ((GetTickCount64() / 200) % 2 == 0)
-						d2d->DrawLine(
-							{ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y) - OffsetY },
-							{ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y + selRange[0].height) + OffsetY },
-							Colors::Black);
+					d2d->DrawLine(
+						{ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y) - OffsetY },
+						{ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y + selRange[0].height) + OffsetY },
+						Colors::Black);
 				}
 				auto lot = Factory::CreateStringLayout(this->Text, FLT_MAX, render_height, font->FontObject);
 				d2d->DrawStringLayoutEffect(lot,
@@ -78,7 +77,7 @@ void CustomTextBox1::Update()
 		}
 		else
 		{
-			if (isSelected && (GetTickCount64() / 100) % 2 == 0)
+			if (isSelected)
 				d2d->DrawLine(
 					{ (float)TextMargin + (float)abslocation.x - OffsetX, (float)abslocation.y + OffsetY },
 					{ (float)TextMargin + (float)abslocation.x - OffsetX, (float)abslocation.y + OffsetY + 16.0f },
@@ -95,7 +94,7 @@ void CustomTextBox1::Update()
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRoundRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f }, this->TextMargin);
 	}
 	d2d->PopDrawRect();
 }
@@ -129,10 +128,6 @@ void CustomLabel1::Update()
 		}
 		d2d->DrawString(this->Text, abslocation.x, abslocation.y, brush, this->Font);
 		brush->Release();
-	}
-	if (!this->Enable)
-	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	d2d->PopDrawRect();
 	last_width = size.cx;

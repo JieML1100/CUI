@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "ComboBox.h"
 #include "Form.h"
 #pragma comment(lib, "Imm32.lib")
@@ -269,8 +269,13 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 	{
 		if (WM_LBUTTONDOWN == message)
 		{
-			if (xof >= Width - 8 && xof <= Width) {
+			// 仅在“展开状态 + 鼠标在下拉区滚动条轨道”时才进入滚动拖拽
+			//（避免点击右侧下拉按钮/文本区时被误判为滚动条拖拽，导致无法展开/收起）
+			if (this->Expand && xof >= (Width - 8) && xof <= Width && yof >= this->Height)
+			{
 				isDraggingScroll = true;
+				// 点击滚动条轨道时，立即定位到相对位置（和 GridView 一致）
+				UpdateScrollDrag((float)(yof - this->Height));
 			}
 			this->ParentForm->Selected = this;
 		}
@@ -293,21 +298,18 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 				{
 					if (yof < this->Height)
 					{
-						this->Expand = !this->Expand;
-						this->ParentForm->Update();
 						this->PostRender();
+
+						this->Expand = !this->Expand;
 						if (this->Expand)
-						{
-							this->ParentForm->ForeGroundControls.Add(this);
-						}
+							this->ParentForm->ForegroundControls.Add(this);
 						else
-						{
-							this->ParentForm->ForeGroundControls.Remove(this);
-						}
+							this->ParentForm->ForegroundControls.Remove(this);
+
+						this->PostRender();
 						this->ParentForm->Selected = NULL;
 						MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 						this->OnMouseUp(this, event_obj);
-						this->PostRender();
 						break;
 					}
 					else if (this->Expand)
@@ -322,8 +324,9 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 								this->SelectedIndex = this->_underMouseIndex;
 								this->Text = this->values[this->SelectedIndex];
 								this->OnSelectionChanged(this);
+								this->PostRender();
 								this->Expand = false;
-								this->ParentForm->Update();
+								this->ParentForm->ForegroundControls.Remove(this);
 								this->PostRender();
 							}
 						}

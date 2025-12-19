@@ -1,10 +1,13 @@
 ﻿#include "DemoWindow.h"
+//去掉控制台
+#pragma comment(linker, "/subsystem:\"windows\" /entry:\"mainCRTStartup\"")
 int main()
 {
-    DemoWindow* form = new DemoWindow();
-	form->Show();
+    auto form = DemoWindow();
+    form.Show();
+
     NotifyIcon notifyIcon;
-    notifyIcon.InitNotifyIcon(form->Handle, 1);
+    notifyIcon.InitNotifyIcon(form.Handle, 1);
     notifyIcon.SetIcon(LoadIcon(NULL, IDI_APPLICATION));
     notifyIcon.SetToolTip("应用程序");
     notifyIcon.ShowNotifyIcon();
@@ -13,8 +16,6 @@ int main()
 
     
     NotifyIconMenuItem settingsMenu("设置", 2);
-
-    
     settingsMenu.AddSubItem(NotifyIconMenuItem("音频设置", 21));
     settingsMenu.AddSubItem(NotifyIconMenuItem("显示设置", 22));
     settingsMenu.AddSubItem(NotifyIconMenuItem::CreateSeparator());
@@ -30,7 +31,7 @@ int main()
     notifyIcon.OnNotifyIconMenuClick += [](NotifyIcon* sender, int menuId) {
             switch (menuId) {
             case 1: 
-                ShowWindow(sender->hWnd, SW_SHOW);
+                ShowWindow(sender->hWnd, SW_SHOWNORMAL);
                 break;
             case 21: 
                 break;
@@ -50,5 +51,6 @@ int main()
 		if (Application::Forms.size() == 0)
 			break;
 	}
+    notifyIcon.HideNotifyIcon();
 	return 0;
 }

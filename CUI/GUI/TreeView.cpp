@@ -1,4 +1,4 @@
-﻿#include "TreeView.h"
+#include "TreeView.h"
 #include "Form.h"
 static void renderNodes(TreeView* tree, D2DGraphics* d2d, float x, float y, float w, float h, float itemHeight, int scrollIndex, int& currindex, int sunLevel, List<TreeNode*>& Children)
 {
@@ -136,20 +136,48 @@ TreeView::~TreeView()
 
 void TreeView::UpdateScrollDrag(float posY) {
 	if (!isDraggingScroll) return;
-	int maxScroll = MaxRenderItems - (this->Height / (this->Font->FontHeight));
-	float fontHeight = this->Font->FontHeight;
-	int renderItemCount = this->Height / fontHeight;
-	float scrollBlockHeight = (renderItemCount / (float)this->MaxRenderItems) * this->Height;
+	if (this->MaxRenderItems <= 0) return;
 
-	float scrollTop = scrollBlockHeight * 0.5f;
-	float scrollHeight = this->Height - scrollBlockHeight;
-	float chrckPos = posY - scrollTop;
-	float per = chrckPos / scrollHeight;
-	int newScroll = per * maxScroll;
+	const float fontHeight = this->Font->FontHeight;
+	if (fontHeight <= 0.0f) return;
+
+	const float height = (float)this->Height;
+	int renderItemCount = (int)(height / fontHeight);
+	if (renderItemCount <= 0) renderItemCount = 1;
+
+	// 不需要滚动条时，直接归零
+	if (renderItemCount >= this->MaxRenderItems)
 	{
-		ScrollIndex = newScroll;
-		if (ScrollIndex < 0) ScrollIndex = 0;
-		if (ScrollIndex > maxScroll + 1) ScrollIndex = maxScroll + 1;
+		if (this->ScrollIndex != 0)
+		{
+			this->ScrollIndex = 0;
+			PostRender();
+		}
+		return;
+	}
+
+	int maxScroll = this->MaxRenderItems - renderItemCount;
+	if (maxScroll < 0) maxScroll = 0;
+
+	float scrollBlockHeight = (renderItemCount / (float)this->MaxRenderItems) * height;
+	if (scrollBlockHeight < height * 0.1f) scrollBlockHeight = height * 0.1f;
+	if (scrollBlockHeight > height) scrollBlockHeight = height;
+
+	const float scrollTop = scrollBlockHeight * 0.5f;
+	const float scrollHeight = height - scrollBlockHeight;
+	if (scrollHeight <= 0.0f) return;
+
+	float per = (posY - scrollTop) / scrollHeight;
+	if (per < 0.0f) per = 0.0f;
+	if (per > 1.0f) per = 1.0f;
+
+	int newScroll = (int)(per * (float)maxScroll);
+	if (newScroll < 0) newScroll = 0;
+	if (newScroll > maxScroll) newScroll = maxScroll;
+
+	if (this->ScrollIndex != newScroll)
+	{
+		this->ScrollIndex = newScroll;
 		PostRender();
 	}
 }
@@ -293,8 +321,11 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 				this->ParentForm->Selected = this;
 				if (lse) lse->PostRender();
 			}
-			if (xof >= Width - 8 && xof <= Width) {
+			if (xof >= Width - 8 && xof <= Width)
+			{
+				// 点击滚动条轨道：立即定位到相对位置（无需先拖拽）
 				isDraggingScroll = true;
+				UpdateScrollDrag((float)yof);
 			}
 			else
 			{

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "Control.h"
 #pragma comment(lib, "Imm32.lib")
 typedef Event<void(class GridView*, int c, int r, bool v) > OnGridViewCheckStateChangedEvent;
@@ -20,7 +20,7 @@ public:
 class CellValue
 {
 public:
-	std::wstring str;
+	std::wstring Text;
 	ID2D1Bitmap* Image;
 	__int64 Tag;
 	CellValue();
@@ -45,6 +45,11 @@ class GridView : public Control
 public:
 	UIClass Type();
 	GridView(int x = 0, int y = 0, int width = 120, int height = 20);
+	// 编辑态光标闪烁需要周期刷新（媒体播放器等实时控件也可用同机制）
+	int DesiredFrameIntervalMs() override
+	{
+		return (this->Editing && this->IsSelected()) ? 100 : 0;
+	}
 	class Font* HeadFont = NULL;
 	bool InScroll = false;
 	ScrollChangedEvent ScrollChanged;
@@ -69,6 +74,11 @@ public:
 	D2D1_COLOR_F UnderMouseItemForeColor = Colors::Black;
 	D2D1_COLOR_F ScrollBackColor = Colors::LightGray;
 	D2D1_COLOR_F ScrollForeColor = Colors::DimGrey;
+	D2D1_COLOR_F EditBackColor = Colors::White;
+	D2D1_COLOR_F EditForeColor = Colors::Black;
+	D2D1_COLOR_F EditSelectedBackColor = { 0.f , 0.f , 1.f , 0.5f };
+	D2D1_COLOR_F EditSelectedForeColor = Colors::White;
+	float EditTextMargin = 3.0f;
 	OnGridViewCheckStateChangedEvent OnGridViewCheckStateChanged;
 	SelectionChangedEvent SelectionChanged;
 	GridViewRow& SelectedRow();
@@ -82,22 +92,46 @@ private:
 	int GetGridViewRenderRowCount(GridView* ct);
 	void DrawScroll();
 	void SetScrollByPos(float yof);
-	bool UpdateEdit();
 	void HandleDropFiles(WPARAM wParam);
 	void HandleMouseWheel(WPARAM wParam, int xof, int yof);
 	void HandleMouseMove(int xof, int yof);
-    void HandleLeftButtonDown(int xof, int yof, bool hitEdit);
+    void HandleLeftButtonDown(int xof, int yof);
     void HandleLeftButtonUp(int xof, int yof);
     void HandleKeyDown(WPARAM wParam);
     void HandleKeyUp(WPARAM wParam);
+	void HandleCharInput(WPARAM wParam);
+	void HandleImeComposition(LPARAM lParam);
     void HandleCellClick(int col, int row);
 	void ToggleCheckState(int col, int row);
 	void StartEditingCell(int col, int row);
-	void CancelEditing();
-	void SaveCurrentEditingCell();
+	void CancelEditing(bool revert = true);
+	void SaveCurrentEditingCell(bool commit = true);
 	void AdjustScrollPosition();
 	bool CanScrollDown();
 	void UpdateUnderMouseIndices(int xof, int yof);
+
+	// 内建编辑器状态（替代嵌入 TextBox）
+	bool Editing = false;
+	int EditingColumnIndex = -1;
+	int EditingRowIndex = -1;
+	std::wstring EditingText;
+	std::wstring EditingOriginalText;
+	int EditSelectionStart = 0;
+	int EditSelectionEnd = 0;
+	float EditOffsetX = 0.0f;
+
+	float GetRowHeightPx();
+	float GetHeadHeightPx();
+	bool TryGetCellRectLocal(int col, int row, D2D1_RECT_F& outRect);
+	bool IsEditableTextCell(int col, int row);
+	void EditInputText(const std::wstring& input);
+	void EditInputBack();
+	void EditInputDelete();
+	void EditUpdateScroll(float cellWidth);
+	int EditHitTestTextPosition(float cellWidth, float cellHeight, float x, float y);
+	std::wstring EditGetSelectedString();
+	void EditEnsureSelectionInRange();
+	void EditSetImeCompositionWindow();
 public:
 	void Update() override;
 	void AutoSizeColumn(int col);
