@@ -248,50 +248,6 @@ void Form::ExecuteCaptionButton(CaptionButtonKind kind)
 	this->Invalidate(true);
 }
 
-int Form::ComputeDesiredFrameIntervalMs()
-{
-	int best = 0;
-	std::function<void(Control*)> consider;
-	consider = [&](Control* c)
-	{
-		if (!c) return;
-		if (!c->IsVisual) return;
-		int v = c->DesiredFrameIntervalMs();
-		if (v > 0)
-		{
-			if (best <= 0) best = v;
-			else best = std::min(best, v);
-		}
-				for (int i = 0; i < c->Count; i++)
-			consider(c->operator[](i));
-	};
-	for (auto c : this->Controls) consider(c);
-	for (auto c : this->ForegroundControls) consider(c);
-		if (best > 0 && best < 10) best = 10;
-	return best;
-}
-
-void Form::UpdateAnimationTimer()
-{
-	if (!this->Handle) return;
-	UINT newInterval = (UINT)ComputeDesiredFrameIntervalMs();
-	if (newInterval == 0)
-	{
-		if (this->_animIntervalMs != 0)
-		{
-			KillTimer(this->Handle, this->_animTimerId);
-			this->_animIntervalMs = 0;
-		}
-		return;
-	}
-	if (this->_animIntervalMs != newInterval)
-	{
-				if (this->_animIntervalMs != 0)
-			KillTimer(this->Handle, this->_animTimerId);
-		SetTimer(this->Handle, this->_animTimerId, newInterval, NULL);
-		this->_animIntervalMs = newInterval;
-	}
-}
 
 void Form::Invalidate(bool immediate)
 {
@@ -349,20 +305,6 @@ void Form::InvalidateAnimatedControls(bool immediate)
 	{
 		if (!c) return;
 		if (!c->IsVisual) return;
-		if (c->DesiredFrameIntervalMs() > 0)
-		{
-			D2D1_RECT_F anim{};
-			if (c->GetAnimatedInvalidRect(anim))
-			{
-				RECT rc = ToRECT(anim, 2);
-				OffsetRect(&rc, 0, ClientTop());
-				Invalidate(rc, false);
-			}
-			else
-			{
-				InvalidateControl(c, 2, false);
-			}
-		}
 		for (int i = 0; i < c->Count; i++)
 			consider(c->operator[](i));
 	};
@@ -669,8 +611,6 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 		if (dirty.right <= dirty.left || dirty.bottom <= dirty.top)
 		return false;
 
-	UpdateAnimationTimer();
-
 	this->Render->BeginRender();
 		this->Render->FillRect((float)dirty.left, (float)dirty.top, (float)(dirty.right - dirty.left), (float)(dirty.bottom - dirty.top), this->BackColor);
 
@@ -822,6 +762,7 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 
 	this->Render->EndRender();
 	this->ControlChanged = false;
+	this->_hasRenderedOnce = true;
 	return true;
 }
 bool Form::ForceUpdate()
@@ -1168,7 +1109,6 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		this->Selected = NULL;
 		se->PostRender();
 	}
-		UpdateAnimationTimer();
 	return true;
 }
 void Form::RenderImage()
@@ -1325,7 +1265,19 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 			PAINTSTRUCT ps{};
 			BeginPaint(hWnd, &ps);
 			if (form->Render)
-				form->UpdateDirtyRect(ps.rcPaint, true);
+			{
+				if (!(form->ControlChanged) && form->_hasRenderedOnce)
+				{
+					// no-op: just validate region
+					/*
+					form->UpdateDirtyRect(ps.rcPaint, true);
+					*/
+				}
+				else
+				{
+					form->UpdateDirtyRect(ps.rcPaint, true);
+				}
+			}
 			EndPaint(hWnd, &ps);
 			return 0;
 		}

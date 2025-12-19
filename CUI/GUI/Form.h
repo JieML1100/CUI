@@ -69,8 +69,7 @@ private:
 	bool _showInTaskBar = true;
 	UINT_PTR _animTimerId = 0xC001;
 	UINT _animIntervalMs = 0;
-	void UpdateAnimationTimer();
-	int ComputeDesiredFrameIntervalMs();
+	bool _hasRenderedOnce = false;
 	void InvalidateControl(class Control* c, int inflatePx = 2, bool immediate = false);
 	void InvalidateAnimatedControls(bool immediate = false);
 	static bool RectIntersects(const RECT& a, const RECT& b);

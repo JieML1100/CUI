@@ -54,10 +54,6 @@ public:
 	UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
 	GridView(int x = 0, int y = 0, int width = 120, int height = 20);
-		int DesiredFrameIntervalMs() override
-	{
-		return (this->Editing && this->IsSelected()) ? 100 : 0;
-	}
 	class Font* HeadFont = NULL;
 		bool InScroll = false;
 		bool InHScroll = false;

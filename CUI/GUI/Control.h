@@ -133,7 +133,6 @@ public:
 	virtual UIClass Type();
 	virtual void Update();
 	virtual void PostRender();
-	virtual int DesiredFrameIntervalMs() { return 0; }
 	virtual bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) { (void)outRect; return false; }
 	PROPERTY(class Font*, Font);
 	GET(class Font*, Font);
@@ -202,8 +201,8 @@ public:
 	GET(ID2D1Bitmap*, Image);
 	SET(ID2D1Bitmap*, Image);
 
-		CursorKind Cursor = CursorKind::Arrow;
-		virtual CursorKind QueryCursor(int xof, int yof) { (void)xof; (void)yof; return this->Cursor; }
+	CursorKind Cursor = CursorKind::Arrow;
+	virtual CursorKind QueryCursor(int xof, int yof) { (void)xof; (void)yof; return this->Cursor; }
 	virtual void RenderImage();
 	virtual SIZE ActualSize();
 	void setTextPrivate(std::wstring);

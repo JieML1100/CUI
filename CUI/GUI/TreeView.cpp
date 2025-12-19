@@ -290,6 +290,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 				need_update = true;
 				this->ScrollIndex += 1;
 				this->ScrollChanged(this);
+				this->PostRender();
 			}
 		}
 		else
@@ -299,6 +300,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 				need_update = true;
 				this->ScrollIndex -= 1;
 				this->ScrollChanged(this);
+				this->PostRender();
 			}
 		}
 		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
@@ -318,7 +320,10 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 			auto size = this->ActualSize();
 			int curr = 0;
 			bool isHit = false;
-			this->HoveredNode = findNode(xof, yof, size.cx, size.cy, font->FontHeight, ScrollIndex, curr, 0, this->Root->Children, isHit);
+			auto newHoveredNode = findNode(xof, yof, size.cx, size.cy, font->FontHeight, ScrollIndex, curr, 0, this->Root->Children, isHit);
+			bool needUpdate = this->HoveredNode == newHoveredNode;
+			this->HoveredNode = newHoveredNode;
+			if (needUpdate) this->PostRender();
 		}
 		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
 		this->OnMouseMove(this, event_obj);

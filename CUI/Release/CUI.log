@@ -1,30 +1,7 @@
-﻿  DemoWindow.cpp
-  CustomControls.cpp
-  Button.cpp
-  CheckBox.cpp
-  ComboBox.cpp
-  Control.cpp
-  Form.cpp
-  GridView.cpp
-  Label.cpp
-  Panel.cpp
-  PasswordBox.cpp
-  PictureBox.cpp
-  ProgressBar.cpp
-  RadioBox.cpp
-  RichTextBox.cpp
-  RoundTextBox.cpp
-  Switch.cpp
-  TabControl.cpp
-  TextBox.cpp
-  TreeView.cpp
-  main.cpp
-D:\Projects\CUI\CUI\DemoWindow.cpp(239,67): warning C4305: “初始化”: 从“double”到“float”截断
-D:\Projects\CUI\CUI\DemoWindow.cpp(240,70): warning C4305: “初始化”: 从“double”到“float”截断
-D:\Projects\CUI\CUI\DemoWindow.cpp(241,73): warning C4305: “初始化”: 从“double”到“float”截断
+﻿  TreeView.cpp
   正在生成代码
-  91 of 4000 functions ( 2.3%) were compiled, the rest were copied from previous compilation.
+  1 of 3973 functions (<0.1%) were compiled, the rest were copied from previous compilation.
     0 functions were new in current compilation
-    30 functions had inline decision re-evaluated but remain unchanged
+    2 functions had inline decision re-evaluated but remain unchanged
   已完成代码的生成
   CUI.vcxproj -> D:\Projects\CUI\Release\CUI.exe

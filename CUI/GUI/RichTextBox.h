@@ -31,7 +31,6 @@ private:
 public:
 	virtual UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
-		int DesiredFrameIntervalMs() override { return (this->IsSelected() && this->SelectionStart == this->SelectionEnd) ? 100 : 0; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	D2D1_SIZE_F textSize = { 0,0 };
 	D2D1_COLOR_F UnderMouseColor = Colors::White;
