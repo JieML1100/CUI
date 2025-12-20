@@ -15,11 +15,15 @@
 #include "RichTextBox.h"
 #include "RoundTextBox.h"
 #include "Switch.h"
+#include "Menu.h"
+#include "ToolBar.h"
+#include "Slider.h"
 #include "TabControl.h"
 #include "TextBox.h"
 #include "TreeView.h"
 #include "Taskbar.h"
 #include "NotifyIcon.h"
+#include "WebBrowser.h"
 typedef Event<void(class Form* sender, int Id, int info)> CommandEvent;
 typedef Event<void(class Form*)> FormClosingEvent;
 typedef Event<void(class Form*)> FormClosedEvent;
@@ -118,7 +122,7 @@ public:
 	class Control* UnderMouse = NULL;
 	List<class Control*> Controls = List<class Control*>();
 	List<class Control*> ForegroundControls = List<class Control*>();
-	D2DGraphics* Render;
+	D2DGraphics1* Render;
 	int HeadHeight = 24;
 	D2D1_COLOR_F BackColor = Colors::WhiteSmoke;
 	D2D1_COLOR_F ForeColor = Colors::Black;

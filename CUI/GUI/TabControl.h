@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "Control.h"
 #include "Panel.h"
 #pragma comment(lib, "Imm32.lib")
@@ -27,4 +27,12 @@ public:
 	TabPage* AddPage(std::wstring name);
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+
+private:
+	// 解决“拖动/松开时鼠标移出控件导致事件丢失”的问题：
+	// TabControl 需要记住鼠标按下命中的子控件，并在按键按住期间持续转发 mousemove / buttonup。
+	Control* _capturedChild = NULL;
+
+	// 记录上一次选择页，用于在 Update 中检测程序切换页并同步原生子窗口控件（如 WebBrowser）
+	int _lastSelectIndex = -1;
 };

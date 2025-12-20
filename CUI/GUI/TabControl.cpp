@@ -2,6 +2,7 @@
 #include "TabControl.h"
 #include "Panel.h"
 #include "Form.h"
+#include "WebBrowser.h"
 #pragma comment(lib, "Imm32.lib")
 
 UIClass TabPage::Type() { return UIClass::UI_TabPage; }
@@ -20,6 +21,30 @@ TabControl::TabControl(int x, int y, int width, int height)
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
 }
+
+static void SyncNativeChildWindowsRecursive(Control* root)
+{
+	if (!root) return;
+	// 目前库里只有 WebBrowser 会创建真实 HWND 子窗口；后续有更多原生控件也可在此扩展
+	if (root->Type() == UIClass::UI_WebBrowser)
+	{
+		// 强制跑一次 Update：它会根据 IsVisual/Visible 同步宿主 HWND 的 Show/Hide/Bounds
+		root->Update();
+	}
+	for (int i = 0; i < root->Count; i++)
+		SyncNativeChildWindowsRecursive(root->operator[](i));
+}
+
+static void SyncNativeChildWindowsForAllPages(TabControl* tc)
+{
+	if (!tc) return;
+	for (int i = 0; i < tc->Count; i++)
+	{
+		auto page = tc->operator[](i);
+		SyncNativeChildWindowsRecursive(page);
+	}
+}
+
 TabPage* TabControl::AddPage(std::wstring name)
 {
 	TabPage* result = this->AddControl(new TabPage(name));
@@ -30,6 +55,8 @@ TabPage* TabControl::AddPage(std::wstring name)
 	{
 		this->operator[](i)->Visible = (this->SelectIndex == i);
 	}
+	// 新增页后也同步一次原生子窗口（避免被隐藏页“遗留显示”）
+	SyncNativeChildWindowsForAllPages(this);
 	return result;
 }
 GET_CPP(TabControl, int, PageCount)
@@ -60,6 +87,9 @@ void TabControl::Update()
 		
 		if (this->Count > 0)
 		{
+			if (this->SelectIndex < 0)this->SelectIndex = 0;
+			if (this->SelectIndex >= this->Count)this->SelectIndex = this->Count - 1;
+
 			for (int i = 0; i < this->Count; i++)
 			{
 				this->operator[](i)->Visible = this->SelectIndex == i;
@@ -81,6 +111,15 @@ void TabControl::Update()
 			page->Location = POINT{ 0,(int)this->TitleHeight };
 			page->Size = this->Size;
 			page->Update();
+
+			// 关键：TabControl 通过 Visible 控制页显示，但隐藏页不会被 Update() 调用，
+			// 这会导致 WebBrowser 这种“真实 HWND 子窗口”无法及时 Hide。
+			// 因此当选择页发生变化时，强制同步所有页的原生子窗口显隐/位置。
+			if (this->_lastSelectIndex != this->SelectIndex)
+			{
+				SyncNativeChildWindowsForAllPages(this);
+				this->_lastSelectIndex = this->SelectIndex;
+			}
 		}
 		d2d->DrawRect(abslocation.x, abslocation.y + this->TitleHeight, size.cx, size.cy - this->TitleHeight, this->BolderColor, this->Boder);
 	}
@@ -102,28 +141,106 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 			se->PostRender();
 		}
 	}
+
 	if (this->Count > 0)
 	{
 		if (this->SelectIndex < 0)this->SelectIndex = 0;
 		if (this->SelectIndex >= this->Count)this->SelectIndex = this->Count - 1;
 		TabPage* page = (TabPage*)this->operator[](this->SelectIndex);
-		for (int i = 0; i < page->Count; i++)
+
+		// 先处理标题栏点击（切换页）：
+		if (message == WM_LBUTTONDOWN && yof < this->TitleHeight)
 		{
-			float _yof = yof - TitleHeight;
-			auto c = page->operator[](i);
-			auto location = c->Location;
-			auto size = c->ActualSize();
-			if (
-				xof >= location.x &&
-				_yof >= location.y &&
-				xof <= (location.x + size.cx) &&
-				_yof <= (location.y + size.cy)
-				)
+			if (xof < (this->Count * this->TitleWidth))
 			{
-				c->ProcessMessage(message, wParam, lParam, xof - location.x, _yof - location.y);
+				int newSelected = xof / this->TitleWidth;
+				if (this->SelectIndex != newSelected)
+				{
+					this->SelectIndex = newSelected;
+					this->OnSelectedChanged(this);
+				}
+				for (int i = 0; i < this->Count; i++)
+				{
+					this->operator[](i)->Visible = (i == this->SelectIndex);
+				}
+
+				// 同步隐藏页的 WebBrowser 之类的原生子窗口
+				SyncNativeChildWindowsForAllPages(this);
+				this->_lastSelectIndex = this->SelectIndex;
+
+				this->_capturedChild = NULL;
+				if (GetCapture() == this->ParentForm->Handle)
+					ReleaseCapture();
+				this->PostRender();
+			}
+		}
+
+		// Content 区域坐标
+		const int cy = yof - this->TitleHeight;
+
+		auto forwardToChild = [&](Control* c)
+			{
+				if (!c) return;
+				auto location = c->Location;
+				c->ProcessMessage(message, wParam, lParam, xof - location.x, cy - location.y);
+			};
+
+		// 鼠标按住期间：持续转发到按下时命中的子控件（解决拖动/松开丢失）
+		bool mousePressed = (wParam & MK_LBUTTON) || (wParam & MK_RBUTTON) || (wParam & MK_MBUTTON);
+		if ((message == WM_MOUSEMOVE || message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP) && this->_capturedChild)
+		{
+			forwardToChild(this->_capturedChild);
+			if (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP)
+			{
+				this->_capturedChild = NULL;
+				if (GetCapture() == this->ParentForm->Handle)
+					ReleaseCapture();
+			}
+		}
+		else if ((message == WM_MOUSEMOVE && mousePressed) && this->_capturedChild)
+		{
+			forwardToChild(this->_capturedChild);
+		}
+		else
+		{
+			// 按下时：命中哪个子控件就捕获它
+			if (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN ||
+				message == WM_LBUTTONDBLCLK || message == WM_RBUTTONDBLCLK || message == WM_MBUTTONDBLCLK ||
+				message == WM_MOUSEMOVE || message == WM_MOUSEWHEEL)
+			{
+				// 只在 content 区域才命中子控件
+				if (cy >= 0)
+				{
+					Control* hit = NULL;
+					for (int i = page->Count - 1; i >= 0; i--)
+					{
+						auto c = page->operator[](i);
+						if (!c || !c->Visible || !c->Enable) continue;
+						auto loc = c->Location;
+						auto sz = c->ActualSize();
+						if (xof >= loc.x && cy >= loc.y && xof <= (loc.x + sz.cx) && cy <= (loc.y + sz.cy))
+						{
+							hit = c;
+							break;
+						}
+					}
+
+					if (hit)
+					{
+						// 捕获鼠标，确保鼠标移出窗口也能持续收到 move/up（拖动选中/下拉框等）
+						if (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN)
+						{
+							this->_capturedChild = hit;
+							if (this->ParentForm && this->ParentForm->Handle)
+								SetCapture(this->ParentForm->Handle);
+						}
+						forwardToChild(hit);
+					}
+				}
 			}
 		}
 	}
+
 	switch (message)
 	{
 	case WM_DROPFILES:
@@ -160,33 +277,6 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 	case WM_RBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 	{
-		if (WM_LBUTTONDOWN == message)
-		{
-			if (yof < this->TitleHeight)
-			{
-				if (xof < (this->Count * this->TitleWidth))
-				{
-					int newSelected = xof / this->TitleWidth;
-					if (this->SelectIndex != newSelected)
-					{
-						this->SelectIndex = newSelected;
-						this->OnSelectedChanged(this);
-					}
-					for (int i = 0; i < this->Count; i++)
-					{
-						if (i != this->SelectIndex)
-						{
-							this->operator[](i)->Visible = false;
-						}
-						else
-						{
-							this->operator[](i)->Visible = true;
-						}
-					}
-					this->PostRender();
-				}
-			}
-		}
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 		this->OnMouseDown(this, event_obj);
 	}
@@ -195,6 +285,10 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 	case WM_RBUTTONUP:
 	case WM_MBUTTONUP:
 	{
+		// 防御：如果捕获还在，释放掉
+		if (this->_capturedChild && (GetCapture() == this->ParentForm->Handle))
+			ReleaseCapture();
+		this->_capturedChild = NULL;
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 		this->OnMouseUp(this, event_obj);
 	}

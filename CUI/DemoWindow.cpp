@@ -1,7 +1,8 @@
 #include "DemoWindow.h"
 #include "imgs.h"
 #include "nanosvg.h"
-ID2D1Bitmap* ToBitmapFromSvg(D2DGraphics* g, const char* data) {
+#include "resource.h"
+ID2D1Bitmap* ToBitmapFromSvg(D2DGraphics1* g, const char* data) {
 	if (!g || !data) return NULL;
 	int len = strlen(data) + 1;
 	char* svg_text = new char[len];
@@ -15,7 +16,7 @@ ID2D1Bitmap* ToBitmapFromSvg(D2DGraphics* g, const char* data) {
 		percen = 4096.0f / maxv;
 	}
 	auto renderSource = BitmapSource::CreateEmpty(image->width * percen, image->height * percen);
-	auto subg = new D2DGraphics(renderSource.get());
+	auto subg = new D2DGraphics1(renderSource.get());
 	NSVGshape* shape;
 	NSVGpath* path;
 	subg->BeginRender();
@@ -38,7 +39,7 @@ ID2D1Bitmap* ToBitmapFromSvg(D2DGraphics* g, const char* data) {
 			}
 			skin->Close();
 		}
-		auto _get_svg_brush = [](NSVGpaint paint, float opacity, D2DGraphics* g) ->ID2D1Brush* {
+		auto _get_svg_brush = [](NSVGpaint paint, float opacity, D2DGraphics1* g) ->ID2D1Brush* {
 			const auto ic2fc = [](int colorInt, float opacity)->D2D1_COLOR_F {
 				return D2D1_COLOR_F{ (float)GetRValue(colorInt) / 255.0f ,(float)GetGValue(colorInt) / 255.0f ,(float)GetBValue(colorInt) / 255.0f ,opacity };
 				};
@@ -102,6 +103,33 @@ void DemoWindow::button1_OnMouseClick(class Control* sender, MouseEventArgs e)
 	sender->PostRender();
 }
 
+void DemoWindow::menu_OnCommand(class Control* sender, int id)
+{
+	(void)sender;
+	switch (id)
+	{
+	case 101:
+		this->label1->Text = L"Menu: 文件 -> 打开";
+		this->label1->PostRender();
+		break;
+	case 102:
+		PostMessage(this->Handle, WM_CLOSE, 0, 0);
+		break;
+	case 201:
+		this->label1->Text = L"Menu: 帮助 -> 关于";
+		this->label1->PostRender();
+		break;
+	}
+}
+
+void DemoWindow::slider1_OnValueChanged(class Control* sender, float oldValue, float newValue)
+{
+	(void)sender;
+	(void)oldValue;
+	this->label1->Text = StringHelper::Format(L"Slider Value=%.0f", newValue);
+	this->label1->PostRender();
+}
+
 void DemoWindow::radiobox1_OnChecked(class Control* sender)
 {
 	this->radiobox2->Checked = false;
@@ -154,12 +182,14 @@ void DemoWindow::sw1_OnMouseClick(class Control* sender, MouseEventArgs e)
 {
 	Switch* sw = (Switch*)sender;
 	this->gridview1->Enable = sw->Checked;
+	this->Invalidate();
 }
 
 void DemoWindow::sw2_OnMouseClick(class Control* sender, MouseEventArgs e)
 {
 	Switch* sw = (Switch*)sender;
 	this->gridview1->Visible = sw->Checked;
+	this->Invalidate();
 }
 
 void DemoWindow::iconButton_OnMouseClick(class Control* sender, MouseEventArgs e)
@@ -188,7 +218,7 @@ void DemoWindow::picturebox1_OnDropFile(class Control* sender, List<std::wstring
 		sender->PostRender();
 	}
 }
-DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,600 })
+DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 {
 	bmps[0] = ToBitmapFromSvg(this->Render, _0_ico);
 	bmps[1] = ToBitmapFromSvg(this->Render, _1_ico);
@@ -206,10 +236,51 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,600 })
 	icos[3] = ToBitmapFromSvg(this->Render, icon3);
 	icos[4] = ToBitmapFromSvg(this->Render, icon4);
 
-	label1 = this->AddControl(new Label(L"Label", 10, 10));
+	menu1 = this->AddControl(new Menu(0, 0, this->Size.cx, 28));
+	menu1->BarBackColor = D2D1_COLOR_F{ 1,1,1,0.08f };
+	menu1->DropBackColor = D2D1_COLOR_F{ 0.12f,0.12f,0.12f,0.92f };
+	menu1->OnMenuCommand += std::bind_front(&DemoWindow::menu_OnCommand, this);
+	{
+		auto file = menu1->AddItem(L"文件");
+		file->AddSubItem(L"打开", 101);
+		auto recent = file->AddSubItem(L"最近打开");
+		recent->AddSubItem(L"project_a.cui", 111);
+		recent->AddSubItem(L"project_b.cui", 112);
+		recent->AddSeparator();
+		recent->AddSubItem(L"清空列表", 113);
+		file->AddSeparator();
+		file->AddSubItem(L"退出", 102);
+
+		auto settings = menu1->AddItem(L"设置");
+		auto theme = settings->AddSubItem(L"主题");
+		theme->AddSubItem(L"浅色", 301);
+		theme->AddSubItem(L"深色", 302);
+		settings->AddSeparator();
+		settings->AddSubItem(L"重置", 303);
+
+		auto help = menu1->AddItem(L"帮助");
+		help->AddSubItem(L"关于", 201);
+	}
+
+	toolbar1 = this->AddControl(new ToolBar(0, this->Size.cy - this->HeadHeight - 24, this->Size.cx, 24));
+	auto tbNew = toolbar1->AddToolButton(L"New", 90);
+	auto tbSave = toolbar1->AddToolButton(L"Save", 90);
+	auto tbRun = toolbar1->AddToolButton(L"Run", 90);
+
+	tbNew->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: New"; this->label1->PostRender(); };
+	tbSave->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: Save"; this->label1->PostRender(); };
+	tbRun->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: Run"; this->label1->PostRender(); };
+
+	slider1 = this->AddControl(new Slider(10, menu1->Bottom + 8, 320, 32));
+	slider1->Min = 0;
+	slider1->Max = 10000;
+	slider1->Value = 50;
+	slider1->OnValueChanged += std::bind_front(&DemoWindow::slider1_OnValueChanged, this);
+
+	label1 = this->AddControl(new Label(L"Label", 10, (int)slider1->Bottom + 6));
 	label1->OnMouseWheel += std::bind_front(&DemoWindow::label1_OnMouseWheel, this);
 
-	clabel1 = this->AddControl(new CustomLabel1(L"Custom Label", 400, 10));
+	clabel1 = this->AddControl(new CustomLabel1(L"Custom Label", 400, label1->Top));
 	button1 = this->AddControl(new Button(L"BUTTON1", 10, this->LastChild()->Bottom + 5, 120, 24));
 	button1->OnMouseClick += std::bind_front(&DemoWindow::button1_OnMouseClick, this);
 	textbox0 = this->AddControl(new TextBox(L"TextBox", 10, this->LastChild()->Bottom + 5, 120, 20));
@@ -235,10 +306,11 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,600 })
 	textbox2->AllowMultiLine = true;
 	textbox2->ScrollToEnd();
 	tabControl1 = this->AddControl(new TabControl(10, combobox1->Bottom + 5, 1200, 300));
-	tabControl1->BackColor = D2D1_COLOR_F{ 1,1,1,0.0 };
-	tabControl1->AddPage(L"Page 1")->BackColor = D2D1_COLOR_F{ 1,1,1,0.3 };
-	tabControl1->AddPage(L"Grid View")->BackColor = D2D1_COLOR_F{ 1,1,1,0.3 };
-	tabControl1->AddPage(L"Icon Buttons")->BackColor = D2D1_COLOR_F{ 1,1,1,0.3 };
+	tabControl1->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.0f };
+	tabControl1->AddPage(L"Page 1")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
+	tabControl1->AddPage(L"Grid View")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
+	tabControl1->AddPage(L"Icon Buttons")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
+	tabControl1->AddPage(L"WebBrowser")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
 	tabControl1->get(0)->AddControl(new Label(L"基本容器", 10, 10));
 
 	bt2 = tabControl1->get(0)->AddControl(new Button(L"打开图片", 120, 10, 120, 24));
@@ -293,7 +365,7 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,600 })
 	gridview1->Columns.Add(textColumn);
 	gridview1->Columns.Add(GridViewColumn(L"Check", 80, ColumnType::Check));
 	gridview1->Columns.Add(GridViewColumn(L"Edit", 200, ColumnType::Text, true));
-	for (int i = 0; i < 100; i++)
+	for (int i = 0; i < 10000; i++)
 	{
 		GridViewRow row;
 		row.Cells = { bmps[i % 10] ,i % 2 == 0,std::to_wstring(Random::Next()) ,i % 3 == 0 ,std::to_wstring(Random::Next()) };
@@ -317,15 +389,33 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,600 })
 		ingButton->OnMouseClick += std::bind_front(&DemoWindow::iconButton_OnMouseClick, this);
 	}
 
+	// WebBrowser（WebView2 原生嵌入渲染）演示
+	{
+		auto page = tabControl1->get(3);
+		page->AddControl(new Label(L"WebBrowser", 10, 10));
+		web1 = page->AddControl(new WebBrowser(10, 36, 1180, 210));
+
+		web1->Navigate(L"https://www.baidu.com");
+	}
+
 	this->BackColor = Colors::grey31;
 	this->SizeMode = ImageSizeMode::StretchIamge;
+
+	this->OnSizeChanged += [&](class Form* sender) {
+		(void)sender;
+		if (this->menu1) this->menu1->Width = this->Size.cx;
+		if (this->toolbar1) {
+			this->toolbar1->Width = this->Size.cx;
+			this->toolbar1->Top = this->Size.cy - this->HeadHeight - 24;
+		}
+		};
 }
 
 NotifyIcon* TestNotifyIcon(HWND handle)
 {
 	NotifyIcon* notifyIcon = new NotifyIcon();
 	notifyIcon->InitNotifyIcon(handle, 1);
-	notifyIcon->SetIcon(LoadIcon(NULL, IDI_APPLICATION));
+	notifyIcon->SetIcon(LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_ICON1)));
 	notifyIcon->SetToolTip(Convert::Utf8ToAnsi("应用程序").c_str());
 	notifyIcon->ShowNotifyIcon();
 

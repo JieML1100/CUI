@@ -1,7 +1,7 @@
 #include "Form.h"
 #include "NotifyIcon.h"
 #include <CppUtils/Graphics/Factory.h>
-#include <CppUtils/Graphics/Graphics.h>
+#include <CppUtils/Graphics/Graphics1.h>
 #include <algorithm>
 #include <functional>
 #include <unordered_map>
@@ -11,7 +11,7 @@
 
 HCURSOR Form::GetSystemCursor(CursorKind kind)
 {
-		static std::unordered_map<CursorKind, HCURSOR> cache;
+	static std::unordered_map<CursorKind, HCURSOR> cache;
 	auto it = cache.find(kind);
 	if (it != cache.end() && it->second) return it->second;
 
@@ -36,7 +36,7 @@ HCURSOR Form::GetSystemCursor(CursorKind kind)
 
 void Form::ApplyCursor(CursorKind kind)
 {
-			HCURSOR desired = GetSystemCursor(kind);
+	HCURSOR desired = GetSystemCursor(kind);
 	if (kind == _currentCursor && ::GetCursor() == desired) return;
 	_currentCursor = kind;
 	::SetCursor(desired);
@@ -47,7 +47,7 @@ static Control* HitTestDeepestChild(Control* root, POINT contentMouse)
 	if (!root) return NULL;
 	if (!root->Visible || !root->Enable) return NULL;
 
-		for (int i = root->Count - 1; i >= 0; i--)
+	for (int i = root->Count - 1; i >= 0; i--)
 	{
 		auto c = root->operator[](i);
 		if (!c || !c->Visible || !c->Enable) continue;
@@ -65,7 +65,7 @@ static Control* HitTestDeepestChild(Control* root, POINT contentMouse)
 
 Control* Form::HitTestControlAt(POINT contentMouse)
 {
-		for (auto fc : this->ForegroundControls)
+	for (auto fc : this->ForegroundControls)
 	{
 		if (!fc || !fc->Visible || !fc->Enable) continue;
 		auto loc = fc->Location;
@@ -77,12 +77,13 @@ Control* Form::HitTestControlAt(POINT contentMouse)
 		}
 	}
 
-		for (int pass = 0; pass < 2; pass++)
+	for (int pass = 0; pass < 2; pass++)
 	{
 		for (int i = 0; i < this->Controls.Count; i++)
 		{
 			auto c = this->Controls[i];
 			if (!c || !c->Visible || !c->Enable) continue;
+			if (this->ForegroundControls.Contains(c)) continue;
 			if (pass == 0 && c->Type() != UIClass::UI_ComboBox) continue;
 			if (pass == 1 && c->Type() == UIClass::UI_ComboBox) continue;
 
@@ -100,13 +101,13 @@ Control* Form::HitTestControlAt(POINT contentMouse)
 
 CursorKind Form::QueryCursorAt(POINT mouseClient, POINT contentMouse)
 {
-		const int top = ClientTop();
+	const int top = ClientTop();
 	if (this->VisibleHead && mouseClient.y < top)
 	{
 		return CursorKind::Arrow;
 	}
 
-		if (this->Selected && this->Selected->IsVisual && (GetAsyncKeyState(VK_LBUTTON) & 0x8000))
+	if (this->Selected && this->Selected->IsVisual && (GetAsyncKeyState(VK_LBUTTON) & 0x8000))
 	{
 		auto abs = this->Selected->AbsLocation;
 		int xof = contentMouse.x - abs.x;
@@ -141,28 +142,28 @@ bool Form::TryGetCaptionButtonRect(CaptionButtonKind kind, RECT& out)
 {
 	if (!this->VisibleHead || this->HeadHeight <= 0) return false;
 
-		int xRight = this->Size.cx;
+	int xRight = this->Size.cx;
 	int h = this->HeadHeight;
 	int w = this->HeadHeight;
 
 	auto place = [&](CaptionButtonKind k, bool enabled) -> std::optional<RECT>
-	{
-		if (!enabled) return std::nullopt;
-		RECT r{ xRight - w, 0, xRight, h };
-		xRight -= w;
-		return r;
-	};
+		{
+			if (!enabled) return std::nullopt;
+			RECT r{ xRight - w, 0, xRight, h };
+			xRight -= w;
+			return r;
+		};
 
 	auto closeR = place(CaptionButtonKind::Close, this->CloseBox);
 	auto maxR = place(CaptionButtonKind::Maximize, this->MaxBox);
 	auto minR = place(CaptionButtonKind::Minimize, this->MinBox);
 
 	auto pick = [&](CaptionButtonKind k) -> std::optional<RECT>
-	{
-		if (k == CaptionButtonKind::Close) return closeR;
-		if (k == CaptionButtonKind::Maximize) return maxR;
-		return minR;
-	};
+		{
+			if (k == CaptionButtonKind::Close) return closeR;
+			if (k == CaptionButtonKind::Maximize) return maxR;
+			return minR;
+		};
 
 	auto r = pick(kind);
 	if (!r.has_value()) return false;
@@ -210,11 +211,11 @@ void Form::UpdateCaptionHover(POINT ptClient)
 	auto oldMax = _capMaxState;
 	auto oldClose = _capCloseState;
 
-		_capMinState = (onBtn && hit == CaptionButtonKind::Minimize) ? CaptionButtonState::Hover : CaptionButtonState::None;
+	_capMinState = (onBtn && hit == CaptionButtonKind::Minimize) ? CaptionButtonState::Hover : CaptionButtonState::None;
 	_capMaxState = (onBtn && hit == CaptionButtonKind::Maximize) ? CaptionButtonState::Hover : CaptionButtonState::None;
 	_capCloseState = (onBtn && hit == CaptionButtonKind::Close) ? CaptionButtonState::Hover : CaptionButtonState::None;
 
-		if (_capPressed)
+	if (_capPressed)
 	{
 		if (_capPressedKind == CaptionButtonKind::Minimize) _capMinState = CaptionButtonState::Pressed;
 		if (_capPressedKind == CaptionButtonKind::Maximize) _capMaxState = CaptionButtonState::Pressed;
@@ -294,20 +295,20 @@ void Form::InvalidateControl(Control* c, int inflatePx, bool immediate)
 	if (!c || !this->Handle) return;
 	if (!c->IsVisual) return;
 	RECT rc = ToRECT(c->AbsRect, inflatePx);
-		OffsetRect(&rc, 0, ClientTop());
+	OffsetRect(&rc, 0, ClientTop());
 	Invalidate(rc, immediate);
 }
 
 void Form::InvalidateAnimatedControls(bool immediate)
 {
-		std::function<void(Control*)> consider;
+	std::function<void(Control*)> consider;
 	consider = [&](Control* c)
-	{
-		if (!c) return;
-		if (!c->IsVisual) return;
-		for (int i = 0; i < c->Count; i++)
-			consider(c->operator[](i));
-	};
+		{
+			if (!c) return;
+			if (!c->IsVisual) return;
+			for (int i = 0; i < c->Count; i++)
+				consider(c->operator[](i));
+		};
 	for (auto c : this->Controls) consider(c);
 	for (auto c : this->ForegroundControls) consider(c);
 	if (immediate)
@@ -361,17 +362,9 @@ SET_CPP(Form, SIZE, Size)
 
 GET_CPP(Form, SIZE, ClientSize)
 {
-	if (this->Handle)
-	{
-		RECT rect;
-		GetClientRect(this->Handle, &rect);
-		SIZE size = { rect.right - rect.left,rect.bottom - rect.top };
-		return size;
-	}
-	else
-	{
-		return this->_Size_INTI;
-	}
+	auto siz = this->Size;
+	siz.cy -= this->HeadHeight;
+	return siz;
 }
 GET_CPP(Form, std::wstring, Text) {
 	return _text;
@@ -472,18 +465,18 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 		this->Location.y == 0 ? ((int)(desktopHeight - this->Size.cy) / 2) : this->Location.y,
 		this->Size.cx,
 		this->Size.cy,
-						NULL,
+		NULL,
 		NULL,
 		GetModuleHandleW(0),
 		0);
 	SetWindowLongPtrW(this->Handle, GWLP_USERDATA, (LONG_PTR)this ^ 0xFFFFFFFFFFFFFFFF);
-	
+
 	DragAcceptFiles(this->Handle, TRUE);
 
 
 	Application::Forms.Add(this->Handle, this);
 
-	Render = new HwndGraphics(this->Handle);
+	Render = new HwndGraphics1(this->Handle);
 	ClearCaptionStates();
 }
 void Form::Show()
@@ -495,7 +488,7 @@ void Form::Show()
 }
 static HWND GetBestOwnerWindowInCurrentProcess(HWND exclude = NULL)
 {
-		HWND fg = GetForegroundWindow();
+	HWND fg = GetForegroundWindow();
 	if (fg && fg != exclude)
 	{
 		DWORD pid = 0;
@@ -504,7 +497,7 @@ static HWND GetBestOwnerWindowInCurrentProcess(HWND exclude = NULL)
 			return fg;
 	}
 
-		HWND active = GetActiveWindow();
+	HWND active = GetActiveWindow();
 	if (active && active != exclude)
 	{
 		DWORD pid = 0;
@@ -513,7 +506,7 @@ static HWND GetBestOwnerWindowInCurrentProcess(HWND exclude = NULL)
 			return active;
 	}
 
-		for (auto& kv : Application::Forms)
+	for (auto& kv : Application::Forms)
 	{
 		HWND h = kv.first;
 		if (h && h != exclude && IsWindow(h) && IsWindowVisible(h))
@@ -525,16 +518,16 @@ static HWND GetBestOwnerWindowInCurrentProcess(HWND exclude = NULL)
 
 void Form::ShowDialog(HWND parent)
 {
-		HWND owner = parent;
+	HWND owner = parent;
 	if (!owner)
 		owner = GetBestOwnerWindowInCurrentProcess(this->Handle);
 
-		if (owner && IsWindow(owner))
+	if (owner && IsWindow(owner))
 		SetWindowLongPtrW(this->Handle, GWLP_HWNDPARENT, (LONG_PTR)owner);
 	else
 		SetWindowLongPtrW(this->Handle, GWLP_HWNDPARENT, 0);
 
-		if (owner && IsWindow(owner))
+	if (owner && IsWindow(owner))
 	{
 		EnableWindow(owner, FALSE);
 	}
@@ -546,16 +539,16 @@ void Form::ShowDialog(HWND parent)
 	SetForegroundWindow(this->Handle);
 	SetActiveWindow(this->Handle);
 
-		MSG msg;
+	MSG msg;
 	while (IsWindow(this->Handle))
 	{
 		BOOL r = GetMessageW(&msg, NULL, 0, 0);
-		if (r <= 0) break; 
+		if (r <= 0) break;
 		TranslateMessage(&msg);
 		DispatchMessageW(&msg);
 	}
 
-		if (owner && IsWindow(owner))
+	if (owner && IsWindow(owner))
 	{
 		EnableWindow(owner, TRUE);
 		SetForegroundWindow(owner);
@@ -576,9 +569,9 @@ bool Form::DoEvent()
 		DispatchMessage(&msg);
 		hasMessage = true;
 	}
-		if (!hasMessage && Application::Forms.size() > 0)
+	if (!hasMessage && Application::Forms.size() > 0)
 	{
-				WaitMessage();
+		WaitMessage();
 	}
 	return hasMessage;
 }
@@ -595,8 +588,11 @@ bool Form::WaiteEvent()
 }
 bool Form::Update(bool force)
 {
-		if (!IsWindow(this->Handle)) return false;
-	if (!(force || ControlChanged)) return false;
+	if (!IsWindow(this->Handle)) return false;
+
+	// 旧版 WebBrowser 依赖“抓帧贴图”需要持续 Update；
+	// 现在 WebBrowser 使用原生 WebView2 子窗口渲染，不再需要强制刷新。
+	if (!force && !ControlChanged) return false;
 
 	RECT dirty{};
 	if (!GetUpdateRect(this->Handle, &dirty, FALSE))
@@ -608,23 +604,41 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 {
 	if (!IsWindow(this->Handle) || !this->Render) return false;
 
-		if (dirty.right <= dirty.left || dirty.bottom <= dirty.top)
+	if (dirty.right <= dirty.left || dirty.bottom <= dirty.top)
 		return false;
 
+	// 注意：
+	// - 当前渲染采用“按脏矩形局部重绘”的策略；
+	// - 但底层 D2D 渲染目标在很多场景下并不保证保留上一帧内容（尤其是 Resize 之后）；
+	// - 同时标题栏/按钮存在半透明填充，如果绘制越界到 dirty 外，会对未清理区域产生“叠加污染”，表现为残影。
+	// 因此：本次绘制全程裁剪到 drawRc，并在需要时强制全量重绘。
+	RECT clientRc{};
+	::GetClientRect(this->Handle, &clientRc);
+	RECT drawRc = dirty;
+	if (force || !this->_hasRenderedOnce)
+	{
+		drawRc = clientRc;
+	}
+
 	this->Render->BeginRender();
-		this->Render->FillRect((float)dirty.left, (float)dirty.top, (float)(dirty.right - dirty.left), (float)(dirty.bottom - dirty.top), this->BackColor);
+	// 防御：避免上一次绘制遗留 Transform 影响背景/标题栏
+	this->Render->ClearTransform();
+	// 全程裁剪到本次需要更新的区域，避免对 dirty 外区域产生半透明叠加污染
+	this->Render->PushDrawRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top));
+	// 先用不透明底色清空 drawRc，保证接下来的半透明绘制不叠加历史内容
+	this->Render->FillRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top), this->BackColor);
 
 	if (this->Image)
 	{
-				this->Render->PushDrawRect((float)dirty.left, (float)dirty.top, (float)(dirty.right - dirty.left), (float)(dirty.bottom - dirty.top));
+		this->Render->PushDrawRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top));
 		this->RenderImage();
 		this->Render->PopDrawRect();
 	}
 
 	if (VisibleHead)
 	{
-				RECT headRc{ 0, 0, this->Size.cx, this->HeadHeight };
-		if (RectIntersects(dirty, headRc))
+		RECT headRc{ 0, 0, this->Size.cx, this->HeadHeight };
+		if (RectIntersects(drawRc, headRc))
 		{
 			this->Render->FillRect(0, 0, this->Size.cx, this->HeadHeight, this->HeadBackColor);
 			auto defaultFont = GetDefaultFontObject();
@@ -636,7 +650,7 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 			{
 				auto tSize = defaultFont->GetTextSize(this->Text);
 				float textRangeWidth = this->Size.cx;
-								int buttonCount = 0;
+				int buttonCount = 0;
 				if (this->MinBox) buttonCount++;
 				if (this->MaxBox) buttonCount++;
 				if (this->CloseBox) buttonCount++;
@@ -651,81 +665,81 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 				this->Render->DrawString(this->Text, 5.0f, headTextTop, this->ForeColor);
 			}
 
-						auto drawBtn = [&](CaptionButtonKind kind, CaptionButtonState st, D2D1_COLOR_F hover, D2D1_COLOR_F pressed)
-			{
-				RECT r{};
-				if (!TryGetCaptionButtonRect(kind, r)) return;
-				if (st == CaptionButtonState::Hover)
-					this->Render->FillRect((float)r.left, (float)r.top, (float)(r.right - r.left), (float)(r.bottom - r.top), hover);
-				else if (st == CaptionButtonState::Pressed)
-					this->Render->FillRect((float)r.left, (float)r.top, (float)(r.right - r.left), (float)(r.bottom - r.top), pressed);
-
-								const float left = (float)r.left;
-				const float top = (float)r.top;
-				const float bw = (float)(r.right - r.left);
-				const float bh = (float)(r.bottom - r.top);
-				const float s = (bw < bh) ? bw : bh;
-				const float cx = left + bw * 0.5f;
-				const float cy = top + bh * 0.5f;
-
-								const float icon = s * 0.42f;
-				const float half = icon * 0.5f;
-				float stroke = s * 0.08f;
-				if (stroke < 1.0f) stroke = 1.0f;
-
-				auto drawMinimize = [&]()
+			auto drawBtn = [&](CaptionButtonKind kind, CaptionButtonState st, D2D1_COLOR_F hover, D2D1_COLOR_F pressed)
 				{
-										const float y = cy + half * 0.35f;
-					this->Render->DrawLine({ cx - half, y }, { cx + half, y }, this->ForeColor, stroke);
+					RECT r{};
+					if (!TryGetCaptionButtonRect(kind, r)) return;
+					if (st == CaptionButtonState::Hover)
+						this->Render->FillRect((float)r.left, (float)r.top, (float)(r.right - r.left), (float)(r.bottom - r.top), hover);
+					else if (st == CaptionButtonState::Pressed)
+						this->Render->FillRect((float)r.left, (float)r.top, (float)(r.right - r.left), (float)(r.bottom - r.top), pressed);
+
+					const float left = (float)r.left;
+					const float top = (float)r.top;
+					const float bw = (float)(r.right - r.left);
+					const float bh = (float)(r.bottom - r.top);
+					const float s = (bw < bh) ? bw : bh;
+					const float cx = left + bw * 0.5f;
+					const float cy = top + bh * 0.5f;
+
+					const float icon = s * 0.42f;
+					const float half = icon * 0.5f;
+					float stroke = s * 0.08f;
+					if (stroke < 1.0f) stroke = 1.0f;
+
+					auto drawMinimize = [&]()
+						{
+							const float y = cy + half * 0.35f;
+							this->Render->DrawLine({ cx - half, y }, { cx + half, y }, this->ForeColor, stroke);
+						};
+					auto drawMaximize = [&]()
+						{
+							const float x = cx - half;
+							const float y = cy - half;
+							this->Render->DrawRect(x, y, icon, icon, this->ForeColor, stroke);
+						};
+					auto drawRestore = [&]()
+						{
+							const float off = stroke * 1.2f;
+							const float xBack = (cx - half) - off;
+							const float yBack = (cy - half) - off;
+							const float xFront = (cx - half) + off;
+							const float yFront = (cy - half) + off;
+							this->Render->DrawRect(xBack, yBack, icon, icon, this->ForeColor, stroke);
+							this->Render->DrawRect(xFront, yFront, icon, icon, this->ForeColor, stroke);
+						};
+					auto drawClose = [&]()
+						{
+							this->Render->DrawLine({ cx - half, cy - half }, { cx + half, cy + half }, this->ForeColor, stroke);
+							this->Render->DrawLine({ cx + half, cy - half }, { cx - half, cy + half }, this->ForeColor, stroke);
+						};
+
+					switch (kind)
+					{
+					case CaptionButtonKind::Minimize:
+						drawMinimize();
+						break;
+					case CaptionButtonKind::Maximize:
+						if (IsZoomed(this->Handle))
+							drawRestore();
+						else
+							drawMaximize();
+						break;
+					case CaptionButtonKind::Close:
+						drawClose();
+						break;
+					}
 				};
-				auto drawMaximize = [&]()
-				{
-										const float x = cx - half;
-					const float y = cy - half;
-					this->Render->DrawRect(x, y, icon, icon, this->ForeColor, stroke);
-				};
-				auto drawRestore = [&]()
-				{
-										const float off = stroke * 1.2f;
-					const float xBack = (cx - half) - off;
-					const float yBack = (cy - half) - off;
-					const float xFront = (cx - half) + off;
-					const float yFront = (cy - half) + off;
-					this->Render->DrawRect(xBack, yBack, icon, icon, this->ForeColor, stroke);
-					this->Render->DrawRect(xFront, yFront, icon, icon, this->ForeColor, stroke);
-				};
-				auto drawClose = [&]()
-				{
-										this->Render->DrawLine({ cx - half, cy - half }, { cx + half, cy + half }, this->ForeColor, stroke);
-					this->Render->DrawLine({ cx + half, cy - half }, { cx - half, cy + half }, this->ForeColor, stroke);
-				};
 
-				switch (kind)
-				{
-				case CaptionButtonKind::Minimize:
-					drawMinimize();
-					break;
-				case CaptionButtonKind::Maximize:
-					if (IsZoomed(this->Handle))
-						drawRestore();
-					else
-						drawMaximize();
-					break;
-				case CaptionButtonKind::Close:
-					drawClose();
-					break;
-				}
-			};
-
-						drawBtn(CaptionButtonKind::Close, _capCloseState, this->CloseHoverColor, this->ClosePressedColor);
-						drawBtn(CaptionButtonKind::Maximize, _capMaxState, this->CaptionHoverColor, this->CaptionPressedColor);
-						drawBtn(CaptionButtonKind::Minimize, _capMinState, this->CaptionHoverColor, this->CaptionPressedColor);
+			drawBtn(CaptionButtonKind::Close, _capCloseState, this->CloseHoverColor, this->ClosePressedColor);
+			drawBtn(CaptionButtonKind::Maximize, _capMaxState, this->CaptionHoverColor, this->CaptionPressedColor);
+			drawBtn(CaptionButtonKind::Minimize, _capMinState, this->CaptionHoverColor, this->CaptionPressedColor);
 
 			this->Render->PopDrawRect();
 		}
 	}
 	const int top = ClientTop();
-	RECT contentDirty = dirty;
+	RECT contentDirty = drawRc;
 	contentDirty.top -= top;
 	contentDirty.bottom -= top;
 	if (contentDirty.top < 0) contentDirty.top = 0;
@@ -741,14 +755,16 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 		for (int i = 0; i < this->Controls.Count; i++)
 		{
 			auto c = this->Controls[i]; if (!c->Visible)continue;
+			if (this->ForegroundControls.Contains(c)) continue;
 			RECT crc = ToRECT(c->AbsRect, 2);
 			if (!RectIntersects(contentDirty, crc)) continue;
 			if (c->ParentForm->Render == NULL)
 				c->ParentForm->Render = this->Render;
 			c->Update();
 		}
-		for (auto fc : this->ForegroundControls)
+		for (int i = 0; i < this->ForegroundControls.Count; i++)
 		{
+			auto fc = this->ForegroundControls[i];
 			RECT crc = ToRECT(fc->AbsRect, 2);
 			if (!RectIntersects(contentDirty, crc)) continue;
 			fc->Update();
@@ -760,6 +776,8 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 
 	this->OnPaint(this);
 
+	// 结束本次全程裁剪
+	this->Render->PopDrawRect();
 	this->Render->EndRender();
 	this->ControlChanged = false;
 	this->_hasRenderedOnce = true;
@@ -793,25 +811,25 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	POINT contentMouse{ mouse.x, mouse.y - top };
 	Control* HitControl = NULL;
 	switch (message)
-	{ 
+	{
 	case WM_MOUSEMOVE:
 	{
-				if (this->VisibleHead && mouse.y < this->HeadHeight)
+		if (this->VisibleHead && mouse.y < this->HeadHeight)
 		{
 			UpdateCaptionHover(mouse);
 		}
 		else if (this->_capMinState != CaptionButtonState::None || this->_capMaxState != CaptionButtonState::None || this->_capCloseState != CaptionButtonState::None)
 		{
-						if (!this->_capPressed)
+			if (!this->_capPressed)
 			{
 				ClearCaptionStates();
 				Invalidate(TitleBarRectClient(), false);
 			}
 		}
 
-				if (this->VisibleHead && mouse.y < top)
+		if (this->VisibleHead && mouse.y < top)
 		{
-						ApplyCursor(CursorKind::Arrow);
+			ApplyCursor(CursorKind::Arrow);
 			break;
 		}
 
@@ -822,18 +840,37 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 				HitControl = this->Selected;
 				auto location = this->Selected->AbsLocation;
 				this->Selected->ProcessMessage(message, wParam, lParam, contentMouse.x - location.x, contentMouse.y - location.y);
-								UpdateCursor(mouse, contentMouse);
+				UpdateCursor(mouse, contentMouse);
 				break;
 			}
 		}
 		auto lastUnderMouse = this->UnderMouse;
 		this->UnderMouse = NULL;
 		bool is_First = true;
+
+		// ForegroundControls: 顶层优先命中（用于 Menu 下拉、ToolBar 等）
+		for (int i = this->ForegroundControls.Count - 1; i >= 0; i--)
+		{
+			auto fc = this->ForegroundControls[i];
+			if (!fc || !fc->Visible || !fc->Enable) continue;
+			auto loc = fc->Location;
+			auto size = fc->ActualSize();
+			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
+				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))
+			{
+				HitControl = fc;
+				this->UnderMouse = fc;
+				fc->ProcessMessage(message, wParam, lParam, contentMouse.x - loc.x, contentMouse.y - loc.y);
+				goto ext;
+			}
+		}
+
 	reExc:
 		for (int i = 0; i < this->Controls.Count; i++)
 		{
 			auto c = this->Controls[i];
 			if (!c->Visible || !c->Enable)continue;
+			if (this->ForegroundControls.Contains(c)) continue;
 			auto location = c->Location;
 			auto size = c->ActualSize();
 			if (
@@ -873,7 +910,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			if (lastUnderMouse)lastUnderMouse->PostRender();
 		}
 
-				UpdateCursor(mouse, contentMouse);
+		UpdateCursor(mouse, contentMouse);
 	}
 	break;
 	case WM_DROPFILES:
@@ -886,11 +923,28 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	case WM_RBUTTONUP:
 	case WM_LBUTTONDBLCLK:
 	{
+		// WebBrowser(WebView2) 是真实 HWND 子窗口：当它获得焦点后，键盘/IME 消息会发往子窗口，
+		// 这会导致框架内的自绘控件（GridView 编辑等）无法继续收到 WM_CHAR/WM_IME_*。
+		// 解决：当鼠标点击目标不是 WebBrowser 时，显式把焦点抢回到 Form。
+		if (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN)
+		{
+			// 标题栏区域不参与控件输入焦点（但不影响拖动/系统按钮）
+			if (!(this->VisibleHead && mouse.y < top))
+			{
+				Control* hit = HitTestControlAt(contentMouse);
+				if (!(hit && hit->Type() == UIClass::UI_WebBrowser))
+				{
+					if (::GetFocus() != this->Handle)
+						::SetFocus(this->Handle);
+				}
+			}
+		}
+
 		if (WM_LBUTTONDOWN == message)
 		{
 			if (VisibleHead)
 			{
-								CaptionButtonKind kind{};
+				CaptionButtonKind kind{};
 				if (HitTestCaptionButtons(mouse, kind))
 				{
 					_capPressed = true;
@@ -901,7 +955,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 					break;
 				}
 
-								if (mouse.y < top)
+				if (mouse.y < top)
 				{
 					ReleaseCapture();
 					PostMessage(this->Handle, WM_SYSCOMMAND, SC_MOVE | HTCAPTION, 0);
@@ -910,7 +964,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		}
 		else if (WM_LBUTTONUP == message)
 		{
-						if (_capTracking)
+			if (_capTracking)
 			{
 				ReleaseCapture();
 				_capTracking = false;
@@ -921,7 +975,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 					_capPressed = false;
 					ClearCaptionStates();
 					ExecuteCaptionButton(kind);
-										UpdateCursor(mouse, contentMouse);
+					UpdateCursor(mouse, contentMouse);
 					break;
 				}
 				_capPressed = false;
@@ -938,14 +992,14 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 					HitControl = this->Selected;
 					auto location = this->Selected->AbsLocation;
 					this->Selected->ProcessMessage(message, wParam, lParam, contentMouse.x - location.x, contentMouse.y - location.y);
-															UpdateCursor(mouse, contentMouse);
+					UpdateCursor(mouse, contentMouse);
 					break;
 				}
 			}
 		}
 		else if (WM_LBUTTONDBLCLK == message)
 		{
-						if (VisibleHead && mouse.y < this->HeadHeight)
+			if (VisibleHead && mouse.y < this->HeadHeight)
 			{
 				CaptionButtonKind kind{};
 				if (!HitTestCaptionButtons(mouse, kind))
@@ -955,15 +1009,33 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 				}
 			}
 		}
-				if (this->VisibleHead && mouse.y < top)
+		if (this->VisibleHead && mouse.y < top)
 		{
 			break;
 		}
 		bool is_First = true;
+
+		// ForegroundControls: 顶层优先命中并吞掉事件（用于 Menu 下拉、ToolBar 等）
+		for (int i = this->ForegroundControls.Count - 1; i >= 0; i--)
+		{
+			auto fc = this->ForegroundControls[i];
+			if (!fc || !fc->Visible || !fc->Enable) continue;
+			auto loc = fc->Location;
+			auto size = fc->ActualSize();
+			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
+				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))
+			{
+				HitControl = fc;
+				fc->ProcessMessage(message, wParam, lParam, contentMouse.x - loc.x, contentMouse.y - loc.y);
+				goto ext1;
+			}
+		}
+
 	reExc1:
 		for (int i = 0; i < this->Controls.Count; i++)
 		{
 			auto c = this->Controls[i]; if (!c->Visible)continue;
+			if (this->ForegroundControls.Contains(c)) continue;
 			auto location = c->Location;
 			auto size = c->ActualSize();
 			if (
@@ -995,7 +1067,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			goto reExc1;
 		}
 	ext1:;
-						if (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP)
+		if (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP)
 			UpdateCursor(mouse, contentMouse);
 	}
 	break;
@@ -1045,6 +1117,8 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		RECT rec;
 		GetClientRect(this->Handle, &rec);
 		this->Render->ReSize(width, height);
+		// Resize 后 D2D 的后台缓冲内容通常不再可信，强制下一帧全量重绘
+		this->_hasRenderedOnce = false;
 		this->OnSizeChanged(this);
 		this->Invalidate(false);
 	}
@@ -1058,7 +1132,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	break;
 	case WM_PAINT:
 	{
-		
+
 	}
 	break;
 	case WM_CHAR:
@@ -1090,7 +1164,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	case WM_CLOSE:
 	{
 		this->OnFormClosing(this);
-				delete this->Render;
+		delete this->Render;
 		this->Render = NULL;
 		return true;
 	}
@@ -1118,7 +1192,8 @@ void Form::RenderImage()
 		auto size = this->Image->GetSize();
 		if (size.width > 0 && size.height > 0)
 		{
-			auto asize = this->ClientSize;
+			// 自绘标题栏属于 client 区域的一部分：背景图应铺满整个窗口区域（0..Size）
+			auto asize = this->Size;
 			switch (this->SizeMode)
 			{
 			case ImageSizeMode::Normal:
@@ -1251,7 +1326,7 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 		{
 		case WM_SETCURSOR:
 		{
-						if (LOWORD(lParam) == HTCLIENT)
+			if (LOWORD(lParam) == HTCLIENT)
 			{
 				form->UpdateCursorFromCurrentMouse();
 				return TRUE;
@@ -1266,15 +1341,34 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 			BeginPaint(hWnd, &ps);
 			if (form->Render)
 			{
-				if (!(form->ControlChanged) && form->_hasRenderedOnce)
+				// 检查是否有可见的 WebBrowser 控件
+				bool hasVisibleWebBrowser = false;
+				std::function<void(Control*)> checkWebBrowser;
+				checkWebBrowser = [&](Control* c) {
+					if (!c || !c->Visible) return;
+					if (c->Type() == UIClass::UI_WebBrowser) {
+						hasVisibleWebBrowser = true;
+						return;
+					}
+					for (int i = 0; i < c->Count && !hasVisibleWebBrowser; i++)
+						checkWebBrowser(c->operator[](i));
+				};
+				
+				for (auto c : form->Controls)
+					if (!hasVisibleWebBrowser)
+						checkWebBrowser(c);
+				for (auto c : form->ForegroundControls)
+					if (!hasVisibleWebBrowser)
+						checkWebBrowser(c);
+				
+				// 如果有 WebBrowser 或 ControlChanged，则更新
+				if (hasVisibleWebBrowser || form->ControlChanged || !form->_hasRenderedOnce)
 				{
-					// no-op: just validate region
-					/*
 					form->UpdateDirtyRect(ps.rcPaint, true);
-					*/
 				}
-				else
+				else if (form->_hasRenderedOnce)
 				{
+					// 无 WebBrowser 且无变化时，只验证区域
 					form->UpdateDirtyRect(ps.rcPaint, true);
 				}
 			}
@@ -1336,7 +1430,7 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 						0, mouseLocation.x, mouseLocation.y, 0
 					));
 
-					
+
 					if (lParam == WM_RBUTTONDOWN)
 					{
 						NotifyIcon::Instance->ShowContextMenu(mouseLocation.x, mouseLocation.y);

@@ -97,3 +97,7 @@ dkms.conf
 /SCUMX/x64
 /CUI/x64
 /.vscode
+
+# NuGet / tooling (native WebView2 package)
+/packages/
+/.tools/

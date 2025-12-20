@@ -8,6 +8,8 @@ public:
     DemoWindow();
     void label1_OnMouseWheel(class Control* sender, MouseEventArgs e);
     void button1_OnMouseClick(class Control* sender, MouseEventArgs e);
+    void menu_OnCommand(class Control* sender, int id);
+    void slider1_OnValueChanged(class Control* sender, float oldValue, float newValue);
     void radiobox1_OnChecked(class Control* sender);
     void radiobox2_OnChecked(class Control* sender);
     void bt2_OnMouseClick(class Control* sender, MouseEventArgs e);
@@ -37,6 +39,12 @@ public:
     Button* bt2;
     Switch* sw1;
     Switch* sw2;
+
+    WebBrowser* web1;
+
+    Menu* menu1;
+    ToolBar* toolbar1;
+    Slider* slider1;
 };
 
 NotifyIcon* TestNotifyIcon(HWND handle);

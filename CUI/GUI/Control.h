@@ -2,7 +2,7 @@
 #include <CppUtils/Utils/Utils.h>
 #include <CppUtils/Graphics/Colors.h>
 #include <CppUtils/Graphics/Font.h>
-#include <CppUtils/Graphics/Graphics.h>
+#include <CppUtils/Graphics/Graphics1.h>
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -41,6 +41,11 @@ enum class UIClass : int
 	UI_TabPage,
 	UI_TabControl,
 	UI_Switch,
+	UI_Menu,
+	UI_MenuItem,
+	UI_ToolBar,
+	UI_Slider,
+	UI_WebBrowser,
 	UI_CUSTOM
 };
 
@@ -129,7 +134,7 @@ public:
 	List<Control*> Children;
 	ImageSizeMode SizeMode = ImageSizeMode::Zoom;
 	Control();
-	~Control();
+	virtual ~Control();
 	virtual UIClass Type();
 	virtual void Update();
 	virtual void PostRender();

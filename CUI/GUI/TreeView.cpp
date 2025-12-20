@@ -1,6 +1,6 @@
 #include "TreeView.h"
 #include "Form.h"
-static void renderNodes(TreeView* tree, D2DGraphics* d2d, float x, float y, float w, float h, float itemHeight, int scrollIndex, int& currindex, int sunLevel, List<TreeNode*>& Children)
+static void renderNodes(TreeView* tree, D2DGraphics1* d2d, float x, float y, float w, float h, float itemHeight, int scrollIndex, int& currindex, int sunLevel, List<TreeNode*>& Children)
 {
 	float baseLeft = sunLevel * itemHeight + 3.5f + x;
 	for (auto c : Children)
