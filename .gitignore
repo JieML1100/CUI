@@ -101,3 +101,4 @@ dkms.conf
 # NuGet / tooling (native WebView2 package)
 /packages/
 /.tools/
+/Release/CUI.exe.WebView2/EBWebView

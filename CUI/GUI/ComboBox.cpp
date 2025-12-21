@@ -9,7 +9,7 @@ CursorKind ComboBox::QueryCursor(int xof, int yof)
 {
 	if (!this->Enable) return CursorKind::Arrow;
 
-		const bool hasVScroll = (this->Expand && this->values.Count > this->ExpandCount);
+	const bool hasVScroll = (this->Expand && this->values.Count > this->ExpandCount);
 	if (hasVScroll && xof >= (this->Width - 8) && yof >= this->Height)
 		return CursorKind::SizeNS;
 
@@ -281,10 +281,10 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 	{
 		if (WM_LBUTTONDOWN == message)
 		{
-									if (this->Expand && xof >= (Width - 8) && xof <= Width && yof >= this->Height)
+			if (this->Expand && xof >= (Width - 8) && xof <= Width && yof >= this->Height)
 			{
 				isDraggingScroll = true;
-								UpdateScrollDrag((float)(yof - this->Height));
+				UpdateScrollDrag((float)(yof - this->Height));
 			}
 			this->ParentForm->Selected = this;
 		}
@@ -310,11 +310,18 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 						this->PostRender();
 
 						this->Expand = !this->Expand;
-						if (this->Expand)
-							this->ParentForm->ForegroundControls.Add(this);
-						else
-							this->ParentForm->ForegroundControls.Remove(this);
+						// 置顶控件改为单指针管理
+						if (this->ParentForm)
+						{
+							if (this->Expand)
+								this->ParentForm->ForegroundControl = this;
+							else if (this->ParentForm->ForegroundControl == this)
+								this->ParentForm->ForegroundControl = NULL;
+						}
 
+					// 收起/展开时：强制立即重绘（UpdateWindow），避免 WM_PAINT 被延后导致“残影直到 Resize 才消失”
+					if (this->ParentForm)
+						this->ParentForm->Invalidate(true);
 						this->PostRender();
 						this->ParentForm->Selected = NULL;
 						MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
@@ -335,7 +342,11 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 								this->OnSelectionChanged(this);
 								this->PostRender();
 								this->Expand = false;
-								this->ParentForm->ForegroundControls.Remove(this);
+								if (this->ParentForm && this->ParentForm->ForegroundControl == this)
+									this->ParentForm->ForegroundControl = NULL;
+								// 选择后收起：立即重绘，清理 Overlay 残影
+								if (this->ParentForm)
+									this->ParentForm->Invalidate(true);
 								this->PostRender();
 							}
 						}

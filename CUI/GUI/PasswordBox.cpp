@@ -1,7 +1,6 @@
 #pragma once
 #include "PasswordBox.h"
 #include "Form.h"
-#include <CppUtils/Graphics/Factory.h>
 #pragma comment(lib, "Imm32.lib")
 UIClass PasswordBox::Type() { return UIClass::UI_PasswordBox; }
 PasswordBox::PasswordBox(std::wstring text, int x, int y, int width, int height)

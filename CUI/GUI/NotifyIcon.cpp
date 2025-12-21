@@ -1,5 +1,4 @@
 ﻿#include "NotifyIcon.h"
-
 NotifyIcon* NotifyIcon::Instance = NULL;
 
 

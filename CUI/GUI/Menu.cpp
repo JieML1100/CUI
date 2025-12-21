@@ -8,9 +8,10 @@ MenuItem::MenuItem(std::wstring text, int id)
 {
 	this->Text = text;
 	this->Id = id;
-	this->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->BolderColor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->ForeColor = Colors::WhiteSmoke;
+	// 使用私有成员直接赋值,避免触发PostRender
+	this->_backcolor = D2D1_COLOR_F{ 0,0,0,0 };
+	this->_boldercolor = D2D1_COLOR_F{ 0,0,0,0 };
+	this->_forecolor = Colors::WhiteSmoke;
 	this->Cursor = CursorKind::Hand;
 }
 
@@ -24,7 +25,7 @@ MenuItem::~MenuItem()
 MenuItem* MenuItem::AddSubItem(std::wstring text, int id)
 {
 	auto* it = new MenuItem(text, id);
-	it->ForeColor = Colors::WhiteSmoke;
+	// ForeColor 已经在构造函数中设置,无需重复设置
 	SubItems.push_back(it);
 	return it;
 }
@@ -94,7 +95,7 @@ MenuItem* Menu::AddItem(std::wstring text)
 {
 	auto* item = this->AddControl(new MenuItem(text, 0));
 	item->Height = this->BarHeight;
-	item->ForeColor = Colors::WhiteSmoke;
+	// ForeColor 已经在构造函数中设置,无需重复设置
 	return item;
 }
 
@@ -167,8 +168,9 @@ SIZE Menu::ActualSize()
 		// 展开时尽量覆盖整个内容区域，便于点击空白处收起
 		if (this->ParentForm)
 		{
-			int top = (this->ParentForm->VisibleHead ? this->ParentForm->HeadHeight : 0);
-			int contentH = this->ParentForm->ClientSize.cy - top;
+			// 注意：Form::ClientSize 本身就是“内容区高度”（已扣除 HeadHeight）
+			// 这里不应再次扣除 top，否则会导致展开区域变小，点击空白处无法正确命中/收起。
+			int contentH = this->ParentForm->ClientSize.cy;
 			if (contentH < BarHeight) contentH = BarHeight;
 			s.cy = contentH;
 		}
@@ -187,19 +189,10 @@ SIZE Menu::ActualSize()
 void Menu::Update()
 {
 	if (!this->IsVisual) return;
-	// 展开时：自动置顶渲染（避免 Demo 手动控制）
+	// 主菜单单独管理：记录到 Form::MainMenu（不再使用 ForegroundControls 容器）
 	if (this->ParentForm)
 	{
-		if (_expand)
-		{
-			if (!this->ParentForm->ForegroundControls.Contains(this))
-				this->ParentForm->ForegroundControls.Add(this);
-		}
-		else
-		{
-			if (this->ParentForm->ForegroundControls.Contains(this))
-				this->ParentForm->ForegroundControls.Remove(this);
-		}
+		this->ParentForm->MainMenu = this;
 	}
 	auto d2d = this->ParentForm->Render;
 	auto abs = this->AbsLocation;
@@ -349,19 +342,10 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 {
 	if (!this->Enable || !this->Visible) return true;
 
-	// 展开时：自动加入顶层队列；收起时：自动移除（避免 Demo 手动控制）
+	// 主菜单单独管理：记录到 Form::MainMenu
 	if (this->ParentForm)
 	{
-		if (_expand)
-		{
-			if (!this->ParentForm->ForegroundControls.Contains(this))
-				this->ParentForm->ForegroundControls.Add(this);
-		}
-		else
-		{
-			if (this->ParentForm->ForegroundControls.Contains(this))
-				this->ParentForm->ForegroundControls.Remove(this);
-		}
+		this->ParentForm->MainMenu = this;
 	}
 
 	// route to top items (bar area only)
@@ -413,7 +397,9 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 					_openSubOwnerIndex = -1;
 					_hoverSubIndex = -1;
 				}
-				this->PostRender();
+				// 展开/收起：立即触发一次重绘，避免 WM_PAINT 延后导致残影
+				if (this->ParentForm) this->ParentForm->Invalidate(true);
+				else this->PostRender();
 			}
 		}
 
@@ -575,7 +561,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 							_hoverDropIndex = -1;
 							_openSubOwnerIndex = -1;
 							_hoverSubIndex = -1;
-							this->ParentForm->Invalidate();
+							this->ParentForm->Invalidate(true);
 						}
 					}
 				}
@@ -588,19 +574,23 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 				_hoverDropIndex = -1;
 				_openSubOwnerIndex = -1;
 				_hoverSubIndex = -1;
-				this->ParentForm->Invalidate();
+				// 收起时：强制立即全量重绘，清除 Overlay 残影
+				if (this->ParentForm) this->ParentForm->Invalidate(true);
+				else this->PostRender();
 			}
 		}
 	}
 	// 展开时点击菜单栏/下拉之外：收起（配合 ActualSize 覆盖内容区）
 	else if (_expand && message == WM_LBUTTONUP)
 	{
-		_expand = false;
-		_expandIndex = -1;
-		_hoverDropIndex = -1;
-		_openSubOwnerIndex = -1;
-		_hoverSubIndex = -1;
-		this->PostRender();
+				_expand = false;
+				_expandIndex = -1;
+				_hoverDropIndex = -1;
+				_openSubOwnerIndex = -1;
+				_hoverSubIndex = -1;
+				// 收起时：强制立即全量重绘，清除 Overlay 残影
+				if (this->ParentForm) this->ParentForm->Invalidate(true);
+				else this->PostRender();
 	}
 
 	return Control::ProcessMessage(message, wParam, lParam, xof, yof);

@@ -1,8 +1,24 @@
 #pragma once
+
+
+/*---如果Utils和Graphics源代码包含在此项目中则直接引用本地项目---*/
+//#define _LIB
+//#include "../../CppUtils/Utils/Event.h"
+//#include "../../CppUtils/Utils/Utils.h"
+//#include "../../CppUtils/Graphics/Colors.h"
+//#include "../../CppUtils/Graphics/Font.h"
+//#include "../../CppUtils/Graphics/Factory.h"
+//#include "../../CppUtils/Graphics/Graphics1.h"
+
+/*---如果Utils和Graphics被编译成lib则引用外部头文件---*/
+#include <CppUtils/Utils/Event.h>
 #include <CppUtils/Utils/Utils.h>
 #include <CppUtils/Graphics/Colors.h>
 #include <CppUtils/Graphics/Font.h>
+#include <CppUtils/Graphics/Factory.h>
 #include <CppUtils/Graphics/Graphics1.h>
+
+
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -91,7 +107,7 @@ typedef Event<void(class Control*)> SelectionChangedEvent;
 #define defthis(x) decltype(this) _this = (decltype(this))((class Control*)x)->ParentForm
 class Control
 {
-private:
+protected:
 	POINT _location = { 0,0 };
 	SIZE _size = { 120,20 };
 	D2D1_COLOR_F _backcolor = Colors::gray91;
@@ -100,30 +116,34 @@ private:
 	ID2D1Bitmap* _image = NULL;
 	std::wstring _text;
 	Font* _font = NULL;
+	// 上一次 PostRender 触发的 client 坐标系矩形（包含标题栏 top 偏移）
+	// 用于处理控件尺寸变小（如 Menu/ComboBox 收起）时，旧绘制区域未被失效导致的残影。
+	D2D1_RECT_F _lastPostRenderClientRect{ 0,0,0,0 };
+	bool _hasLastPostRenderClientRect = false;
 public:
-	CheckedEvent OnChecked;
-	MouseWheelEvent OnMouseWheel;
-	MouseMoveEvent OnMouseMove;
-	MouseUpEvent OnMouseUp;
-	MouseDownEvent OnMouseDown;
-	MouseDoubleClickEvent OnMouseDoubleClick;
-	MouseClickEvent OnMouseClick;
-	MouseEnterEvent OnMouseEnter;
-	MouseLeavedEvent OnMouseLeaved;
-	KeyUpEvent OnKeyUp;
-	KeyDownEvent OnKeyDown;
-	PaintEvent OnPaint;
-	GridViewCheckStateChangedEvent OnGridViewCheckStateChanged;
-	CloseEvent OnClose;
-	MovedEvent OnMoved;
-	SizeChangedEvent OnSizeChanged;
-	SelectedChangedEvent OnSelectedChanged;
-	ScrollChangedEvent OnScrollChanged;
-	TextChangedEvent OnTextChanged;
-	CharInputEvent OnCharInput;
-	GotFocusEvent OnGotFocus;
-	LostFocusEvent OnLostFocus;
-	DropFileEvent OnDropFile;
+	CheckedEvent OnChecked = CheckedEvent();
+	MouseWheelEvent OnMouseWheel = MouseWheelEvent();
+	MouseMoveEvent OnMouseMove = MouseMoveEvent();
+	MouseUpEvent OnMouseUp = MouseUpEvent();
+	MouseDownEvent OnMouseDown = MouseDownEvent();
+	MouseDoubleClickEvent OnMouseDoubleClick = MouseDoubleClickEvent();
+	MouseClickEvent OnMouseClick = MouseClickEvent();
+	MouseEnterEvent OnMouseEnter = MouseEnterEvent();
+	MouseLeavedEvent OnMouseLeaved = MouseLeavedEvent();
+	KeyUpEvent OnKeyUp = KeyUpEvent();
+	KeyDownEvent OnKeyDown = KeyDownEvent();
+	PaintEvent OnPaint = PaintEvent();
+	GridViewCheckStateChangedEvent OnGridViewCheckStateChanged = GridViewCheckStateChangedEvent();
+	CloseEvent OnClose = CloseEvent();
+	MovedEvent OnMoved = MovedEvent();
+	SizeChangedEvent OnSizeChanged = SizeChangedEvent();
+	SelectedChangedEvent OnSelectedChanged = SelectedChangedEvent();
+	ScrollChangedEvent OnScrollChanged = ScrollChangedEvent();
+	TextChangedEvent OnTextChanged = TextChangedEvent();
+	CharInputEvent OnCharInput = CharInputEvent();
+	GotFocusEvent OnGotFocus = GotFocusEvent();
+	LostFocusEvent OnLostFocus = LostFocusEvent();
+	DropFileEvent OnDropFile = DropFileEvent();
 	class Form* ParentForm;
 	class Control* Parent;
 	bool TextChanged = true;

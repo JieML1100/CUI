@@ -41,7 +41,25 @@ void Control::PostRender()
 	auto r = this->AbsRect;
 	r.top += top;
 	r.bottom += top;
-	this->ParentForm->Invalidate(r, false);
+
+	// 关键：当控件从“展开/大尺寸”变为“收起/小尺寸”时，
+	// 仅失效当前 r 会漏掉旧区域，导致 DComp swapchain 画面残留直到下一次全量重绘（比如 Resize）。
+	if (_hasLastPostRenderClientRect)
+	{
+		D2D1_RECT_F u{};
+		u.left = (std::min)(_lastPostRenderClientRect.left, r.left);
+		u.top = (std::min)(_lastPostRenderClientRect.top, r.top);
+		u.right = (std::max)(_lastPostRenderClientRect.right, r.right);
+		u.bottom = (std::max)(_lastPostRenderClientRect.bottom, r.bottom);
+		this->ParentForm->Invalidate(u, false);
+	}
+	else
+	{
+		this->ParentForm->Invalidate(r, false);
+	}
+
+	_lastPostRenderClientRect = r;
+	_hasLastPostRenderClientRect = true;
 }
 
 GET_CPP(Control, class Font*, Font)

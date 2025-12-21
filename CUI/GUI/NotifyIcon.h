@@ -1,9 +1,8 @@
 ﻿#pragma once
 #include <string>
 #include <vector>
-#include <CppUtils/Utils/Event.h>
+#include "Control.h"
 #include <Shellapi.h>
-
 class NotifyIconMenuItem
 {
 public:

@@ -116,7 +116,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>WebView2LoaderStatic.lib;Graphics_x86_MDd.lib;CppUtils_x86_MDd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -143,7 +143,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>WebView2LoaderStatic.lib;Graphics_x86_MT.lib;CppUtils_x86_MT.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -167,7 +167,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <UACExecutionLevel>AsInvoker</UACExecutionLevel>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>WebView2LoaderStatic.lib;Graphics_x64_MTd.lib;CppUtils_x64_MTd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -204,7 +204,7 @@
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <MergeSections>.rdata=.text</MergeSections>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>WebView2LoaderStatic.lib;Graphics_x64_MT.lib;CppUtils_x64_MT.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -215,6 +215,7 @@
     <ClInclude Include="GUI\CheckBox.h" />
     <ClInclude Include="GUI\ComboBox.h" />
     <ClInclude Include="GUI\Control.h" />
+    <ClInclude Include="GUI\DCompLayeredHost.h" />
     <ClInclude Include="GUI\Form.h" />
     <ClInclude Include="GUI\GridView.h" />
     <ClInclude Include="GUI\Label.h" />
@@ -247,6 +248,7 @@
     <ClCompile Include="GUI\CheckBox.cpp" />
     <ClCompile Include="GUI\ComboBox.cpp" />
     <ClCompile Include="GUI\Control.cpp" />
+    <ClCompile Include="GUI\DCompLayeredHost.cpp" />
     <ClCompile Include="GUI\Form.cpp" />
     <ClCompile Include="GUI\GridView.cpp" />
     <ClCompile Include="GUI\Label.cpp" />

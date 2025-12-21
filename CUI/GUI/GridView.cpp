@@ -1,7 +1,6 @@
 #pragma once
 #include "GridView.h"
 #include "Form.h"
-#include <CppUtils/Graphics/Factory.h>
 #include <algorithm>
 #include <cwchar>
 #pragma comment(lib, "Imm32.lib")

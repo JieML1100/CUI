@@ -1,7 +1,6 @@
 #include "Form.h"
 #include "NotifyIcon.h"
-#include <CppUtils/Graphics/Factory.h>
-#include <CppUtils/Graphics/Graphics1.h>
+#include "DCompLayeredHost.h"
 #include <algorithm>
 #include <functional>
 #include <unordered_map>
@@ -65,9 +64,10 @@ static Control* HitTestDeepestChild(Control* root, POINT contentMouse)
 
 Control* Form::HitTestControlAt(POINT contentMouse)
 {
-	for (auto fc : this->ForegroundControls)
+	// 1) 置顶控件优先命中（ComboBox 下拉等）
+	if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl->Enable)
 	{
-		if (!fc || !fc->Visible || !fc->Enable) continue;
+		auto* fc = this->ForegroundControl;
 		auto loc = fc->Location;
 		auto sz = fc->ActualSize();
 		if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
@@ -77,13 +77,27 @@ Control* Form::HitTestControlAt(POINT contentMouse)
 		}
 	}
 
+	// 2) 主菜单单独优先命中（包含下拉区域）
+	if (this->MainMenu && this->MainMenu->Visible && this->MainMenu->Enable)
+	{
+		auto* m = this->MainMenu;
+		auto loc = m->Location;
+		auto sz = m->ActualSize();
+		if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
+			contentMouse.x <= (loc.x + sz.cx) && contentMouse.y <= (loc.y + sz.cy))
+		{
+			return HitTestDeepestChild(m, contentMouse);
+		}
+	}
+
 	for (int pass = 0; pass < 2; pass++)
 	{
 		for (int i = 0; i < this->Controls.Count; i++)
 		{
 			auto c = this->Controls[i];
 			if (!c || !c->Visible || !c->Enable) continue;
-			if (this->ForegroundControls.Contains(c)) continue;
+			if (c == this->ForegroundControl) continue;
+			if (c == this->MainMenu) continue;
 			if (pass == 0 && c->Type() != UIClass::UI_ComboBox) continue;
 			if (pass == 1 && c->Type() == UIClass::UI_ComboBox) continue;
 
@@ -125,6 +139,23 @@ CursorKind Form::QueryCursorAt(POINT mouseClient, POINT contentMouse)
 
 void Form::UpdateCursor(POINT mouseClient, POINT contentMouse)
 {
+	// WebBrowser：使用 WebView2 的 system cursor id（避免被 QueryCursorAt 强行覆盖成 Arrow）
+	auto hit = HitTestControlAt(contentMouse);
+	if (hit && hit->Type() == UIClass::UI_WebBrowser)
+	{
+		auto* wb = (WebBrowser*)hit;
+		UINT32 id = 0;
+		if (wb && wb->TryGetSystemCursorId(id) && id != 0)
+		{
+			HCURSOR h = LoadCursorW(NULL, MAKEINTRESOURCEW((ULONG_PTR)id));
+			if (h)
+			{
+				::SetCursor(h);
+				return;
+			}
+		}
+	}
+
 	ApplyCursor(QueryCursorAt(mouseClient, contentMouse));
 }
 
@@ -310,7 +341,9 @@ void Form::InvalidateAnimatedControls(bool immediate)
 				consider(c->operator[](i));
 		};
 	for (auto c : this->Controls) consider(c);
-	for (auto c : this->ForegroundControls) consider(c);
+	// 单一置顶控件 / 主菜单（有可能不在 Controls 容器里，保险起见单独考虑）
+	if (this->ForegroundControl) consider(this->ForegroundControl);
+	if (this->MainMenu) consider((Control*)this->MainMenu);
 	if (immediate)
 		::UpdateWindow(this->Handle);
 }
@@ -476,8 +509,57 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 
 	Application::Forms.Add(this->Handle, this);
 
-	Render = new HwndGraphics1(this->Handle);
+	// 采用 DirectComposition 三层：Base(D2D) / Web / Overlay(D2D)
+	// 如果初始化失败（极少数环境），回退到旧的 Hwnd SwapChain 渲染（此时 WebBrowser 可能无法启用 Composition）。
+	_dcompHost = new DCompLayeredHost(this->Handle);
+	if (_dcompHost && SUCCEEDED(_dcompHost->Initialize()) &&
+		_dcompHost->GetBaseSwapChain() && _dcompHost->GetOverlaySwapChain())
+	{
+		Render = new CompositionSwapChainGraphics1(_dcompHost->GetBaseSwapChain());
+		OverlayRender = new CompositionSwapChainGraphics1(_dcompHost->GetOverlaySwapChain());
+	}
+	else
+	{
+		delete _dcompHost;
+		_dcompHost = nullptr;
+		Render = new HwndGraphics1(this->Handle);
+		OverlayRender = nullptr;
+	}
 	ClearCaptionStates();
+}
+
+Form::~Form()
+{
+	if (OverlayRender)
+	{
+		delete OverlayRender;
+		OverlayRender = nullptr;
+	}
+	if (Render)
+	{
+		delete Render;
+		Render = nullptr;
+	}
+	if (_dcompHost)
+	{
+		delete _dcompHost;
+		_dcompHost = nullptr;
+	}
+}
+
+IDCompositionDevice* Form::GetDCompDevice() const
+{
+	return _dcompHost ? _dcompHost->GetDCompDevice() : nullptr;
+}
+
+IDCompositionVisual* Form::GetWebContainerVisual() const
+{
+	return _dcompHost ? _dcompHost->GetWebContainerVisual() : nullptr;
+}
+
+void Form::CommitComposition()
+{
+	if (_dcompHost) _dcompHost->Commit();
 }
 void Form::Show()
 {
@@ -755,21 +837,18 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 		for (int i = 0; i < this->Controls.Count; i++)
 		{
 			auto c = this->Controls[i]; if (!c->Visible)continue;
-			if (this->ForegroundControls.Contains(c)) continue;
+			// 主菜单/置顶控件在有 Overlay 时由 Overlay 层单独绘制，避免重复
+			if (this->OverlayRender)
+			{
+				if (c == this->ForegroundControl) continue;
+				if (c == this->MainMenu) continue;
+			}
 			RECT crc = ToRECT(c->AbsRect, 2);
 			if (!RectIntersects(contentDirty, crc)) continue;
 			if (c->ParentForm->Render == NULL)
 				c->ParentForm->Render = this->Render;
 			c->Update();
 		}
-		for (int i = 0; i < this->ForegroundControls.Count; i++)
-		{
-			auto fc = this->ForegroundControls[i];
-			RECT crc = ToRECT(fc->AbsRect, 2);
-			if (!RectIntersects(contentDirty, crc)) continue;
-			fc->Update();
-		}
-
 		this->Render->PopDrawRect();
 		this->Render->ClearTransform();
 	}
@@ -779,6 +858,65 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 	// 结束本次全程裁剪
 	this->Render->PopDrawRect();
 	this->Render->EndRender();
+
+	// 对于 DirectComposition：即使没有 OverlayRender，也需要每帧提交一次，避免 resize / present 后画面不同步
+	this->CommitComposition();
+
+	// Overlay 层：绘制 MainMenu / ForegroundControl（透明底），确保位于 Web 之上
+	if (this->OverlayRender)
+	{
+		auto* oldRender = this->Render;
+		// Overlay 为防止“残影/收不回去”，每次都清整屏透明（不依赖脏矩形）
+		RECT fullClient{};
+		::GetClientRect(this->Handle, &fullClient);
+		RECT overlayRc = fullClient;
+
+		this->OverlayRender->BeginRender();
+		this->OverlayRender->ClearTransform();
+		// 关键修复：使用Clear方法而不是FillRect+PushDrawRect，确保SwapChain后台缓冲被真正清空
+		this->OverlayRender->Clear(D2D1_COLOR_F{ 0.0f,0.0f,0.0f,0.0f });
+		this->OverlayRender->PushDrawRect((float)overlayRc.left, (float)overlayRc.top, (float)(overlayRc.right - overlayRc.left), (float)(overlayRc.bottom - overlayRc.top));
+
+		// Overlay content 区域也清整块（并绘制当前 MainMenu / ForegroundControl）
+		RECT overlayContent = fullClient;
+		const int top = ClientTop();
+		overlayContent.top -= top;
+		overlayContent.bottom -= top;
+		if (overlayContent.top < 0) overlayContent.top = 0;
+		if (overlayContent.left < 0) overlayContent.left = 0;
+		if (overlayContent.right > this->Size.cx) overlayContent.right = this->Size.cx;
+		if (overlayContent.bottom > (this->Size.cy - top)) overlayContent.bottom = (this->Size.cy - top);
+
+		if (overlayContent.right > overlayContent.left && overlayContent.bottom > overlayContent.top)
+		{
+			this->OverlayRender->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, (float)top));
+			this->OverlayRender->PushDrawRect((float)overlayContent.left, (float)overlayContent.top, (float)(overlayContent.right - overlayContent.left), (float)(overlayContent.bottom - overlayContent.top));
+
+			// 临时切换 Render，让控件绘制到 Overlay swapchain
+			this->Render = this->OverlayRender;
+			// 先画主菜单（通常需要始终在 Web 之上）
+			if (this->MainMenu && this->MainMenu->Visible)
+			{
+				this->MainMenu->Update();
+			}
+			// 再画置顶控件（例如 ComboBox 展开）
+			if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl != (Control*)this->MainMenu)
+			{
+				this->ForegroundControl->Update();
+			}
+			this->Render = oldRender;
+
+			this->OverlayRender->PopDrawRect();
+			this->OverlayRender->ClearTransform();
+		}
+
+		this->OverlayRender->PopDrawRect();
+		this->OverlayRender->EndRender();
+
+		// Overlay 绘制过程中可能触发 WebView2 RootVisualTarget/位置调整等，需要提交一次
+		this->CommitComposition();
+	}
+
 	this->ControlChanged = false;
 	this->_hasRenderedOnce = true;
 	return true;
@@ -794,7 +932,8 @@ bool Form::RemoveControl(Control* c)
 	if (this->Controls.Contains(c))
 	{
 		this->Controls.Remove(c);
-		this->ForegroundControls.Remove(c);
+		if (this->ForegroundControl == c) this->ForegroundControl = NULL;
+		if (this->MainMenu == c) this->MainMenu = NULL;
 		c->Parent = NULL;
 		c->ParentForm = NULL;
 		return true;
@@ -848,11 +987,10 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		this->UnderMouse = NULL;
 		bool is_First = true;
 
-		// ForegroundControls: 顶层优先命中（用于 Menu 下拉、ToolBar 等）
-		for (int i = this->ForegroundControls.Count - 1; i >= 0; i--)
+		// 置顶控件：顶层优先命中
+		if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl->Enable)
 		{
-			auto fc = this->ForegroundControls[i];
-			if (!fc || !fc->Visible || !fc->Enable) continue;
+			auto* fc = this->ForegroundControl;
 			auto loc = fc->Location;
 			auto size = fc->ActualSize();
 			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
@@ -865,12 +1003,29 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			}
 		}
 
+		// 主菜单：次优先命中（包含下拉区域）
+		if (this->MainMenu && this->MainMenu->Visible && this->MainMenu->Enable)
+		{
+			auto* m = this->MainMenu;
+			auto loc = m->Location;
+			auto size = m->ActualSize();
+			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
+				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))
+			{
+				HitControl = m;
+				this->UnderMouse = m;
+				m->ProcessMessage(message, wParam, lParam, contentMouse.x - loc.x, contentMouse.y - loc.y);
+				goto ext;
+			}
+		}
+
 	reExc:
 		for (int i = 0; i < this->Controls.Count; i++)
 		{
 			auto c = this->Controls[i];
 			if (!c->Visible || !c->Enable)continue;
-			if (this->ForegroundControls.Contains(c)) continue;
+			if (c == this->ForegroundControl) continue;
+			if (c == this->MainMenu) continue;
 			auto location = c->Location;
 			auto size = c->ActualSize();
 			if (
@@ -1015,11 +1170,10 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		}
 		bool is_First = true;
 
-		// ForegroundControls: 顶层优先命中并吞掉事件（用于 Menu 下拉、ToolBar 等）
-		for (int i = this->ForegroundControls.Count - 1; i >= 0; i--)
+		// 置顶控件：顶层优先命中并吞掉事件
+		if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl->Enable)
 		{
-			auto fc = this->ForegroundControls[i];
-			if (!fc || !fc->Visible || !fc->Enable) continue;
+			auto* fc = this->ForegroundControl;
 			auto loc = fc->Location;
 			auto size = fc->ActualSize();
 			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
@@ -1031,11 +1185,27 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			}
 		}
 
+		// 主菜单：次优先（包含下拉区域）
+		if (this->MainMenu && this->MainMenu->Visible && this->MainMenu->Enable)
+		{
+			auto* m = this->MainMenu;
+			auto loc = m->Location;
+			auto size = m->ActualSize();
+			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
+				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))
+			{
+				HitControl = m;
+				m->ProcessMessage(message, wParam, lParam, contentMouse.x - loc.x, contentMouse.y - loc.y);
+				goto ext1;
+			}
+		}
+
 	reExc1:
 		for (int i = 0; i < this->Controls.Count; i++)
 		{
 			auto c = this->Controls[i]; if (!c->Visible)continue;
-			if (this->ForegroundControls.Contains(c)) continue;
+			if (c == this->ForegroundControl) continue;
+			if (c == this->MainMenu) continue;
 			auto location = c->Location;
 			auto size = c->ActualSize();
 			if (
@@ -1117,10 +1287,14 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		RECT rec;
 		GetClientRect(this->Handle, &rec);
 		this->Render->ReSize(width, height);
+		if (this->OverlayRender) this->OverlayRender->ReSize(width, height);
+		this->CommitComposition();
 		// Resize 后 D2D 的后台缓冲内容通常不再可信，强制下一帧全量重绘
 		this->_hasRenderedOnce = false;
 		this->OnSizeChanged(this);
-		this->Invalidate(false);
+		// DComp 模式下，部分系统/驱动组合在 Resize 过程中不会及时触发 WM_PAINT，
+		// 会导致底部出现“空白帧”。这里强制立即刷新一次。
+		this->Invalidate(this->_dcompHost != nullptr);
 	}
 	break;
 	case WM_MOVE:
@@ -1357,9 +1531,10 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 				for (auto c : form->Controls)
 					if (!hasVisibleWebBrowser)
 						checkWebBrowser(c);
-				for (auto c : form->ForegroundControls)
-					if (!hasVisibleWebBrowser)
-						checkWebBrowser(c);
+				if (!hasVisibleWebBrowser && form->MainMenu)
+					checkWebBrowser((Control*)form->MainMenu);
+				if (!hasVisibleWebBrowser && form->ForegroundControl)
+					checkWebBrowser(form->ForegroundControl);
 				
 				// 如果有 WebBrowser 或 ControlChanged，则更新
 				if (hasVisibleWebBrowser || form->ControlChanged || !form->_hasRenderedOnce)

@@ -1,5 +1,4 @@
 #pragma once
-#include <CppUtils/Utils/Utils.h>
 #include "Control.h"
 #include "Application.h"
 #include "Button.h"
@@ -24,6 +23,11 @@
 #include "Taskbar.h"
 #include "NotifyIcon.h"
 #include "WebBrowser.h"
+
+// Forward declarations for DirectComposition (avoid pulling dcomp.h into all includes)
+struct IDCompositionDevice;
+struct IDCompositionVisual;
+class DCompLayeredHost;
 typedef Event<void(class Form* sender, int Id, int info)> CommandEvent;
 typedef Event<void(class Form*)> FormClosingEvent;
 typedef Event<void(class Form*)> FormClosedEvent;
@@ -82,32 +86,31 @@ private:
 		CursorKind _currentCursor = CursorKind::Arrow;
 	void ApplyCursor(CursorKind kind);
 	void UpdateCursor(POINT mouseClient, POINT contentMouse);
-	void UpdateCursorFromCurrentMouse();
 	CursorKind QueryCursorAt(POINT mouseClient, POINT contentMouse);
 	class Control* HitTestControlAt(POINT contentMouse);
 	static HCURSOR GetSystemCursor(CursorKind kind);
 public:
-	FormMouseWheelEvent OnMouseWheel;
-	FormMouseMoveEvent OnMouseMove;
-	FormMouseUpEvent OnMouseUp;
-	FormMouseDownEvent OnMouseDown;
-	MouseDoubleClickEvent OnMouseDoubleClick;
-	FormMouseClickEvent OnMouseClick;
-	MouseEnterEvent OnMouseEnter;
-	MouseLeavedEvent OnMouseLeaved;
-	FormKeyUpEvent OnKeyUp;
-	FormKeyDownEvent OnKeyDown;
-	FormPaintEvent OnPaint;
-	CloseEvent OnClose;
-	FormMovedEvent OnMoved;
-	FormSizeChangedEvent OnSizeChanged;
-	FormTextChangedEvent OnTextChanged;
-	FormCharInputEvent OnCharInput;
-	FormGotFocusEvent OnGotFocus;
-	FormLostFocusEvent OnLostFocus;
-	FormDropFileEvent OnDropFile;
-	FormClosingEvent OnFormClosing;
-	FormClosedEvent OnFormClosed;
+	FormMouseWheelEvent OnMouseWheel = FormMouseWheelEvent();
+	FormMouseMoveEvent OnMouseMove = FormMouseMoveEvent();
+	FormMouseUpEvent OnMouseUp = FormMouseUpEvent();
+	FormMouseDownEvent OnMouseDown = FormMouseDownEvent();
+	MouseDoubleClickEvent OnMouseDoubleClick = MouseDoubleClickEvent();
+	FormMouseClickEvent OnMouseClick = FormMouseClickEvent();
+	MouseEnterEvent OnMouseEnter = MouseEnterEvent();
+	MouseLeavedEvent OnMouseLeaved = MouseLeavedEvent();
+	FormKeyUpEvent OnKeyUp = FormKeyUpEvent();
+	FormKeyDownEvent OnKeyDown = FormKeyDownEvent();
+	FormPaintEvent OnPaint = FormPaintEvent();
+	CloseEvent OnClose = CloseEvent();
+	FormMovedEvent OnMoved = FormMovedEvent();
+	FormSizeChangedEvent OnSizeChanged = FormSizeChangedEvent();
+	FormTextChangedEvent OnTextChanged = FormTextChangedEvent();
+	FormCharInputEvent OnCharInput = FormCharInputEvent();
+	FormGotFocusEvent OnGotFocus = FormGotFocusEvent();
+	FormLostFocusEvent OnLostFocus = FormLostFocusEvent();
+	FormDropFileEvent OnDropFile = FormDropFileEvent();
+	FormClosingEvent OnFormClosing = FormClosingEvent();
+	FormClosedEvent OnFormClosed = FormClosedEvent();
 	
 	CommandEvent OnCommand;
 
@@ -121,8 +124,13 @@ public:
 	class Control* Selected = NULL;
 	class Control* UnderMouse = NULL;
 	List<class Control*> Controls = List<class Control*>();
-	List<class Control*> ForegroundControls = List<class Control*>();
+	// 置顶控件：最多只允许一个（用于 ComboBox 下拉、临时浮层等）
+	class Control* ForegroundControl = NULL;
+	// 主菜单：单独管理（菜单栏/下拉菜单）
+	class Menu* MainMenu = NULL;
 	D2DGraphics1* Render;
+	D2DGraphics1* OverlayRender = nullptr;
+	class DCompLayeredHost* _dcompHost = nullptr;
 	int HeadHeight = 24;
 	D2D1_COLOR_F BackColor = Colors::WhiteSmoke;
 	D2D1_COLOR_F ForeColor = Colors::Black;
@@ -156,9 +164,16 @@ public:
 
 	HICON Icon = NULL;
 	Form(std::wstring _text = L"NativeWindow", POINT _location = { 0,0 }, SIZE _size = { 600,400 });
+	~Form();
 	void Show();
 	void ShowDialog(HWND parent = NULL);
 	void Close();
+	void UpdateCursorFromCurrentMouse();
+
+	// WebView2 Composition 支持：给 WebBrowser 提供 DirectComposition 的容器层
+	IDCompositionDevice* GetDCompDevice() const;
+	IDCompositionVisual* GetWebContainerVisual() const;
+	void CommitComposition();
 
 	template<typename T>
 	T AddControl(T c)
@@ -175,6 +190,11 @@ public:
 		this->Controls.Add(c);
 		c->Parent = NULL;
 		c->ParentForm = this;
+		// 主菜单单独管理
+		if (c->Type() == UIClass::UI_Menu)
+		{
+			this->MainMenu = (Menu*)c;
+		}
 		return c;
 	}
 	bool RemoveControl(Control* c);

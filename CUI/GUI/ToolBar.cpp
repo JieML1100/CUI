@@ -54,11 +54,6 @@ void ToolBar::LayoutItems()
 
 void ToolBar::Update()
 {
-	// ToolBar 默认置顶渲染/优先命中（无需 Demo 手动维护）
-	if (this->ParentForm && !this->ParentForm->ForegroundControls.Contains(this))
-	{
-		this->ParentForm->ForegroundControls.Add(this);
-	}
 	LayoutItems();
 	Panel::Update();
 }

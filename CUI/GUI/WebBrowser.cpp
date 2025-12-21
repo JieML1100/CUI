@@ -1,11 +1,9 @@
 #include "WebBrowser.h"
 #include "Form.h"
 
-#include <CppUtils/Graphics/Graphics1.h>
-#include <CppUtils/Utils/StringHelper.h>
-
 #include <windowsx.h>
 #include <algorithm>
+#include <dcomp.h>
 
 #include <wrl.h>
 #include <wrl/client.h>
@@ -14,21 +12,6 @@
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
-
-static const wchar_t* kWebHostClassName = L"CUI_WebViewHost";
-
-static void EnsureWebHostClass()
-{
-	static bool inited = false;
-	if (inited) return;
-
-	WNDCLASSW wc{};
-	wc.lpfnWndProc = DefWindowProcW;
-	wc.hInstance = GetModuleHandleW(NULL);
-	wc.lpszClassName = kWebHostClassName;
-	RegisterClassW(&wc);
-	inited = true;
-}
 
 WebBrowser::WebBrowser(int x, int y, int width, int height)
 {
@@ -39,7 +22,6 @@ WebBrowser::WebBrowser(int x, int y, int width, int height)
 	_lastControllerHr = E_PENDING;
 	_lastGetWebViewHr = E_PENDING;
 
-	// 位置/尺寸变化时同步 Controller bounds
 	this->OnSizeChanged += [&](class Control* s) { 
 		(void)s; 
 		EnsureControllerBounds(); 
@@ -53,14 +35,17 @@ WebBrowser::WebBrowser(int x, int y, int width, int height)
 WebBrowser::~WebBrowser()
 {
 	_webview.Reset();
+	if (_compositionController && _cursorChangedToken.value != 0)
+	{
+		_compositionController->remove_CursorChanged(_cursorChangedToken);
+		_cursorChangedToken.value = 0;
+	}
+	_compositionController.Reset();
 	_controller.Reset();
 	_env.Reset();
 
-	if (_hostHwnd && IsWindow(_hostHwnd))
-	{
-		DestroyWindow(_hostHwnd);
-		_hostHwnd = NULL;
-	}
+	_dcompClip.Reset();
+	_dcompVisual.Reset();
 }
 
 std::wstring WebBrowser::JsStringLiteral(const std::wstring& s)
@@ -164,23 +149,35 @@ void WebBrowser::EnsureInitialized()
 	_webviewReady = false;
 	_navCompletedCount = 0;
 
-	// WebView2 推荐 STA
 	_lastCoInitHr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
-	EnsureWebHostClass();
-	if (!_hostHwnd)
+	// DirectComposition：为每个 WebBrowser 创建一个独立的 Visual，并挂到 Form 的 Web 容器层
+	IDCompositionDevice* dcompDevice = this->ParentForm->GetDCompDevice();
+	IDCompositionVisual* container = this->ParentForm->GetWebContainerVisual();
+	if (!dcompDevice || !container)
 	{
-		// 创建宿主窗口（子窗口）。WebView2 将在此窗口内创建并渲染自身的子窗口。
-		_hostHwnd = CreateWindowExW(
-			0,
-			kWebHostClassName,
-			L"",
-			WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
-			0, 0, std::max(1, this->Width), std::max(1, this->Height),
-			this->ParentForm->Handle,
-			NULL,
-			GetModuleHandleW(NULL),
-			NULL);
+		_lastInitHr = E_NOINTERFACE;
+		this->PostRender();
+		return;
+	}
+
+	if (!_dcompVisual)
+	{
+		HRESULT hrv = dcompDevice->CreateVisual(&_dcompVisual);
+		if (FAILED(hrv) || !_dcompVisual)
+		{
+			_lastInitHr = hrv;
+			this->PostRender();
+			return;
+		}
+		dcompDevice->CreateRectangleClip(&_dcompClip);
+		if (_dcompClip)
+		{
+			_dcompVisual->SetClip(_dcompClip.Get());
+		}
+		// 插入到容器末尾（多个 WebBrowser 时保持顺序）
+		container->AddVisual(_dcompVisual.Get(), FALSE, nullptr);
+		this->ParentForm->CommitComposition();
 	}
 
 	auto envCompleted = Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
@@ -194,18 +191,56 @@ void WebBrowser::EnsureInitialized()
 			}
 			_env = env;
 
-			auto ctlCompleted = Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-				[this](HRESULT result2, ICoreWebView2Controller* controller) -> HRESULT
+			auto ctlCompleted = Callback<ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler>(
+				[this](HRESULT result2, ICoreWebView2CompositionController* compositionController) -> HRESULT
 				{
 					_lastControllerHr = result2;
-					if (FAILED(result2) || !controller)
+					if (FAILED(result2) || !compositionController)
 					{
 						this->PostRender();
 						return S_OK;
 					}
-					_controller = controller;
+					_compositionController = compositionController;
+					_controller.Reset();
+					// 同一对象上也实现 ICoreWebView2Controller
+					_compositionController.As(&_controller);
 					_webview.Reset();
 					_lastGetWebViewHr = _controller->get_CoreWebView2(_webview.GetAddressOf());
+
+					// 将 WebView2 视觉树挂到我们的 DComp Visual
+					if (_compositionController && _dcompVisual)
+					{
+						_compositionController->put_RootVisualTarget(_dcompVisual.Get());
+						_rootAttached = true;
+						this->ParentForm->CommitComposition();
+					}
+
+					// CursorChanged：缓存 system cursor id，交给 Form::UpdateCursor 使用
+					if (_compositionController)
+					{
+						_cursorChangedToken.value = 0;
+						_compositionController->add_CursorChanged(
+							Callback<ICoreWebView2CursorChangedEventHandler>(
+								[this](ICoreWebView2CompositionController* sender, IUnknown* args) -> HRESULT
+								{
+									(void)args;
+									UINT32 id = 0;
+									if (sender && SUCCEEDED(sender->get_SystemCursorId(&id)))
+									{
+										_lastSystemCursorId = id;
+										_hasSystemCursorId = true;
+									}
+									else
+									{
+										_hasSystemCursorId = false;
+									}
+									// 如果当前鼠标在 WebBrowser 上，立刻刷新一次光标
+									if (this->ParentForm && this->ParentForm->UnderMouse == this)
+										this->ParentForm->UpdateCursorFromCurrentMouse();
+									return S_OK;
+								}).Get(),
+							&_cursorChangedToken);
+					}
 
 					EnsureControllerBounds();
 					_controller->put_IsVisible(TRUE);
@@ -228,8 +263,6 @@ void WebBrowser::EnsureInitialized()
 							Callback<ICoreWebView2NavigationCompletedEventHandler>(
 								[this](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT
 								{
-									(void)sender;
-									(void)args;
 									_navCompletedCount++;
 									this->PostRender();
 									return S_OK;
@@ -241,8 +274,6 @@ void WebBrowser::EnsureInitialized()
 							Callback<ICoreWebView2ContentLoadingEventHandler>(
 								[this](ICoreWebView2* sender, ICoreWebView2ContentLoadingEventArgs* args) -> HRESULT
 								{
-									(void)sender;
-									(void)args;
 									this->PostRender();
 									return S_OK;
 								}).Get(),
@@ -267,7 +298,15 @@ void WebBrowser::EnsureInitialized()
 					return S_OK;
 				});
 
-			env->CreateCoreWebView2Controller(_hostHwnd, ctlCompleted.Get());
+			ComPtr<ICoreWebView2Environment3> env3;
+			HRESULT hrEnv3 = env->QueryInterface(IID_PPV_ARGS(&env3));
+			if (FAILED(hrEnv3) || !env3)
+			{
+				_lastControllerHr = hrEnv3;
+				this->PostRender();
+				return S_OK;
+			}
+			env3->CreateCoreWebView2CompositionController(this->ParentForm->Handle, ctlCompleted.Get());
 			return S_OK;
 		});
 
@@ -281,34 +320,55 @@ void WebBrowser::EnsureInitialized()
 
 void WebBrowser::EnsureControllerBounds()
 {
-	if (!_hostHwnd || !IsWindow(_hostHwnd)) return;
+	if (!this->ParentForm || !this->ParentForm->Handle) return;
 
 	int w = std::max(1, this->Width);
 	int h = std::max(1, this->Height);
 
-	// 注意：Control::AbsLocation 不包含标题栏高度；子窗口坐标是相对 Form 客户区
 	POINT abs = this->AbsLocation;
 	int top = (this->ParentForm && this->ParentForm->VisibleHead) ? this->ParentForm->HeadHeight : 0;
 	int x = abs.x;
 	int y = abs.y + top;
 
-	// 控件不可见时隐藏宿主窗口，避免抢占鼠标/焦点
-	if (!this->IsVisual || !this->Visible || !_webviewReady)
-	{
-		ShowWindow(_hostHwnd, SW_HIDE);
-	}
-	else
-	{
-		ShowWindow(_hostHwnd, SW_SHOWNOACTIVATE);
-	}
-
-	MoveWindow(_hostHwnd, x, y, w, h, FALSE);
+	const bool visible = (this->IsVisual && this->Visible && _webviewReady);
 
 	if (_controller)
 	{
 		RECT rc{ 0,0,w,h };
 		_controller->put_Bounds(rc);
+		_controller->put_IsVisible(visible ? TRUE : FALSE);
 		_controller->NotifyParentWindowPositionChanged();
+	}
+
+	if (_dcompVisual)
+	{
+		_dcompVisual->SetOffsetX((float)x);
+		_dcompVisual->SetOffsetY((float)y);
+		if (_dcompClip)
+		{
+			_dcompClip->SetLeft(0.0f);
+			_dcompClip->SetTop(0.0f);
+			_dcompClip->SetRight((float)w);
+			_dcompClip->SetBottom((float)h);
+		}
+
+		// 关键：隐藏时断开 RootVisualTarget，避免“隐藏页残留显示上一帧”
+		if (_compositionController)
+		{
+			if (!visible && _rootAttached)
+			{
+				_compositionController->put_RootVisualTarget(nullptr);
+				_rootAttached = false;
+			}
+			else if (visible && !_rootAttached)
+			{
+				_compositionController->put_RootVisualTarget(_dcompVisual.Get());
+				_rootAttached = true;
+			}
+		}
+
+		// 位置/裁剪/挂载更新需要 Commit
+		if (this->ParentForm) this->ParentForm->CommitComposition();
 	}
 }
 
@@ -322,7 +382,6 @@ void WebBrowser::Update()
 	auto abs = this->AbsLocation;
 	auto sz = this->ActualSize();
 
-	// 仅在 WebView 未就绪时绘制占位（就绪后由 WebView2 子窗口自行绘制，无需抓帧/贴图）
 	if (!_webviewReady)
 	{
 		this->ParentForm->Render->FillRect((float)abs.x, (float)abs.y, (float)sz.cx, (float)sz.cy, this->BackColor);
@@ -342,7 +401,81 @@ void WebBrowser::Update()
 
 bool WebBrowser::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {
+	// Composition 模式下需要显式转发鼠标输入
+	ForwardMouseMessageToWebView(message, wParam, lParam, xof, yof);
 	Control::ProcessMessage(message, wParam, lParam, xof, yof);
+	return true;
+}
+
+bool WebBrowser::TryGetSystemCursorId(UINT32& outId) const
+{
+	if (!_webviewReady || !_compositionController) return false;
+	if (!_hasSystemCursorId) return false;
+	outId = _lastSystemCursorId;
+	return true;
+}
+
+bool WebBrowser::ForwardMouseMessageToWebView(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+{
+	(void)lParam;
+	if (!_webviewReady || !_compositionController) return false;
+	if (!this->Visible || !this->IsVisual) return false;
+
+	COREWEBVIEW2_MOUSE_EVENT_KIND kind{};
+	UINT32 mouseData = 0;
+
+	switch (message)
+	{
+	case WM_MOUSEMOVE: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE; break;
+	case WM_LBUTTONDOWN: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN; break;
+	case WM_LBUTTONUP: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP; break;
+	case WM_RBUTTONDOWN: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN; break;
+	case WM_RBUTTONUP: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP; break;
+	case WM_MBUTTONDOWN: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_DOWN; break;
+	case WM_MBUTTONUP: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_UP; break;
+	case WM_MOUSEWHEEL:
+		kind = COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL;
+		mouseData = (UINT32)GET_WHEEL_DELTA_WPARAM(wParam);
+		break;
+	case WM_MOUSEHWHEEL:
+		kind = COREWEBVIEW2_MOUSE_EVENT_KIND_HORIZONTAL_WHEEL;
+		mouseData = (UINT32)GET_WHEEL_DELTA_WPARAM(wParam);
+		break;
+	default:
+		return false;
+	}
+
+	COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)0;
+	if (wParam & MK_LBUTTON) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON);
+	if (wParam & MK_RBUTTON) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON);
+	if (wParam & MK_MBUTTON) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_MIDDLE_BUTTON);
+	if (wParam & MK_XBUTTON1) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_X_BUTTON1);
+	if (wParam & MK_XBUTTON2) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_X_BUTTON2);
+	if (GetKeyState(VK_CONTROL) & 0x8000) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_CONTROL);
+	if (GetKeyState(VK_SHIFT) & 0x8000) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_SHIFT);
+
+	POINT pt{ xof, yof };
+	_compositionController->SendMouseInput(kind, vkeys, mouseData, pt);
+
+	// 尽量同步光标（Form 的 UpdateCursor 会覆盖一次，这里在鼠标移动时再补一刀）
+	if (message == WM_MOUSEMOVE && this->ParentForm && this->ParentForm->UnderMouse == this)
+	{
+		UINT32 id = 0;
+		if (SUCCEEDED(_compositionController->get_SystemCursorId(&id)) && id != 0)
+		{
+			_lastSystemCursorId = id;
+			_hasSystemCursorId = true;
+			auto h = LoadCursorW(NULL, MAKEINTRESOURCEW((ULONG_PTR)id));
+			if (h) ::SetCursor(h);
+		}
+	}
+
+	// 点入时尝试把焦点交给 WebView
+	if (_controller && (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN))
+	{
+		_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+	}
+
 	return true;
 }
 
@@ -388,7 +521,6 @@ void WebBrowser::ExecuteScriptAsync(const std::wstring& script,
 		{
 			if (callback)
 				callback(errorCode, resultObjectAsJson ? resultObjectAsJson : L"");
-			// 脚本执行后可能改变内容：占位区域刷新一下（实际页面由 WebView2 自行呈现）
 			this->PostRender();
 			return S_OK;
 		});
