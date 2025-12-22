@@ -20,7 +20,7 @@ Control::Control()
 }
 Control::~Control()
 {
-		if (this->_font)
+	if (this->_font)
 		delete this->_font;
 	for (auto c : this->Children)
 	{
@@ -90,7 +90,13 @@ void Control::RemoveControl(Control* c)
 	this->Children.Remove(c);
 	c->Parent = NULL;
 	c->ParentForm = NULL;
-	}
+	if (this->ParentForm->ForegroundControl == c)
+		this->ParentForm->ForegroundControl = NULL;
+	if (this->ParentForm->MainMenu == c)
+		this->ParentForm->MainMenu = NULL;
+	if (this->ParentForm->UnderMouse == c)
+		this->ParentForm->UnderMouse = NULL;
+}
 GET_CPP(Control, POINT, AbsLocation)
 {
 	Control* tmpc = this;
@@ -108,7 +114,7 @@ GET_CPP(Control, D2D1_RECT_F, AbsRect)
 {
 	Control* tmpc = this;
 	auto absMin = this->AbsLocation;
-						auto asize = this->ActualSize();
+	auto asize = this->ActualSize();
 	return D2D1_RECT_F{
 		(float)absMin.x,
 		(float)absMin.y,
@@ -512,21 +518,21 @@ SET_CPP(Control, SIZE, MaxSize)
 SIZE Control::MeasureCore(SIZE availableSize)
 {
 	SIZE desired = this->_size;
-	
+
 	// 应用 Padding
 	desired.cx += (LONG)(_padding.Left + _padding.Right);
 	desired.cy += (LONG)(_padding.Top + _padding.Bottom);
-	
+
 	// 应用约束
 	if (desired.cx < _minSize.cx) desired.cx = _minSize.cx;
 	if (desired.cy < _minSize.cy) desired.cy = _minSize.cy;
 	if (desired.cx > _maxSize.cx) desired.cx = _maxSize.cx;
 	if (desired.cy > _maxSize.cy) desired.cy = _maxSize.cy;
-	
+
 	// 考虑可用空间
 	if (desired.cx > availableSize.cx) desired.cx = availableSize.cx;
 	if (desired.cy > availableSize.cy) desired.cy = availableSize.cy;
-	
+
 	return desired;
 }
 
@@ -534,19 +540,19 @@ SIZE Control::MeasureCore(SIZE availableSize)
 void Control::ApplyLayout(POINT location, SIZE size)
 {
 	bool changed = false;
-	
+
 	if (_location.x != location.x || _location.y != location.y)
 	{
 		_location = location;
 		changed = true;
 	}
-	
+
 	if (_size.cx != size.cx || _size.cy != size.cy)
 	{
 		_size = size;
 		changed = true;
 	}
-	
+
 	if (changed)
 	{
 		this->PostRender();

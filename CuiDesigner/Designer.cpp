@@ -5,6 +5,21 @@
 
 namespace
 {
+	static std::string MakeDesignFilter()
+	{
+		std::string s;
+		s.append("CUI Designer Files (*.cui.json)");
+		s.push_back('\0');
+		s.append("*.cui.json");
+		s.push_back('\0');
+		s.append("JSON Files (*.json)");
+		s.push_back('\0');
+		s.append("*.json");
+		s.push_back('\0');
+		s.push_back('\0');
+		return s;
+	}
+
 
 	static void ShowModalMessage(Form* ownerForm, const std::wstring& caption, const std::wstring& text)
 	{
@@ -14,11 +29,7 @@ namespace
 
 Designer::Designer() : Form(L"CUI 窗口设计器", { 0,0 }, { 1400, 840 })
 {
-	// 设置窗体属性
 	this->BackColor = D2D1::ColorF(0.9f, 0.9f, 0.9f, 1.0f);
-	
-	// 注意：不在构造函数中调用InitializeComponents
-	// 需要在Show之前调用，确保所有控件都正确初始化
 }
 
 Designer::~Designer()
@@ -27,9 +38,7 @@ Designer::~Designer()
 
 void Designer::InitAndShow()
 {
-	// 先初始化所有控件
 	InitializeComponents();
-	// 确保所有控件都添加完成后再显示窗口
 	this->Show();
 }
 
@@ -48,6 +57,22 @@ void Designer::InitializeComponents()
 		OnNewClick();
 	};
 	this->AddControl(_btnNew);
+	btnX += btnWidth + 10;
+
+	_btnOpen = new Button(L"打开", btnX, btnY, btnWidth, btnHeight);
+	_btnOpen->Round = 0.5f;
+	_btnOpen->OnMouseClick += [this](Control*, MouseEventArgs) {
+		OnOpenClick();
+	};
+	this->AddControl(_btnOpen);
+	btnX += btnWidth + 10;
+
+	_btnSave = new Button(L"保存", btnX, btnY, btnWidth, btnHeight);
+	_btnSave->Round = 0.5f;
+	_btnSave->OnMouseClick += [this](Control*, MouseEventArgs) {
+		OnSaveClick();
+	};
+	this->AddControl(_btnSave);
 	btnX += btnWidth + 10;
 	
 	_btnExport = new Button(L"导出代码", btnX, btnY, btnWidth + 20, btnHeight);
@@ -99,6 +124,38 @@ void Designer::InitializeComponents()
 
 	// 让 PropertyGrid 能在“编辑页/按钮”时同步更新 DesignerCanvas 的设计器模型
 	_propertyGrid->SetDesignerCanvas(_canvas);
+
+	// 窗口大小变化时：自动调整内部控件布局
+	auto doLayout = [this, toolbarHeight, toolBoxWidth, propertyGridWidth]() {
+		int w = this->Size.cx;
+		int h = this->Size.cy;
+		int usableH = h - toolbarHeight - 40;
+		if (usableH < 50) usableH = 50;
+		if (_toolBox)
+		{
+			_toolBox->Location = { 10, toolbarHeight + 10 };
+			_toolBox->Size = { toolBoxWidth, usableH };
+		}
+		if (_propertyGrid)
+		{
+			_propertyGrid->Location = { w - propertyGridWidth - 10, toolbarHeight + 10 };
+			_propertyGrid->Size = { propertyGridWidth, usableH };
+			// 重新加载以适配宽度变化
+			_propertyGrid->LoadControl(_canvas ? _canvas->GetSelectedControl() : nullptr);
+		}
+		if (_canvas)
+		{
+			int canvasX = toolBoxWidth + 20;
+			int canvasW = w - toolBoxWidth - propertyGridWidth - 40;
+			if (canvasW < 100) canvasW = 100;
+			_canvas->Location = { canvasX, toolbarHeight + 10 };
+			_canvas->Size = { canvasW, usableH };
+			_canvas->PostRender();
+		}
+	};
+
+	this->OnSizeChanged += [doLayout](Form*) { doLayout(); };
+	doLayout();
 }
 
 void Designer::OnToolBoxControlSelected(UIClass type)
@@ -125,7 +182,78 @@ void Designer::OnNewClick()
 {
 	_canvas->ClearCanvas();
 	_propertyGrid->Clear();
+	_currentFileName.clear();
 	_lblInfo->Text = L"画布已清空";
+}
+
+void Designer::OnOpenClick()
+{
+	OpenFileDialog ofd;
+	ofd.Filter = MakeDesignFilter();
+	ofd.Multiselect = false;
+	ofd.Title = "Open Designer File";
+	auto r = ofd.ShowDialog(this->Handle);
+
+	// 兜底恢复交互
+	if (this->Handle && ::IsWindow(this->Handle))
+	{
+		::EnableWindow(this->Handle, TRUE);
+		::ReleaseCapture();
+		::SetForegroundWindow(this->Handle);
+		::SetActiveWindow(this->Handle);
+		::SetFocus(this->Handle);
+	}
+
+	if (r != DialogResult::OK || ofd.SelectedPaths.empty())
+		return;
+
+	std::wstring path = Convert::string_to_wstring(ofd.SelectedPaths[0]);
+	std::wstring err;
+	if (_canvas->LoadDesignFile(path, &err))
+	{
+		_currentFileName = path;
+		_propertyGrid->LoadControl(nullptr);
+		_lblInfo->Text = L"已打开: " + path;
+	}
+	else
+	{
+		ShowModalMessage(this, L"打开失败", err.empty() ? L"无法加载设计文件。" : err);
+	}
+}
+
+void Designer::OnSaveClick()
+{
+	std::wstring path = _currentFileName;
+	if (path.empty())
+	{
+		SaveFileDialog sfd;
+		sfd.Filter = MakeDesignFilter();
+		sfd.Title = "Save Designer File";
+		auto r = sfd.ShowDialog(this->Handle);
+		if (this->Handle && ::IsWindow(this->Handle))
+		{
+			::EnableWindow(this->Handle, TRUE);
+			::ReleaseCapture();
+			::SetForegroundWindow(this->Handle);
+			::SetActiveWindow(this->Handle);
+			::SetFocus(this->Handle);
+		}
+		if (r != DialogResult::OK)
+			return;
+		path = Convert::string_to_wstring(sfd.SelectedPath);
+		if (path.empty()) return;
+	}
+
+	std::wstring err;
+	if (_canvas->SaveDesignFile(path, &err))
+	{
+		_currentFileName = path;
+		_lblInfo->Text = L"已保存: " + path;
+	}
+	else
+	{
+		ShowModalMessage(this, L"保存失败", err.empty() ? L"无法保存设计文件。" : err);
+	}
 }
 
 void Designer::OnExportClick()
@@ -185,8 +313,11 @@ void Designer::OnExportClick()
 			fileName = fileName.substr(0, pos);
 		}
 		
-		// 生成代码
-		CodeGenerator generator(fileName, controls);
+		// 生成代码（包含窗体标题/尺寸）
+		CodeGenerator generator(fileName, controls,
+			_canvas ? _canvas->GetDesignedFormText() : L"",
+			_canvas ? _canvas->GetDesignedFormSize() : SIZE{ 800, 600 },
+			_canvas ? _canvas->GetDesignedFormLocation() : POINT{ 100, 100 });
 		
 		if (generator.GenerateFiles(headerPath, cppPath))
 		{

@@ -7,8 +7,245 @@
 #include "TreeViewNodesEditorDialog.h"
 #include "GridPanelDefinitionsEditorDialog.h"
 #include "DesignerCanvas.h"
+#include "../CUI/GUI/ComboBox.h"
+#include "../CUI/GUI/Slider.h"
+#include "../CUI/GUI/ProgressBar.h"
+#include "../CUI/GUI/PictureBox.h"
+#include "../CUI/GUI/TreeView.h"
+#include "../CUI/GUI/TabControl.h"
+#include "../CUI/GUI/ToolBar.h"
+#include "../CUI/GUI/Layout/StackPanel.h"
+#include "../CUI/GUI/Layout/WrapPanel.h"
 #include <sstream>
 #include <iomanip>
+
+namespace
+{
+	static std::wstring TrimWs(const std::wstring& s)
+	{
+		size_t b = 0;
+		while (b < s.size() && iswspace(s[b])) b++;
+		size_t e = s.size();
+		while (e > b && iswspace(s[e - 1])) e--;
+		return s.substr(b, e - b);
+	}
+
+	static std::vector<std::wstring> Split(const std::wstring& s, wchar_t sep)
+	{
+		std::vector<std::wstring> out;
+		std::wstring cur;
+		for (wchar_t c : s)
+		{
+			if (c == sep)
+			{
+				out.push_back(TrimWs(cur));
+				cur.clear();
+			}
+			else cur.push_back(c);
+		}
+		out.push_back(TrimWs(cur));
+		return out;
+	}
+
+	static std::wstring ColorToText(const D2D1_COLOR_F& c)
+	{
+		std::wostringstream oss;
+		oss.setf(std::ios::fixed);
+		oss << std::setprecision(3) << c.r << L"," << c.g << L"," << c.b << L"," << c.a;
+		return oss.str();
+	}
+
+	static bool TryParseHexNibble(wchar_t c, int& out)
+	{
+		if (c >= L'0' && c <= L'9') { out = c - L'0'; return true; }
+		if (c >= L'a' && c <= L'f') { out = 10 + (c - L'a'); return true; }
+		if (c >= L'A' && c <= L'F') { out = 10 + (c - L'A'); return true; }
+		return false;
+	}
+
+	static bool TryParseColor(const std::wstring& s, D2D1_COLOR_F& out)
+	{
+		auto t = TrimWs(s);
+		if (t.empty()) return false;
+		// #RRGGBB or #AARRGGBB
+		if (t[0] == L'#')
+		{
+			std::wstring hex = t.substr(1);
+			if (hex.size() != 6 && hex.size() != 8) return false;
+			auto byteAt = [&](size_t i, unsigned char& b) -> bool {
+				int hi = 0, lo = 0;
+				if (!TryParseHexNibble(hex[i], hi)) return false;
+				if (!TryParseHexNibble(hex[i + 1], lo)) return false;
+				b = (unsigned char)((hi << 4) | lo);
+				return true;
+			};
+			unsigned char a = 255, r = 0, g = 0, b = 0;
+			size_t off = 0;
+			if (hex.size() == 8)
+			{
+				if (!byteAt(0, a)) return false;
+				off = 2;
+			}
+			if (!byteAt(off + 0, r)) return false;
+			if (!byteAt(off + 2, g)) return false;
+			if (!byteAt(off + 4, b)) return false;
+			out = D2D1::ColorF(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
+			return true;
+		}
+		// r,g,b or r,g,b,a (float 0~1 or int 0~255)
+		auto parts = Split(t, L',');
+		if (parts.size() < 3) return false;
+		float v[4] = { 0,0,0,1 };
+		for (size_t i = 0; i < parts.size() && i < 4; i++)
+		{
+			try { v[i] = std::stof(parts[i]); }
+			catch (...) { return false; }
+		}
+		bool anyOver1 = (v[0] > 1.0f || v[1] > 1.0f || v[2] > 1.0f || v[3] > 1.0f);
+		if (anyOver1)
+		{
+			out = D2D1::ColorF(v[0] / 255.0f, v[1] / 255.0f, v[2] / 255.0f, v[3] / 255.0f);
+		}
+		else
+		{
+			out = D2D1::ColorF(v[0], v[1], v[2], v[3]);
+		}
+		return true;
+	}
+
+	static std::wstring ThicknessToText(const Thickness& t)
+	{
+		std::wostringstream oss;
+		oss.setf(std::ios::fixed);
+		oss << std::setprecision(1) << t.Left << L"," << t.Top << L"," << t.Right << L"," << t.Bottom;
+		return oss.str();
+	}
+
+	static bool TryParseThickness(const std::wstring& s, Thickness& out)
+	{
+		auto parts = Split(s, L',');
+		if (parts.size() != 4) return false;
+		try
+		{
+			out.Left = std::stof(parts[0]);
+			out.Top = std::stof(parts[1]);
+			out.Right = std::stof(parts[2]);
+			out.Bottom = std::stof(parts[3]);
+			return true;
+		}
+		catch (...) { return false; }
+	}
+
+	static bool TryParseHAlign(const std::wstring& s, ::HorizontalAlignment& out)
+	{
+		auto t = TrimWs(s);
+		if (t == L"Left") { out = HorizontalAlignment::Left; return true; }
+		if (t == L"Center") { out = HorizontalAlignment::Center; return true; }
+		if (t == L"Right") { out = HorizontalAlignment::Right; return true; }
+		if (t == L"Stretch") { out = HorizontalAlignment::Stretch; return true; }
+		return false;
+	}
+
+	static bool TryParseVAlign(const std::wstring& s, ::VerticalAlignment& out)
+	{
+		auto t = TrimWs(s);
+		if (t == L"Top") { out = VerticalAlignment::Top; return true; }
+		if (t == L"Center") { out = VerticalAlignment::Center; return true; }
+		if (t == L"Bottom") { out = VerticalAlignment::Bottom; return true; }
+		if (t == L"Stretch") { out = VerticalAlignment::Stretch; return true; }
+		return false;
+	}
+
+	static std::wstring HAlignToText(::HorizontalAlignment a)
+	{
+		switch (a)
+		{
+		case HorizontalAlignment::Left: return L"Left";
+		case HorizontalAlignment::Center: return L"Center";
+		case HorizontalAlignment::Right: return L"Right";
+		case HorizontalAlignment::Stretch: return L"Stretch";
+		default: return L"Left";
+		}
+	}
+
+	static std::wstring VAlignToText(::VerticalAlignment a)
+	{
+		switch (a)
+		{
+		case VerticalAlignment::Top: return L"Top";
+		case VerticalAlignment::Center: return L"Center";
+		case VerticalAlignment::Bottom: return L"Bottom";
+		case VerticalAlignment::Stretch: return L"Stretch";
+		default: return L"Top";
+		}
+	}
+
+	static bool TryParseDock(const std::wstring& s, ::Dock& out)
+	{
+		auto t = TrimWs(s);
+		if (t == L"Fill") { out = Dock::Fill; return true; }
+		if (t == L"Left") { out = Dock::Left; return true; }
+		if (t == L"Top") { out = Dock::Top; return true; }
+		if (t == L"Right") { out = Dock::Right; return true; }
+		if (t == L"Bottom") { out = Dock::Bottom; return true; }
+		return false;
+	}
+
+	static std::wstring DockToText(::Dock d)
+	{
+		switch (d)
+		{
+		case Dock::Fill: return L"Fill";
+		case Dock::Left: return L"Left";
+		case Dock::Top: return L"Top";
+		case Dock::Right: return L"Right";
+		case Dock::Bottom: return L"Bottom";
+		default: return L"Fill";
+		}
+	}
+
+	static bool TryParseOrientation(const std::wstring& s, ::Orientation& out)
+	{
+		auto t = TrimWs(s);
+		if (t == L"Horizontal") { out = Orientation::Horizontal; return true; }
+		if (t == L"Vertical") { out = Orientation::Vertical; return true; }
+		return false;
+	}
+
+	static std::wstring OrientationToText(::Orientation o)
+	{
+		switch (o)
+		{
+		case Orientation::Horizontal: return L"Horizontal";
+		case Orientation::Vertical: return L"Vertical";
+		default: return L"Vertical";
+		}
+	}
+
+	static bool TryParseImageSizeMode(const std::wstring& s, ::ImageSizeMode& out)
+	{
+		auto t = TrimWs(s);
+		if (t == L"Normal") { out = ImageSizeMode::Normal; return true; }
+		if (t == L"CenterImage") { out = ImageSizeMode::CenterImage; return true; }
+		if (t == L"Stretch") { out = ImageSizeMode::StretchIamge; return true; }
+		if (t == L"Zoom") { out = ImageSizeMode::Zoom; return true; }
+		// 兼容旧拼写
+		if (t == L"StretchIamge") { out = ImageSizeMode::StretchIamge; return true; }
+		return false;
+	}
+
+	static std::wstring ImageSizeModeToText(::ImageSizeMode m)
+	{
+		switch (m)
+		{
+		case ImageSizeMode::Normal: return L"Normal";
+		case ImageSizeMode::CenterImage: return L"CenterImage";
+		case ImageSizeMode::StretchIamge: return L"Stretch";
+		case ImageSizeMode::Zoom: return L"Zoom";
+		default: return L"Zoom";
+		}
+	}
+}
 
 PropertyGrid::PropertyGrid(int x, int y, int width, int height)
 	: Panel(x, y, width, height)
@@ -87,17 +324,129 @@ void PropertyGrid::CreateBoolPropertyItem(std::wstring propertyName, bool value,
 	yOffset += 25;
 }
 
+void PropertyGrid::CreateEnumPropertyItem(std::wstring propertyName, const std::wstring& value,
+	const std::vector<std::wstring>& options, int& yOffset)
+{
+	int width = this->Width;
+
+	auto nameLabel = new Label(propertyName, 10, yOffset);
+	nameLabel->Size = { (width - 30) / 2, 20 };
+	nameLabel->Font = new ::Font(L"Microsoft YaHei", 12.0f);
+	this->AddControl(nameLabel);
+	nameLabel->ParentForm = this->ParentForm;
+
+	auto valueCombo = new ComboBox(L"", (width - 30) / 2 + 15, yOffset, (width - 30) / 2, 20);
+	valueCombo->ParentForm = this->ParentForm;
+	valueCombo->values.Clear();
+	for (auto& o : options) valueCombo->values.Add(o);
+
+	int idx = 0;
+	for (int i = 0; i < valueCombo->values.Count; i++)
+	{
+		if (valueCombo->values[i] == value) { idx = i; break; }
+	}
+	valueCombo->SelectedIndex = idx;
+	if (valueCombo->values.Count > 0 && idx >= 0 && idx < valueCombo->values.Count)
+		valueCombo->Text = valueCombo->values[idx];
+	else
+		valueCombo->Text = value;
+
+	valueCombo->OnSelectionChanged += [this, propertyName](Control* sender) {
+		auto cb = (ComboBox*)sender;
+		UpdatePropertyFromTextBox(propertyName, cb->Text);
+	};
+
+	this->AddControl(valueCombo);
+
+	auto item = new PropertyItem(propertyName, nameLabel, (Control*)valueCombo);
+	_items.push_back(item);
+
+	yOffset += 25;
+}
+
+void PropertyGrid::CreateFloatSliderPropertyItem(std::wstring propertyName, float value,
+	float minValue, float maxValue, float step, int& yOffset)
+{
+	int width = this->Width;
+
+	auto nameLabel = new Label(propertyName, 10, yOffset);
+	nameLabel->Size = { (width - 30) / 2, 20 };
+	nameLabel->Font = new ::Font(L"Microsoft YaHei", 12.0f);
+	this->AddControl(nameLabel);
+	nameLabel->ParentForm = this->ParentForm;
+
+	auto slider = new Slider((width - 30) / 2 + 15, yOffset - 4, (width - 30) / 2, 28);
+	slider->ParentForm = this->ParentForm;
+	slider->Min = minValue;
+	slider->Max = maxValue;
+	slider->Step = step;
+	slider->SnapToStep = false;
+	slider->Value = value;
+
+	slider->OnValueChanged += [this, propertyName](Control*, float, float newValue) {
+		UpdatePropertyFromFloat(propertyName, newValue);
+	};
+
+	this->AddControl(slider);
+
+	auto item = new PropertyItem(propertyName, nameLabel, (Control*)slider);
+	_items.push_back(item);
+
+	yOffset += 32;
+}
+
 void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wstring value)
 {
-	if (!_currentControl || !_currentControl->ControlInstance) return;
-	
+	// 未选中控件时：编辑“被设计窗体”属性
+	if (!_currentControl)
+	{
+		if (!_canvas) return;
+		try
+		{
+			if (propertyName == L"Text")
+			{
+				_canvas->SetDesignedFormText(value);
+			}
+			else if (propertyName == L"X")
+			{
+				auto p = _canvas->GetDesignedFormLocation();
+				p.x = std::stoi(value);
+				_canvas->SetDesignedFormLocation(p);
+			}
+			else if (propertyName == L"Y")
+			{
+				auto p = _canvas->GetDesignedFormLocation();
+				p.y = std::stoi(value);
+				_canvas->SetDesignedFormLocation(p);
+			}
+			else if (propertyName == L"Width")
+			{
+				auto s = _canvas->GetDesignedFormSize();
+				s.cx = std::stoi(value);
+				_canvas->SetDesignedFormSize(s);
+			}
+			else if (propertyName == L"Height")
+			{
+				auto s = _canvas->GetDesignedFormSize();
+				s.cy = std::stoi(value);
+				_canvas->SetDesignedFormSize(s);
+			}
+		}
+		catch (...) {}
+		return;
+	}
+	if (!_currentControl->ControlInstance) return;
+
 	auto ctrl = _currentControl->ControlInstance;
 	
 	try
 	{
 		if (propertyName == L"Name")
 		{
-			_currentControl->Name = value;
+			if (_canvas)
+				_currentControl->Name = _canvas->MakeUniqueControlName(_currentControl, value);
+			else
+				_currentControl->Name = value;
 		}
 		else if (propertyName == L"Text")
 		{
@@ -135,11 +484,188 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 		{
 			ctrl->Visible = (value == L"true" || value == L"True" || value == L"1");
 		}
+		else if (propertyName == L"BackColor")
+		{
+			D2D1_COLOR_F c;
+			if (TryParseColor(value, c)) ctrl->BackColor = c;
+		}
+		else if (propertyName == L"ForeColor")
+		{
+			D2D1_COLOR_F c;
+			if (TryParseColor(value, c)) ctrl->ForeColor = c;
+		}
+		else if (propertyName == L"BolderColor")
+		{
+			D2D1_COLOR_F c;
+			if (TryParseColor(value, c)) ctrl->BolderColor = c;
+		}
+		else if (propertyName == L"Margin")
+		{
+			Thickness t;
+			if (TryParseThickness(value, t)) ctrl->Margin = t;
+		}
+		else if (propertyName == L"Padding")
+		{
+			Thickness t;
+			if (TryParseThickness(value, t)) ctrl->Padding = t;
+		}
+		else if (propertyName == L"HAlign")
+		{
+			::HorizontalAlignment a;
+			if (TryParseHAlign(value, a)) ctrl->HAlign = a;
+		}
+		else if (propertyName == L"VAlign")
+		{
+			::VerticalAlignment a;
+			if (TryParseVAlign(value, a)) ctrl->VAlign = a;
+		}
+		else if (propertyName == L"Dock")
+		{
+			::Dock d;
+			if (TryParseDock(value, d)) ctrl->DockPosition = d;
+		}
+		else if (propertyName == L"GridRow")
+		{
+			ctrl->GridRow = std::stoi(value);
+		}
+		else if (propertyName == L"GridColumn")
+		{
+			ctrl->GridColumn = std::stoi(value);
+		}
+		else if (propertyName == L"GridRowSpan")
+		{
+			ctrl->GridRowSpan = std::stoi(value);
+		}
+		else if (propertyName == L"GridColumnSpan")
+		{
+			ctrl->GridColumnSpan = std::stoi(value);
+		}
+		else if (propertyName == L"SelectIndex")
+		{
+			if (ctrl->Type() == UIClass::UI_TabControl)
+			{
+				auto* tc = (TabControl*)ctrl;
+				tc->SelectIndex = std::stoi(value);
+			}
+		}
+		else if (propertyName == L"TitleHeight")
+		{
+			if (ctrl->Type() == UIClass::UI_TabControl)
+			{
+				auto* tc = (TabControl*)ctrl;
+				tc->TitleHeight = std::stoi(value);
+			}
+		}
+		else if (propertyName == L"TitleWidth")
+		{
+			if (ctrl->Type() == UIClass::UI_TabControl)
+			{
+				auto* tc = (TabControl*)ctrl;
+				tc->TitleWidth = std::stoi(value);
+			}
+		}
+		else if (propertyName == L"Orientation")
+		{
+			::Orientation o;
+			if (TryParseOrientation(value, o))
+			{
+				if (ctrl->Type() == UIClass::UI_StackPanel) ((StackPanel*)ctrl)->SetOrientation(o);
+				else if (ctrl->Type() == UIClass::UI_WrapPanel) ((WrapPanel*)ctrl)->SetOrientation(o);
+			}
+		}
+		else if (propertyName == L"SizeMode")
+		{
+			if (ctrl->Type() == UIClass::UI_PictureBox)
+			{
+				::ImageSizeMode m;
+				if (TryParseImageSizeMode(value, m)) ctrl->SizeMode = m;
+			}
+		}
+		else if (propertyName == L"SelectedBackColor")
+		{
+			if (ctrl->Type() == UIClass::UI_TreeView)
+			{
+				D2D1_COLOR_F c;
+				if (TryParseColor(value, c)) ((TreeView*)ctrl)->SelectedBackColor = c;
+			}
+		}
+		else if (propertyName == L"UnderMouseItemBackColor")
+		{
+			if (ctrl->Type() == UIClass::UI_TreeView)
+			{
+				D2D1_COLOR_F c;
+				if (TryParseColor(value, c)) ((TreeView*)ctrl)->UnderMouseItemBackColor = c;
+			}
+		}
+		else if (propertyName == L"SelectedForeColor")
+		{
+			if (ctrl->Type() == UIClass::UI_TreeView)
+			{
+				D2D1_COLOR_F c;
+				if (TryParseColor(value, c)) ((TreeView*)ctrl)->SelectedForeColor = c;
+			}
+		}
+		else if (propertyName == L"Spacing")
+		{
+			if (ctrl->Type() == UIClass::UI_StackPanel)
+				((StackPanel*)ctrl)->SetSpacing(std::stof(value));
+		}
+		else if (propertyName == L"ItemWidth")
+		{
+			if (ctrl->Type() == UIClass::UI_WrapPanel)
+				((WrapPanel*)ctrl)->SetItemWidth(std::stof(value));
+		}
+		else if (propertyName == L"ItemHeight")
+		{
+			if (ctrl->Type() == UIClass::UI_WrapPanel)
+				((WrapPanel*)ctrl)->SetItemHeight(std::stof(value));
+		}
+		else if (propertyName == L"Gap")
+		{
+			if (ctrl->Type() == UIClass::UI_ToolBar)
+				((ToolBar*)ctrl)->Gap = std::stof(value);
+		}
 	}
 	catch (...)
 	{
 		// 忽略转换错误
 	}
+
+	if (auto* p = dynamic_cast<Panel*>(ctrl->Parent))
+	{
+		p->InvalidateLayout();
+		p->PerformLayout();
+	}
+	if (_canvas) _canvas->ClampControlToDesignSurface(ctrl);
+	ctrl->PostRender();
+}
+
+void PropertyGrid::UpdatePropertyFromFloat(std::wstring propertyName, float value)
+{
+	if (!_currentControl || !_currentControl->ControlInstance) return;
+	auto ctrl = _currentControl->ControlInstance;
+
+	try
+	{
+		if (propertyName == L"PercentageValue")
+		{
+			if (ctrl->Type() == UIClass::UI_ProgressBar)
+			{
+				auto* pb = (ProgressBar*)ctrl;
+				float v = std::clamp(value, 0.0f, 1.0f);
+				pb->PercentageValue = v;
+			}
+		}
+	}
+	catch (...) {}
+
+	if (auto* p = dynamic_cast<Panel*>(ctrl->Parent))
+	{
+		p->InvalidateLayout();
+		p->PerformLayout();
+	}
+	if (_canvas) _canvas->ClampControlToDesignSurface(ctrl);
+	ctrl->PostRender();
 }
 
 void PropertyGrid::UpdatePropertyFromBool(std::wstring propertyName, bool value)
@@ -155,6 +681,7 @@ void PropertyGrid::UpdatePropertyFromBool(std::wstring propertyName, bool value)
 	{
 		ctrl->Visible = value;
 	}
+	ctrl->PostRender();
 }
 
 void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
@@ -164,6 +691,21 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 	
 	if (!control || !control->ControlInstance)
 	{
+		// 未选中控件时：展示被设计窗体属性
+		if (_canvas)
+		{
+			_titleLabel->Text = L"属性 - 窗体";
+			int yOffset = 45;
+			CreatePropertyItem(L"Text", _canvas->GetDesignedFormText(), yOffset);
+			auto p = _canvas->GetDesignedFormLocation();
+			CreatePropertyItem(L"X", std::to_wstring(p.x), yOffset);
+			CreatePropertyItem(L"Y", std::to_wstring(p.y), yOffset);
+			auto s = _canvas->GetDesignedFormSize();
+			CreatePropertyItem(L"Width", std::to_wstring(s.cx), yOffset);
+			CreatePropertyItem(L"Height", std::to_wstring(s.cy), yOffset);
+			Control::SetChildrenParentForm(this, this->ParentForm);
+			return;
+		}
 		_titleLabel->Text = L"属性";
 		return;
 	}
@@ -186,6 +728,65 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 	// 状态
 	CreateBoolPropertyItem(L"Enabled", ctrl->Enable, yOffset);
 	CreateBoolPropertyItem(L"Visible", ctrl->Visible, yOffset);
+
+	// 常用外观/布局
+	CreatePropertyItem(L"BackColor", ColorToText(ctrl->BackColor), yOffset);
+	CreatePropertyItem(L"ForeColor", ColorToText(ctrl->ForeColor), yOffset);
+	CreatePropertyItem(L"BolderColor", ColorToText(ctrl->BolderColor), yOffset);
+	CreatePropertyItem(L"Margin", ThicknessToText(ctrl->Margin), yOffset);
+	CreatePropertyItem(L"Padding", ThicknessToText(ctrl->Padding), yOffset);
+	CreateEnumPropertyItem(L"HAlign", HAlignToText(ctrl->HAlign), { L"Left", L"Center", L"Right", L"Stretch" }, yOffset);
+	CreateEnumPropertyItem(L"VAlign", VAlignToText(ctrl->VAlign), { L"Top", L"Center", L"Bottom", L"Stretch" }, yOffset);
+	if (ctrl->Parent && ctrl->Parent->Type() == UIClass::UI_DockPanel)
+		CreateEnumPropertyItem(L"Dock", DockToText(ctrl->DockPosition), { L"Fill", L"Left", L"Top", L"Right", L"Bottom" }, yOffset);
+	if (ctrl->Parent && ctrl->Parent->Type() == UIClass::UI_GridPanel)
+	{
+		CreatePropertyItem(L"GridRow", std::to_wstring(ctrl->GridRow), yOffset);
+		CreatePropertyItem(L"GridColumn", std::to_wstring(ctrl->GridColumn), yOffset);
+		CreatePropertyItem(L"GridRowSpan", std::to_wstring(ctrl->GridRowSpan), yOffset);
+		CreatePropertyItem(L"GridColumnSpan", std::to_wstring(ctrl->GridColumnSpan), yOffset);
+	}
+	if (control->Type == UIClass::UI_TabControl)
+	{
+		auto* tc = (TabControl*)ctrl;
+		CreatePropertyItem(L"SelectIndex", std::to_wstring(tc->SelectIndex), yOffset);
+		CreatePropertyItem(L"TitleHeight", std::to_wstring(tc->TitleHeight), yOffset);
+		CreatePropertyItem(L"TitleWidth", std::to_wstring(tc->TitleWidth), yOffset);
+	}
+	if (control->Type == UIClass::UI_StackPanel)
+	{
+		auto* sp = (StackPanel*)ctrl;
+		CreateEnumPropertyItem(L"Orientation", OrientationToText(sp->GetOrientation()), { L"Horizontal", L"Vertical" }, yOffset);
+		CreatePropertyItem(L"Spacing", std::to_wstring(sp->GetSpacing()), yOffset);
+	}
+	if (control->Type == UIClass::UI_WrapPanel)
+	{
+		auto* wp = (WrapPanel*)ctrl;
+		CreateEnumPropertyItem(L"Orientation", OrientationToText(wp->GetOrientation()), { L"Horizontal", L"Vertical" }, yOffset);
+		CreatePropertyItem(L"ItemWidth", std::to_wstring(wp->GetItemWidth()), yOffset);
+		CreatePropertyItem(L"ItemHeight", std::to_wstring(wp->GetItemHeight()), yOffset);
+	}
+	if (control->Type == UIClass::UI_ProgressBar)
+	{
+		auto* pb = (ProgressBar*)ctrl;
+		CreateFloatSliderPropertyItem(L"PercentageValue", pb->PercentageValue, 0.0f, 1.0f, 0.01f, yOffset);
+	}
+	if (control->Type == UIClass::UI_PictureBox)
+	{
+		CreateEnumPropertyItem(L"SizeMode", ImageSizeModeToText(ctrl->SizeMode), { L"Normal", L"CenterImage", L"Stretch", L"Zoom" }, yOffset);
+	}
+	if (control->Type == UIClass::UI_TreeView)
+	{
+		auto* tv = (TreeView*)ctrl;
+		CreatePropertyItem(L"SelectedBackColor", ColorToText(tv->SelectedBackColor), yOffset);
+		CreatePropertyItem(L"UnderMouseItemBackColor", ColorToText(tv->UnderMouseItemBackColor), yOffset);
+		CreatePropertyItem(L"SelectedForeColor", ColorToText(tv->SelectedForeColor), yOffset);
+	}
+	if (control->Type == UIClass::UI_ToolBar)
+	{
+		auto* tb = (ToolBar*)ctrl;
+		CreatePropertyItem(L"Gap", std::to_wstring(tb->Gap), yOffset);
+	}
 
 	// 高级编辑入口（模态窗口）
 	if (control->Type == UIClass::UI_ComboBox)
@@ -300,6 +901,7 @@ void PropertyGrid::Clear()
 		for (auto item : _items)
 		{
 			if (this->ParentForm->Selected == item->NameLabel ||
+				(item->ValueControl && this->ParentForm->Selected == item->ValueControl) ||
 				(item->ValueTextBox && this->ParentForm->Selected == item->ValueTextBox) ||
 				(item->ValueCheckBox && this->ParentForm->Selected == item->ValueCheckBox))
 			{
@@ -325,15 +927,10 @@ void PropertyGrid::Clear()
 	{
 		this->RemoveControl(item->NameLabel);
 		delete item->NameLabel;
-		if (item->ValueTextBox)
+		if (item->ValueControl)
 		{
-			this->RemoveControl(item->ValueTextBox);
-			delete item->ValueTextBox;
-		}
-		if (item->ValueCheckBox)
-		{
-			this->RemoveControl(item->ValueCheckBox);
-			delete item->ValueCheckBox;
+			this->RemoveControl(item->ValueControl);
+			delete item->ValueControl;
 		}
 		delete item;
 	}

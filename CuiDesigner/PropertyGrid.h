@@ -14,16 +14,22 @@ class PropertyItem
 public:
 	std::wstring PropertyName;
 	Label* NameLabel;
+	Control* ValueControl;
 	TextBox* ValueTextBox;
 	CheckBox* ValueCheckBox;
 	
 	PropertyItem(std::wstring name, Label* label, TextBox* textBox)
-		: PropertyName(name), NameLabel(label), ValueTextBox(textBox), ValueCheckBox(nullptr)
+		: PropertyName(name), NameLabel(label), ValueControl(textBox), ValueTextBox(textBox), ValueCheckBox(nullptr)
 	{
 	}
 
 	PropertyItem(std::wstring name, Label* label, CheckBox* checkBox)
-		: PropertyName(name), NameLabel(label), ValueTextBox(nullptr), ValueCheckBox(checkBox)
+		: PropertyName(name), NameLabel(label), ValueControl(checkBox), ValueTextBox(nullptr), ValueCheckBox(checkBox)
+	{
+	}
+
+	PropertyItem(std::wstring name, Label* label, Control* valueControl)
+		: PropertyName(name), NameLabel(label), ValueControl(valueControl), ValueTextBox(nullptr), ValueCheckBox(nullptr)
 	{
 	}
 };
@@ -39,8 +45,13 @@ private:
 	
 	void CreatePropertyItem(std::wstring propertyName, std::wstring value, int& yOffset);
 	void CreateBoolPropertyItem(std::wstring propertyName, bool value, int& yOffset);
+	void CreateEnumPropertyItem(std::wstring propertyName, const std::wstring& value,
+		const std::vector<std::wstring>& options, int& yOffset);
+	void CreateFloatSliderPropertyItem(std::wstring propertyName, float value,
+		float minValue, float maxValue, float step, int& yOffset);
 	void UpdatePropertyFromTextBox(std::wstring propertyName, std::wstring value);
 	void UpdatePropertyFromBool(std::wstring propertyName, bool value);
+	void UpdatePropertyFromFloat(std::wstring propertyName, float value);
 	
 public:
 	PropertyGrid(int x, int y, int width, int height);

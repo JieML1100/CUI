@@ -7,13 +7,45 @@
 class DesignerCanvas : public Panel
 {
 private:
+	Panel* _designSurface = nullptr;
+	std::wstring _designedFormText = L"Form";
+	SIZE _designedFormSize = { 800, 600 };
+	POINT _designedFormLocation = { 100, 100 };
+	POINT _designSurfaceOrigin = { 20, 20 };
+
+	// 网格/吸附/参考线
+	int _gridSize = 10;
+	bool _snapToGrid = true;
+	bool _snapToGuides = true;
+	int _snapThreshold = 5; // 像素阈值：接近则吸附
+	std::vector<int> _vGuides; // canvas 坐标
+	std::vector<int> _hGuides; // canvas 坐标
+
 	std::vector<std::shared_ptr<DesignerControl>> _designerControls;
-	std::shared_ptr<DesignerControl> _selectedControl;
+	std::vector<std::shared_ptr<DesignerControl>> _selectedControls;
+	std::shared_ptr<DesignerControl> _selectedControl; // primary selection
+
+	// 框选状态（rubber band）
+	bool _isBoxSelecting = false;
+	POINT _boxSelectStart = { 0,0 };
+	RECT _boxSelectRect = { 0,0,0,0 };
+	bool _boxSelectAddToSelection = false; // Shift+框选：在现有选择上追加
 	
 	// 拖拽状态
 	bool _isDragging = false;
 	POINT _dragStartPoint = {0, 0};
-	POINT _controlStartLocation = {0, 0};
+	RECT _dragStartRectInCanvas = { 0,0,0,0 };
+
+	struct DragStartItem
+	{
+		Control* ControlInstance = nullptr;
+		Control* Parent = nullptr;
+		RECT StartRectInCanvas{ 0,0,0,0 };
+		POINT StartLocation{ 0,0 };
+		Thickness StartMargin{};
+		bool UsesRelativeMargin = false;
+	};
+	std::vector<DragStartItem> _dragStartItems;
 	
 	// 调整大小状态
 	bool _isResizing = false;
@@ -26,14 +58,43 @@ private:
 	
 	void DrawSelectionHandles(std::shared_ptr<DesignerControl> dc);
 	void DrawGrid();
+	RECT GetDesignSurfaceRectInCanvas() const;
+	bool IsPointInDesignSurface(POINT ptCanvas) const;
+	RECT ClampRectToBounds(RECT r, const RECT& bounds, bool keepSize) const;
+	bool TryHandleTabHeaderClick(POINT ptCanvas);
 	
 	std::shared_ptr<DesignerControl> HitTestControl(POINT pt);
 	CursorKind GetResizeCursor(DesignerControl::ResizeHandle handle);
+	void ClearSelection();
+	bool IsSelected(const std::shared_ptr<DesignerControl>& dc) const;
+	void SetPrimarySelection(const std::shared_ptr<DesignerControl>& dc, bool fireEvent);
+	void AddToSelection(const std::shared_ptr<DesignerControl>& dc, bool setPrimary, bool fireEvent);
+	void ToggleSelection(const std::shared_ptr<DesignerControl>& dc, bool fireEvent);
+	RECT GetSelectionBoundsInCanvas() const;
+	void BeginDragFromCurrentSelection(POINT mousePos);
+	void ApplyMoveDeltaToSelection(int dx, int dy);
+	void ClearAlignmentGuides();
+	void AddVGuide(int xCanvas);
+	void AddHGuide(int yCanvas);
+	RECT ApplyMoveSnap(RECT desiredRectInCanvas, Control* referenceParent);
+	RECT ApplyResizeSnap(RECT desiredRectInCanvas, Control* referenceParent, DesignerControl::ResizeHandle handle);
 	
 public:
 	DesignerCanvas(int x, int y, int width, int height);
 	virtual ~DesignerCanvas();
 	bool HitTestChildren() const override { return false; }
+
+	std::wstring GetDesignedFormText() const { return _designedFormText; }
+	void SetDesignedFormText(const std::wstring& t) { _designedFormText = t; this->PostRender(); }
+	SIZE GetDesignedFormSize() const { return _designedFormSize; }
+	void SetDesignedFormSize(SIZE s);
+	POINT GetDesignedFormLocation() const { return _designedFormLocation; }
+	void SetDesignedFormLocation(POINT p) { _designedFormLocation = p; }
+	void ClampControlToDesignSurface(Control* c);
+
+	// 设计文件（用于保存/加载设计进度）
+	bool SaveDesignFile(const std::wstring& filePath, std::wstring* outError = nullptr) const;
+	bool LoadDesignFile(const std::wstring& filePath, std::wstring* outError = nullptr);
 	
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
@@ -43,7 +104,10 @@ public:
 	void DeleteSelectedControl();
 	void ClearCanvas();
 	void RemoveDesignerControlsInSubtree(Control* root);
+	// 设计期 Name：用于保存/加载 parent 引用，必须非空且在当前文档内唯一
+	std::wstring MakeUniqueControlName(const std::shared_ptr<DesignerControl>& target, const std::wstring& desired) const;
 	std::shared_ptr<DesignerControl> GetSelectedControl() { return _selectedControl; }
+	const std::vector<std::shared_ptr<DesignerControl>>& GetSelectedControls() const { return _selectedControls; }
 	const std::vector<std::shared_ptr<DesignerControl>>& GetAllControls() const { return _designerControls; }
 	
 	// 准备添加控件（鼠标模式）

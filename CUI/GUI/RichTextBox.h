@@ -40,6 +40,7 @@ public:
 	D2D1_COLOR_F ScrollBackColor = Colors::LightGray;
 	D2D1_COLOR_F ScrollForeColor = Colors::DimGrey;
 	bool AllowMultiLine = false;
+	bool AllowTabInput = false;
 			size_t MaxTextLength = 1000000;
 		bool EnableVirtualization = true;
 	size_t VirtualizeThreshold = 20000;

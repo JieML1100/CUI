@@ -25,6 +25,8 @@ private:
 	void OnToolBoxControlSelected(UIClass type);
 	void OnCanvasControlSelected(std::shared_ptr<DesignerControl> control);
 	void OnNewClick();
+	void OnOpenClick();
+	void OnSaveClick();
 	void OnExportClick();
 	void OnDeleteClick();
 	

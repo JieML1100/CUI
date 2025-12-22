@@ -87,6 +87,7 @@ TreeViewNodesEditorDialog::TreeViewNodesEditorDialog(TreeView* target)
 
 	_editor = this->AddControl(new RichTextBox(L"", 12, 60, 576, 330));
 	_editor->AllowMultiLine = true;
+	_editor->AllowTabInput = true;
 	_editor->BackColor = Colors::White;
 	_editor->FocusedColor = D2D1_COLOR_F{ 1,1,1,1 };
 	_editor->Text = NodesToText(_target);

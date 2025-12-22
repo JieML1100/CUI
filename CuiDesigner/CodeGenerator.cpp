@@ -2,6 +2,7 @@
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
+#include <cctype>
 
 // 生成时需要访问具体控件类型的公开字段/方法
 #include "../CUI/GUI/ComboBox.h"
@@ -9,6 +10,10 @@
 #include "../CUI/GUI/TabControl.h"
 #include "../CUI/GUI/ToolBar.h"
 #include "../CUI/GUI/Button.h"
+#include "../CUI/GUI/ProgressBar.h"
+#include "../CUI/GUI/Slider.h"
+#include "../CUI/GUI/PictureBox.h"
+#include "../CUI/GUI/TreeView.h"
 
 #include "../CUI/GUI/Layout/GridPanel.h"
 #include "../CUI/GUI/Layout/StackPanel.h"
@@ -50,12 +55,101 @@ static bool IsContainerType(UIClass t)
 	}
 }
 
-CodeGenerator::CodeGenerator(std::wstring className, const std::vector<std::shared_ptr<DesignerControl>>& controls)
-	: _className(className), _controls(controls)
+CodeGenerator::CodeGenerator(std::wstring className, const std::vector<std::shared_ptr<DesignerControl>>& controls,
+	std::wstring formText, SIZE formSize, POINT formLocation)
+	: _className(className), _controls(controls), _formText(formText), _formSize(formSize), _formLocation(formLocation)
 {
+	if (_formSize.cx <= 0) _formSize.cx = 800;
+	if (_formSize.cy <= 0) _formSize.cy = 600;
+	// 防御：避免生成一个极端位置导致窗体不可见
+	if (_formLocation.x < -10000) _formLocation.x = -10000;
+	if (_formLocation.y < -10000) _formLocation.y = -10000;
+	if (_formLocation.x > 10000) _formLocation.x = 10000;
+	if (_formLocation.y > 10000) _formLocation.y = 10000;
+	BuildVarNameMap();
 }
 
-std::string CodeGenerator::WStringToString(const std::wstring& wstr)
+static bool IsCppKeyword(const std::string& s)
+{
+	static const std::unordered_set<std::string> k = {
+		"alignas","alignof","and","and_eq","asm","atomic_cancel","atomic_commit","atomic_noexcept",
+		"auto","bitand","bitor","bool","break","case","catch","char","char8_t","char16_t","char32_t",
+		"class","compl","concept","const","consteval","constexpr","constinit","const_cast","continue",
+		"co_await","co_return","co_yield","decltype","default","delete","do","double","dynamic_cast",
+		"else","enum","explicit","export","extern","false","float","for","friend","goto","if","inline",
+		"int","long","mutable","namespace","new","noexcept","not","not_eq","nullptr","operator","or",
+		"or_eq","private","protected","public","register","reinterpret_cast","requires","return","short",
+		"signed","sizeof","static","static_assert","static_cast","struct","switch","synchronized","template",
+		"this","thread_local","throw","true","try","typedef","typeid","typename","union","unsigned","using",
+		"virtual","void","volatile","wchar_t","while","xor","xor_eq"
+	};
+	return k.find(s) != k.end();
+}
+
+std::string CodeGenerator::SanitizeCppIdentifier(const std::string& raw)
+{
+	std::string out;
+	out.reserve(raw.size() + 2);
+
+	for (unsigned char ch : raw)
+	{
+		if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_')
+			out.push_back((char)ch);
+		else
+			out.push_back('_');
+	}
+
+	// 不能以数字开头
+	if (!out.empty() && (out[0] >= '0' && out[0] <= '9'))
+		out.insert(out.begin(), '_');
+
+	// 不能空
+	if (out.empty()) out = "control";
+
+	// 避免关键字
+	if (IsCppKeyword(out)) out += "_";
+
+	return out;
+}
+
+void CodeGenerator::BuildVarNameMap()
+{
+	_varNameOf.clear();
+	_varNameOf.reserve(_controls.size());
+
+	std::unordered_map<std::string, int> used;
+	used.reserve(_controls.size());
+
+	for (const auto& dc : _controls)
+	{
+		if (!dc) continue;
+		std::string base = SanitizeCppIdentifier(WStringToString(dc->Name));
+		// 保守：成员变量建议以小写开头，避免与类型名混淆（仅在安全情况下调整）
+		if (!base.empty() && base[0] >= 'A' && base[0] <= 'Z')
+			base[0] = (char)(base[0] - 'A' + 'a');
+
+		int& cnt = used[base];
+		cnt++;
+		std::string finalName = base;
+		if (cnt > 1)
+			finalName = base + std::to_string(cnt);
+
+		// 二次防御：仍可能撞上关键字（例如 base="this" 调整后）
+		if (IsCppKeyword(finalName)) finalName += "_";
+
+		_varNameOf[dc.get()] = finalName;
+	}
+}
+
+std::string CodeGenerator::GetVarName(const std::shared_ptr<DesignerControl>& dc) const
+{
+	if (!dc) return "";
+	auto it = _varNameOf.find(dc.get());
+	if (it != _varNameOf.end()) return it->second;
+	return SanitizeCppIdentifier(WStringToString(dc->Name));
+}
+
+std::string CodeGenerator::WStringToString(const std::wstring& wstr) const
 {
 	if (wstr.empty()) return std::string();
 	int size = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
@@ -64,7 +158,7 @@ std::string CodeGenerator::WStringToString(const std::wstring& wstr)
 	return result;
 }
 
-std::wstring CodeGenerator::StringToWString(const std::string& str)
+std::wstring CodeGenerator::StringToWString(const std::string& str) const
 {
 	if (str.empty()) return std::wstring();
 	int size = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
@@ -279,7 +373,7 @@ std::string CodeGenerator::GenerateControlInstantiation(const std::shared_ptr<De
 	auto* ctrl = dc->ControlInstance;
 	std::ostringstream code;
 	std::string indentStr(indent, '\t');
-	std::string name = WStringToString(dc->Name);
+	std::string name = GetVarName(dc);
 	std::string typeName = GetControlTypeName(dc->Type);
 
 	code << indentStr << "// " << name << "\n";
@@ -343,7 +437,7 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	auto* ctrl = dc->ControlInstance;
 	std::ostringstream code;
 	std::string indentStr(indent, '\t');
-	std::string name = WStringToString(dc->Name);
+	std::string name = GetVarName(dc);
 
 	// 尺寸：Label/CheckBox/RadioBox 构造函数无 size
 	if (dc->Type == UIClass::UI_Label || dc->Type == UIClass::UI_CheckBox || dc->Type == UIClass::UI_RadioBox)
@@ -400,6 +494,61 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 		}
 	}
 
+	// ProgressBar
+	if (dc->Type == UIClass::UI_ProgressBar)
+	{
+		auto* pb = (ProgressBar*)ctrl;
+		// 默认值 0.5f
+		if (std::fabs(pb->PercentageValue - 0.5f) > 1e-6f)
+			code << indentStr << name << "->PercentageValue = " << FloatLiteral(pb->PercentageValue) << ";\n";
+	}
+
+	// Slider
+	if (dc->Type == UIClass::UI_Slider)
+	{
+		auto* s = (Slider*)ctrl;
+		if (std::fabs(s->Min - 0.0f) > 1e-6f) code << indentStr << name << "->Min = " << FloatLiteral(s->Min) << ";\n";
+		if (std::fabs(s->Max - 100.0f) > 1e-6f) code << indentStr << name << "->Max = " << FloatLiteral(s->Max) << ";\n";
+		if (std::fabs(s->Value - 0.0f) > 1e-6f) code << indentStr << name << "->Value = " << FloatLiteral(s->Value) << ";\n";
+		if (std::fabs(s->Step - 1.0f) > 1e-6f) code << indentStr << name << "->Step = " << FloatLiteral(s->Step) << ";\n";
+		if (s->SnapToStep) code << indentStr << name << "->SnapToStep = true;\n";
+	}
+
+	// PictureBox (SizeMode is on base Control)
+	if (dc->Type == UIClass::UI_PictureBox)
+	{
+		if (ctrl->SizeMode != ImageSizeMode::Zoom)
+		{
+			switch (ctrl->SizeMode)
+			{
+			case ImageSizeMode::Normal: code << indentStr << name << "->SizeMode = ImageSizeMode::Normal;\n"; break;
+			case ImageSizeMode::CenterImage: code << indentStr << name << "->SizeMode = ImageSizeMode::CenterImage;\n"; break;
+			case ImageSizeMode::StretchIamge: code << indentStr << name << "->SizeMode = ImageSizeMode::StretchIamge;\n"; break;
+			case ImageSizeMode::Zoom: code << indentStr << name << "->SizeMode = ImageSizeMode::Zoom;\n"; break;
+			default: break;
+			}
+		}
+	}
+
+	// TreeView colors
+	if (dc->Type == UIClass::UI_TreeView)
+	{
+		auto* tv = (TreeView*)ctrl;
+		// 这些默认值在 TreeView.h 里有初始化，这里做“保守输出”：只要与默认不同就生成
+		const D2D1_COLOR_F defSelBack = D2D1_COLOR_F{ 0.f , 0.f , 1.f , 0.5f };
+		const D2D1_COLOR_F defUnderBack = D2D1_COLOR_F{ 0.5961f , 0.9608f , 1.f , 0.5f };
+		const D2D1_COLOR_F defSelFore = Colors::White;
+		auto neq = [](const D2D1_COLOR_F& a, const D2D1_COLOR_F& b) {
+			return std::fabs(a.r - b.r) > 1e-6f || std::fabs(a.g - b.g) > 1e-6f || std::fabs(a.b - b.b) > 1e-6f || std::fabs(a.a - b.a) > 1e-6f;
+		};
+		if (neq(tv->SelectedBackColor, defSelBack))
+			code << indentStr << name << "->SelectedBackColor = " << ColorToString(tv->SelectedBackColor) << ";\n";
+		if (neq(tv->UnderMouseItemBackColor, defUnderBack))
+			code << indentStr << name << "->UnderMouseItemBackColor = " << ColorToString(tv->UnderMouseItemBackColor) << ";\n";
+		if (neq(tv->SelectedForeColor, defSelFore))
+			code << indentStr << name << "->SelectedForeColor = " << ColorToString(tv->SelectedForeColor) << ";\n";
+	}
+
 	// GridView columns
 	if (dc->Type == UIClass::UI_GridView)
 	{
@@ -451,7 +600,7 @@ std::string CodeGenerator::GenerateContainerProperties(const std::shared_ptr<Des
 	auto* ctrl = dc->ControlInstance;
 	std::ostringstream code;
 	std::string indentStr(indent, '\t');
-	std::string name = WStringToString(dc->Name);
+	std::string name = GetVarName(dc);
 
 	if (dc->Type == UIClass::UI_GridPanel)
 	{
@@ -526,7 +675,7 @@ std::string CodeGenerator::GenerateHeader()
 	// 声明控件成员
 	for (const auto& dc : _controls)
 	{
-		std::string name = WStringToString(dc->Name);
+		std::string name = GetVarName(dc);
 		std::string typeName = GetControlTypeName(dc->Type);
 		header << "\t" << typeName << "* " << name << ";\n";
 	}
@@ -551,7 +700,10 @@ std::string CodeGenerator::GenerateCpp()
 	// 构造函数（注意：本框架的窗体初始化应走 Form 基类构造函数参数，
 	// 在构造函数体内直接写 this->Text/Size/Location 可能不会生效。）
 	cpp << className << "::" << className << "()\n";
-	cpp << "\t: Form(L\"" << className << "\", POINT{ 100, 100 }, SIZE{ 800, 600 })\n";
+	std::wstring text = _formText.empty() ? _className : _formText;
+	cpp << "\t: Form(L\"" << EscapeWStringLiteral(text) << "\", POINT{ "
+		<< _formLocation.x << ", " << _formLocation.y << " }, SIZE{ "
+		<< _formSize.cx << ", " << _formSize.cy << " })\n";
 	cpp << "{\n\n";
 	
 	cpp << "\t// 创建控件\n";
@@ -575,7 +727,7 @@ std::string CodeGenerator::GenerateCpp()
 	for (const auto& dc : _controls)
 	{
 		if (!dc || !dc->ControlInstance) continue;
-		varOf[dc->ControlInstance] = WStringToString(dc->Name);
+		varOf[dc->ControlInstance] = GetVarName(dc);
 	}
 
 	// parent -> children(designer) 映射
@@ -665,7 +817,7 @@ std::string CodeGenerator::GenerateCpp()
 		// TabPage 由 TabControl::AddPage 创建，不走通用 AddControl 流程
 		if (dc->Type == UIClass::UI_TabPage) return;
 		auto* c = dc->ControlInstance;
-		std::string childVar = WStringToString(dc->Name);
+		std::string childVar = GetVarName(dc);
 		std::string indentStr(indent, '\t');
 
 		// 添加到父容器

@@ -70,7 +70,7 @@ Control* Form::HitTestControlAt(POINT contentMouse)
 	if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl->Enable)
 	{
 		auto* fc = this->ForegroundControl;
-		auto loc = fc->Location;
+		auto loc = fc->AbsLocation;
 		auto sz = fc->ActualSize();
 		if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
 			contentMouse.x <= (loc.x + sz.cx) && contentMouse.y <= (loc.y + sz.cy))
@@ -83,7 +83,7 @@ Control* Form::HitTestControlAt(POINT contentMouse)
 	if (this->MainMenu && this->MainMenu->Visible && this->MainMenu->Enable)
 	{
 		auto* m = this->MainMenu;
-		auto loc = m->Location;
+		auto loc = m->AbsLocation;
 		auto sz = m->ActualSize();
 		if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
 			contentMouse.x <= (loc.x + sz.cx) && contentMouse.y <= (loc.y + sz.cy))
@@ -1031,8 +1031,12 @@ bool Form::RemoveControl(Control* c)
 	if (this->Controls.Contains(c))
 	{
 		this->Controls.Remove(c);
-		if (this->ForegroundControl == c) this->ForegroundControl = NULL;
-		if (this->MainMenu == c) this->MainMenu = NULL;
+		if (this->ForegroundControl == c) 
+			this->ForegroundControl = NULL;
+		if (this->MainMenu == c) 
+			this->MainMenu = NULL;
+		if (this->UnderMouse == c)
+			this->UnderMouse = NULL;
 		c->Parent = NULL;
 		c->ParentForm = NULL;
 		return true;
@@ -1090,7 +1094,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl->Enable)
 		{
 			auto* fc = this->ForegroundControl;
-			auto loc = fc->Location;
+			auto loc = fc->AbsLocation;
 			auto size = fc->ActualSize();
 			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
 				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))
@@ -1106,7 +1110,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		if (this->MainMenu && this->MainMenu->Visible && this->MainMenu->Enable)
 		{
 			auto* m = this->MainMenu;
-			auto loc = m->Location;
+			auto loc = m->AbsLocation;
 			auto size = m->ActualSize();
 			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
 				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))
@@ -1269,7 +1273,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl->Enable)
 		{
 			auto* fc = this->ForegroundControl;
-			auto loc = fc->Location;
+			auto loc = fc->AbsLocation;
 			auto size = fc->ActualSize();
 			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
 				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))
@@ -1284,7 +1288,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		if (this->MainMenu && this->MainMenu->Visible && this->MainMenu->Enable)
 		{
 			auto* m = this->MainMenu;
-			auto loc = m->Location;
+			auto loc = m->AbsLocation;
 			auto size = m->ActualSize();
 			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
 				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))

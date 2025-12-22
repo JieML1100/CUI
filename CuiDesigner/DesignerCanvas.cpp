@@ -1,4 +1,6 @@
 #include "DesignerCanvas.h"
+#include <CppUtils/Utils/json.h>
+#include <CppUtils/Utils/Convert.h>
 #include "../CUI/GUI/Label.h"
 #include "../CUI/GUI/Button.h"
 #include "../CUI/GUI/TextBox.h"
@@ -26,12 +28,35 @@
 #include <windowsx.h>
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
+#include <unordered_set>
+#include <fstream>
+
+using Json = JsonLib::json;
+
+static RECT IntersectRectSafe(const RECT& a, const RECT& b)
+{
+	RECT r;
+	r.left = (std::max)(a.left, b.left);
+	r.top = (std::max)(a.top, b.top);
+	r.right = (std::min)(a.right, b.right);
+	r.bottom = (std::min)(a.bottom, b.bottom);
+	if (r.right < r.left) r.right = r.left;
+	if (r.bottom < r.top) r.bottom = r.top;
+	return r;
+}
 
 DesignerCanvas::DesignerCanvas(int x, int y, int width, int height)
 	: Panel(x, y, width, height)
 {
-	this->BackColor = Colors::White;
+	// 画布（外围）与设计面板（内部）区分：设计面板负责裁剪/承载被设计控件
+	this->BackColor = Colors::WhiteSmoke;
 	this->Boder = 2.0f;
+
+	_designSurface = new Panel(_designSurfaceOrigin.x, _designSurfaceOrigin.y, _designedFormSize.cx, _designedFormSize.cy);
+	_designSurface->BackColor = Colors::White;
+	_designSurface->Boder = 1.0f;
+	this->AddControl(_designSurface);
 }
 
 DesignerCanvas::~DesignerCanvas()
@@ -40,46 +65,654 @@ DesignerCanvas::~DesignerCanvas()
 
 void DesignerCanvas::Update()
 {
-	Panel::Update();
-	
-	// 绘制网格
-	DrawGrid();
-	
-	// 绘制所有控件
-	for (auto& dc : _designerControls)
+	if (this->IsVisual == false) return;
+	if (!this->ParentForm) return;
+
+	auto d2d = this->ParentForm->Render;
+	auto abslocation = this->AbsLocation;
+	auto size = this->ActualSize();
+	auto absRect = this->AbsRect;
+
+	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
 	{
-		if (dc->ControlInstance && dc->ControlInstance->Visible)
+		d2d->FillRect(abslocation.x, abslocation.y, (float)size.cx, (float)size.cy, this->BackColor);
+		DrawGrid();
+		if (_designSurface)
 		{
-			dc->ControlInstance->Update();
+			_designSurface->Update();
+		}
+		// 选中边框/手柄/框选矩形：裁剪到设计面板
+		{
+			auto clip = GetDesignSurfaceRectInCanvas();
+			RECT canvasRect{ 0,0,this->Width,this->Height };
+			auto finalClip = IntersectRectSafe(clip, canvasRect);
+			auto canvasAbs = this->AbsLocation;
+			d2d->PushDrawRect((float)(canvasAbs.x + finalClip.left), (float)(canvasAbs.y + finalClip.top),
+				(float)(finalClip.right - finalClip.left), (float)(finalClip.bottom - finalClip.top));
+
+			// 参考线（拖拽/缩放期间）
+			if ((_isDragging || _isResizing) && (!_vGuides.empty() || !_hGuides.empty()))
+			{
+				float left = (float)(canvasAbs.x + clip.left);
+				float top = (float)(canvasAbs.y + clip.top);
+				float right = (float)(canvasAbs.x + clip.right);
+				float bottom = (float)(canvasAbs.y + clip.bottom);
+				auto c = Colors::DodgerBlue;
+				c.a = 0.85f;
+				for (int xCanvas : _vGuides)
+				{
+					float x = (float)(canvasAbs.x + xCanvas);
+					d2d->DrawLine(x, top, x, bottom, c, 1.0f);
+				}
+				for (int yCanvas : _hGuides)
+				{
+					float y = (float)(canvasAbs.y + yCanvas);
+					d2d->DrawLine(left, y, right, y, c, 1.0f);
+				}
+			}
+
+			// 先绘制所有选中的边框
+			for (auto& dc : _selectedControls)
+			{
+				if (!dc || !dc->ControlInstance) continue;
+				auto rect = GetControlRectInCanvas(dc->ControlInstance);
+				int w = rect.right - rect.left;
+				int h = rect.bottom - rect.top;
+				float x = (float)(canvasAbs.x + rect.left);
+				float y = (float)(canvasAbs.y + rect.top);
+				d2d->DrawRect(x, y, (float)w, (float)h, Colors::DodgerBlue, 2.0f);
+			}
+
+			// 主选中控件的调整手柄
+			if (_selectedControl)
+			{
+				DrawSelectionHandles(_selectedControl);
+			}
+
+			// 框选矩形
+			if (_isBoxSelecting)
+			{
+				auto r = _boxSelectRect;
+				int w = r.right - r.left;
+				int h = r.bottom - r.top;
+				float x = (float)(canvasAbs.x + r.left);
+				float y = (float)(canvasAbs.y + r.top);
+				D2D1_COLOR_F c = D2D1::ColorF(0.12f, 0.50f, 0.95f, 0.25f);
+				d2d->FillRect(x, y, (float)w, (float)h, c);
+				d2d->DrawRect(x, y, (float)w, (float)h, Colors::DodgerBlue, 1.0f);
+			}
+
+			d2d->PopDrawRect();
+		}
+
+		d2d->DrawRect(abslocation.x, abslocation.y, (float)size.cx, (float)size.cy, this->BolderColor, this->Boder);
+	}
+	if (!this->Enable)
+	{
+		d2d->FillRect(abslocation.x, abslocation.y, (float)size.cx, (float)size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+	}
+	d2d->PopDrawRect();
+}
+
+void DesignerCanvas::ClearSelection()
+{
+	for (auto& dc : _selectedControls)
+	{
+		if (dc) dc->IsSelected = false;
+	}
+	_selectedControls.clear();
+	_selectedControl = nullptr;
+}
+
+bool DesignerCanvas::IsSelected(const std::shared_ptr<DesignerControl>& dc) const
+{
+	if (!dc) return false;
+	for (auto& s : _selectedControls)
+	{
+		if (s == dc) return true;
+	}
+	return false;
+}
+
+void DesignerCanvas::SetPrimarySelection(const std::shared_ptr<DesignerControl>& dc, bool fireEvent)
+{
+	_selectedControl = dc;
+	if (fireEvent)
+		OnControlSelected(_selectedControl);
+}
+
+void DesignerCanvas::AddToSelection(const std::shared_ptr<DesignerControl>& dc, bool setPrimary, bool fireEvent)
+{
+	if (!dc || !dc->ControlInstance) return;
+	if (!IsSelected(dc))
+	{
+		// 最小约束：多选只允许同一运行时父容器，避免跨容器移动/布局难题
+		if (!_selectedControls.empty() && _selectedControl && _selectedControl->ControlInstance)
+		{
+			auto* p0 = _selectedControl->ControlInstance->Parent;
+			auto* p1 = dc->ControlInstance->Parent;
+			if (p0 != p1)
+				return;
+		}
+		_selectedControls.push_back(dc);
+		dc->IsSelected = true;
+	}
+	if (setPrimary)
+		SetPrimarySelection(dc, fireEvent);
+	else if (fireEvent)
+		OnControlSelected(_selectedControl);
+}
+
+void DesignerCanvas::ToggleSelection(const std::shared_ptr<DesignerControl>& dc, bool fireEvent)
+{
+	if (!dc || !dc->ControlInstance) return;
+	if (!IsSelected(dc))
+	{
+		AddToSelection(dc, true, fireEvent);
+		return;
+	}
+
+	// remove
+	_selectedControls.erase(
+		std::remove_if(_selectedControls.begin(), _selectedControls.end(),
+			[&](const std::shared_ptr<DesignerControl>& x) { return x == dc; }),
+		_selectedControls.end());
+	dc->IsSelected = false;
+
+	if (_selectedControl == dc)
+	{
+		_selectedControl = _selectedControls.empty() ? nullptr : _selectedControls.back();
+	}
+	if (fireEvent)
+		OnControlSelected(_selectedControl);
+}
+
+RECT DesignerCanvas::GetSelectionBoundsInCanvas() const
+{
+	RECT out{ 0,0,0,0 };
+	bool first = true;
+	for (auto& dc : _selectedControls)
+	{
+		if (!dc || !dc->ControlInstance) continue;
+		auto r = const_cast<DesignerCanvas*>(this)->GetControlRectInCanvas(dc->ControlInstance);
+		if (first) { out = r; first = false; }
+		else
+		{
+			out.left = (std::min)(out.left, r.left);
+			out.top = (std::min)(out.top, r.top);
+			out.right = (std::max)(out.right, r.right);
+			out.bottom = (std::max)(out.bottom, r.bottom);
 		}
 	}
-	
-	// 绘制选中控件的调整手柄
-	if (_selectedControl)
+	return out;
+}
+
+void DesignerCanvas::BeginDragFromCurrentSelection(POINT mousePos)
+{
+	_dragStartItems.clear();
+	for (auto& dc : _selectedControls)
 	{
-		DrawSelectionHandles(_selectedControl);
+		if (!dc || !dc->ControlInstance) continue;
+		auto* c = dc->ControlInstance;
+		DragStartItem it;
+		it.ControlInstance = c;
+		it.Parent = c->Parent ? c->Parent : _designSurface;
+		it.StartRectInCanvas = GetControlRectInCanvas(c);
+		it.StartLocation = c->Location;
+		it.StartMargin = c->Margin;
+		it.UsesRelativeMargin = (it.Parent && it.Parent->Type() == UIClass::UI_RelativePanel);
+		_dragStartItems.push_back(it);
+	}
+	_isDragging = !_dragStartItems.empty();
+	_dragStartPoint = mousePos;
+	if (_selectedControl && _selectedControl->ControlInstance)
+		_dragStartRectInCanvas = GetControlRectInCanvas(_selectedControl->ControlInstance);
+}
+
+void DesignerCanvas::ApplyMoveDeltaToSelection(int dx, int dy)
+{
+	if (_dragStartItems.empty()) return;
+
+	// 多选移动：目前只支持同一父容器（AddToSelection 已约束）
+	for (auto& it : _dragStartItems)
+	{
+		if (!it.ControlInstance) continue;
+		RECT newRect = it.StartRectInCanvas;
+		newRect.left += dx;
+		newRect.right += dx;
+		newRect.top += dy;
+		newRect.bottom += dy;
+
+		// 根级控件：约束到设计面板；容器内控件不做全局 clamp（由容器布局决定）
+		if (_designSurface && it.ControlInstance->Parent == _designSurface)
+		{
+			auto bounds = GetDesignSurfaceRectInCanvas();
+			newRect = ClampRectToBounds(newRect, bounds, true);
+		}
+
+		Control* parent = it.Parent ? it.Parent : _designSurface;
+		POINT newLocal = CanvasToContainerPoint({ newRect.left, newRect.top }, parent);
+		if (it.UsesRelativeMargin)
+		{
+			auto m = it.StartMargin;
+			m.Left = (float)newLocal.x;
+			m.Top = (float)newLocal.y;
+			it.ControlInstance->Margin = m;
+			it.ControlInstance->Location = { 0,0 };
+			if (auto* p = dynamic_cast<Panel*>(parent))
+			{
+				p->InvalidateLayout();
+				p->PerformLayout();
+			}
+		}
+		else
+		{
+			it.ControlInstance->Location = newLocal;
+		}
 	}
 }
 
 void DesignerCanvas::DrawGrid()
 {
 	if (!this->ParentForm) return;
+	if (!_designSurface) return;
 	auto d2d = this->ParentForm->Render;
-	int gridSize = 10;
-	auto absloc = this->AbsLocation;
+	int gridSize = _gridSize;
+	auto canvasAbs = this->AbsLocation;
+	auto surfRect = GetDesignSurfaceRectInCanvas();
+	auto surfAbsLeft = (float)(canvasAbs.x + surfRect.left);
+	auto surfAbsTop = (float)(canvasAbs.y + surfRect.top);
+	auto surfW = (float)(surfRect.right - surfRect.left);
+	auto surfH = (float)(surfRect.bottom - surfRect.top);
+
+	// 裁剪到设计面板
+	d2d->PushDrawRect(surfAbsLeft, surfAbsTop, surfW, surfH);
 	
 	// 绘制浅色网格
 	D2D1_COLOR_F gridColor = D2D1::ColorF(0.9f, 0.9f, 0.9f, 1.0f);
-	
-	for (int x = 0; x < this->Width; x += gridSize)
+
+	for (int x = 0; x < (surfRect.right - surfRect.left); x += gridSize)
 	{
-		d2d->DrawLine(absloc.x + x, absloc.y, absloc.x + x, absloc.y + this->Height, gridColor, 0.5f);
+		d2d->DrawLine(surfAbsLeft + x, surfAbsTop, surfAbsLeft + x, surfAbsTop + surfH, gridColor, 0.5f);
 	}
-	
-	for (int y = 0; y < this->Height; y += gridSize)
+
+	for (int y = 0; y < (surfRect.bottom - surfRect.top); y += gridSize)
 	{
-		d2d->DrawLine(absloc.x, absloc.y + y, absloc.x + this->Width, absloc.y + y, gridColor, 0.5f);
+		d2d->DrawLine(surfAbsLeft, surfAbsTop + y, surfAbsLeft + surfW, surfAbsTop + y, gridColor, 0.5f);
 	}
+
+	d2d->PopDrawRect();
+}
+
+void DesignerCanvas::ClearAlignmentGuides()
+{
+	_vGuides.clear();
+	_hGuides.clear();
+}
+
+void DesignerCanvas::AddVGuide(int xCanvas)
+{
+	_vGuides.push_back(xCanvas);
+}
+
+void DesignerCanvas::AddHGuide(int yCanvas)
+{
+	_hGuides.push_back(yCanvas);
+}
+
+RECT DesignerCanvas::ApplyMoveSnap(RECT desiredRectInCanvas, Control* referenceParent)
+{
+	ClearAlignmentGuides();
+	if (!_designSurface) return desiredRectInCanvas;
+	if (!_snapToGrid && !_snapToGuides) return desiredRectInCanvas;
+
+	auto surfRect = GetDesignSurfaceRectInCanvas();
+	int dx = 0;
+	int dy = 0;
+
+	auto snapToGrid1 = [&](int value, int origin) {
+		if (_gridSize <= 1) return value;
+		int rel = value - origin;
+		int snapped = origin + (int)std::lround((double)rel / (double)_gridSize) * _gridSize;
+		if (std::abs(snapped - value) <= _snapThreshold) return snapped;
+		return value;
+	};
+
+	if (_snapToGrid)
+	{
+		int newLeft = snapToGrid1(desiredRectInCanvas.left, surfRect.left);
+		int newTop = snapToGrid1(desiredRectInCanvas.top, surfRect.top);
+		dx += (newLeft - desiredRectInCanvas.left);
+		dy += (newTop - desiredRectInCanvas.top);
+	}
+
+	if (_snapToGuides)
+	{
+		std::vector<int> refX;
+		std::vector<int> refY;
+		refX.reserve(_designerControls.size() * 3 + 4);
+		refY.reserve(_designerControls.size() * 3 + 4);
+
+		// design surface edges/centers
+		refX.push_back(surfRect.left);
+		refX.push_back(surfRect.right);
+		refX.push_back((surfRect.left + surfRect.right) / 2);
+		refY.push_back(surfRect.top);
+		refY.push_back(surfRect.bottom);
+		refY.push_back((surfRect.top + surfRect.bottom) / 2);
+
+		for (auto& dc : _designerControls)
+		{
+			if (!dc || !dc->ControlInstance) continue;
+			if (dc->Type == UIClass::UI_TabPage) continue;
+			Control* c = dc->ControlInstance;
+			if (referenceParent && c->Parent != referenceParent) continue;
+			if (IsSelected(dc)) continue;
+			auto r = GetControlRectInCanvas(c);
+			refX.push_back(r.left);
+			refX.push_back(r.right);
+			refX.push_back((r.left + r.right) / 2);
+			refY.push_back(r.top);
+			refY.push_back(r.bottom);
+			refY.push_back((r.top + r.bottom) / 2);
+		}
+
+		RECT moved = desiredRectInCanvas;
+		moved.left += dx; moved.right += dx;
+		moved.top += dy; moved.bottom += dy;
+
+		int candX[3] = { moved.left, moved.right, (moved.left + moved.right) / 2 };
+		int candY[3] = { moved.top, moved.bottom, (moved.top + moved.bottom) / 2 };
+
+		int bestDx = 0; int bestAbsX = _snapThreshold + 1; int bestGuideX = INT_MIN;
+		for (int rx : refX)
+		{
+			for (int cx : candX)
+			{
+				int d = rx - cx;
+				int a = std::abs(d);
+				if (a <= _snapThreshold && a < bestAbsX)
+				{
+					bestAbsX = a;
+					bestDx = d;
+					bestGuideX = rx;
+				}
+			}
+		}
+
+		int bestDy = 0; int bestAbsY = _snapThreshold + 1; int bestGuideY = INT_MIN;
+		for (int ry : refY)
+		{
+			for (int cy : candY)
+			{
+				int d = ry - cy;
+				int a = std::abs(d);
+				if (a <= _snapThreshold && a < bestAbsY)
+				{
+					bestAbsY = a;
+					bestDy = d;
+					bestGuideY = ry;
+				}
+			}
+		}
+
+		dx += bestDx;
+		dy += bestDy;
+		if (bestGuideX != INT_MIN) AddVGuide(bestGuideX);
+		if (bestGuideY != INT_MIN) AddHGuide(bestGuideY);
+	}
+
+	desiredRectInCanvas.left += dx;
+	desiredRectInCanvas.right += dx;
+	desiredRectInCanvas.top += dy;
+	desiredRectInCanvas.bottom += dy;
+	return desiredRectInCanvas;
+}
+
+RECT DesignerCanvas::ApplyResizeSnap(RECT desiredRectInCanvas, Control* referenceParent, DesignerControl::ResizeHandle handle)
+{
+	ClearAlignmentGuides();
+	if (!_designSurface) return desiredRectInCanvas;
+	if (!_snapToGrid && !_snapToGuides) return desiredRectInCanvas;
+
+	auto surfRect = GetDesignSurfaceRectInCanvas();
+
+	auto snapToGridEdge = [&](int value, int origin) {
+		if (_gridSize <= 1) return value;
+		int rel = value - origin;
+		int snapped = origin + (int)std::lround((double)rel / (double)_gridSize) * _gridSize;
+		if (std::abs(snapped - value) <= _snapThreshold) return snapped;
+		return value;
+	};
+
+	auto collectRefX = [&]() {
+		std::vector<int> refX;
+		refX.reserve(_designerControls.size() * 2 + 2);
+		refX.push_back(surfRect.left);
+		refX.push_back(surfRect.right);
+		for (auto& dc : _designerControls)
+		{
+			if (!dc || !dc->ControlInstance) continue;
+			if (dc->Type == UIClass::UI_TabPage) continue;
+			Control* c = dc->ControlInstance;
+			if (referenceParent && c->Parent != referenceParent) continue;
+			if (IsSelected(dc)) continue;
+			auto r = GetControlRectInCanvas(c);
+			refX.push_back(r.left);
+			refX.push_back(r.right);
+		}
+		return refX;
+	};
+	auto collectRefY = [&]() {
+		std::vector<int> refY;
+		refY.reserve(_designerControls.size() * 2 + 2);
+		refY.push_back(surfRect.top);
+		refY.push_back(surfRect.bottom);
+		for (auto& dc : _designerControls)
+		{
+			if (!dc || !dc->ControlInstance) continue;
+			if (dc->Type == UIClass::UI_TabPage) continue;
+			Control* c = dc->ControlInstance;
+			if (referenceParent && c->Parent != referenceParent) continue;
+			if (IsSelected(dc)) continue;
+			auto r = GetControlRectInCanvas(c);
+			refY.push_back(r.top);
+			refY.push_back(r.bottom);
+		}
+		return refY;
+	};
+
+	auto hasLeft = (handle == DesignerControl::ResizeHandle::Left || handle == DesignerControl::ResizeHandle::TopLeft || handle == DesignerControl::ResizeHandle::BottomLeft);
+	auto hasRight = (handle == DesignerControl::ResizeHandle::Right || handle == DesignerControl::ResizeHandle::TopRight || handle == DesignerControl::ResizeHandle::BottomRight);
+	auto hasTop = (handle == DesignerControl::ResizeHandle::Top || handle == DesignerControl::ResizeHandle::TopLeft || handle == DesignerControl::ResizeHandle::TopRight);
+	auto hasBottom = (handle == DesignerControl::ResizeHandle::Bottom || handle == DesignerControl::ResizeHandle::BottomLeft || handle == DesignerControl::ResizeHandle::BottomRight);
+
+	if (_snapToGrid)
+	{
+		if (hasLeft) desiredRectInCanvas.left = snapToGridEdge(desiredRectInCanvas.left, surfRect.left);
+		if (hasRight) desiredRectInCanvas.right = snapToGridEdge(desiredRectInCanvas.right, surfRect.left);
+		if (hasTop) desiredRectInCanvas.top = snapToGridEdge(desiredRectInCanvas.top, surfRect.top);
+		if (hasBottom) desiredRectInCanvas.bottom = snapToGridEdge(desiredRectInCanvas.bottom, surfRect.top);
+	}
+
+	if (_snapToGuides)
+	{
+		if (hasLeft || hasRight)
+		{
+			auto refX = collectRefX();
+			int edge = hasLeft ? desiredRectInCanvas.left : desiredRectInCanvas.right;
+			int bestDx = 0; int bestAbs = _snapThreshold + 1; int bestGuide = INT_MIN;
+			for (int rx : refX)
+			{
+				int d = rx - edge;
+				int a = std::abs(d);
+				if (a <= _snapThreshold && a < bestAbs)
+				{
+					bestAbs = a;
+					bestDx = d;
+					bestGuide = rx;
+				}
+			}
+			if (bestGuide != INT_MIN)
+			{
+				if (hasLeft) desiredRectInCanvas.left += bestDx;
+				else desiredRectInCanvas.right += bestDx;
+				AddVGuide(bestGuide);
+			}
+		}
+		if (hasTop || hasBottom)
+		{
+			auto refY = collectRefY();
+			int edge = hasTop ? desiredRectInCanvas.top : desiredRectInCanvas.bottom;
+			int bestDy = 0; int bestAbs = _snapThreshold + 1; int bestGuide = INT_MIN;
+			for (int ry : refY)
+			{
+				int d = ry - edge;
+				int a = std::abs(d);
+				if (a <= _snapThreshold && a < bestAbs)
+				{
+					bestAbs = a;
+					bestDy = d;
+					bestGuide = ry;
+				}
+			}
+			if (bestGuide != INT_MIN)
+			{
+				if (hasTop) desiredRectInCanvas.top += bestDy;
+				else desiredRectInCanvas.bottom += bestDy;
+				AddHGuide(bestGuide);
+			}
+		}
+	}
+
+	return desiredRectInCanvas;
+}
+
+RECT DesignerCanvas::GetDesignSurfaceRectInCanvas() const
+{
+	if (!_designSurface) return RECT{ 0,0,0,0 };
+	RECT r;
+	r.left = _designSurface->Location.x;
+	r.top = _designSurface->Location.y;
+	r.right = r.left + _designSurface->Size.cx;
+	r.bottom = r.top + _designSurface->Size.cy;
+	return r;
+}
+
+bool DesignerCanvas::IsPointInDesignSurface(POINT ptCanvas) const
+{
+	auto r = GetDesignSurfaceRectInCanvas();
+	return ptCanvas.x >= r.left && ptCanvas.x <= r.right && ptCanvas.y >= r.top && ptCanvas.y <= r.bottom;
+}
+
+RECT DesignerCanvas::ClampRectToBounds(RECT r, const RECT& bounds, bool keepSize) const
+{
+	int w = r.right - r.left;
+	int h = r.bottom - r.top;
+	if (keepSize)
+	{
+		if (r.left < bounds.left) { r.left = bounds.left; r.right = r.left + w; }
+		if (r.top < bounds.top) { r.top = bounds.top; r.bottom = r.top + h; }
+		if (r.right > bounds.right) { r.right = bounds.right; r.left = r.right - w; }
+		if (r.bottom > bounds.bottom) { r.bottom = bounds.bottom; r.top = r.bottom - h; }
+	}
+	else
+	{
+		if (r.left < bounds.left) r.left = bounds.left;
+		if (r.top < bounds.top) r.top = bounds.top;
+		if (r.right > bounds.right) r.right = bounds.right;
+		if (r.bottom > bounds.bottom) r.bottom = bounds.bottom;
+	}
+	// 防御：避免反转
+	if (r.right < r.left) r.right = r.left;
+	if (r.bottom < r.top) r.bottom = r.top;
+	return r;
+}
+
+bool DesignerCanvas::TryHandleTabHeaderClick(POINT ptCanvas)
+{
+	// DesignerCanvas 自己处理选中/拖拽，导致 TabControl 无法收到点击切页。
+	// 这里在画布层模拟 TabControl 标题栏点击，设置 SelectIndex。
+	TabControl* bestTc = nullptr;
+	std::shared_ptr<DesignerControl> bestDc = nullptr;
+	int bestArea = INT_MAX;
+
+	for (auto& dc : _designerControls)
+	{
+		if (!dc || !dc->ControlInstance) continue;
+		if (dc->Type != UIClass::UI_TabControl) continue;
+		auto* tc = dynamic_cast<TabControl*>(dc->ControlInstance);
+		if (!tc) continue;
+		auto r = GetControlRectInCanvas(tc);
+		if (ptCanvas.x < r.left || ptCanvas.x > r.right || ptCanvas.y < r.top || ptCanvas.y > r.bottom) continue;
+		int area = (r.right - r.left) * (r.bottom - r.top);
+		if (area < bestArea)
+		{
+			bestArea = area;
+			bestTc = tc;
+			bestDc = dc;
+		}
+	}
+
+	if (!bestTc || !bestDc) return false;
+
+	auto r = GetControlRectInCanvas(bestTc);
+	int localX = ptCanvas.x - r.left;
+	int localY = ptCanvas.y - r.top;
+	if (localY >= bestTc->TitleHeight) return false;
+	if (bestTc->Count <= 0) return false;
+	if (localX >= bestTc->Count * bestTc->TitleWidth) return false;
+	int idx = localX / bestTc->TitleWidth;
+	if (idx < 0) idx = 0;
+	if (idx >= bestTc->Count) idx = bestTc->Count - 1;
+
+	bestTc->SelectIndex = idx;
+	bestTc->PostRender();
+
+	if (_selectedControl != bestDc)
+	{
+		if (_selectedControl) _selectedControl->IsSelected = false;
+		_selectedControl = bestDc;
+		_selectedControl->IsSelected = true;
+		OnControlSelected(_selectedControl);
+	}
+	return true;
+}
+
+void DesignerCanvas::SetDesignedFormSize(SIZE s)
+{
+	if (s.cx < 50) s.cx = 50;
+	if (s.cy < 50) s.cy = 50;
+	_designedFormSize = s;
+	if (_designSurface)
+	{
+		_designSurface->Size = s;
+		if (auto* p = dynamic_cast<Panel*>(_designSurface))
+		{
+			p->InvalidateLayout();
+			p->PerformLayout();
+		}
+	}
+	// 尺寸变化后：尽量把现有控件也约束到设计面板内
+	for (auto& dc : _designerControls)
+	{
+		if (dc && dc->ControlInstance)
+			ClampControlToDesignSurface(dc->ControlInstance);
+	}
+	this->PostRender();
+}
+
+void DesignerCanvas::ClampControlToDesignSurface(Control* c)
+{
+	if (!c || !_designSurface) return;
+	// 仅约束“当前所在父容器”为设计面板的控件（根级控件）
+	if (c->Parent != _designSurface) return;
+	auto rCanvas = GetControlRectInCanvas(c);
+	auto bounds = GetDesignSurfaceRectInCanvas();
+	RECT clamped = ClampRectToBounds(rCanvas, bounds, true);
+	POINT newTopLeftCanvas{ clamped.left, clamped.top };
+	POINT newLocal = CanvasToContainerPoint(newTopLeftCanvas, _designSurface);
+	c->Location = newLocal;
 }
 
 void DesignerCanvas::DrawSelectionHandles(std::shared_ptr<DesignerControl> dc)
@@ -236,9 +869,13 @@ void DesignerCanvas::RemoveDesignerControlsInSubtree(Control* root)
 	};
 
 	bool selectionRemoved = false;
-	if (_selectedControl && _selectedControl->ControlInstance)
+	for (auto& s : _selectedControls)
 	{
-		selectionRemoved = isInSubtree(_selectedControl->ControlInstance);
+		if (s && s->ControlInstance && isInSubtree(s->ControlInstance))
+		{
+			selectionRemoved = true;
+			break;
+		}
 	}
 
 	_designerControls.erase(
@@ -250,7 +887,7 @@ void DesignerCanvas::RemoveDesignerControlsInSubtree(Control* root)
 
 	if (selectionRemoved)
 	{
-		_selectedControl = nullptr;
+		ClearSelection();
 		OnControlSelected(nullptr);
 	}
 }
@@ -348,6 +985,7 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 {
 	if (!_selectedControl || !_selectedControl->ControlInstance) return;
 	auto* moving = _selectedControl->ControlInstance;
+	if (!_designSurface) return;
 
 	// ToolBar 限制：只允许 Button
 	auto movingType = moving->Type();
@@ -358,19 +996,15 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 	Control* rawContainer = FindBestContainerAtPoint(center, moving);
 	Control* container = NormalizeContainerForDrop(rawContainer);
 	if (!container) {
-		// 落在画布空白：归为根级
-		if (_selectedControl->DesignerParent != nullptr)
-		{
-			// 计算当前在画布中的左上角
-			POINT newCanvasPos{ r.left, r.top };
-			// 从旧父移除
-			if (moving->Parent) moving->Parent->RemoveControl(moving);
-			// 加到画布
-			this->AddControl(moving);
-			moving->Location = newCanvasPos;
-			_selectedControl->DesignerParent = nullptr;
-			this->PostRender();
-		}
+		// 落在容器之外：归为根级（设计期挂到 designSurface 下，但 DesignerParent 仍为 nullptr）
+		POINT newCanvasPos{ r.left, r.top };
+		POINT newLocal = CanvasToContainerPoint(newCanvasPos, _designSurface);
+		if (moving->Parent) moving->Parent->RemoveControl(moving);
+		_designSurface->AddControl(moving);
+		moving->Location = newLocal;
+		_selectedControl->DesignerParent = nullptr;
+		ClampControlToDesignSurface(moving);
+		this->PostRender();
 		return;
 	}
 
@@ -595,56 +1229,65 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			return true;
 		}
 
-		if (!_selectedControl || !_selectedControl->ControlInstance)
+		// Ctrl+A：全选当前容器
+		if (wParam == 'A' && (GetKeyState(VK_CONTROL) & 0x8000))
+		{
+			Control* requiredParent = _designSurface;
+			if (_selectedControl && _selectedControl->ControlInstance)
+				requiredParent = _selectedControl->ControlInstance->Parent ? _selectedControl->ControlInstance->Parent : _designSurface;
+			if (!requiredParent) requiredParent = _designSurface;
+
+			ClearSelection();
+			std::shared_ptr<DesignerControl> first = nullptr;
+			for (auto& dc : _designerControls)
+			{
+				if (!dc || !dc->ControlInstance) continue;
+				if (dc->Type == UIClass::UI_TabPage) continue;
+				if (dc->ControlInstance->Parent != requiredParent) continue;
+				if (!first) { first = dc; AddToSelection(dc, true, false); }
+				else AddToSelection(dc, false, false);
+			}
+			OnControlSelected(_selectedControl);
+			this->PostRender();
+			return true;
+		}
+
+		if (_selectedControls.empty() || !_selectedControl || !_selectedControl->ControlInstance)
 		{
 			break;
 		}
 
 		int step = (GetKeyState(VK_SHIFT) & 0x8000) ? 10 : 1;
-		auto* moving = _selectedControl->ControlInstance;
-		auto loc = moving->Location;
-		bool useRelativeMargin = (moving->Parent && moving->Parent->Type() == UIClass::UI_RelativePanel);
-		auto margin = moving->Margin;
+		bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+		int dx = 0, dy = 0;
 
 		switch (wParam)
 		{
 		case VK_LEFT:
-			if (useRelativeMargin) margin.Left -= step; else loc.x -= step;
+			dx = -step;
 			break;
 		case VK_RIGHT:
-			if (useRelativeMargin) margin.Left += step; else loc.x += step;
+			dx = step;
 			break;
 		case VK_UP:
-			if (useRelativeMargin) margin.Top -= step; else loc.y -= step;
+			dy = -step;
 			break;
 		case VK_DOWN:
-			if (useRelativeMargin) margin.Top += step; else loc.y += step;
+			dy = step;
 			break;
 		default:
 			break;
 		}
-		if (useRelativeMargin)
+		(void)shift;
+		if (dx != 0 || dy != 0)
 		{
-			if (margin.Left != moving->Margin.Left || margin.Top != moving->Margin.Top)
-			{
-				moving->Margin = margin;
-				if (auto* p = dynamic_cast<Panel*>(moving->Parent))
-				{
-					p->InvalidateLayout();
-					p->PerformLayout();
-				}
-				this->PostRender();
-				return true;
-			}
-		}
-		else
-		{
-			if (loc.x != moving->Location.x || loc.y != moving->Location.y)
-			{
-				moving->Location = loc;
-				this->PostRender();
-				return true;
-			}
+			BeginDragFromCurrentSelection(_dragStartPoint);
+			ApplyMoveDeltaToSelection(dx, dy);
+			// 根级控件约束
+			for (auto& sdc : _selectedControls)
+				if (sdc && sdc->ControlInstance) ClampControlToDesignSurface(sdc->ControlInstance);
+			this->PostRender();
+			return true;
 		}
 		break;
 	}
@@ -656,17 +1299,22 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			this->ParentForm->Selected = this;
 		}
 
-		// 如果有待添加的控件，点击时添加
+		// 如果有待添加的控件，点击时添加（必须在设计面板内）
 		if (_controlToAdd != UIClass::UI_Base)
 		{
-			AddControlToCanvas(_controlToAdd, mousePos);
+			if (IsPointInDesignSurface(mousePos))
+				AddControlToCanvas(_controlToAdd, mousePos);
 			_controlToAdd = UIClass::UI_Base;
 			this->Cursor = CursorKind::Arrow;
 			return true;
 		}
+
+		// 先处理 TabControl 标题栏点击（切页）
+		if (TryHandleTabHeaderClick(mousePos))
+			return true;
 		
-		// 检查是否点击选中手柄
-		if (_selectedControl)
+		// 检查是否点击主选中手柄（仅单选/主选中可调整大小）
+		if (_selectedControl && _selectedControls.size() == 1)
 		{
 			auto rect = GetControlRectInCanvas(_selectedControl->ControlInstance);
 			auto handle = HitTestHandleFromRect(rect, mousePos, 6);
@@ -681,49 +1329,80 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			}
 		}
 		
+		bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+		ClearAlignmentGuides();
 		// 选中控件
 		auto hitControl = HitTestControl(mousePos);
 		if (hitControl)
 		{
-			// 取消之前的选中
-			if (_selectedControl)
+			if (shift)
 			{
-				_selectedControl->IsSelected = false;
+				ToggleSelection(hitControl, true);
 			}
-			
-			_selectedControl = hitControl;
-			_selectedControl->IsSelected = true;
-			_isDragging = true;
-			_dragStartPoint = mousePos;
-			_controlStartLocation = hitControl->ControlInstance->Location;
-			
-			OnControlSelected(_selectedControl);
+			else
+			{
+				// 单击：如果点在已选中集合内，则保留多选并切换主选中；否则选中单个
+				if (IsSelected(hitControl) && _selectedControls.size() > 1)
+				{
+					SetPrimarySelection(hitControl, true);
+				}
+				else
+				{
+					ClearSelection();
+					AddToSelection(hitControl, true, true);
+				}
+			}
+			BeginDragFromCurrentSelection(mousePos);
 			return true;
 		}
 		else
 		{
-			// 取消选中
-			if (_selectedControl)
+			// 空白处：开始框选
+			_boxSelectAddToSelection = shift;
+			if (!shift)
 			{
-				_selectedControl->IsSelected = false;
-				_selectedControl = nullptr;
+				ClearSelection();
 				OnControlSelected(nullptr);
+			}
+			if (IsPointInDesignSurface(mousePos))
+			{
+				_isBoxSelecting = true;
+				_boxSelectStart = mousePos;
+				_boxSelectRect = { mousePos.x, mousePos.y, mousePos.x, mousePos.y };
+				return true;
 			}
 		}
 		break;
 	}
 	case WM_MOUSEMOVE:
 	{
-		// 拖拽控件
-		if (_isDragging && _selectedControl && _selectedControl->ControlInstance)
+		// 框选更新
+		if (_isBoxSelecting)
 		{
-			int dx = mousePos.x - _dragStartPoint.x;
-			int dy = mousePos.y - _dragStartPoint.y;
-			
-			_selectedControl->ControlInstance->Location = {
-				_controlStartLocation.x + dx,
-				_controlStartLocation.y + dy
-			};
+			RECT r;
+			r.left = (std::min)(_boxSelectStart.x, mousePos.x);
+			r.top = (std::min)(_boxSelectStart.y, mousePos.y);
+			r.right = (std::max)(_boxSelectStart.x, mousePos.x);
+			r.bottom = (std::max)(_boxSelectStart.y, mousePos.y);
+			_boxSelectRect = r;
+			this->Cursor = CursorKind::Arrow;
+			this->PostRender();
+			return true;
+		}
+
+		// 拖拽控件
+		if (_isDragging && !_dragStartItems.empty())
+		{
+			int rawDx = mousePos.x - _dragStartPoint.x;
+			int rawDy = mousePos.y - _dragStartPoint.y;
+			Control* refParent = (_selectedControl && _selectedControl->ControlInstance) ? _selectedControl->ControlInstance->Parent : _designSurface;
+			RECT desired = _dragStartRectInCanvas;
+			desired.left += rawDx; desired.right += rawDx;
+			desired.top += rawDy; desired.bottom += rawDy;
+			desired = ApplyMoveSnap(desired, refParent);
+			int dx = desired.left - _dragStartRectInCanvas.left;
+			int dy = desired.top - _dragStartRectInCanvas.top;
+			ApplyMoveDeltaToSelection(dx, dy);
 			this->Cursor = CursorKind::SizeAll;
 			return true;
 		}
@@ -758,18 +1437,31 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			
 			// 最小尺寸限制
 			int minSize = 20;
-			if (newRect.right - newRect.left >= minSize && newRect.bottom - newRect.top >= minSize)
-			{
-				_selectedControl->ControlInstance->Location = {newRect.left, newRect.top};
-				_selectedControl->ControlInstance->Size = {newRect.right - newRect.left, newRect.bottom - newRect.top};
-			}
+			if (newRect.right - newRect.left < minSize) newRect.right = newRect.left + minSize;
+			if (newRect.bottom - newRect.top < minSize) newRect.bottom = newRect.top + minSize;
+
+			Control* refParent = _selectedControl->ControlInstance->Parent ? _selectedControl->ControlInstance->Parent : _designSurface;
+			newRect = ApplyResizeSnap(newRect, refParent, _resizeHandle);
+
+			// 再次最小尺寸限制（吸附后可能破坏）
+			if (newRect.right - newRect.left < minSize) newRect.right = newRect.left + minSize;
+			if (newRect.bottom - newRect.top < minSize) newRect.bottom = newRect.top + minSize;
+			// 约束到设计面板
+			auto bounds = GetDesignSurfaceRectInCanvas();
+			newRect = ClampRectToBounds(newRect, bounds, false);
+
+			auto* moving = _selectedControl->ControlInstance;
+			Control* parent = moving->Parent ? moving->Parent : _designSurface;
+			POINT newLocal = CanvasToContainerPoint({ newRect.left, newRect.top }, parent);
+			moving->Location = newLocal;
+			moving->Size = { newRect.right - newRect.left, newRect.bottom - newRect.top };
 			
 			this->Cursor = GetResizeCursor(_resizeHandle);
 			return true;
 		}
 		
-		// 更新鼠标样式
-		if (_selectedControl)
+		// 更新鼠标样式（仅单选时显示 resize cursor）
+		if (_selectedControl && _selectedControls.size() == 1)
 		{
 			auto rect = GetControlRectInCanvas(_selectedControl->ControlInstance);
 			auto handle = HitTestHandleFromRect(rect, mousePos, 6);
@@ -793,14 +1485,66 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 	}
 	case WM_LBUTTONUP:
 	{
-		// 拖拽结束：尝试将控件放入容器
-		if (_isDragging)
+		// 框选结束：按矩形选中（限制：同一父容器）
+		if (_isBoxSelecting)
+		{
+			_isBoxSelecting = false;
+			RECT sel = _boxSelectRect;
+			auto intersects = [](const RECT& a, const RECT& b) {
+				RECT r;
+				r.left = (std::max)(a.left, b.left);
+				r.top = (std::max)(a.top, b.top);
+				r.right = (std::min)(a.right, b.right);
+				r.bottom = (std::min)(a.bottom, b.bottom);
+				return (r.right > r.left) && (r.bottom > r.top);
+			};
+
+			std::shared_ptr<DesignerControl> firstPick = nullptr;
+			Control* requiredParent = nullptr;
+			if (_boxSelectAddToSelection && _selectedControl && _selectedControl->ControlInstance)
+				requiredParent = _selectedControl->ControlInstance->Parent;
+
+			bool primarySet = (_selectedControl != nullptr);
+			for (auto& dc : _designerControls)
+			{
+				if (!dc || !dc->ControlInstance) continue;
+				if (dc->Type == UIClass::UI_TabPage) continue;
+				auto r = GetControlRectInCanvas(dc->ControlInstance);
+				if (!intersects(sel, r)) continue;
+
+				if (!requiredParent)
+					requiredParent = dc->ControlInstance->Parent;
+				if (dc->ControlInstance->Parent != requiredParent) continue;
+
+				if (!firstPick) firstPick = dc;
+
+				// Shift+框选：追加；普通框选：此时已在 LBUTTONDOWN 清空过
+				if (!primarySet)
+				{
+					AddToSelection(dc, true, false);
+					primarySet = true;
+				}
+				else
+				{
+					AddToSelection(dc, false, false);
+				}
+			}
+			_boxSelectAddToSelection = false;
+			OnControlSelected(_selectedControl);
+			this->PostRender();
+			return true;
+		}
+
+		// 拖拽结束：单选时尝试放入容器
+		if (_isDragging && _selectedControls.size() == 1)
 		{
 			TryReparentSelectedAfterDrag();
 		}
 		_isDragging = false;
+		_dragStartItems.clear();
 		_isResizing = false;
 		_resizeHandle = DesignerControl::ResizeHandle::None;
+		ClearAlignmentGuides();
 		this->Cursor = CursorKind::Arrow;
 		return true;
 	}
@@ -813,10 +1557,12 @@ void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
 {
 	Control* newControl = nullptr;
 	std::wstring typeName;
+	if (!_designSurface) return;
+	if (!IsPointInDesignSurface(canvasPos)) return;
 	
 	// 在点击位置创建控件（左上角对齐，稍微偏移避免手感奇怪）
-	int centerX = std::max(0L, canvasPos.x - 30);
-	int centerY = std::max(0L, canvasPos.y - 12);
+	int centerX = (int)canvasPos.x - 30;
+	int centerY = (int)canvasPos.y - 12;
 	
 	switch (type)
 	{
@@ -1049,9 +1795,12 @@ void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
 		}
 		else
 		{
-			// 根级
-			this->AddControl(newControl);
-			newControl->Location = { centerX, centerY };
+			// 根级：属于窗体，但设计期挂在 designSurface 下以获得裁剪/可视边界
+			_designSurface->AddControl(newControl);
+			POINT local = CanvasToContainerPoint({ centerX, centerY }, _designSurface);
+			newControl->Location = local;
+			// 约束初始位置到设计面板
+			ClampControlToDesignSurface(newControl);
 		}
 		
 		// 生成唯一名称
@@ -1063,50 +1812,1112 @@ void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
 		_designerControls.push_back(dc);
 		
 		// 自动选中新添加的控件
-		if (_selectedControl)
-		{
-			_selectedControl->IsSelected = false;
-		}
-		_selectedControl = dc;
-		_selectedControl->IsSelected = true;
-		
-		OnControlSelected(_selectedControl);
+		ClearSelection();
+		AddToSelection(dc, true, true);
 	}
 }
 
 void DesignerCanvas::DeleteSelectedControl()
 {
-	if (!_selectedControl) return;
-	
-	// 从父容器移除并递归删除
-	auto* inst = _selectedControl->ControlInstance;
-	if (!inst)
+	if (_selectedControls.empty()) return;
+
+	// 复制要删除的实例列表（避免删除过程中修改 _selectedControls）
+	std::vector<Control*> toDelete;
+	toDelete.reserve(_selectedControls.size());
+	for (auto& dc : _selectedControls)
 	{
-		_selectedControl = nullptr;
-		OnControlSelected(nullptr);
-		return;
+		if (!dc || !dc->ControlInstance) continue;
+		// 安全：不允许删除设计面板本身
+		if (dc->ControlInstance == _designSurface) continue;
+		toDelete.push_back(dc->ControlInstance);
 	}
 
-	// 删除控件前：先移除该子树下所有 DesignerControl，避免悬挂指针
-	RemoveDesignerControlsInSubtree(inst);
+	ClearSelection();
+	OnControlSelected(nullptr);
 
-	if (inst->Parent)
-		inst->Parent->RemoveControl(inst);
-	DeleteControlRecursive(inst);
+	for (auto* inst : toDelete)
+	{
+		if (!inst) continue;
+		// 删除控件前：先移除该子树下所有 DesignerControl，避免悬挂指针
+		RemoveDesignerControlsInSubtree(inst);
+		if (inst->Parent)
+			inst->Parent->RemoveControl(inst);
+		DeleteControlRecursive(inst);
+	}
 }
 
 void DesignerCanvas::ClearCanvas()
 {
-	// 清空所有控件（递归释放）
-	while (this->Count > 0)
+	if (_designSurface)
 	{
-		auto c = this->operator[](this->Count - 1);
-		this->RemoveControl(c);
-		DeleteControlRecursive(c);
+		// 清空设计面板内的所有控件（递归释放）
+		while (_designSurface->Count > 0)
+		{
+			auto c = _designSurface->operator[](_designSurface->Count - 1);
+			_designSurface->RemoveControl(c);
+			DeleteControlRecursive(c);
+		}
 	}
 	_designerControls.clear();
 	_selectedControl = nullptr;
 	_controlCounter = 0;
 	
 	OnControlSelected(nullptr);
+}
+
+namespace
+{
+	static std::wstring TrimWs(const std::wstring& s)
+	{
+		size_t b = 0;
+		while (b < s.size() && iswspace(s[b])) b++;
+		size_t e = s.size();
+		while (e > b && iswspace(s[e - 1])) e--;
+		return s.substr(b, e - b);
+	}
+
+	static std::string ToUtf8(const std::wstring& s)
+	{
+		return Convert::UnicodeToUtf8(s);
+	}
+
+	static std::wstring FromUtf8(const std::string& s)
+	{
+		return Convert::Utf8ToUnicode(s);
+	}
+
+	static std::string UIClassToString(UIClass t)
+	{
+		switch (t)
+		{
+		case UIClass::UI_Label: return "Label";
+		case UIClass::UI_Button: return "Button";
+		case UIClass::UI_TextBox: return "TextBox";
+		case UIClass::UI_RichTextBox: return "RichTextBox";
+		case UIClass::UI_PasswordBox: return "PasswordBox";
+		case UIClass::UI_Panel: return "Panel";
+		case UIClass::UI_StackPanel: return "StackPanel";
+		case UIClass::UI_GridPanel: return "GridPanel";
+		case UIClass::UI_DockPanel: return "DockPanel";
+		case UIClass::UI_WrapPanel: return "WrapPanel";
+		case UIClass::UI_RelativePanel: return "RelativePanel";
+		case UIClass::UI_CheckBox: return "CheckBox";
+		case UIClass::UI_RadioBox: return "RadioBox";
+		case UIClass::UI_ComboBox: return "ComboBox";
+		case UIClass::UI_GridView: return "GridView";
+		case UIClass::UI_TreeView: return "TreeView";
+		case UIClass::UI_ProgressBar: return "ProgressBar";
+		case UIClass::UI_Slider: return "Slider";
+		case UIClass::UI_PictureBox: return "PictureBox";
+		case UIClass::UI_Switch: return "Switch";
+		case UIClass::UI_TabControl: return "TabControl";
+		case UIClass::UI_ToolBar: return "ToolBar";
+		case UIClass::UI_WebBrowser: return "WebBrowser";
+		case UIClass::UI_TabPage: return "TabPage";
+		default: return "Control";
+		}
+	}
+
+	static bool TryParseUIClass(const std::string& s, UIClass& out)
+	{
+		if (s == "Label") { out = UIClass::UI_Label; return true; }
+		if (s == "Button") { out = UIClass::UI_Button; return true; }
+		if (s == "TextBox") { out = UIClass::UI_TextBox; return true; }
+		if (s == "RichTextBox") { out = UIClass::UI_RichTextBox; return true; }
+		if (s == "PasswordBox") { out = UIClass::UI_PasswordBox; return true; }
+		if (s == "Panel") { out = UIClass::UI_Panel; return true; }
+		if (s == "StackPanel") { out = UIClass::UI_StackPanel; return true; }
+		if (s == "GridPanel") { out = UIClass::UI_GridPanel; return true; }
+		if (s == "DockPanel") { out = UIClass::UI_DockPanel; return true; }
+		if (s == "WrapPanel") { out = UIClass::UI_WrapPanel; return true; }
+		if (s == "RelativePanel") { out = UIClass::UI_RelativePanel; return true; }
+		if (s == "CheckBox") { out = UIClass::UI_CheckBox; return true; }
+		if (s == "RadioBox") { out = UIClass::UI_RadioBox; return true; }
+		if (s == "ComboBox") { out = UIClass::UI_ComboBox; return true; }
+		if (s == "GridView") { out = UIClass::UI_GridView; return true; }
+		if (s == "TreeView") { out = UIClass::UI_TreeView; return true; }
+		if (s == "ProgressBar") { out = UIClass::UI_ProgressBar; return true; }
+		if (s == "Slider") { out = UIClass::UI_Slider; return true; }
+		if (s == "PictureBox") { out = UIClass::UI_PictureBox; return true; }
+		if (s == "Switch") { out = UIClass::UI_Switch; return true; }
+		if (s == "TabControl") { out = UIClass::UI_TabControl; return true; }
+		if (s == "ToolBar") { out = UIClass::UI_ToolBar; return true; }
+		if (s == "WebBrowser") { out = UIClass::UI_WebBrowser; return true; }
+		if (s == "TabPage") { out = UIClass::UI_TabPage; return true; }
+		return false;
+	}
+
+	static Json ColorToJson(const D2D1_COLOR_F& c)
+	{
+		return Json{ {"r", c.r}, {"g", c.g}, {"b", c.b}, {"a", c.a} };
+	}
+	static D2D1_COLOR_F ColorFromJson(const Json& j, const D2D1_COLOR_F& def)
+	{
+		D2D1_COLOR_F c = def;
+		if (j.is_object())
+		{
+			c.r = j.value("r", def.r);
+			c.g = j.value("g", def.g);
+			c.b = j.value("b", def.b);
+			c.a = j.value("a", def.a);
+		}
+		return c;
+	}
+
+	static Json ThicknessToJson(const Thickness& t)
+	{
+		return Json{ {"l", t.Left}, {"t", t.Top}, {"r", t.Right}, {"b", t.Bottom} };
+	}
+	static Thickness ThicknessFromJson(const Json& j, const Thickness& def)
+	{
+		Thickness t = def;
+		if (j.is_object())
+		{
+			t.Left = j.value("l", def.Left);
+			t.Top = j.value("t", def.Top);
+			t.Right = j.value("r", def.Right);
+			t.Bottom = j.value("b", def.Bottom);
+		}
+		return t;
+	}
+
+	static std::string HAlignToString(HorizontalAlignment a)
+	{
+		switch (a)
+		{
+		case HorizontalAlignment::Left: return "Left";
+		case HorizontalAlignment::Center: return "Center";
+		case HorizontalAlignment::Right: return "Right";
+		case HorizontalAlignment::Stretch: return "Stretch";
+		default: return "Left";
+		}
+	}
+	static bool TryParseHAlign(const std::string& s, HorizontalAlignment& out)
+	{
+		if (s == "Left") { out = HorizontalAlignment::Left; return true; }
+		if (s == "Center") { out = HorizontalAlignment::Center; return true; }
+		if (s == "Right") { out = HorizontalAlignment::Right; return true; }
+		if (s == "Stretch") { out = HorizontalAlignment::Stretch; return true; }
+		return false;
+	}
+	static std::string VAlignToString(VerticalAlignment a)
+	{
+		switch (a)
+		{
+		case VerticalAlignment::Top: return "Top";
+		case VerticalAlignment::Center: return "Center";
+		case VerticalAlignment::Bottom: return "Bottom";
+		case VerticalAlignment::Stretch: return "Stretch";
+		default: return "Top";
+		}
+	}
+	static bool TryParseVAlign(const std::string& s, VerticalAlignment& out)
+	{
+		if (s == "Top") { out = VerticalAlignment::Top; return true; }
+		if (s == "Center") { out = VerticalAlignment::Center; return true; }
+		if (s == "Bottom") { out = VerticalAlignment::Bottom; return true; }
+		if (s == "Stretch") { out = VerticalAlignment::Stretch; return true; }
+		return false;
+	}
+	static std::string DockToString(Dock d)
+	{
+		switch (d)
+		{
+		case Dock::Left: return "Left";
+		case Dock::Top: return "Top";
+		case Dock::Right: return "Right";
+		case Dock::Bottom: return "Bottom";
+		case Dock::Fill: return "Fill";
+		default: return "Fill";
+		}
+	}
+	static bool TryParseDock(const std::string& s, Dock& out)
+	{
+		if (s == "Left") { out = Dock::Left; return true; }
+		if (s == "Top") { out = Dock::Top; return true; }
+		if (s == "Right") { out = Dock::Right; return true; }
+		if (s == "Bottom") { out = Dock::Bottom; return true; }
+		if (s == "Fill") { out = Dock::Fill; return true; }
+		return false;
+	}
+	static std::string OrientationToString(Orientation o)
+	{
+		switch (o)
+		{
+		case Orientation::Horizontal: return "Horizontal";
+		case Orientation::Vertical: return "Vertical";
+		default: return "Vertical";
+		}
+	}
+	static bool TryParseOrientation(const std::string& s, Orientation& out)
+	{
+		if (s == "Horizontal") { out = Orientation::Horizontal; return true; }
+		if (s == "Vertical") { out = Orientation::Vertical; return true; }
+		return false;
+	}
+
+	static std::string SizeUnitToString(SizeUnit u)
+	{
+		switch (u)
+		{
+		case SizeUnit::Pixel: return "Pixel";
+		case SizeUnit::Percent: return "Percent";
+		case SizeUnit::Auto: return "Auto";
+		case SizeUnit::Star: return "Star";
+		default: return "Pixel";
+		}
+	}
+	static bool TryParseSizeUnit(const std::string& s, SizeUnit& out)
+	{
+		if (s == "Pixel") { out = SizeUnit::Pixel; return true; }
+		if (s == "Percent") { out = SizeUnit::Percent; return true; }
+		if (s == "Auto") { out = SizeUnit::Auto; return true; }
+		if (s == "Star") { out = SizeUnit::Star; return true; }
+		return false;
+	}
+	static Json GridLengthToJson(const GridLength& gl)
+	{
+		return Json{ {"value", gl.Value}, {"unit", SizeUnitToString(gl.Unit)} };
+	}
+	static GridLength GridLengthFromJson(const Json& j, const GridLength& def)
+	{
+		GridLength gl = def;
+		if (!j.is_object()) return gl;
+		gl.Value = j.value("value", def.Value);
+		SizeUnit u = def.Unit;
+		if (j.contains("unit") && j["unit"].is_string())
+		{
+			TryParseSizeUnit(j["unit"].get<std::string>(), u);
+		}
+		gl.Unit = u;
+		return gl;
+	}
+
+	static int GetChildIndex(Control* parent, Control* child)
+	{
+		if (!parent || !child) return -1;
+		for (int i = 0; i < parent->Count; i++)
+		{
+			if (parent->operator[](i) == child) return i;
+		}
+		return -1;
+	}
+
+	static Json TreeNodesToJson(List<TreeNode*>& nodes)
+	{
+		Json arr = Json::array();
+		for (auto* n : nodes)
+		{
+			if (!n) continue;
+			Json one;
+			one["text"] = ToUtf8(n->Text);
+			one["expand"] = n->Expand;
+			if (n->Children.Count > 0)
+				one["children"] = TreeNodesToJson(n->Children);
+			arr.push_back(one);
+		}
+		return arr;
+	}
+
+	static void JsonToTreeNodes(const Json& j, List<TreeNode*>& outNodes)
+	{
+		if (!j.is_array()) return;
+		for (auto& it : j)
+		{
+			if (!it.is_object()) continue;
+			auto text = FromUtf8(it.value("text", std::string()));
+			auto* node = new TreeNode(text);
+			node->Expand = it.value("expand", false);
+			if (it.contains("children"))
+				JsonToTreeNodes(it["children"], node->Children);
+			outNodes.push_back(node);
+		}
+	}
+
+	static int ParseTrailingIntOrZero(const std::wstring& s)
+	{
+		int i = (int)s.size() - 1;
+		while (i >= 0 && iswdigit(s[(size_t)i])) i--;
+		if (i == (int)s.size() - 1) return 0;
+		try
+		{
+			return std::stoi(s.substr((size_t)i + 1));
+		}
+		catch (...) { return 0; }
+	}
+}
+
+std::wstring DesignerCanvas::MakeUniqueControlName(const std::shared_ptr<DesignerControl>& target, const std::wstring& desired) const
+{
+	std::wstring base = TrimWs(desired);
+	if (base.empty()) base = L"Control";
+
+	auto isUsed = [&](const std::wstring& n) -> bool
+	{
+		for (auto& dc : _designerControls)
+		{
+			if (!dc) continue;
+			if (dc == target) continue;
+			if (dc->Name == n) return true;
+		}
+		return false;
+	};
+
+	if (!isUsed(base)) return base;
+
+	int suffix = 2;
+	while (suffix < 1000000)
+	{
+		std::wstring candidate = base + std::to_wstring(suffix);
+		if (!isUsed(candidate)) return candidate;
+		suffix++;
+	}
+	// 极端情况下兜底：保持可用但不保证美观
+	return base + L"_";
+}
+
+bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* outError) const
+{
+	try
+	{
+		if (filePath.empty())
+		{
+			if (outError) *outError = L"文件路径为空。";
+			return false;
+		}
+
+		Json root;
+		root["schema"] = "cui.designer";
+		root["version"] = 1;
+		root["form"] = Json{
+			{"text", ToUtf8(_designedFormText)},
+			{"size", Json{{"w", _designedFormSize.cx}, {"h", _designedFormSize.cy}}},
+			{"location", Json{{"x", _designedFormLocation.x}, {"y", _designedFormLocation.y}}}
+		};
+
+		// 防御：Name 必须唯一，否则 parent 引用会歧义，文件将无法可靠加载
+		{
+			std::unordered_set<std::wstring> used;
+			used.reserve(_designerControls.size());
+			for (auto& dc : _designerControls)
+			{
+				if (!dc) continue;
+				if (dc->Name.empty())
+				{
+					if (outError) *outError = L"存在空的控件 Name，请先为控件命名。";
+					return false;
+				}
+				if (used.find(dc->Name) != used.end())
+				{
+					if (outError) *outError = L"存在重复的控件 Name: " + dc->Name;
+					return false;
+				}
+				used.insert(dc->Name);
+			}
+		}
+
+		// Control* -> name
+		std::unordered_map<Control*, std::wstring> nameOf;
+		nameOf.reserve(_designerControls.size());
+		for (auto& dc : _designerControls)
+		{
+			if (!dc || !dc->ControlInstance) continue;
+			nameOf[dc->ControlInstance] = dc->Name;
+		}
+
+		// TabPage* -> pageId
+		std::unordered_map<Control*, std::string> tabPageIdOf;
+		tabPageIdOf.reserve(32);
+		for (auto& dc : _designerControls)
+		{
+			if (!dc || !dc->ControlInstance) continue;
+			if (dc->Type != UIClass::UI_TabControl) continue;
+			auto* tc = (TabControl*)dc->ControlInstance;
+			for (int i = 0; i < tc->Count; i++)
+			{
+				auto* page = tc->operator[](i);
+				if (!page) continue;
+				std::wstring wid = dc->Name + L"#page" + std::to_wstring(i);
+				tabPageIdOf[page] = ToUtf8(wid);
+			}
+		}
+
+		Json arr = Json::array();
+		for (auto& dc : _designerControls)
+		{
+			if (!dc || !dc->ControlInstance) continue;
+			if (dc->Type == UIClass::UI_TabPage) continue;
+			auto* c = dc->ControlInstance;
+
+			Json item;
+			item["name"] = ToUtf8(dc->Name);
+			item["type"] = UIClassToString(dc->Type);
+
+			// parent reference
+			if (!dc->DesignerParent)
+			{
+				item["parent"] = nullptr;
+			}
+			else
+			{
+				auto itName = nameOf.find(dc->DesignerParent);
+				if (itName != nameOf.end())
+					item["parent"] = ToUtf8(itName->second);
+				else
+				{
+					auto itPage = tabPageIdOf.find(dc->DesignerParent);
+					if (itPage != tabPageIdOf.end()) item["parent"] = itPage->second;
+					else item["parent"] = nullptr;
+				}
+			}
+
+			Control* runtimeParent = dc->DesignerParent ? dc->DesignerParent : _designSurface;
+			item["order"] = GetChildIndex(runtimeParent, c);
+
+			Json props;
+			props["text"] = ToUtf8(c->Text);
+			props["location"] = Json{ {"x", c->Location.x}, {"y", c->Location.y} };
+			props["size"] = Json{ {"w", c->Size.cx}, {"h", c->Size.cy} };
+			props["enable"] = c->Enable;
+			props["visible"] = c->Visible;
+			props["backColor"] = ColorToJson(c->BackColor);
+			props["foreColor"] = ColorToJson(c->ForeColor);
+			props["bolderColor"] = ColorToJson(c->BolderColor);
+			props["margin"] = ThicknessToJson(c->Margin);
+			props["padding"] = ThicknessToJson(c->Padding);
+			props["hAlign"] = HAlignToString(c->HAlign);
+			props["vAlign"] = VAlignToString(c->VAlign);
+			props["dock"] = DockToString(c->DockPosition);
+			props["gridRow"] = c->GridRow;
+			props["gridColumn"] = c->GridColumn;
+			props["gridRowSpan"] = c->GridRowSpan;
+			props["gridColumnSpan"] = c->GridColumnSpan;
+			props["sizeMode"] = (int)c->SizeMode;
+			item["props"] = props;
+
+			Json extra;
+			if (dc->Type == UIClass::UI_ComboBox)
+			{
+				auto* cb = (ComboBox*)c;
+				Json items = Json::array();
+				for (int i = 0; i < cb->values.Count; i++)
+					items.push_back(ToUtf8(cb->values[i]));
+				extra["items"] = items;
+				extra["selectedIndex"] = cb->SelectedIndex;
+			}
+			else if (dc->Type == UIClass::UI_ProgressBar)
+			{
+				extra["percentageValue"] = ((ProgressBar*)c)->PercentageValue;
+			}
+			else if (dc->Type == UIClass::UI_Slider)
+			{
+				auto* s = (Slider*)c;
+				extra["min"] = s->Min;
+				extra["max"] = s->Max;
+				extra["value"] = s->Value;
+				extra["step"] = s->Step;
+				extra["snapToStep"] = s->SnapToStep;
+			}
+			else if (dc->Type == UIClass::UI_GridView)
+			{
+				auto* gv = (GridView*)c;
+				Json cols = Json::array();
+				for (int i = 0; i < gv->Columns.Count; i++)
+				{
+					auto& col = gv->Columns[i];
+					Json cj;
+					cj["name"] = ToUtf8(col.Name);
+					cj["width"] = col.Width;
+					cj["type"] = (int)col.Type;
+					cj["canEdit"] = col.CanEdit;
+					cols.push_back(cj);
+				}
+				extra["columns"] = cols;
+			}
+			else if (dc->Type == UIClass::UI_TreeView)
+			{
+				auto* tv = (TreeView*)c;
+				if (tv->Root)
+					extra["nodes"] = TreeNodesToJson(tv->Root->Children);
+				extra["selectedBackColor"] = ColorToJson(tv->SelectedBackColor);
+				extra["underMouseItemBackColor"] = ColorToJson(tv->UnderMouseItemBackColor);
+				extra["selectedForeColor"] = ColorToJson(tv->SelectedForeColor);
+			}
+			else if (dc->Type == UIClass::UI_TabControl)
+			{
+				auto* tc = (TabControl*)c;
+				extra["selectIndex"] = tc->SelectIndex;
+				extra["titleHeight"] = tc->TitleHeight;
+				extra["titleWidth"] = tc->TitleWidth;
+				Json pages = Json::array();
+				for (int i = 0; i < tc->Count; i++)
+				{
+					auto* page = tc->operator[](i);
+					if (!page) continue;
+					Json pj;
+					std::wstring wid = dc->Name + L"#page" + std::to_wstring(i);
+					pj["id"] = ToUtf8(wid);
+					pj["text"] = ToUtf8(page->Text);
+					pages.push_back(pj);
+				}
+				extra["pages"] = pages;
+			}
+			else if (dc->Type == UIClass::UI_ToolBar)
+			{
+				auto* tb = (ToolBar*)c;
+				extra["padding"] = tb->Padding;
+				extra["gap"] = tb->Gap;
+				extra["itemHeight"] = tb->ItemHeight;
+			}
+			else if (dc->Type == UIClass::UI_GridPanel)
+			{
+				auto* gp = (GridPanel*)c;
+				Json rows = Json::array();
+				for (auto& r : gp->GetRows())
+				{
+					rows.push_back(Json{
+						{"height", GridLengthToJson(r.Height)},
+						{"min", r.MinHeight},
+						{"max", r.MaxHeight}
+					});
+				}
+				Json cols = Json::array();
+				for (auto& col : gp->GetColumns())
+				{
+					cols.push_back(Json{
+						{"width", GridLengthToJson(col.Width)},
+						{"min", col.MinWidth},
+						{"max", col.MaxWidth}
+					});
+				}
+				extra["rows"] = rows;
+				extra["columns"] = cols;
+			}
+			else if (dc->Type == UIClass::UI_StackPanel)
+			{
+				auto* sp = (StackPanel*)c;
+				extra["orientation"] = OrientationToString(sp->GetOrientation());
+				extra["spacing"] = sp->GetSpacing();
+			}
+			else if (dc->Type == UIClass::UI_WrapPanel)
+			{
+				auto* wp = (WrapPanel*)c;
+				extra["orientation"] = OrientationToString(wp->GetOrientation());
+				extra["itemWidth"] = wp->GetItemWidth();
+				extra["itemHeight"] = wp->GetItemHeight();
+			}
+			else if (dc->Type == UIClass::UI_DockPanel)
+			{
+				auto* dp = (DockPanel*)c;
+				extra["lastChildFill"] = dp->GetLastChildFill();
+			}
+
+			if (!extra.empty()) item["extra"] = extra;
+			arr.push_back(item);
+		}
+
+		root["controls"] = arr;
+		std::string out = root.dump(2);
+		std::ofstream f(filePath, std::ios::binary);
+		if (!f.is_open())
+		{
+			if (outError) *outError = L"无法打开文件写入。";
+			return false;
+		}
+		f.write(out.data(), (std::streamsize)out.size());
+		return true;
+	}
+	catch (const std::exception& ex)
+	{
+		if (outError) *outError = L"保存失败: " + FromUtf8(ex.what());
+		return false;
+	}
+	catch (...)
+	{
+		if (outError) *outError = L"保存失败：未知错误。";
+		return false;
+	}
+}
+
+bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* outError)
+{
+	try
+	{
+		if (filePath.empty())
+		{
+			if (outError) *outError = L"文件路径为空。";
+			return false;
+		}
+
+		std::ifstream f(filePath, std::ios::binary);
+		if (!f.is_open())
+		{
+			if (outError) *outError = L"无法打开文件读取。";
+			return false;
+		}
+		std::stringstream ss;
+		ss << f.rdbuf();
+		Json root = Json::parse(ss.str(), nullptr, true, true);
+
+		if (root.value("schema", std::string()) != "cui.designer")
+		{
+			if (outError) *outError = L"不是有效的 CUI Designer 文件（schema 不匹配）。";
+			return false;
+		}
+		int ver = root.value("version", 0);
+		if (ver != 1)
+		{
+			if (outError) *outError = L"不支持的设计文件版本。";
+			return false;
+		}
+		if (!root.contains("controls") || !root["controls"].is_array())
+		{
+			if (outError) *outError = L"设计文件缺少 controls 数组。";
+			return false;
+		}
+
+		ClearCanvas();
+		_controlCounter = 0;
+
+		if (root.contains("form") && root["form"].is_object())
+		{
+			auto& form = root["form"];
+			_designedFormText = FromUtf8(form.value("text", std::string()));
+			if (form.contains("size") && form["size"].is_object())
+			{
+				SIZE s;
+				s.cx = form["size"].value("w", 800);
+				s.cy = form["size"].value("h", 600);
+				SetDesignedFormSize(s);
+			}
+			if (form.contains("location") && form["location"].is_object())
+			{
+				_designedFormLocation.x = form["location"].value("x", 100);
+				_designedFormLocation.y = form["location"].value("y", 100);
+			}
+		}
+
+		struct Pending
+		{
+			std::wstring name;
+			UIClass type = UIClass::UI_Base;
+			Json parent;
+			int order = -1;
+			Json props;
+			Json extra;
+		};
+		std::vector<Pending> items;
+		items.reserve(root["controls"].size());
+
+		std::unordered_set<std::wstring> nameSet;
+		for (auto& j : root["controls"])
+		{
+			if (!j.is_object()) continue;
+			Pending p;
+			p.name = FromUtf8(j.value("name", std::string()));
+			std::string typeStr = j.value("type", std::string());
+			UIClass t;
+			if (p.name.empty() || !TryParseUIClass(typeStr, t))
+			{
+				if (outError) *outError = L"控件条目缺少 name/type 或 type 不支持。";
+				return false;
+			}
+			p.type = t;
+			if (nameSet.find(p.name) != nameSet.end())
+			{
+				if (outError) *outError = L"控件 Name 重复: " + p.name;
+				return false;
+			}
+			nameSet.insert(p.name);
+			p.parent = j.contains("parent") ? j["parent"] : Json();
+			p.order = j.value("order", -1);
+			p.props = j.contains("props") ? j["props"] : Json::object();
+			p.extra = j.contains("extra") ? j["extra"] : Json::object();
+			items.push_back(std::move(p));
+		}
+
+		auto createControl = [&](UIClass type) -> Control*
+		{
+			switch (type)
+			{
+			case UIClass::UI_Label: return new Label(L"标签", 0, 0);
+			case UIClass::UI_Button: return new Button(L"按钮", 0, 0, 120, 30);
+			case UIClass::UI_TextBox: return new TextBox(L"", 0, 0, 200, 25);
+			case UIClass::UI_RichTextBox: return new RichTextBox(L"", 0, 0, 300, 160);
+			case UIClass::UI_PasswordBox: return new PasswordBox(L"", 0, 0, 200, 25);
+			case UIClass::UI_Panel: return new Panel(0, 0, 200, 200);
+			case UIClass::UI_StackPanel: return new StackPanel(0, 0, 200, 200);
+			case UIClass::UI_GridPanel: return new GridPanel(0, 0, 200, 200);
+			case UIClass::UI_DockPanel: return new DockPanel(0, 0, 200, 200);
+			case UIClass::UI_WrapPanel: return new WrapPanel(0, 0, 200, 200);
+			case UIClass::UI_RelativePanel: return new RelativePanel(0, 0, 200, 200);
+			case UIClass::UI_CheckBox: return new CheckBox(L"复选框", 0, 0);
+			case UIClass::UI_RadioBox: return new RadioBox(L"单选框", 0, 0);
+			case UIClass::UI_ComboBox: return new ComboBox(L"", 0, 0, 150, 25);
+			case UIClass::UI_GridView: return new GridView(0, 0, 360, 200);
+			case UIClass::UI_TreeView: return new TreeView(0, 0, 220, 220);
+			case UIClass::UI_ProgressBar: return new ProgressBar(0, 0, 200, 20);
+			case UIClass::UI_Slider: return new Slider(0, 0, 200, 30);
+			case UIClass::UI_PictureBox: return new PictureBox(0, 0, 150, 150);
+			case UIClass::UI_Switch: return new Switch(0, 0, 60, 30);
+			case UIClass::UI_TabControl: return new TabControl(0, 0, 360, 240);
+			case UIClass::UI_ToolBar: return new ToolBar(0, 0, 360, 34);
+			case UIClass::UI_WebBrowser: return new WebBrowser(0, 0, 500, 360);
+			default: return nullptr;
+			}
+		};
+
+		std::unordered_map<std::wstring, std::shared_ptr<DesignerControl>> dcOf;
+		dcOf.reserve(items.size());
+		std::unordered_map<std::wstring, Control*> instOf;
+		instOf.reserve(items.size());
+
+		// TabPage id(wstring) -> TabPage*
+		std::unordered_map<std::wstring, Control*> tabPageOf;
+		tabPageOf.reserve(64);
+
+		// 1) create instances
+		for (auto& it : items)
+		{
+			Control* c = createControl(it.type);
+			if (!c)
+			{
+				if (outError) *outError = L"无法创建控件实例: " + it.name;
+				return false;
+			}
+			auto dc = std::make_shared<DesignerControl>(c, it.name, it.type, nullptr);
+			dcOf[it.name] = dc;
+			instOf[it.name] = c;
+			_controlCounter = (std::max)(_controlCounter, ParseTrailingIntOrZero(it.name));
+		}
+
+		// 2) apply properties/extras that affect children creation (e.g. GridPanel defs, TabControl pages)
+		for (auto& it : items)
+		{
+			auto dcIt = dcOf.find(it.name);
+			if (dcIt == dcOf.end()) continue;
+			auto dc = dcIt->second;
+			auto* c = dc->ControlInstance;
+			if (!c) continue;
+
+			// base props
+			if (it.props.is_object())
+			{
+				c->Text = FromUtf8(it.props.value("text", std::string()));
+				if (it.props.contains("location"))
+				{
+					auto& l = it.props["location"];
+					if (l.is_object())
+						c->Location = { l.value("x", 0), l.value("y", 0) };
+				}
+				if (it.props.contains("size"))
+				{
+					auto& s = it.props["size"];
+					if (s.is_object())
+						c->Size = { s.value("w", c->Size.cx), s.value("h", c->Size.cy) };
+				}
+				c->Enable = it.props.value("enable", true);
+				c->Visible = it.props.value("visible", true);
+				c->BackColor = ColorFromJson(it.props.value("backColor", Json()), c->BackColor);
+				c->ForeColor = ColorFromJson(it.props.value("foreColor", Json()), c->ForeColor);
+				c->BolderColor = ColorFromJson(it.props.value("bolderColor", Json()), c->BolderColor);
+				c->Margin = ThicknessFromJson(it.props.value("margin", Json()), c->Margin);
+				c->Padding = ThicknessFromJson(it.props.value("padding", Json()), c->Padding);
+				HorizontalAlignment ha = c->HAlign;
+				VerticalAlignment va = c->VAlign;
+				Dock dk = c->DockPosition;
+				if (it.props.contains("hAlign") && it.props["hAlign"].is_string())
+					TryParseHAlign(it.props["hAlign"].get<std::string>(), ha);
+				if (it.props.contains("vAlign") && it.props["vAlign"].is_string())
+					TryParseVAlign(it.props["vAlign"].get<std::string>(), va);
+				if (it.props.contains("dock") && it.props["dock"].is_string())
+					TryParseDock(it.props["dock"].get<std::string>(), dk);
+				c->HAlign = ha;
+				c->VAlign = va;
+				c->DockPosition = dk;
+				c->GridRow = it.props.value("gridRow", c->GridRow);
+				c->GridColumn = it.props.value("gridColumn", c->GridColumn);
+				c->GridRowSpan = it.props.value("gridRowSpan", c->GridRowSpan);
+				c->GridColumnSpan = it.props.value("gridColumnSpan", c->GridColumnSpan);
+				c->SizeMode = (ImageSizeMode)it.props.value("sizeMode", (int)c->SizeMode);
+			}
+
+			if (it.extra.is_object())
+			{
+				if (it.type == UIClass::UI_GridPanel)
+				{
+					auto* gp = (GridPanel*)c;
+					gp->ClearRows();
+					gp->ClearColumns();
+					if (it.extra.contains("rows") && it.extra["rows"].is_array())
+					{
+						for (auto& r : it.extra["rows"])
+						{
+							if (!r.is_object()) continue;
+							GridLength h = GridLengthFromJson(r.value("height", Json()), GridLength::Auto());
+							float minH = r.value("min", 0.0f);
+							float maxH = r.value("max", FLT_MAX);
+							gp->AddRow(h, minH, maxH);
+						}
+					}
+					if (it.extra.contains("columns") && it.extra["columns"].is_array())
+					{
+						for (auto& col : it.extra["columns"])
+						{
+							if (!col.is_object()) continue;
+							GridLength w = GridLengthFromJson(col.value("width", Json()), GridLength::Auto());
+							float minW = col.value("min", 0.0f);
+							float maxW = col.value("max", FLT_MAX);
+							gp->AddColumn(w, minW, maxW);
+						}
+					}
+				}
+				else if (it.type == UIClass::UI_TabControl)
+				{
+					auto* tc = (TabControl*)c;
+					tc->SelectIndex = it.extra.value("selectIndex", tc->SelectIndex);
+					tc->TitleHeight = it.extra.value("titleHeight", tc->TitleHeight);
+					tc->TitleWidth = it.extra.value("titleWidth", tc->TitleWidth);
+					if (it.extra.contains("pages") && it.extra["pages"].is_array())
+					{
+						for (auto& pj : it.extra["pages"])
+						{
+							if (!pj.is_object()) continue;
+							std::wstring id = FromUtf8(pj.value("id", std::string()));
+							auto text = FromUtf8(pj.value("text", std::string("Page")));
+							auto* page = tc->AddPage(text);
+							if (page)
+								tabPageOf[id] = page;
+						}
+					}
+				}
+				else if (it.type == UIClass::UI_StackPanel)
+				{
+					auto* sp = (StackPanel*)c;
+					Orientation o;
+					if (it.extra.contains("orientation") && it.extra["orientation"].is_string() && TryParseOrientation(it.extra["orientation"].get<std::string>(), o))
+						sp->SetOrientation(o);
+					sp->SetSpacing(it.extra.value("spacing", sp->GetSpacing()));
+				}
+				else if (it.type == UIClass::UI_WrapPanel)
+				{
+					auto* wp = (WrapPanel*)c;
+					Orientation o;
+					if (it.extra.contains("orientation") && it.extra["orientation"].is_string() && TryParseOrientation(it.extra["orientation"].get<std::string>(), o))
+						wp->SetOrientation(o);
+					wp->SetItemWidth(it.extra.value("itemWidth", wp->GetItemWidth()));
+					wp->SetItemHeight(it.extra.value("itemHeight", wp->GetItemHeight()));
+				}
+				else if (it.type == UIClass::UI_DockPanel)
+				{
+					auto* dp = (DockPanel*)c;
+					dp->SetLastChildFill(it.extra.value("lastChildFill", dp->GetLastChildFill()));
+				}
+				else if (it.type == UIClass::UI_ToolBar)
+				{
+					auto* tb = (ToolBar*)c;
+					tb->Padding = it.extra.value("padding", tb->Padding);
+					tb->Gap = it.extra.value("gap", tb->Gap);
+					tb->ItemHeight = it.extra.value("itemHeight", tb->ItemHeight);
+				}
+				else if (it.type == UIClass::UI_ComboBox)
+				{
+					auto* cb = (ComboBox*)c;
+					cb->values.Clear();
+					if (it.extra.contains("items") && it.extra["items"].is_array())
+					{
+						for (auto& sj : it.extra["items"])
+							if (sj.is_string()) cb->values.Add(FromUtf8(sj.get<std::string>()));
+					}
+					cb->SelectedIndex = it.extra.value("selectedIndex", cb->SelectedIndex);
+					if (cb->values.Count > 0 && cb->SelectedIndex >= 0 && cb->SelectedIndex < cb->values.Count)
+						cb->Text = cb->values[cb->SelectedIndex];
+				}
+				else if (it.type == UIClass::UI_GridView)
+				{
+					auto* gv = (GridView*)c;
+					gv->Columns.Clear();
+					if (it.extra.contains("columns") && it.extra["columns"].is_array())
+					{
+						for (auto& cj : it.extra["columns"])
+						{
+							if (!cj.is_object()) continue;
+							GridViewColumn col;
+							col.Name = FromUtf8(cj.value("name", std::string()));
+							col.Width = cj.value("width", col.Width);
+							col.Type = (ColumnType)cj.value("type", (int)col.Type);
+							col.CanEdit = cj.value("canEdit", col.CanEdit);
+							gv->Columns.Add(col);
+						}
+					}
+				}
+				else if (it.type == UIClass::UI_TreeView)
+				{
+					auto* tv = (TreeView*)c;
+					if (tv->Root)
+					{
+						for (auto n : tv->Root->Children) delete n;
+						tv->Root->Children.Clear();
+						if (it.extra.contains("nodes"))
+							JsonToTreeNodes(it.extra["nodes"], tv->Root->Children);
+					}
+					tv->SelectedBackColor = ColorFromJson(it.extra.value("selectedBackColor", Json()), tv->SelectedBackColor);
+					tv->UnderMouseItemBackColor = ColorFromJson(it.extra.value("underMouseItemBackColor", Json()), tv->UnderMouseItemBackColor);
+					tv->SelectedForeColor = ColorFromJson(it.extra.value("selectedForeColor", Json()), tv->SelectedForeColor);
+				}
+				else if (it.type == UIClass::UI_ProgressBar)
+				{
+					((ProgressBar*)c)->PercentageValue = it.extra.value("percentageValue", ((ProgressBar*)c)->PercentageValue);
+				}
+				else if (it.type == UIClass::UI_Slider)
+				{
+					auto* s = (Slider*)c;
+					s->Min = it.extra.value("min", s->Min);
+					s->Max = it.extra.value("max", s->Max);
+					s->Value = it.extra.value("value", s->Value);
+					s->Step = it.extra.value("step", s->Step);
+					s->SnapToStep = it.extra.value("snapToStep", s->SnapToStep);
+				}
+			}
+		}
+
+		// 3) attach controls by parent grouping + order
+		std::unordered_map<std::wstring, std::vector<Pending*>> childrenByParent;
+		childrenByParent.reserve(items.size());
+		std::vector<Pending*> roots;
+		roots.reserve(items.size());
+		for (auto& it : items)
+		{
+			if (!it.parent.is_string())
+			{
+				roots.push_back(&it);
+				continue;
+			}
+			childrenByParent[FromUtf8(it.parent.get<std::string>())].push_back(&it);
+		}
+
+		auto sortByOrder = [](std::vector<Pending*>& v) {
+			std::stable_sort(v.begin(), v.end(), [](const Pending* a, const Pending* b) {
+				return a->order < b->order;
+			});
+		};
+		sortByOrder(roots);
+		for (auto& kv : childrenByParent) sortByOrder(kv.second);
+
+		std::unordered_set<std::wstring> attached;
+		attached.reserve(items.size());
+
+		auto attachOne = [&](Pending* it, Control* runtimeParent, Control* designerParent)
+		{
+			if (!it) return;
+			auto dc = dcOf[it->name];
+			if (!dc || !dc->ControlInstance) return;
+			auto* c = dc->ControlInstance;
+			if (!runtimeParent) runtimeParent = _designSurface;
+			if (!runtimeParent) return;
+			if (runtimeParent->Type() == UIClass::UI_ToolBar)
+			{
+				if (c->Type() == UIClass::UI_Button)
+					((ToolBar*)runtimeParent)->AddToolButton((Button*)c);
+				else
+					runtimeParent->AddControl(c);
+			}
+			else
+			{
+				runtimeParent->AddControl(c);
+			}
+			dc->DesignerParent = designerParent;
+			_designerControls.push_back(dc);
+			attached.insert(it->name);
+		};
+
+		std::function<void(const std::wstring& parentKey, Control* runtimeParent, Control* designerParent)> attachChildren;
+		attachChildren = [&](const std::wstring& parentKey, Control* runtimeParent, Control* designerParent)
+		{
+			auto it = childrenByParent.find(parentKey);
+			if (it == childrenByParent.end()) return;
+			for (auto* ch : it->second)
+			{
+				attachOne(ch, runtimeParent, designerParent);
+				// 递归：按控件 name 挂载其子控件
+				attachChildren(ch->name, dcOf[ch->name]->ControlInstance, dcOf[ch->name]->ControlInstance);
+				// 若该控件是 TabControl，则也需要按 page id 挂载页内子控件
+				if (ch->type == UIClass::UI_TabControl)
+				{
+					auto* tc = (TabControl*)dcOf[ch->name]->ControlInstance;
+					(void)tc;
+					for (auto& kv : tabPageOf)
+					{
+						// page id 必须属于该 TabControl（前缀匹配 name + "#page"）
+						std::wstring prefix = ch->name + L"#page";
+						if (kv.first.rfind(prefix, 0) != 0) continue;
+						attachChildren(kv.first, kv.second, kv.second);
+					}
+				}
+			}
+		};
+
+		// attach roots first
+		for (auto* it : roots)
+		{
+			attachOne(it, _designSurface, nullptr);
+			attachChildren(it->name, dcOf[it->name]->ControlInstance, dcOf[it->name]->ControlInstance);
+			if (it->type == UIClass::UI_TabControl)
+			{
+				for (auto& kv : tabPageOf)
+				{
+					std::wstring prefix = it->name + L"#page";
+					if (kv.first.rfind(prefix, 0) != 0) continue;
+					attachChildren(kv.first, kv.second, kv.second);
+				}
+			}
+		}
+
+		// 若仍有未挂载项，报错
+		if (attached.size() != items.size())
+		{
+			for (auto& it : items)
+			{
+				if (attached.find(it.name) == attached.end())
+				{
+					if (outError) *outError = L"无法解析控件父级引用，未能挂载控件: " + it.name;
+					return false;
+				}
+			}
+		}
+
+		// 4) layout
+		if (_designSurface)
+		{
+			if (auto* p = dynamic_cast<Panel*>(_designSurface))
+			{
+				p->InvalidateLayout();
+				p->PerformLayout();
+			}
+		}
+		for (auto& dc : _designerControls)
+		{
+			if (!dc || !dc->ControlInstance) continue;
+			if (auto* p = dynamic_cast<Panel*>(dc->ControlInstance))
+			{
+				p->InvalidateLayout();
+				p->PerformLayout();
+			}
+		}
+
+		ClearSelection();
+		OnControlSelected(nullptr);
+		this->PostRender();
+		return true;
+	}
+	catch (const std::exception& ex)
+	{
+		if (outError) *outError = L"加载失败: " + FromUtf8(ex.what());
+		return false;
+	}
+	catch (...)
+	{
+		if (outError) *outError = L"加载失败：未知错误。";
+		return false;
+	}
 }

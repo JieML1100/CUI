@@ -894,6 +894,15 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	break;
 	case WM_KEYDOWN:
 	{
+		if (wParam == VK_TAB && this->AllowTabInput)
+		{
+			this->InputText(L"\t");
+			this->selRangeDirty = true;
+			UpdateScroll();
+			this->PostRender();
+			return true;
+		}
+
 		auto pos = this->AbsLocation;
 		pos.x += this->selectedPos.x;
 		pos.y += this->selectedPos.y;
