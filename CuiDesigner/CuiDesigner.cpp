@@ -1,19 +1,16 @@
-﻿#include "DemoWindow.h"
+﻿#include "Designer.h"
 #pragma comment(linker, "/subsystem:\"windows\" /entry:\"mainCRTStartup\"")
-
 int main()
 {
-    auto form = DemoWindow();
-    form.Show();
-	NotifyIcon* notifyIcon = TestNotifyIcon(form.Handle);
+	Designer designer;
+	// 初始化完成后再显示，确保所有控件的ParentForm都已设置
+	designer.InitAndShow();
 
-	int index = 0;
 	while (1)
 	{
 		Form::DoEvent();
 		if (Application::Forms.size() == 0)
 			break;
 	}
-    notifyIcon->HideNotifyIcon();
 	return 0;
 }

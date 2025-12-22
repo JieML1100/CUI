@@ -16,6 +16,12 @@
     <Filter Include="GUI">
       <UniqueIdentifier>{54ac85a5-6857-4899-b29b-b22c3adb784b}</UniqueIdentifier>
     </Filter>
+    <Filter Include="GUI\Layout">
+      <UniqueIdentifier>{b8fd3b1a-0e99-45f4-a76d-b54d51ef0155}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Designer">
+      <UniqueIdentifier>{3d8a9f0b-1234-4567-89ab-cdef01234567}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GUI\Control.h">
@@ -96,17 +102,80 @@
     <ClInclude Include="GUI\WebBrowser.h">
       <Filter>GUI</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\Menu.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Slider.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\ToolBar.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
     <ClInclude Include="resource.h">
       <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Layout\DockPanel.h">
+      <Filter>GUI\Layout</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Layout\GridPanel.h">
+      <Filter>GUI\Layout</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Layout\Layout.h">
+      <Filter>GUI\Layout</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Layout\LayoutEngine.h">
+      <Filter>GUI\Layout</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Layout\LayoutTypes.h">
+      <Filter>GUI\Layout</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Layout\RelativePanel.h">
+      <Filter>GUI\Layout</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Layout\StackPanel.h">
+      <Filter>GUI\Layout</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Layout\WrapPanel.h">
+      <Filter>GUI\Layout</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\ToolBar.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Slider.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Menu.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\DCompLayeredHost.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="Designer\Designer.h">
+      <Filter>Designer</Filter>
+    </ClInclude>
+    <ClInclude Include="Designer\DesignerCanvas.h">
+      <Filter>Designer</Filter>
+    </ClInclude>
+    <ClInclude Include="Designer\DesignerTypes.h">
+      <Filter>Designer</Filter>
+    </ClInclude>
+    <ClInclude Include="Designer\ToolBox.h">
+      <Filter>Designer</Filter>
+    </ClInclude>
+    <ClInclude Include="Designer\PropertyGrid.h">
+      <Filter>Designer</Filter>
+    </ClInclude>
+    <ClInclude Include="Designer\ComboBoxItemsEditorDialog.h">
+      <Filter>Designer</Filter>
+    </ClInclude>
+    <ClInclude Include="Designer\GridViewColumnsEditorDialog.h">
+      <Filter>Designer</Filter>
+    </ClInclude>
+    <ClInclude Include="Designer\TabControlPagesEditorDialog.h">
+      <Filter>Designer</Filter>
+    </ClInclude>
+    <ClInclude Include="Designer\ToolBarButtonsEditorDialog.h">
+      <Filter>Designer</Filter>
+    </ClInclude>
+    <ClInclude Include="Designer\TreeViewNodesEditorDialog.h">
+      <Filter>Designer</Filter>
+    </ClInclude>
+    <ClInclude Include="Designer\GridPanelDefinitionsEditorDialog.h">
+      <Filter>Designer</Filter>
+    </ClInclude>
+    <ClInclude Include="Designer\CodeGenerator.h">
+      <Filter>Designer</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -188,14 +257,68 @@
     <ClCompile Include="GUI\WebBrowser.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Menu.cpp">
-      <Filter>源文件</Filter>
+    <ClCompile Include="GUI\Layout\WrapPanel.cpp">
+      <Filter>GUI\Layout</Filter>
     </ClCompile>
-    <ClCompile Include="GUI\Slider.cpp">
-      <Filter>源文件</Filter>
+    <ClCompile Include="GUI\Layout\StackPanel.cpp">
+      <Filter>GUI\Layout</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Layout\RelativePanel.cpp">
+      <Filter>GUI\Layout</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Layout\GridPanel.cpp">
+      <Filter>GUI\Layout</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Layout\DockPanel.cpp">
+      <Filter>GUI\Layout</Filter>
     </ClCompile>
     <ClCompile Include="GUI\ToolBar.cpp">
-      <Filter>源文件</Filter>
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Slider.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Menu.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\DCompLayeredHost.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="Designer\Designer.cpp">
+      <Filter>Designer</Filter>
+    </ClCompile>
+    <ClCompile Include="Designer\DesignerCanvas.cpp">
+      <Filter>Designer</Filter>
+    </ClCompile>
+    <ClCompile Include="Designer\DesignerTypes.cpp">
+      <Filter>Designer</Filter>
+    </ClCompile>
+    <ClCompile Include="Designer\ToolBox.cpp">
+      <Filter>Designer</Filter>
+    </ClCompile>
+    <ClCompile Include="Designer\PropertyGrid.cpp">
+      <Filter>Designer</Filter>
+    </ClCompile>
+    <ClCompile Include="Designer\CodeGenerator.cpp">
+      <Filter>Designer</Filter>
+    </ClCompile>
+    <ClCompile Include="Designer\ComboBoxItemsEditorDialog.cpp">
+      <Filter>Designer</Filter>
+    </ClCompile>
+    <ClCompile Include="Designer\GridViewColumnsEditorDialog.cpp">
+      <Filter>Designer</Filter>
+    </ClCompile>
+    <ClCompile Include="Designer\TabControlPagesEditorDialog.cpp">
+      <Filter>Designer</Filter>
+    </ClCompile>
+    <ClCompile Include="Designer\ToolBarButtonsEditorDialog.cpp">
+      <Filter>Designer</Filter>
+    </ClCompile>
+    <ClCompile Include="Designer\TreeViewNodesEditorDialog.cpp">
+      <Filter>Designer</Filter>
+    </ClCompile>
+    <ClCompile Include="Designer\GridPanelDefinitionsEditorDialog.cpp">
+      <Filter>Designer</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

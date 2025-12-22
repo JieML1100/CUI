@@ -42,8 +42,6 @@ void Control::PostRender()
 	r.top += top;
 	r.bottom += top;
 
-	// 关键：当控件从“展开/大尺寸”变为“收起/小尺寸”时，
-	// 仅失效当前 r 会漏掉旧区域，导致 DComp swapchain 画面残留直到下一次全量重绘（比如 Resize）。
 	if (_hasLastPostRenderClientRect)
 	{
 		D2D1_RECT_F u{};
@@ -381,4 +379,176 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 	break;
 	}
 	return true;
+}
+
+// 布局属性实现
+GET_CPP(Control, Thickness, Margin)
+{
+	return _margin;
+}
+SET_CPP(Control, Thickness, Margin)
+{
+	if (_margin != value)
+	{
+		_margin = value;
+		this->PostRender();
+	}
+}
+
+GET_CPP(Control, Thickness, Padding)
+{
+	return _padding;
+}
+SET_CPP(Control, Thickness, Padding)
+{
+	if (_padding != value)
+	{
+		_padding = value;
+		this->PostRender();
+	}
+}
+
+GET_CPP(Control, HorizontalAlignment, HAlign)
+{
+	return _horizontalAlignment;
+}
+SET_CPP(Control, HorizontalAlignment, HAlign)
+{
+	_horizontalAlignment = value;
+	this->PostRender();
+}
+
+GET_CPP(Control, VerticalAlignment, VAlign)
+{
+	return _verticalAlignment;
+}
+SET_CPP(Control, VerticalAlignment, VAlign)
+{
+	_verticalAlignment = value;
+	this->PostRender();
+}
+
+GET_CPP(Control, uint8_t, AnchorStyles)
+{
+	return _anchorStyles;
+}
+SET_CPP(Control, uint8_t, AnchorStyles)
+{
+	_anchorStyles = value;
+	this->PostRender();
+}
+
+GET_CPP(Control, int, GridRow)
+{
+	return _gridRow;
+}
+SET_CPP(Control, int, GridRow)
+{
+	_gridRow = value;
+	this->PostRender();
+}
+
+GET_CPP(Control, int, GridColumn)
+{
+	return _gridColumn;
+}
+SET_CPP(Control, int, GridColumn)
+{
+	_gridColumn = value;
+	this->PostRender();
+}
+
+GET_CPP(Control, int, GridRowSpan)
+{
+	return _gridRowSpan;
+}
+SET_CPP(Control, int, GridRowSpan)
+{
+	_gridRowSpan = value;
+	this->PostRender();
+}
+
+GET_CPP(Control, int, GridColumnSpan)
+{
+	return _gridColumnSpan;
+}
+SET_CPP(Control, int, GridColumnSpan)
+{
+	_gridColumnSpan = value;
+	this->PostRender();
+}
+
+GET_CPP(Control, Dock, DockPosition)
+{
+	return _dock;
+}
+SET_CPP(Control, Dock, DockPosition)
+{
+	_dock = value;
+	this->PostRender();
+}
+
+GET_CPP(Control, SIZE, MinSize)
+{
+	return _minSize;
+}
+SET_CPP(Control, SIZE, MinSize)
+{
+	_minSize = value;
+	this->PostRender();
+}
+
+GET_CPP(Control, SIZE, MaxSize)
+{
+	return _maxSize;
+}
+SET_CPP(Control, SIZE, MaxSize)
+{
+	_maxSize = value;
+	this->PostRender();
+}
+
+// 测量控件期望尺寸
+SIZE Control::MeasureCore(SIZE availableSize)
+{
+	SIZE desired = this->_size;
+	
+	// 应用 Padding
+	desired.cx += (LONG)(_padding.Left + _padding.Right);
+	desired.cy += (LONG)(_padding.Top + _padding.Bottom);
+	
+	// 应用约束
+	if (desired.cx < _minSize.cx) desired.cx = _minSize.cx;
+	if (desired.cy < _minSize.cy) desired.cy = _minSize.cy;
+	if (desired.cx > _maxSize.cx) desired.cx = _maxSize.cx;
+	if (desired.cy > _maxSize.cy) desired.cy = _maxSize.cy;
+	
+	// 考虑可用空间
+	if (desired.cx > availableSize.cx) desired.cx = availableSize.cx;
+	if (desired.cy > availableSize.cy) desired.cy = availableSize.cy;
+	
+	return desired;
+}
+
+// 应用布局结果
+void Control::ApplyLayout(POINT location, SIZE size)
+{
+	bool changed = false;
+	
+	if (_location.x != location.x || _location.y != location.y)
+	{
+		_location = location;
+		changed = true;
+	}
+	
+	if (_size.cx != size.cx || _size.cy != size.cy)
+	{
+		_size = size;
+		changed = true;
+	}
+	
+	if (changed)
+	{
+		this->PostRender();
+	}
 }

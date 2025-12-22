@@ -1,10 +1,10 @@
 ﻿#pragma once
 /*---如果Utils和Graphics源代码包含在此项目中则直接引用本地项目---*/
 //#define _LIB
-//#include "../../CppUtils/Utils/Utils.h"
+#include <CppUtils/Utils/Utils.h>
 
 /*---如果Utils和Graphics被编译成lib则引用外部头文件---*/
-#include <CppUtils/Utils/Utils.h>
+// (using external CppUtils)
 class Application
 {
 public:

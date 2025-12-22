@@ -83,12 +83,17 @@ private:
 	static bool RectIntersects(const RECT& a, const RECT& b);
 	static RECT ToRECT(D2D1_RECT_F r, int inflatePx = 0);
 
-		CursorKind _currentCursor = CursorKind::Arrow;
+	CursorKind _currentCursor = CursorKind::Arrow;
 	void ApplyCursor(CursorKind kind);
 	void UpdateCursor(POINT mouseClient, POINT contentMouse);
 	CursorKind QueryCursorAt(POINT mouseClient, POINT contentMouse);
 	class Control* HitTestControlAt(POINT contentMouse);
 	static HCURSOR GetSystemCursor(CursorKind kind);
+	
+	// 布局支持
+	class LayoutEngine* _layoutEngine = nullptr;
+	bool _needsLayout = false;
+	
 public:
 	FormMouseWheelEvent OnMouseWheel = FormMouseWheelEvent();
 	FormMouseMoveEvent OnMouseMove = FormMouseMoveEvent();
@@ -190,11 +195,17 @@ public:
 		this->Controls.Add(c);
 		c->Parent = NULL;
 		c->ParentForm = this;
+		
+		// 递归设置所有子控件的ParentForm
+		Control::SetChildrenParentForm(c, this);
+		
 		// 主菜单单独管理
 		if (c->Type() == UIClass::UI_Menu)
 		{
 			this->MainMenu = (Menu*)c;
 		}
+		// 触发布局
+		_needsLayout = true;
 		return c;
 	}
 	bool RemoveControl(Control* c);
@@ -208,6 +219,12 @@ public:
 	virtual void RenderImage();
 	D2D1_RECT_F ChildRect();
 	Control* LastChild();
+	
+	// 布局管理
+	void SetLayoutEngine(class LayoutEngine* engine);
+	void PerformLayout();
+	void InvalidateLayout() { _needsLayout = true; }
+	
 	static bool DoEvent();
 	static bool WaiteEvent();
 	static LRESULT CALLBACK WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);

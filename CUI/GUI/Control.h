@@ -3,14 +3,6 @@
 
 /*---如果Utils和Graphics源代码包含在此项目中则直接引用本地项目---*/
 //#define _LIB
-//#include "../../CppUtils/Utils/Event.h"
-//#include "../../CppUtils/Utils/Utils.h"
-//#include "../../CppUtils/Graphics/Colors.h"
-//#include "../../CppUtils/Graphics/Font.h"
-//#include "../../CppUtils/Graphics/Factory.h"
-//#include "../../CppUtils/Graphics/Graphics1.h"
-
-/*---如果Utils和Graphics被编译成lib则引用外部头文件---*/
 #include <CppUtils/Utils/Event.h>
 #include <CppUtils/Utils/Utils.h>
 #include <CppUtils/Graphics/Colors.h>
@@ -18,10 +10,14 @@
 #include <CppUtils/Graphics/Factory.h>
 #include <CppUtils/Graphics/Graphics1.h>
 
+/*---如果Utils和Graphics被编译成lib则引用外部头文件---*/
+// (using external CppUtils)
+
 
 #include <string>
 #include <vector>
 #include <cstdint>
+#include "Layout/LayoutTypes.h"
 
 struct ID2D1Bitmap;
 
@@ -62,6 +58,11 @@ enum class UIClass : int
 	UI_ToolBar,
 	UI_Slider,
 	UI_WebBrowser,
+	UI_StackPanel,
+	UI_GridPanel,
+	UI_DockPanel,
+	UI_WrapPanel,
+	UI_RelativePanel,
 	UI_CUSTOM
 };
 
@@ -120,6 +121,26 @@ protected:
 	// 用于处理控件尺寸变小（如 Menu/ComboBox 收起）时，旧绘制区域未被失效导致的残影。
 	D2D1_RECT_F _lastPostRenderClientRect{ 0,0,0,0 };
 	bool _hasLastPostRenderClientRect = false;
+	
+	// 布局属性
+	Thickness _margin;
+	Thickness _padding;
+	HorizontalAlignment _horizontalAlignment = HorizontalAlignment::Left;
+	VerticalAlignment _verticalAlignment = VerticalAlignment::Top;
+	uint8_t _anchorStyles = AnchorStyles::None;
+	
+	// Grid 布局专用属性
+	int _gridRow = 0;
+	int _gridColumn = 0;
+	int _gridRowSpan = 1;
+	int _gridColumnSpan = 1;
+	
+	// Dock 布局专用属性
+	Dock _dock = Dock::Fill;
+	
+	// 尺寸约束
+	SIZE _minSize = {0, 0};
+	SIZE _maxSize = {INT_MAX, INT_MAX};
 public:
 	CheckedEvent OnChecked = CheckedEvent();
 	MouseWheelEvent OnMouseWheel = MouseWheelEvent();
@@ -179,7 +200,19 @@ public:
 		c->Parent = this;
 		c->ParentForm = this->ParentForm;
 		this->Children.Add(c);
+		
+		// 递归设置所有子控件的ParentForm
+		SetChildrenParentForm(c, this->ParentForm);
 		return c;
+	}
+	
+	// 递归设置所有子控件的ParentForm
+	static void SetChildrenParentForm(Control* c, Form* form) {
+		if (!c) return;
+		c->ParentForm = form;
+		for (int i = 0; i < c->Children.Count; i++) {
+			SetChildrenParentForm(c->Children[i], form);
+		}
 	}
 	void RemoveControl(Control* c);
 	READONLY_PROPERTY(POINT, AbsLocation);
@@ -226,8 +259,54 @@ public:
 	GET(ID2D1Bitmap*, Image);
 	SET(ID2D1Bitmap*, Image);
 
+	// 布局属性访问器
+	PROPERTY(Thickness, Margin);
+	GET(Thickness, Margin);
+	SET(Thickness, Margin);
+	PROPERTY(Thickness, Padding);
+	GET(Thickness, Padding);
+	SET(Thickness, Padding);
+	PROPERTY(::HorizontalAlignment, HAlign);
+	GET(::HorizontalAlignment, HAlign);
+	SET(::HorizontalAlignment, HAlign);
+	PROPERTY(::VerticalAlignment, VAlign);
+	GET(::VerticalAlignment, VAlign);
+	SET(::VerticalAlignment, VAlign);
+	PROPERTY(uint8_t, AnchorStyles);
+	GET(uint8_t, AnchorStyles);
+	SET(uint8_t, AnchorStyles);
+	PROPERTY(int, GridRow);
+	GET(int, GridRow);
+	SET(int, GridRow);
+	PROPERTY(int, GridColumn);
+	GET(int, GridColumn);
+	SET(int, GridColumn);
+	PROPERTY(int, GridRowSpan);
+	GET(int, GridRowSpan);
+	SET(int, GridRowSpan);
+	PROPERTY(int, GridColumnSpan);
+	GET(int, GridColumnSpan);
+	SET(int, GridColumnSpan);
+	PROPERTY(::Dock, DockPosition);
+	GET(::Dock, DockPosition);
+	SET(::Dock, DockPosition);
+	PROPERTY(SIZE, MinSize);
+	GET(SIZE, MinSize);
+	SET(SIZE, MinSize);
+	PROPERTY(SIZE, MaxSize);
+	GET(SIZE, MaxSize);
+	SET(SIZE, MaxSize);
+	
+	// 布局相关方法
+	virtual SIZE MeasureCore(SIZE availableSize);
+	void ApplyLayout(POINT location, SIZE size);
+
 	CursorKind Cursor = CursorKind::Arrow;
 	virtual CursorKind QueryCursor(int xof, int yof) { (void)xof; (void)yof; return this->Cursor; }
+	// Whether Form-level hit-testing should descend into children.
+	// Default: true (normal containers). DesignerCanvas overrides this to false
+	// so that clicks on child controls are handled by the canvas for selection/drag/resize.
+	virtual bool HitTestChildren() const { return true; }
 	virtual void RenderImage();
 	virtual SIZE ActualSize();
 	void setTextPrivate(std::wstring);

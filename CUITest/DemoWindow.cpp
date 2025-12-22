@@ -1,7 +1,6 @@
 #include "DemoWindow.h"
 #include "imgs.h"
-#include "nanosvg.h"
-#include "resource.h"
+#include "../CUI/nanosvg.h"
 ID2D1Bitmap* ToBitmapFromSvg(D2DGraphics1* g, const char* data) {
 	if (!g || !data) return NULL;
 	int len = strlen(data) + 1;
@@ -310,6 +309,7 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 	tabControl1->AddPage(L"Page 1")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
 	tabControl1->AddPage(L"Grid View")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
 	tabControl1->AddPage(L"Icon Buttons")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
+	tabControl1->AddPage(L"Layout Demo")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
 	tabControl1->AddPage(L"WebBrowser")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
 	tabControl1->get(0)->AddControl(new Label(L"基本容器", 10, 10));
 
@@ -389,13 +389,117 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 		ingButton->OnMouseClick += std::bind_front(&DemoWindow::iconButton_OnMouseClick, this);
 	}
 
+	// ========== 布局系统演示 ==========
+	{
+		auto layoutPage = tabControl1->get(3);
+		layoutPage->AddControl(new Label(L"布局系统演示", 10, 10));
+
+		// StackPanel 示例
+		auto stackLabel = layoutPage->AddControl(new Label(L"StackPanel:", 10, 40));
+		auto stack = layoutPage->AddControl(new StackPanel(10, 60, 280, 200));
+		stack->SetOrientation(Orientation::Vertical);
+		stack->SetSpacing(5);
+		stack->BackColor = D2D1_COLOR_F{ 0.2f, 0.2f, 0.2f, 0.5f };
+		
+		auto stackBtn1 = new Button(L"按钮 1 (200px)", 0, 0, 200, 25);
+		auto stackBtn2 = new Button(L"按钮 2 (180px)", 0, 0, 180, 25);
+		auto stackBtn3 = new Button(L"按钮 3 (220px)", 0, 0, 220, 25);
+		stack->AddControl(stackBtn1);
+		stack->AddControl(stackBtn2);
+		stack->AddControl(stackBtn3);
+
+		// GridPanel 示例
+		auto gridLabel = layoutPage->AddControl(new Label(L"GridPanel:", 300, 40));
+		auto grid = layoutPage->AddControl(new GridPanel(300, 60, 280, 200));
+		grid->BackColor = D2D1_COLOR_F{ 0.2f, 0.2f, 0.2f, 0.5f };
+		
+		grid->AddRow(GridLength::Auto());
+		grid->AddRow(GridLength::Star(1.0f));
+		grid->AddRow(GridLength::Pixels(30));
+		grid->AddColumn(GridLength::Star(1.0f));
+		grid->AddColumn(GridLength::Star(1.0f));
+		
+		auto gridTitle = new Label(L"标题", 0, 0);
+		gridTitle->GridRow = 0;
+		gridTitle->GridColumn = 0;
+		gridTitle->GridColumnSpan = 2;
+		gridTitle->HAlign = HorizontalAlignment::Center;
+		
+		auto gridContent1 = new Button(L"内容1", 0, 0, 100, 80);
+		gridContent1->GridRow = 1;
+		gridContent1->GridColumn = 0;
+		gridContent1->Margin = Thickness(5);
+		
+		auto gridContent2 = new Button(L"内容2", 0, 0, 100, 80);
+		gridContent2->GridRow = 1;
+		gridContent2->GridColumn = 1;
+		gridContent2->Margin = Thickness(5);
+		
+		auto gridFooter = new Label(L"底部", 0, 0);
+		gridFooter->GridRow = 2;
+		gridFooter->GridColumn = 0;
+		gridFooter->GridColumnSpan = 2;
+		gridFooter->HAlign = HorizontalAlignment::Center;
+		
+		grid->AddControl(gridTitle);
+		grid->AddControl(gridContent1);
+		grid->AddControl(gridContent2);
+		grid->AddControl(gridFooter);
+
+		// DockPanel 示例
+		auto dockLabel = layoutPage->AddControl(new Label(L"DockPanel:", 590, 40));
+		auto dock = layoutPage->AddControl(new DockPanel(590, 60, 280, 200));
+		dock->BackColor = D2D1_COLOR_F{ 0.2f, 0.2f, 0.2f, 0.5f };
+		dock->SetLastChildFill(true);
+		
+		auto dockTop = new Label(L"Top", 0, 0);
+		dockTop->BackColor = D2D1_COLOR_F{ 0.3f, 0.3f, 0.5f, 0.7f };
+		dockTop->Size = SIZE{280, 30};
+		dockTop->DockPosition = Dock::Top;
+		
+		auto dockBottom = new Label(L"Bottom", 0, 0);
+		dockBottom->BackColor = D2D1_COLOR_F{ 0.5f, 0.3f, 0.3f, 0.7f };
+		dockBottom->Size = SIZE{280, 30};
+		dockBottom->DockPosition = Dock::Bottom;
+		
+		auto dockLeft = new Label(L"Left", 0, 0);
+		dockLeft->BackColor = D2D1_COLOR_F{ 0.3f, 0.5f, 0.3f, 0.7f };
+		dockLeft->Size = SIZE{60, 140};
+		dockLeft->DockPosition = Dock::Left;
+		
+		auto dockFill = new Label(L"Fill", 0, 0);
+		dockFill->BackColor = D2D1_COLOR_F{ 0.4f, 0.4f, 0.4f, 0.7f };
+		dockFill->DockPosition = Dock::Fill;
+		
+		dock->AddControl(dockTop);
+		dock->AddControl(dockBottom);
+		dock->AddControl(dockLeft);
+		dock->AddControl(dockFill);
+
+		// WrapPanel 示例
+		auto wrapLabel = layoutPage->AddControl(new Label(L"WrapPanel:", 880, 40));
+		auto wrap = layoutPage->AddControl(new WrapPanel(880, 60, 300, 200));
+		wrap->SetOrientation(Orientation::Horizontal);
+		wrap->BackColor = D2D1_COLOR_F{ 0.2f, 0.2f, 0.2f, 0.5f };
+		
+		for (int i = 1; i <= 8; i++) {
+			auto wrapBtn = new Button(
+				StringHelper::Format(L"Btn%d", i), 
+				0, 0, 
+				60,
+				25
+			);
+			wrap->AddControl(wrapBtn);
+		}
+	}
+
 	// WebBrowser（WebView2 原生嵌入渲染）演示
 	{
-		auto page = tabControl1->get(3);
+		auto page = tabControl1->get(4);
 		page->AddControl(new Label(L"WebBrowser", 10, 10));
 		web1 = page->AddControl(new WebBrowser(10, 36, 1180, 210));
 
-		web1->Navigate(L"https://www.baidu.com");
+		web1->Navigate(L"https://www.bing.com");
 	}
 
 	this->BackColor = Colors::grey31;
@@ -415,7 +519,7 @@ NotifyIcon* TestNotifyIcon(HWND handle)
 {
 	NotifyIcon* notifyIcon = new NotifyIcon();
 	notifyIcon->InitNotifyIcon(handle, 1);
-	notifyIcon->SetIcon(LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_ICON1)));
+	//notifyIcon->SetIcon(LoadIcon(NULL, IDI_ICON1));
 	notifyIcon->SetToolTip(Convert::Utf8ToAnsi("应用程序").c_str());
 	notifyIcon->ShowNotifyIcon();
 

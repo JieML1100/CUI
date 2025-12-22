@@ -1,6 +1,7 @@
 #pragma once
 #include <iostream>
-#include "GUI/Form.h"
+#include "../CUI/GUI/Form.h"
+#include "../CUI/GUI/Layout/Layout.h"
 #include "CustomControls.h"
 class DemoWindow : public Form
 {

@@ -102,3 +102,7 @@ dkms.conf
 /packages/
 /.tools/
 /Release/CUI.exe.WebView2/EBWebView
+/CUI/CUI/x64
+/CUI/Release
+/CuiDesigner/x64
+/CUITest/x64/Release

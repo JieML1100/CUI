@@ -27,26 +27,26 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
@@ -108,7 +108,7 @@
       <PrecompiledHeaderOutputFile />
       <EnableModules>false</EnableModules>
       <BuildStlModules>true</BuildStlModules>
-      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
@@ -208,8 +208,6 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="DemoWindow.h" />
-    <ClInclude Include="CustomControls.h" />
     <ClInclude Include="GUI\Application.h" />
     <ClInclude Include="GUI\Button.h" />
     <ClInclude Include="GUI\CheckBox.h" />
@@ -236,13 +234,17 @@
     <ClInclude Include="GUI\WebBrowser.h" />
     <ClInclude Include="GUI\TextBox.h" />
     <ClInclude Include="GUI\TreeView.h" />
-    <ClInclude Include="imgs.h" />
+    <ClInclude Include="GUI\Layout\LayoutTypes.h" />
+    <ClInclude Include="GUI\Layout\LayoutEngine.h" />
+    <ClInclude Include="GUI\Layout\StackPanel.h" />
+    <ClInclude Include="GUI\Layout\GridPanel.h" />
+    <ClInclude Include="GUI\Layout\DockPanel.h" />
+    <ClInclude Include="GUI\Layout\WrapPanel.h" />
+    <ClInclude Include="GUI\Layout\RelativePanel.h" />
+    <ClInclude Include="GUI\Layout\Layout.h" />
     <ClInclude Include="nanosvg.h" />
-    <ClInclude Include="resource.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="DemoWindow.cpp" />
-    <ClCompile Include="CustomControls.cpp" />
     <ClCompile Include="GUI\Application.cpp" />
     <ClCompile Include="GUI\Button.cpp" />
     <ClCompile Include="GUI\CheckBox.cpp" />
@@ -269,16 +271,24 @@
     <ClCompile Include="GUI\WebBrowser.cpp" />
     <ClCompile Include="GUI\TextBox.cpp" />
     <ClCompile Include="GUI\TreeView.cpp" />
-    <ClCompile Include="main.cpp" />
+    <ClCompile Include="GUI\Layout\StackPanel.cpp" />
+    <ClCompile Include="GUI\Layout\GridPanel.cpp" />
+    <ClCompile Include="GUI\Layout\DockPanel.cpp" />
+    <ClCompile Include="GUI\Layout\WrapPanel.cpp" />
+    <ClCompile Include="GUI\Layout\RelativePanel.cpp" />
     <ClCompile Include="nanosvg.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <Image Include="cloud.ico" />
-  </ItemGroup>
-  <ItemGroup>
-    <ResourceCompile Include="CUI.rc" />
+    <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
+    <Import Project="..\packages\Microsoft.Web.WebView2.1.0.3712-prerelease\build\native\Microsoft.Web.WebView2.targets" Condition="Exists('..\packages\Microsoft.Web.WebView2.1.0.3712-prerelease\build\native\Microsoft.Web.WebView2.targets')" />
   </ImportGroup>
+  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <ErrorText>这台计算机上缺少此项目引用的 NuGet 程序包。使用“NuGet 程序包还原”可下载这些程序包。有关更多信息，请参见 http://go.microsoft.com/fwlink/?LinkID=322105。缺少的文件是 {0}。</ErrorText>
+    </PropertyGroup>
+    <Error Condition="!Exists('..\packages\Microsoft.Web.WebView2.1.0.3712-prerelease\build\native\Microsoft.Web.WebView2.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Microsoft.Web.WebView2.1.0.3712-prerelease\build\native\Microsoft.Web.WebView2.targets'))" />
+  </Target>
 </Project>

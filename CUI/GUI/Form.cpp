@@ -45,6 +45,8 @@ static Control* HitTestDeepestChild(Control* root, POINT contentMouse)
 {
 	if (!root) return NULL;
 	if (!root->Visible || !root->Enable) return NULL;
+	if (!root->HitTestChildren())
+		return root;
 
 	for (int i = root->Count - 1; i >= 0; i--)
 	{
@@ -139,7 +141,6 @@ CursorKind Form::QueryCursorAt(POINT mouseClient, POINT contentMouse)
 
 void Form::UpdateCursor(POINT mouseClient, POINT contentMouse)
 {
-	// WebBrowser：使用 WebView2 的 system cursor id（避免被 QueryCursorAt 强行覆盖成 Arrow）
 	auto hit = HitTestControlAt(contentMouse);
 	if (hit && hit->Type() == UIClass::UI_WebBrowser)
 	{
@@ -391,6 +392,8 @@ SET_CPP(Form, SIZE, Size)
 	}
 	this->_Size_INTI = value;
 	this->ControlChanged = true;
+	// 触发布局
+	_needsLayout = true;
 }
 
 GET_CPP(Form, SIZE, ClientSize)
@@ -509,8 +512,6 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 
 	Application::Forms.Add(this->Handle, this);
 
-	// 采用 DirectComposition 三层：Base(D2D) / Web / Overlay(D2D)
-	// 如果初始化失败（极少数环境），回退到旧的 Hwnd SwapChain 渲染（此时 WebBrowser 可能无法启用 Composition）。
 	_dcompHost = new DCompLayeredHost(this->Handle);
 	if (_dcompHost && SUCCEEDED(_dcompHost->Initialize()) &&
 		_dcompHost->GetBaseSwapChain() && _dcompHost->GetOverlaySwapChain())
@@ -545,6 +546,11 @@ Form::~Form()
 		delete _dcompHost;
 		_dcompHost = nullptr;
 	}
+	if (_layoutEngine)
+	{
+		delete _layoutEngine;
+		_layoutEngine = nullptr;
+	}
 }
 
 IDCompositionDevice* Form::GetDCompDevice() const
@@ -561,6 +567,84 @@ void Form::CommitComposition()
 {
 	if (_dcompHost) _dcompHost->Commit();
 }
+
+void Form::SetLayoutEngine(class LayoutEngine* engine)
+{
+	if (_layoutEngine)
+	{
+		delete _layoutEngine;
+	}
+	_layoutEngine = engine;
+	_needsLayout = true;
+}
+
+void Form::PerformLayout()
+{
+	if (!_layoutEngine)
+	{
+		// 默认布局：支持控件的 Anchor 和 Margin
+		SIZE clientSize = this->ClientSize;
+		
+		for (int i = 0; i < this->Controls.Count; i++)
+		{
+			auto control = this->Controls[i];
+			if (!control || !control->Visible) continue;
+			if (control->Type() == UIClass::UI_Menu) continue; // 跳过主菜单
+			
+			POINT loc = control->Location;
+			SIZE size = control->Size;
+			Thickness margin = control->Margin;
+			uint8_t anchor = control->AnchorStyles;
+			
+			// 应用 Anchor
+			if (anchor != AnchorStyles::None)
+			{
+				// 左右都锚定：宽度随窗口变化
+				if ((anchor & AnchorStyles::Left) && (anchor & AnchorStyles::Right))
+				{
+					size.cx = clientSize.cx - loc.x - (LONG)margin.Right;
+				}
+				// 只锚定右边：跟随右边缘
+				else if (anchor & AnchorStyles::Right)
+				{
+					loc.x = clientSize.cx - size.cx - (LONG)margin.Right;
+				}
+				
+				// 上下都锚定：高度随窗口变化
+				if ((anchor & AnchorStyles::Top) && (anchor & AnchorStyles::Bottom))
+				{
+					size.cy = clientSize.cy - loc.y - (LONG)margin.Bottom;
+				}
+				// 只锚定下边：跟随下边缘
+				else if (anchor & AnchorStyles::Bottom)
+				{
+					loc.y = clientSize.cy - size.cy - (LONG)margin.Bottom;
+				}
+			}
+			
+			control->ApplyLayout(loc, size);
+		}
+	}
+	else
+	{
+		// 使用布局引擎
+		if (_layoutEngine->NeedsLayout())
+		{
+			SIZE clientSize = this->ClientSize;
+			_layoutEngine->Measure(nullptr, clientSize);
+			
+			D2D1_RECT_F finalRect = { 
+				0, 0, 
+				(float)clientSize.cx, 
+				(float)clientSize.cy 
+			};
+			_layoutEngine->Arrange(nullptr, finalRect);
+		}
+	}
+	
+	_needsLayout = false;
+}
+
 void Form::Show()
 {
 	if (this->Icon) SendMessage(this->Handle, WM_SETICON, ICON_BIG, (LPARAM)this->Icon);
@@ -672,8 +756,6 @@ bool Form::Update(bool force)
 {
 	if (!IsWindow(this->Handle)) return false;
 
-	// 旧版 WebBrowser 依赖“抓帧贴图”需要持续 Update；
-	// 现在 WebBrowser 使用原生 WebView2 子窗口渲染，不再需要强制刷新。
 	if (!force && !ControlChanged) return false;
 
 	RECT dirty{};
@@ -689,11 +771,6 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 	if (dirty.right <= dirty.left || dirty.bottom <= dirty.top)
 		return false;
 
-	// 注意：
-	// - 当前渲染采用“按脏矩形局部重绘”的策略；
-	// - 但底层 D2D 渲染目标在很多场景下并不保证保留上一帧内容（尤其是 Resize 之后）；
-	// - 同时标题栏/按钮存在半透明填充，如果绘制越界到 dirty 外，会对未清理区域产生“叠加污染”，表现为残影。
-	// 因此：本次绘制全程裁剪到 drawRc，并在需要时强制全量重绘。
 	RECT clientRc{};
 	::GetClientRect(this->Handle, &clientRc);
 	RECT drawRc = dirty;
@@ -703,11 +780,8 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 	}
 
 	this->Render->BeginRender();
-	// 防御：避免上一次绘制遗留 Transform 影响背景/标题栏
 	this->Render->ClearTransform();
-	// 全程裁剪到本次需要更新的区域，避免对 dirty 外区域产生半透明叠加污染
 	this->Render->PushDrawRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top));
-	// 先用不透明底色清空 drawRc，保证接下来的半透明绘制不叠加历史内容
 	this->Render->FillRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top), this->BackColor);
 
 	if (this->Image)
@@ -855,29 +929,23 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 
 	this->OnPaint(this);
 
-	// 结束本次全程裁剪
 	this->Render->PopDrawRect();
 	this->Render->EndRender();
 
-	// 对于 DirectComposition：即使没有 OverlayRender，也需要每帧提交一次，避免 resize / present 后画面不同步
 	this->CommitComposition();
 
-	// Overlay 层：绘制 MainMenu / ForegroundControl（透明底），确保位于 Web 之上
 	if (this->OverlayRender)
 	{
 		auto* oldRender = this->Render;
-		// Overlay 为防止“残影/收不回去”，每次都清整屏透明（不依赖脏矩形）
 		RECT fullClient{};
 		::GetClientRect(this->Handle, &fullClient);
 		RECT overlayRc = fullClient;
 
 		this->OverlayRender->BeginRender();
 		this->OverlayRender->ClearTransform();
-		// 关键修复：使用Clear方法而不是FillRect+PushDrawRect，确保SwapChain后台缓冲被真正清空
 		this->OverlayRender->Clear(D2D1_COLOR_F{ 0.0f,0.0f,0.0f,0.0f });
 		this->OverlayRender->PushDrawRect((float)overlayRc.left, (float)overlayRc.top, (float)(overlayRc.right - overlayRc.left), (float)(overlayRc.bottom - overlayRc.top));
 
-		// Overlay content 区域也清整块（并绘制当前 MainMenu / ForegroundControl）
 		RECT overlayContent = fullClient;
 		const int top = ClientTop();
 		overlayContent.top -= top;
@@ -892,14 +960,11 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 			this->OverlayRender->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, (float)top));
 			this->OverlayRender->PushDrawRect((float)overlayContent.left, (float)overlayContent.top, (float)(overlayContent.right - overlayContent.left), (float)(overlayContent.bottom - overlayContent.top));
 
-			// 临时切换 Render，让控件绘制到 Overlay swapchain
 			this->Render = this->OverlayRender;
-			// 先画主菜单（通常需要始终在 Web 之上）
 			if (this->MainMenu && this->MainMenu->Visible)
 			{
 				this->MainMenu->Update();
 			}
-			// 再画置顶控件（例如 ComboBox 展开）
 			if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl != (Control*)this->MainMenu)
 			{
 				this->ForegroundControl->Update();
@@ -913,7 +978,6 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 		this->OverlayRender->PopDrawRect();
 		this->OverlayRender->EndRender();
 
-		// Overlay 绘制过程中可能触发 WebView2 RootVisualTarget/位置调整等，需要提交一次
 		this->CommitComposition();
 	}
 
@@ -1078,12 +1142,8 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	case WM_RBUTTONUP:
 	case WM_LBUTTONDBLCLK:
 	{
-		// WebBrowser(WebView2) 是真实 HWND 子窗口：当它获得焦点后，键盘/IME 消息会发往子窗口，
-		// 这会导致框架内的自绘控件（GridView 编辑等）无法继续收到 WM_CHAR/WM_IME_*。
-		// 解决：当鼠标点击目标不是 WebBrowser 时，显式把焦点抢回到 Form。
 		if (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN)
 		{
-			// 标题栏区域不参与控件输入焦点（但不影响拖动/系统按钮）
 			if (!(this->VisibleHead && mouse.y < top))
 			{
 				Control* hit = HitTestControlAt(contentMouse);
@@ -1289,11 +1349,8 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		this->Render->ReSize(width, height);
 		if (this->OverlayRender) this->OverlayRender->ReSize(width, height);
 		this->CommitComposition();
-		// Resize 后 D2D 的后台缓冲内容通常不再可信，强制下一帧全量重绘
 		this->_hasRenderedOnce = false;
 		this->OnSizeChanged(this);
-		// DComp 模式下，部分系统/驱动组合在 Resize 过程中不会及时触发 WM_PAINT，
-		// 会导致底部出现“空白帧”。这里强制立即刷新一次。
 		this->Invalidate(this->_dcompHost != nullptr);
 	}
 	break;

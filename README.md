@@ -40,6 +40,7 @@ CUI 是一个现代化的 Windows 原生 GUI 框架，采用 Direct2D 进行硬�
 
 - ✅ **Direct2D 渲染引擎**：高性能 2D 图形渲染
 - ✅ **DirectComposition 合成**：分层窗口合成，支持透明和动画
+- ✅ **现代化布局系统**：StackPanel、GridPanel、DockPanel、WrapPanel、RelativePanel 五种布局容器
 - ✅ **SVG 支持**：内置 nanosvg，支持 SVG 图像渲染
 - ✅ **完整事件系统**：鼠标、键盘、焦点、拖放等事件
 - ✅ **IME 输入支持**：完整支持中文输入法
@@ -47,6 +48,7 @@ CUI 是一个现代化的 Windows 原生 GUI 框架，采用 Direct2D 进行硬�
 - ✅ **系统托盘图标**：支持托盘图标和上下文菜单
 - ✅ **任务栏集成**：支持任务栏进度显示
 - ✅ **WebView2 集成**：嵌入 Chromium 内核的现代浏览器
+- ✅ **灵活的定位系统**：支持绝对定位、Anchor 锚点、Margin 边距
 
 ## 📦 依赖项
 
@@ -166,6 +168,26 @@ DCompLayeredHost (合成管理)
 | **TabControl** | 标签页 | 多页切换 |
 | **TabPage** | 标签页面 | TabControl 子页面 |
 
+### 布局控件 🆕
+
+| 控件 | 说明 | 特性 |
+|------|------|------|
+| **StackPanel** | 堆叠面板 | 垂直/水平线性排列，支持间距 |
+| **GridPanel** | 网格面板 | 行列布局，支持 Auto/Star/Pixel 尺寸 |
+| **DockPanel** | 停靠面板 | Top/Bottom/Left/Right/Fill 停靠 |
+| **WrapPanel** | 包裹面板 | 流式布局，自动换行/换列 |
+| **RelativePanel** | 相对面板 | 相对定位，支持控件间约束关系 |
+
+**布局属性支持**：
+- `Margin` - 外边距（上下左右）
+- `Padding` - 内边距
+- `HorizontalAlignment` - 水平对齐（Left/Center/Right/Stretch）
+- `VerticalAlignment` - 垂直对齐（Top/Center/Bottom/Stretch）
+- `AnchorStyles` - 锚点（Top|Bottom|Left|Right 组合）
+- `GridRow/GridColumn` - Grid 布局的行列位置
+- `GridRowSpan/GridColumnSpan` - Grid 布局的跨行跨列
+- `Dock` - Dock 布局的停靠位置
+
 ### 数据展示
 
 | 控件 | 说明 | 特性 |
@@ -252,6 +274,93 @@ public:
                      D2D1_COLOR_F{1, 1, 1, 1});
     }
 };
+```
+
+### 布局系统 🆕
+
+CUI 提供了完整的布局管理系统，类似 WPF/UWP 的布局方式。
+
+#### StackPanel - 线性堆叠布局
+
+```cpp
+#include "GUI/Layout/Layout.h"
+
+// 垂直堆叠
+auto stack = new StackPanel(10, 10, 380, 280);
+stack->SetOrientation(Orientation::Vertical);
+stack->SetSpacing(10);  // 间距
+
+stack->AddControl(new Button(L"按钮 1", 0, 0, 200, 30));
+stack->AddControl(new Button(L"按钮 2", 0, 0, 200, 30));
+stack->AddControl(new Button(L"按钮 3", 0, 0, 200, 30));
+```
+
+#### GridPanel - 网格布局
+
+```cpp
+auto grid = new GridPanel(10, 10, 580, 380);
+
+// 定义行和列
+grid->AddRow(GridLength::Auto());        // 自动高度
+grid->AddRow(GridLength::Star(1.0f));    // 占剩余空间的 1 份
+grid->AddRow(GridLength::Pixels(50));    // 固定 50 像素
+
+grid->AddColumn(GridLength::Star(1.0f)); // 占 1 份
+grid->AddColumn(GridLength::Star(2.0f)); // 占 2 份
+
+// 设置控件的位置
+auto label = new Label(L"标题", 0, 0);
+label->GridRow = 0;
+label->GridColumn = 0;
+label->GridColumnSpan = 2;  // 跨两列
+
+grid->AddControl(label);
+```
+
+#### DockPanel - 停靠布局
+
+```cpp
+auto dock = new DockPanel(10, 10, 580, 380);
+dock->SetLastChildFill(true);  // 最后一个控件填充剩余空间
+
+auto toolbar = new Panel(0, 0, 580, 40);
+toolbar->Dock = Dock::Top;
+
+auto sidebar = new Panel(0, 0, 150, 300);
+sidebar->Dock = Dock::Left;
+
+auto content = new Panel(0, 0, 300, 300);
+content->Dock = Dock::Fill;  // 填充剩余空间
+
+dock->AddControl(toolbar);
+dock->AddControl(sidebar);
+dock->AddControl(content);
+```
+
+#### Anchor 和 Margin - 增强绝对定位
+
+```cpp
+// 右下角固定的按钮
+auto btnOK = new Button(L"确定", 0, 0, 80, 30);
+btnOK->AnchorStyles = AnchorStyles::Right | AnchorStyles::Bottom;
+btnOK->Margin = Thickness(0, 0, 10, 10);  // 距离右下角 10 像素
+
+// 四边锚定，随窗口缩放
+auto textBox = new TextBox(L"", 10, 10, 200, 100);
+textBox->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | 
+                        AnchorStyles::Right | AnchorStyles::Bottom;
+textBox->Margin = Thickness(10, 10, 10, 50);
+```
+
+#### 对齐和边距
+
+所有控件都支持：
+
+```cpp
+control->HorizontalAlignment = HorizontalAlignment::Center;  // 水平居中
+control->VerticalAlignment = VerticalAlignment::Top;         // 顶部对齐
+control->Margin = Thickness(10, 5, 10, 5);  // 外边距：左10, 上5, 右10, 下5
+control->Padding = Thickness(5);            // 内边距：所有方向5像素
 ```
 
 ### 事件处理

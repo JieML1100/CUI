@@ -1,6 +1,6 @@
 #pragma once
-#include "GUI/TextBox.h"
-#include "GUI/Label.h"
+#include "../CUI/GUI/TextBox.h"
+#include "../CUI/GUI/Label.h"
 class CustomTextBox1 : public TextBox
 {
 public:
