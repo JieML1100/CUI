@@ -367,7 +367,7 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 	gridview1->Columns.Add(textColumn);
 	gridview1->Columns.Add(GridViewColumn(L"Check", 80, ColumnType::Check));
 	gridview1->Columns.Add(GridViewColumn(L"Edit", 200, ColumnType::Text, true));
-	for (int i = 0; i < 10000; i++)
+	for (int i = 0; i < 64; i++)
 	{
 		GridViewRow row;
 		row.Cells = { bmps[i % 10] ,i % 2 == 0,std::to_wstring(Random::Next()) ,i % 3 == 0 ,std::to_wstring(Random::Next()) };

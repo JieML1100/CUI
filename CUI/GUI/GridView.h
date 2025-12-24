@@ -67,6 +67,8 @@ public:
 	float Boder = 1.5f;
 	D2D1_COLOR_F HeadBackColor = Colors::Snow3;
 	D2D1_COLOR_F HeadForeColor = Colors::Black;
+	// Pixel-based vertical scroll offset for smooth/position scrolling.
+	float ScrollYOffset = 0.0f;
 	int ScrollRowPosition = 0;
 	int SelectedColumnIndex = -1;
 	int SelectedRowIndex = -1;
@@ -105,6 +107,9 @@ private:
 		float RenderWidth = 0.0f;   		float RenderHeight = 0.0f;  		float HeadHeight = 0.0f;
 		float RowHeight = 0.0f;
 		float TotalColumnsWidth = 0.0f;
+		float ContentHeight = 0.0f;
+		float TotalRowsHeight = 0.0f;
+		float MaxScrollY = 0.0f;
 		int VisibleRows = 0;
 		int MaxScrollRow = 0;
 		float MaxScrollX = 0.0f;
