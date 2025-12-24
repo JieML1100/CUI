@@ -162,15 +162,15 @@ void DemoWindow::bt2_OnMouseClick(class Control* sender, MouseEventArgs e)
 		if (file.Extension() == ".svg" || file.Extension() == ".SVG")
 		{
 			auto bytes = File::ReadAllBytes(ofd.SelectedPaths[0]);
-			picturebox1->Image = this->Image = ToBitmapFromSvg(this->Render, (char*)bytes.data());
-			picturebox1->PostRender();
+			this->Image = ToBitmapFromSvg(this->Render, (char*)bytes.data());
+			picturebox1->SetImageEx(this->Image, false);
 		}
 		else
 		{
 			auto bytes = File::ReadAllBytes(ofd.SelectedPaths[0]);
 			auto img = BitmapSource::FromBuffer(bytes.data(), bytes.size());
-			picturebox1->Image = this->Image = this->Render->CreateBitmap(img->GetWicBitmap());
-			picturebox1->PostRender();
+			this->Image = this->Render->CreateBitmap(img->GetWicBitmap());
+			picturebox1->SetImageEx(this->Image, false);
 		}
 		this->Invalidate();
 	}
@@ -205,17 +205,21 @@ void DemoWindow::picturebox1_OnDropFile(class Control* sender, List<std::wstring
 	FileInfo file(Convert::wstring_to_string(files[0]));
 	if (file.Extension() == ".svg" || file.Extension() == ".SVG")
 	{
-		sender->Image = ToBitmapFromSvg(this->Render, (char*)File::ReadAllBytes(Convert::wstring_to_string(files[0]).c_str()).data());
-		sender->PostRender();
+		this->Image = ToBitmapFromSvg(this->Render, (char*)File::ReadAllBytes(Convert::wstring_to_string(files[0]).c_str()).data());
+		picturebox1->SetImageEx(this->Image, false);
 	}
 	else
 	{
-		auto img = BitmapSource::FromFile(files[0]);
-		sender->Image = sender->ParentForm->Render->CreateBitmap(img->GetWicBitmap());
-		sender->PostRender();
+		if (StringHelper::Contains(".png.PNG.jpg.JPG.jpeg.JPEG.bmp.BMP", file.Extension()))
+		{
+			auto img = BitmapSource::FromFile(files[0]);
+			this->Image = this->Render->CreateBitmap(img->GetWicBitmap());
+			picturebox1->SetImageEx(this->Image, false);
+		}
 	}
+	this->Invalidate();
 }
-DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 800,640 })
+DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 {
 	bmps[0] = ToBitmapFromSvg(this->Render, _0_ico);
 	bmps[1] = ToBitmapFromSvg(this->Render, _1_ico);

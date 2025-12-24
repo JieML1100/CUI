@@ -25,14 +25,14 @@ static void renderNodes(TreeView* tree, D2DGraphics1* d2d, float x, float y, flo
 			{
 				d2d->DrawRect(renderLeft, exTop, itemHeight * 0.6f, itemHeight * 0.6f, foreColor);
 
-				
+
 				d2d->DrawLine(
 					{ renderLeft + (itemHeight * 0.1f), exTop + (itemHeight * 0.3f) },
 					{ renderLeft + (itemHeight * 0.5f), exTop + (itemHeight * 0.3f) },
 					foreColor);
 				if (!c->Expand)
 				{
-					
+
 					d2d->DrawLine(
 						{ renderLeft + (itemHeight * 0.3f), exTop + (itemHeight * 0.1f) },
 						{ renderLeft + (itemHeight * 0.3f), exTop + (itemHeight * 0.5f) },
@@ -127,7 +127,7 @@ CursorKind TreeView::QueryCursor(int xof, int yof)
 	(void)yof;
 	if (!this->Enable) return CursorKind::Arrow;
 
-		const float fontHeight = this->Font ? this->Font->FontHeight : 0.0f;
+	const float fontHeight = this->Font ? this->Font->FontHeight : 0.0f;
 	if (fontHeight > 0.0f)
 	{
 		const int renderCount = std::max(1, (int)((float)this->Height / fontHeight));
@@ -161,7 +161,7 @@ void TreeView::UpdateScrollDrag(float posY) {
 	int renderItemCount = (int)(height / fontHeight);
 	if (renderItemCount <= 0) renderItemCount = 1;
 
-		if (renderItemCount >= this->MaxRenderItems)
+	if (renderItemCount >= this->MaxRenderItems)
 	{
 		if (this->ScrollIndex != 0)
 		{
@@ -230,7 +230,7 @@ void TreeView::Update()
 		{
 			this->RenderImage();
 		}
-		
+
 		{
 			int curr = 0;
 			renderNodes(this, d2d, abslocation.x, abslocation.y, size.cx, size.cy, font->FontHeight, ScrollIndex, curr, 0, this->Root->Children);
@@ -343,7 +343,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 			}
 			if (xof >= Width - 8 && xof <= Width)
 			{
-								isDraggingScroll = true;
+				isDraggingScroll = true;
 				UpdateScrollDrag((float)yof);
 			}
 			else

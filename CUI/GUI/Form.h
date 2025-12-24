@@ -95,6 +95,8 @@ private:
 	// 布局支持
 	class LayoutEngine* _layoutEngine = nullptr;
 	bool _needsLayout = false;
+	bool _resourcesCleaned = false;
+	void CleanupResources();
 
 public:
 	FormMouseWheelEvent OnMouseWheel = FormMouseWheelEvent();

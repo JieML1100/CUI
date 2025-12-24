@@ -20,8 +20,18 @@ Control::Control()
 }
 Control::~Control()
 {
-	if (this->_font)
+	if (this->_image && this->_ownsImage)
+	{
+		this->_image->Release();
+	}
+	this->_image = NULL;
+	this->_ownsImage = false;
+	if (this->_font && this->_ownsFont)
+	{
 		delete this->_font;
+	}
+	this->_font = NULL;
+	this->_ownsFont = false;
 	for (auto c : this->Children)
 	{
 		delete c;
@@ -68,7 +78,30 @@ GET_CPP(Control, class Font*, Font)
 }
 SET_CPP(Control, class Font*, Font)
 {
+	this->SetFontEx(value, true);
+}
+
+void Control::SetFontEx(class Font* value, bool takeOwnership)
+{
+	if (value == GetDefaultFontObject())
+	{
+		value = nullptr;
+		takeOwnership = false;
+	}
+
+	if (value == this->_font)
+	{
+		this->_ownsFont = takeOwnership;
+		return;
+	}
+
+	if (this->_font && this->_ownsFont)
+	{
+		delete this->_font;
+	}
 	this->_font = value;
+	this->_ownsFont = takeOwnership;
+	this->PostRender();
 }
 
 GET_CPP(Control, int, Count)
@@ -246,7 +279,22 @@ GET_CPP(Control, ID2D1Bitmap*, Image)
 }
 SET_CPP(Control, ID2D1Bitmap*, Image)
 {
-	_image = value;
+	this->SetImageEx(value, true);
+}
+
+void Control::SetImageEx(ID2D1Bitmap* value, bool takeOwnership)
+{
+	if (value == this->_image)
+	{
+		this->_ownsImage = takeOwnership;
+		return;
+	}
+	if (this->_image && this->_ownsImage)
+	{
+		this->_image->Release();
+	}
+	this->_image = value;
+	this->_ownsImage = takeOwnership;
 	this->PostRender();
 }
 void Control::RenderImage()

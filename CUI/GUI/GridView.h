@@ -54,6 +54,7 @@ public:
 	UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
 	GridView(int x = 0, int y = 0, int width = 120, int height = 20);
+	~GridView() override;
 	class Font* HeadFont = NULL;
 		bool InScroll = false;
 		bool InHScroll = false;

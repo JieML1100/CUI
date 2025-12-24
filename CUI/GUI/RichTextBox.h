@@ -4,17 +4,17 @@
 class RichTextBox : public Control
 {
 private:
-			std::wstring buffer;
+	std::wstring buffer;
 	bool bufferSyncedFromControl = false;
 
-	POINT selectedPos = {0,0};
+	POINT selectedPos = { 0,0 };
 	bool isDraggingScroll = false;
 	IDWriteTextLayout* layOutCache = NULL;
 	std::vector<DWRITE_HIT_TEST_METRICS> selRange;
 	bool selRangeDirty = true;
 	SIZE lastLayoutSize = { 0,0 };
 
-		struct TextBlock
+	struct TextBlock
 	{
 		size_t start = 0;
 		size_t len = 0;
@@ -41,8 +41,8 @@ public:
 	D2D1_COLOR_F ScrollForeColor = Colors::DimGrey;
 	bool AllowMultiLine = false;
 	bool AllowTabInput = false;
-			size_t MaxTextLength = 1000000;
-		bool EnableVirtualization = true;
+	size_t MaxTextLength = 1000000;
+	bool EnableVirtualization = true;
 	size_t VirtualizeThreshold = 20000;
 	size_t BlockCharCount = 4096;
 	int SelectionStart = 0;
@@ -52,7 +52,7 @@ public:
 	float TextMargin = 5.0f;
 	RichTextBox(std::wstring text, int x, int y, int width = 120, int height = 24);
 private:
-		D2D1_RECT_F _caretRectCache = { 0,0,0,0 };
+	D2D1_RECT_F _caretRectCache = { 0,0,0,0 };
 	bool _caretRectCacheValid = false;
 private:
 	void SyncBufferFromControlIfNeeded();

@@ -566,6 +566,60 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 
 Form::~Form()
 {
+	CleanupResources();
+}
+
+void Form::CleanupResources()
+{
+	if (_resourcesCleaned)
+		return;
+	_resourcesCleaned = true;
+
+	auto isDescendant = [&](Control* root, Control* node, const auto& self) -> bool
+		{
+			if (!root || !node) return false;
+			for (int i = 0; i < root->Count; i++)
+			{
+				auto child = root->operator[](i);
+				if (child == node) return true;
+				if (self(child, node, self)) return true;
+			}
+			return false;
+		};
+
+	auto isOwnedByRootControls = [&](Control* node) -> bool
+		{
+			if (!node) return false;
+			for (auto c : this->Controls)
+			{
+				if (c == node) return true;
+				if (isDescendant(c, node, isDescendant)) return true;
+			}
+			return false;
+		};
+
+	if (this->ForegroundControl && !isOwnedByRootControls(this->ForegroundControl))
+	{
+		delete this->ForegroundControl;
+	}
+	this->ForegroundControl = nullptr;
+
+	for (auto c : this->Controls)
+	{
+		delete c;
+	}
+	this->Controls.Clear();
+
+	this->Selected = nullptr;
+	this->UnderMouse = nullptr;
+	this->MainMenu = nullptr;
+
+	if (this->Image)
+	{
+		this->Image->Release();
+		this->Image = nullptr;
+	}
+
 	if (OverlayRender)
 	{
 		delete OverlayRender;
@@ -1692,6 +1746,7 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 		{
 			form->OnFormClosed(form);
 			Application::Forms.Remove(form->Handle);
+			form->CleanupResources();
 		}
 		break;
 		case (WM_USER + 1):

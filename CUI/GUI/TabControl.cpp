@@ -112,9 +112,6 @@ void TabControl::Update()
 			page->Size = this->Size;
 			page->Update();
 
-			// 关键：TabControl 通过 Visible 控制页显示，但隐藏页不会被 Update() 调用，
-			// 这会导致 WebBrowser 这种“真实 HWND 子窗口”无法及时 Hide。
-			// 因此当选择页发生变化时，强制同步所有页的原生子窗口显隐/位置。
 			if (this->_lastSelectIndex != this->SelectIndex)
 			{
 				SyncNativeChildWindowsForAllPages(this);

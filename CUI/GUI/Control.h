@@ -115,8 +115,10 @@ protected:
 	D2D1_COLOR_F _forecolor = Colors::Black;
 	D2D1_COLOR_F _boldercolor = Colors::Black;
 	ID2D1Bitmap* _image = NULL;
+	bool _ownsImage = false;
 	std::wstring _text;
 	Font* _font = NULL;
+	bool _ownsFont = false;
 	// 上一次 PostRender 触发的 client 坐标系矩形（包含标题栏 top 偏移）
 	// 用于处理控件尺寸变小（如 Menu/ComboBox 收起）时，旧绘制区域未被失效导致的残影。
 	D2D1_RECT_F _lastPostRenderClientRect{ 0,0,0,0 };
@@ -183,6 +185,8 @@ public:
 	PROPERTY(class Font*, Font);
 	GET(class Font*, Font);
 	SET(class Font*, Font);
+	// 显式设置是否由 Control 释放 Font（默认：通过属性 Font 设置时视为“拥有”）
+	void SetFontEx(class Font* value, bool takeOwnership);
 	READONLY_PROPERTY(int, Count);
 	GET(int, Count);
 	Control* operator[](int index);
@@ -258,6 +262,8 @@ public:
 	PROPERTY(ID2D1Bitmap*, Image);
 	GET(ID2D1Bitmap*, Image);
 	SET(ID2D1Bitmap*, Image);
+	// 显式设置 Image 所有权（默认：通过属性 Image 设置时视为“拥有”并在析构/替换时 Release）
+	void SetImageEx(ID2D1Bitmap* value, bool takeOwnership);
 
 	// 布局属性访问器
 	PROPERTY(Thickness, Margin);

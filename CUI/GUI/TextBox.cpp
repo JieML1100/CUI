@@ -171,7 +171,7 @@ void TextBox::Update()
 	auto size = this->ActualSize();
 	auto absRect = this->AbsRect;
 	bool isSelected = this->ParentForm->Selected == this;
-		this->_caretRectCacheValid = false;
+	this->_caretRectCacheValid = false;
 	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
 	{
 		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, isSelected ? this->FocusedColor : this->BackColor);
@@ -201,7 +201,7 @@ void TextBox::Update()
 				}
 				else
 				{
-										if (!selRange.empty())
+					if (!selRange.empty())
 					{
 						const auto caret = selRange[0];
 						const float cx = caret.left + (float)abslocation.x + TextMargin - OffsetX;
@@ -237,7 +237,7 @@ void TextBox::Update()
 		{
 			if (isSelected)
 			{
-								const float cx = (float)TextMargin + (float)abslocation.x - OffsetX;
+				const float cx = (float)TextMargin + (float)abslocation.x - OffsetX;
 				const float cy = (float)abslocation.y + OffsetY;
 				const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
 				this->_caretRectCache = { cx - 2.0f, cy - 2.0f, cx + 2.0f, cy + ch + 2.0f };
@@ -263,7 +263,7 @@ void TextBox::Update()
 
 bool TextBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 {
-		if (!this->IsSelected()) return false;
+	if (!this->IsSelected()) return false;
 	if (this->SelectionStart != this->SelectionEnd) return false;
 	if (!this->_caretRectCacheValid) return false;
 	outRect = this->_caretRectCache;
