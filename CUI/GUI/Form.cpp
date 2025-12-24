@@ -92,6 +92,19 @@ Control* Form::HitTestControlAt(POINT contentMouse)
 		}
 	}
 
+	// 3) 状态栏：置顶于普通控件（但优先级低于主菜单与前景控件）
+	if (this->MainStatusBar && this->MainStatusBar->TopMost && this->MainStatusBar->Visible && this->MainStatusBar->Enable)
+	{
+		auto* sb = this->MainStatusBar;
+		auto loc = sb->AbsLocation;
+		auto sz = sb->ActualSize();
+		if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
+			contentMouse.x <= (loc.x + sz.cx) && contentMouse.y <= (loc.y + sz.cy))
+		{
+			return HitTestDeepestChild(sb, contentMouse);
+		}
+	}
+
 	for (int pass = 0; pass < 2; pass++)
 	{
 		for (int i = 0; i < this->Controls.Count; i++)
@@ -100,6 +113,7 @@ Control* Form::HitTestControlAt(POINT contentMouse)
 			if (!c || !c->Visible || !c->Enable) continue;
 			if (c == this->ForegroundControl) continue;
 			if (c == this->MainMenu) continue;
+			if (this->MainStatusBar && this->MainStatusBar->TopMost && c == this->MainStatusBar) continue;
 			if (pass == 0 && c->Type() != UIClass::UI_ComboBox) continue;
 			if (pass == 1 && c->Type() == UIClass::UI_ComboBox) continue;
 
@@ -1005,12 +1019,37 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 			{
 				if (c == this->ForegroundControl) continue;
 				if (c == this->MainMenu) continue;
+				if (this->MainStatusBar && this->MainStatusBar->TopMost && c == this->MainStatusBar) continue;
 			}
+			// 状态栏（TopMost=true）单独绘制，避免被普通控件覆盖
+			if (this->MainStatusBar && this->MainStatusBar->TopMost && c == this->MainStatusBar)
+				continue;
 			RECT crc = ToRECT(c->AbsRect, 2);
 			if (!RectIntersects(contentDirty, crc)) continue;
 			if (c->ParentForm->Render == NULL)
 				c->ParentForm->Render = this->Render;
 			c->Update();
+		}
+
+		// 状态栏：在普通控件之后绘制（TopMost=true）
+		if (this->MainStatusBar && this->MainStatusBar->TopMost && this->MainStatusBar->Visible)
+		{
+			this->MainStatusBar->Update();
+		}
+
+		// 如果主菜单展开/前景控件可见，它们应覆盖在状态栏之上
+		if (!this->OverlayRender)
+		{
+			if (this->MainMenu && this->MainMenu->Visible)
+			{
+				auto ms = this->MainMenu->ActualSize();
+				if (ms.cy > this->MainMenu->BarHeight)
+					this->MainMenu->Update();
+			}
+			if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl != (Control*)this->MainMenu)
+			{
+				this->ForegroundControl->Update();
+			}
 		}
 		this->Render->PopDrawRect();
 		this->Render->ClearTransform();
@@ -1050,6 +1089,10 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 			this->OverlayRender->PushDrawRect((float)overlayContent.left, (float)overlayContent.top, (float)(overlayContent.right - overlayContent.left), (float)(overlayContent.bottom - overlayContent.top));
 
 			this->Render = this->OverlayRender;
+			if (this->MainStatusBar && this->MainStatusBar->TopMost && this->MainStatusBar->Visible)
+			{
+				this->MainStatusBar->Update();
+			}
 			if (this->MainMenu && this->MainMenu->Visible)
 			{
 				this->MainMenu->Update();
@@ -1089,6 +1132,8 @@ bool Form::RemoveControl(Control* c)
 			this->ForegroundControl = NULL;
 		if (this->MainMenu == c) 
 			this->MainMenu = NULL;
+		if (this->MainStatusBar == c)
+			this->MainStatusBar = NULL;
 		if (this->UnderMouse == c)
 			this->UnderMouse = NULL;
 		c->Parent = NULL;
@@ -1176,6 +1221,22 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			}
 		}
 
+		// 状态栏：再次优先命中（TopMost=true）
+		if (this->MainStatusBar && this->MainStatusBar->TopMost && this->MainStatusBar->Visible && this->MainStatusBar->Enable)
+		{
+			auto* sb = this->MainStatusBar;
+			auto loc = sb->AbsLocation;
+			auto size = sb->ActualSize();
+			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
+				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))
+			{
+				HitControl = sb;
+				this->UnderMouse = sb;
+				sb->ProcessMessage(message, wParam, lParam, contentMouse.x - loc.x, contentMouse.y - loc.y);
+				goto ext;
+			}
+		}
+
 	reExc:
 		for (int i = 0; i < this->Controls.Count; i++)
 		{
@@ -1183,6 +1244,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			if (!c->Visible || !c->Enable)continue;
 			if (c == this->ForegroundControl) continue;
 			if (c == this->MainMenu) continue;
+			if (this->MainStatusBar && this->MainStatusBar->TopMost && c == this->MainStatusBar) continue;
 			auto location = c->Location;
 			auto size = c->ActualSize();
 			if (
@@ -1353,12 +1415,28 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			}
 		}
 
+		// 状态栏：再次优先（TopMost=true）
+		if (this->MainStatusBar && this->MainStatusBar->TopMost && this->MainStatusBar->Visible && this->MainStatusBar->Enable)
+		{
+			auto* sb = this->MainStatusBar;
+			auto loc = sb->AbsLocation;
+			auto size = sb->ActualSize();
+			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
+				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))
+			{
+				HitControl = sb;
+				sb->ProcessMessage(message, wParam, lParam, contentMouse.x - loc.x, contentMouse.y - loc.y);
+				goto ext1;
+			}
+		}
+
 	reExc1:
 		for (int i = 0; i < this->Controls.Count; i++)
 		{
 			auto c = this->Controls[i]; if (!c->Visible)continue;
 			if (c == this->ForegroundControl) continue;
 			if (c == this->MainMenu) continue;
+			if (this->MainStatusBar && this->MainStatusBar->TopMost && c == this->MainStatusBar) continue;
 			auto location = c->Location;
 			auto size = c->ActualSize();
 			if (

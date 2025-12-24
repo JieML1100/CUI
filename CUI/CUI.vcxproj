@@ -231,6 +231,7 @@
     <ClInclude Include="GUI\TabControl.h" />
     <ClInclude Include="GUI\Taskbar.h" />
     <ClInclude Include="GUI\ToolBar.h" />
+    <ClInclude Include="GUI\StatusBar.h" />
     <ClInclude Include="GUI\WebBrowser.h" />
     <ClInclude Include="GUI\TextBox.h" />
     <ClInclude Include="GUI\TreeView.h" />
@@ -268,6 +269,7 @@
     <ClCompile Include="GUI\TabControl.cpp" />
     <ClCompile Include="GUI\Taskbar.cpp" />
     <ClCompile Include="GUI\ToolBar.cpp" />
+    <ClCompile Include="GUI\StatusBar.cpp" />
     <ClCompile Include="GUI\WebBrowser.cpp" />
     <ClCompile Include="GUI\TextBox.cpp" />
     <ClCompile Include="GUI\TreeView.cpp" />

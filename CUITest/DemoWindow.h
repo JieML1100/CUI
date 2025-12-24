@@ -45,6 +45,7 @@ public:
 
     Menu* menu1;
     ToolBar* toolbar1;
+    StatusBar* statusbar1;
     Slider* slider1;
 };
 

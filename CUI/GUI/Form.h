@@ -16,6 +16,7 @@
 #include "Switch.h"
 #include "Menu.h"
 #include "ToolBar.h"
+#include "StatusBar.h"
 #include "Slider.h"
 #include "TabControl.h"
 #include "TextBox.h"
@@ -137,6 +138,8 @@ public:
 	class Control* ForegroundControl = NULL;
 	// 主菜单：单独管理（菜单栏/下拉菜单）
 	class Menu* MainMenu = NULL;
+	// 状态栏：单独管理（置底但置顶于普通控件；需要独立渲染与消息处理）
+	class StatusBar* MainStatusBar = NULL;
 	D2DGraphics1* Render;
 	D2DGraphics1* OverlayRender = nullptr;
 	class DCompLayeredHost* _dcompHost = nullptr;
@@ -211,6 +214,13 @@ public:
 		if (c->Type() == UIClass::UI_Menu)
 		{
 			this->MainMenu = (Menu*)c;
+		}
+		// 状态栏单独管理（TopMost=true 时）
+		if (c->Type() == UIClass::UI_StatusBar)
+		{
+			auto* sb = (StatusBar*)c;
+			if (sb && sb->TopMost)
+				this->MainStatusBar = sb;
 		}
 		// 触发布局
 		_needsLayout = true;

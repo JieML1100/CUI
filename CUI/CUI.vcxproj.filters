@@ -132,6 +132,9 @@
     <ClInclude Include="GUI\ToolBar.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\StatusBar.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\Slider.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -273,6 +276,9 @@
       <Filter>GUI\Layout</Filter>
     </ClCompile>
     <ClCompile Include="GUI\ToolBar.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\StatusBar.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Slider.cpp">

@@ -127,6 +127,8 @@ void Control::RemoveControl(Control* c)
 		this->ParentForm->ForegroundControl = NULL;
 	if (this->ParentForm->MainMenu == c)
 		this->ParentForm->MainMenu = NULL;
+	if (this->ParentForm->MainStatusBar == c)
+		this->ParentForm->MainStatusBar = NULL;
 	if (this->ParentForm->UnderMouse == c)
 		this->ParentForm->UnderMouse = NULL;
 }

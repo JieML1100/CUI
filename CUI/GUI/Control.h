@@ -56,6 +56,7 @@ enum class UIClass : int
 	UI_Menu,
 	UI_MenuItem,
 	UI_ToolBar,
+	UI_StatusBar,
 	UI_Slider,
 	UI_WebBrowser,
 	UI_StackPanel,
@@ -105,7 +106,6 @@ typedef Event<void(class Control*)> LostFocusEvent;
 typedef Event<void(class Control*, List<std::wstring>)> DropFileEvent;
 typedef Event<void(class Control*)> SelectionChangedEvent;
 
-#define defthis(x) decltype(this) _this = (decltype(this))((class Control*)x)->ParentForm
 class Control
 {
 protected:

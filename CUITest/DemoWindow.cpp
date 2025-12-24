@@ -264,15 +264,22 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 	}
 
 	toolbar1 = this->AddControl(new ToolBar(0, this->Size.cy - this->HeadHeight - 24, this->Size.cx, 24));
-	auto tbNew = toolbar1->AddToolButton(L"New", 90);
-	auto tbSave = toolbar1->AddToolButton(L"Save", 90);
-	auto tbRun = toolbar1->AddToolButton(L"Run", 90);
+	auto tbNew = toolbar1->AddToolButton(L"I'm", 90);
+	auto tbSave = toolbar1->AddToolButton(L"a", 90);
+	auto tbRun = toolbar1->AddToolButton(L"Toolbar", 90);
 
-	tbNew->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: New"; this->label1->PostRender(); };
-	tbSave->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: Save"; this->label1->PostRender(); };
-	tbRun->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: Run"; this->label1->PostRender(); };
+	statusbar1 = this->AddControl(new StatusBar(0, this->Size.cy - this->HeadHeight - 26, this->Size.cx, 26));
+	statusbar1->AddPart(L"0 part", -1);
+	statusbar1->AddPart(L"1 part/140", 140);
+	statusbar1->AddPart(L"2 part/70", 100);
+	statusbar1->AddPart(L"3 part/240", 240);
 
-	slider1 = this->AddControl(new Slider(10, menu1->Bottom + 8, 320, 32));
+	tbNew->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: New"; this->label1->PostRender(); this->statusbar1->SetPartText(0, L"ToolBar: I'm"); this->statusbar1->PostRender(); };
+	tbSave->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: Save"; this->label1->PostRender(); this->statusbar1->SetPartText(0, L"ToolBar: a"); this->statusbar1->PostRender(); };
+	tbRun->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: Run"; this->label1->PostRender(); this->statusbar1->SetPartText(0, L"ToolBar: Toolbar"); this->statusbar1->PostRender(); };
+
+	toolbar1->Top = menu1->Bottom;
+	slider1 = this->AddControl(new Slider(10, toolbar1->Bottom + 8, 320, 32));
 	slider1->Min = 0;
 	slider1->Max = 10000;
 	slider1->Value = 50;
@@ -512,7 +519,11 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 		if (this->menu1) this->menu1->Width = this->Size.cx;
 		if (this->toolbar1) {
 			this->toolbar1->Width = this->Size.cx;
-			this->toolbar1->Top = this->Size.cy - this->HeadHeight - 24;
+			this->toolbar1->Top = this->menu1 ? this->menu1->Bottom : 0;
+		}
+		if (this->statusbar1) {
+			this->statusbar1->Width = this->Size.cx;
+			this->statusbar1->Top = this->Size.cy - this->HeadHeight - this->statusbar1->Height;
 		}
 		};
 }
