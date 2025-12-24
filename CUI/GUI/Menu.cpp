@@ -2,13 +2,26 @@
 #include "Form.h"
 #include <algorithm>
 
+namespace
+{
+	struct MenuPanel
+	{
+		MenuItem* Owner = nullptr;                 // 该层面板对应的 owner（其 SubItems 为该面板内容）
+		const std::vector<MenuItem*>* Items = nullptr;
+		float X = 0;
+		float Y = 0;
+		float W = 0;
+		float H = 0;
+		bool OpenedToLeft = false;               // 相对上一层面板是否向左展开
+	};
+}
+
 UIClass MenuItem::Type() { return UIClass::UI_MenuItem; }
 
 MenuItem::MenuItem(std::wstring text, int id)
 {
 	this->Text = text;
 	this->Id = id;
-	// 使用私有成员直接赋值,避免触发PostRender
 	this->_backcolor = D2D1_COLOR_F{ 0,0,0,0 };
 	this->_boldercolor = D2D1_COLOR_F{ 0,0,0,0 };
 	this->_forecolor = Colors::WhiteSmoke;
@@ -25,7 +38,6 @@ MenuItem::~MenuItem()
 MenuItem* MenuItem::AddSubItem(std::wstring text, int id)
 {
 	auto* it = new MenuItem(text, id);
-	// ForeColor 已经在构造函数中设置,无需重复设置
 	SubItems.push_back(it);
 	return it;
 }
@@ -95,7 +107,6 @@ MenuItem* Menu::AddItem(std::wstring text)
 {
 	auto* item = this->AddControl(new MenuItem(text, 0));
 	item->Height = this->BarHeight;
-	// ForeColor 已经在构造函数中设置,无需重复设置
 	return item;
 }
 
@@ -165,11 +176,8 @@ SIZE Menu::ActualSize()
 	auto s = this->Size;
 	if (_expand)
 	{
-		// 展开时尽量覆盖整个内容区域，便于点击空白处收起
 		if (this->ParentForm)
 		{
-			// 注意：Form::ClientSize 本身就是“内容区高度”（已扣除 HeadHeight）
-			// 这里不应再次扣除 top，否则会导致展开区域变小，点击空白处无法正确命中/收起。
 			int contentH = this->ParentForm->ClientSize.cy;
 			if (contentH < BarHeight) contentH = BarHeight;
 			s.cy = contentH;
@@ -189,7 +197,6 @@ SIZE Menu::ActualSize()
 void Menu::Update()
 {
 	if (!this->IsVisual) return;
-	// 主菜单单独管理：记录到 Form::MainMenu（不再使用 ForegroundControls 容器）
 	if (this->ParentForm)
 	{
 		this->ParentForm->MainMenu = this;
@@ -201,11 +208,9 @@ void Menu::Update()
 	absRect.bottom = absRect.top + size.cy;
 	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
 	{
-		// bar
 		d2d->FillRect(abs.x, abs.y, (float)this->Width, (float)BarHeight, BarBackColor);
 		d2d->DrawRect(abs.x, abs.y + (float)BarHeight - Boder, (float)this->Width, Boder, BarBorderColor, Boder);
 
-		// layout top items
 		float x = 6.0f;
 		auto font = this->Font;
 		for (int i = 0; i < this->Count; i++)
@@ -221,63 +226,18 @@ void Menu::Update()
 			it->Update();
 		}
 
-		// dropdown
 		if (_expand && DropCount() > 0)
 		{
-			float dl = abs.x + DropLeftLocal();
-			float dt = abs.y + DropTopLocal();
-			float dw = DropWidthLocal();
-			float dh = DropHeightLocal();
-			d2d->FillRoundRect(dl, dt, dw, dh, DropBackColor, 4.0f);
-			d2d->DrawRoundRect(dl, dt, dw, dh, DropBorderColor, 1.0f, 4.0f);
-
 			auto* top = (MenuItem*)this->operator[](_expandIndex);
-			for (int i = 0; i < (int)top->SubItems.size(); i++)
+			if (top)
 			{
-				auto* sub = top->SubItems[i];
-				float iy = dt + DropPaddingY + (float)i * (float)DropItemHeight;
-				if (sub && sub->Separator)
+				auto calcPanelWidth = [&](const std::vector<MenuItem*>& items, float maxW) -> float
 				{
-					float y = iy + (float)DropItemHeight * 0.5f;
-					d2d->DrawLine(dl + 10.0f, y, dl + dw - 10.0f, y, DropSeparatorColor, 1.0f);
-					continue;
-				}
-				if (i == _hoverDropIndex || i == _openSubOwnerIndex)
-					d2d->FillRect(dl + 2.0f, iy, dw - 4.0f, (float)DropItemHeight, DropHoverColor);
-
-				if (sub)
-				{
-					auto ts = font->GetTextSize(sub->Text);
-					float ty = iy + ((float)DropItemHeight - ts.height) * 0.5f;
-					if (ty < iy) ty = iy;
-					d2d->DrawString(sub->Text, dl + 12.0f, ty, DropTextColor, font);
-					if (!sub->Shortcut.empty())
+					float w = 120.0f;
+					for (auto* it : items)
 					{
-						auto ss = font->GetTextSize(sub->Shortcut);
-						float sx = dl + dw - 12.0f - ss.width;
-						d2d->DrawString(sub->Shortcut, sx, ty, DropTextColor, font);
-					}
-					// 子菜单指示
-					if (!sub->SubItems.empty())
-					{
-						auto as = font->GetTextSize(L"›");
-						float ax = dl + dw - 12.0f - as.width;
-						d2d->DrawString(L"›", ax, ty, DropTextColor, font);
-					}
-				}
-			}
-
-			// 二级子菜单
-			if (_openSubOwnerIndex >= 0 && _openSubOwnerIndex < (int)top->SubItems.size())
-			{
-				auto* owner = top->SubItems[_openSubOwnerIndex];
-				if (owner && !owner->Separator && !owner->SubItems.empty())
-				{
-					// 计算子菜单宽度
-					float subw = 140.0f;
-					for (auto* it : owner->SubItems)
-					{
-						if (!it || it->Separator) continue;
+						if (!it) continue;
+						if (it->Separator) continue;
 						auto ts = font->GetTextSize(it->Text);
 						float tw = ts.width + 24.0f;
 						if (!it->Shortcut.empty())
@@ -285,50 +245,119 @@ void Menu::Update()
 							auto ss = font->GetTextSize(it->Shortcut);
 							tw += ss.width + 20.0f;
 						}
-						if (tw > subw) subw = tw;
+						// 预留子菜单指示符空间
+						if (!it->SubItems.empty())
+							tw += 18.0f;
+						if (tw > w) w = tw;
 					}
-					if (subw < 100.0f) subw = 100.0f;
+					if (w < 80.0f) w = 80.0f;
+					if (maxW > 0.0f && w > maxW) w = maxW;
+					return w;
+				};
 
-					float subh = DropPaddingY * 2.0f + (float)owner->SubItems.size() * (float)DropItemHeight;
-					float subx = dl + dw + 4.0f;
-					float suby = dt + DropPaddingY + (float)_openSubOwnerIndex * (float)DropItemHeight;
+				auto clampPanelXY = [&](float& x, float& y, float w, float h)
+				{
+					if (!this->ParentForm) return;
+					float maxX = (float)this->ParentForm->ClientSize.cx;
+					float maxY = (float)this->ParentForm->ClientSize.cy;
+					if (x < 0.0f) x = 0.0f;
+					if (y < 0.0f) y = 0.0f;
+					if (x + w > maxX) x = std::max(0.0f, maxX - w);
+					if (y + h > maxY) y = std::max(0.0f, maxY - h);
+				};
 
-					// 右侧放不下则放左侧
+				// build panels based on open path
+				std::vector<MenuPanel> panels;
+				panels.reserve(8);
+
+				MenuPanel p0;
+				p0.Owner = top;
+				p0.Items = &top->SubItems;
+				p0.X = abs.x + DropLeftLocal();
+				p0.Y = abs.y + DropTopLocal();
+				{
+					float maxw = (float)this->Width - DropLeftLocal();
+					p0.W = calcPanelWidth(*p0.Items, maxw);
+					p0.H = DropPaddingY * 2.0f + (float)p0.Items->size() * (float)DropItemHeight;
+					clampPanelXY(p0.X, p0.Y, p0.W, p0.H);
+				}
+				panels.push_back(p0);
+
+				for (size_t level = 0; level < _openPath.size(); level++)
+				{
+					int openIdx = _openPath[level];
+					if (openIdx < 0) break;
+					const auto& prev = panels.back();
+					if (!prev.Items) break;
+					if (openIdx >= (int)prev.Items->size()) break;
+					auto* owner = (*prev.Items)[openIdx];
+					if (!owner || owner->Separator || owner->SubItems.empty()) break;
+
+					MenuPanel p;
+					p.Owner = owner;
+					p.Items = &owner->SubItems;
+					p.W = calcPanelWidth(*p.Items, 0.0f);
+					p.H = DropPaddingY * 2.0f + (float)p.Items->size() * (float)DropItemHeight;
+					p.X = prev.X + prev.W - 1.0f;
+					p.Y = prev.Y + DropPaddingY + (float)openIdx * (float)DropItemHeight;
+
 					if (this->ParentForm)
 					{
 						float maxX = (float)this->ParentForm->ClientSize.cx;
-						if (subx + subw > maxX)
-							subx = dl - subw - 4.0f;
-						if (subx < 0.0f) subx = 0.0f;
+						if (p.X + p.W > maxX)
+						{
+							p.X = prev.X - p.W - 4.0f;
+							p.OpenedToLeft = true;
+						}
+						if (p.X < 0.0f) p.X = 0.0f;
 					}
+					clampPanelXY(p.X, p.Y, p.W, p.H);
+					panels.push_back(p);
+					if (panels.size() > 32) break;
+				}
 
-					d2d->FillRoundRect(subx, suby, subw, subh, DropBackColor, 4.0f);
-					d2d->DrawRoundRect(subx, suby, subw, subh, DropBorderColor, 1.0f, 4.0f);
+				for (size_t level = 0; level < panels.size(); level++)
+				{
+					const auto& pn = panels[level];
+					if (!pn.Items) continue;
+					d2d->FillRoundRect(pn.X, pn.Y, pn.W, pn.H, DropBackColor, 4.0f);
+					d2d->DrawRoundRect(pn.X, pn.Y, pn.W, pn.H, DropBorderColor, 1.0f, 4.0f);
 
-					for (int j = 0; j < (int)owner->SubItems.size(); j++)
+					int hoverIdx = (level < _hoverPath.size() ? _hoverPath[level] : -1);
+					int openIdx = (level < _openPath.size() ? _openPath[level] : -1);
+					for (int i = 0; i < (int)pn.Items->size(); i++)
 					{
-						auto* it = owner->SubItems[j];
-						float iy = suby + DropPaddingY + (float)j * (float)DropItemHeight;
+						auto* it = (*pn.Items)[i];
+						float iy = pn.Y + DropPaddingY + (float)i * (float)DropItemHeight;
 						if (it && it->Separator)
 						{
 							float y = iy + (float)DropItemHeight * 0.5f;
-							d2d->DrawLine(subx + 10.0f, y, subx + subw - 10.0f, y, DropSeparatorColor, 1.0f);
+							d2d->DrawLine(pn.X + 10.0f, y, pn.X + pn.W - 10.0f, y, DropSeparatorColor, 1.0f);
 							continue;
 						}
-						if (j == _hoverSubIndex)
-							d2d->FillRect(subx + 2.0f, iy, subw - 4.0f, (float)DropItemHeight, DropHoverColor);
-						if (it)
+						if (i == hoverIdx || i == openIdx)
+							d2d->FillRect(pn.X + 2.0f, iy, pn.W - 4.0f, (float)DropItemHeight, DropHoverColor);
+
+						if (!it) continue;
+						auto ts = font->GetTextSize(it->Text);
+						float ty = iy + ((float)DropItemHeight - ts.height) * 0.5f;
+						if (ty < iy) ty = iy;
+						d2d->DrawString(it->Text, pn.X + 12.0f, ty, DropTextColor, font);
+						if (!it->Shortcut.empty())
 						{
-							auto ts = font->GetTextSize(it->Text);
-							float ty = iy + ((float)DropItemHeight - ts.height) * 0.5f;
-							if (ty < iy) ty = iy;
-							d2d->DrawString(it->Text, subx + 12.0f, ty, DropTextColor, font);
-							if (!it->Shortcut.empty())
-							{
-								auto ss = font->GetTextSize(it->Shortcut);
-								float sx = subx + subw - 12.0f - ss.width;
-								d2d->DrawString(it->Shortcut, sx, ty, DropTextColor, font);
-							}
+							auto ss = font->GetTextSize(it->Shortcut);
+							float sx = pn.X + pn.W - 12.0f - ss.width;
+							d2d->DrawString(it->Shortcut, sx, ty, DropTextColor, font);
+						}
+
+						if (!it->SubItems.empty())
+						{
+							std::wstring arrow = L"›";
+							if (i == openIdx && (level + 1) < panels.size() && panels[level + 1].OpenedToLeft)
+								arrow = L"‹";
+							auto as = font->GetTextSize(arrow);
+							float ax = pn.X + pn.W - 12.0f - as.width;
+							d2d->DrawString(arrow, ax, ty, DropTextColor, font);
 						}
 					}
 				}
@@ -373,7 +402,8 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			if (_expand && _hoverTopIndex >= 0 && _hoverTopIndex != _expandIndex)
 			{
 				_expandIndex = _hoverTopIndex;
-				_hoverDropIndex = -1;
+				_hoverPath.clear();
+				_openPath.clear();
 				this->PostRender();
 			}
 		}
@@ -385,19 +415,16 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 				{
 					_expand = false;
 					_expandIndex = -1;
-					_hoverDropIndex = -1;
-					_openSubOwnerIndex = -1;
-					_hoverSubIndex = -1;
+					_hoverPath.clear();
+					_openPath.clear();
 				}
 				else
 				{
 					_expand = true;
 					_expandIndex = _hoverTopIndex;
-					_hoverDropIndex = -1;
-					_openSubOwnerIndex = -1;
-					_hoverSubIndex = -1;
+					_hoverPath.clear();
+					_openPath.clear();
 				}
-				// 展开/收起：立即触发一次重绘，避免 WM_PAINT 延后导致残影
 				if (this->ParentForm) this->ParentForm->Invalidate(true);
 				else this->PostRender();
 			}
@@ -406,33 +433,20 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		return Control::ProcessMessage(message, wParam, lParam, xof, yof);
 	}
 
-	// dropdown interactions
+	// dropdown interactions (支持任意层级)
 	if (_expand && DropCount() > 0)
 	{
-		float dl = DropLeftLocal();
-		float dt = DropTopLocal();
-		float dw = DropWidthLocal();
-		float dh = DropHeightLocal();
-
-		bool inDrop = ((float)xof >= dl && (float)xof <= dl + dw && (float)yof >= dt && (float)yof <= dt + dh);
-
-		// 二级子菜单区域
-		bool inSub = false;
-		bool inBridge = false;
-		float subx = 0, suby = 0, subw = 0, subh = 0;
 		auto* top = (MenuItem*)this->operator[](_expandIndex);
-		MenuItem* owner = nullptr;
-		if (top && _openSubOwnerIndex >= 0 && _openSubOwnerIndex < (int)top->SubItems.size())
+		if (top)
 		{
-			owner = top->SubItems[_openSubOwnerIndex];
-			if (owner && !owner->Separator && !owner->SubItems.empty())
+			auto calcPanelWidth = [&](const std::vector<MenuItem*>& items) -> float
 			{
-				// compute same as Update()
+				float w = 120.0f;
 				auto font = this->Font;
-				subw = 140.0f;
-				for (auto* it : owner->SubItems)
+				for (auto* it : items)
 				{
-					if (!it || it->Separator) continue;
+					if (!it) continue;
+					if (it->Separator) continue;
 					auto ts = font->GetTextSize(it->Text);
 					float tw = ts.width + 24.0f;
 					if (!it->Shortcut.empty())
@@ -440,143 +454,212 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 						auto ss = font->GetTextSize(it->Shortcut);
 						tw += ss.width + 20.0f;
 					}
-					if (tw > subw) subw = tw;
+					if (!it->SubItems.empty())
+						tw += 18.0f;
+					if (tw > w) w = tw;
 				}
-				if (subw < 100.0f) subw = 100.0f;
-				subh = DropPaddingY * 2.0f + (float)owner->SubItems.size() * (float)DropItemHeight;
-				// 子菜单贴紧一级菜单（避免出现鼠标穿越空隙导致丢失 hover）
-				subx = dl + dw - 1.0f;
-				suby = dt + DropPaddingY + (float)_openSubOwnerIndex * (float)DropItemHeight;
+				if (w < 80.0f) w = 80.0f;
+				return w;
+			};
+
+			auto clampPanelXY = [&](float& x, float& y, float w, float h)
+			{
+				if (!this->ParentForm) return;
+				float maxX = (float)this->ParentForm->ClientSize.cx;
+				float maxY = (float)this->ParentForm->ClientSize.cy;
+				if (x < 0.0f) x = 0.0f;
+				if (y < 0.0f) y = 0.0f;
+				if (x + w > maxX) x = std::max(0.0f, maxX - w);
+				if (y + h > maxY) y = std::max(0.0f, maxY - h);
+			};
+
+			// build panels (local coords)
+			std::vector<MenuPanel> panels;
+			panels.reserve(8);
+			MenuPanel p0;
+			p0.Owner = top;
+			p0.Items = &top->SubItems;
+			p0.X = DropLeftLocal();
+			p0.Y = DropTopLocal();
+			p0.W = DropWidthLocal();
+			p0.H = DropPaddingY * 2.0f + (float)p0.Items->size() * (float)DropItemHeight;
+			clampPanelXY(p0.X, p0.Y, p0.W, p0.H);
+			panels.push_back(p0);
+
+			for (size_t level = 0; level < _openPath.size(); level++)
+			{
+				int openIdx = _openPath[level];
+				if (openIdx < 0) break;
+				const auto& prev = panels.back();
+				if (!prev.Items) break;
+				if (openIdx >= (int)prev.Items->size()) break;
+				auto* owner = (*prev.Items)[openIdx];
+				if (!owner || owner->Separator || owner->SubItems.empty()) break;
+				MenuPanel p;
+				p.Owner = owner;
+				p.Items = &owner->SubItems;
+				p.W = calcPanelWidth(*p.Items);
+				p.H = DropPaddingY * 2.0f + (float)p.Items->size() * (float)DropItemHeight;
+				p.X = prev.X + prev.W - 1.0f;
+				p.Y = prev.Y + DropPaddingY + (float)openIdx * (float)DropItemHeight;
+
 				if (this->ParentForm)
 				{
 					float maxX = (float)this->ParentForm->ClientSize.cx;
-					if (subx + subw > maxX) subx = dl - subw - 4.0f;
-					if (subx < 0.0f) subx = 0.0f;
+					if (p.X + p.W > maxX)
+					{
+						p.X = prev.X - p.W - 4.0f;
+						p.OpenedToLeft = true;
+					}
+					if (p.X < 0.0f) p.X = 0.0f;
 				}
-				inSub = ((float)xof >= subx && (float)xof <= subx + subw && (float)yof >= suby && (float)yof <= suby + subh);
-				// “桥接区域”：允许鼠标在一级菜单右边缘与子菜单左边缘之间移动，不触发关闭/丢失
-				float bridgeL = dl + dw - 2.0f;
-				float bridgeR = subx + 2.0f;
-				float bridgeT = suby;
-				float bridgeB = suby + subh;
-				inBridge = ((float)xof >= bridgeL && (float)xof <= bridgeR && (float)yof >= bridgeT && (float)yof <= bridgeB);
+				clampPanelXY(p.X, p.Y, p.W, p.H);
+				panels.push_back(p);
+				if (panels.size() > 32) break;
 			}
-		}
 
-		if (message == WM_MOUSEMOVE)
-		{
-			if (inSub && owner)
+			auto pointInRect = [&](float x, float y, const MenuPanel& pn) -> bool
 			{
-				int idx = (int)(((float)yof - (suby + DropPaddingY)) / (float)DropItemHeight);
-				int cnt = (int)owner->SubItems.size();
-				if (idx < 0 || idx >= cnt) idx = -1;
-				if (idx != _hoverSubIndex)
+				return (x >= pn.X && x <= pn.X + pn.W && y >= pn.Y && y <= pn.Y + pn.H);
+			};
+
+			int hitLevel = -1;
+			for (int i = (int)panels.size() - 1; i >= 0; i--)
+			{
+				if (pointInRect((float)xof, (float)yof, panels[i]))
 				{
-					_hoverSubIndex = idx;
-					this->PostRender();
+					hitLevel = i;
+					break;
 				}
 			}
-			else if (inDrop || inBridge)
+
+			bool inBridge = false;
+			for (size_t i = 0; i + 1 < panels.size(); i++)
 			{
-				// 只有在真正位于一级下拉区域时才更新 hover；桥接区只负责“不断开”
-				if (inDrop)
+				const auto& a = panels[i];
+				const auto& b = panels[i + 1];
+				float bridgeL = std::min(a.X + a.W - 2.0f, b.X + 2.0f);
+				float bridgeR = std::max(a.X + a.W - 2.0f, b.X + 2.0f);
+				float bridgeT = b.Y;
+				float bridgeB = b.Y + b.H;
+				if ((float)xof >= bridgeL && (float)xof <= bridgeR && (float)yof >= bridgeT && (float)yof <= bridgeB)
 				{
-					int idx = (int)(((float)yof - (dt + DropPaddingY)) / (float)DropItemHeight);
-					int cnt = DropCount();
+					inBridge = true;
+					break;
+				}
+			}
+
+			auto ensureSize = [](std::vector<int>& v, size_t n)
+			{
+				if (v.size() < n) v.resize(n, -1);
+			};
+
+			auto itemHasSubMenu = [](MenuItem* it) -> bool
+			{
+				return it && !it->Separator && !it->SubItems.empty();
+			};
+
+			if (message == WM_MOUSEMOVE)
+			{
+				if (hitLevel >= 0)
+				{
+					const auto& pn = panels[hitLevel];
+					int idx = (int)(((float)yof - (pn.Y + DropPaddingY)) / (float)DropItemHeight);
+					int cnt = pn.Items ? (int)pn.Items->size() : 0;
 					if (idx < 0 || idx >= cnt) idx = -1;
 					bool need = false;
-					if (idx != _hoverDropIndex)
+
+					ensureSize(_hoverPath, (size_t)hitLevel + 1);
+					ensureSize(_openPath, (size_t)hitLevel + 1);
+					// 清理更深层状态（鼠标在更浅层活动时）
+					if (_hoverPath.size() > (size_t)hitLevel + 1)
+						_hoverPath.resize((size_t)hitLevel + 1, -1);
+					if (_openPath.size() > (size_t)hitLevel + 1)
+						_openPath.resize((size_t)hitLevel + 1, -1);
+
+					if (_hoverPath[hitLevel] != idx)
 					{
-						_hoverDropIndex = idx;
-						_hoverSubIndex = -1;
+						_hoverPath[hitLevel] = idx;
 						need = true;
 					}
-					// hover 到有子菜单的项：打开二级菜单
-					int newOwner = (HasSubMenu(_hoverDropIndex) ? _hoverDropIndex : -1);
-					if (newOwner != _openSubOwnerIndex)
+
+					int newOpen = -1;
+					MenuItem* hovered = nullptr;
+					if (idx >= 0 && pn.Items && idx < (int)pn.Items->size())
+						hovered = (*pn.Items)[idx];
+					if (itemHasSubMenu(hovered))
+						newOpen = idx;
+
+					if (_openPath[hitLevel] != newOpen)
 					{
-						_openSubOwnerIndex = newOwner;
-						_hoverSubIndex = -1;
+						_openPath[hitLevel] = newOpen;
 						need = true;
 					}
 					if (need) this->PostRender();
 				}
-			}
-			else
-			{
-				// 离开下拉区域：取消 hover（但保持展开，点击空白会收起）
-				if (_hoverDropIndex != -1 || _hoverSubIndex != -1 || _openSubOwnerIndex != -1)
+				else if (inBridge)
 				{
-					_hoverDropIndex = -1;
-					_hoverSubIndex = -1;
-					_openSubOwnerIndex = -1;
-					this->PostRender();
+					// 桥接区：不断开即可
 				}
-			}
-		}
-		else if (message == WM_LBUTTONUP)
-		{
-			if (inSub && owner)
-			{
-				int idx = (int)(((float)yof - (suby + DropPaddingY)) / (float)DropItemHeight);
-				int cnt = (int)owner->SubItems.size();
-				if (idx >= 0 && idx < cnt)
+				else
 				{
-					auto* it = owner->SubItems[idx];
-					if (it && !it->Separator && it->SubItems.empty() && it->Id != 0)
+					// 离开所有面板：清空 hover/open（保持展开）
+					if (!_hoverPath.empty() || !_openPath.empty())
 					{
-						this->OnMenuCommand(this, it->Id);
+						_hoverPath.clear();
+						_openPath.clear();
+						this->PostRender();
 					}
 				}
-				_expand = false;
-				_expandIndex = -1;
-				_hoverDropIndex = -1;
-				_openSubOwnerIndex = -1;
-				_hoverSubIndex = -1;
-				this->ParentForm->Invalidate();
 			}
-			else if (inDrop)
+			else if (message == WM_LBUTTONUP)
 			{
-				int idx = (int)(((float)yof - (dt + DropPaddingY)) / (float)DropItemHeight);
-				int cnt = DropCount();
-				if (idx >= 0 && idx < cnt)
+				if (hitLevel >= 0)
 				{
-					auto* sub = top ? top->SubItems[idx] : nullptr;
-					if (sub && !sub->Separator)
+					const auto& pn = panels[hitLevel];
+					int idx = (int)(((float)yof - (pn.Y + DropPaddingY)) / (float)DropItemHeight);
+					int cnt = pn.Items ? (int)pn.Items->size() : 0;
+					if (idx >= 0 && idx < cnt)
 					{
-						// 有二级菜单：只展开二级，不直接触发
-						if (!sub->SubItems.empty())
+						auto* it = (*pn.Items)[idx];
+						if (it && !it->Separator)
 						{
-							_openSubOwnerIndex = idx;
-							_hoverDropIndex = idx;
-							_hoverSubIndex = -1;
-							this->PostRender();
-						}
-						else
-						{
-							if (sub->Id != 0)
-								this->OnMenuCommand(this, sub->Id);
+							// 点击有子菜单项：展开下一层但不触发命令
+							if (!it->SubItems.empty())
+							{
+								ensureSize(_hoverPath, (size_t)hitLevel + 1);
+								ensureSize(_openPath, (size_t)hitLevel + 1);
+								_hoverPath.resize((size_t)hitLevel + 1, -1);
+								_openPath.resize((size_t)hitLevel + 1, -1);
+								_hoverPath[hitLevel] = idx;
+								_openPath[hitLevel] = idx;
+								this->PostRender();
+								return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+							}
+							// 叶子项：触发命令并收起
+							if (it->Id != 0)
+								this->OnMenuCommand(this, it->Id);
 							_expand = false;
 							_expandIndex = -1;
-							_hoverDropIndex = -1;
-							_openSubOwnerIndex = -1;
-							_hoverSubIndex = -1;
+							_hoverPath.clear();
+							_openPath.clear();
 							this->ParentForm->Invalidate(true);
+							return Control::ProcessMessage(message, wParam, lParam, xof, yof);
 						}
 					}
+					// 点击分隔符：不处理
 				}
-			}
-			else
-			{
-				// 点击到下拉外区域：只收起
-				_expand = false;
-				_expandIndex = -1;
-				_hoverDropIndex = -1;
-				_openSubOwnerIndex = -1;
-				_hoverSubIndex = -1;
-				// 收起时：强制立即全量重绘，清除 Overlay 残影
-				if (this->ParentForm) this->ParentForm->Invalidate(true);
-				else this->PostRender();
+				else
+				{
+					// 点击到下拉外区域：只收起
+					_expand = false;
+					_expandIndex = -1;
+					_hoverPath.clear();
+					_openPath.clear();
+					if (this->ParentForm) this->ParentForm->Invalidate(true);
+					else this->PostRender();
+					return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+				}
 			}
 		}
 	}
@@ -585,9 +668,8 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	{
 				_expand = false;
 				_expandIndex = -1;
-				_hoverDropIndex = -1;
-				_openSubOwnerIndex = -1;
-				_hoverSubIndex = -1;
+				_hoverPath.clear();
+				_openPath.clear();
 				// 收起时：强制立即全量重绘，清除 Overlay 残影
 				if (this->ParentForm) this->ParentForm->Invalidate(true);
 				else this->PostRender();

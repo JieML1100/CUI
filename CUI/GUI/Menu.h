@@ -32,9 +32,8 @@ private:
 	bool _expand = false;
 	int _expandIndex = -1;
 	int _hoverTopIndex = -1;
-	int _hoverDropIndex = -1;
-	int _openSubOwnerIndex = -1;   // 一级下拉中当前打开子菜单的项
-	int _hoverSubIndex = -1;       // 二级子菜单当前 hover
+	std::vector<int> _hoverPath;
+	std::vector<int> _openPath;
 
 	float ItemPaddingX = 10.0f;
 	float DropPaddingY = 6.0f;

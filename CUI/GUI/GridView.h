@@ -18,7 +18,7 @@ public:
 	float Width = 120;
 	ColumnType Type = ColumnType::Text;
 	bool CanEdit = true;
-		std::function<int(const CellValue& lhs, const CellValue& rhs)> SortFunc = nullptr;
+	std::function<int(const CellValue& lhs, const CellValue& rhs)> SortFunc = nullptr;
 	GridViewColumn(std::wstring name = L"", float width = 120.0F, ColumnType type = ColumnType::Text, bool canEdit = false);
 	void SetSortFunc(std::function<int(const CellValue& lhs, const CellValue& rhs)> func)
 	{
@@ -56,8 +56,8 @@ public:
 	GridView(int x = 0, int y = 0, int width = 120, int height = 20);
 	~GridView() override;
 	class Font* HeadFont = NULL;
-		bool InScroll = false;
-		bool InHScroll = false;
+	bool InScroll = false;
+	bool InHScroll = false;
 	ScrollChangedEvent ScrollChanged;
 	List<GridViewColumn> Columns = List<GridViewColumn>();
 	List<GridViewRow> Rows = List<GridViewRow>();
@@ -91,13 +91,13 @@ public:
 	float EditTextMargin = 3.0f;
 	OnGridViewCheckStateChangedEvent OnGridViewCheckStateChanged;
 	SelectionChangedEvent SelectionChanged;
-		float ScrollXOffset = 0.0f;
+	float ScrollXOffset = 0.0f;
 	GridViewRow& SelectedRow();
 	std::wstring& SelectedValue();
 	void Clear();
 	void ChangeEditionSelected(int col, int row);
 	void ReSizeRows(int count);
-		void SortByColumn(int col, bool ascending = true);
+	void SortByColumn(int col, bool ascending = true);
 private:
 	struct ScrollLayout
 	{
@@ -118,7 +118,7 @@ private:
 	float GetTotalColumnsWidth();
 	POINT GetGridViewUnderMouseItem(int x, int y, GridView* ct);
 	int HitTestHeaderColumn(int x, int y);
-			int HitTestHeaderDivider(int x, int y);
+	int HitTestHeaderDivider(int x, int y);
 	D2D1_RECT_F GetGridViewScrollBlockRect(GridView* ct);
 	int GetGridViewRenderRowCount(GridView* ct);
 	void DrawScroll();
@@ -129,13 +129,13 @@ private:
 	void HandleDropFiles(WPARAM wParam);
 	void HandleMouseWheel(WPARAM wParam, int xof, int yof);
 	void HandleMouseMove(int xof, int yof);
-    void HandleLeftButtonDown(int xof, int yof);
-    void HandleLeftButtonUp(int xof, int yof);
-    void HandleKeyDown(WPARAM wParam);
-    void HandleKeyUp(WPARAM wParam);
+	void HandleLeftButtonDown(int xof, int yof);
+	void HandleLeftButtonUp(int xof, int yof);
+	void HandleKeyDown(WPARAM wParam);
+	void HandleKeyUp(WPARAM wParam);
 	void HandleCharInput(WPARAM wParam);
 	void HandleImeComposition(LPARAM lParam);
-    void HandleCellClick(int col, int row);
+	void HandleCellClick(int col, int row);
 	void ToggleCheckState(int col, int row);
 	void StartEditingCell(int col, int row);
 	void CancelEditing(bool revert = true);
@@ -144,13 +144,13 @@ private:
 	bool CanScrollDown();
 	void UpdateUnderMouseIndices(int xof, int yof);
 
-		bool _resizingColumn = false;
+	bool _resizingColumn = false;
 	int _resizeColumnIndex = -1;
 	float _resizeStartX = 0.0f;
 	float _resizeStartWidth = 0.0f;
 	float _minColumnWidth = 24.0f;
 
-		bool Editing = false;
+	bool Editing = false;
 	int EditingColumnIndex = -1;
 	int EditingRowIndex = -1;
 	std::wstring EditingText;
