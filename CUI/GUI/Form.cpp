@@ -64,16 +64,23 @@ static Control* HitTestDeepestChild(Control* root, POINT contentMouse)
 	return root;
 }
 
+static bool PointInControlRect(Control* c, POINT contentMouse)
+{
+	if (!c) return false;
+	if (!c->Visible || !c->Enable) return false;
+	auto loc = c->AbsLocation;
+	auto sz = c->ActualSize();
+	return (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
+		contentMouse.x <= loc.x + sz.cx && contentMouse.y <= loc.y + sz.cy);
+}
+
 Control* Form::HitTestControlAt(POINT contentMouse)
 {
 	// 1) 置顶控件优先命中（ComboBox 下拉等）
 	if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl->Enable)
 	{
 		auto* fc = this->ForegroundControl;
-		auto loc = fc->AbsLocation;
-		auto sz = fc->ActualSize();
-		if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
-			contentMouse.x <= (loc.x + sz.cx) && contentMouse.y <= (loc.y + sz.cy))
+		if (PointInControlRect(fc, contentMouse))
 		{
 			return HitTestDeepestChild(fc, contentMouse);
 		}
@@ -83,10 +90,7 @@ Control* Form::HitTestControlAt(POINT contentMouse)
 	if (this->MainMenu && this->MainMenu->Visible && this->MainMenu->Enable)
 	{
 		auto* m = this->MainMenu;
-		auto loc = m->AbsLocation;
-		auto sz = m->ActualSize();
-		if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
-			contentMouse.x <= (loc.x + sz.cx) && contentMouse.y <= (loc.y + sz.cy))
+		if (PointInControlRect(m, contentMouse))
 		{
 			return HitTestDeepestChild(m, contentMouse);
 		}
@@ -96,37 +100,85 @@ Control* Form::HitTestControlAt(POINT contentMouse)
 	if (this->MainStatusBar && this->MainStatusBar->TopMost && this->MainStatusBar->Visible && this->MainStatusBar->Enable)
 	{
 		auto* sb = this->MainStatusBar;
-		auto loc = sb->AbsLocation;
-		auto sz = sb->ActualSize();
-		if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
-			contentMouse.x <= (loc.x + sz.cx) && contentMouse.y <= (loc.y + sz.cy))
+		if (PointInControlRect(sb, contentMouse))
 		{
 			return HitTestDeepestChild(sb, contentMouse);
 		}
 	}
 
-	for (int pass = 0; pass < 2; pass++)
+	// 4) 普通控件：按绘制顺序倒序命中（后绘制者优先）
+	for (int i = this->Controls.Count - 1; i >= 0; i--)
 	{
-		for (int i = 0; i < this->Controls.Count; i++)
-		{
-			auto c = this->Controls[i];
-			if (!c || !c->Visible || !c->Enable) continue;
-			if (c == this->ForegroundControl) continue;
-			if (c == this->MainMenu) continue;
-			if (this->MainStatusBar && this->MainStatusBar->TopMost && c == this->MainStatusBar) continue;
-			if (pass == 0 && c->Type() != UIClass::UI_ComboBox) continue;
-			if (pass == 1 && c->Type() == UIClass::UI_ComboBox) continue;
-
-			auto loc = c->Location;
-			auto sz = c->ActualSize();
-			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
-				contentMouse.x <= (loc.x + sz.cx) && contentMouse.y <= (loc.y + sz.cy))
-			{
-				return HitTestDeepestChild(c, contentMouse);
-			}
-		}
+		auto c = this->Controls[i];
+		if (!c || !c->Visible || !c->Enable) continue;
+		if (c == this->ForegroundControl) continue;
+		if (c == this->MainMenu) continue;
+		if (this->MainStatusBar && this->MainStatusBar->TopMost && c == this->MainStatusBar) continue;
+		if (!PointInControlRect(c, contentMouse)) continue;
+		return HitTestDeepestChild(c, contentMouse);
 	}
 	return NULL;
+}
+
+static Control* HitTestRootControlAt(Form* f, POINT contentMouse)
+{
+	if (!f) return NULL;
+
+	// 1) ForegroundControl 顶层优先
+	if (f->ForegroundControl && f->ForegroundControl->Visible && f->ForegroundControl->Enable)
+	{
+		auto* fc = f->ForegroundControl;
+		if (PointInControlRect(fc, contentMouse))
+			return fc;
+	}
+
+	// 2) 主菜单次优先
+	if (f->MainMenu && f->MainMenu->Visible && f->MainMenu->Enable)
+	{
+		auto* m = f->MainMenu;
+		if (PointInControlRect(m, contentMouse))
+			return (Control*)m;
+	}
+
+	// 3) 状态栏（TopMost=true）
+	if (f->MainStatusBar && f->MainStatusBar->TopMost && f->MainStatusBar->Visible && f->MainStatusBar->Enable)
+	{
+		auto* sb = f->MainStatusBar;
+		if (PointInControlRect(sb, contentMouse))
+			return (Control*)sb;
+	}
+
+	// 4) 普通控件按绘制顺序倒序命中
+	for (int i = f->Controls.Count - 1; i >= 0; i--)
+	{
+		auto c = f->Controls[i];
+		if (!c || !c->Visible || !c->Enable) continue;
+		if (c == f->ForegroundControl) continue;
+		if (c == f->MainMenu) continue;
+		if (f->MainStatusBar && f->MainStatusBar->TopMost && c == f->MainStatusBar) continue;
+		if (!PointInControlRect(c, contentMouse)) continue;
+		return c;
+	}
+	return NULL;
+}
+
+static void DismissComboBoxForegroundOnOutsideMouseDown(Form* f, POINT contentMouse, UINT message)
+{
+	if (!f) return;
+	if (message != WM_LBUTTONDOWN && message != WM_RBUTTONDOWN && message != WM_MBUTTONDOWN) return;
+	if (!f->ForegroundControl || !f->ForegroundControl->Visible || !f->ForegroundControl->Enable) return;
+	if (PointInControlRect(f->ForegroundControl, contentMouse)) return;
+
+	if (f->ForegroundControl->Type() != UIClass::UI_ComboBox) return;
+	auto* cb = (ComboBox*)f->ForegroundControl;
+	if (!cb->Expand) return;
+
+	cb->Expand = false;
+	if (f->ForegroundControl == cb)
+		f->ForegroundControl = NULL;
+
+	cb->PostRender();
+	f->Invalidate(true);
 }
 
 CursorKind Form::QueryCursorAt(POINT mouseClient, POINT contentMouse)
@@ -1187,97 +1239,15 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		}
 		auto lastUnderMouse = this->UnderMouse;
 		this->UnderMouse = NULL;
-		bool is_First = true;
 
-		// 置顶控件：顶层优先命中
-		if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl->Enable)
+		auto hit = HitTestRootControlAt(this, contentMouse);
+		if (hit)
 		{
-			auto* fc = this->ForegroundControl;
-			auto loc = fc->AbsLocation;
-			auto size = fc->ActualSize();
-			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
-				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))
-			{
-				HitControl = fc;
-				this->UnderMouse = fc;
-				fc->ProcessMessage(message, wParam, lParam, contentMouse.x - loc.x, contentMouse.y - loc.y);
-				goto ext;
-			}
+			HitControl = hit;
+			this->UnderMouse = hit;
+			auto abs = hit->AbsLocation;
+			hit->ProcessMessage(message, wParam, lParam, contentMouse.x - abs.x, contentMouse.y - abs.y);
 		}
-
-		// 主菜单：次优先命中（包含下拉区域）
-		if (this->MainMenu && this->MainMenu->Visible && this->MainMenu->Enable)
-		{
-			auto* m = this->MainMenu;
-			auto loc = m->AbsLocation;
-			auto size = m->ActualSize();
-			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
-				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))
-			{
-				HitControl = m;
-				this->UnderMouse = m;
-				m->ProcessMessage(message, wParam, lParam, contentMouse.x - loc.x, contentMouse.y - loc.y);
-				goto ext;
-			}
-		}
-
-		// 状态栏：再次优先命中（TopMost=true）
-		if (this->MainStatusBar && this->MainStatusBar->TopMost && this->MainStatusBar->Visible && this->MainStatusBar->Enable)
-		{
-			auto* sb = this->MainStatusBar;
-			auto loc = sb->AbsLocation;
-			auto size = sb->ActualSize();
-			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
-				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))
-			{
-				HitControl = sb;
-				this->UnderMouse = sb;
-				sb->ProcessMessage(message, wParam, lParam, contentMouse.x - loc.x, contentMouse.y - loc.y);
-				goto ext;
-			}
-		}
-
-	reExc:
-		for (int i = 0; i < this->Controls.Count; i++)
-		{
-			auto c = this->Controls[i];
-			if (!c->Visible || !c->Enable)continue;
-			if (c == this->ForegroundControl) continue;
-			if (c == this->MainMenu) continue;
-			if (this->MainStatusBar && this->MainStatusBar->TopMost && c == this->MainStatusBar) continue;
-			auto location = c->Location;
-			auto size = c->ActualSize();
-			if (
-				contentMouse.x >= location.x &&
-				contentMouse.y >= location.y &&
-				contentMouse.x <= (location.x + size.cx) &&
-				contentMouse.y <= (location.y + size.cy)
-				)
-			{
-				if (is_First)
-				{
-					if (c->Type() == UIClass::UI_ComboBox)
-					{
-						HitControl = c;
-						this->UnderMouse = c;
-						c->ProcessMessage(message, wParam, lParam, contentMouse.x - location.x, contentMouse.y - location.y);
-						goto ext;
-					}
-				}
-				else
-				{
-					HitControl = c;
-					this->UnderMouse = c;
-					c->ProcessMessage(message, wParam, lParam, contentMouse.x - location.x, contentMouse.y - location.y);
-				}
-			}
-		}
-		if (is_First)
-		{
-			is_First = false;
-			goto reExc;
-		}
-	ext:
 		if (lastUnderMouse != this->UnderMouse)
 		{
 			if (this->UnderMouse)this->UnderMouse->PostRender();
@@ -1297,6 +1267,8 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	case WM_RBUTTONUP:
 	case WM_LBUTTONDBLCLK:
 	{
+		DismissComboBoxForegroundOnOutsideMouseDown(this, contentMouse, message);
+
 		if (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN)
 		{
 			if (!(this->VisibleHead && mouse.y < top))
@@ -1383,91 +1355,14 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		{
 			break;
 		}
-		bool is_First = true;
-
-		// 置顶控件：顶层优先命中并吞掉事件
-		if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl->Enable)
+		auto hit = HitTestRootControlAt(this, contentMouse);
+		if (hit)
 		{
-			auto* fc = this->ForegroundControl;
-			auto loc = fc->AbsLocation;
-			auto size = fc->ActualSize();
-			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
-				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))
-			{
-				HitControl = fc;
-				fc->ProcessMessage(message, wParam, lParam, contentMouse.x - loc.x, contentMouse.y - loc.y);
-				goto ext1;
-			}
+			HitControl = hit;
+			auto abs = hit->AbsLocation;
+			hit->ProcessMessage(message, wParam, lParam, contentMouse.x - abs.x, contentMouse.y - abs.y);
 		}
 
-		// 主菜单：次优先（包含下拉区域）
-		if (this->MainMenu && this->MainMenu->Visible && this->MainMenu->Enable)
-		{
-			auto* m = this->MainMenu;
-			auto loc = m->AbsLocation;
-			auto size = m->ActualSize();
-			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
-				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))
-			{
-				HitControl = m;
-				m->ProcessMessage(message, wParam, lParam, contentMouse.x - loc.x, contentMouse.y - loc.y);
-				goto ext1;
-			}
-		}
-
-		// 状态栏：再次优先（TopMost=true）
-		if (this->MainStatusBar && this->MainStatusBar->TopMost && this->MainStatusBar->Visible && this->MainStatusBar->Enable)
-		{
-			auto* sb = this->MainStatusBar;
-			auto loc = sb->AbsLocation;
-			auto size = sb->ActualSize();
-			if (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
-				contentMouse.x <= (loc.x + size.cx) && contentMouse.y <= (loc.y + size.cy))
-			{
-				HitControl = sb;
-				sb->ProcessMessage(message, wParam, lParam, contentMouse.x - loc.x, contentMouse.y - loc.y);
-				goto ext1;
-			}
-		}
-
-	reExc1:
-		for (int i = 0; i < this->Controls.Count; i++)
-		{
-			auto c = this->Controls[i]; if (!c->Visible)continue;
-			if (c == this->ForegroundControl) continue;
-			if (c == this->MainMenu) continue;
-			if (this->MainStatusBar && this->MainStatusBar->TopMost && c == this->MainStatusBar) continue;
-			auto location = c->Location;
-			auto size = c->ActualSize();
-			if (
-				contentMouse.x >= location.x &&
-				contentMouse.y >= location.y &&
-				contentMouse.x <= (location.x + size.cx) &&
-				contentMouse.y <= (location.y + size.cy)
-				)
-			{
-				if (is_First)
-				{
-					if (c->Type() == UIClass::UI_ComboBox)
-					{
-						HitControl = c;
-						c->ProcessMessage(message, wParam, lParam, contentMouse.x - location.x, contentMouse.y - location.y);
-						goto ext1;
-					}
-				}
-				else
-				{
-					HitControl = c;
-					c->ProcessMessage(message, wParam, lParam, contentMouse.x - location.x, contentMouse.y - location.y);
-				}
-			}
-		}
-		if (is_First)
-		{
-			is_First = false;
-			goto reExc1;
-		}
-	ext1:;
 		if (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP)
 			UpdateCursor(mouse, contentMouse);
 	}

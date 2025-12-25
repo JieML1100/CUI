@@ -1288,7 +1288,7 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 		}
 		else
 		{
-			CancelEditing(true);
+			CancelEditing(false);
 		}
 	}
 
