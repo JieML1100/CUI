@@ -750,15 +750,37 @@ void Form::PerformLayout()
 			if (!control || !control->Visible) continue;
 			if (control->Type() == UIClass::UI_Menu) continue; // 跳过主菜单
 			
-			POINT loc = control->Location;
-			SIZE size = control->Size;
+			control->EnsureLayoutBase();
+			POINT loc = control->_layoutBaseLocation;
+			SIZE size = control->_layoutBaseSize;
 			Thickness margin = control->Margin;
 			uint8_t anchor = control->AnchorStyles;
 			HorizontalAlignment hAlign = control->HAlign;
 			VerticalAlignment vAlign = control->VAlign;
 
-			float x = contentLeft + (float)loc.x + margin.Left;
-			float y = contentTop + (float)loc.y + margin.Top;
+			// Anchor 模式下：当锚定到 Left/Top 且对应 Margin 非 0 时，将 Margin 视为到边界的绑定距离
+			// （避免 Location 与 Margin 在 Left/Top 方向叠加导致的“边距翻倍”）
+			float baseLeft = (float)loc.x;
+			float baseTop = (float)loc.y;
+			if (anchor & AnchorStyles::Left)
+			{
+				if (margin.Left != 0.0f) baseLeft = margin.Left;
+			}
+			else
+			{
+				baseLeft += margin.Left;
+			}
+			if (anchor & AnchorStyles::Top)
+			{
+				if (margin.Top != 0.0f) baseTop = margin.Top;
+			}
+			else
+			{
+				baseTop += margin.Top;
+			}
+
+			float x = contentLeft + baseLeft;
+			float y = contentTop + baseTop;
 			float w = (float)size.cx;
 			float h = (float)size.cy;
 

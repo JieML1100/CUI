@@ -122,6 +122,8 @@ void RelativeLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 {
 	if (!container) return;
 	
+	const float originX = finalRect.left;
+	const float originY = finalRect.top;
 	float containerWidth = finalRect.right - finalRect.left;
 	float containerHeight = finalRect.bottom - finalRect.top;
 	
@@ -150,22 +152,22 @@ void RelativeLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 			// 相对于面板对齐
 			if (c.AlignLeftWithPanel)
 			{
-				left = margin.Left;
+				left = originX + margin.Left;
 				leftSet = true;
 			}
 			if (c.AlignRightWithPanel)
 			{
-				right = containerWidth - margin.Right;
+				right = originX + containerWidth - margin.Right;
 				rightSet = true;
 			}
 			if (c.AlignTopWithPanel)
 			{
-				top = margin.Top;
+				top = originY + margin.Top;
 				topSet = true;
 			}
 			if (c.AlignBottomWithPanel)
 			{
-				bottom = containerHeight - margin.Bottom;
+				bottom = originY + containerHeight - margin.Bottom;
 				bottomSet = true;
 			}
 			
@@ -216,12 +218,12 @@ void RelativeLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 			// 居中
 			if (c.CenterHorizontal && !leftSet && !rightSet)
 			{
-				left = (containerWidth - childSize.cx) / 2.0f;
+				left = originX + (containerWidth - childSize.cx) / 2.0f;
 				leftSet = true;
 			}
 			if (c.CenterVertical && !topSet && !bottomSet)
 			{
-				top = (containerHeight - childSize.cy) / 2.0f;
+				top = originY + (containerHeight - childSize.cy) / 2.0f;
 				topSet = true;
 			}
 		}
@@ -229,12 +231,12 @@ void RelativeLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 		// 如果没有设置位置，使用默认位置
 		if (!leftSet && !rightSet)
 		{
-			left = margin.Left;
+			left = originX + margin.Left;
 			leftSet = true;
 		}
 		if (!topSet && !bottomSet)
 		{
-			top = margin.Top;
+			top = originY + margin.Top;
 			topSet = true;
 		}
 		

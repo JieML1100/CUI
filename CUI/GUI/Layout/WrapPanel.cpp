@@ -114,6 +114,8 @@ void WrapLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 {
 	if (!container) return;
 	
+	const float originX = finalRect.left;
+	const float originY = finalRect.top;
 	float containerWidth = finalRect.right - finalRect.left;
 	float containerHeight = finalRect.bottom - finalRect.top;
 	
@@ -146,7 +148,7 @@ void WrapLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 			}
 			
 			// 设置子控件位置
-			POINT loc = { (LONG)(x + margin.Left), (LONG)(y + margin.Top) };
+			POINT loc = { (LONG)(originX + x + margin.Left), (LONG)(originY + y + margin.Top) };
 			SIZE size = { (LONG)itemWidth, (LONG)itemHeight };
 			child->ApplyLayout(loc, size);
 			
@@ -184,7 +186,7 @@ void WrapLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 			}
 			
 			// 设置子控件位置
-			POINT loc = { (LONG)(x + margin.Left), (LONG)(y + margin.Top) };
+			POINT loc = { (LONG)(originX + x + margin.Left), (LONG)(originY + y + margin.Top) };
 			SIZE size = { (LONG)itemWidth, (LONG)itemHeight };
 			child->ApplyLayout(loc, size);
 			

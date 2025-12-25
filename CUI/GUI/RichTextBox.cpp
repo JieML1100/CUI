@@ -358,10 +358,12 @@ void RichTextBox::UpdateScrollDrag(float posY) {
 	float fontHeight = this->Font->FontHeight;
 	int renderItemCount = this->Height / fontHeight;
 
-	float scrollTop = scrollBlockHeight * 0.5f;
 	float scrollHeight = this->Height - scrollBlockHeight;
-	float chrckPos = posY - scrollTop;
-	float per = chrckPos / scrollHeight;
+	if (scrollHeight <= 0.0f) return;
+	float grab = std::clamp(_scrollThumbGrabOffsetY, 0.0f, scrollBlockHeight);
+	float targetTop = posY - grab;
+	float per = targetTop / scrollHeight;
+	per = std::clamp(per, 0.0f, 1.0f);
 	int newScroll = per * maxScroll;
 	{
 		this->OffsetY = newScroll;
@@ -844,8 +846,28 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			}
 			if (xof >= Width - 8 && xof <= Width)
 			{
-								this->SetScrollByPos((float)yof);
+				// 竖向滚动条：点在滑块上则用按下点锚定；否则用滑块中心（原行为）
+				const float renderHeight = this->Height - (TextMargin * 2.0f);
+				if (renderHeight > 0.0f && textSize.height > renderHeight)
+				{
+					const float maxScroll = std::max(0.0f, textSize.height - renderHeight);
+					float thumbH = (renderHeight / textSize.height) * renderHeight;
+					if (thumbH < this->Height * 0.1f) thumbH = this->Height * 0.1f;
+					if (thumbH > this->Height) thumbH = this->Height;
+					const float moveSpace = std::max(0.0f, (float)this->Height - thumbH);
+					float per = 0.0f;
+					if (maxScroll > 0.0f) per = std::clamp(this->OffsetY / maxScroll, 0.0f, 1.0f);
+					const float thumbTop = per * moveSpace;
+					const float localY = (float)yof;
+					const bool hitThumb = (localY >= thumbTop && localY <= (thumbTop + thumbH));
+					_scrollThumbGrabOffsetY = hitThumb ? (localY - thumbTop) : (thumbH * 0.5f);
+				}
+				else
+				{
+					_scrollThumbGrabOffsetY = 0.0f;
+				}
 				isDraggingScroll = true;
+				UpdateScrollDrag((float)yof);
 				this->PostRender();
 			}
 			else

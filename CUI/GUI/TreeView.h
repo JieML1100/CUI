@@ -16,6 +16,7 @@ class TreeView : public Control
 {
 private:
 	bool isDraggingScroll = false;
+	float _scrollThumbGrabOffsetY = 0.0f;
 	void UpdateScrollDrag(float posY);
 	void DrawScroll();
 public:

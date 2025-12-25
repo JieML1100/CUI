@@ -99,6 +99,8 @@ public:
 	void ReSizeRows(int count);
 	void SortByColumn(int col, bool ascending = true);
 private:
+	float _vScrollThumbGrabOffsetY = 0.0f;
+	float _hScrollThumbGrabOffsetX = 0.0f;
 	struct ScrollLayout
 	{
 		bool NeedV = false;

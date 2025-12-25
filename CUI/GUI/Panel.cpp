@@ -5,9 +5,17 @@
 
 UIClass Panel::Type() { return UIClass::UI_Panel; }
 
-Panel::Panel() {}
+Panel::Panel()
+{
+	// Panel 作为容器：当自身尺寸变化时应重新布局子控件
+	this->OnSizeChanged += [&](class Control* s) {
+		(void)s;
+		this->InvalidateLayout();
+	};
+}
 
 Panel::Panel(int x, int y, int width, int height)
+	: Panel()
 {
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
@@ -60,15 +68,37 @@ void Panel::PerformLayout()
 			auto child = this->Children[i];
 			if (!child || !child->Visible) continue;
 			
-			POINT loc = child->Location;
-			SIZE size = child->Size;
+			child->EnsureLayoutBase();
+			POINT loc = child->_layoutBaseLocation;
+			SIZE size = child->_layoutBaseSize;
 			Thickness margin = child->Margin;
 			uint8_t anchor = child->AnchorStyles;
 			HorizontalAlignment hAlign = child->HAlign;
 			VerticalAlignment vAlign = child->VAlign;
 
-			float x = contentLeft + (float)loc.x + margin.Left;
-			float y = contentTop + (float)loc.y + margin.Top;
+			// Anchor 模式下：当锚定到 Left/Top 且对应 Margin 非 0 时，将 Margin 视为到边界的绑定距离
+			// （避免 Location 与 Margin 在 Left/Top 方向叠加导致的“边距翻倍”）
+			float baseLeft = (float)loc.x;
+			float baseTop = (float)loc.y;
+			if (anchor & AnchorStyles::Left)
+			{
+				if (margin.Left != 0.0f) baseLeft = margin.Left;
+			}
+			else
+			{
+				baseLeft += margin.Left;
+			}
+			if (anchor & AnchorStyles::Top)
+			{
+				if (margin.Top != 0.0f) baseTop = margin.Top;
+			}
+			else
+			{
+				baseTop += margin.Top;
+			}
+
+			float x = contentLeft + baseLeft;
+			float y = contentTop + baseTop;
 			float w = (float)size.cx;
 			float h = (float)size.cy;
 

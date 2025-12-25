@@ -18,6 +18,9 @@ Control::Control()
 	_image(NULL),
 	_text(L"")
 {
+	this->_layoutBaseLocation = this->_location;
+	this->_layoutBaseSize = this->_size;
+	this->_layoutBaseInitialized = true;
 }
 Control::~Control()
 {
@@ -196,6 +199,7 @@ SET_CPP(Control, POINT, Location)
 {
 	this->OnMoved(this);
 	_location = value;
+	this->UpdateLayoutBaseLocation(value);
 	this->PostRender();
 }
 GET_CPP(Control, SIZE, Size)
@@ -206,6 +210,7 @@ SET_CPP(Control, SIZE, Size)
 {
 	this->OnSizeChanged(this);
 	_size = value;
+	this->UpdateLayoutBaseSize(value);
 	this->RequestLayout();
 	this->PostRender();
 }
@@ -216,6 +221,7 @@ GET_CPP(Control, int, Left)
 SET_CPP(Control, int, Left)
 {
 	this->_location = POINT{ value,this->_location.y };
+	this->UpdateLayoutBaseLocation(this->_location);
 	this->PostRender();
 }
 GET_CPP(Control, int, Top)
@@ -225,6 +231,7 @@ GET_CPP(Control, int, Top)
 SET_CPP(Control, int, Top)
 {
 	this->_location = POINT{ this->_location.x,value };
+	this->UpdateLayoutBaseLocation(this->_location);
 	this->PostRender();
 }
 GET_CPP(Control, int, Width)
@@ -235,6 +242,7 @@ SET_CPP(Control, int, Width)
 {
 	this->OnSizeChanged(this);
 	this->_size.cx = value;
+	this->UpdateLayoutBaseSize(this->_size);
 	this->RequestLayout();
 	this->PostRender();
 }
@@ -246,6 +254,7 @@ SET_CPP(Control, int, Height)
 {
 	this->OnSizeChanged(this);
 	_size.cy = value;
+	this->UpdateLayoutBaseSize(this->_size);
 	this->RequestLayout();
 	this->PostRender();
 }
@@ -624,21 +633,22 @@ SIZE Control::MeasureCore(SIZE availableSize)
 // 应用布局结果
 void Control::ApplyLayout(POINT location, SIZE size)
 {
-	bool changed = false;
+	bool locationChanged = (_location.x != location.x || _location.y != location.y);
+	bool sizeChanged = (_size.cx != size.cx || _size.cy != size.cy);
 
-	if (_location.x != location.x || _location.y != location.y)
+	if (locationChanged)
 	{
 		_location = location;
-		changed = true;
+		this->OnMoved(this);
 	}
 
-	if (_size.cx != size.cx || _size.cy != size.cy)
+	if (sizeChanged)
 	{
 		_size = size;
-		changed = true;
+		this->OnSizeChanged(this);
 	}
 
-	if (changed)
+	if (locationChanged || sizeChanged)
 	{
 		this->PostRender();
 	}

@@ -494,7 +494,9 @@ void GridView::SetScrollByPos(float yof)
 		if (thumbH > renderingHeight) thumbH = renderingHeight;
 
 		const float moveSpace = std::max(0.0f, renderingHeight - thumbH);
-		float target = yof - (thumbH * 0.5f);
+		float grab = std::clamp(_vScrollThumbGrabOffsetY, 0.0f, thumbH);
+		if (grab <= 0.0f) grab = thumbH * 0.5f;
+		float target = yof - grab;
 		target = std::clamp(target, 0.0f, moveSpace);
 		const float per = (moveSpace > 0.0f) ? (target / moveSpace) : 0.0f;
 		this->ScrollYOffset = std::clamp(per * maxScrollY, 0.0f, maxScrollY);
@@ -526,7 +528,9 @@ void GridView::SetHScrollByPos(float xof)
 	const float moveSpace = barW - thumbW;
 	if (moveSpace <= 0.0f) { this->ScrollXOffset = 0.0f; return; }
 
-	float target = xof - (thumbW * 0.5f);
+	float grab = std::clamp(_hScrollThumbGrabOffsetX, 0.0f, thumbW);
+	if (grab <= 0.0f) grab = thumbW * 0.5f;
+	float target = xof - grab;
 	target = std::clamp(target, 0.0f, moveSpace);
 	float per = target / moveSpace;
 	this->ScrollXOffset = std::clamp(per * maxScrollX, 0.0f, maxScrollX);
@@ -1213,6 +1217,26 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 	{
 		CancelEditing(true);
 		this->InHScroll = true;
+		if (l.TotalColumnsWidth > l.RenderWidth && l.RenderWidth > 0.0f)
+		{
+			const float barW = l.RenderWidth;
+			const float maxScrollX = std::max(0.0f, l.TotalColumnsWidth - barW);
+			float thumbW = (barW * barW) / l.TotalColumnsWidth;
+			const float minThumbW = barW * 0.1f;
+			if (thumbW < minThumbW) thumbW = minThumbW;
+			if (thumbW > barW) thumbW = barW;
+			const float moveSpace = std::max(0.0f, barW - thumbW);
+			float per = 0.0f;
+			if (maxScrollX > 0.0f) per = std::clamp(this->ScrollXOffset / maxScrollX, 0.0f, 1.0f);
+			const float thumbX = per * moveSpace;
+			const float localX = (float)xof;
+			const bool hitThumb = (localX >= thumbX && localX <= (thumbX + thumbW));
+			_hScrollThumbGrabOffsetX = hitThumb ? (localX - thumbX) : (thumbW * 0.5f);
+		}
+		else
+		{
+			_hScrollThumbGrabOffsetX = 0.0f;
+		}
 		SetHScrollByPos((float)xof);
 		SetCapture(this->ParentForm->Handle);
 		MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
@@ -1225,6 +1249,25 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 	{
 		CancelEditing(true);
 		this->InScroll = true;
+		if (this->Rows.Count > 0 && l.MaxScrollY > 0.0f && l.RenderHeight > 0.0f && l.ContentHeight > 0.0f)
+		{
+			const float renderingHeight = l.RenderHeight;
+			const float totalHeight = l.TotalRowsHeight;
+			float thumbH = renderingHeight * (l.ContentHeight / totalHeight);
+			const float minThumbH = renderingHeight * 0.1f;
+			if (thumbH < minThumbH) thumbH = minThumbH;
+			if (thumbH > renderingHeight) thumbH = renderingHeight;
+			const float moveSpace = std::max(0.0f, renderingHeight - thumbH);
+			float per = std::clamp(this->ScrollYOffset / l.MaxScrollY, 0.0f, 1.0f);
+			const float thumbTop = per * moveSpace;
+			const float localY = (float)yof;
+			const bool hitThumb = (localY >= thumbTop && localY <= (thumbTop + thumbH));
+			_vScrollThumbGrabOffsetY = hitThumb ? (localY - thumbTop) : (thumbH * 0.5f);
+		}
+		else
+		{
+			_vScrollThumbGrabOffsetY = 0.0f;
+		}
 		SetScrollByPos((float)yof);
 		SetCapture(this->ParentForm->Handle);
 		MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);

@@ -9,6 +9,7 @@ private:
 
 	POINT selectedPos = { 0,0 };
 	bool isDraggingScroll = false;
+	float _scrollThumbGrabOffsetY = 0.0f;
 	IDWriteTextLayout* layOutCache = NULL;
 	std::vector<DWRITE_HIT_TEST_METRICS> selRange;
 	bool selRangeDirty = true;

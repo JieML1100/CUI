@@ -7,6 +7,7 @@ class ComboBox : public Control
 private:
 	int _underMouseIndex = -1;
 	bool isDraggingScroll = false;
+	float _scrollThumbGrabOffsetY = 0.0f;
 	void UpdateScrollDrag(float posY);
 public:
 	virtual UIClass Type();

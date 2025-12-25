@@ -72,10 +72,13 @@ void ComboBox::UpdateScrollDrag(float posY) {
 	int maxScroll = this->values.Count - render_count;
 	float fontHeight = this->Font->FontHeight;
 	float scrollBlockHeight = ((float)render_count / (float)this->values.Count) * (float)_render_height;
-	float scrollTop = scrollBlockHeight * 0.5f;
+	if (scrollBlockHeight < COMBO_MIN_SCROLL_BLOCK)scrollBlockHeight = COMBO_MIN_SCROLL_BLOCK;
 	float scrollHeight = dxHeight - scrollBlockHeight;
-	float chrckPos = posY - scrollTop;
-	float per = chrckPos / scrollHeight;
+	if (scrollHeight <= 0.0f) return;
+	float grab = std::clamp(_scrollThumbGrabOffsetY, 0.0f, scrollBlockHeight);
+	float targetTop = posY - grab;
+	float per = targetTop / scrollHeight;
+	per = std::clamp(per, 0.0f, 1.0f);
 	int newScroll = per * maxScroll;
 	{
 		ExpandScroll = newScroll;
@@ -283,8 +286,24 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		{
 			if (this->Expand && xof >= (Width - 8) && xof <= Width && yof >= this->Height)
 			{
-				isDraggingScroll = true;
-				UpdateScrollDrag((float)(yof - this->Height));
+				const int render_count = this->ExpandCount;
+				if (render_count > 0 && this->values.Count > render_count)
+				{
+					const int max_scroll = this->values.Count - render_count;
+					const float renderH = (float)(this->Height * this->ExpandCount);
+					float thumbH = ((float)render_count / (float)this->values.Count) * renderH;
+					if (thumbH < COMBO_MIN_SCROLL_BLOCK) thumbH = COMBO_MIN_SCROLL_BLOCK;
+					if (thumbH > renderH) thumbH = renderH;
+					const float moveSpace = std::max(0.0f, renderH - thumbH);
+					float per = 0.0f;
+					if (max_scroll > 0) per = std::clamp((float)this->ExpandScroll / (float)max_scroll, 0.0f, 1.0f);
+					const float thumbTop = per * moveSpace;
+					const float localY = (float)(yof - this->Height);
+					const bool hitThumb = (localY >= thumbTop && localY <= (thumbTop + thumbH));
+					_scrollThumbGrabOffsetY = hitThumb ? (localY - thumbTop) : (thumbH * 0.5f);
+					isDraggingScroll = true;
+					UpdateScrollDrag(localY);
+				}
 			}
 			this->ParentForm->Selected = this;
 		}

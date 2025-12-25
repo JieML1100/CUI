@@ -77,8 +77,10 @@ void StackLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 {
 	if (!container) return;
 	
-	float currentX = finalRect.left;
-	float currentY = finalRect.top;
+	const float originX = finalRect.left;
+	const float originY = finalRect.top;
+	float currentX = originX;
+	float currentY = originY;
 	float containerWidth = finalRect.right - finalRect.left;
 	float containerHeight = finalRect.bottom - finalRect.top;
 	
@@ -113,7 +115,7 @@ void StackLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 			}
 			
 			// 设置位置和尺寸
-			POINT loc = { (LONG)childX, (LONG)(currentY + margin.Top) };
+			POINT loc = { (LONG)(originX + childX), (LONG)(currentY + margin.Top) };
 			SIZE size = { (LONG)childWidth, childSize.cy };
 			child->ApplyLayout(loc, size);
 			
@@ -152,7 +154,7 @@ void StackLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 			}
 			
 			// 设置位置和尺寸
-			POINT loc = { (LONG)(currentX + margin.Left), (LONG)childY };
+			POINT loc = { (LONG)(currentX + margin.Left), (LONG)(originY + childY) };
 			SIZE size = { childSize.cx, (LONG)childHeight };
 			child->ApplyLayout(loc, size);
 			

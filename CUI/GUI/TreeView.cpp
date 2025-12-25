@@ -178,11 +178,11 @@ void TreeView::UpdateScrollDrag(float posY) {
 	if (scrollBlockHeight < height * 0.1f) scrollBlockHeight = height * 0.1f;
 	if (scrollBlockHeight > height) scrollBlockHeight = height;
 
-	const float scrollTop = scrollBlockHeight * 0.5f;
 	const float scrollHeight = height - scrollBlockHeight;
 	if (scrollHeight <= 0.0f) return;
-
-	float per = (posY - scrollTop) / scrollHeight;
+	float grab = std::clamp(_scrollThumbGrabOffsetY, 0.0f, scrollBlockHeight);
+	float targetTop = posY - grab;
+	float per = targetTop / scrollHeight;
 	if (per < 0.0f) per = 0.0f;
 	if (per > 1.0f) per = 1.0f;
 
@@ -343,6 +343,33 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 			}
 			if (xof >= Width - 8 && xof <= Width)
 			{
+				// 竖向滚动条：点在滑块上则用按下点锚定；否则用滑块中心（原行为）
+				const float fontHeight = this->Font ? this->Font->FontHeight : 0.0f;
+				if (fontHeight > 0.0f && this->MaxRenderItems > 0)
+				{
+					const float height = (float)this->Height;
+					int renderItemCount = (int)(height / fontHeight);
+					if (renderItemCount <= 0) renderItemCount = 1;
+					if (renderItemCount < this->MaxRenderItems)
+					{
+						int maxScroll = this->MaxRenderItems - renderItemCount;
+						if (maxScroll < 0) maxScroll = 0;
+						float thumbH = (renderItemCount / (float)this->MaxRenderItems) * height;
+						if (thumbH < height * 0.1f) thumbH = height * 0.1f;
+						if (thumbH > height) thumbH = height;
+						const float moveSpace = std::max(0.0f, height - thumbH);
+						float per = 0.0f;
+						if (maxScroll > 0) per = std::clamp((float)this->ScrollIndex / (float)maxScroll, 0.0f, 1.0f);
+						const float thumbTop = per * moveSpace;
+						const float localY = (float)yof;
+						const bool hitThumb = (localY >= thumbTop && localY <= (thumbTop + thumbH));
+						_scrollThumbGrabOffsetY = hitThumb ? (localY - thumbTop) : (thumbH * 0.5f);
+					}
+					else
+					{
+						_scrollThumbGrabOffsetY = 0.0f;
+					}
+				}
 				isDraggingScroll = true;
 				UpdateScrollDrag((float)yof);
 			}

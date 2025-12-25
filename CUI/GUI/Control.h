@@ -144,8 +144,37 @@ protected:
 	SIZE _minSize = {0, 0};
 	SIZE _maxSize = {INT_MAX, INT_MAX};
 
+	// 默认 Anchor/Margin 布局使用的“基准”位置/尺寸（不随 ApplyLayout 写回而变化）
+	// 用于保证重复 PerformLayout 幂等，避免位置/尺寸在多次布局时累计偏移。
+	POINT _layoutBaseLocation = { 0,0 };
+	SIZE _layoutBaseSize = { 120,20 };
+	bool _layoutBaseInitialized = false;
+
+	void EnsureLayoutBase()
+	{
+		if (_layoutBaseInitialized) return;
+		_layoutBaseLocation = _location;
+		_layoutBaseSize = _size;
+		_layoutBaseInitialized = true;
+	}
+
+	void UpdateLayoutBaseLocation(POINT value)
+	{
+		_layoutBaseLocation = value;
+		_layoutBaseInitialized = true;
+	}
+
+	void UpdateLayoutBaseSize(SIZE value)
+	{
+		_layoutBaseSize = value;
+		_layoutBaseInitialized = true;
+	}
+
 	// 通知父容器（Panel 或 Form）需要重新布局
 	void RequestLayout();
+
+	friend class Panel;
+	friend class Form;
 public:
 	CheckedEvent OnChecked = CheckedEvent();
 	MouseWheelEvent OnMouseWheel = MouseWheelEvent();

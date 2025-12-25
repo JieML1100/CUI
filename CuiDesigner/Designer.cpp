@@ -8,13 +8,13 @@ namespace
 	static std::string MakeDesignFilter()
 	{
 		std::string s;
-		s.append("CUI Designer Files (*.cui.json)");
-		s.push_back('\0');
-		s.append("*.cui.json");
-		s.push_back('\0');
 		s.append("JSON Files (*.json)");
 		s.push_back('\0');
 		s.append("*.json");
+		s.push_back('\0');
+		s.append("CUI Designer Files (*.cui.json)");
+		s.push_back('\0');
+		s.append("*.cui.json");
 		s.push_back('\0');
 		s.push_back('\0');
 		return s;

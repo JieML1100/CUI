@@ -357,12 +357,14 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 	picturebox1->OnDropFile += std::bind_front(&DemoWindow::picturebox1_OnDropFile, this);
 	panel1->AddControl(new Label(L"Progress Bar", 10, picturebox1->Bottom + 5));
 	progressbar1 = panel1->AddControl(new ProgressBar(120, picturebox1->Bottom + 5, 260, 24));
-	gridview1 = tabControl1->get(1)->AddControl(new GridView(10, 10, 1000, 200));
+	gridview1 = tabControl1->get(1)->AddControl(new GridView(10, 24, 1000, 200));
 	gridview1->HeadFont = new Font(L"Arial", 16);
 	gridview1->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
 	gridview1->Font = new Font(L"Arial", 16);
+	gridview1->Margin = Thickness(10, 32, 10, 10);
+	gridview1->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
 
-		GridViewColumn textColumn = GridViewColumn(L"Text", 100, ColumnType::Text, false);
+	GridViewColumn textColumn = GridViewColumn(L"Text", 100, ColumnType::Text, false);
 	textColumn.SetSortFunc([](const CellValue& lhs, const CellValue& rhs) -> int {
 		wchar_t* end1 = nullptr;
 		wchar_t* end2 = nullptr;
@@ -372,7 +374,7 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 		if (end2 == rhs.Text.c_str()) b = 0;
 		if (a == b) return 0;
 		return (a < b) ? -1 : 1;
-	});
+		});
 	gridview1->Columns.Add(GridViewColumn(L"Image", 80, ColumnType::Image));
 	gridview1->Columns.Add(GridViewColumn(L"Check", 80, ColumnType::Check));
 	gridview1->Columns.Add(textColumn);
@@ -385,11 +387,11 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 		gridview1->Rows.Add(row);
 	}
 
-	sw1 = tabControl1->get(1)->AddControl(new Switch(gridview1->Right + 5, 10));
+	sw1 = tabControl1->get(1)->AddControl(new Switch(10, 5));
 	sw1->Checked = gridview1->Visible;
 	sw1->OnMouseClick += std::bind_front(&DemoWindow::sw1_OnMouseClick, this);
 
-	sw2 = tabControl1->get(1)->AddControl(new Switch(gridview1->Right + 5, 42));
+	sw2 = tabControl1->get(1)->AddControl(new Switch(72, 5));
 	sw2->Checked = gridview1->Visible;
 	sw2->OnMouseClick += std::bind_front(&DemoWindow::sw2_OnMouseClick, this);
 	for (int i = 0; i < 5; i++)
@@ -413,7 +415,7 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 		stack->SetOrientation(Orientation::Vertical);
 		stack->SetSpacing(5);
 		stack->BackColor = D2D1_COLOR_F{ 0.2f, 0.2f, 0.2f, 0.5f };
-		
+
 		auto stackBtn1 = new Button(L"按钮 1 (200px)", 0, 0, 200, 25);
 		auto stackBtn2 = new Button(L"按钮 2 (180px)", 0, 0, 180, 25);
 		auto stackBtn3 = new Button(L"按钮 3 (220px)", 0, 0, 220, 25);
@@ -425,35 +427,35 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 		auto gridLabel = layoutPage->AddControl(new Label(L"GridPanel:", 300, 40));
 		auto grid = layoutPage->AddControl(new GridPanel(300, 60, 280, 200));
 		grid->BackColor = D2D1_COLOR_F{ 0.2f, 0.2f, 0.2f, 0.5f };
-		
+
 		grid->AddRow(GridLength::Auto());
 		grid->AddRow(GridLength::Star(1.0f));
 		grid->AddRow(GridLength::Pixels(30));
 		grid->AddColumn(GridLength::Star(1.0f));
 		grid->AddColumn(GridLength::Star(1.0f));
-		
+
 		auto gridTitle = new Label(L"标题", 0, 0);
 		gridTitle->GridRow = 0;
 		gridTitle->GridColumn = 0;
 		gridTitle->GridColumnSpan = 2;
 		gridTitle->HAlign = HorizontalAlignment::Center;
-		
+
 		auto gridContent1 = new Button(L"内容1", 0, 0, 100, 80);
 		gridContent1->GridRow = 1;
 		gridContent1->GridColumn = 0;
 		gridContent1->Margin = Thickness(5);
-		
+
 		auto gridContent2 = new Button(L"内容2", 0, 0, 100, 80);
 		gridContent2->GridRow = 1;
 		gridContent2->GridColumn = 1;
 		gridContent2->Margin = Thickness(5);
-		
+
 		auto gridFooter = new Label(L"底部", 0, 0);
 		gridFooter->GridRow = 2;
 		gridFooter->GridColumn = 0;
 		gridFooter->GridColumnSpan = 2;
 		gridFooter->HAlign = HorizontalAlignment::Center;
-		
+
 		grid->AddControl(gridTitle);
 		grid->AddControl(gridContent1);
 		grid->AddControl(gridContent2);
@@ -464,26 +466,26 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 		auto dock = layoutPage->AddControl(new DockPanel(590, 60, 280, 200));
 		dock->BackColor = D2D1_COLOR_F{ 0.2f, 0.2f, 0.2f, 0.5f };
 		dock->SetLastChildFill(true);
-		
+
 		auto dockTop = new Label(L"Top", 0, 0);
 		dockTop->BackColor = D2D1_COLOR_F{ 0.3f, 0.3f, 0.5f, 0.7f };
-		dockTop->Size = SIZE{280, 30};
+		dockTop->Size = SIZE{ 280, 30 };
 		dockTop->DockPosition = Dock::Top;
-		
+
 		auto dockBottom = new Label(L"Bottom", 0, 0);
 		dockBottom->BackColor = D2D1_COLOR_F{ 0.5f, 0.3f, 0.3f, 0.7f };
-		dockBottom->Size = SIZE{280, 30};
+		dockBottom->Size = SIZE{ 280, 30 };
 		dockBottom->DockPosition = Dock::Bottom;
-		
+
 		auto dockLeft = new Label(L"Left", 0, 0);
 		dockLeft->BackColor = D2D1_COLOR_F{ 0.3f, 0.5f, 0.3f, 0.7f };
-		dockLeft->Size = SIZE{60, 140};
+		dockLeft->Size = SIZE{ 60, 140 };
 		dockLeft->DockPosition = Dock::Left;
-		
+
 		auto dockFill = new Label(L"Fill", 0, 0);
 		dockFill->BackColor = D2D1_COLOR_F{ 0.4f, 0.4f, 0.4f, 0.7f };
 		dockFill->DockPosition = Dock::Fill;
-		
+
 		dock->AddControl(dockTop);
 		dock->AddControl(dockBottom);
 		dock->AddControl(dockLeft);
@@ -494,11 +496,11 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 		auto wrap = layoutPage->AddControl(new WrapPanel(880, 60, 300, 200));
 		wrap->SetOrientation(Orientation::Horizontal);
 		wrap->BackColor = D2D1_COLOR_F{ 0.2f, 0.2f, 0.2f, 0.5f };
-		
+
 		for (int i = 1; i <= 8; i++) {
 			auto wrapBtn = new Button(
-				StringHelper::Format(L"Btn%d", i), 
-				0, 0, 
+				StringHelper::Format(L"Btn%d", i),
+				0, 0,
 				60,
 				25
 			);
@@ -509,8 +511,10 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 	// WebBrowser（WebView2 原生嵌入渲染）演示
 	{
 		auto page = tabControl1->get(4);
-		page->AddControl(new Label(L"WebBrowser", 10, 10));
-		web1 = page->AddControl(new WebBrowser(10, 36, 1180, 210));
+		web1 = page->AddControl(new WebBrowser(10, 20, 1180, 210));
+
+		web1->Margin = Thickness(10, 10, 10, 10);
+		web1->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
 
 		web1->Navigate(L"https://www.bing.com");
 	}

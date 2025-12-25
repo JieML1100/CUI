@@ -49,8 +49,12 @@ TabPage* TabControl::AddPage(std::wstring name)
 {
 	TabPage* result = this->AddControl(new TabPage(name));
 	result->BackColor = this->BackColor;
-		result->Location = POINT{ 0, this->TitleHeight };
-	result->Size = this->Size;
+	result->Location = POINT{ 0, this->TitleHeight };
+	{
+		SIZE s = this->Size;
+		s.cy = std::max(0L, s.cy - this->TitleHeight);
+		result->Size = s;
+	}
 	for (int i = 0; i < this->Count; i++)
 	{
 		this->operator[](i)->Visible = (this->SelectIndex == i);
@@ -109,7 +113,11 @@ void TabControl::Update()
 			}
 			TabPage* page = (TabPage*)this->operator[](this->SelectIndex);
 			page->Location = POINT{ 0,(int)this->TitleHeight };
-			page->Size = this->Size;
+			{
+				SIZE s = this->Size;
+				s.cy = std::max(0L, s.cy - this->TitleHeight);
+				page->Size = s;
+			}
 			page->Update();
 
 			if (this->_lastSelectIndex != this->SelectIndex)

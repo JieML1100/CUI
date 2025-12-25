@@ -221,10 +221,20 @@ bool GridLayoutEngine::TryGetCellAtPoint(Control* container, float x, float y, i
 	outCol = 0;
 	if (!container) return false;
 
-	// 使用当前容器尺寸计算（与 Arrange 一致）
+	// Panel 在 Arrange 时会把 finalRect 设置为内容区（即加上 Padding 偏移），
+	// 这里的 x/y 约定为容器本地坐标（0,0 在 GridPanel 左上角），因此需要扣掉 Padding。
+	Thickness padding = container->Padding;
+	x -= padding.Left;
+	y -= padding.Top;
+
+	// 使用当前容器内容区尺寸计算（与 Arrange 一致）
 	auto size = container->Size;
-	CalculateColumnWidths(container, (float)size.cx);
-	CalculateRowHeights(container, (float)size.cy);
+	float contentW = (float)size.cx - padding.Left - padding.Right;
+	float contentH = (float)size.cy - padding.Top - padding.Bottom;
+	if (contentW < 0.0f) contentW = 0.0f;
+	if (contentH < 0.0f) contentH = 0.0f;
+	CalculateColumnWidths(container, contentW);
+	CalculateRowHeights(container, contentH);
 
 	if (_columnPositions.size() < 2 || _rowPositions.size() < 2) return false;
 
@@ -294,8 +304,8 @@ void GridLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 		if (colSpan < 1) colSpan = 1;
 		
 		// 计算单元格区域
-		float cellX = _columnPositions[col];
-		float cellY = _rowPositions[row];
+		float cellX = finalRect.left + _columnPositions[col];
+		float cellY = finalRect.top + _rowPositions[row];
 		float cellWidth = 0.0f;
 		float cellHeight = 0.0f;
 		
