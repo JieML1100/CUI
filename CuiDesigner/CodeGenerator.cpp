@@ -58,6 +58,22 @@ static bool IsContainerType(UIClass t)
 	}
 }
 
+static std::string AnchorStylesToExpr(uint8_t a)
+{
+	if (a == AnchorStyles::None) return "AnchorStyles::None";
+	std::string out;
+	auto add = [&](const char* s) {
+		if (!out.empty()) out += " | ";
+		out += s;
+	};
+	if (a & AnchorStyles::Left) add("AnchorStyles::Left");
+	if (a & AnchorStyles::Top) add("AnchorStyles::Top");
+	if (a & AnchorStyles::Right) add("AnchorStyles::Right");
+	if (a & AnchorStyles::Bottom) add("AnchorStyles::Bottom");
+	if (out.empty()) return "AnchorStyles::None";
+	return out;
+}
+
 CodeGenerator::CodeGenerator(std::wstring className, const std::vector<std::shared_ptr<DesignerControl>>& controls,
 	std::wstring formText, SIZE formSize, POINT formLocation,
 	bool formVisibleHead, int formHeadHeight,
@@ -481,6 +497,8 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	auto m = ctrl->Margin;
 	if (m.Left != 0.0f || m.Top != 0.0f || m.Right != 0.0f || m.Bottom != 0.0f)
 		code << indentStr << name << "->Margin = " << ThicknessToString(m) << ";\n";
+	if (ctrl->AnchorStyles != AnchorStyles::None)
+		code << indentStr << name << "->AnchorStyles = " << AnchorStylesToExpr(ctrl->AnchorStyles) << ";\n";
 	auto p = ctrl->Padding;
 	// ToolBar/StatusBar 里有 int Padding，会隐藏 Control::Padding(Thickness)。为避免生成无效赋值，这两类控件不输出 Thickness Padding。
 	if (dc->Type != UIClass::UI_ToolBar && dc->Type != UIClass::UI_StatusBar)

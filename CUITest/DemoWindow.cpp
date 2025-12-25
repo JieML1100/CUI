@@ -310,11 +310,15 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 	textbox2 = this->AddControl(new RichTextBox(L"RichTextBox", 260, button1->Top, 800, 160));
 	textbox2->BackColor = D2D1_COLOR_F{ 1,1,1,0.25f };
 	textbox2->FocusedColor = D2D1_COLOR_F{ 1,1,1,0.5f };
-
 	textbox2->AllowMultiLine = true;
 	textbox2->ScrollToEnd();
+	textbox2->Margin = Thickness(0, 0, 15, 0);
+	textbox2->AnchorStyles = AnchorStyles::Left | AnchorStyles::Right;
+
 	tabControl1 = this->AddControl(new TabControl(10, combobox1->Bottom + 5, 1200, 300));
 	tabControl1->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.0f };
+	tabControl1->Margin = Thickness(0, 0, 15, 40);
+	tabControl1->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
 	tabControl1->AddPage(L"Page 1")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
 	tabControl1->AddPage(L"Grid View")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
 	tabControl1->AddPage(L"Icon Buttons")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };

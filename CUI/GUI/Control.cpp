@@ -1,5 +1,6 @@
 #include "Control.h"
 #include "Form.h"
+#include "Panel.h"
 
 #pragma warning(disable: 4267)
 #pragma warning(disable: 4244)
@@ -44,6 +45,24 @@ void Control::setTextPrivate(std::wstring s)
 	this->_text = s;
 }
 void Control::Update() {}
+
+void Control::RequestLayout()
+{
+	if (this->Parent)
+	{
+		auto* panelParent = dynamic_cast<Panel*>(this->Parent);
+		if (panelParent)
+		{
+			panelParent->InvalidateLayout();
+		}
+		return;
+	}
+
+	if (this->ParentForm)
+	{
+		this->ParentForm->InvalidateLayout();
+	}
+}
 void Control::PostRender()
 {
 	if (!this->IsVisual || !this->ParentForm) return;
@@ -187,6 +206,7 @@ SET_CPP(Control, SIZE, Size)
 {
 	this->OnSizeChanged(this);
 	_size = value;
+	this->RequestLayout();
 	this->PostRender();
 }
 GET_CPP(Control, int, Left)
@@ -215,6 +235,7 @@ SET_CPP(Control, int, Width)
 {
 	this->OnSizeChanged(this);
 	this->_size.cx = value;
+	this->RequestLayout();
 	this->PostRender();
 }
 GET_CPP(Control, int, Height)
@@ -225,6 +246,7 @@ SET_CPP(Control, int, Height)
 {
 	this->OnSizeChanged(this);
 	_size.cy = value;
+	this->RequestLayout();
 	this->PostRender();
 }
 GET_CPP(Control, float, Right)
@@ -448,6 +470,7 @@ SET_CPP(Control, Thickness, Margin)
 	if (_margin != value)
 	{
 		_margin = value;
+		this->RequestLayout();
 		this->PostRender();
 	}
 }
@@ -461,6 +484,7 @@ SET_CPP(Control, Thickness, Padding)
 	if (_padding != value)
 	{
 		_padding = value;
+		this->RequestLayout();
 		this->PostRender();
 	}
 }
@@ -472,6 +496,7 @@ GET_CPP(Control, HorizontalAlignment, HAlign)
 SET_CPP(Control, HorizontalAlignment, HAlign)
 {
 	_horizontalAlignment = value;
+	this->RequestLayout();
 	this->PostRender();
 }
 
@@ -482,6 +507,7 @@ GET_CPP(Control, VerticalAlignment, VAlign)
 SET_CPP(Control, VerticalAlignment, VAlign)
 {
 	_verticalAlignment = value;
+	this->RequestLayout();
 	this->PostRender();
 }
 
@@ -492,6 +518,7 @@ GET_CPP(Control, uint8_t, AnchorStyles)
 SET_CPP(Control, uint8_t, AnchorStyles)
 {
 	_anchorStyles = value;
+	this->RequestLayout();
 	this->PostRender();
 }
 
@@ -502,6 +529,7 @@ GET_CPP(Control, int, GridRow)
 SET_CPP(Control, int, GridRow)
 {
 	_gridRow = value;
+	this->RequestLayout();
 	this->PostRender();
 }
 
@@ -512,6 +540,7 @@ GET_CPP(Control, int, GridColumn)
 SET_CPP(Control, int, GridColumn)
 {
 	_gridColumn = value;
+	this->RequestLayout();
 	this->PostRender();
 }
 
@@ -522,6 +551,7 @@ GET_CPP(Control, int, GridRowSpan)
 SET_CPP(Control, int, GridRowSpan)
 {
 	_gridRowSpan = value;
+	this->RequestLayout();
 	this->PostRender();
 }
 
@@ -532,6 +562,7 @@ GET_CPP(Control, int, GridColumnSpan)
 SET_CPP(Control, int, GridColumnSpan)
 {
 	_gridColumnSpan = value;
+	this->RequestLayout();
 	this->PostRender();
 }
 
@@ -542,6 +573,7 @@ GET_CPP(Control, Dock, DockPosition)
 SET_CPP(Control, Dock, DockPosition)
 {
 	_dock = value;
+	this->RequestLayout();
 	this->PostRender();
 }
 
@@ -552,6 +584,7 @@ GET_CPP(Control, SIZE, MinSize)
 SET_CPP(Control, SIZE, MinSize)
 {
 	_minSize = value;
+	this->RequestLayout();
 	this->PostRender();
 }
 
@@ -562,6 +595,7 @@ GET_CPP(Control, SIZE, MaxSize)
 SET_CPP(Control, SIZE, MaxSize)
 {
 	_maxSize = value;
+	this->RequestLayout();
 	this->PostRender();
 }
 

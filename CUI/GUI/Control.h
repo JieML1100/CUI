@@ -143,6 +143,9 @@ protected:
 	// 尺寸约束
 	SIZE _minSize = {0, 0};
 	SIZE _maxSize = {INT_MAX, INT_MAX};
+
+	// 通知父容器（Panel 或 Form）需要重新布局
+	void RequestLayout();
 public:
 	CheckedEvent OnChecked = CheckedEvent();
 	MouseWheelEvent OnMouseWheel = MouseWheelEvent();

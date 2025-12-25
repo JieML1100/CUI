@@ -43,6 +43,7 @@ private:
 	bool _isDragging = false;
 	POINT _dragStartPoint = {0, 0};
 	RECT _dragStartRectInCanvas = { 0,0,0,0 };
+	DWORD _lastPropSyncTick = 0;
 
 	struct DragStartItem
 	{
@@ -84,6 +85,7 @@ private:
 	RECT GetSelectionBoundsInCanvas() const;
 	void BeginDragFromCurrentSelection(POINT mousePos);
 	void ApplyMoveDeltaToSelection(int dx, int dy);
+	void NotifySelectionChangedThrottled();
 	void ClearAlignmentGuides();
 	void AddVGuide(int xCanvas);
 	void AddHGuide(int yCanvas);

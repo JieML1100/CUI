@@ -739,6 +739,10 @@ void Form::PerformLayout()
 	{
 		// 默认布局：支持控件的 Anchor 和 Margin
 		SIZE clientSize = this->ClientSize;
+		float contentLeft = 0.0f;
+		float contentTop = 0.0f;
+		float contentWidth = (float)clientSize.cx;
+		float contentHeight = (float)clientSize.cy;
 		
 		for (int i = 0; i < this->Controls.Count; i++)
 		{
@@ -750,6 +754,18 @@ void Form::PerformLayout()
 			SIZE size = control->Size;
 			Thickness margin = control->Margin;
 			uint8_t anchor = control->AnchorStyles;
+			HorizontalAlignment hAlign = control->HAlign;
+			VerticalAlignment vAlign = control->VAlign;
+
+			float x = contentLeft + (float)loc.x + margin.Left;
+			float y = contentTop + (float)loc.y + margin.Top;
+			float w = (float)size.cx;
+			float h = (float)size.cy;
+
+			float availableW = contentWidth - margin.Left - margin.Right;
+			float availableH = contentHeight - margin.Top - margin.Bottom;
+			if (availableW < 0) availableW = 0;
+			if (availableH < 0) availableH = 0;
 			
 			// 应用 Anchor
 			if (anchor != AnchorStyles::None)
@@ -757,33 +773,84 @@ void Form::PerformLayout()
 				// 左右都锚定：宽度随窗口变化
 				if ((anchor & AnchorStyles::Left) && (anchor & AnchorStyles::Right))
 				{
-					size.cx = clientSize.cx - loc.x - (LONG)margin.Right;
+					w = (float)clientSize.cx - margin.Right - x;
+					if (w < 0) w = 0;
 				}
 				// 只锚定右边：跟随右边缘
 				else if (anchor & AnchorStyles::Right)
 				{
-					loc.x = clientSize.cx - size.cx - (LONG)margin.Right;
+					x = (float)clientSize.cx - margin.Right - w;
 				}
 				
 				// 上下都锚定：高度随窗口变化
 				if ((anchor & AnchorStyles::Top) && (anchor & AnchorStyles::Bottom))
 				{
-					size.cy = clientSize.cy - loc.y - (LONG)margin.Bottom;
+					h = (float)clientSize.cy - margin.Bottom - y;
+					if (h < 0) h = 0;
 				}
 				// 只锚定下边：跟随下边缘
 				else if (anchor & AnchorStyles::Bottom)
 				{
-					loc.y = clientSize.cy - size.cy - (LONG)margin.Bottom;
+					y = (float)clientSize.cy - margin.Bottom - h;
 				}
 			}
+			else
+			{
+				// 兼容增强：普通容器下，仅设置 Right/Bottom Margin 时，也视为对右/下边界的约束
+				// 典型用法：Location.x 固定左侧，Margin.Right 固定右侧留白
+				if (hAlign == HorizontalAlignment::Left && margin.Right != 0.0f)
+				{
+					w = availableW - (float)loc.x;
+					if (w < 0) w = 0;
+				}
+				if (vAlign == VerticalAlignment::Top && margin.Bottom != 0.0f)
+				{
+					h = availableH - (float)loc.y;
+					if (h < 0) h = 0;
+				}
+
+				// 未设置 Anchor 时，使用对齐属性（Left/Top 为兼容模式：保留 Location 语义）
+				if (hAlign == HorizontalAlignment::Stretch)
+				{
+					x = margin.Left;
+					w = availableW;
+				}
+				else if (hAlign == HorizontalAlignment::Center)
+				{
+					x = margin.Left + (availableW - w) / 2.0f;
+				}
+				else if (hAlign == HorizontalAlignment::Right)
+				{
+					x = margin.Left + (availableW - w);
+				}
+				
+				if (vAlign == VerticalAlignment::Stretch)
+				{
+					y = margin.Top;
+					h = availableH;
+				}
+				else if (vAlign == VerticalAlignment::Center)
+				{
+					y = margin.Top + (availableH - h) / 2.0f;
+				}
+				else if (vAlign == VerticalAlignment::Bottom)
+				{
+					y = margin.Top + (availableH - h);
+				}
+			}
+
+			if (w < 0) w = 0;
+			if (h < 0) h = 0;
 			
-			control->ApplyLayout(loc, size);
+			POINT finalLoc = { (LONG)x, (LONG)y };
+			SIZE finalSize = { (LONG)w, (LONG)h };
+			control->ApplyLayout(finalLoc, finalSize);
 		}
 	}
 	else
 	{
 		// 使用布局引擎
-		if (_layoutEngine->NeedsLayout())
+		if (_needsLayout || _layoutEngine->NeedsLayout())
 		{
 			SIZE clientSize = this->ClientSize;
 			_layoutEngine->Measure(nullptr, clientSize);
@@ -928,6 +995,12 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 
 	RECT clientRc{};
 	::GetClientRect(this->Handle, &clientRc);
+
+	// 在渲染前执行一次布局：否则直接挂在 Form 上的控件不会应用 Margin/Anchor 等布局属性
+	if (_needsLayout || (_layoutEngine && _layoutEngine->NeedsLayout()))
+	{
+		PerformLayout();
+	}
 	RECT drawRc = dirty;
 	if (force || !this->_hasRenderedOnce)
 	{

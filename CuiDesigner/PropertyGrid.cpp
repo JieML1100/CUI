@@ -326,6 +326,69 @@ void PropertyGrid::CreateBoolPropertyItem(std::wstring propertyName, bool value,
 	yOffset += 25;
 }
 
+void PropertyGrid::CreateAnchorPropertyItem(std::wstring propertyName, uint8_t anchorStyles, int& yOffset)
+{
+	int width = this->Width;
+
+	auto nameLabel = new Label(propertyName, 10, yOffset);
+	nameLabel->Size = { (width - 30) / 2, 20 };
+	nameLabel->Font = new ::Font(L"Microsoft YaHei", 12.0f);
+	this->AddControl(nameLabel);
+	nameLabel->ParentForm = this->ParentForm;
+
+	int valueX = (width - 30) / 2 + 15;
+	int valueW = (width - 30) / 2;
+
+	// 使用一个容器承载 4 个方向开关
+	auto panel = new Panel(valueX, yOffset, valueW, 20);
+	panel->BackColor = D2D1::ColorF(0, 0);
+	panel->Boder = 0.0f;
+	panel->ParentForm = this->ParentForm;
+
+	// 紧凑布局：L/T/R/B
+	int gap = 6;
+	int cbW = (valueW - gap * 3) / 4;
+	if (cbW < 24) cbW = 24;
+
+	auto cbL = new CheckBox(L"", 0, 0);
+	auto cbT = new CheckBox(L"", cbW + gap, 0);
+	auto cbR = new CheckBox(L"", (cbW + gap) * 2, 0);
+	auto cbB = new CheckBox(L"", (cbW + gap) * 3, 0);
+	cbL->Size = { cbW, 20 };
+	cbT->Size = { cbW, 20 };
+	cbR->Size = { cbW, 20 };
+	cbB->Size = { cbW, 20 };
+	cbL->ParentForm = this->ParentForm;
+	cbT->ParentForm = this->ParentForm;
+	cbR->ParentForm = this->ParentForm;
+	cbB->ParentForm = this->ParentForm;
+
+	cbL->Checked = (anchorStyles & AnchorStyles::Left) != 0;
+	cbT->Checked = (anchorStyles & AnchorStyles::Top) != 0;
+	cbR->Checked = (anchorStyles & AnchorStyles::Right) != 0;
+	cbB->Checked = (anchorStyles & AnchorStyles::Bottom) != 0;
+
+	auto apply = [this, cbL, cbT, cbR, cbB](Control*, MouseEventArgs) {
+		UpdateAnchorFromChecks(cbL->Checked, cbT->Checked, cbR->Checked, cbB->Checked);
+	};
+	cbL->OnMouseClick += apply;
+	cbT->OnMouseClick += apply;
+	cbR->OnMouseClick += apply;
+	cbB->OnMouseClick += apply;
+
+	panel->AddControl(cbL);
+	panel->AddControl(cbT);
+	panel->AddControl(cbR);
+	panel->AddControl(cbB);
+
+	this->AddControl(panel);
+
+	auto item = new PropertyItem(propertyName, nameLabel, (Control*)panel);
+	_items.push_back(item);
+
+	yOffset += 25;
+}
+
 void PropertyGrid::CreateEnumPropertyItem(std::wstring propertyName, const std::wstring& value,
 	const std::vector<std::wstring>& options, int& yOffset)
 {
@@ -674,6 +737,27 @@ void PropertyGrid::UpdatePropertyFromFloat(std::wstring propertyName, float valu
 	ctrl->PostRender();
 }
 
+void PropertyGrid::UpdateAnchorFromChecks(bool left, bool top, bool right, bool bottom)
+{
+	if (!_currentControl || !_currentControl->ControlInstance) return;
+	auto* ctrl = _currentControl->ControlInstance;
+
+	uint8_t a = AnchorStyles::None;
+	if (left) a |= AnchorStyles::Left;
+	if (top) a |= AnchorStyles::Top;
+	if (right) a |= AnchorStyles::Right;
+	if (bottom) a |= AnchorStyles::Bottom;
+	ctrl->AnchorStyles = a;
+
+	if (auto* p = dynamic_cast<Panel*>(ctrl->Parent))
+	{
+		p->InvalidateLayout();
+		p->PerformLayout();
+	}
+	if (_canvas) _canvas->ClampControlToDesignSurface(ctrl);
+	ctrl->PostRender();
+}
+
 void PropertyGrid::UpdatePropertyFromBool(std::wstring propertyName, bool value)
 {
 	// 未选中控件时：编辑“被设计窗体”属性
@@ -760,6 +844,7 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 	CreatePropertyItem(L"BolderColor", ColorToText(ctrl->BolderColor), yOffset);
 	CreatePropertyItem(L"Margin", ThicknessToText(ctrl->Margin), yOffset);
 	CreatePropertyItem(L"Padding", ThicknessToText(ctrl->Padding), yOffset);
+	CreateAnchorPropertyItem(L"Anchor", ctrl->AnchorStyles, yOffset);
 	CreateEnumPropertyItem(L"HAlign", HAlignToText(ctrl->HAlign), { L"Left", L"Center", L"Right", L"Stretch" }, yOffset);
 	CreateEnumPropertyItem(L"VAlign", VAlignToText(ctrl->VAlign), { L"Top", L"Center", L"Bottom", L"Stretch" }, yOffset);
 	if (ctrl->Parent && ctrl->Parent->Type() == UIClass::UI_DockPanel)
@@ -949,6 +1034,28 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 
 void PropertyGrid::Clear()
 {
+	auto isDescendantOf = [](Control* root, Control* node) -> bool {
+		if (!root || !node) return false;
+		if (root == node) return true;
+		std::vector<Control*> stack;
+		stack.reserve(64);
+		stack.push_back(root);
+		while (!stack.empty())
+		{
+			Control* cur = stack.back();
+			stack.pop_back();
+			if (!cur) continue;
+			for (int i = 0; i < cur->Children.Count; i++)
+			{
+				auto* ch = cur->Children[i];
+				if (!ch) continue;
+				if (ch == node) return true;
+				stack.push_back(ch);
+			}
+		}
+		return false;
+	};
+
 	// 在移除控件前，如果Form的Selected是PropertyGrid的子控件，先清除Selected
 	// 避免移除后的控件在处理鼠标事件时访问ParentForm
 	if (this->ParentForm && this->ParentForm->Selected)
@@ -956,7 +1063,7 @@ void PropertyGrid::Clear()
 		for (auto item : _items)
 		{
 			if (this->ParentForm->Selected == item->NameLabel ||
-				(item->ValueControl && this->ParentForm->Selected == item->ValueControl) ||
+				(item->ValueControl && (this->ParentForm->Selected == item->ValueControl || isDescendantOf(item->ValueControl, this->ParentForm->Selected))) ||
 				(item->ValueTextBox && this->ParentForm->Selected == item->ValueTextBox) ||
 				(item->ValueCheckBox && this->ParentForm->Selected == item->ValueCheckBox))
 			{
@@ -968,7 +1075,7 @@ void PropertyGrid::Clear()
 		{
 			for (auto* c : _extraControls)
 			{
-				if (c && this->ParentForm->Selected == c)
+				if (c && (this->ParentForm->Selected == c || isDescendantOf(c, this->ParentForm->Selected)))
 				{
 					this->ParentForm->Selected = nullptr;
 					break;

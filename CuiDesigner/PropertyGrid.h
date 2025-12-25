@@ -45,6 +45,7 @@ private:
 	
 	void CreatePropertyItem(std::wstring propertyName, std::wstring value, int& yOffset);
 	void CreateBoolPropertyItem(std::wstring propertyName, bool value, int& yOffset);
+	void CreateAnchorPropertyItem(std::wstring propertyName, uint8_t anchorStyles, int& yOffset);
 	void CreateEnumPropertyItem(std::wstring propertyName, const std::wstring& value,
 		const std::vector<std::wstring>& options, int& yOffset);
 	void CreateFloatSliderPropertyItem(std::wstring propertyName, float value,
@@ -52,6 +53,7 @@ private:
 	void UpdatePropertyFromTextBox(std::wstring propertyName, std::wstring value);
 	void UpdatePropertyFromBool(std::wstring propertyName, bool value);
 	void UpdatePropertyFromFloat(std::wstring propertyName, float value);
+	void UpdateAnchorFromChecks(bool left, bool top, bool right, bool bottom);
 	
 public:
 	PropertyGrid(int x, int y, int width, int height);

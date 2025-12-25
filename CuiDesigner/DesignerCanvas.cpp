@@ -419,6 +419,16 @@ void DesignerCanvas::ApplyMoveDeltaToSelection(int dx, int dy)
 	}
 }
 
+void DesignerCanvas::NotifySelectionChangedThrottled()
+{
+	// 拖动中频繁重建 PropertyGrid 可能较重，这里做一个简单节流。
+	// Designer.cpp 已订阅 OnControlSelected 并调用 PropertyGrid::LoadControl。
+	DWORD now = GetTickCount();
+	if (now - _lastPropSyncTick < 40) return; // ~25fps
+	_lastPropSyncTick = now;
+	OnControlSelected(_selectedControl);
+}
+
 void DesignerCanvas::DrawGrid()
 {
 	if (!this->ParentForm) return;
@@ -1550,6 +1560,7 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			int dx = desired.left - _dragStartRectInCanvas.left;
 			int dy = desired.top - _dragStartRectInCanvas.top;
 			ApplyMoveDeltaToSelection(dx, dy);
+			NotifySelectionChangedThrottled();
 			this->Cursor = CursorKind::SizeAll;
 			return true;
 		}
@@ -1602,6 +1613,7 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			POINT newLocal = CanvasToContainerPoint({ newRect.left, newRect.top }, parent);
 			moving->Location = newLocal;
 			moving->Size = { newRect.right - newRect.left, newRect.bottom - newRect.top };
+			NotifySelectionChangedThrottled();
 			
 			this->Cursor = GetResizeCursor(_resizeHandle);
 			return true;
@@ -2525,6 +2537,7 @@ bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* 
 			props["bolderColor"] = ColorToJson(c->BolderColor);
 			props["margin"] = ThicknessToJson(c->Margin);
 			props["padding"] = ThicknessToJson(c->Padding);
+			props["anchor"] = (int)c->AnchorStyles;
 			props["hAlign"] = HAlignToString(c->HAlign);
 			props["vAlign"] = VAlignToString(c->VAlign);
 			props["dock"] = DockToString(c->DockPosition);
@@ -2900,6 +2913,7 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 				c->BolderColor = ColorFromJson(it.props.value("bolderColor", Json()), c->BolderColor);
 				c->Margin = ThicknessFromJson(it.props.value("margin", Json()), c->Margin);
 				c->Padding = ThicknessFromJson(it.props.value("padding", Json()), c->Padding);
+				c->AnchorStyles = (uint8_t)it.props.value("anchor", (int)c->AnchorStyles);
 				HorizontalAlignment ha = c->HAlign;
 				VerticalAlignment va = c->VAlign;
 				Dock dk = c->DockPosition;

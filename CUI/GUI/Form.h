@@ -25,7 +25,6 @@
 #include "NotifyIcon.h"
 #include "WebBrowser.h"
 
-// Forward declarations for DirectComposition (avoid pulling dcomp.h into all includes)
 struct IDCompositionDevice;
 struct IDCompositionVisual;
 class DCompLayeredHost;
@@ -241,7 +240,7 @@ public:
 	// 布局管理
 	void SetLayoutEngine(class LayoutEngine* engine);
 	void PerformLayout();
-	void InvalidateLayout() { _needsLayout = true; }
+	void InvalidateLayout() { _needsLayout = true; if (_layoutEngine) _layoutEngine->Invalidate(); }
 
 	static bool DoEvent();
 	static bool WaiteEvent();

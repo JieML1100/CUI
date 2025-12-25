@@ -47,6 +47,13 @@ void Panel::PerformLayout()
 	{
 		// 默认布局：支持 Anchor 和 Margin
 		SIZE containerSize = this->Size;
+		Thickness padding = this->Padding;
+		float contentLeft = padding.Left;
+		float contentTop = padding.Top;
+		float contentWidth = (float)containerSize.cx - padding.Left - padding.Right;
+		float contentHeight = (float)containerSize.cy - padding.Top - padding.Bottom;
+		if (contentWidth < 0) contentWidth = 0;
+		if (contentHeight < 0) contentHeight = 0;
 		
 		for (int i = 0; i < this->Children.Count; i++)
 		{
@@ -57,6 +64,18 @@ void Panel::PerformLayout()
 			SIZE size = child->Size;
 			Thickness margin = child->Margin;
 			uint8_t anchor = child->AnchorStyles;
+			HorizontalAlignment hAlign = child->HAlign;
+			VerticalAlignment vAlign = child->VAlign;
+
+			float x = contentLeft + (float)loc.x + margin.Left;
+			float y = contentTop + (float)loc.y + margin.Top;
+			float w = (float)size.cx;
+			float h = (float)size.cy;
+
+			float availableW = contentWidth - margin.Left - margin.Right;
+			float availableH = contentHeight - margin.Top - margin.Bottom;
+			if (availableW < 0) availableW = 0;
+			if (availableH < 0) availableH = 0;
 			
 			// 应用 Anchor
 			if (anchor != AnchorStyles::None)
@@ -64,27 +83,77 @@ void Panel::PerformLayout()
 				// 左右都锚定：宽度随容器变化
 				if ((anchor & AnchorStyles::Left) && (anchor & AnchorStyles::Right))
 				{
-					size.cx = containerSize.cx - loc.x - (LONG)margin.Right;
+					w = (float)containerSize.cx - padding.Right - margin.Right - x;
+					if (w < 0) w = 0;
 				}
 				// 只锚定右边：跟随右边缘
 				else if (anchor & AnchorStyles::Right)
 				{
-					loc.x = containerSize.cx - size.cx - (LONG)margin.Right;
+					x = (float)containerSize.cx - padding.Right - margin.Right - w;
 				}
 				
 				// 上下都锚定：高度随容器变化
 				if ((anchor & AnchorStyles::Top) && (anchor & AnchorStyles::Bottom))
 				{
-					size.cy = containerSize.cy - loc.y - (LONG)margin.Bottom;
+					h = (float)containerSize.cy - padding.Bottom - margin.Bottom - y;
+					if (h < 0) h = 0;
 				}
 				// 只锚定下边：跟随下边缘
 				else if (anchor & AnchorStyles::Bottom)
 				{
-					loc.y = containerSize.cy - size.cy - (LONG)margin.Bottom;
+					y = (float)containerSize.cy - padding.Bottom - margin.Bottom - h;
 				}
 			}
+			else
+			{
+				// 兼容增强：普通容器下，仅设置 Right/Bottom Margin 时，也视为对右/下边界的约束
+				if (hAlign == HorizontalAlignment::Left && margin.Right != 0.0f)
+				{
+					w = availableW - (float)loc.x;
+					if (w < 0) w = 0;
+				}
+				if (vAlign == VerticalAlignment::Top && margin.Bottom != 0.0f)
+				{
+					h = availableH - (float)loc.y;
+					if (h < 0) h = 0;
+				}
+
+				// 未设置 Anchor 时，使用对齐属性（Left/Top 为兼容模式：保留 Location 语义）
+				if (hAlign == HorizontalAlignment::Stretch)
+				{
+					x = contentLeft + margin.Left;
+					w = availableW;
+				}
+				else if (hAlign == HorizontalAlignment::Center)
+				{
+					x = contentLeft + margin.Left + (availableW - w) / 2.0f;
+				}
+				else if (hAlign == HorizontalAlignment::Right)
+				{
+					x = contentLeft + margin.Left + (availableW - w);
+				}
+				
+				if (vAlign == VerticalAlignment::Stretch)
+				{
+					y = contentTop + margin.Top;
+					h = availableH;
+				}
+				else if (vAlign == VerticalAlignment::Center)
+				{
+					y = contentTop + margin.Top + (availableH - h) / 2.0f;
+				}
+				else if (vAlign == VerticalAlignment::Bottom)
+				{
+					y = contentTop + margin.Top + (availableH - h);
+				}
+			}
+
+			if (w < 0) w = 0;
+			if (h < 0) h = 0;
 			
-			child->ApplyLayout(loc, size);
+			POINT finalLoc = { (LONG)x, (LONG)y };
+			SIZE finalSize = { (LONG)w, (LONG)h };
+			child->ApplyLayout(finalLoc, finalSize);
 		}
 	}
 	else
@@ -93,12 +162,16 @@ void Panel::PerformLayout()
 		if (_needsLayout || _layoutEngine->NeedsLayout())
 		{
 			SIZE availableSize = this->Size;
+			Thickness padding = this->Padding;
+			availableSize.cx = (LONG)((std::max)(0.0f, (float)availableSize.cx - padding.Left - padding.Right));
+			availableSize.cy = (LONG)((std::max)(0.0f, (float)availableSize.cy - padding.Top - padding.Bottom));
 			_layoutEngine->Measure(this, availableSize);
 			
 			D2D1_RECT_F finalRect = { 
-				0, 0, 
-				(float)availableSize.cx, 
-				(float)availableSize.cy 
+				padding.Left,
+				padding.Top,
+				padding.Left + (float)availableSize.cx,
+				padding.Top + (float)availableSize.cy
 			};
 			_layoutEngine->Arrange(this, finalRect);
 		}
