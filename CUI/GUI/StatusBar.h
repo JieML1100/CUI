@@ -40,6 +40,7 @@ public:
 	int PartCount() const;
 	void SetPartText(int index, const std::wstring& text);
 	std::wstring GetPartText(int index) const;
+	int GetPartWidth(int index) const;
 	void SetPartWidth(int index, int width);
 
 	void SetLeftText(const std::wstring& text);

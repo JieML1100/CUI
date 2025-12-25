@@ -6,6 +6,8 @@
 #include "ToolBarButtonsEditorDialog.h"
 #include "TreeViewNodesEditorDialog.h"
 #include "GridPanelDefinitionsEditorDialog.h"
+#include "MenuItemsEditorDialog.h"
+#include "StatusBarPartsEditorDialog.h"
 #include "DesignerCanvas.h"
 #include "../CUI/GUI/ComboBox.h"
 #include "../CUI/GUI/Slider.h"
@@ -906,6 +908,36 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 			dlg.ShowDialog(this->ParentForm->Handle);
 			gp->PostRender();
 			};
+		this->AddControl(editBtn);
+		_extraControls.push_back(editBtn);
+		yOffset += 36;
+	}
+	else if (control->Type == UIClass::UI_Menu)
+	{
+		auto editBtn = new Button(L"编辑菜单项...", 10, yOffset + 8, this->Width - 20, 28);
+		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
+			if (!_currentControl || !_currentControl->ControlInstance || !this->ParentForm) return;
+			auto m = dynamic_cast<Menu*>(_currentControl->ControlInstance);
+			if (!m) return;
+			MenuItemsEditorDialog dlg(m);
+			dlg.ShowDialog(this->ParentForm->Handle);
+			m->PostRender();
+		};
+		this->AddControl(editBtn);
+		_extraControls.push_back(editBtn);
+		yOffset += 36;
+	}
+	else if (control->Type == UIClass::UI_StatusBar)
+	{
+		auto editBtn = new Button(L"编辑分段...", 10, yOffset + 8, this->Width - 20, 28);
+		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
+			if (!_currentControl || !_currentControl->ControlInstance || !this->ParentForm) return;
+			auto sb = dynamic_cast<StatusBar*>(_currentControl->ControlInstance);
+			if (!sb) return;
+			StatusBarPartsEditorDialog dlg(sb);
+			dlg.ShowDialog(this->ParentForm->Handle);
+			sb->PostRender();
+		};
 		this->AddControl(editBtn);
 		_extraControls.push_back(editBtn);
 		yOffset += 36;

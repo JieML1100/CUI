@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <cctype>
+#include <functional>
 
 // 生成时需要访问具体控件类型的公开字段/方法
 #include "../CUI/GUI/ComboBox.h"
@@ -14,6 +15,8 @@
 #include "../CUI/GUI/Slider.h"
 #include "../CUI/GUI/PictureBox.h"
 #include "../CUI/GUI/TreeView.h"
+#include "../CUI/GUI/Menu.h"
+#include "../CUI/GUI/StatusBar.h"
 
 #include "../CUI/GUI/Layout/GridPanel.h"
 #include "../CUI/GUI/Layout/StackPanel.h"
@@ -201,6 +204,8 @@ std::string CodeGenerator::GetControlTypeName(UIClass type)
 	case UIClass::UI_TabControl: return "TabControl";
 	case UIClass::UI_TabPage: return "TabPage";
 	case UIClass::UI_ToolBar: return "ToolBar";
+	case UIClass::UI_Menu: return "Menu";
+	case UIClass::UI_StatusBar: return "StatusBar";
 	case UIClass::UI_WebBrowser: return "WebBrowser";
 	default: return "Control";
 	}
@@ -477,8 +482,12 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	if (m.Left != 0.0f || m.Top != 0.0f || m.Right != 0.0f || m.Bottom != 0.0f)
 		code << indentStr << name << "->Margin = " << ThicknessToString(m) << ";\n";
 	auto p = ctrl->Padding;
-	if (p.Left != 0.0f || p.Top != 0.0f || p.Right != 0.0f || p.Bottom != 0.0f)
-		code << indentStr << name << "->Padding = " << ThicknessToString(p) << ";\n";
+	// ToolBar/StatusBar 里有 int Padding，会隐藏 Control::Padding(Thickness)。为避免生成无效赋值，这两类控件不输出 Thickness Padding。
+	if (dc->Type != UIClass::UI_ToolBar && dc->Type != UIClass::UI_StatusBar)
+	{
+		if (p.Left != 0.0f || p.Top != 0.0f || p.Right != 0.0f || p.Bottom != 0.0f)
+			code << indentStr << name << "->Padding = " << ThicknessToString(p) << ";\n";
+	}
 
 	// Min/MaxSize（只在用户改过时输出；不精确比较，保守输出非默认）
 	if (ctrl->MinSize.cx != 0 || ctrl->MinSize.cy != 0)
@@ -620,6 +629,100 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 		code << indentStr << name << "->Padding = " << tb->Padding << ";\n";
 		code << indentStr << name << "->Gap = " << tb->Gap << ";\n";
 		code << indentStr << name << "->ItemHeight = " << tb->ItemHeight << ";\n";
+	}
+
+	// StatusBar 基本参数 + parts
+	if (dc->Type == UIClass::UI_StatusBar)
+	{
+		auto* sb = (StatusBar*)ctrl;
+		if (!sb->TopMost)
+			code << indentStr << name << "->TopMost = false;\n";
+		if (sb->Padding != 6)
+			code << indentStr << name << "->Padding = " << sb->Padding << ";\n";
+		if (sb->Gap != 10)
+			code << indentStr << name << "->Gap = " << sb->Gap << ";\n";
+
+		int pc = sb->PartCount();
+		if (pc > 0)
+		{
+			code << indentStr << name << "->ClearParts();\n";
+			for (int i = 0; i < pc; i++)
+			{
+				code << indentStr << name << "->AddPart(L\"" << EscapeWStringLiteral(sb->GetPartText(i))
+					<< "\", " << sb->GetPartWidth(i) << ");\n";
+			}
+		}
+	}
+
+	// Menu 基本参数 + items
+	if (dc->Type == UIClass::UI_Menu)
+	{
+		auto* menu = (Menu*)ctrl;
+		if (menu->BarHeight != 28)
+			code << indentStr << name << "->BarHeight = " << menu->BarHeight << ";\n";
+		if (menu->DropItemHeight != 26)
+			code << indentStr << name << "->DropItemHeight = " << menu->DropItemHeight << ";\n";
+		if (std::fabs(menu->Boder - 1.0f) > 1e-6f)
+			code << indentStr << name << "->Boder = " << FloatLiteral(menu->Boder) << ";\n";
+
+		if (menu->Count > 0)
+		{
+			code << indentStr << "// Menu items\n";
+			code << indentStr << "while (" << name << "->Count > 0)\n";
+			code << indentStr << "{\n";
+			code << indentStr << "\tauto* it = (MenuItem*)" << name << "->operator[](" << name << "->Count - 1);\n";
+			code << indentStr << "\t" << name << "->RemoveControl(it);\n";
+			code << indentStr << "\tdelete it;\n";
+			code << indentStr << "}\n";
+
+			int menuAutoId = 0;
+			auto emitItemProps = [&](MenuItem* it, const std::string& var, int depth)
+			{
+				std::string ind(indent + depth, '\t');
+				if (!it) return;
+				if (it->Id != 0)
+					code << ind << var << "->Id = " << it->Id << ";\n";
+				if (!it->Enable)
+					code << ind << var << "->Enable = false;\n";
+				if (!it->Shortcut.empty())
+					code << ind << var << "->Shortcut = L\"" << EscapeWStringLiteral(it->Shortcut) << "\";\n";
+				if (it->Separator)
+					code << ind << var << "->Separator = true;\n";
+			};
+
+			std::function<void(MenuItem* parent, const std::string& parentVar, int depth)> emitSub;
+			emitSub = [&](MenuItem* parent, const std::string& parentVar, int depth)
+			{
+				if (!parent) return;
+				for (auto* sub : parent->SubItems)
+				{
+					std::string ind(indent + depth, '\t');
+					if (!sub) continue;
+					if (sub->Separator)
+					{
+						code << ind << parentVar << "->AddSeparator();\n";
+						continue;
+					}
+					std::string var = name + "_item" + std::to_string(++menuAutoId);
+					code << ind << "auto* " << var << " = " << parentVar << "->AddSubItem(L\"" << EscapeWStringLiteral(sub->Text)
+						<< "\", " << sub->Id << ");\n";
+					emitItemProps(sub, var, depth);
+					if (!sub->SubItems.empty())
+						emitSub(sub, var, depth + 1);
+				}
+			};
+
+			for (int i = 0; i < menu->Count; i++)
+			{
+				auto* top = (MenuItem*)menu->operator[](i);
+				if (!top) continue;
+				std::string var = name + "_item" + std::to_string(++menuAutoId);
+				code << indentStr << "auto* " << var << " = " << name << "->AddItem(L\"" << EscapeWStringLiteral(top->Text) << "\");\n";
+				emitItemProps(top, var, 0);
+				if (!top->SubItems.empty())
+					emitSub(top, var, 1);
+			}
+		}
 	}
 
 	return code.str();
@@ -872,6 +975,11 @@ std::string CodeGenerator::GenerateCpp()
 		else
 		{
 			cpp << indentStr << parentExpr << "->AddControl(" << childVar << ");\n";
+		}
+
+		if (dc->Type == UIClass::UI_StatusBar)
+		{
+			cpp << indentStr << childVar << "->LayoutItems();\n";
 		}
 
 		emitLayoutPropsForParent(dc->DesignerParent, childVar, c, indent);

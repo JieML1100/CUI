@@ -76,6 +76,12 @@ std::wstring StatusBar::GetPartText(int index) const
 	return lbl ? lbl->Text : L"";
 }
 
+int StatusBar::GetPartWidth(int index) const
+{
+	if (index < 0 || index >= (int)_parts.size()) return 0;
+	return _parts[index].Width;
+}
+
 void StatusBar::SetPartWidth(int index, int width)
 {
 	if (index < 0 || index >= (int)_parts.size()) return;

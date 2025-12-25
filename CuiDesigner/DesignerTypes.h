@@ -77,6 +77,8 @@ public:
 			{ UIClass::UI_Switch, L"Switch", L"开关", {60, 30}, false },
 			{ UIClass::UI_TabControl, L"TabControl", L"选项卡", {360, 240}, true },
 			{ UIClass::UI_ToolBar, L"ToolBar", L"工具栏", {360, 34}, false },
+			{ UIClass::UI_Menu, L"Menu", L"菜单", {600, 28}, false },
+			{ UIClass::UI_StatusBar, L"StatusBar", L"状态栏", {600, 26}, false },
 			{ UIClass::UI_WebBrowser, L"WebBrowser", L"浏览器", {500, 360}, false },
 		};
 	}

@@ -18,6 +18,8 @@
 #include "../CUI/GUI/TreeView.h"
 #include "../CUI/GUI/TabControl.h"
 #include "../CUI/GUI/ToolBar.h"
+#include "../CUI/GUI/Menu.h"
+#include "../CUI/GUI/StatusBar.h"
 #include "../CUI/GUI/WebBrowser.h"
 #include "../CUI/GUI/Layout/StackPanel.h"
 #include "../CUI/GUI/Layout/GridPanel.h"
@@ -1799,6 +1801,27 @@ void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
 		newControl = new ToolBar(centerX, centerY, 360, 34);
 		typeName = L"ToolBar";
 		break;
+	case UIClass::UI_Menu:
+	{
+		// Menu 始终为窗体根级控件：放在客户区顶部并拉伸宽度
+		int w = _clientSurface ? _clientSurface->Width : 360;
+		if (w < 80) w = 80;
+		newControl = new Menu(0, 0, w, 28);
+		typeName = L"Menu";
+		break;
+	}
+	case UIClass::UI_StatusBar:
+	{
+		// StatusBar 始终为窗体根级控件：放在客户区底部并拉伸宽度
+		int w = _clientSurface ? _clientSurface->Width : 360;
+		if (w < 80) w = 80;
+		int h = 26;
+		int y = _clientSurface ? (_clientSurface->Height - h) : (centerY);
+		if (y < 0) y = 0;
+		newControl = new StatusBar(0, y, w, h);
+		typeName = L"StatusBar";
+		break;
+	}
 	case UIClass::UI_WebBrowser:
 		newControl = new WebBrowser(centerX, centerY, 500, 360);
 		typeName = L"WebBrowser";
@@ -1809,6 +1832,21 @@ void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
 	
 	if (newControl)
 	{
+		// Menu/StatusBar 不参与容器命中：强制根级（窗体客户区）
+		if (type == UIClass::UI_Menu || type == UIClass::UI_StatusBar)
+		{
+			_clientSurface->AddControl(newControl);
+			// 生成唯一名称
+			_controlCounter++;
+			std::wstring name = typeName + std::to_wstring(_controlCounter);
+			auto dc = std::make_shared<DesignerControl>(newControl, name, type, nullptr);
+			_designerControls.push_back(dc);
+			ClearSelection();
+			AddToSelection(dc, true, true);
+			this->PostRender();
+			return;
+		}
+
 		// 确定父容器：鼠标点下命中的最内层容器（TabControl 会归一化到当前页）
 		Control* rawContainer = FindBestContainerAtPoint(canvasPos, nullptr);
 		Control* container = NormalizeContainerForDrop(rawContainer);
@@ -2057,6 +2095,8 @@ namespace
 		case UIClass::UI_Switch: return "Switch";
 		case UIClass::UI_TabControl: return "TabControl";
 		case UIClass::UI_ToolBar: return "ToolBar";
+		case UIClass::UI_Menu: return "Menu";
+		case UIClass::UI_StatusBar: return "StatusBar";
 		case UIClass::UI_WebBrowser: return "WebBrowser";
 		case UIClass::UI_TabPage: return "TabPage";
 		default: return "Control";
@@ -2087,9 +2127,57 @@ namespace
 		if (s == "Switch") { out = UIClass::UI_Switch; return true; }
 		if (s == "TabControl") { out = UIClass::UI_TabControl; return true; }
 		if (s == "ToolBar") { out = UIClass::UI_ToolBar; return true; }
+		if (s == "Menu") { out = UIClass::UI_Menu; return true; }
+		if (s == "StatusBar") { out = UIClass::UI_StatusBar; return true; }
 		if (s == "WebBrowser") { out = UIClass::UI_WebBrowser; return true; }
 		if (s == "TabPage") { out = UIClass::UI_TabPage; return true; }
 		return false;
+	}
+
+	static Json MenuItemToJson(MenuItem* it)
+	{
+		if (!it) return Json();
+		Json j;
+		j["text"] = ToUtf8(it->Text);
+		j["id"] = it->Id;
+		j["shortcut"] = ToUtf8(it->Shortcut);
+		j["separator"] = it->Separator;
+		j["enable"] = it->Enable;
+		Json subs = Json::array();
+		for (auto* s : it->SubItems)
+		{
+			if (!s) continue;
+			subs.push_back(MenuItemToJson(s));
+		}
+		j["subItems"] = subs;
+		return j;
+	}
+
+	static void JsonToMenuSubItems(const Json& arr, std::vector<MenuItem*>& out, MenuItem* owner)
+	{
+		if (!owner) return;
+		if (!arr.is_array()) return;
+		for (auto& j : arr)
+		{
+			if (!j.is_object()) continue;
+			bool sep = j.value("separator", false);
+			if (sep)
+			{
+				auto* s = owner->AddSeparator();
+				if (!s) continue;
+				continue;
+			}
+			auto text = FromUtf8(j.value("text", std::string()));
+			int id = j.value("id", 0);
+			auto* s = owner->AddSubItem(text, id);
+			if (!s) continue;
+			s->Shortcut = FromUtf8(j.value("shortcut", std::string()));
+			s->Enable = j.value("enable", true);
+			if (j.contains("subItems"))
+			{
+				JsonToMenuSubItems(j["subItems"], out, s);
+			}
+		}
 	}
 
 	static Json ColorToJson(const D2D1_COLOR_F& c)
@@ -2563,6 +2651,32 @@ bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* 
 				auto* dp = (DockPanel*)c;
 				extra["lastChildFill"] = dp->GetLastChildFill();
 			}
+			else if (dc->Type == UIClass::UI_StatusBar)
+			{
+				auto* sb = (StatusBar*)c;
+				extra["topMost"] = sb->TopMost;
+				Json parts = Json::array();
+				for (int i = 0; i < sb->PartCount(); i++)
+				{
+					Json pj;
+					pj["text"] = ToUtf8(sb->GetPartText(i));
+					pj["width"] = sb->GetPartWidth(i);
+					parts.push_back(pj);
+				}
+				extra["parts"] = parts;
+			}
+			else if (dc->Type == UIClass::UI_Menu)
+			{
+				auto* m = (Menu*)c;
+				Json tops = Json::array();
+				for (int i = 0; i < m->Count; i++)
+				{
+					auto* it = dynamic_cast<MenuItem*>(m->operator[](i));
+					if (!it) continue;
+					tops.push_back(MenuItemToJson(it));
+				}
+				extra["items"] = tops;
+			}
 
 			if (!extra.empty()) item["extra"] = extra;
 			arr.push_back(item);
@@ -2723,6 +2837,8 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 			case UIClass::UI_Switch: return new Switch(0, 0, 60, 30);
 			case UIClass::UI_TabControl: return new TabControl(0, 0, 360, 240);
 			case UIClass::UI_ToolBar: return new ToolBar(0, 0, 360, 34);
+			case UIClass::UI_Menu: return new Menu(0, 0, 600, 28);
+			case UIClass::UI_StatusBar: return new StatusBar(0, 0, 600, 26);
 			case UIClass::UI_WebBrowser: return new WebBrowser(0, 0, 500, 360);
 			default: return nullptr;
 			}
@@ -2938,6 +3054,54 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 					s->Value = it.extra.value("value", s->Value);
 					s->Step = it.extra.value("step", s->Step);
 					s->SnapToStep = it.extra.value("snapToStep", s->SnapToStep);
+				}
+				else if (it.type == UIClass::UI_StatusBar)
+				{
+					auto* sb = (StatusBar*)c;
+					sb->TopMost = it.extra.value("topMost", sb->TopMost);
+					sb->ClearParts();
+					if (it.extra.contains("parts") && it.extra["parts"].is_array())
+					{
+						for (auto& pj : it.extra["parts"])
+						{
+							if (!pj.is_object()) continue;
+							std::wstring text = FromUtf8(pj.value("text", std::string()));
+							int w = pj.value("width", 0);
+							sb->AddPart(text, w);
+						}
+					}
+				}
+				else if (it.type == UIClass::UI_Menu)
+				{
+					auto* m = (Menu*)c;
+					// 清空现有顶层项
+					while (m->Count > 0)
+					{
+						auto* cc = m->operator[](m->Count - 1);
+						m->RemoveControl(cc);
+						delete cc;
+					}
+					if (it.extra.contains("items") && it.extra["items"].is_array())
+					{
+						for (auto& ij : it.extra["items"])
+						{
+							if (!ij.is_object()) continue;
+							bool sep = ij.value("separator", false);
+							if (sep) continue; // 顶层不支持 separator
+							auto text = FromUtf8(ij.value("text", std::string()));
+							if (text.empty()) continue;
+							auto* top = m->AddItem(text);
+							if (!top) continue;
+							top->Id = ij.value("id", 0);
+							top->Shortcut = FromUtf8(ij.value("shortcut", std::string()));
+							top->Enable = ij.value("enable", true);
+							if (ij.contains("subItems"))
+							{
+								std::vector<MenuItem*> tmp;
+								JsonToMenuSubItems(ij["subItems"], tmp, top);
+							}
+						}
+					}
 				}
 			}
 		}

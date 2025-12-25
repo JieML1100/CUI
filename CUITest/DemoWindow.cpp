@@ -274,9 +274,9 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 	statusbar1->AddPart(L"2 part/70", 100);
 	statusbar1->AddPart(L"3 part/240", 240);
 
-	tbNew->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: New"; this->label1->PostRender(); this->statusbar1->SetPartText(0, L"ToolBar: I'm"); this->statusbar1->PostRender(); };
-	tbSave->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: Save"; this->label1->PostRender(); this->statusbar1->SetPartText(0, L"ToolBar: a"); this->statusbar1->PostRender(); };
-	tbRun->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: Run"; this->label1->PostRender(); this->statusbar1->SetPartText(0, L"ToolBar: Toolbar"); this->statusbar1->PostRender(); };
+	tbNew->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: I'm"; this->label1->PostRender(); this->statusbar1->SetPartText(0, L"ToolBar: I'm"); this->statusbar1->PostRender(); };
+	tbSave->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: a"; this->label1->PostRender(); this->statusbar1->SetPartText(0, L"ToolBar: a"); this->statusbar1->PostRender(); };
+	tbRun->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: Toolbar"; this->label1->PostRender(); this->statusbar1->SetPartText(0, L"ToolBar: Toolbar"); this->statusbar1->PostRender(); };
 
 	toolbar1->Top = menu1->Bottom;
 	slider1 = this->AddControl(new Slider(10, toolbar1->Bottom + 8, 320, 32));
@@ -532,7 +532,7 @@ NotifyIcon* TestNotifyIcon(HWND handle)
 {
 	NotifyIcon* notifyIcon = new NotifyIcon();
 	notifyIcon->InitNotifyIcon(handle, 1);
-	//notifyIcon->SetIcon(LoadIcon(NULL, IDI_ICON1));
+	notifyIcon->SetIcon(LoadIcon(NULL, IDI_APPLICATION));
 	notifyIcon->SetToolTip(Convert::Utf8ToAnsi("应用程序").c_str());
 	notifyIcon->ShowNotifyIcon();
 

@@ -123,6 +123,7 @@ void Control::RemoveControl(Control* c)
 	this->Children.Remove(c);
 	c->Parent = NULL;
 	c->ParentForm = NULL;
+	if (!this->ParentForm) return;
 	if (this->ParentForm->ForegroundControl == c)
 		this->ParentForm->ForegroundControl = NULL;
 	if (this->ParentForm->MainMenu == c)

@@ -138,6 +138,8 @@
   <ItemGroup>
     <ClCompile Include="CodeGenerator.cpp" />
     <ClCompile Include="ComboBoxItemsEditorDialog.cpp" />
+    <ClCompile Include="MenuItemsEditorDialog.cpp" />
+    <ClCompile Include="StatusBarPartsEditorDialog.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Designer.cpp" />
     <ClCompile Include="DesignerCanvas.cpp" />
@@ -158,6 +160,8 @@
   <ItemGroup>
     <ClInclude Include="CodeGenerator.h" />
     <ClInclude Include="ComboBoxItemsEditorDialog.h" />
+    <ClInclude Include="MenuItemsEditorDialog.h" />
+    <ClInclude Include="StatusBarPartsEditorDialog.h" />
     <ClInclude Include="Designer.h" />
     <ClInclude Include="DesignerCanvas.h" />
     <ClInclude Include="DesignerTypes.h" />

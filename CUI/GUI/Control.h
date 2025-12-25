@@ -303,15 +303,11 @@ public:
 	GET(SIZE, MaxSize);
 	SET(SIZE, MaxSize);
 	
-	// 布局相关方法
 	virtual SIZE MeasureCore(SIZE availableSize);
 	void ApplyLayout(POINT location, SIZE size);
 
 	CursorKind Cursor = CursorKind::Arrow;
 	virtual CursorKind QueryCursor(int xof, int yof) { (void)xof; (void)yof; return this->Cursor; }
-	// Whether Form-level hit-testing should descend into children.
-	// Default: true (normal containers). DesignerCanvas overrides this to false
-	// so that clicks on child controls are handled by the canvas for selection/drag/resize.
 	virtual bool HitTestChildren() const { return true; }
 	virtual void RenderImage();
 	virtual SIZE ActualSize();
