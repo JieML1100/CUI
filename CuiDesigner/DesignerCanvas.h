@@ -91,6 +91,8 @@ private:
 	void AddHGuide(int yCanvas);
 	RECT ApplyMoveSnap(RECT desiredRectInCanvas, Control* referenceParent);
 	RECT ApplyResizeSnap(RECT desiredRectInCanvas, Control* referenceParent, DesignerControl::ResizeHandle handle);
+	void ApplyRectToControl(Control* c, const RECT& rectInCanvas);
+	static Thickness GetPaddingOfContainer(Control* container);
 	
 public:
 	DesignerCanvas(int x, int y, int width, int height);
@@ -118,6 +120,8 @@ public:
 	bool GetDesignedFormAllowResize() const { return _designedFormAllowResize; }
 	void SetDesignedFormAllowResize(bool v) { _designedFormAllowResize = v; this->PostRender(); }
 	void ClampControlToDesignSurface(Control* c);
+	// 设计器专用：切换 Anchor 时保持控件当前视觉矩形不变，并同步换算 Margin
+	void ApplyAnchorStylesKeepingBounds(Control* c, uint8_t newAnchorStyles);
 
 	// 设计文件（用于保存/加载设计进度）
 	bool SaveDesignFile(const std::wstring& filePath, std::wstring* outError = nullptr) const;

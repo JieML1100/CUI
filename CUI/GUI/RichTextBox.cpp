@@ -10,16 +10,16 @@ CursorKind RichTextBox::QueryCursor(int xof, int yof)
 	(void)yof;
 	if (!this->Enable) return CursorKind::Arrow;
 
-		const float renderHeight = (float)this->Height - (this->TextMargin * 2.0f);
+	const float renderHeight = (float)this->Height - (this->TextMargin * 2.0f);
 	const bool hasVScroll = (renderHeight > 0.0f) && (this->textSize.height > renderHeight);
 	if (hasVScroll && xof >= (this->Width - 8))
 		return CursorKind::SizeNS;
 
-		return CursorKind::IBeam;
+	return CursorKind::IBeam;
 }
 RichTextBox::RichTextBox(std::wstring text, int x, int y, int width, int height)
 {
-		this->Text = text;
+	this->Text = text;
 	this->buffer = text;
 	this->bufferSyncedFromControl = true;
 	this->Location = POINT{ x,y };
@@ -63,7 +63,7 @@ void RichTextBox::TrimToMaxLength()
 
 void RichTextBox::UpdateSelRange()
 {
-	if (!this->layOutCache) 
+	if (!this->layOutCache)
 		return;
 	auto d2d = this->ParentForm->Render;
 	auto font = this->Font;
@@ -82,10 +82,10 @@ void RichTextBox::UpdateLayout()
 		return;
 	SyncBufferFromControlIfNeeded();
 
-		this->virtualMode = (this->EnableVirtualization && this->AllowMultiLine && this->buffer.size() >= this->VirtualizeThreshold);
+	this->virtualMode = (this->EnableVirtualization && this->AllowMultiLine && this->buffer.size() >= this->VirtualizeThreshold);
 	if (this->virtualMode)
 	{
-				if (this->layOutCache)
+		if (this->layOutCache)
 		{
 			this->layOutCache->Release();
 			this->layOutCache = NULL;
@@ -94,23 +94,23 @@ void RichTextBox::UpdateLayout()
 		float renderWidth = this->Width - (TextMargin * 2.0f);
 		float renderHeight = this->Height - (TextMargin * 2.0f);
 
-				if (this->TextChanged || this->lastLayoutSize.cx != this->Width || this->lastLayoutSize.cy != this->Height || this->blocksDirty)
+		if (this->TextChanged || this->lastLayoutSize.cx != this->Width || this->lastLayoutSize.cy != this->Height || this->blocksDirty)
 		{
 			RebuildBlocks();
 			this->lastLayoutSize = SIZE{ this->Width, this->Height };
 			this->TextChanged = false;
 		}
 
-				EnsureAllBlockMetrics(renderWidth, renderHeight);
+		EnsureAllBlockMetrics(renderWidth, renderHeight);
 		this->textSize.height = this->virtualTotalHeight;
 		this->textSize.width = renderWidth;
 		this->selRangeDirty = true;
 		return;
 	}
 
-		ReleaseBlocks();
+	ReleaseBlocks();
 
-		if ((this->TextChanged || this->lastLayoutSize.cx != this->Width || this->lastLayoutSize.cy != this->Height) && this->ParentForm)
+	if ((this->TextChanged || this->lastLayoutSize.cx != this->Width || this->lastLayoutSize.cy != this->Height) && this->ParentForm)
 	{
 		if (this->layOutCache)this->layOutCache->Release();
 		auto d2d = this->ParentForm->Render;
@@ -120,7 +120,7 @@ void RichTextBox::UpdateLayout()
 			float render_width = this->Width - (TextMargin * 2.0f);
 			float render_height = this->Height - (TextMargin * 2.0f);
 
-						this->layOutCache = d2d->CreateStringLayout(this->buffer, render_width, render_height, font);
+			this->layOutCache = d2d->CreateStringLayout(this->buffer, render_width, render_height, font);
 			textSize = font->GetTextSize(layOutCache);
 			if (textSize.height > render_height)
 			{
@@ -171,7 +171,7 @@ void RichTextBox::RebuildBlocks()
 	while (i < n)
 	{
 		size_t len = std::min(blockSize, n - i);
-				if (i + len < n)
+		if (i + len < n)
 		{
 			wchar_t last = this->buffer[i + len - 1];
 			wchar_t next = this->buffer[i + len];
@@ -208,15 +208,15 @@ void RichTextBox::EnsureBlockLayout(int idx, float renderWidth, float renderHeig
 
 void RichTextBox::EnsureAllBlockMetrics(float renderWidth, float renderHeight)
 {
-		if (!this->blockMetricsDirty && this->cachedRenderWidth == renderWidth)
+	if (!this->blockMetricsDirty && this->cachedRenderWidth == renderWidth)
 		return;
 
 	this->cachedRenderWidth = renderWidth;
 	this->virtualTotalHeight = 0.0f;
 	this->blockTops.resize(this->blocks.size());
 
-		auto compute = [&](float w) {
-				for (auto& b : this->blocks)
+	auto compute = [&](float w) {
+		for (auto& b : this->blocks)
 		{
 			if (b.layout)
 			{
@@ -233,7 +233,7 @@ void RichTextBox::EnsureAllBlockMetrics(float renderWidth, float renderHeight)
 			y += this->blocks[i].height;
 		}
 		return y;
-	};
+		};
 
 	float total = compute(renderWidth);
 	bool needScrollBar = total > renderHeight;
@@ -260,7 +260,7 @@ int RichTextBox::HitTestGlobalIndex(float x, float y)
 	float contentY = (y + this->OffsetY) - this->TextMargin;
 	if (contentY < 0) contentY = 0;
 
-		int idx = 0;
+	int idx = 0;
 	for (int i = 0; i < (int)this->blockTops.size(); i++)
 	{
 		if (contentY >= this->blockTops[i])
@@ -374,7 +374,7 @@ void RichTextBox::UpdateScrollDrag(float posY) {
 }
 void RichTextBox::SetScrollByPos(float yof)
 {
-		const float renderHeight = this->Height - (TextMargin * 2.0f);
+	const float renderHeight = this->Height - (TextMargin * 2.0f);
 	if (renderHeight <= 0.0f || textSize.height <= 0.0f)
 	{
 		this->OffsetY = 0.0f;
@@ -389,11 +389,11 @@ void RichTextBox::SetScrollByPos(float yof)
 
 	const float maxScroll = std::max(0.0f, textSize.height - renderHeight);
 
-		float scrollBlockHeight = (renderHeight / textSize.height) * renderHeight;
+	float scrollBlockHeight = (renderHeight / textSize.height) * renderHeight;
 	if (scrollBlockHeight < this->Height * 0.1f) scrollBlockHeight = this->Height * 0.1f;
 	if (scrollBlockHeight > this->Height) scrollBlockHeight = this->Height;
 
-		const float topPosition = scrollBlockHeight * 0.5f;
+	const float topPosition = scrollBlockHeight * 0.5f;
 	const float bottomPosition = this->Height - topPosition;
 	if (bottomPosition > topPosition)
 	{
@@ -413,7 +413,7 @@ void RichTextBox::InputText(std::wstring input)
 	sels = std::clamp(sels, 0, (int)this->buffer.size());
 	sele = std::clamp(sele, 0, (int)this->buffer.size());
 
-		if (sels == sele && sels == (int)this->buffer.size())
+	if (sels == sele && sels == (int)this->buffer.size())
 	{
 		this->buffer.append(input);
 		SelectionEnd = SelectionStart = (int)this->buffer.size();
@@ -493,7 +493,7 @@ void RichTextBox::InputDelete()
 }
 void RichTextBox::UpdateScroll(bool arrival)
 {
-				if (this->TextChanged || (this->virtualMode && (this->blocksDirty || this->blockMetricsDirty)) || (!this->virtualMode && this->layOutCache == NULL))
+	if (this->TextChanged || (this->virtualMode && (this->blocksDirty || this->blockMetricsDirty)) || (!this->virtualMode && this->layOutCache == NULL))
 	{
 		this->UpdateLayout();
 	}
@@ -506,7 +506,7 @@ void RichTextBox::UpdateScroll(bool arrival)
 			float render_height = this->Height - (TextMargin * 2.0f);
 			float caretTopContent = (cy - this->TextMargin) + this->OffsetY;
 			float caretBottomContent = caretTopContent + ch;
-						if (arrival && this->SelectionEnd >= (int)this->buffer.size())
+			if (arrival && this->SelectionEnd >= (int)this->buffer.size())
 			{
 				const float maxScroll = std::max(0.0f, this->textSize.height - render_height);
 				this->OffsetY = maxScroll;
@@ -530,7 +530,7 @@ void RichTextBox::UpdateScroll(bool arrival)
 	if (selected.size() > 0)
 	{
 		auto lastSelect = selected[0];
-				if (arrival && this->SelectionEnd >= (int)this->buffer.size())
+		if (arrival && this->SelectionEnd >= (int)this->buffer.size())
 		{
 			const float maxScroll = std::max(0.0f, this->textSize.height - render_height);
 			OffsetY = maxScroll;
@@ -583,7 +583,7 @@ void RichTextBox::Update()
 	auto size = this->ActualSize();
 	auto absRect = this->AbsRect;
 	bool isSelected = this->ParentForm->Selected == this;
-		this->_caretRectCacheValid = false;
+	this->_caretRectCacheValid = false;
 
 	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
 	{
@@ -597,7 +597,7 @@ void RichTextBox::Update()
 			auto font = this->Font;
 			if (this->virtualMode)
 			{
-								float renderWidth = this->Width - (TextMargin * 2.0f);
+				float renderWidth = this->Width - (TextMargin * 2.0f);
 				float renderHeight = this->Height - (TextMargin * 2.0f);
 				if (this->layoutWidthHasScrollBar) renderWidth -= 8.0f;
 
@@ -605,11 +605,11 @@ void RichTextBox::Update()
 				int sele = std::max(SelectionStart, SelectionEnd);
 				int selLen = sele - sels;
 
-								float cx, cy, ch;
+				float cx, cy, ch;
 				if (isSelected && selLen == 0 && GetCaretMetrics(this->SelectionEnd, cx, cy, ch))
 				{
 					selectedPos = { (int)(cx), (int)(cy) };
-										{
+					{
 						const float ax = (float)abslocation.x + cx;
 						const float ay = (float)abslocation.y + cy;
 						const float ah = (ch > 0.0f) ? ch : font->FontHeight;
@@ -622,10 +622,10 @@ void RichTextBox::Update()
 						Colors::Black);
 				}
 
-								float viewTop = this->OffsetY;
+				float viewTop = this->OffsetY;
 				float viewBottom = this->OffsetY + renderHeight;
 
-								int first = 0;
+				int first = 0;
 				for (int i = 0; i < (int)this->blockTops.size(); i++)
 				{
 					if (this->blockTops[i] + this->blocks[i].height >= viewTop)
@@ -645,7 +645,7 @@ void RichTextBox::Update()
 					float drawY = ((float)abslocation.y + TextMargin) + (top - this->OffsetY);
 					float drawX = (float)abslocation.x + TextMargin;
 
-										if (isSelected && selLen != 0)
+					if (isSelected && selLen != 0)
 					{
 						int blockStart = (int)this->blocks[i].start;
 						int blockEnd = (int)(this->blocks[i].start + this->blocks[i].len);
@@ -731,7 +731,7 @@ void RichTextBox::Update()
 		{
 			if (isSelected)
 			{
-								const float ax = (float)TextMargin + (float)abslocation.x;
+				const float ax = (float)TextMargin + (float)abslocation.x;
 				const float ay = (float)abslocation.y;
 				const float ah = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
 				this->_caretRectCache = { ax - 2.0f, ay - 2.0f, ax + 2.0f, ay + ah + 2.0f };
@@ -1113,13 +1113,13 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		{
 			const wchar_t c[] = { ch,L'\0' };
 			this->InputText(c);
-						UpdateScroll(this->SelectionEnd >= (int)this->buffer.size());
+			UpdateScroll(this->SelectionEnd >= (int)this->buffer.size());
 		}
 		else if (ch == 13 && this->AllowMultiLine)
 		{
 			const wchar_t c[] = { L'\n',L'\0' };
 			this->InputText(c);
-						UpdateScroll(true);
+			UpdateScroll(true);
 		}
 		else if (ch == 1)
 		{

@@ -397,25 +397,122 @@ void DesignerCanvas::ApplyMoveDeltaToSelection(int dx, int dy)
 			newRect = ClampRectToBounds(newRect, bounds, true);
 		}
 
-		Control* parent = it.Parent ? it.Parent : (_clientSurface ? (Control*)_clientSurface : (Control*)_designSurface);
-		POINT newLocal = CanvasToContainerPoint({ newRect.left, newRect.top }, parent);
-		if (it.UsesRelativeMargin)
+		ApplyRectToControl(it.ControlInstance, newRect);
+	}
+}
+
+Thickness DesignerCanvas::GetPaddingOfContainer(Control* container)
+{
+	if (!container) return Thickness();
+	if (auto* p = dynamic_cast<Panel*>(container))
+		return p->Padding;
+	return Thickness();
+}
+
+void DesignerCanvas::ApplyAnchorStylesKeepingBounds(Control* c, uint8_t newAnchorStyles)
+{
+	if (!c) return;
+	// 以“当前视觉矩形”为准，切换 Anchor 后通过 Margin/Location 换算保持不变
+	RECT r = GetControlRectInCanvas(c);
+	c->AnchorStyles = newAnchorStyles;
+	ApplyRectToControl(c, r);
+}
+
+void DesignerCanvas::ApplyRectToControl(Control* c, const RECT& rectInCanvas)
+{
+	if (!c) return;
+	Control* parent = c->Parent ? c->Parent : (_clientSurface ? (Control*)_clientSurface : (Control*)_designSurface);
+	if (!parent) return;
+
+	POINT newLocal = CanvasToContainerPoint({ rectInCanvas.left, rectInCanvas.top }, parent);
+	int newW = rectInCanvas.right - rectInCanvas.left;
+	int newH = rectInCanvas.bottom - rectInCanvas.top;
+	if (newW < 0) newW = 0;
+	if (newH < 0) newH = 0;
+
+	// RelativePanel：运行时主要用 Margin 表达定位
+	if (parent->Type() == UIClass::UI_RelativePanel)
+	{
+		auto m = c->Margin;
+		m.Left = (float)newLocal.x;
+		m.Top = (float)newLocal.y;
+		c->Margin = m;
+		c->Location = { 0,0 };
+		c->Size = { newW, newH };
+		if (auto* p = dynamic_cast<Panel*>(parent))
 		{
-			auto m = it.StartMargin;
-			m.Left = (float)newLocal.x;
-			m.Top = (float)newLocal.y;
-			it.ControlInstance->Margin = m;
-			it.ControlInstance->Location = { 0,0 };
-			if (auto* p = dynamic_cast<Panel*>(parent))
-			{
-				p->InvalidateLayout();
-				p->PerformLayout();
-			}
+			p->InvalidateLayout();
+			p->PerformLayout();
 		}
+		return;
+	}
+
+	// 其他容器：沿用运行时默认 Anchor+Margin 规则。
+	// 设计器这里需要在 Right/Bottom 锚定时同步换算 Margin.Right/Bottom，避免运行时贴边/拉伸异常。
+	Thickness pad = GetPaddingOfContainer(parent);
+	SIZE ps = parent->Size;
+	const int innerRight = (int)ps.cx - (int)pad.Right;
+	const int innerBottom = (int)ps.cy - (int)pad.Bottom;
+	const int x = newLocal.x;
+	const int y = newLocal.y;
+
+	int leftDist = x - (int)pad.Left;
+	int topDist = y - (int)pad.Top;
+	int rightDist = innerRight - (x + newW);
+	int bottomDist = innerBottom - (y + newH);
+	if (leftDist < 0) leftDist = 0;
+	if (topDist < 0) topDist = 0;
+	if (rightDist < 0) rightDist = 0;
+	if (bottomDist < 0) bottomDist = 0;
+
+	auto m = c->Margin;
+	uint8_t a = c->AnchorStyles;
+
+	// 水平：
+	if (a & AnchorStyles::Right)
+	{
+		m.Right = (float)rightDist;
+	}
+	if (a & AnchorStyles::Left)
+	{
+		// Left 锚定时：如果当前已经用 Margin.Left 表达，则保持这种语义；否则用 Location 表达
+		if (m.Left != 0.0f)
+			m.Left = (float)leftDist;
 		else
-		{
-			it.ControlInstance->Location = newLocal;
-		}
+			c->Location = { leftDist, c->Location.y };
+	}
+	else
+	{
+		// 没有 Left：运行时会用 loc.x + margin.Left
+		c->Location = { (int)std::lround((double)leftDist - (double)m.Left), c->Location.y };
+	}
+
+	// 垂直：
+	if (a & AnchorStyles::Bottom)
+	{
+		m.Bottom = (float)bottomDist;
+	}
+	if (a & AnchorStyles::Top)
+	{
+		if (m.Top != 0.0f)
+			m.Top = (float)topDist;
+		else
+			c->Location = { c->Location.x, topDist };
+	}
+	else
+	{
+		c->Location = { c->Location.x, (int)std::lround((double)topDist - (double)m.Top) };
+	}
+
+	// 尺寸：在 Left+Right / Top+Bottom 同时锚定时，运行时会由 margin 推导出 size。
+	// 这里仍然写回 Size，主要用于保存/显示；实际布局以运行时计算为准。
+	c->Size = { newW, newH };
+	c->Margin = m;
+
+	if (auto* p = dynamic_cast<Panel*>(parent))
+	{
+		p->InvalidateLayout();
+		p->PerformLayout();
 	}
 }
 
@@ -1608,11 +1705,7 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			auto bounds = GetClientSurfaceRectInCanvas();
 			newRect = ClampRectToBounds(newRect, bounds, false);
 
-			auto* moving = _selectedControl->ControlInstance;
-			Control* parent = moving->Parent ? moving->Parent : (_clientSurface ? (Control*)_clientSurface : (Control*)_designSurface);
-			POINT newLocal = CanvasToContainerPoint({ newRect.left, newRect.top }, parent);
-			moving->Location = newLocal;
-			moving->Size = { newRect.right - newRect.left, newRect.bottom - newRect.top };
+			ApplyRectToControl(_selectedControl->ControlInstance, newRect);
 			NotifySelectionChangedThrottled();
 			
 			this->Cursor = GetResizeCursor(_resizeHandle);

@@ -22,7 +22,7 @@ void RoundTextBox::Update()
 	auto size = ActualSize();
 	auto absRect = AbsRect;
 	bool isSelected = ParentForm->Selected == this;
-		this->_caretRectCacheValid = false;
+	this->_caretRectCacheValid = false;
 
 	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
 	{
@@ -43,7 +43,7 @@ void RoundTextBox::Update()
 				{
 					d2d->FillRect(sr.left + abslocation.x + TextMargin - OffsetX, (sr.top + abslocation.y) + OffsetY, sr.width, sr.height, this->SelectedBackColor);
 				}
-								if (selLen == 0 && !selRange.empty())
+				if (selLen == 0 && !selRange.empty())
 				{
 					const auto caret = selRange[0];
 					const float cx = caret.left + (float)abslocation.x + TextMargin - OffsetX;
@@ -52,7 +52,7 @@ void RoundTextBox::Update()
 					this->_caretRectCache = { cx - 2.0f, cy - 2.0f, cx + 2.0f, cy + ch + 2.0f };
 					this->_caretRectCacheValid = true;
 				}
-				if (selLen == 0 && !selRange.empty() && (GetTickCount64() / 200) % 2 == 0)
+				if (selLen == 0 && !selRange.empty())
 					d2d->DrawLine({ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y) + OffsetY },
 						{ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y + selRange[0].height) + OffsetY }, Colors::Black);
 				auto lot = Factory::CreateStringLayout(this->Text, FLT_MAX, render_height, font->FontObject);
@@ -76,12 +76,11 @@ void RoundTextBox::Update()
 		}
 		else if (isSelected)
 		{
-						const float cx = (float)TextMargin + (float)abslocation.x - OffsetX;
+			const float cx = (float)TextMargin + (float)abslocation.x - OffsetX;
 			const float cy = (float)abslocation.y + OffsetY;
 			const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
 			this->_caretRectCache = { cx - 2.0f, cy - 2.0f, cx + 2.0f, cy + ch + 2.0f };
 			this->_caretRectCacheValid = true;
-			if ((GetTickCount64() / 100) % 2 == 0)
 			d2d->DrawLine({ (float)TextMargin + (float)abslocation.x - OffsetX, (float)abslocation.y + OffsetY },
 				{ (float)TextMargin + (float)abslocation.x - OffsetX, (float)abslocation.y + OffsetY + 16.0f }, Colors::Black);
 		}

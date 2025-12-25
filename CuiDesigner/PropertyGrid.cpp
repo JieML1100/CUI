@@ -18,11 +18,47 @@
 #include "../CUI/GUI/ToolBar.h"
 #include "../CUI/GUI/Layout/StackPanel.h"
 #include "../CUI/GUI/Layout/WrapPanel.h"
+#include <commdlg.h>
 #include <sstream>
 #include <iomanip>
+#include <algorithm>
+#include <cmath>
+
+#pragma comment(lib, "Comdlg32.lib")
 
 namespace
 {
+	static COLORREF ColorFToCOLORREF(const D2D1_COLOR_F& c)
+	{
+		int r = (int)std::lround(std::clamp(c.r, 0.0f, 1.0f) * 255.0f);
+		int g = (int)std::lround(std::clamp(c.g, 0.0f, 1.0f) * 255.0f);
+		int b = (int)std::lround(std::clamp(c.b, 0.0f, 1.0f) * 255.0f);
+		return RGB(r, g, b);
+	}
+
+	static D2D1_COLOR_F COLORREFToColorF(COLORREF cr, float a01)
+	{
+		float r = GetRValue(cr) / 255.0f;
+		float g = GetGValue(cr) / 255.0f;
+		float b = GetBValue(cr) / 255.0f;
+		return D2D1::ColorF(r, g, b, std::clamp(a01, 0.0f, 1.0f));
+	}
+
+	static bool PickColorWithDialog(HWND owner, const D2D1_COLOR_F& initial, D2D1_COLOR_F& out)
+	{
+		CHOOSECOLORW cc{};
+		static COLORREF custom[16]{};
+		cc.lStructSize = sizeof(cc);
+		cc.hwndOwner = owner;
+		cc.rgbResult = ColorFToCOLORREF(initial);
+		cc.lpCustColors = custom;
+		cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+		if (!ChooseColorW(&cc))
+			return false;
+		out = COLORREFToColorF(cc.rgbResult, initial.a);
+		return true;
+	}
+
 	static std::wstring TrimWs(const std::wstring& s)
 	{
 		size_t b = 0;
@@ -293,6 +329,137 @@ void PropertyGrid::CreatePropertyItem(std::wstring propertyName, std::wstring va
 
 	auto item = new PropertyItem(propertyName, nameLabel, valueTextBox);
 	_items.push_back(item);
+
+	yOffset += 25;
+}
+
+void PropertyGrid::CreateColorPropertyItem(std::wstring propertyName, const D2D1_COLOR_F& value, int& yOffset)
+{
+	int width = this->Width;
+
+	auto nameLabel = new Label(propertyName, 10, yOffset);
+	nameLabel->Size = { (width - 30) / 2, 20 };
+	nameLabel->Font = new ::Font(L"Microsoft YaHei", 12.0f);
+	this->AddControl(nameLabel);
+	nameLabel->ParentForm = this->ParentForm;
+
+	int valueX = (width - 30) / 2 + 15;
+	int valueW = (width - 30) / 2;
+
+	// 容器：颜色预览 + 文本 + 选择按钮
+	auto panel = new Panel(valueX, yOffset, valueW, 20);
+	panel->BackColor = D2D1::ColorF(0, 0);
+	panel->Boder = 0.0f;
+	panel->ParentForm = this->ParentForm;
+
+	const int previewW = 18;
+	const int btnW = 26;
+	const int gap = 6;
+	int textW = valueW - previewW - btnW - gap * 2;
+	if (textW < 40) textW = 40;
+
+	auto preview = new Panel(0, 1, previewW, 18);
+	preview->BackColor = value;
+	preview->Boder = 1.0f;
+	preview->BolderColor = Colors::DimGrey;
+	preview->ParentForm = this->ParentForm;
+
+	auto tb = new TextBox(L"", previewW + gap, 0, textW, 20);
+	tb->Text = ColorToText(value);
+	tb->ParentForm = this->ParentForm;
+	tb->OnTextChanged += [this, propertyName, preview](Control*, std::wstring, std::wstring newText) {
+		UpdatePropertyFromTextBox(propertyName, newText);
+		D2D1_COLOR_F c{};
+		if (TryParseColor(newText, c))
+		{
+			preview->BackColor = c;
+			preview->PostRender();
+		}
+	};
+
+	auto btn = new Button(L"...", previewW + gap + textW + gap, -1, btnW, 22);
+	btn->ParentForm = this->ParentForm;
+	btn->OnMouseClick += [this, propertyName, tb, preview](Control*, MouseEventArgs) {
+		if (!this->ParentForm) return;
+		D2D1_COLOR_F cur{};
+		if (!TryParseColor(tb->Text, cur)) cur = D2D1::ColorF(0, 0, 0, 1);
+		D2D1_COLOR_F picked{};
+		if (PickColorWithDialog(this->ParentForm->Handle, cur, picked))
+		{
+			preview->BackColor = picked;
+			tb->Text = ColorToText(picked);
+			UpdatePropertyFromTextBox(propertyName, tb->Text);
+		}
+	};
+
+	panel->AddControl(preview);
+	panel->AddControl(tb);
+	panel->AddControl(btn);
+	this->AddControl(panel);
+
+	_items.push_back(new PropertyItem(propertyName, nameLabel, (Control*)panel));
+
+	yOffset += 25;
+}
+
+void PropertyGrid::CreateThicknessPropertyItem(std::wstring propertyName, const Thickness& value, int& yOffset)
+{
+	int width = this->Width;
+
+	auto nameLabel = new Label(propertyName, 10, yOffset);
+	nameLabel->Size = { (width - 30) / 2, 20 };
+	nameLabel->Font = new ::Font(L"Microsoft YaHei", 12.0f);
+	this->AddControl(nameLabel);
+	nameLabel->ParentForm = this->ParentForm;
+
+	int valueX = (width - 30) / 2 + 15;
+	int valueW = (width - 30) / 2;
+
+	auto panel = new Panel(valueX, yOffset, valueW, 20);
+	panel->BackColor = D2D1::ColorF(0, 0);
+	panel->Boder = 0.0f;
+	panel->ParentForm = this->ParentForm;
+
+	int gap = 4;
+	int boxW = (valueW - gap * 3) / 4;
+	if (boxW < 26) boxW = 26;
+
+	auto makeBox = [&](int x, float v) {
+		auto t = new TextBox(L"", x, 0, boxW, 20);
+		t->ParentForm = this->ParentForm;
+		std::wostringstream oss;
+		oss.setf(std::ios::fixed);
+		oss << std::setprecision(2) << v;
+		t->Text = oss.str();
+		return t;
+	};
+
+	auto tbL = makeBox(0, value.Left);
+	auto tbT = makeBox(boxW + gap, value.Top);
+	auto tbR = makeBox((boxW + gap) * 2, value.Right);
+	auto tbB = makeBox((boxW + gap) * 3, value.Bottom);
+
+	auto apply = [this, propertyName, tbL, tbT, tbR, tbB](Control*, std::wstring, std::wstring) {
+		Thickness t{};
+		try { t.Left = std::stof(tbL->Text); } catch (...) { return; }
+		try { t.Top = std::stof(tbT->Text); } catch (...) { return; }
+		try { t.Right = std::stof(tbR->Text); } catch (...) { return; }
+		try { t.Bottom = std::stof(tbB->Text); } catch (...) { return; }
+		UpdatePropertyFromTextBox(propertyName, ThicknessToText(t));
+	};
+
+	tbL->OnTextChanged += apply;
+	tbT->OnTextChanged += apply;
+	tbR->OnTextChanged += apply;
+	tbB->OnTextChanged += apply;
+
+	panel->AddControl(tbL);
+	panel->AddControl(tbT);
+	panel->AddControl(tbR);
+	panel->AddControl(tbB);
+	this->AddControl(panel);
+
+	_items.push_back(new PropertyItem(propertyName, nameLabel, (Control*)panel));
 
 	yOffset += 25;
 }
@@ -747,7 +914,14 @@ void PropertyGrid::UpdateAnchorFromChecks(bool left, bool top, bool right, bool 
 	if (top) a |= AnchorStyles::Top;
 	if (right) a |= AnchorStyles::Right;
 	if (bottom) a |= AnchorStyles::Bottom;
-	ctrl->AnchorStyles = a;
+	if (_canvas)
+	{
+		_canvas->ApplyAnchorStylesKeepingBounds(ctrl, a);
+	}
+	else
+	{
+		ctrl->AnchorStyles = a;
+	}
 
 	if (auto* p = dynamic_cast<Panel*>(ctrl->Parent))
 	{
@@ -839,11 +1013,11 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 	CreateBoolPropertyItem(L"Visible", ctrl->Visible, yOffset);
 
 	// 常用外观/布局
-	CreatePropertyItem(L"BackColor", ColorToText(ctrl->BackColor), yOffset);
-	CreatePropertyItem(L"ForeColor", ColorToText(ctrl->ForeColor), yOffset);
-	CreatePropertyItem(L"BolderColor", ColorToText(ctrl->BolderColor), yOffset);
-	CreatePropertyItem(L"Margin", ThicknessToText(ctrl->Margin), yOffset);
-	CreatePropertyItem(L"Padding", ThicknessToText(ctrl->Padding), yOffset);
+	CreateColorPropertyItem(L"BackColor", ctrl->BackColor, yOffset);
+	CreateColorPropertyItem(L"ForeColor", ctrl->ForeColor, yOffset);
+	CreateColorPropertyItem(L"BolderColor", ctrl->BolderColor, yOffset);
+	CreateThicknessPropertyItem(L"Margin", ctrl->Margin, yOffset);
+	CreateThicknessPropertyItem(L"Padding", ctrl->Padding, yOffset);
 	CreateAnchorPropertyItem(L"Anchor", ctrl->AnchorStyles, yOffset);
 	CreateEnumPropertyItem(L"HAlign", HAlignToText(ctrl->HAlign), { L"Left", L"Center", L"Right", L"Stretch" }, yOffset);
 	CreateEnumPropertyItem(L"VAlign", VAlignToText(ctrl->VAlign), { L"Top", L"Center", L"Bottom", L"Stretch" }, yOffset);

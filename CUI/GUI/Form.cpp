@@ -1254,7 +1254,8 @@ void Form::ShowDialog(HWND parent)
 }
 void Form::Close()
 {
-	SendMessageA(this->Handle, WM_CLOSE, 0, 0);
+	if (!this->Handle) return;
+	PostMessageW(this->Handle, WM_CLOSE, 0, 0);
 }
 bool Form::DoEvent()
 {

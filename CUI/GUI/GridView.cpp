@@ -712,13 +712,10 @@ void GridView::Update()
 											}
 											else
 											{
-												if (!selRange.empty() && (GetTickCount64() / 200) % 2 == 0)
-												{
-													d2d->DrawLine(
-														{ selRange[0].left + abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + abslocation.y + yf) - offsetY },
-														{ selRange[0].left + abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + abslocation.y + yf + selRange[0].height) + offsetY },
-														Colors::Black);
-												}
+												d2d->DrawLine(
+													{ selRange[0].left + abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + abslocation.y + yf) - offsetY },
+													{ selRange[0].left + abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + abslocation.y + yf + selRange[0].height) + offsetY },
+													Colors::Black);
 											}
 
 											auto lot = Factory::CreateStringLayout(this->EditingText, FLT_MAX, renderHeight, font->FontObject);

@@ -44,6 +44,8 @@ private:
 	Label* _titleLabel;
 	
 	void CreatePropertyItem(std::wstring propertyName, std::wstring value, int& yOffset);
+	void CreateColorPropertyItem(std::wstring propertyName, const D2D1_COLOR_F& value, int& yOffset);
+	void CreateThicknessPropertyItem(std::wstring propertyName, const Thickness& value, int& yOffset);
 	void CreateBoolPropertyItem(std::wstring propertyName, bool value, int& yOffset);
 	void CreateAnchorPropertyItem(std::wstring propertyName, uint8_t anchorStyles, int& yOffset);
 	void CreateEnumPropertyItem(std::wstring propertyName, const std::wstring& value,

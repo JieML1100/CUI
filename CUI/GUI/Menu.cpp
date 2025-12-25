@@ -232,39 +232,39 @@ void Menu::Update()
 			if (top)
 			{
 				auto calcPanelWidth = [&](const std::vector<MenuItem*>& items, float maxW) -> float
-				{
-					float w = 120.0f;
-					for (auto* it : items)
 					{
-						if (!it) continue;
-						if (it->Separator) continue;
-						auto ts = font->GetTextSize(it->Text);
-						float tw = ts.width + 24.0f;
-						if (!it->Shortcut.empty())
+						float w = 120.0f;
+						for (auto* it : items)
 						{
-							auto ss = font->GetTextSize(it->Shortcut);
-							tw += ss.width + 20.0f;
+							if (!it) continue;
+							if (it->Separator) continue;
+							auto ts = font->GetTextSize(it->Text);
+							float tw = ts.width + 24.0f;
+							if (!it->Shortcut.empty())
+							{
+								auto ss = font->GetTextSize(it->Shortcut);
+								tw += ss.width + 20.0f;
+							}
+							// 预留子菜单指示符空间
+							if (!it->SubItems.empty())
+								tw += 18.0f;
+							if (tw > w) w = tw;
 						}
-						// 预留子菜单指示符空间
-						if (!it->SubItems.empty())
-							tw += 18.0f;
-						if (tw > w) w = tw;
-					}
-					if (w < 80.0f) w = 80.0f;
-					if (maxW > 0.0f && w > maxW) w = maxW;
-					return w;
-				};
+						if (w < 80.0f) w = 80.0f;
+						if (maxW > 0.0f && w > maxW) w = maxW;
+						return w;
+					};
 
 				auto clampPanelXY = [&](float& x, float& y, float w, float h)
-				{
-					if (!this->ParentForm) return;
-					float maxX = (float)this->ParentForm->ClientSize.cx;
-					float maxY = (float)this->ParentForm->ClientSize.cy;
-					if (x < 0.0f) x = 0.0f;
-					if (y < 0.0f) y = 0.0f;
-					if (x + w > maxX) x = std::max(0.0f, maxX - w);
-					if (y + h > maxY) y = std::max(0.0f, maxY - h);
-				};
+					{
+						if (!this->ParentForm) return;
+						float maxX = (float)this->ParentForm->ClientSize.cx;
+						float maxY = (float)this->ParentForm->ClientSize.cy;
+						if (x < 0.0f) x = 0.0f;
+						if (y < 0.0f) y = 0.0f;
+						if (x + w > maxX) x = std::max(0.0f, maxX - w);
+						if (y + h > maxY) y = std::max(0.0f, maxY - h);
+					};
 
 				// build panels based on open path
 				std::vector<MenuPanel> panels;
@@ -440,38 +440,38 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		if (top)
 		{
 			auto calcPanelWidth = [&](const std::vector<MenuItem*>& items) -> float
-			{
-				float w = 120.0f;
-				auto font = this->Font;
-				for (auto* it : items)
 				{
-					if (!it) continue;
-					if (it->Separator) continue;
-					auto ts = font->GetTextSize(it->Text);
-					float tw = ts.width + 24.0f;
-					if (!it->Shortcut.empty())
+					float w = 120.0f;
+					auto font = this->Font;
+					for (auto* it : items)
 					{
-						auto ss = font->GetTextSize(it->Shortcut);
-						tw += ss.width + 20.0f;
+						if (!it) continue;
+						if (it->Separator) continue;
+						auto ts = font->GetTextSize(it->Text);
+						float tw = ts.width + 24.0f;
+						if (!it->Shortcut.empty())
+						{
+							auto ss = font->GetTextSize(it->Shortcut);
+							tw += ss.width + 20.0f;
+						}
+						if (!it->SubItems.empty())
+							tw += 18.0f;
+						if (tw > w) w = tw;
 					}
-					if (!it->SubItems.empty())
-						tw += 18.0f;
-					if (tw > w) w = tw;
-				}
-				if (w < 80.0f) w = 80.0f;
-				return w;
-			};
+					if (w < 80.0f) w = 80.0f;
+					return w;
+				};
 
 			auto clampPanelXY = [&](float& x, float& y, float w, float h)
-			{
-				if (!this->ParentForm) return;
-				float maxX = (float)this->ParentForm->ClientSize.cx;
-				float maxY = (float)this->ParentForm->ClientSize.cy;
-				if (x < 0.0f) x = 0.0f;
-				if (y < 0.0f) y = 0.0f;
-				if (x + w > maxX) x = std::max(0.0f, maxX - w);
-				if (y + h > maxY) y = std::max(0.0f, maxY - h);
-			};
+				{
+					if (!this->ParentForm) return;
+					float maxX = (float)this->ParentForm->ClientSize.cx;
+					float maxY = (float)this->ParentForm->ClientSize.cy;
+					if (x < 0.0f) x = 0.0f;
+					if (y < 0.0f) y = 0.0f;
+					if (x + w > maxX) x = std::max(0.0f, maxX - w);
+					if (y + h > maxY) y = std::max(0.0f, maxY - h);
+				};
 
 			// build panels (local coords)
 			std::vector<MenuPanel> panels;
@@ -519,9 +519,9 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			}
 
 			auto pointInRect = [&](float x, float y, const MenuPanel& pn) -> bool
-			{
-				return (x >= pn.X && x <= pn.X + pn.W && y >= pn.Y && y <= pn.Y + pn.H);
-			};
+				{
+					return (x >= pn.X && x <= pn.X + pn.W && y >= pn.Y && y <= pn.Y + pn.H);
+				};
 
 			int hitLevel = -1;
 			for (int i = (int)panels.size() - 1; i >= 0; i--)
@@ -550,14 +550,14 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			}
 
 			auto ensureSize = [](std::vector<int>& v, size_t n)
-			{
-				if (v.size() < n) v.resize(n, -1);
-			};
+				{
+					if (v.size() < n) v.resize(n, -1);
+				};
 
 			auto itemHasSubMenu = [](MenuItem* it) -> bool
-			{
-				return it && !it->Separator && !it->SubItems.empty();
-			};
+				{
+					return it && !it->Separator && !it->SubItems.empty();
+				};
 
 			if (message == WM_MOUSEMOVE)
 			{
@@ -666,13 +666,13 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	// 展开时点击菜单栏/下拉之外：收起（配合 ActualSize 覆盖内容区）
 	else if (_expand && message == WM_LBUTTONUP)
 	{
-				_expand = false;
-				_expandIndex = -1;
-				_hoverPath.clear();
-				_openPath.clear();
-				// 收起时：强制立即全量重绘，清除 Overlay 残影
-				if (this->ParentForm) this->ParentForm->Invalidate(true);
-				else this->PostRender();
+		_expand = false;
+		_expandIndex = -1;
+		_hoverPath.clear();
+		_openPath.clear();
+		// 收起时：强制立即全量重绘，清除 Overlay 残影
+		if (this->ParentForm) this->ParentForm->Invalidate(true);
+		else this->PostRender();
 	}
 
 	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
