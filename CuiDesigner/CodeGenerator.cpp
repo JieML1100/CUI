@@ -751,22 +751,21 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 			code << indentStr << name << "->Root->Children.Clear();\n";
 
 			int nodeAutoId = 0;
-			auto emit = [&](auto&& self, List<TreeNode*>& nodes, const std::string& parentExpr, int depth) -> void
+			auto emit = [&](auto&& self, List<TreeNode*>& nodes, const std::string& parentExpr) -> void
 			{
 				for (auto* n : nodes)
 				{
 					if (!n) continue;
-					std::string ind(indent + depth, '\t');
 					std::string var = name + "_node" + std::to_string(++nodeAutoId);
-					code << ind << "auto* " << var << " = new TreeNode(L\"" << EscapeWStringLiteral(n->Text) << "\");\n";
+					code << indentStr << "auto* " << var << " = new TreeNode(L\"" << EscapeWStringLiteral(n->Text) << "\");\n";
 					if (n->Expand)
-						code << ind << var << "->Expand = true;\n";
-					code << ind << parentExpr << "->Children.push_back(" << var << ");\n";
+						code << indentStr << var << "->Expand = true;\n";
+					code << indentStr << parentExpr << "->Children.push_back(" << var << ");\n";
 					if (n->Children.Count > 0)
-						self(self, n->Children, var, depth + 1);
+						self(self, n->Children, var);
 				}
 			};
-			emit(emit, tv->Root->Children, name + "->Root", 0);
+			emit(emit, tv->Root->Children, name + "->Root");
 		}
 	}
 
@@ -849,45 +848,44 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 			code << indentStr << "// Menu items\n";
 			code << indentStr << "while (" << name << "->Count > 0)\n";
 			code << indentStr << "{\n";
-			code << indentStr << "\tauto* it = (MenuItem*)" << name << "->operator[](" << name << "->Count - 1);\n";
-			code << indentStr << "\t" << name << "->RemoveControl(it);\n";
-			code << indentStr << "\tdelete it;\n";
+			std::string innerIndentStr(indent + 1, '\t');
+			code << innerIndentStr << "auto* it = (MenuItem*)" << name << "->operator[](" << name << "->Count - 1);\n";
+			code << innerIndentStr << name << "->RemoveControl(it);\n";
+			code << innerIndentStr << "delete it;\n";
 			code << indentStr << "}\n";
 
 			int menuAutoId = 0;
-			auto emitItemProps = [&](MenuItem* it, const std::string& var, int depth)
+			auto emitItemProps = [&](MenuItem* it, const std::string& var)
 			{
-				std::string ind(indent + depth, '\t');
 				if (!it) return;
 				if (it->Id != 0)
-					code << ind << var << "->Id = " << it->Id << ";\n";
+					code << indentStr << var << "->Id = " << it->Id << ";\n";
 				if (!it->Enable)
-					code << ind << var << "->Enable = false;\n";
+					code << indentStr << var << "->Enable = false;\n";
 				if (!it->Shortcut.empty())
-					code << ind << var << "->Shortcut = L\"" << EscapeWStringLiteral(it->Shortcut) << "\";\n";
+					code << indentStr << var << "->Shortcut = L\"" << EscapeWStringLiteral(it->Shortcut) << "\";\n";
 				if (it->Separator)
-					code << ind << var << "->Separator = true;\n";
+					code << indentStr << var << "->Separator = true;\n";
 			};
 
-			std::function<void(MenuItem* parent, const std::string& parentVar, int depth)> emitSub;
-			emitSub = [&](MenuItem* parent, const std::string& parentVar, int depth)
+			std::function<void(MenuItem* parent, const std::string& parentVar)> emitSub;
+			emitSub = [&](MenuItem* parent, const std::string& parentVar)
 			{
 				if (!parent) return;
 				for (auto* sub : parent->SubItems)
 				{
-					std::string ind(indent + depth, '\t');
 					if (!sub) continue;
 					if (sub->Separator)
 					{
-						code << ind << parentVar << "->AddSeparator();\n";
+						code << indentStr << parentVar << "->AddSeparator();\n";
 						continue;
 					}
 					std::string var = name + "_item" + std::to_string(++menuAutoId);
-					code << ind << "auto* " << var << " = " << parentVar << "->AddSubItem(L\"" << EscapeWStringLiteral(sub->Text)
+					code << indentStr << "auto* " << var << " = " << parentVar << "->AddSubItem(L\"" << EscapeWStringLiteral(sub->Text)
 						<< "\", " << sub->Id << ");\n";
-					emitItemProps(sub, var, depth);
+					emitItemProps(sub, var);
 					if (!sub->SubItems.empty())
-						emitSub(sub, var, depth + 1);
+						emitSub(sub, var);
 				}
 			};
 
@@ -897,9 +895,9 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 				if (!top) continue;
 				std::string var = name + "_item" + std::to_string(++menuAutoId);
 				code << indentStr << "auto* " << var << " = " << name << "->AddItem(L\"" << EscapeWStringLiteral(top->Text) << "\");\n";
-				emitItemProps(top, var, 0);
+				emitItemProps(top, var);
 				if (!top->SubItems.empty())
-					emitSub(top, var, 1);
+					emitSub(top, var);
 			}
 		}
 	}
@@ -1293,18 +1291,18 @@ std::string CodeGenerator::GenerateCpp()
 				}
 				tabPageVarOf[page] = pageVar;
 				// 页是容器：继续往里加
-				emitChildren(page, pageVar, indent + 1);
+				emitChildren(page, pageVar, indent);
 			}
 		}
 		else if (dc->Type == UIClass::UI_ToolBar)
 		{
 			// ToolBar：其子控件必须用 AddToolButton
-			emitChildren(c, childVar, indent + 1);
+			emitChildren(c, childVar, indent);
 			cpp << indentStr << childVar << "->LayoutItems();\n";
 		}
 		else if (IsContainerType(dc->Type))
 		{
-			emitChildren(c, childVar, indent + 1);
+			emitChildren(c, childVar, indent);
 			// 对 Panel 类容器，生成后立即触发布局一次
 			if (dc->Type == UIClass::UI_Panel || IsLayoutContainerType(dc->Type) || dc->Type == UIClass::UI_TabPage)
 				cpp << indentStr << childVar << "->PerformLayout();\n";

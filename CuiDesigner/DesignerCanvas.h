@@ -51,6 +51,9 @@ private:
 	
 	// 拖拽状态
 	bool _isDragging = false;
+	bool _dragHasMoved = false;
+	bool _dragLiftedToRoot = false;
+	int _dragStartThreshold = 2; // 像素阈值：超过则视为真正拖拽（避免单击触发换容器/重排）
 	POINT _dragStartPoint = {0, 0};
 	RECT _dragStartRectInCanvas = { 0,0,0,0 };
 	DWORD _lastPropSyncTick = 0;
@@ -97,6 +100,8 @@ private:
 	void ToggleSelection(const std::shared_ptr<DesignerControl>& dc, bool fireEvent);
 	RECT GetSelectionBoundsInCanvas() const;
 	void BeginDragFromCurrentSelection(POINT mousePos);
+	bool IsLayoutContainer(Control* c) const;
+	void LiftSelectedToRootForDrag();
 	void ApplyMoveDeltaToSelection(int dx, int dy);
 	void NotifySelectionChangedThrottled();
 	void ClearAlignmentGuides();

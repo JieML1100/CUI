@@ -375,9 +375,63 @@ void DesignerCanvas::BeginDragFromCurrentSelection(POINT mousePos)
 		_dragStartItems.push_back(it);
 	}
 	_isDragging = !_dragStartItems.empty();
+	_dragHasMoved = false;
+	_dragLiftedToRoot = false;
 	_dragStartPoint = mousePos;
 	if (_selectedControl && _selectedControl->ControlInstance)
 		_dragStartRectInCanvas = GetControlRectInCanvas(_selectedControl->ControlInstance);
+}
+
+bool DesignerCanvas::IsLayoutContainer(Control* c) const
+{
+	if (!c) return false;
+	switch (c->Type())
+	{
+	case UIClass::UI_GridPanel:
+	case UIClass::UI_StackPanel:
+	case UIClass::UI_DockPanel:
+	case UIClass::UI_WrapPanel:
+	case UIClass::UI_RelativePanel:
+	case UIClass::UI_ToolBar:
+		return true;
+	default:
+		return false;
+	}
+}
+
+void DesignerCanvas::LiftSelectedToRootForDrag()
+{
+	if (_dragLiftedToRoot) return;
+	if (!_selectedControl || !_selectedControl->ControlInstance) return;
+	if (!_clientSurface) return;
+
+	auto* moving = _selectedControl->ControlInstance;
+	auto* parent = moving->Parent;
+	if (!parent) return;
+	if (parent == _clientSurface) return;
+	if (!IsLayoutContainer(parent)) return;
+
+	// 抬升前先拿到当前视觉矩形，保持“画面不跳”
+	RECT r = GetControlRectInCanvas(moving);
+	POINT newLocal = CanvasToContainerPoint({ r.left, r.top }, _clientSurface);
+	int w = r.right - r.left;
+	int h = r.bottom - r.top;
+	if (w < 0) w = 0;
+	if (h < 0) h = 0;
+
+	// 从布局容器移除，加入根客户区；这样拖动时不再受布局/裁剪限制
+	parent->RemoveControl(moving);
+	_clientSurface->AddControl(moving);
+	moving->Location = newLocal;
+	moving->Size = { w, h };
+	_selectedControl->DesignerParent = nullptr;
+	_dragLiftedToRoot = true;
+
+	if (auto* p = dynamic_cast<Panel*>(parent))
+	{
+		p->InvalidateLayout();
+		p->PerformLayout();
+	}
 }
 
 void DesignerCanvas::ApplyMoveDeltaToSelection(int dx, int dy)
@@ -1673,6 +1727,13 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		{
 			int rawDx = mousePos.x - _dragStartPoint.x;
 			int rawDy = mousePos.y - _dragStartPoint.y;
+			if (!_dragHasMoved && (std::abs(rawDx) >= _dragStartThreshold || std::abs(rawDy) >= _dragStartThreshold))
+			{
+				_dragHasMoved = true;
+				// 若原先在布局容器内，先抬升到根设计面，才能拖出容器边界
+				if (_selectedControls.size() == 1)
+					LiftSelectedToRootForDrag();
+			}
 			Control* refParent = (_selectedControl && _selectedControl->ControlInstance) ? _selectedControl->ControlInstance->Parent : (_clientSurface ? (Control*)_clientSurface : (Control*)_designSurface);
 			RECT desired = _dragStartRectInCanvas;
 			desired.left += rawDx; desired.right += rawDx;
@@ -1812,11 +1873,13 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		}
 
 		// 拖拽结束：单选时尝试放入容器
-		if (_isDragging && _selectedControls.size() == 1)
+		if (_isDragging && _selectedControls.size() == 1 && (_dragHasMoved || _dragLiftedToRoot))
 		{
 			TryReparentSelectedAfterDrag();
 		}
 		_isDragging = false;
+		_dragHasMoved = false;
+		_dragLiftedToRoot = false;
 		_dragStartItems.clear();
 		_isResizing = false;
 		_resizeHandle = DesignerControl::ResizeHandle::None;
