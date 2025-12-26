@@ -1863,12 +1863,13 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	break;
 	case WM_SIZE:
 	{
+		RECT rec;
 		UINT width = LOWORD(lParam);
 		UINT height = HIWORD(lParam);
-		RECT rec;
 		GetClientRect(this->Handle, &rec);
 		this->Render->ReSize(width, height);
 		if (this->OverlayRender) this->OverlayRender->ReSize(width, height);
+		this->InvalidateLayout();
 		this->CommitComposition();
 		this->_hasRenderedOnce = false;
 		this->OnSizeChanged(this);
@@ -2108,7 +2109,12 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 			BeginPaint(hWnd, &ps);
 			if (form->Render)
 			{
-				// 检查是否有可见的 WebBrowser 控件
+				if (!::IsWindowEnabled(hWnd))
+				{
+					EndPaint(hWnd, &ps);
+					return 0;
+				}
+
 				bool hasVisibleWebBrowser = false;
 				std::function<void(Control*)> checkWebBrowser;
 				checkWebBrowser = [&](Control* c) {
@@ -2129,8 +2135,6 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 				if (!hasVisibleWebBrowser && form->ForegroundControl)
 					checkWebBrowser(form->ForegroundControl);
 				
-				// 如果有 WebBrowser 或 ControlChanged，则更新。
-				// 否则（无变化时）只需验证区域（BeginPaint/EndPaint 已完成验证），不应强制渲染。
 				if (hasVisibleWebBrowser || form->ControlChanged || !form->_hasRenderedOnce)
 					form->UpdateDirtyRect(ps.rcPaint, true);
 			}

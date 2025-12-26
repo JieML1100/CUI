@@ -1,5 +1,6 @@
 #include "MenuItemsEditorDialog.h"
 #include <algorithm>
+#include <sstream>
 
 std::wstring MenuItemsEditorDialog::Trim(const std::wstring& s)
 {
@@ -8,6 +9,68 @@ std::wstring MenuItemsEditorDialog::Trim(const std::wstring& s)
 	size_t end = s.size();
 	while (end > start && iswspace(s[end - 1])) end--;
 	return s.substr(start, end - start);
+}
+
+std::vector<std::wstring> MenuItemsEditorDialog::SplitLines(const std::wstring& text)
+{
+	std::vector<std::wstring> lines;
+	std::wstring current;
+	for (size_t i = 0; i < text.size(); i++)
+	{
+		wchar_t c = text[i];
+		if (c == L'\r')
+		{
+			if (i + 1 < text.size() && text[i + 1] == L'\n') i++;
+			lines.push_back(current);
+			current.clear();
+			continue;
+		}
+		if (c == L'\n')
+		{
+			lines.push_back(current);
+			current.clear();
+			continue;
+		}
+		current.push_back(c);
+	}
+	lines.push_back(current);
+	return lines;
+}
+
+int MenuItemsEditorDialog::CountIndentTabs(const std::wstring& s)
+{
+	// 兼容：允许使用 tab 或空格缩进（4 个空格视为 1 级）。
+	int depth = 0;
+	int spaceRun = 0;
+	for (size_t i = 0; i < s.size(); i++)
+	{
+		wchar_t c = s[i];
+		if (c == L'\t')
+		{
+			depth++;
+			spaceRun = 0;
+			continue;
+		}
+		if (c == L' ')
+		{
+			spaceRun++;
+			if (spaceRun >= 4)
+			{
+				depth++;
+				spaceRun = 0;
+			}
+			continue;
+		}
+		break;
+	}
+	return depth;
+}
+
+std::wstring MenuItemsEditorDialog::StripIndentTabs(const std::wstring& s)
+{
+	size_t i = 0;
+	while (i < s.size() && (s[i] == L'\t' || s[i] == L' ')) i++;
+	return s.substr(i);
 }
 
 bool MenuItemsEditorDialog::ParseBool(const std::wstring& s, bool def)
@@ -29,241 +92,210 @@ int MenuItemsEditorDialog::ParseInt(const std::wstring& s, int def)
 	catch (...) { return def; }
 }
 
+std::vector<std::wstring> MenuItemsEditorDialog::SplitByPipe(const std::wstring& s)
+{
+	std::vector<std::wstring> parts;
+	std::wstring cur;
+	for (auto c : s)
+	{
+		if (c == L'|')
+		{
+			parts.push_back(cur);
+			cur.clear();
+			continue;
+		}
+		cur.push_back(c);
+	}
+	parts.push_back(cur);
+	return parts;
+}
+
+MenuItemsEditorDialog::ItemModel MenuItemsEditorDialog::FromMenuItem(MenuItem* it)
+{
+	ItemModel m;
+	if (!it) return m;
+	m.Text = it->Text;
+	m.Id = it->Id;
+	m.Shortcut = it->Shortcut;
+	m.Separator = it->Separator;
+	m.Enable = it->Enable;
+	m.SubItems.reserve(it->SubItems.size());
+	for (auto* si : it->SubItems)
+	{
+		if (!si) continue;
+		m.SubItems.push_back(FromMenuItem(si));
+	}
+	return m;
+}
+
 void MenuItemsEditorDialog::LoadModelFromTarget()
 {
 	_tops.clear();
-	_currentTopIndex = -1;
 	if (!_target) return;
 
 	for (int i = 0; i < _target->Count; i++)
 	{
 		auto* top = dynamic_cast<MenuItem*>(_target->operator[](i));
 		if (!top) continue;
-		ItemModel m;
-		m.Text = top->Text;
-		m.Id = top->Id;
-		m.Shortcut = top->Shortcut;
-		m.Separator = top->Separator;
-		m.Enable = top->Enable;
-		m.SubItems.reserve(top->SubItems.size());
-		for (auto* si : top->SubItems)
+		_tops.push_back(FromMenuItem(top));
+	}
+}
+
+void MenuItemsEditorDialog::SerializeItems(std::wstringstream& ss, const std::vector<ItemModel>& items, int depth)
+{
+	for (auto& it : items)
+	{
+		for (int i = 0; i < depth; i++) ss << L"\t";
+		if (it.Separator)
 		{
-			if (!si) continue;
-			ItemModel sm;
-			sm.Text = si->Text;
-			sm.Id = si->Id;
-			sm.Shortcut = si->Shortcut;
-			sm.Separator = si->Separator;
-			sm.Enable = si->Enable;
-			m.SubItems.push_back(std::move(sm));
+			ss << L"----\r\n";
+			continue;
 		}
-		_tops.push_back(std::move(m));
+
+		auto text = Trim(it.Text);
+		if (text.empty()) continue;
+		ss << text;
+
+		bool needExtras = (it.Id != 0) || !it.Shortcut.empty() || !it.Enable;
+		if (needExtras)
+		{
+			ss << L" | " << it.Id << L" | " << it.Shortcut << L" | " << (it.Enable ? L"true" : L"false");
+		}
+		ss << L"\r\n";
+
+		if (!it.SubItems.empty())
+			SerializeItems(ss, it.SubItems, depth + 1);
 	}
 }
 
-void MenuItemsEditorDialog::RefreshTopGrid()
+std::wstring MenuItemsEditorDialog::ModelToText(const std::vector<ItemModel>& tops)
 {
-	if (!_topGrid) return;
-	_topGrid->Rows.Clear();
-	for (auto& t : _tops)
-	{
-		GridViewRow r;
-		r.Cells.Add(CellValue(t.Text));
-		_topGrid->Rows.Add(r);
-	}
-	if (_tops.empty())
-	{
-		_topGrid->SelectedRowIndex = -1;
-		_topGrid->SelectedColumnIndex = -1;
-		_currentTopIndex = -1;
-		if (_subGrid) _subGrid->Rows.Clear();
-	}
-	else
-	{
-		int idx = _currentTopIndex;
-		if (idx < 0) idx = 0;
-		if (idx >= (int)_tops.size()) idx = (int)_tops.size() - 1;
-		_topGrid->SelectedRowIndex = idx;
-		_topGrid->SelectedColumnIndex = 0;
-		_currentTopIndex = idx;
-		LoadSubGridFromModel(idx);
-	}
-	SyncButtons();
+	std::wstringstream ss;
+	SerializeItems(ss, tops, 0);
+	return ss.str();
 }
 
-void MenuItemsEditorDialog::LoadSubGridFromModel(int topIndex)
+std::vector<MenuItemsEditorDialog::ItemModel> MenuItemsEditorDialog::TextToModel(const std::wstring& text)
 {
-	if (!_subGrid) return;
-	_subGrid->Rows.Clear();
-	if (topIndex < 0 || topIndex >= (int)_tops.size()) return;
-	auto& subs = _tops[topIndex].SubItems;
+	auto lines = SplitLines(text);
+	std::vector<ItemModel> tops;
+	std::vector<ItemModel*> stack;
+	std::vector<int> depthStack;
+
+	auto isDashSeparator = [&](const std::wstring& s) -> bool
+		{
+			if (s.size() < 2) return false;
+			for (auto c : s)
+				if (c != L'-') return false;
+			return true;
+		};
+
+	for (auto& raw : lines)
+	{
+		int depth = CountIndentTabs(raw);
+		auto stripped = StripIndentTabs(raw);
+		auto trimmed = Trim(stripped);
+
+		ItemModel m;
+		if (trimmed.empty())
+		{
+			m.Separator = true;
+			m.Enable = true;
+		}
+		else
+		{
+			auto parts = SplitByPipe(trimmed);
+			auto head = Trim(parts.size() > 0 ? parts[0] : L"");
+			if (isDashSeparator(head))
+			{
+				m.Separator = true;
+				m.Enable = true;
+			}
+			else
+			{
+				m.Text = head;
+			m.Id = ParseInt(parts.size() > 1 ? parts[1] : L"", 0);
+			m.Shortcut = Trim(parts.size() > 2 ? parts[2] : L"");
+			m.Enable = ParseBool(parts.size() > 3 ? parts[3] : L"", true);
+				m.Separator = false;
+				if (m.Text.empty())
+					continue;
+			}
+		}
+
+		if (depth <= 0)
+		{
+			tops.push_back(std::move(m));
+			stack.clear();
+			depthStack.clear();
+			if (!tops.back().Separator)
+			{
+				stack.push_back(&tops.back());
+				depthStack.push_back(0);
+			}
+			continue;
+		}
+
+		while (!depthStack.empty() && depthStack.back() >= depth)
+		{
+			depthStack.pop_back();
+			stack.pop_back();
+		}
+
+		ItemModel* parent = stack.empty() ? nullptr : stack.back();
+		if (!parent)
+		{
+			// 没有可用父节点，降级为顶层。
+			if (!m.Separator)
+			{
+				tops.push_back(std::move(m));
+				stack.clear();
+				depthStack.clear();
+				stack.push_back(&tops.back());
+				depthStack.push_back(0);
+			}
+			continue;
+		}
+
+		parent->SubItems.push_back(std::move(m));
+		auto* added = &parent->SubItems.back();
+		if (!added->Separator)
+		{
+			stack.push_back(added);
+			depthStack.push_back(depth);
+		}
+	}
+
+	return tops;
+}
+
+void MenuItemsEditorDialog::ApplySubItems(MenuItem* parent, const std::vector<ItemModel>& subs)
+{
+	if (!parent) return;
 	for (auto& s : subs)
 	{
-		GridViewRow r;
-		r.Cells.Add(CellValue(s.Text));
-		r.Cells.Add(CellValue(std::to_wstring(s.Id)));
-		r.Cells.Add(CellValue(s.Shortcut));
-		r.Cells.Add(CellValue(s.Separator ? L"true" : L"false"));
-		r.Cells.Add(CellValue(s.Enable ? L"true" : L"false"));
-		_subGrid->Rows.Add(r);
-	}
-	_subGrid->SelectedRowIndex = (_subGrid->Rows.Count > 0) ? 0 : -1;
-	_subGrid->SelectedColumnIndex = (_subGrid->Rows.Count > 0) ? 0 : -1;
-	SyncButtons();
-}
-
-void MenuItemsEditorDialog::SaveSubGridToModel(int topIndex)
-{
-	if (!_subGrid) return;
-	if (topIndex < 0 || topIndex >= (int)_tops.size()) return;
-
-	auto& subs = _tops[topIndex].SubItems;
-	subs.clear();
-	subs.reserve(_subGrid->Rows.Count);
-	for (int i = 0; i < _subGrid->Rows.Count; i++)
-	{
-		auto& row = _subGrid->Rows[i];
-		ItemModel m;
-		m.Text = (row.Cells.Count > 0) ? Trim(row.Cells[0].Text) : L"";
-		m.Id = (row.Cells.Count > 1) ? ParseInt(row.Cells[1].Text, 0) : 0;
-		m.Shortcut = (row.Cells.Count > 2) ? Trim(row.Cells[2].Text) : L"";
-		m.Separator = (row.Cells.Count > 3) ? ParseBool(row.Cells[3].Text, false) : false;
-		m.Enable = (row.Cells.Count > 4) ? ParseBool(row.Cells[4].Text, true) : true;
-		// Separator 行允许 Text 为空；非 Separator 行要求 Text 非空
-		if (!m.Separator && m.Text.empty())
+		if (s.Separator)
+		{
+			parent->AddSeparator();
 			continue;
-		subs.push_back(std::move(m));
+		}
+		auto st = Trim(s.Text);
+		if (st.empty()) continue;
+		auto* si = parent->AddSubItem(st, s.Id);
+		if (!si) continue;
+		si->Shortcut = s.Shortcut;
+		si->Enable = s.Enable;
+		if (!s.SubItems.empty())
+			ApplySubItems(si, s.SubItems);
 	}
-}
-
-void MenuItemsEditorDialog::SyncButtons()
-{
-	if (_topGrid && _topRemove && _topUp && _topDown)
-	{
-		int idx = _topGrid->SelectedRowIndex;
-		bool hasSel = (idx >= 0 && idx < _topGrid->Rows.Count);
-		_topRemove->Enable = hasSel;
-		_topUp->Enable = hasSel && idx > 0;
-		_topDown->Enable = hasSel && idx + 1 < _topGrid->Rows.Count;
-	}
-	if (_subGrid && _subRemove && _subUp && _subDown)
-	{
-		int idx = _subGrid->SelectedRowIndex;
-		bool hasSel = (idx >= 0 && idx < _subGrid->Rows.Count);
-		_subRemove->Enable = hasSel;
-		_subUp->Enable = hasSel && idx > 0;
-		_subDown->Enable = hasSel && idx + 1 < _subGrid->Rows.Count;
-	}
-}
-
-void MenuItemsEditorDialog::SetCurrentTopIndex(int idx)
-{
-	if (idx == _currentTopIndex) return;
-	// 切换前保存当前子项编辑
-	SaveSubGridToModel(_currentTopIndex);
-	_currentTopIndex = idx;
-	LoadSubGridFromModel(_currentTopIndex);
-	SyncButtons();
-}
-
-void MenuItemsEditorDialog::AddTop()
-{
-	ItemModel m;
-	m.Text = L"Menu";
-	m.Enable = true;
-	_tops.push_back(std::move(m));
-	_currentTopIndex = (int)_tops.size() - 1;
-	RefreshTopGrid();
-	if (_topGrid)
-	{
-		_topGrid->SelectedRowIndex = _currentTopIndex;
-		_topGrid->SelectedColumnIndex = 0;
-		_topGrid->ChangeEditionSelected(0, _currentTopIndex);
-	}
-}
-
-void MenuItemsEditorDialog::RemoveTop()
-{
-	if (!_topGrid) return;
-	int idx = _topGrid->SelectedRowIndex;
-	if (idx < 0 || idx >= (int)_tops.size()) return;
-	_tops.erase(_tops.begin() + idx);
-	if (_tops.empty()) _currentTopIndex = -1;
-	else
-	{
-		if (idx >= (int)_tops.size()) idx = (int)_tops.size() - 1;
-		_currentTopIndex = idx;
-	}
-	RefreshTopGrid();
-}
-
-void MenuItemsEditorDialog::MoveTop(int delta)
-{
-	if (!_topGrid) return;
-	int idx = _topGrid->SelectedRowIndex;
-	int to = idx + delta;
-	if (idx < 0 || idx >= (int)_tops.size()) return;
-	if (to < 0 || to >= (int)_tops.size()) return;
-	std::swap(_tops[idx], _tops[to]);
-	_currentTopIndex = to;
-	RefreshTopGrid();
-}
-
-void MenuItemsEditorDialog::AddSubRow(bool separator)
-{
-	if (!_subGrid) return;
-	GridViewRow r;
-	r.Cells.Add(CellValue(separator ? L"" : L"Item"));
-	r.Cells.Add(CellValue(L"0"));
-	r.Cells.Add(CellValue(L""));
-	r.Cells.Add(CellValue(separator ? L"true" : L"false"));
-	r.Cells.Add(CellValue(L"true"));
-	_subGrid->Rows.Add(r);
-	_subGrid->SelectedRowIndex = _subGrid->Rows.Count - 1;
-	_subGrid->SelectedColumnIndex = 0;
-	_subGrid->ChangeEditionSelected(0, _subGrid->SelectedRowIndex);
-	SyncButtons();
-}
-
-void MenuItemsEditorDialog::RemoveSub()
-{
-	if (!_subGrid) return;
-	int idx = _subGrid->SelectedRowIndex;
-	if (idx < 0 || idx >= _subGrid->Rows.Count) return;
-	_subGrid->Rows.RemoveAt(idx);
-	if (_subGrid->Rows.Count <= 0)
-	{
-		_subGrid->SelectedRowIndex = -1;
-		_subGrid->SelectedColumnIndex = -1;
-	}
-	else
-	{
-		if (idx >= _subGrid->Rows.Count) idx = _subGrid->Rows.Count - 1;
-		_subGrid->SelectedRowIndex = idx;
-		_subGrid->SelectedColumnIndex = 0;
-	}
-	SyncButtons();
-}
-
-void MenuItemsEditorDialog::MoveSub(int delta)
-{
-	if (!_subGrid) return;
-	int idx = _subGrid->SelectedRowIndex;
-	int to = idx + delta;
-	if (idx < 0 || idx >= _subGrid->Rows.Count) return;
-	if (to < 0 || to >= _subGrid->Rows.Count) return;
-	_subGrid->Rows.Swap(idx, to);
-	_subGrid->SelectedRowIndex = to;
-	_subGrid->SelectedColumnIndex = 0;
-	SyncButtons();
 }
 
 void MenuItemsEditorDialog::ApplyToTarget()
 {
 	if (!_target) return;
 
-	// 先将 UI 中的编辑同步到模型
-	SaveSubGridToModel(_currentTopIndex);
+	if (_editor)
+		_tops = TextToModel(_editor->Text);
 
 	// 清空现有顶层 MenuItem（会递归释放 SubItems）
 	while (_target->Count > 0)
@@ -275,6 +307,14 @@ void MenuItemsEditorDialog::ApplyToTarget()
 
 	for (auto& t : _tops)
 	{
+		if (t.Separator)
+		{
+			// 顶层也允许分割线（表现为不可交互的分隔项）。
+			auto* sep = _target->AddControl(MenuItem::CreateSeparator());
+			if (sep) sep->Height = _target->BarHeight;
+			continue;
+		}
+
 		auto text = Trim(t.Text);
 		if (text.empty()) continue;
 		auto* top = _target->AddItem(text);
@@ -282,84 +322,39 @@ void MenuItemsEditorDialog::ApplyToTarget()
 		top->Id = t.Id;
 		top->Shortcut = t.Shortcut;
 		top->Enable = t.Enable;
-
-		for (auto& s : t.SubItems)
-		{
-			if (s.Separator)
-			{
-				top->AddSeparator();
-				continue;
-			}
-			auto st = Trim(s.Text);
-			if (st.empty()) continue;
-			auto* si = top->AddSubItem(st, s.Id);
-			if (!si) continue;
-			si->Shortcut = s.Shortcut;
-			si->Enable = s.Enable;
-		}
+		if (!t.SubItems.empty())
+			ApplySubItems(top, t.SubItems);
 	}
 
 	_target->PostRender();
 }
 
 MenuItemsEditorDialog::MenuItemsEditorDialog(Menu* target)
-	: Form(L"编辑 Menu 菜单项", POINT{ 260, 260 }, SIZE{ 760, 520 }), _target(target)
+	: Form(L"编辑 Menu 菜单项", POINT{ 280, 280 }, SIZE{ 640, 480 }), _target(target)
 {
 	this->VisibleHead = true;
 	this->MinBox = false;
 	this->MaxBox = false;
 	this->BackColor = Colors::WhiteSmoke;
 
-	auto tip = this->AddControl(new Label(L"左侧编辑菜单栏项；右侧编辑该项的下拉项。Separator 填 true 可插入分隔线。", 12, 12));
-	tip->Size = { 736, 20 };
+	auto tip = this->AddControl(new Label(
+		L"用 \t 缩进表示层级（支持多级子菜单）；用 ---- 表示分割线（顶层/子层都支持）。\n"
+		L"可选：行内字段 Text | Id | Shortcut | Enable（不填则使用默认值）",
+		12, 12));
+	tip->Size = { 616, 44 };
 	tip->Font = new ::Font(L"Microsoft YaHei", 12.0f);
 
-	_topGrid = this->AddControl(new GridView(12, 38, 260, 360));
-	_topGrid->Columns.Clear();
-	_topGrid->Columns.Add(GridViewColumn(L"Top Items", 220.0f, ColumnType::Text, true));
+	_editor = this->AddControl(new RichTextBox(L"", 12, 60, 616, 340));
+	_editor->AllowMultiLine = true;
+	_editor->AllowTabInput = true;
+	_editor->BackColor = Colors::White;
+	_editor->FocusedColor = D2D1_COLOR_F{ 1,1,1,1 };
 
-	_subGrid = this->AddControl(new GridView(284, 38, 464, 360));
-	_subGrid->Columns.Clear();
-	_subGrid->Columns.Add(GridViewColumn(L"Text", 170.0f, ColumnType::Text, true));
-	_subGrid->Columns.Add(GridViewColumn(L"Id", 60.0f, ColumnType::Text, true));
-	_subGrid->Columns.Add(GridViewColumn(L"Shortcut", 110.0f, ColumnType::Text, true));
-	_subGrid->Columns.Add(GridViewColumn(L"Separator", 70.0f, ColumnType::Text, true));
-	_subGrid->Columns.Add(GridViewColumn(L"Enable", 60.0f, ColumnType::Text, true));
-
-	_topAdd = this->AddControl(new Button(L"新增", 12, 406, 62, 30));
-	_topRemove = this->AddControl(new Button(L"删除", 78, 406, 62, 30));
-	_topUp = this->AddControl(new Button(L"上移", 144, 406, 62, 30));
-	_topDown = this->AddControl(new Button(L"下移", 210, 406, 62, 30));
-
-	_subAdd = this->AddControl(new Button(L"新增项", 284, 406, 90, 30));
-	auto* subSep = this->AddControl(new Button(L"新增分隔", 380, 406, 110, 30));
-	_subRemove = this->AddControl(new Button(L"删除", 496, 406, 70, 30));
-	_subUp = this->AddControl(new Button(L"上移", 572, 406, 70, 30));
-	_subDown = this->AddControl(new Button(L"下移", 648, 406, 70, 30));
-
-	_ok = this->AddControl(new Button(L"确定", 12, 448, 110, 34));
-	_cancel = this->AddControl(new Button(L"取消", 132, 448, 110, 34));
+	_ok = this->AddControl(new Button(L"确定", 12, 414, 110, 34));
+	_cancel = this->AddControl(new Button(L"取消", 132, 414, 110, 34));
 
 	LoadModelFromTarget();
-	RefreshTopGrid();
-
-	_topGrid->SelectionChanged += [this](Control*) {
-		if (!_topGrid) return;
-		int idx = _topGrid->SelectedRowIndex;
-		SetCurrentTopIndex(idx);
-	};
-	_subGrid->SelectionChanged += [this](Control*) { SyncButtons(); };
-
-	_topAdd->OnMouseClick += [this](Control*, MouseEventArgs) { AddTop(); };
-	_topRemove->OnMouseClick += [this](Control*, MouseEventArgs) { RemoveTop(); };
-	_topUp->OnMouseClick += [this](Control*, MouseEventArgs) { MoveTop(-1); };
-	_topDown->OnMouseClick += [this](Control*, MouseEventArgs) { MoveTop(+1); };
-
-	_subAdd->OnMouseClick += [this](Control*, MouseEventArgs) { AddSubRow(false); };
-	subSep->OnMouseClick += [this](Control*, MouseEventArgs) { AddSubRow(true); };
-	_subRemove->OnMouseClick += [this](Control*, MouseEventArgs) { RemoveSub(); };
-	_subUp->OnMouseClick += [this](Control*, MouseEventArgs) { MoveSub(-1); };
-	_subDown->OnMouseClick += [this](Control*, MouseEventArgs) { MoveSub(+1); };
+	_editor->Text = ModelToText(_tops);
 
 	_ok->OnMouseClick += [this](Control*, MouseEventArgs) {
 		ApplyToTarget();
@@ -370,6 +365,4 @@ MenuItemsEditorDialog::MenuItemsEditorDialog(Menu* target)
 		Applied = false;
 		this->Close();
 	};
-
-	SyncButtons();
 }

@@ -1,9 +1,9 @@
 #pragma once
 #include "../CUI/GUI/Form.h"
 #include "../CUI/GUI/Label.h"
+#include "../CUI/GUI/RichTextBox.h"
 #include "../CUI/GUI/Button.h"
 #include "../CUI/GUI/Menu.h"
-#include "../CUI/GUI/GridView.h"
 
 class MenuItemsEditorDialog : public Form
 {
@@ -25,39 +25,25 @@ private:
 	};
 
 	Menu* _target = nullptr;
-	GridView* _topGrid = nullptr;
-	GridView* _subGrid = nullptr;
-	Button* _topAdd = nullptr;
-	Button* _topRemove = nullptr;
-	Button* _topUp = nullptr;
-	Button* _topDown = nullptr;
-	Button* _subAdd = nullptr;
-	Button* _subRemove = nullptr;
-	Button* _subUp = nullptr;
-	Button* _subDown = nullptr;
+	RichTextBox* _editor = nullptr;
 	Button* _ok = nullptr;
 	Button* _cancel = nullptr;
 
 	std::vector<ItemModel> _tops;
-	int _currentTopIndex = -1;
 
 	static std::wstring Trim(const std::wstring& s);
+	static std::vector<std::wstring> SplitLines(const std::wstring& text);
+	static int CountIndentTabs(const std::wstring& s);
+	static std::wstring StripIndentTabs(const std::wstring& s);
 	static bool ParseBool(const std::wstring& s, bool def);
 	static int ParseInt(const std::wstring& s, int def);
+	static std::vector<std::wstring> SplitByPipe(const std::wstring& s);
 
 	void LoadModelFromTarget();
-	void RefreshTopGrid();
-	void LoadSubGridFromModel(int topIndex);
-	void SaveSubGridToModel(int topIndex);
-	void SyncButtons();
-	void SetCurrentTopIndex(int idx);
+	static void SerializeItems(std::wstringstream& ss, const std::vector<ItemModel>& items, int depth);
+	static std::wstring ModelToText(const std::vector<ItemModel>& tops);
+	static std::vector<ItemModel> TextToModel(const std::wstring& text);
+	static ItemModel FromMenuItem(MenuItem* it);
+	static void ApplySubItems(MenuItem* parent, const std::vector<ItemModel>& subs);
 	void ApplyToTarget();
-
-	void AddTop();
-	void RemoveTop();
-	void MoveTop(int delta);
-
-	void AddSubRow(bool separator);
-	void RemoveSub();
-	void MoveSub(int delta);
 };

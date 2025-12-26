@@ -330,7 +330,8 @@ void WebBrowser::EnsureControllerBounds()
 	int x = abs.x;
 	int y = abs.y + top;
 
-	const bool visible = (this->IsVisual && this->Visible && _webviewReady);
+	const bool parentEnabled = ::IsWindowEnabled(this->ParentForm->Handle) != FALSE;
+	const bool visible = (parentEnabled && this->IsVisual && this->Visible && _webviewReady);
 
 	if (_controller)
 	{

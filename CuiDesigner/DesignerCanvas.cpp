@@ -34,6 +34,10 @@
 #include <unordered_set>
 #include <fstream>
 
+#ifdef log
+#undef log
+#endif
+
 using Json = JsonLib::json;
 
 static RECT IntersectRectSafe(const RECT& a, const RECT& b)
@@ -1941,11 +1945,10 @@ void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
 		if (type == UIClass::UI_Menu || type == UIClass::UI_StatusBar)
 		{
 			_clientSurface->AddControl(newControl);
-			// 生成唯一名称
-			_controlCounter++;
-			std::wstring name = typeName + std::to_wstring(_controlCounter);
+			std::wstring name = GenerateDefaultControlName(type, typeName);
 			auto dc = std::make_shared<DesignerControl>(newControl, name, type, nullptr);
 			_designerControls.push_back(dc);
+			UpdateDefaultNameCounterFromName(type, name);
 			ClearSelection();
 			AddToSelection(dc, true, true);
 			this->PostRender();
@@ -2091,13 +2094,12 @@ void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
 			ClampControlToDesignSurface(newControl);
 		}
 		
-		// 生成唯一名称
-		_controlCounter++;
-		std::wstring name = typeName + std::to_wstring(_controlCounter);
+		std::wstring name = GenerateDefaultControlName(type, typeName);
 		
 		// 创建设计器控件包装
 		auto dc = std::make_shared<DesignerControl>(newControl, name, type, designerParent);
 		_designerControls.push_back(dc);
+		UpdateDefaultNameCounterFromName(type, name);
 		
 		// 自动选中新添加的控件
 		ClearSelection();
@@ -2148,9 +2150,178 @@ void DesignerCanvas::ClearCanvas()
 	}
 	_designerControls.clear();
 	_selectedControl = nullptr;
-	_controlCounter = 0;
+	_controlTypeCounters.clear();
 	
 	OnControlSelected(nullptr);
+}
+
+static bool IsExportableDesignType(UIClass t)
+{
+	switch (t)
+	{
+	case UIClass::UI_Label:
+	case UIClass::UI_Button:
+	case UIClass::UI_TextBox:
+	case UIClass::UI_RichTextBox:
+	case UIClass::UI_PasswordBox:
+	case UIClass::UI_Panel:
+	case UIClass::UI_StackPanel:
+	case UIClass::UI_GridPanel:
+	case UIClass::UI_DockPanel:
+	case UIClass::UI_WrapPanel:
+	case UIClass::UI_RelativePanel:
+	case UIClass::UI_CheckBox:
+	case UIClass::UI_RadioBox:
+	case UIClass::UI_ComboBox:
+	case UIClass::UI_GridView:
+	case UIClass::UI_TreeView:
+	case UIClass::UI_ProgressBar:
+	case UIClass::UI_Slider:
+	case UIClass::UI_PictureBox:
+	case UIClass::UI_Switch:
+	case UIClass::UI_TabControl:
+	case UIClass::UI_TabPage:
+	case UIClass::UI_ToolBar:
+	case UIClass::UI_Menu:
+	case UIClass::UI_StatusBar:
+	case UIClass::UI_WebBrowser:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static std::wstring ExportTypeName(UIClass t)
+{
+	switch (t)
+	{
+	case UIClass::UI_Label: return L"Label";
+	case UIClass::UI_Button: return L"Button";
+	case UIClass::UI_TextBox: return L"TextBox";
+	case UIClass::UI_RichTextBox: return L"RichTextBox";
+	case UIClass::UI_PasswordBox: return L"PasswordBox";
+	case UIClass::UI_ComboBox: return L"ComboBox";
+	case UIClass::UI_GridView: return L"GridView";
+	case UIClass::UI_CheckBox: return L"CheckBox";
+	case UIClass::UI_RadioBox: return L"RadioBox";
+	case UIClass::UI_ProgressBar: return L"ProgressBar";
+	case UIClass::UI_TreeView: return L"TreeView";
+	case UIClass::UI_Panel: return L"Panel";
+	case UIClass::UI_TabPage: return L"TabPage";
+	case UIClass::UI_TabControl: return L"TabControl";
+	case UIClass::UI_Switch: return L"Switch";
+	case UIClass::UI_Menu: return L"Menu";
+	case UIClass::UI_ToolBar: return L"ToolBar";
+	case UIClass::UI_StatusBar: return L"StatusBar";
+	case UIClass::UI_Slider: return L"Slider";
+	case UIClass::UI_WebBrowser: return L"WebBrowser";
+	case UIClass::UI_StackPanel: return L"StackPanel";
+	case UIClass::UI_GridPanel: return L"GridPanel";
+	case UIClass::UI_DockPanel: return L"DockPanel";
+	case UIClass::UI_WrapPanel: return L"WrapPanel";
+	case UIClass::UI_RelativePanel: return L"RelativePanel";
+	case UIClass::UI_PictureBox: return L"PictureBox";
+	default: return L"Control";
+	}
+}
+
+namespace
+{
+	static bool TryParseNumericSuffix(const std::wstring& name, const std::wstring& prefix, int& outSuffix);
+}
+
+std::vector<std::shared_ptr<DesignerControl>> DesignerCanvas::GetAllControlsForExport() const
+{
+	std::vector<std::shared_ptr<DesignerControl>> out;
+	out.reserve(_designerControls.size() + 64);
+
+	std::unordered_map<Control*, std::shared_ptr<DesignerControl>> dcOf;
+	dcOf.reserve(_designerControls.size() * 2 + 16);
+
+	std::unordered_set<std::wstring> usedNames;
+	usedNames.reserve(_designerControls.size() * 2 + 16);
+
+	for (auto& dc : _designerControls)
+	{
+		if (!dc || !dc->ControlInstance) continue;
+		out.push_back(dc);
+		dcOf[dc->ControlInstance] = dc;
+		if (!dc->Name.empty()) usedNames.insert(dc->Name);
+	}
+
+	std::unordered_map<std::wstring, int> nextSuffixOf;
+	nextSuffixOf.reserve(64);
+
+	auto computeMaxSuffix = [&](const std::wstring& base) -> int {
+		int maxSuf = 0;
+		for (const auto& n : usedNames)
+		{
+			int suf = 0;
+			if (TryParseNumericSuffix(n, base, suf))
+				maxSuf = (std::max)(maxSuf, suf);
+		}
+		return maxSuf;
+	};
+
+	auto makeUniqueName = [&](UIClass t) -> std::wstring {
+		std::wstring base = ExportTypeName(t);
+		if (base.empty()) base = L"Control";
+		auto it = nextSuffixOf.find(base);
+		if (it == nextSuffixOf.end())
+			it = nextSuffixOf.emplace(base, computeMaxSuffix(base)).first;
+
+		for (int guard = 0; guard < 1000000; guard++)
+		{
+			it->second++;
+			std::wstring cand = base + std::to_wstring(it->second);
+			if (usedNames.insert(cand).second)
+				return cand;
+		}
+
+		std::wstring cand = base + L"_auto";
+		usedNames.insert(cand);
+		return cand;
+	};
+
+	auto isInternalSurface = [&](Control* c) -> bool {
+		return c == (Control*)_designSurface || c == (Control*)_clientSurface || c == (Control*)this;
+	};
+
+	Control* root = _clientSurface ? (Control*)_clientSurface : (_designSurface ? (Control*)_designSurface : (Control*)this);
+	if (!root) return out;
+
+	std::function<void(Control*)> walk;
+	walk = [&](Control* parent)
+	{
+		if (!parent) return;
+		for (int i = 0; i < parent->Count; i++)
+		{
+			auto* c = parent->operator[](i);
+			if (!c) continue;
+			if (isInternalSurface(c)) { walk(c); continue; }
+
+			UIClass t = c->Type();
+			if (IsExportableDesignType(t))
+			{
+				if (dcOf.find(c) == dcOf.end())
+				{
+					Control* designerParent = nullptr;
+					auto* rp = c->Parent;
+					if (rp && !isInternalSurface(rp) && rp != root)
+						designerParent = rp;
+					std::wstring name = makeUniqueName(t);
+					auto dc = std::make_shared<DesignerControl>(c, name, t, designerParent);
+					out.push_back(dc);
+					dcOf[c] = dc;
+				}
+			}
+
+			walk(c);
+		}
+	};
+
+	walk(root);
+	return out;
 }
 
 namespace
@@ -2483,6 +2654,30 @@ namespace
 		}
 		catch (...) { return 0; }
 	}
+
+	static bool StartsWith(const std::wstring& s, const std::wstring& prefix)
+	{
+		if (s.size() < prefix.size()) return false;
+		return s.compare(0, prefix.size(), prefix) == 0;
+	}
+
+	static bool TryParseNumericSuffix(const std::wstring& name, const std::wstring& prefix, int& outSuffix)
+	{
+		outSuffix = 0;
+		if (!StartsWith(name, prefix)) return false;
+		std::wstring rest = name.substr(prefix.size());
+		if (rest.empty()) return false;
+		for (wchar_t ch : rest)
+		{
+			if (!iswdigit(ch)) return false;
+		}
+		try
+		{
+			outSuffix = std::stoi(rest);
+			return outSuffix > 0;
+		}
+		catch (...) { return false; }
+	}
 }
 
 std::wstring DesignerCanvas::MakeUniqueControlName(const std::shared_ptr<DesignerControl>& target, const std::wstring& desired) const
@@ -2512,6 +2707,54 @@ std::wstring DesignerCanvas::MakeUniqueControlName(const std::shared_ptr<Designe
 	}
 	// 极端情况下兜底：保持可用但不保证美观
 	return base + L"_";
+}
+
+std::wstring DesignerCanvas::GenerateDefaultControlName(UIClass type, const std::wstring& typeName)
+{
+	std::wstring base = typeName;
+	if (base.empty()) base = L"Control";
+
+	int maxExisting = 0;
+	for (auto& dc : _designerControls)
+	{
+		if (!dc) continue;
+		if (dc->Type != type) continue;
+		int suf = 0;
+		if (TryParseNumericSuffix(dc->Name, base, suf))
+			maxExisting = (std::max)(maxExisting, suf);
+	}
+
+	int& counter = _controlTypeCounters[(int)type];
+	counter = (std::max)(counter, maxExisting);
+
+	auto isUsed = [&](const std::wstring& n) -> bool
+	{
+		for (auto& dc : _designerControls)
+		{
+			if (!dc) continue;
+			if (dc->Name == n) return true;
+		}
+		return false;
+	};
+
+	for (int guard = 0; guard < 1000000; guard++)
+	{
+		counter++;
+		std::wstring candidate = base + std::to_wstring(counter);
+		if (!isUsed(candidate)) return candidate;
+	}
+
+	return base + L"_";
+}
+
+void DesignerCanvas::UpdateDefaultNameCounterFromName(UIClass type, const std::wstring& name)
+{
+	std::wstring base = ExportTypeName(type);
+	if (base.empty()) base = L"Control";
+	int suf = 0;
+	if (!TryParseNumericSuffix(name, base, suf)) return;
+	int& counter = _controlTypeCounters[(int)type];
+	counter = (std::max)(counter, suf);
 }
 
 bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* outError) const
@@ -2849,7 +3092,7 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 		}
 
 		ClearCanvas();
-		_controlCounter = 0;
+		_controlTypeCounters.clear();
 
 		if (root.contains("form") && root["form"].is_object())
 		{
@@ -2955,11 +3198,9 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 		std::unordered_map<std::wstring, Control*> instOf;
 		instOf.reserve(items.size());
 
-		// TabPage id(wstring) -> TabPage*
 		std::unordered_map<std::wstring, Control*> tabPageOf;
 		tabPageOf.reserve(64);
 
-		// 1) create instances
 		for (auto& it : items)
 		{
 			Control* c = createControl(it.type);
@@ -2971,10 +3212,9 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 			auto dc = std::make_shared<DesignerControl>(c, it.name, it.type, nullptr);
 			dcOf[it.name] = dc;
 			instOf[it.name] = c;
-			_controlCounter = (std::max)(_controlCounter, ParseTrailingIntOrZero(it.name));
+			UpdateDefaultNameCounterFromName(it.type, it.name);
 		}
 
-		// 2) apply properties/extras that affect children creation (e.g. GridPanel defs, TabControl pages)
 		for (auto& it : items)
 		{
 			auto dcIt = dcOf.find(it.name);
@@ -2983,7 +3223,6 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 			auto* c = dc->ControlInstance;
 			if (!c) continue;
 
-			// base props
 			if (it.props.is_object())
 			{
 				c->Text = FromUtf8(it.props.value("text", std::string()));
@@ -3213,7 +3452,6 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 			}
 		}
 
-		// 3) attach controls by parent grouping + order
 		std::unordered_map<std::wstring, std::vector<Pending*>> childrenByParent;
 		childrenByParent.reserve(items.size());
 		std::vector<Pending*> roots;
@@ -3271,16 +3509,13 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 			for (auto* ch : it->second)
 			{
 				attachOne(ch, runtimeParent, designerParent);
-				// 递归：按控件 name 挂载其子控件
 				attachChildren(ch->name, dcOf[ch->name]->ControlInstance, dcOf[ch->name]->ControlInstance);
-				// 若该控件是 TabControl，则也需要按 page id 挂载页内子控件
 				if (ch->type == UIClass::UI_TabControl)
 				{
 					auto* tc = (TabControl*)dcOf[ch->name]->ControlInstance;
 					(void)tc;
 					for (auto& kv : tabPageOf)
 					{
-						// page id 必须属于该 TabControl（前缀匹配 name + "#page"）
 						std::wstring prefix = ch->name + L"#page";
 						if (kv.first.rfind(prefix, 0) != 0) continue;
 						attachChildren(kv.first, kv.second, kv.second);
@@ -3289,7 +3524,6 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 			}
 		};
 
-		// attach roots first
 		for (auto* it : roots)
 		{
 			attachOne(it, _clientSurface ? (Control*)_clientSurface : (Control*)_designSurface, nullptr);
@@ -3305,7 +3539,6 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 			}
 		}
 
-		// 若仍有未挂载项，报错
 		if (attached.size() != items.size())
 		{
 			for (auto& it : items)
@@ -3318,7 +3551,6 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 			}
 		}
 
-		// 4) layout
 		if (_designSurface)
 		{
 			if (auto* p = dynamic_cast<Panel*>(_designSurface))

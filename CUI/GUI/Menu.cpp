@@ -223,6 +223,7 @@ void Menu::Update()
 			it->Location = POINT{ (int)x, 0 };
 			it->Size = SIZE{ w, BarHeight };
 			x += (float)w;
+			it->ForeColor = this->_forecolor;
 			it->Update();
 		}
 

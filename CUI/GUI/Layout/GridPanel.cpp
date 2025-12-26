@@ -1,6 +1,7 @@
 #include "GridPanel.h"
 #include "../Form.h"
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 
 // GridLayoutEngine 实现
@@ -22,7 +23,14 @@ void GridLayoutEngine::CalculateColumnWidths(Control* container, float available
 	// 第一遍：计算固定尺寸（Pixel）
 	for (size_t i = 0; i < colCount; i++)
 	{
-		const auto& colDef = _columnDefinitions[i];
+		auto& colDef = _columnDefinitions[i];
+		float minW = colDef.MinWidth;
+		float maxW = colDef.MaxWidth;
+		if (!std::isfinite(minW) || minW < 0.f) minW = 0.f;
+		if (!std::isfinite(maxW) || maxW < 0.f || maxW < minW) maxW = FLT_MAX;
+		colDef.MinWidth = minW;
+		colDef.MaxWidth = maxW;
+
 		if (colDef.Width.IsPixel())
 		{
 			float width = colDef.Width.Value;
@@ -40,7 +48,7 @@ void GridLayoutEngine::CalculateColumnWidths(Control* container, float available
 	// 第二遍：计算 Auto 尺寸（根据子控件内容）
 	for (size_t i = 0; i < colCount; i++)
 	{
-		const auto& colDef = _columnDefinitions[i];
+		auto& colDef = _columnDefinitions[i];
 		if (colDef.Width.IsAuto())
 		{
 			float maxWidth = colDef.MinWidth;
@@ -81,7 +89,7 @@ void GridLayoutEngine::CalculateColumnWidths(Control* container, float available
 		float starUnit = remainingWidth / totalStar;
 		for (size_t i = 0; i < colCount; i++)
 		{
-			const auto& colDef = _columnDefinitions[i];
+			auto& colDef = _columnDefinitions[i];
 			if (colDef.Width.IsStar())
 			{
 				float width = starUnit * colDef.Width.Value;
@@ -117,7 +125,14 @@ void GridLayoutEngine::CalculateRowHeights(Control* container, float availableHe
 	// 第一遍：计算固定尺寸（Pixel）
 	for (size_t i = 0; i < rowCount; i++)
 	{
-		const auto& rowDef = _rowDefinitions[i];
+		auto& rowDef = _rowDefinitions[i];
+		float minH = rowDef.MinHeight;
+		float maxH = rowDef.MaxHeight;
+		if (!std::isfinite(minH) || minH < 0.f) minH = 0.f;
+		if (!std::isfinite(maxH) || maxH < 0.f || maxH < minH) maxH = FLT_MAX;
+		rowDef.MinHeight = minH;
+		rowDef.MaxHeight = maxH;
+
 		if (rowDef.Height.IsPixel())
 		{
 			float height = rowDef.Height.Value;
@@ -135,7 +150,7 @@ void GridLayoutEngine::CalculateRowHeights(Control* container, float availableHe
 	// 第二遍：计算 Auto 尺寸（根据子控件内容）
 	for (size_t i = 0; i < rowCount; i++)
 	{
-		const auto& rowDef = _rowDefinitions[i];
+		auto& rowDef = _rowDefinitions[i];
 		if (rowDef.Height.IsAuto())
 		{
 			float maxHeight = rowDef.MinHeight;
@@ -176,7 +191,7 @@ void GridLayoutEngine::CalculateRowHeights(Control* container, float availableHe
 		float starUnit = remainingHeight / totalStar;
 		for (size_t i = 0; i < rowCount; i++)
 		{
-			const auto& rowDef = _rowDefinitions[i];
+			auto& rowDef = _rowDefinitions[i];
 			if (rowDef.Height.IsStar())
 			{
 				float height = starUnit * rowDef.Height.Value;

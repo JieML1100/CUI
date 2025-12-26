@@ -3,6 +3,7 @@
 #include "DesignerTypes.h"
 #include <vector>
 #include <memory>
+#include <unordered_map>
 
 class DesignerCanvas : public Panel
 {
@@ -63,7 +64,10 @@ private:
 	
 	// 待添加的控件类型
 	UIClass _controlToAdd = UIClass::UI_Base;
-	int _controlCounter = 0;
+	std::unordered_map<int, int> _controlTypeCounters;
+
+	std::wstring GenerateDefaultControlName(UIClass type, const std::wstring& typeName);
+	void UpdateDefaultNameCounterFromName(UIClass type, const std::wstring& name);
 	
 	void DrawSelectionHandles(std::shared_ptr<DesignerControl> dc);
 	void DrawGrid();
@@ -98,6 +102,9 @@ public:
 	DesignerCanvas(int x, int y, int width, int height);
 	virtual ~DesignerCanvas();
 	bool HitTestChildren() const override { return false; }
+
+	// 当外部（属性面板）修改 Name 后，同步默认命名计数器（按类型）。
+	void SyncDefaultNameCounter(UIClass type, const std::wstring& name) { UpdateDefaultNameCounterFromName(type, name); }
 
 	std::wstring GetDesignedFormText() const { return _designedFormText; }
 	void SetDesignedFormText(const std::wstring& t) { _designedFormText = t; this->PostRender(); }
@@ -140,6 +147,7 @@ public:
 	std::shared_ptr<DesignerControl> GetSelectedControl() { return _selectedControl; }
 	const std::vector<std::shared_ptr<DesignerControl>>& GetSelectedControls() const { return _selectedControls; }
 	const std::vector<std::shared_ptr<DesignerControl>>& GetAllControls() const { return _designerControls; }
+	std::vector<std::shared_ptr<DesignerControl>> GetAllControlsForExport() const;
 	
 	// 准备添加控件（鼠标模式）
 	void SetControlToAdd(UIClass type) { _controlToAdd = type; }

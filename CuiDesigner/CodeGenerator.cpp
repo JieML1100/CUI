@@ -4,6 +4,8 @@
 #include <unordered_set>
 #include <cctype>
 #include <functional>
+#include <cfloat>
+#include <cmath>
 
 // 生成时需要访问具体控件类型的公开字段/方法
 #include "../CUI/GUI/ComboBox.h"
@@ -275,8 +277,19 @@ std::string CodeGenerator::FloatLiteral(float v)
 	// 生成合法 C++ float 字面量：保证有小数点，再加 f 后缀。
 	// 例如：0 -> 0.f，1 -> 1.f，0.25 -> 0.25f
 	const float eps = 1e-6f;
+	if (v == FLT_MAX) return "FLT_MAX";
+	if (v == -FLT_MAX) return "-FLT_MAX";
+
+	if (!std::isfinite(v))
+	{
+		if (v > 0) return "3.402823e+38f";
+		if (v < 0) return "-3.402823e+38f";
+		return "0.f";
+	}
+
+	float av = std::fabs(v);
 	float rounded = std::round(v);
-	if (std::fabs(v - rounded) <= eps)
+	if (std::fabs(v - rounded) <= eps && av <= (float)INT_MAX)
 	{
 		std::ostringstream oss;
 		oss << (int)rounded << ".f";
@@ -284,11 +297,20 @@ std::string CodeGenerator::FloatLiteral(float v)
 	}
 
 	std::ostringstream oss;
-	oss.setf(std::ios::fixed);
-	oss.precision(6);
-	oss << v;
+	if ((av != 0.0f && av < 1e-4f) || av >= 1e6f)
+	{
+		oss.setf(std::ios::scientific);
+		oss.precision(6);
+		oss << v;
+	}
+	else
+	{
+		oss.setf(std::ios::fixed);
+		oss.precision(6);
+		oss << v;
+	}
+
 	std::string s = oss.str();
-	// trim trailing zeros
 	while (!s.empty() && s.find('.') != std::string::npos && s.back() == '0')
 		s.pop_back();
 	if (!s.empty() && s.back() == '.')

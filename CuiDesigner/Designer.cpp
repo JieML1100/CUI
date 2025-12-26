@@ -258,11 +258,21 @@ void Designer::OnSaveClick()
 
 void Designer::OnExportClick()
 {
-	auto controls = _canvas->GetAllControls();
+	auto controls = _canvas->GetAllControlsForExport();
 	if (controls.empty())
 	{
 		ShowModalMessage(this, L"提示", L"画布上没有控件，无法导出！");
 		return;
+	}
+
+	int exportCount = (int)controls.size();
+	int buttonCount = 0;
+	int gridPanelCount = 0;
+	for (const auto& dc : controls)
+	{
+		if (!dc) continue;
+		if (dc->Type == UIClass::UI_Button) buttonCount++;
+		if (dc->Type == UIClass::UI_GridPanel) gridPanelCount++;
 	}
 	
 	SaveFileDialog saveFileDialog;
@@ -328,8 +338,13 @@ void Designer::OnExportClick()
 		
 		if (generator.GenerateFiles(headerPath, cppPath))
 		{
-			_lblInfo->Text = L"代码导出成功: " + fileName;
-			ShowModalMessage(this, L"导出成功", (L"代码已成功导出到:\n" + headerPath + L"\n" + cppPath));
+			_lblInfo->Text = L"代码导出成功: " + fileName + L" (控件:" + std::to_wstring(exportCount)
+				+ L", GridPanel:" + std::to_wstring(gridPanelCount)
+				+ L", Button:" + std::to_wstring(buttonCount) + L")";
+			ShowModalMessage(this, L"导出成功", (L"代码已成功导出到:\n" + headerPath + L"\n" + cppPath
+				+ L"\n\n导出统计：控件=" + std::to_wstring(exportCount)
+				+ L"，GridPanel=" + std::to_wstring(gridPanelCount)
+				+ L"，Button=" + std::to_wstring(buttonCount)));
 		}
 		else
 		{

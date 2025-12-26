@@ -680,7 +680,10 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 		if (propertyName == L"Name")
 		{
 			if (_canvas)
+			{
 				_currentControl->Name = _canvas->MakeUniqueControlName(_currentControl, value);
+				_canvas->SyncDefaultNameCounter(_currentControl->Type, _currentControl->Name);
+			}
 			else
 				_currentControl->Name = value;
 		}
