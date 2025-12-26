@@ -913,6 +913,24 @@ bool DesignerCanvas::TryHandleTabHeaderClick(POINT ptCanvas)
 	if (idx >= bestTc->Count) idx = bestTc->Count - 1;
 
 	bestTc->SelectIndex = idx;
+	for (int i = 0; i < bestTc->Count; i++)
+	{
+		auto* page = bestTc->operator[](i);
+		if (!page) continue;
+		page->Visible = (i == bestTc->SelectIndex);
+		if (i == bestTc->SelectIndex)
+		{
+			page->Location = POINT{ 0,(int)bestTc->TitleHeight };
+			SIZE s = bestTc->Size;
+			s.cy = std::max(0L, s.cy - bestTc->TitleHeight);
+			page->Size = s;
+			if (auto* p = dynamic_cast<Panel*>(page))
+			{
+				p->InvalidateLayout();
+				p->PerformLayout();
+			}
+		}
+	}
 	bestTc->PostRender();
 
 	if (_selectedControl != bestDc)
@@ -1207,7 +1225,9 @@ Control* DesignerCanvas::FindBestContainerAtPoint(POINT ptCanvas, Control* ignor
 	{
 		if (!dc || !dc->ControlInstance) continue;
 		auto* c = dc->ControlInstance;
-		if (!c->Visible || !c->Enable) continue;
+		// 关键：必须尊重“祖先可见性”。例如 TabControl 未选中页里的容器，控件自身 Visible 可能仍为 true，
+		// 但其 TabPage 为隐藏状态，此时应当不参与命中，否则会把当前页控件错误塞进隐藏页容器。
+		if (!c->IsVisual || !c->Visible || !c->Enable) continue;
 		if (!IsContainerControl(c)) continue;
 		if (ignore && (c == ignore || IsDescendantOf(ignore, c))) continue;
 

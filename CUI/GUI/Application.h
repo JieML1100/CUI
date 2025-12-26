@@ -9,6 +9,10 @@ class Application
 {
 public:
 	static Dictionary<HWND, class Form*> Forms;
+	// 设计器模式：用于在设计时禁用一些会产生副作用的真实组件（例如 WebView2）。
+	static bool DesignMode;
+	static void SetDesignMode(bool value);
+	static bool IsDesignMode();
 	static std::string ExecutablePath();
 	static std::string StartupPath();
 	static std::string ApplicationName();

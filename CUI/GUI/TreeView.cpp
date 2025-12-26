@@ -239,6 +239,7 @@ void TreeView::Update()
 			if (maxScroll < 0)maxScroll = 0;
 			if (this->ScrollIndex > maxScroll) this->ScrollIndex = maxScroll;
 			this->DrawScroll();
+			d2d->DrawRect(abslocation.x, abslocation.y, size.cx, size.cy, this->ForeColor);
 
 		}
 		if (!this->Enable)
