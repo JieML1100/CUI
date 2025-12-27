@@ -45,4 +45,4 @@ std::string Application::UserAppDataPath()
 RegistryKey Application::UserAppDataRegistry()
 {
 	return RegistryKey(HKEY_CURRENT_USER, StringHelper::Format("Software\\%s", ApplicationName().c_str()));
-}
+} 
