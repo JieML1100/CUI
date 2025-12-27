@@ -32,6 +32,61 @@
 
 namespace
 {
+	static std::wstring TrimWs(const std::wstring& s);
+
+	static const std::wstring kFontDefaultOption = L"<Default>";
+
+	static std::wstring FloatToText(float v)
+	{
+		std::wostringstream oss;
+		oss.setf(std::ios::fixed);
+		oss << std::setprecision(2) << v;
+		return oss.str();
+	}
+
+	static bool TryParseFloatWs(const std::wstring& s, float& out)
+	{
+		try
+		{
+			out = std::stof(s);
+			return true;
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+
+	static std::vector<std::wstring> GetFontNameOptions()
+	{
+		std::vector<std::wstring> out;
+		out.push_back(kFontDefaultOption);
+
+		try
+		{
+			auto fonts = ::Font::GetSystemFonts();
+			std::set<std::wstring> uniq;
+			for (auto& f : fonts)
+			{
+				auto t = TrimWs(f);
+				if (!t.empty()) uniq.insert(t);
+			}
+			for (auto& n : uniq) out.push_back(n);
+		}
+		catch (...) {}
+		return out;
+	}
+
+	static std::vector<std::wstring> GetFontSizeOptions()
+	{
+		// 常用字号（允许 ComboBox 手动输入）
+		static const int sizes[] = { 8,9,10,11,12,14,16,18,20,22,24,26,28,32,36,48,72 };
+		std::vector<std::wstring> out;
+		out.reserve(_countof(sizes));
+		for (int s : sizes) out.push_back(std::to_wstring(s));
+		return out;
+	}
+
 	static COLORREF ColorFToCOLORREF(const D2D1_COLOR_F& c)
 	{
 		int r = (int)std::lround(std::clamp(c.r, 0.0f, 1.0f) * 255.0f);
@@ -1060,6 +1115,18 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 			{
 				_canvas->SetDesignedFormText(value);
 			}
+			else if (propertyName == L"FontName")
+			{
+				auto v = TrimWs(value);
+				if (v == kFontDefaultOption) v.clear();
+				_canvas->SetDesignedFormFontName(v);
+			}
+			else if (propertyName == L"FontSize")
+			{
+				float fs = 0.0f;
+				if (TryParseFloatWs(TrimWs(value), fs))
+					_canvas->SetDesignedFormFontSize(fs);
+			}
 			else if (propertyName == L"BackColor")
 			{
 				D2D1_COLOR_F c;
@@ -1132,6 +1199,32 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 		else if (propertyName == L"Text")
 		{
 			ctrl->Text = value;
+		}
+		else if (propertyName == L"FontName")
+		{
+			auto v = TrimWs(value);
+			if (v == kFontDefaultOption || v.empty())
+			{
+				if (_canvas && _canvas->GetDesignedFormSharedFont())
+					ctrl->SetFontEx(_canvas->GetDesignedFormSharedFont(), false);
+				else
+					ctrl->SetFontEx(nullptr, false);
+			}
+			else
+			{
+				float curSize = ctrl->Font ? ctrl->Font->FontSize : GetDefaultFontObject()->FontSize;
+				ctrl->Font = new ::Font(v, curSize);
+			}
+		}
+		else if (propertyName == L"FontSize")
+		{
+			float fs = 0.0f;
+			if (!TryParseFloatWs(TrimWs(value), fs))
+				throw std::exception();
+			if (fs < 1.0f) fs = 1.0f;
+			if (fs > 200.0f) fs = 200.0f;
+			std::wstring curName = ctrl->Font ? ctrl->Font->FontName : GetDefaultFontObject()->FontName;
+			ctrl->Font = new ::Font(curName, fs);
 		}
 		else if (propertyName == L"X")
 		{
@@ -1495,6 +1588,12 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 			int yOffset = GetContentTopLocal();
 			CreatePropertyItem(L"Name", _canvas->GetDesignedFormName(), yOffset);
 			CreatePropertyItem(L"Text", _canvas->GetDesignedFormText(), yOffset);
+			{
+				std::wstring fn = _canvas->GetDesignedFormFontName();
+				std::wstring dispName = fn.empty() ? kFontDefaultOption : fn;
+				CreateEnumPropertyItem(L"FontName", dispName, GetFontNameOptions(), yOffset);
+				CreateEnumPropertyItem(L"FontSize", FloatToText(_canvas->GetDesignedFormFontSize()), GetFontSizeOptions(), yOffset);
+			}
 			CreateColorPropertyItem(L"BackColor", _canvas->GetDesignedFormBackColor(), yOffset);
 			CreateColorPropertyItem(L"ForeColor", _canvas->GetDesignedFormForeColor(), yOffset);
 			CreateBoolPropertyItem(L"ShowInTaskBar", _canvas->GetDesignedFormShowInTaskBar(), yOffset);
@@ -1536,6 +1635,19 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 	// 基本属性
 	CreatePropertyItem(L"Name", control->Name, yOffset);
 	CreatePropertyItem(L"Text", ctrl->Text, yOffset);
+	{
+		auto* shared = _canvas ? _canvas->GetDesignedFormSharedFont() : nullptr;
+		::Font* f = ctrl->Font;
+		bool isDefaultLike = false;
+		if (shared)
+			isDefaultLike = (f == shared);
+		else
+			isDefaultLike = (f == GetDefaultFontObject());
+		std::wstring dispName = isDefaultLike ? kFontDefaultOption : (f ? f->FontName : kFontDefaultOption);
+		CreateEnumPropertyItem(L"FontName", dispName, GetFontNameOptions(), yOffset);
+		float fs = f ? f->FontSize : GetDefaultFontObject()->FontSize;
+		CreateEnumPropertyItem(L"FontSize", FloatToText(fs), GetFontSizeOptions(), yOffset);
+	}
 
 	// 位置和大小
 	CreatePropertyItem(L"X", std::to_wstring(ctrl->Location.x), yOffset);

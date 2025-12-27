@@ -78,6 +78,23 @@ void RichTextBox::UpdateSelRange()
 }
 void RichTextBox::UpdateLayout()
 {
+	auto font = this->Font;
+	if (font != this->_lastLayoutFont)
+	{
+		this->_lastLayoutFont = font;
+		this->TextChanged = true;
+		this->selRangeDirty = true;
+		this->blocksDirty = true;
+		this->blockMetricsDirty = true;
+		this->_caretRectCacheValid = false;
+		if (this->layOutCache)
+		{
+			this->layOutCache->Release();
+			this->layOutCache = NULL;
+		}
+		ReleaseBlocks();
+	}
+
 	if (!this->ParentForm)
 		return;
 	SyncBufferFromControlIfNeeded();

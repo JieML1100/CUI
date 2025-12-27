@@ -17,6 +17,13 @@ private:
 	POINT _designedFormLocation = { 100, 100 };
 	D2D1_COLOR_F _designedFormBackColor = Colors::WhiteSmoke;
 	D2D1_COLOR_F _designedFormForeColor = Colors::Black;
+	// 窗体默认字体：空表示使用框架默认字体名（GetDefaultFontObject）
+	std::wstring _designedFormFontName;
+	float _designedFormFontSize = 18.0f;
+	// 共享字体对象：用于让“默认字体”的控件跟随窗体字体（控件 SetFontEx(..., false)）。
+	::Font* _designedFormSharedFont = nullptr;
+	// 已被替换但暂未释放的共享字体（避免 UAF：某些复合控件/缓存可能短时间仍引用旧指针）
+	std::vector<::Font*> _retiredDesignedFormSharedFonts;
 	bool _designedFormShowInTaskBar = true;
 	bool _designedFormTopMost = false;
 	bool _designedFormEnable = true;
@@ -111,6 +118,7 @@ private:
 	RECT ApplyResizeSnap(RECT desiredRectInCanvas, Control* referenceParent, DesignerControl::ResizeHandle handle);
 	void ApplyRectToControl(Control* c, const RECT& rectInCanvas);
 	static Thickness GetPaddingOfContainer(Control* container);
+	void RebuildDesignedFormSharedFont();
 	
 public:
 	DesignerCanvas(int x, int y, int width, int height);
@@ -128,6 +136,11 @@ public:
 	void SetDesignedFormBackColor(D2D1_COLOR_F c) { _designedFormBackColor = c; if (_clientSurface) _clientSurface->BackColor = c; this->PostRender(); }
 	D2D1_COLOR_F GetDesignedFormForeColor() const { return _designedFormForeColor; }
 	void SetDesignedFormForeColor(D2D1_COLOR_F c) { _designedFormForeColor = c; this->PostRender(); }
+	std::wstring GetDesignedFormFontName() const { return _designedFormFontName; }
+	float GetDesignedFormFontSize() const { return _designedFormFontSize; }
+	::Font* GetDesignedFormSharedFont() const { return _designedFormSharedFont; }
+	void SetDesignedFormFontName(const std::wstring& name);
+	void SetDesignedFormFontSize(float size);
 	bool GetDesignedFormShowInTaskBar() const { return _designedFormShowInTaskBar; }
 	void SetDesignedFormShowInTaskBar(bool v) { _designedFormShowInTaskBar = v; }
 	bool GetDesignedFormTopMost() const { return _designedFormTopMost; }

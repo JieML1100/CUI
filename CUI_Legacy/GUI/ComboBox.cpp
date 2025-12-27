@@ -122,10 +122,35 @@ void ComboBox::Update()
 			drawLeft = drawTop = (this->Height - textSize.height) / 2.0f;
 		}
 		d2d->DrawString(this->Text, abslocation.x + drawLeft, abslocation.y + drawTop, this->ForeColor, this->Font);
-		auto tSize = font->GetTextSize(L'﹀');
-		float tLeft = this->Width - (tSize.width * 1.5f);
-		float tTop = (this->Height - tSize.height) * 0.5f;
-		d2d->DrawString(L"﹀", abslocation.x + tLeft, abslocation.y + tTop, this->ForeColor);
+		// 右侧展开符号：使用图形绘制，避免随 Font 改变，并在展开/收起时显示不同图案
+		{
+			const float h = (float)this->Height;
+			float iconSize = h * 0.38f;
+			if (iconSize < 8.0f) iconSize = 8.0f;
+			if (iconSize > 14.0f) iconSize = 14.0f;
+			const float padRight = 8.0f;
+			const float cx = abslocation.x + (float)this->Width - padRight - iconSize * 0.5f;
+			const float cy = abslocation.y + h * 0.5f;
+			const float half = iconSize * 0.5f;
+			const float triH = iconSize * 0.55f;
+
+			D2D1_TRIANGLE tri{};
+			if (this->Expand)
+			{
+				// 已展开：上三角（提示可收起）
+				tri.point1 = D2D1::Point2F(cx - half, cy + triH * 0.5f);
+				tri.point2 = D2D1::Point2F(cx + half, cy + triH * 0.5f);
+				tri.point3 = D2D1::Point2F(cx, cy - triH * 0.5f);
+			}
+			else
+			{
+				// 未展开：下三角
+				tri.point1 = D2D1::Point2F(cx - half, cy - triH * 0.5f);
+				tri.point2 = D2D1::Point2F(cx + half, cy - triH * 0.5f);
+				tri.point3 = D2D1::Point2F(cx, cy + triH * 0.5f);
+			}
+			d2d->DrawTriangle(tri, this->ForeColor);
+		}
 		if (this->Expand)
 		{
 			for (int i = this->ExpandScroll; i < this->ExpandScroll + this->ExpandCount && i < this->values.Count; i++)

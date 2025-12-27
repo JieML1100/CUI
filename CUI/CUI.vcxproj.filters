@@ -78,12 +78,6 @@
     <ClInclude Include="GUI\TextBox.h">
       <Filter>GUI</Filter>
     </ClInclude>
-    <ClInclude Include="CustomControls.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="imgs.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
     <ClInclude Include="GUI\TreeView.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -93,17 +87,11 @@
     <ClInclude Include="GUI\NotifyIcon.h">
       <Filter>GUI</Filter>
     </ClInclude>
-    <ClInclude Include="DemoWindow.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
     <ClInclude Include="nanosvg.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="GUI\WebBrowser.h">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="resource.h">
-      <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Layout\DockPanel.h">
       <Filter>GUI\Layout</Filter>
@@ -144,42 +132,6 @@
     <ClInclude Include="GUI\DCompLayeredHost.h">
       <Filter>GUI</Filter>
     </ClInclude>
-    <ClInclude Include="Designer\Designer.h">
-      <Filter>Designer</Filter>
-    </ClInclude>
-    <ClInclude Include="Designer\DesignerCanvas.h">
-      <Filter>Designer</Filter>
-    </ClInclude>
-    <ClInclude Include="Designer\DesignerTypes.h">
-      <Filter>Designer</Filter>
-    </ClInclude>
-    <ClInclude Include="Designer\ToolBox.h">
-      <Filter>Designer</Filter>
-    </ClInclude>
-    <ClInclude Include="Designer\PropertyGrid.h">
-      <Filter>Designer</Filter>
-    </ClInclude>
-    <ClInclude Include="Designer\ComboBoxItemsEditorDialog.h">
-      <Filter>Designer</Filter>
-    </ClInclude>
-    <ClInclude Include="Designer\GridViewColumnsEditorDialog.h">
-      <Filter>Designer</Filter>
-    </ClInclude>
-    <ClInclude Include="Designer\TabControlPagesEditorDialog.h">
-      <Filter>Designer</Filter>
-    </ClInclude>
-    <ClInclude Include="Designer\ToolBarButtonsEditorDialog.h">
-      <Filter>Designer</Filter>
-    </ClInclude>
-    <ClInclude Include="Designer\TreeViewNodesEditorDialog.h">
-      <Filter>Designer</Filter>
-    </ClInclude>
-    <ClInclude Include="Designer\GridPanelDefinitionsEditorDialog.h">
-      <Filter>Designer</Filter>
-    </ClInclude>
-    <ClInclude Include="Designer\CodeGenerator.h">
-      <Filter>Designer</Filter>
-    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="GUI\Control.cpp">
@@ -187,9 +139,6 @@
     </ClCompile>
     <ClCompile Include="GUI\Form.cpp">
       <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="main.cpp">
-      <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Application.cpp">
       <Filter>GUI</Filter>
@@ -239,9 +188,6 @@
     <ClCompile Include="GUI\TabControl.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
-    <ClCompile Include="CustomControls.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
     <ClCompile Include="GUI\TreeView.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
@@ -250,9 +196,6 @@
     </ClCompile>
     <ClCompile Include="GUI\NotifyIcon.cpp">
       <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="DemoWindow.cpp">
-      <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="nanosvg.cpp">
       <Filter>源文件</Filter>
@@ -290,51 +233,8 @@
     <ClCompile Include="GUI\DCompLayeredHost.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
-    <ClCompile Include="Designer\Designer.cpp">
-      <Filter>Designer</Filter>
-    </ClCompile>
-    <ClCompile Include="Designer\DesignerCanvas.cpp">
-      <Filter>Designer</Filter>
-    </ClCompile>
-    <ClCompile Include="Designer\DesignerTypes.cpp">
-      <Filter>Designer</Filter>
-    </ClCompile>
-    <ClCompile Include="Designer\ToolBox.cpp">
-      <Filter>Designer</Filter>
-    </ClCompile>
-    <ClCompile Include="Designer\PropertyGrid.cpp">
-      <Filter>Designer</Filter>
-    </ClCompile>
-    <ClCompile Include="Designer\CodeGenerator.cpp">
-      <Filter>Designer</Filter>
-    </ClCompile>
-    <ClCompile Include="Designer\ComboBoxItemsEditorDialog.cpp">
-      <Filter>Designer</Filter>
-    </ClCompile>
-    <ClCompile Include="Designer\GridViewColumnsEditorDialog.cpp">
-      <Filter>Designer</Filter>
-    </ClCompile>
-    <ClCompile Include="Designer\TabControlPagesEditorDialog.cpp">
-      <Filter>Designer</Filter>
-    </ClCompile>
-    <ClCompile Include="Designer\ToolBarButtonsEditorDialog.cpp">
-      <Filter>Designer</Filter>
-    </ClCompile>
-    <ClCompile Include="Designer\TreeViewNodesEditorDialog.cpp">
-      <Filter>Designer</Filter>
-    </ClCompile>
-    <ClCompile Include="Designer\GridPanelDefinitionsEditorDialog.cpp">
-      <Filter>Designer</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="CUI.rc">
-      <Filter>资源文件</Filter>
-    </ResourceCompile>
-  </ItemGroup>
-  <ItemGroup>
-    <Image Include="cloud.ico">
-      <Filter>资源文件</Filter>
-    </Image>
+    <None Include="packages.config" />
   </ItemGroup>
 </Project>

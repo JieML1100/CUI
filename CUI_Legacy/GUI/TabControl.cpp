@@ -81,7 +81,7 @@ void TabControl::Update()
 					d2d->FillRect(abslocation.x + (TitleWidth * i), abslocation.y, TitleWidth, TitleHeight, this->SelectedTitleBackColor);
 				else
 					d2d->FillRect(abslocation.x + (TitleWidth * i), abslocation.y, TitleWidth, TitleHeight, this->TitleBackColor);
-				d2d->DrawString(this->operator[](i)->Text, abslocation.x + (TitleWidth * i) + lf, abslocation.y + tf, this->ForeColor);
+				d2d->DrawString(this->operator[](i)->Text, abslocation.x + (TitleWidth * i) + lf, abslocation.y + tf, this->ForeColor, font);
 				d2d->DrawRect(abslocation.x + (TitleWidth * i), abslocation.y, TitleWidth, TitleHeight, this->BolderColor, this->Boder);
 				d2d->PopDrawRect();
 			}

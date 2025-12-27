@@ -31,6 +31,8 @@ private:
 	bool _formCloseBox = true;
 	bool _formCenterTitle = true;
 	bool _formAllowResize = true;
+	std::wstring _formFontName;
+	float _formFontSize = 18.0f;
 	std::unordered_map<const DesignerControl*, std::string> _varNameOf;
 	
 	std::string WStringToString(const std::wstring& wstr) const;
@@ -63,7 +65,8 @@ public:
 		const std::map<std::wstring, std::wstring>& formEventHandlers = std::map<std::wstring, std::wstring>{},
 		bool formVisibleHead = true, int formHeadHeight = 24,
 		bool formMinBox = true, bool formMaxBox = true, bool formCloseBox = true,
-		bool formCenterTitle = true, bool formAllowResize = true);
+		bool formCenterTitle = true, bool formAllowResize = true,
+		std::wstring formFontName = L"", float formFontSize = 18.0f);
 	
 	bool GenerateFiles(std::wstring headerPath, std::wstring cppPath);
 	std::string GenerateHeader();

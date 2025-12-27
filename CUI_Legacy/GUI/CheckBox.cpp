@@ -40,7 +40,7 @@ void CheckBox::Update()
 		}
 		auto font = this->Font;
 		auto textSize = font->GetTextSize(this->Text);
-		d2d->DrawString(this->Text, abslocation.x + textSize.height + 2, abslocation.y, col);
+		d2d->DrawString(this->Text, abslocation.x + textSize.height + 2, abslocation.y, col, font);
 		d2d->DrawRect(
 			abslocation.x + (textSize.height * 0.2), abslocation.y + (textSize.height * 0.2),
 			textSize.height * 0.6, textSize.height * 0.6,

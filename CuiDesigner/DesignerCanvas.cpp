@@ -55,6 +55,13 @@ static RECT IntersectRectSafe(const RECT& a, const RECT& b)
 DesignerCanvas::DesignerCanvas(int x, int y, int width, int height)
 	: Panel(x, y, width, height)
 {
+	// 初始化窗体字体为框架默认字体
+	if (auto* def = GetDefaultFontObject())
+	{
+		_designedFormFontSize = def->FontSize;
+	}
+	_designedFormFontName = L"";
+
 	// 画布（外围）与设计面板（内部）区分：设计面板负责裁剪/承载被设计控件
 	this->BackColor = Colors::WhiteSmoke;
 	this->Boder = 2.0f;
@@ -73,10 +80,179 @@ DesignerCanvas::DesignerCanvas(int x, int y, int width, int height)
 	_clientSurface->BackColor = _designedFormBackColor;
 	_clientSurface->Boder = 0.0f;
 	_designSurface->AddControl(_clientSurface);
+
+	// 确保 clientSurface 使用窗体默认字体（初始为默认，不创建共享对象）
+	RebuildDesignedFormSharedFont();
 }
 
 DesignerCanvas::~DesignerCanvas()
 {
+	if (_designedFormSharedFont)
+	{
+		delete _designedFormSharedFont;
+		_designedFormSharedFont = nullptr;
+	}
+	for (auto* f : _retiredDesignedFormSharedFonts)
+	{
+		delete f;
+	}
+	_retiredDesignedFormSharedFonts.clear();
+}
+
+void DesignerCanvas::SetDesignedFormFontName(const std::wstring& name)
+{
+	_designedFormFontName = name;
+	RebuildDesignedFormSharedFont();
+	this->PostRender();
+}
+
+void DesignerCanvas::SetDesignedFormFontSize(float size)
+{
+	if (std::isnan(size) || std::isinf(size)) return;
+	if (size < 1.0f) size = 1.0f;
+	if (size > 200.0f) size = 200.0f;
+	_designedFormFontSize = size;
+	RebuildDesignedFormSharedFont();
+	this->PostRender();
+}
+
+void DesignerCanvas::RebuildDesignedFormSharedFont()
+{
+	auto rebindFontOf = [](Control* c, ::Font* value) {
+		if (!c) return;
+		if (value) c->SetFontEx(value, false);
+		else c->SetFontEx(nullptr, false);
+	};
+
+	auto isDefaultLikeFont = [](const ::Font* cur, const ::Font* oldShared) -> bool {
+		if (cur == GetDefaultFontObject()) return true;
+		if (oldShared && cur == oldShared) return true;
+		return false;
+	};
+
+	auto rebindFontsRecursive = [&](Control* root, ::Font* oldShared, ::Font* newShared) {
+		if (!root) return;
+		std::vector<Control*> stack;
+		stack.reserve(128);
+		stack.push_back(root);
+		while (!stack.empty())
+		{
+			auto* c = stack.back();
+			stack.pop_back();
+			if (!c) continue;
+			::Font* cur = c->Font;
+			if (isDefaultLikeFont(cur, oldShared))
+				rebindFontOf(c, newShared);
+			for (int i = 0; i < c->Children.Count; i++)
+			{
+				stack.push_back(c->Children[i]);
+			}
+		}
+	};
+
+	auto isFontUsedRecursive = [&](Control* root, const ::Font* f) -> bool {
+		if (!root || !f) return false;
+		std::vector<Control*> stack;
+		stack.reserve(128);
+		stack.push_back(root);
+		while (!stack.empty())
+		{
+			auto* c = stack.back();
+			stack.pop_back();
+			if (!c) continue;
+			if (c->Font == f) return true;
+			for (int i = 0; i < c->Children.Count; i++)
+				stack.push_back(c->Children[i]);
+		}
+		return false;
+	};
+
+	::Font* oldShared = _designedFormSharedFont;
+	_designedFormSharedFont = nullptr;
+
+	auto* def = GetDefaultFontObject();
+	std::wstring defName = def ? def->FontName : L"Arial";
+	float defSize = def ? def->FontSize : 18.0f;
+
+	std::wstring desiredName = _designedFormFontName.empty() ? defName : _designedFormFontName;
+	float desiredSize = _designedFormFontSize;
+	if (desiredSize < 1.0f) desiredSize = 1.0f;
+
+	bool needShared = true;
+	// 当字体名未显式设置且字号等于框架默认值时，使用框架默认字体（不创建共享对象）
+	if (_designedFormFontName.empty() && std::fabs(desiredSize - defSize) < 1e-6f && desiredName == defName)
+	{
+		needShared = false;
+	}
+
+	::Font* newShared = nullptr;
+	if (needShared)
+	{
+		try
+		{
+			newShared = new ::Font(desiredName, desiredSize);
+		}
+		catch (...)
+		{
+			newShared = nullptr;
+		}
+	}
+
+	_designedFormSharedFont = newShared;
+
+	// 让 clientSurface 也使用窗体字体（不拥有）
+	if (_clientSurface)
+	{
+		rebindFontOf(_clientSurface, newShared);
+	}
+
+	// 将“默认字体”的控件绑定到新的共享字体；显式字体不受影响。
+	// 注意：仅遍历 _designerControls 可能遗漏复合控件内部对象；这里额外递归遍历设计面板子树。
+	for (auto& dc : _designerControls)
+	{
+		if (!dc || !dc->ControlInstance) continue;
+		auto* c = dc->ControlInstance;
+		::Font* cur = c->Font;
+		if (!isDefaultLikeFont(cur, oldShared)) continue;
+		rebindFontOf(c, newShared);
+	}
+	rebindFontsRecursive(_designSurface ? (Control*)_designSurface : (Control*)_clientSurface, oldShared, newShared);
+
+	// 尝试释放旧共享字体：如果仍被任何控件引用则暂存，避免二次修改时 UAF 崩溃
+	if (oldShared)
+	{
+		bool stillUsed = false;
+		if (_designSurface)
+			stillUsed = isFontUsedRecursive(_designSurface, oldShared);
+		else if (_clientSurface)
+			stillUsed = isFontUsedRecursive(_clientSurface, oldShared);
+
+		if (stillUsed)
+			_retiredDesignedFormSharedFonts.push_back(oldShared);
+		else
+			delete oldShared;
+	}
+
+	// 顺便清理已退休的字体：若已不再被引用则释放
+	if (!_retiredDesignedFormSharedFonts.empty())
+	{
+		std::vector<::Font*> keep;
+		keep.reserve(_retiredDesignedFormSharedFonts.size());
+		for (auto* f : _retiredDesignedFormSharedFonts)
+		{
+			if (!f || f == _designedFormSharedFont)
+			{
+				if (f) keep.push_back(f);
+				continue;
+			}
+			bool used = false;
+			if (_designSurface) used = isFontUsedRecursive(_designSurface, f);
+			else if (_clientSurface) used = isFontUsedRecursive(_clientSurface, f);
+			if (used) keep.push_back(f);
+			else delete f;
+		}
+		_retiredDesignedFormSharedFonts.swap(keep);
+	}
 }
 
 void DesignerCanvas::Update()
@@ -2917,6 +3093,7 @@ bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* 
 		Json formObj = Json{
 			{"name", ToUtf8(_designedFormName)},
 			{"text", ToUtf8(_designedFormText)},
+			{"font", Json{{"name", ToUtf8(_designedFormFontName)}, {"size", _designedFormFontSize}}},
 			{"size", Json{{"w", _designedFormSize.cx}, {"h", _designedFormSize.cy}}},
 			{"location", Json{{"x", _designedFormLocation.x}, {"y", _designedFormLocation.y}}},
 			{"backColor", Json{{"r", _designedFormBackColor.r}, {"g", _designedFormBackColor.g}, {"b", _designedFormBackColor.b}, {"a", _designedFormBackColor.a}}},
@@ -3028,6 +3205,19 @@ bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* 
 			props["text"] = ToUtf8(c->Text);
 			props["location"] = Json{ {"x", c->Location.x}, {"y", c->Location.y} };
 			props["size"] = Json{ {"w", c->Size.cx}, {"h", c->Size.cy} };
+			// 字体：默认（跟随窗体/框架）不保存，显式字体才保存
+			{
+				::Font* f = c->Font;
+				bool inherited = false;
+				if (_designedFormSharedFont)
+					inherited = (f == _designedFormSharedFont);
+				else
+					inherited = (f == GetDefaultFontObject());
+				if (!inherited && f)
+				{
+					props["font"] = Json{ {"name", ToUtf8(f->FontName)}, {"size", f->FontSize} };
+				}
+			}
 			props["enable"] = c->Enable;
 			props["visible"] = c->Visible;
 			props["backColor"] = ColorToJson(c->BackColor);
@@ -3276,6 +3466,20 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 			_designedFormName = FromUtf8(form.value("name", std::string()));
 			if (_designedFormName.empty()) _designedFormName = L"MainForm";
 			_designedFormText = FromUtf8(form.value("text", std::string()));
+			// Font（name 允许为空，表示框架默认字体名）
+			if (form.contains("font") && form["font"].is_object())
+			{
+				auto& fj = form["font"];
+				_designedFormFontName = FromUtf8(fj.value("name", std::string()));
+				_designedFormFontSize = (float)fj.value("size", (double)_designedFormFontSize);
+				if (_designedFormFontSize < 1.0f) _designedFormFontSize = 1.0f;
+				if (_designedFormFontSize > 200.0f) _designedFormFontSize = 200.0f;
+			}
+			else
+			{
+				_designedFormFontName.clear();
+				if (auto* def = GetDefaultFontObject()) _designedFormFontSize = def->FontSize;
+			}
 			_designedFormShowInTaskBar = form.value("showInTaskBar", _designedFormShowInTaskBar);
 			_designedFormTopMost = form.value("topMost", _designedFormTopMost);
 			_designedFormEnable = form.value("enable", _designedFormEnable);
@@ -3338,6 +3542,7 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 				_designedFormLocation.y = form["location"].value("y", 100);
 			}
 			UpdateClientSurfaceLayout();
+			RebuildDesignedFormSharedFont();
 		}
 
 		struct Pending
@@ -3504,6 +3709,23 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 				c->GridRowSpan = it.props.value("gridRowSpan", c->GridRowSpan);
 				c->GridColumnSpan = it.props.value("gridColumnSpan", c->GridColumnSpan);
 				c->SizeMode = (ImageSizeMode)it.props.value("sizeMode", (int)c->SizeMode);
+
+				// Font：有显式设置则创建新对象，否则跟随窗体字体/框架默认
+				if (it.props.contains("font") && it.props["font"].is_object())
+				{
+					auto& fj = it.props["font"];
+					std::wstring fn = FromUtf8(fj.value("name", std::string()));
+					float fs = (float)fj.value("size", (double)GetDefaultFontObject()->FontSize);
+					if (fs < 1.0f) fs = 1.0f;
+					if (fs > 200.0f) fs = 200.0f;
+					if (fn.empty()) fn = GetDefaultFontObject()->FontName;
+					c->Font = new ::Font(fn, fs);
+				}
+				else
+				{
+					if (_designedFormSharedFont) c->SetFontEx(_designedFormSharedFont, false);
+					else c->SetFontEx(nullptr, false);
+				}
 			}
 
 			if (it.extra.is_object())

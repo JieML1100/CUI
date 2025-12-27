@@ -1,7 +1,7 @@
 #pragma once
 #include "RadioBox.h"
 #include "Form.h"
-UIClass RadioBox::Type() { return UIClass::UI_CheckBox; }
+UIClass RadioBox::Type() { return UIClass::UI_RadioBox; }
 RadioBox::RadioBox(std::wstring text, int x, int y)
 {
 	this->Text = text;
@@ -39,7 +39,7 @@ void RadioBox::Update()
 		}
 		auto font = this->Font;
 		auto textSize = font->GetTextSize(this->Text);
-		d2d->DrawString(this->Text, abslocation.x + textSize.height + 2, abslocation.y, col);
+		d2d->DrawString(this->Text, abslocation.x + textSize.height + 2, abslocation.y, col, font);
 		d2d->DrawEllipse(
 			abslocation.x + (textSize.height * 0.5), abslocation.y + (textSize.height * 0.5),
 			textSize.height * 0.3, textSize.height * 0.3,

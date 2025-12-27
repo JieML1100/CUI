@@ -217,6 +217,9 @@ void Menu::Update()
 		{
 			auto* it = (MenuItem*)this->operator[](i);
 			if (!it) continue;
+			// Menu 是复合控件：顶层 MenuItem 默认应跟随 Menu 的字体
+			if (it->Font == GetDefaultFontObject())
+				it->SetFontEx(font, false);
 			auto ts = font->GetTextSize(it->Text);
 			int w = (int)(ts.width + ItemPaddingX * 2.0f);
 			if (w < 50) w = 50;

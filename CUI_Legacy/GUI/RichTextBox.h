@@ -6,6 +6,7 @@ class RichTextBox : public Control
 private:
 	std::wstring buffer;
 	bool bufferSyncedFromControl = false;
+	::Font* _lastLayoutFont = NULL;
 
 	POINT selectedPos = { 0,0 };
 	bool isDraggingScroll = false;

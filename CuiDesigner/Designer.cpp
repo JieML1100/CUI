@@ -348,7 +348,9 @@ void Designer::OnExportClick()
 			_canvas ? _canvas->GetDesignedFormMaxBox() : true,
 			_canvas ? _canvas->GetDesignedFormCloseBox() : true,
 			_canvas ? _canvas->GetDesignedFormCenterTitle() : true,
-			_canvas ? _canvas->GetDesignedFormAllowResize() : true);
+			_canvas ? _canvas->GetDesignedFormAllowResize() : true,
+			_canvas ? _canvas->GetDesignedFormFontName() : L"",
+			_canvas ? _canvas->GetDesignedFormFontSize() : GetDefaultFontObject()->FontSize);
 		
 		if (generator.GenerateFiles(headerPath, cppPath))
 		{

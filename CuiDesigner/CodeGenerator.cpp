@@ -217,18 +217,22 @@ CodeGenerator::CodeGenerator(std::wstring className, const std::vector<std::shar
 	const std::map<std::wstring, std::wstring>& formEventHandlers,
 	bool formVisibleHead, int formHeadHeight,
 	bool formMinBox, bool formMaxBox, bool formCloseBox,
-	bool formCenterTitle, bool formAllowResize)
+	bool formCenterTitle, bool formAllowResize,
+	std::wstring formFontName, float formFontSize)
 	: _className(className), _controls(controls), _formText(formText), _formName(formName), _formSize(formSize), _formLocation(formLocation),
 	_formBackColor(formBackColor), _formForeColor(formForeColor),
 	_formShowInTaskBar(formShowInTaskBar), _formTopMost(formTopMost), _formEnable(formEnable), _formVisible(formVisible),
 	_formEventHandlers(formEventHandlers),
 	_formVisibleHead(formVisibleHead), _formHeadHeight(formHeadHeight),
 	_formMinBox(formMinBox), _formMaxBox(formMaxBox), _formCloseBox(formCloseBox),
-	_formCenterTitle(formCenterTitle), _formAllowResize(formAllowResize)
+	_formCenterTitle(formCenterTitle), _formAllowResize(formAllowResize),
+	_formFontName(std::move(formFontName)), _formFontSize(formFontSize)
 {
 	if (_formSize.cx <= 0) _formSize.cx = 800;
 	if (_formSize.cy <= 0) _formSize.cy = 600;
 	if (_formHeadHeight < 0) _formHeadHeight = 0;
+	if (_formFontSize < 1.0f) _formFontSize = 1.0f;
+	if (_formFontSize > 200.0f) _formFontSize = 200.0f;
 	if (_formName.empty()) _formName = L"MainForm";
 	if (_formLocation.x < -10000) _formLocation.x = -10000;
 	if (_formLocation.y < -10000) _formLocation.y = -10000;
@@ -648,6 +652,33 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 		code << indentStr << name << "->Enable = false;\n";
 	if (!ctrl->Visible)
 		code << indentStr << name << "->Visible = false;\n";
+
+	// Font：默认字体不输出；若窗体 Font 与框架默认不同，则用共享 __formFont 绑定“默认控件”
+	{
+		auto* def = GetDefaultFontObject();
+		std::wstring defName = def ? def->FontName : L"Arial";
+		float defSize = def ? def->FontSize : 18.0f;
+		std::wstring formNameW = _formFontName.empty() ? defName : _formFontName;
+		float formSize = _formFontSize;
+		bool formHasShared = !(_formFontName.empty() && formNameW == defName && std::fabs(formSize - defSize) < 1e-6f);
+
+		std::wstring curNameW = ctrl->Font ? ctrl->Font->FontName : defName;
+		float curSize = ctrl->Font ? ctrl->Font->FontSize : defSize;
+		auto feq = [](float a, float b) { return std::fabs(a - b) < 1e-3f; };
+
+		if (formHasShared && curNameW == formNameW && feq(curSize, formSize))
+		{
+			code << indentStr << name << "->SetFontEx(__formFont, false);\n";
+		}
+		else
+		{
+			if (!(curNameW == defName && feq(curSize, defSize)))
+			{
+				code << indentStr << name << "->Font = new ::Font(L\"" << EscapeWStringLiteral(curNameW) << "\", "
+					<< FloatLiteral(curSize) << ");\n";
+			}
+		}
+	}
 
 	// 颜色
 	code << indentStr << name << "->BackColor = " << ColorToString(ctrl->BackColor) << ";\n";
@@ -1081,6 +1112,23 @@ std::string CodeGenerator::GenerateCpp()
 	cpp << "\tthis->TopMost = " << (_formTopMost ? "true" : "false") << ";\n";
 	cpp << "\tthis->Enable = " << (_formEnable ? "true" : "false") << ";\n";
 	cpp << "\tthis->Visible = " << (_formVisible ? "true" : "false") << ";\n\n";
+
+	// Font（共享给默认控件）
+	{
+		auto* def = GetDefaultFontObject();
+		std::wstring defName = def ? def->FontName : L"Arial";
+		float defSize = def ? def->FontSize : 18.0f;
+		std::wstring formNameW = _formFontName.empty() ? defName : _formFontName;
+		float formSize = _formFontSize;
+		bool formHasShared = !(_formFontName.empty() && formNameW == defName && std::fabs(formSize - defSize) < 1e-6f);
+		if (formHasShared)
+		{
+			cpp << "\t// Font\n";
+			cpp << "\tauto* __formFont = new ::Font(L\"" << EscapeWStringLiteral(formNameW) << "\", "
+				<< FloatLiteral(formSize) << ");\n";
+			cpp << "\tthis->SetFontEx(__formFont, true);\n\n";
+		}
+	}
 	
 	cpp << "\t// 创建控件\n";
 
