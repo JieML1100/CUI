@@ -23,7 +23,7 @@ DemoWindow1::DemoWindow1()
 	this->Visible = true;
 
 	// Font
-	auto* __formFont = new ::Font(L"海派腔调森系圆-闪", 16.f);
+	auto* __formFont = new ::Font(L"Arial", 16.f);
 	this->SetFontEx(__formFont, true);
 
 	// 创建控件
@@ -789,14 +789,13 @@ void DemoWindow1::slider1_OnValueChanged(Control* sender, float oldValue, float 
 
 void DemoWindow1::switch1_OnChecked(Control* sender)
 {
-	(void)sender;
+	gridView15->Visible = sender->Checked;
 }
 
 void DemoWindow1::menu1_OnMenuCommand(Control* sender, int id)
 {
 	(void)sender;
-	if(id == 13) {
+	if (id == 13) {
 		this->Close();
 	}
 }
-
