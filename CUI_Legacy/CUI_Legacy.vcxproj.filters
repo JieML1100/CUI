@@ -19,9 +19,6 @@
     <Filter Include="GUI\Layout">
       <UniqueIdentifier>{b8fd3b1a-0e99-45f4-a76d-b54d51ef0155}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Designer">
-      <UniqueIdentifier>{3d8a9f0b-1234-4567-89ab-cdef01234567}</UniqueIdentifier>
-    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GUI\Control.h">

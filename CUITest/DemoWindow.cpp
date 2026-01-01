@@ -369,6 +369,14 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 	gridview1->Margin = Thickness(10, 32, 10, 10);
 	gridview1->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
 
+	gridview1->Columns.Add(GridViewColumn(L"Image", 80, ColumnType::Image));
+
+	GridViewColumn comColumn = GridViewColumn(L"ComboBox", 80, ColumnType::ComboBox);
+	comColumn.ComboBoxItems.push_back(L"Item 1");
+	comColumn.ComboBoxItems.push_back(L"Item 2");
+	comColumn.ComboBoxItems.push_back(L"Item 3");
+	gridview1->Columns.Add(comColumn);
+
 	GridViewColumn textColumn = GridViewColumn(L"Text", 100, ColumnType::Text, false);
 	textColumn.SetSortFunc([](const CellValue& lhs, const CellValue& rhs) -> int {
 		wchar_t* end1 = nullptr;
@@ -380,15 +388,25 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 		if (a == b) return 0;
 		return (a < b) ? -1 : 1;
 		});
-	gridview1->Columns.Add(GridViewColumn(L"Image", 80, ColumnType::Image));
-	gridview1->Columns.Add(GridViewColumn(L"Check", 80, ColumnType::Check));
 	gridview1->Columns.Add(textColumn);
+
+	GridViewColumn buttonColumn = GridViewColumn(L"Button", 80, ColumnType::Button);
+	gridview1->Columns.Add(buttonColumn);
+
+
 	gridview1->Columns.Add(GridViewColumn(L"Check", 80, ColumnType::Check));
 	gridview1->Columns.Add(GridViewColumn(L"Edit", 200, ColumnType::Text, true));
 	for (int i = 0; i < 64; i++)
 	{
 		GridViewRow row;
-		row.Cells = { bmps[i % 10] ,i % 2 == 0,std::to_wstring(Random::Next()) ,i % 3 == 0 ,std::to_wstring(Random::Next()) };
+		row.Cells = {
+			bmps[i % 10] ,
+			i % 2 == 0,
+			std::to_wstring(Random::Next()) ,
+			L"确定",
+			i % 3 == 0 ,
+			std::to_wstring(Random::Next())
+		};
 		gridview1->Rows.Add(row);
 	}
 

@@ -1353,6 +1353,8 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 	this->Render->ClearTransform();
 	this->Render->PushDrawRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top));
 	this->Render->FillRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top), this->BackColor);
+	this->Render->DrawRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top), Colors::White, 2.0f);
+	this->Render->DrawRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top), Colors::Black, 1.0f);
 
 	if (this->Image)
 	{

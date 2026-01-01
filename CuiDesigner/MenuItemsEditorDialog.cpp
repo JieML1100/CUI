@@ -336,6 +336,7 @@ MenuItemsEditorDialog::MenuItemsEditorDialog(Menu* target)
 	this->MinBox = false;
 	this->MaxBox = false;
 	this->BackColor = Colors::WhiteSmoke;
+	this->AllowResize = false;
 
 	auto tip = this->AddControl(new Label(
 		L"用 \t 缩进表示层级（支持多级子菜单）；用 ---- 表示分割线（顶层/子层都支持）。\n"

@@ -3,7 +3,7 @@
 #pragma comment(linker, "/subsystem:\"windows\" /entry:\"mainCRTStartup\"")
 int main()
 {
-	DemoWindow1 fm;
+	DemoWindow fm;
 	fm.Show();
 	auto notify = TestNotifyIcon(fm.Handle);
 	notify->ShowNotifyIcon();

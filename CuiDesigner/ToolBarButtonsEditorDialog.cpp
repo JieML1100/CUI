@@ -82,6 +82,7 @@ ToolBarButtonsEditorDialog::ToolBarButtonsEditorDialog(ToolBar* target)
 	this->MinBox = false;
 	this->MaxBox = false;
 	this->BackColor = Colors::WhiteSmoke;
+	this->AllowResize = false;
 
 	auto tip = this->AddControl(new Label(L"双击单元格可编辑；可新增/删除/重排。", 12, 12));
 	tip->Size = { 536, 20 };

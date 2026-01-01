@@ -3,11 +3,15 @@
 #include <functional>
 #pragma comment(lib, "Imm32.lib")
 typedef Event<void(class GridView*, int c, int r, bool v) > OnGridViewCheckStateChangedEvent;
+typedef Event<void(class GridView*, int c, int r)> OnGridViewButtonClickEvent;
+typedef Event<void(class GridView*, int c, int r, int selectedIndex, std::wstring selectedText)> OnGridViewComboBoxSelectionChangedEvent;
 enum class ColumnType
 {
 	Text,
 	Image,
 	Check,
+	Button,
+	ComboBox,
 };
 
 class CellValue;
@@ -18,6 +22,8 @@ public:
 	float Width = 120;
 	ColumnType Type = ColumnType::Text;
 	bool CanEdit = true;
+	// ComboBox 列：下拉选项列表（当 Count>0 时默认选中第 0 项）
+	List<std::wstring> ComboBoxItems = List<std::wstring>();
 	std::function<int(const CellValue& lhs, const CellValue& rhs)> SortFunc = nullptr;
 	GridViewColumn(std::wstring name = L"", float width = 120.0F, ColumnType type = ColumnType::Text, bool canEdit = false);
 	void SetSortFunc(std::function<int(const CellValue& lhs, const CellValue& rhs)> func)
@@ -78,6 +84,11 @@ public:
 	int UnderMouseRowIndex = -1;
 	D2D1_COLOR_F ButtonBackColor = Colors::GhostWhite;
 	D2D1_COLOR_F ButtonCheckedColor = Colors::White;
+	// Button 列：独立的悬浮/按下效果（尽量模拟 WinForms Button）
+	D2D1_COLOR_F ButtonHoverBackColor = Colors::WhiteSmoke;
+	D2D1_COLOR_F ButtonPressedBackColor = Colors::LightGray;
+	D2D1_COLOR_F ButtonBorderDarkColor = Colors::DimGrey;
+	D2D1_COLOR_F ButtonBorderLightColor = Colors::White;
 	D2D1_COLOR_F SelectedItemBackColor = { 0.f , 0.f , 1.f , 0.5f };
 	D2D1_COLOR_F SelectedItemForeColor = Colors::White;
 	D2D1_COLOR_F UnderMouseItemBackColor = { 0.5961f , 0.9608f , 1.f , 0.5f };
@@ -90,6 +101,8 @@ public:
 	D2D1_COLOR_F EditSelectedForeColor = Colors::White;
 	float EditTextMargin = 3.0f;
 	OnGridViewCheckStateChangedEvent OnGridViewCheckStateChanged;
+	OnGridViewButtonClickEvent OnGridViewButtonClick;
+	OnGridViewComboBoxSelectionChangedEvent OnGridViewComboBoxSelectionChanged;
 	SelectionChangedEvent SelectionChanged;
 	float ScrollXOffset = 0.0f;
 	GridViewRow& SelectedRow();
@@ -140,6 +153,9 @@ private:
 	void HandleCellClick(int col, int row);
 	void ToggleCheckState(int col, int row);
 	void StartEditingCell(int col, int row);
+	void EnsureComboBoxCellDefaultSelection(int col, int row);
+	void ToggleComboBoxEditor(int col, int row);
+	void CloseComboBoxEditor();
 	void CancelEditing(bool revert = true);
 	void SaveCurrentEditingCell(bool commit = true);
 	void AdjustScrollPosition();
@@ -160,6 +176,14 @@ private:
 	int EditSelectionStart = 0;
 	int EditSelectionEnd = 0;
 	float EditOffsetX = 0.0f;
+
+	class ComboBox* _cellComboBox = NULL;
+	int _cellComboBoxColumnIndex = -1;
+	int _cellComboBoxRowIndex = -1;
+
+	bool _buttonMouseDown = false;
+	int _buttonDownColumnIndex = -1;
+	int _buttonDownRowIndex = -1;
 
 	float GetRowHeightPx();
 	float GetHeadHeightPx();

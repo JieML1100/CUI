@@ -17,6 +17,8 @@ bool GridViewColumnsEditorDialog::TryParseColumnType(const std::wstring& s, Colu
 	if (t == L"text") { out = ColumnType::Text; return true; }
 	if (t == L"image") { out = ColumnType::Image; return true; }
 	if (t == L"check") { out = ColumnType::Check; return true; }
+	if (t == L"button") { out = ColumnType::Button; return true; }
+	if (t == L"combobox" || t == L"combo") { out = ColumnType::ComboBox; return true; }
 	return false;
 }
 
@@ -90,6 +92,8 @@ void GridViewColumnsEditorDialog::RefreshGridFromTarget()
 		{
 		case ColumnType::Image: type = L"image"; break;
 		case ColumnType::Check: type = L"check"; break;
+		case ColumnType::Button: type = L"button"; break;
+		case ColumnType::ComboBox: type = L"combobox"; break;
 		default: break;
 		}
 		GridViewRow r;
@@ -107,8 +111,11 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 	this->MinBox = false;
 	this->MaxBox = false;
 	this->BackColor = Colors::WhiteSmoke;
+	this->AllowResize = false;
 
 	auto tip = this->AddControl(new Label(L"双击单元格可编辑；type 支持 text / image / check", 12, 12));
+	// 注：button/combobox 属于显示/交互类型，不一定需要可编辑
+	tip->Text = L"双击单元格可编辑；type 支持 text / image / check / button / combobox";
 	tip->Size = { 596, 20 };
 	tip->Font = new ::Font(L"Microsoft YaHei", 12.0f);
 

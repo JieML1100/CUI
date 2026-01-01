@@ -124,6 +124,7 @@ GridPanelDefinitionsEditorDialog::GridPanelDefinitionsEditorDialog(GridPanel* ta
 	this->MinBox = false;
 	this->MaxBox = false;
 	this->BackColor = Colors::WhiteSmoke;
+	this->AllowResize = false;
 
 	auto tip = this->AddControl(new Label(L"每行一个定义：auto / 数字(像素) / *(星号) / 2*", 12, 12));
 	tip->Size = { 690, 20 };

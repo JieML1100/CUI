@@ -99,6 +99,7 @@ TreeViewNodesEditorDialog::TreeViewNodesEditorDialog(TreeView* target)
 	this->MinBox = false;
 	this->MaxBox = false;
 	this->BackColor = Colors::WhiteSmoke;
+	this->AllowResize = false;
 
 	auto tip = this->AddControl(new Label(L"用 \t 缩进表示层级：\n一级\n\t二级\n\t\t三级", 12, 12));
 	tip->Size = { 570, 44 };

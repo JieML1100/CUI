@@ -85,6 +85,7 @@ ComboBoxItemsEditorDialog::ComboBoxItemsEditorDialog(ComboBox* target)
 	this->MinBox = false;
 	this->MaxBox = false;
 	this->BackColor = Colors::WhiteSmoke;
+	this->AllowResize = false;
 
 	auto title = this->AddControl(new Label(L"双击单元格可编辑；也可在下方输入后新增。", 12, 12));
 	title->Size = { 496, 20 };

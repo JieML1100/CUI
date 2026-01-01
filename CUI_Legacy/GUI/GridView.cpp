@@ -6,7 +6,7 @@
 #include <cwchar>
 #pragma comment(lib, "Imm32.lib")
 
-CellValue::CellValue() : Text(L"")
+CellValue::CellValue() : Text(L""), Image(NULL), Tag(NULL)
 {
 }
 CellValue::CellValue(std::wstring s) : Text(s), Tag(NULL), Image(NULL)
@@ -56,6 +56,15 @@ GridView::GridView(int x, int y, int width, int height)
 
 GridView::~GridView()
 {
+	CloseComboBoxEditor();
+	if (this->_cellComboBox)
+	{
+		delete this->_cellComboBox;
+		this->_cellComboBox = NULL;
+	}
+	this->_cellComboBoxColumnIndex = -1;
+	this->_cellComboBoxRowIndex = -1;
+
 	auto baseFont = this->Font;
 	if (this->HeadFont && this->HeadFont != baseFont && this->HeadFont != GetDefaultFontObject())
 	{
@@ -151,6 +160,16 @@ CursorKind GridView::QueryCursor(int xof, int yof)
 
 	if (HitTestHeaderDivider(xof, yof) >= 0)
 		return CursorKind::SizeWE;
+
+	{
+		POINT undermouseIndex = GetGridViewUnderMouseItem(xof, yof, this);
+		if (undermouseIndex.y >= 0 && undermouseIndex.x >= 0 &&
+			undermouseIndex.y < this->Rows.Count && undermouseIndex.x < this->Columns.Count)
+		{
+			if (this->Columns[undermouseIndex.x].Type == ColumnType::Button)
+				return CursorKind::Hand;
+		}
+	}
 
 	if (this->Editing && this->IsSelected())
 	{
@@ -772,6 +791,101 @@ void GridView::Update()
 								}
 							}
 							break;
+							case ColumnType::Button:
+							{
+								// Button：独立样式（WinForms-like），不使用普通单元格的“选中底色”
+								const bool isHot = (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex);
+								const bool isPressed = (this->_buttonMouseDown && isHot &&
+									this->_buttonDownColumnIndex == c && this->_buttonDownRowIndex == r &&
+									(GetAsyncKeyState(VK_LBUTTON) & 0x8000));
+
+								D2D1_COLOR_F back = this->ButtonBackColor;
+								if (isPressed) back = this->ButtonPressedBackColor;
+								else if (isHot) back = this->ButtonHoverBackColor;
+
+								d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, back);
+
+								// 3D Border: raised vs sunken
+								const float px = 1.0f;
+								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->ButtonBorderDarkColor, 1.0f);
+								if (c_width > 2.0f && _r_height > 2.0f)
+								{
+									auto innerColor = isPressed ? this->ScrollForeColor : this->ButtonBorderLightColor;
+									d2d->DrawRect(abslocation.x + drawX + px, abslocation.y + yf + px,
+										c_width - (px * 2.0f), _r_height - (px * 2.0f),
+										innerColor, 1.0f);
+								}
+
+								// Text center (+ pressed offset)
+								if (row.Cells.Count > c)
+								{
+									auto textSize = font->GetTextSize(row.Cells[c].Text);
+									float tx = (c_width - textSize.width) * 0.5f;
+									float ty = (_r_height - textSize.height) * 0.5f;
+									if (tx < 0.0f) tx = 0.0f;
+									if (ty < 0.0f) ty = 0.0f;
+									if (isPressed) { tx += 1.0f; ty += 1.0f; }
+									d2d->DrawString(row.Cells[c].Text,
+										abslocation.x + drawX + tx,
+										abslocation.y + yf + ty,
+										this->ForeColor, font);
+								}
+							}
+							break;
+							case ColumnType::ComboBox:
+							{
+								EnsureComboBoxCellDefaultSelection(c, r);
+								D2D1_COLOR_F back = D2D1_COLOR_F{ 0,0,0,0 };
+								D2D1_COLOR_F border = this->ForeColor;
+								D2D1_COLOR_F fore = this->ForeColor;
+								bool fill = false;
+
+								if (c == this->SelectedColumnIndex && r == this->SelectedRowIndex)
+								{
+									back = this->SelectedItemBackColor;
+									border = this->SelectedItemForeColor;
+									fore = this->SelectedItemForeColor;
+									fill = true;
+								}
+								else if (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex)
+								{
+									back = this->UnderMouseItemBackColor;
+									border = this->UnderMouseItemForeColor;
+									fore = this->UnderMouseItemForeColor;
+									fill = true;
+								}
+
+								if (fill)
+									d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, back);
+								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, border,
+									r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
+								if (row.Cells.Count > c)
+								{
+									d2d->DrawString(row.Cells[c].Text,
+										abslocation.x + drawX + 4.0f,
+										abslocation.y + yf + text_top,
+										fore, font);
+								}
+
+								// Draw drop arrow on right
+								{
+									const float h = _r_height;
+									float iconSize = h * 0.38f;
+									if (iconSize < 8.0f) iconSize = 8.0f;
+									if (iconSize > 14.0f) iconSize = 14.0f;
+									const float padRight = 8.0f;
+									const float cx = abslocation.x + drawX + c_width - padRight - iconSize * 0.5f;
+									const float cy = abslocation.y + yf + h * 0.5f;
+									const float half = iconSize * 0.5f;
+									const float triH = iconSize * 0.55f;
+									D2D1_TRIANGLE tri{};
+									tri.point1 = D2D1::Point2F(cx - half, cy - triH * 0.5f);
+									tri.point2 = D2D1::Point2F(cx + half, cy - triH * 0.5f);
+									tri.point3 = D2D1::Point2F(cx, cy + triH * 0.5f);
+									d2d->FillTriangle(tri, fore);
+								}
+							}
+							break;
 							case ColumnType::Image:
 							{
 								float _size = c_width < row_height ? c_width : row_height;
@@ -919,7 +1033,9 @@ void GridView::AutoSizeColumn(int col)
 			auto& r = this->Rows[i];
 			if (r.Cells.Count > col)
 			{
-				if (this->Columns[col].Type == ColumnType::Text)
+				if (this->Columns[col].Type == ColumnType::Text ||
+					this->Columns[col].Type == ColumnType::Button ||
+					this->Columns[col].Type == ColumnType::ComboBox)
 				{
 					auto width = font->GetTextSize(r.Cells[col].Text.c_str()).width;
 					if (column.Width < width)
@@ -940,6 +1056,150 @@ void GridView::ToggleCheckState(int col, int row)
 	auto& cell = this->Rows[row].Cells[col];
 	cell.Tag = __int64(!cell.Tag);
 	this->OnGridViewCheckStateChanged(this, col, row, cell.Tag != 0);
+}
+
+void GridView::EnsureComboBoxCellDefaultSelection(int col, int row)
+{
+	if (col < 0 || row < 0) return;
+	if (col >= this->Columns.Count || row >= this->Rows.Count) return;
+	if (this->Columns[col].Type != ColumnType::ComboBox) return;
+
+	auto& column = this->Columns[col];
+	if (column.ComboBoxItems.Count <= 0) return;
+	auto& rowObj = this->Rows[row];
+	if (rowObj.Cells.Count <= col)
+		rowObj.Cells.resize((size_t)col + 1);
+	auto& cell = rowObj.Cells[col];
+
+	const __int64 idx = cell.Tag;
+	if (idx < 0 || idx >= column.ComboBoxItems.Count)
+	{
+		cell.Tag = 0;
+		cell.Text = column.ComboBoxItems[0];
+	}
+	else
+	{
+		// Keep Text in sync with index if needed
+		const auto& t = column.ComboBoxItems[(int)idx];
+		if (cell.Text != t)
+			cell.Text = t;
+	}
+}
+
+void GridView::CloseComboBoxEditor()
+{
+	if (!this->_cellComboBox) return;
+
+	if (this->ParentForm && this->ParentForm->ForegroundControl == this->_cellComboBox)
+		this->ParentForm->ForegroundControl = NULL;
+
+	this->_cellComboBox->Expand = false;
+	this->_cellComboBoxColumnIndex = -1;
+	this->_cellComboBoxRowIndex = -1;
+}
+
+void GridView::ToggleComboBoxEditor(int col, int row)
+{
+	if (col < 0 || row < 0) return;
+	if (col >= this->Columns.Count || row >= this->Rows.Count) return;
+	if (!this->ParentForm) return;
+	if (this->Columns[col].Type != ColumnType::ComboBox) return;
+
+	EnsureComboBoxCellDefaultSelection(col, row);
+
+	// If same cell and already open => close
+	if (this->_cellComboBox &&
+		this->ParentForm->ForegroundControl == this->_cellComboBox &&
+		this->_cellComboBox->Expand &&
+		this->_cellComboBoxColumnIndex == col &&
+		this->_cellComboBoxRowIndex == row)
+	{
+		CloseComboBoxEditor();
+		this->ParentForm->Invalidate(true);
+		this->PostRender();
+		return;
+	}
+
+	// Commit text edit when switching modes
+	if (this->Editing)
+	{
+		SaveCurrentEditingCell(true);
+		this->Editing = false;
+		this->EditingColumnIndex = -1;
+		this->EditingRowIndex = -1;
+		this->EditingText.clear();
+		this->EditingOriginalText.clear();
+		this->EditSelectionStart = this->EditSelectionEnd = 0;
+		this->EditOffsetX = 0.0f;
+	}
+
+	this->SelectedColumnIndex = col;
+	this->SelectedRowIndex = row;
+	this->SelectionChanged(this);
+
+	if (!this->_cellComboBox)
+	{
+		this->_cellComboBox = new ComboBox(L"", 0, 0, 120, 24);
+	}
+
+	D2D1_RECT_F cellLocal{};
+	if (!TryGetCellRectLocal(col, row, cellLocal)) return;
+
+	const auto abs = this->AbsLocation;
+	const int x = (int)std::round((float)abs.x + cellLocal.left);
+	const int y = (int)std::round((float)abs.y + cellLocal.top);
+	const int w = (int)std::round(cellLocal.right - cellLocal.left);
+	const int h = (int)std::round(cellLocal.bottom - cellLocal.top);
+
+	auto& column = this->Columns[col];
+	auto& rowObj = this->Rows[row];
+	if (rowObj.Cells.Count <= col)
+		rowObj.Cells.resize((size_t)col + 1);
+	auto& cell = rowObj.Cells[col];
+
+	this->_cellComboBox->ParentForm = this->ParentForm;
+	this->_cellComboBox->Font = this->Font;
+	this->_cellComboBox->Location = POINT{ x, y };
+	this->_cellComboBox->Size = SIZE{ (w > 0 ? w : 1), (h > 0 ? h : 1) };
+	this->_cellComboBox->values = column.ComboBoxItems;
+	this->_cellComboBox->SelectedIndex = (int)cell.Tag;
+	if (this->_cellComboBox->SelectedIndex < 0) this->_cellComboBox->SelectedIndex = 0;
+	if (this->_cellComboBox->SelectedIndex >= this->_cellComboBox->values.Count)
+		this->_cellComboBox->SelectedIndex = (this->_cellComboBox->values.Count > 0) ? (this->_cellComboBox->values.Count - 1) : 0;
+	this->_cellComboBox->Text = (this->_cellComboBox->values.Count > 0) ? this->_cellComboBox->values[this->_cellComboBox->SelectedIndex] : L"";
+
+	int expandCount = 4;
+	if (this->_cellComboBox->values.Count > 0)
+		expandCount = std::min(4, this->_cellComboBox->values.Count);
+	if (expandCount < 1) expandCount = 1;
+	this->_cellComboBox->ExpandCount = expandCount;
+
+	this->_cellComboBox->OnSelectionChanged.Clear();
+	this->_cellComboBox->OnSelectionChanged += [this, col, row](Control* sender)
+	{
+		(void)sender;
+		if (col < 0 || row < 0) return;
+		if (col >= this->Columns.Count || row >= this->Rows.Count) return;
+		if (this->Columns[col].Type != ColumnType::ComboBox) return;
+		auto& column2 = this->Columns[col];
+		if (!this->_cellComboBox) return;
+		if (column2.ComboBoxItems.Count <= 0) return;
+		int idx = this->_cellComboBox->SelectedIndex;
+		if (idx < 0) idx = 0;
+		if (idx >= column2.ComboBoxItems.Count) idx = column2.ComboBoxItems.Count - 1;
+		auto& cell2 = this->Rows[row].Cells[col];
+		cell2.Tag = (__int64)idx;
+		cell2.Text = column2.ComboBoxItems[idx];
+		this->OnGridViewComboBoxSelectionChanged(this, col, row, idx, cell2.Text);
+		this->PostRender();
+	};
+
+	this->_cellComboBoxColumnIndex = col;
+	this->_cellComboBoxRowIndex = row;
+	this->_cellComboBox->Expand = true;
+	this->ParentForm->ForegroundControl = this->_cellComboBox;
+	this->ParentForm->Invalidate(true);
+	this->PostRender();
 }
 void GridView::StartEditingCell(int col, int row)
 {
@@ -1307,6 +1567,31 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 		if (undermouseIndex.y >= 0 && undermouseIndex.x >= 0 &&
 			undermouseIndex.y < this->Rows.Count && undermouseIndex.x < this->Columns.Count)
 		{
+			// Keep hover index in sync even if we didn't get a prior WM_MOUSEMOVE.
+			this->UnderMouseColumnIndex = undermouseIndex.x;
+			this->UnderMouseRowIndex = undermouseIndex.y;
+
+			if (this->Columns[undermouseIndex.x].Type == ColumnType::Button)
+			{
+				if (this->Editing)
+					SaveCurrentEditingCell(true);
+				CloseComboBoxEditor();
+
+				this->SelectedColumnIndex = undermouseIndex.x;
+				this->SelectedRowIndex = undermouseIndex.y;
+				this->SelectionChanged(this);
+
+				this->_buttonMouseDown = true;
+				this->_buttonDownColumnIndex = undermouseIndex.x;
+				this->_buttonDownRowIndex = undermouseIndex.y;
+				SetCapture(this->ParentForm->Handle);
+
+				MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
+				this->OnMouseDown(this, event_obj);
+				this->PostRender();
+				return;
+			}
+
 			if (this->Editing && undermouseIndex.x == this->EditingColumnIndex && undermouseIndex.y == this->EditingRowIndex)
 			{
 				D2D1_RECT_F rect{};
@@ -1345,6 +1630,32 @@ void GridView::HandleLeftButtonUp(int xof, int yof)
 		ReleaseCapture();
 		MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
 		this->OnMouseUp(this, event_obj);
+		this->PostRender();
+		return;
+	}
+
+	if (this->_buttonMouseDown)
+	{
+		POINT undermouseIndex = GetGridViewUnderMouseItem(xof, yof, this);
+		const bool hitSameCell = (undermouseIndex.x == this->_buttonDownColumnIndex && undermouseIndex.y == this->_buttonDownRowIndex);
+		const bool validCell = (undermouseIndex.x >= 0 && undermouseIndex.y >= 0 &&
+			undermouseIndex.x < this->Columns.Count && undermouseIndex.y < this->Rows.Count);
+		const bool isButtonCell = validCell && (this->Columns[undermouseIndex.x].Type == ColumnType::Button);
+
+		this->_buttonMouseDown = false;
+		this->_buttonDownColumnIndex = -1;
+		this->_buttonDownRowIndex = -1;
+
+		this->InScroll = false;
+		this->InHScroll = false;
+		ReleaseCapture();
+		MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
+		this->OnMouseUp(this, event_obj);
+
+		if (hitSameCell && isButtonCell)
+		{
+			this->OnGridViewButtonClick(this, undermouseIndex.x, undermouseIndex.y);
+		}
 		this->PostRender();
 		return;
 	}
@@ -1583,6 +1894,19 @@ void GridView::HandleCellClick(int col, int row)
 	if (this->Columns[col].Type == ColumnType::Check)
 	{
 		ToggleCheckState(col, row);
+	}
+	else if (this->Columns[col].Type == ColumnType::Button)
+	{
+		// Button click is handled on mouse-up (WinForms-like)
+		if (this->Editing)
+			SaveCurrentEditingCell(true);
+		this->SelectedColumnIndex = col;
+		this->SelectedRowIndex = row;
+		this->SelectionChanged(this);
+	}
+	else if (this->Columns[col].Type == ColumnType::ComboBox)
+	{
+		ToggleComboBoxEditor(col, row);
 	}
 	else
 	{

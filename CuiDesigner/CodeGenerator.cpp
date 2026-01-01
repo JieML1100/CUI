@@ -816,6 +816,8 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 				case ColumnType::Text: typeStr = "ColumnType::Text"; break;
 				case ColumnType::Image: typeStr = "ColumnType::Image"; break;
 				case ColumnType::Check: typeStr = "ColumnType::Check"; break;
+				case ColumnType::Button: typeStr = "ColumnType::Button"; break;
+				case ColumnType::ComboBox: typeStr = "ColumnType::ComboBox"; break;
 				default: typeStr = "ColumnType::Text"; break;
 				}
 				code << indentStr << name << "->Columns.Add(GridViewColumn(L\"" << EscapeWStringLiteral(col.Name)

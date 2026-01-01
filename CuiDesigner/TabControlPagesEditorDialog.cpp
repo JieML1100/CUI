@@ -83,6 +83,7 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 	this->MinBox = false;
 	this->MaxBox = false;
 	this->BackColor = Colors::WhiteSmoke;
+	this->AllowResize = false;
 
 	auto tip = this->AddControl(new Label(L"双击单元格可编辑；删除/上移/下移可调整页。", 12, 12));
 	tip->Size = { 496, 20 };

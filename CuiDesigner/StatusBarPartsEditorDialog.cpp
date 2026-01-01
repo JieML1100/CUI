@@ -99,6 +99,7 @@ StatusBarPartsEditorDialog::StatusBarPartsEditorDialog(StatusBar* target)
 	this->MinBox = false;
 	this->MaxBox = false;
 	this->BackColor = Colors::WhiteSmoke;
+	this->AllowResize = false;
 
 	auto tip = this->AddControl(new Label(L"Width: -1=伸缩；0=自动；>0=固定像素。", 12, 12));
 	tip->Size = { 536, 20 };
