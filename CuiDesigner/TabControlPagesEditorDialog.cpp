@@ -2,6 +2,14 @@
 #include <sstream>
 #include <unordered_set>
 
+namespace
+{
+	constexpr int COL_TITLE = 0;
+	constexpr int COL_UP = 1;
+	constexpr int COL_DOWN = 2;
+	constexpr int COL_DELETE = 3;
+}
+
 std::wstring TabControlPagesEditorDialog::Trim(const std::wstring& s)
 {
 	size_t start = 0;
@@ -11,16 +19,6 @@ std::wstring TabControlPagesEditorDialog::Trim(const std::wstring& s)
 	return s.substr(start, end - start);
 }
 
-void TabControlPagesEditorDialog::SyncButtons()
-{
-	if (!_grid || !_remove || !_up || !_down) return;
-	int idx = _grid->SelectedRowIndex;
-	bool hasSel = (idx >= 0 && idx < _grid->Rows.Count);
-	_remove->Enable = hasSel;
-	_up->Enable = hasSel && idx > 0;
-	_down->Enable = hasSel && idx >= 0 && idx + 1 < _grid->Rows.Count;
-}
-
 void TabControlPagesEditorDialog::AddRow(const std::wstring& title, TabPage* page)
 {
 	if (!_grid) return;
@@ -28,6 +26,9 @@ void TabControlPagesEditorDialog::AddRow(const std::wstring& title, TabPage* pag
 	CellValue v(title);
 	v.Tag = (__int64)page;
 	r.Cells.Add(v);
+	r.Cells.Add(CellValue(L""));
+	r.Cells.Add(CellValue(L""));
+	r.Cells.Add(CellValue(L""));
 	_grid->Rows.Add(r);
 }
 
@@ -43,39 +44,6 @@ void TabControlPagesEditorDialog::RefreshGridFromTarget()
 	}
 }
 
-void TabControlPagesEditorDialog::RemoveSelected()
-{
-	if (!_grid) return;
-	int idx = _grid->SelectedRowIndex;
-	if (idx < 0 || idx >= _grid->Rows.Count) return;
-	_grid->Rows.RemoveAt(idx);
-	if (_grid->Rows.Count <= 0)
-	{
-		_grid->SelectedRowIndex = -1;
-		_grid->SelectedColumnIndex = -1;
-	}
-	else
-	{
-		if (idx >= _grid->Rows.Count) idx = _grid->Rows.Count - 1;
-		_grid->SelectedRowIndex = idx;
-		_grid->SelectedColumnIndex = 0;
-	}
-	SyncButtons();
-}
-
-void TabControlPagesEditorDialog::MoveSelected(int delta)
-{
-	if (!_grid) return;
-	int idx = _grid->SelectedRowIndex;
-	int to = idx + delta;
-	if (idx < 0 || idx >= _grid->Rows.Count) return;
-	if (to < 0 || to >= _grid->Rows.Count) return;
-	_grid->Rows.Swap(idx, to);
-	_grid->SelectedRowIndex = to;
-	_grid->SelectedColumnIndex = 0;
-	SyncButtons();
-}
-
 TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 	: Form(L"编辑 TabControl 页", POINT{ 240, 240 }, SIZE{ 520, 420 }), _target(target)
 {
@@ -85,44 +53,85 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 	this->BackColor = Colors::WhiteSmoke;
 	this->AllowResize = false;
 
-	auto tip = this->AddControl(new Label(L"双击单元格可编辑；删除/上移/下移可调整页。", 12, 12));
+	auto tip = this->AddControl(new Label(L"表格内编辑：Title 可直接修改；右侧按钮列可上移/下移/删除；点击底部“* 新行”可新增。", 12, 12));
 	tip->Size = { 496, 20 };
 	tip->Font = new ::Font(L"Microsoft YaHei", 12.0f);
 
-	_grid = this->AddControl(new GridView(12, 38, 496, 282));
+	_grid = this->AddControl(new GridView(12, 38, 496, 318));
 	_grid->Columns.Clear();
-	_grid->Columns.Add(GridViewColumn(L"Title", 460.0f, ColumnType::Text, true));
+	{
+		GridViewColumn c0(L"Title", 290.0f, ColumnType::Text, true);
+		GridViewColumn c1(L"", 60.0f, ColumnType::Button, false);
+		c1.ButtonText = L"上移";
+		GridViewColumn c2(L"", 60.0f, ColumnType::Button, false);
+		c2.ButtonText = L"下移";
+		GridViewColumn c3(L"", 60.0f, ColumnType::Button, false);
+		c3.ButtonText = L"删除";
+		_grid->Columns.Add(c0);
+		_grid->Columns.Add(c1);
+		_grid->Columns.Add(c2);
+		_grid->Columns.Add(c3);
+	}
+	_grid->AllowUserToAddRows = true;
 	RefreshGridFromTarget();
-	_grid->SelectionChanged += [this](Control*) { SyncButtons(); };
 
-	_add = this->AddControl(new Button(L"新增", 12, 328, 90, 30));
-	_remove = this->AddControl(new Button(L"删除", 108, 328, 90, 30));
-	_up = this->AddControl(new Button(L"上移", 204, 328, 90, 30));
-	_down = this->AddControl(new Button(L"下移", 300, 328, 90, 30));
+	_grid->OnUserAddedRow += [this](GridView*, int newRowIndex)
+	{
+		if (!_grid) return;
+		if (newRowIndex < 0 || newRowIndex >= _grid->Rows.Count) return;
+		auto& row = _grid->Rows[newRowIndex];
+		if (row.Cells.Count < 4)
+			row.Cells.resize(4);
+		row.Cells[COL_TITLE].Text = L"Page";
+		row.Cells[COL_TITLE].Tag = 0;
+		_grid->ChangeEditionSelected(COL_TITLE, newRowIndex);
+	};
+
+	_grid->OnGridViewButtonClick += [this](GridView*, int c, int r)
+	{
+		if (!_grid) return;
+		if (r < 0 || r >= _grid->Rows.Count) return;
+		if (c == COL_UP)
+		{
+			if (r <= 0) return;
+			_grid->Rows.Swap(r, r - 1);
+			_grid->SelectedRowIndex = r - 1;
+			_grid->SelectedColumnIndex = COL_TITLE;
+			_grid->PostRender();
+		}
+		else if (c == COL_DOWN)
+		{
+			if (r + 1 >= _grid->Rows.Count) return;
+			_grid->Rows.Swap(r, r + 1);
+			_grid->SelectedRowIndex = r + 1;
+			_grid->SelectedColumnIndex = COL_TITLE;
+			_grid->PostRender();
+		}
+		else if (c == COL_DELETE)
+		{
+			_grid->Rows.RemoveAt(r);
+			if (_grid->Rows.Count <= 0)
+			{
+				_grid->SelectedRowIndex = -1;
+				_grid->SelectedColumnIndex = -1;
+			}
+			else
+			{
+				int sel = r;
+				if (sel >= _grid->Rows.Count) sel = _grid->Rows.Count - 1;
+				_grid->SelectedRowIndex = sel;
+				_grid->SelectedColumnIndex = COL_TITLE;
+			}
+			_grid->PostRender();
+		}
+	};
 
 	_ok = this->AddControl(new Button(L"确定", 12, 366, 110, 34));
 	_cancel = this->AddControl(new Button(L"取消", 132, 366, 110, 34));
 
-	SyncButtons();
-
-	_add->OnMouseClick += [this](Control*, MouseEventArgs) {
-		if (!_grid) return;
-		GridViewRow r;
-		CellValue v(L"Page");
-		v.Tag = 0;
-		r.Cells.Add(v);
-		_grid->Rows.Add(r);
-		_grid->SelectedRowIndex = _grid->Rows.Count - 1;
-		_grid->SelectedColumnIndex = 0;
-		_grid->ChangeEditionSelected(0, _grid->SelectedRowIndex);
-		SyncButtons();
-		};
-	_remove->OnMouseClick += [this](Control*, MouseEventArgs) { RemoveSelected(); };
-	_up->OnMouseClick += [this](Control*, MouseEventArgs) { MoveSelected(-1); };
-	_down->OnMouseClick += [this](Control*, MouseEventArgs) { MoveSelected(+1); };
-
 	_ok->OnMouseClick += [this](Control*, MouseEventArgs) {
 		if (!_target || !_grid) { this->Close(); return; }
+		_grid->ChangeEditionSelected(-1, -1);
 
 		std::vector<std::wstring> titles;
 		std::vector<TabPage*> desiredPages;
@@ -132,11 +141,11 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 		for (int i = 0; i < _grid->Rows.Count; i++)
 		{
 			auto& row = _grid->Rows[i];
-			if (row.Cells.Count <= 0) continue;
-			auto title = Trim(row.Cells[0].Text);
+			if (row.Cells.Count <= COL_TITLE) continue;
+			auto title = Trim(row.Cells[COL_TITLE].Text);
 			if (title.empty()) continue;
 
-			TabPage* page = (TabPage*)row.Cells[0].Tag;
+			TabPage* page = (TabPage*)row.Cells[COL_TITLE].Tag;
 			if (page && page->Parent != _target) page = nullptr;
 			if (!page)
 			{

@@ -683,324 +683,322 @@ void GridView::Update()
 				float xf = -this->ScrollXOffset;
 				for (int c = s_x; c < this->Columns.Count; c++)
 				{
+					float colW = this->Columns[c].Width;
+					if (xf >= _render_width) break;
+					if (xf + colW <= 0.0f) { xf += colW; continue; }
+
+					float drawX = xf;
+					float c_width = colW;
+					if (drawX < 0.0f) { c_width += drawX; drawX = 0.0f; }
+					if (drawX + c_width > _render_width) c_width = _render_width - drawX;
+					if (c_width <= 0.0f) { xf += colW; continue; }
+					const float clipX = drawX;
+					const float clipW = c_width;
+					drawX = xf;
+					c_width = colW;
+
+					float _r_height = row_height;
+					d2d->PushDrawRect(abslocation.x + clipX, abslocation.y + clipY, clipW, clipH);
 					{
-						float colW = this->Columns[c].Width;
-						if (xf >= _render_width) break;
-						if (xf + colW <= 0.0f) { xf += colW; continue; }
-
-						float drawX = xf;
-						float c_width = colW;
-						if (drawX < 0.0f) { c_width += drawX; drawX = 0.0f; }
-						if (drawX + c_width > _render_width) c_width = _render_width - drawX;
-						if (c_width <= 0.0f) { xf += colW; continue; }
-						const float clipX = drawX;
-						const float clipW = c_width;
-						drawX = xf;
-						c_width = colW;
-
-						float _r_height = row_height;
-						d2d->PushDrawRect(abslocation.x + clipX, abslocation.y + clipY, clipW, clipH);
+						switch (this->Columns[c].Type)
 						{
-							switch (this->Columns[c].Type)
+						case ColumnType::Text:
+						{
+							if (c == this->SelectedColumnIndex && r == this->SelectedRowIndex)
 							{
-							case ColumnType::Text:
-							{
-								if (c == this->SelectedColumnIndex && r == this->SelectedRowIndex)
+								if (this->Editing && this->EditingColumnIndex == c && this->EditingRowIndex == r && this->ParentForm->Selected == this)
 								{
-									if (this->Editing && this->EditingColumnIndex == c && this->EditingRowIndex == r && this->ParentForm->Selected == this)
+									D2D1_RECT_F cellLocal{};
+									if (!TryGetCellRectLocal(c, r, cellLocal))
 									{
-										D2D1_RECT_F cellLocal{};
-										if (!TryGetCellRectLocal(c, r, cellLocal))
-										{
-											SaveCurrentEditingCell(true);
-											this->Editing = false;
-										}
-										else
-										{
-											float renderHeight = _r_height - (this->EditTextMargin * 2.0f);
-											if (renderHeight < 0.0f) renderHeight = 0.0f;
-
-											EditEnsureSelectionInRange();
-											EditUpdateScroll(clipW);
-
-											auto textSize = font->GetTextSize(this->EditingText, FLT_MAX, renderHeight);
-											float offsetY = (_r_height - textSize.height) * 0.5f;
-											if (offsetY < 0.0f) offsetY = 0.0f;
-
-											d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->EditBackColor);
-											d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->SelectedItemForeColor,
-												r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
-
-											int sels = EditSelectionStart <= EditSelectionEnd ? EditSelectionStart : EditSelectionEnd;
-											int sele = EditSelectionEnd >= EditSelectionStart ? EditSelectionEnd : EditSelectionStart;
-											int selLen = sele - sels;
-											auto selRange = font->HitTestTextRange(this->EditingText, (UINT32)sels, (UINT32)selLen);
-
-											if (selLen != 0)
-											{
-												for (auto sr : selRange)
-												{
-													d2d->FillRect(
-														sr.left + abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX,
-														(sr.top + abslocation.y + yf) + offsetY,
-														sr.width, sr.height,
-														this->EditSelectedBackColor);
-												}
-											}
-											else
-											{
-												d2d->DrawLine(
-													{ selRange[0].left + abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + abslocation.y + yf) - offsetY },
-													{ selRange[0].left + abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + abslocation.y + yf + selRange[0].height) + offsetY },
-													Colors::Black);
-											}
-
-											auto lot = Factory::CreateStringLayout(this->EditingText, FLT_MAX, renderHeight, font->FontObject);
-											if (selLen != 0)
-											{
-												d2d->DrawStringLayoutEffect(lot,
-													(float)abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX, ((float)abslocation.y + yf) + offsetY,
-													this->EditForeColor,
-													DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
-													this->EditSelectedForeColor,
-													font);
-											}
-											else
-											{
-												d2d->DrawStringLayout(lot,
-													(float)abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX, ((float)abslocation.y + yf) + offsetY,
-													this->EditForeColor);
-											}
-											lot->Release();
-										}
+										SaveCurrentEditingCell(true);
+										this->Editing = false;
 									}
 									else
 									{
-										d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->SelectedItemBackColor);
+										float renderHeight = _r_height - (this->EditTextMargin * 2.0f);
+										if (renderHeight < 0.0f) renderHeight = 0.0f;
+
+										EditEnsureSelectionInRange();
+										EditUpdateScroll(clipW);
+
+										auto textSize = font->GetTextSize(this->EditingText, FLT_MAX, renderHeight);
+										float offsetY = (_r_height - textSize.height) * 0.5f;
+										if (offsetY < 0.0f) offsetY = 0.0f;
+
+										d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->EditBackColor);
 										d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->SelectedItemForeColor,
 											r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
-										if (row.Cells.Count > c)
-											d2d->DrawString(row.Cells[c].Text,
-												abslocation.x + drawX + 1.0f,
-												abslocation.y + yf + text_top,
-												this->SelectedItemForeColor, font);
+
+										int sels = EditSelectionStart <= EditSelectionEnd ? EditSelectionStart : EditSelectionEnd;
+										int sele = EditSelectionEnd >= EditSelectionStart ? EditSelectionEnd : EditSelectionStart;
+										int selLen = sele - sels;
+										auto selRange = font->HitTestTextRange(this->EditingText, (UINT32)sels, (UINT32)selLen);
+
+										if (selLen != 0)
+										{
+											for (auto sr : selRange)
+											{
+												d2d->FillRect(
+													sr.left + abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX,
+													(sr.top + abslocation.y + yf) + offsetY,
+													sr.width, sr.height,
+													this->EditSelectedBackColor);
+											}
+										}
+										else
+										{
+											d2d->DrawLine(
+												{ selRange[0].left + abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + abslocation.y + yf) - offsetY },
+												{ selRange[0].left + abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + abslocation.y + yf + selRange[0].height) + offsetY },
+												Colors::Black);
+										}
+
+										auto lot = Factory::CreateStringLayout(this->EditingText, FLT_MAX, renderHeight, font->FontObject);
+										if (selLen != 0)
+										{
+											d2d->DrawStringLayoutEffect(lot,
+												(float)abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX, ((float)abslocation.y + yf) + offsetY,
+												this->EditForeColor,
+												DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
+												this->EditSelectedForeColor,
+												font);
+										}
+										else
+										{
+											d2d->DrawStringLayout(lot,
+												(float)abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX, ((float)abslocation.y + yf) + offsetY,
+												this->EditForeColor);
+										}
+										lot->Release();
 									}
-								}
-								else if (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex)
-								{
-									d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemBackColor);
-									d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemForeColor,
-										r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
-									if (row.Cells.Count > c)
-										d2d->DrawString(row.Cells[c].Text,
-											abslocation.x + drawX + 1.0f,
-											abslocation.y + yf + text_top,
-											this->UnderMouseItemForeColor, font);
 								}
 								else
 								{
-									d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->ForeColor,
+									d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->SelectedItemBackColor);
+									d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->SelectedItemForeColor,
 										r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
 									if (row.Cells.Count > c)
 										d2d->DrawString(row.Cells[c].Text,
 											abslocation.x + drawX + 1.0f,
 											abslocation.y + yf + text_top,
-											this->ForeColor, font);
+											this->SelectedItemForeColor, font);
 								}
 							}
-							break;
-							case ColumnType::Button:
+							else if (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex)
 							{
-								// Button：独立样式（WinForms-like），不使用普通单元格的"选中底色"
-								const bool isHot = (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex);
-								const bool isPressed = (this->_buttonMouseDown && isHot &&
-									this->_buttonDownColumnIndex == c && this->_buttonDownRowIndex == r &&
-									(GetAsyncKeyState(VK_LBUTTON) & 0x8000));
-
-								D2D1_COLOR_F back = this->ButtonBackColor;
-								if (isPressed) back = this->ButtonPressedBackColor;
-								else if (isHot) back = this->ButtonHoverBackColor;
-
-								d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, back);
-
-								// 3D Border: raised vs sunken
-								const float px = 1.0f;
-								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->ButtonBorderDarkColor, 1.0f);
-								if (c_width > 2.0f && _r_height > 2.0f)
-								{
-									auto innerColor = isPressed ? this->ScrollForeColor : this->ButtonBorderLightColor;
-									d2d->DrawRect(abslocation.x + drawX + px, abslocation.y + yf + px,
-										c_width - (px * 2.0f), _r_height - (px * 2.0f),
-										innerColor, 1.0f);
-								}
-
-								// Text center (+ pressed offset)
-								// 使用列的ButtonText作为按钮文字
-								const std::wstring& buttonText = this->Columns[c].ButtonText;
-								if (!buttonText.empty())
-								{
-									auto textSize = font->GetTextSize(buttonText);
-									float tx = (c_width - textSize.width) * 0.5f;
-									float ty = (_r_height - textSize.height) * 0.5f;
-									if (tx < 0.0f) tx = 0.0f;
-									if (ty < 0.0f) ty = 0.0f;
-									if (isPressed) { tx += 1.0f; ty += 1.0f; }
-									d2d->DrawString(buttonText,
-										abslocation.x + drawX + tx,
-										abslocation.y + yf + ty,
+								d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemBackColor);
+								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemForeColor,
+									r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
+								if (row.Cells.Count > c)
+									d2d->DrawString(row.Cells[c].Text,
+										abslocation.x + drawX + 1.0f,
+										abslocation.y + yf + text_top,
+										this->UnderMouseItemForeColor, font);
+							}
+							else
+							{
+								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->ForeColor,
+									r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
+								if (row.Cells.Count > c)
+									d2d->DrawString(row.Cells[c].Text,
+										abslocation.x + drawX + 1.0f,
+										abslocation.y + yf + text_top,
 										this->ForeColor, font);
-								}
 							}
-							break;
-							case ColumnType::ComboBox:
+						}
+						break;
+						case ColumnType::Button:
+						{
+							// Button：独立样式（WinForms-like），不使用普通单元格的"选中底色"
+							const bool isHot = (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex);
+							const bool isPressed = (this->_buttonMouseDown && isHot &&
+								this->_buttonDownColumnIndex == c && this->_buttonDownRowIndex == r &&
+								(GetAsyncKeyState(VK_LBUTTON) & 0x8000));
+
+							D2D1_COLOR_F back = this->ButtonBackColor;
+							if (isPressed) back = this->ButtonPressedBackColor;
+							else if (isHot) back = this->ButtonHoverBackColor;
+
+							d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, back);
+
+							// 3D Border: raised vs sunken
+							const float px = 1.0f;
+							d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->ButtonBorderDarkColor, 1.0f);
+							if (c_width > 2.0f && _r_height > 2.0f)
 							{
-								EnsureComboBoxCellDefaultSelection(c, r);
-								D2D1_COLOR_F back = D2D1_COLOR_F{ 0,0,0,0 };
-								D2D1_COLOR_F border = this->ForeColor;
-								D2D1_COLOR_F fore = this->ForeColor;
-								bool fill = false;
+								auto innerColor = isPressed ? this->ScrollForeColor : this->ButtonBorderLightColor;
+								d2d->DrawRect(abslocation.x + drawX + px, abslocation.y + yf + px,
+									c_width - (px * 2.0f), _r_height - (px * 2.0f),
+									innerColor, 1.0f);
+							}
 
-								if (c == this->SelectedColumnIndex && r == this->SelectedRowIndex)
-								{
-									back = this->SelectedItemBackColor;
-									border = this->SelectedItemForeColor;
-									fore = this->SelectedItemForeColor;
-									fill = true;
-								}
-								else if (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex)
-								{
-									back = this->UnderMouseItemBackColor;
-									border = this->UnderMouseItemForeColor;
-									fore = this->UnderMouseItemForeColor;
-									fill = true;
-								}
+							// Text center (+ pressed offset)
+							// 使用列的ButtonText作为按钮文字
+							const std::wstring& buttonText = this->Columns[c].ButtonText;
+							if (!buttonText.empty())
+							{
+								auto textSize = font->GetTextSize(buttonText);
+								float tx = (c_width - textSize.width) * 0.5f;
+								float ty = (_r_height - textSize.height) * 0.5f;
+								if (tx < 0.0f) tx = 0.0f;
+								if (ty < 0.0f) ty = 0.0f;
+								if (isPressed) { tx += 1.0f; ty += 1.0f; }
+								d2d->DrawString(buttonText,
+									abslocation.x + drawX + tx,
+									abslocation.y + yf + ty,
+									this->ForeColor, font);
+							}
+						}
+						break;
+						case ColumnType::ComboBox:
+						{
+							EnsureComboBoxCellDefaultSelection(c, r);
+							D2D1_COLOR_F back = D2D1_COLOR_F{ 0,0,0,0 };
+							D2D1_COLOR_F border = this->ForeColor;
+							D2D1_COLOR_F fore = this->ForeColor;
+							bool fill = false;
 
-								if (fill)
-									d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, back);
-								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, border,
+							if (c == this->SelectedColumnIndex && r == this->SelectedRowIndex)
+							{
+								back = this->SelectedItemBackColor;
+								border = this->SelectedItemForeColor;
+								fore = this->SelectedItemForeColor;
+								fill = true;
+							}
+							else if (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex)
+							{
+								back = this->UnderMouseItemBackColor;
+								border = this->UnderMouseItemForeColor;
+								fore = this->UnderMouseItemForeColor;
+								fill = true;
+							}
+
+							if (fill)
+								d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, back);
+							d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, border,
+								r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
+							if (row.Cells.Count > c)
+							{
+								d2d->DrawString(row.Cells[c].Text,
+									abslocation.x + drawX + 4.0f,
+									abslocation.y + yf + text_top,
+									fore, font);
+							}
+
+							// Draw drop arrow on right
+							{
+								const float h = _r_height;
+								float iconSize = h * 0.38f;
+								if (iconSize < 8.0f) iconSize = 8.0f;
+								if (iconSize > 14.0f) iconSize = 14.0f;
+								const float padRight = 8.0f;
+								const float cx = abslocation.x + drawX + c_width - padRight - iconSize * 0.5f;
+								const float cy = abslocation.y + yf + h * 0.5f;
+								const float half = iconSize * 0.5f;
+								const float triH = iconSize * 0.55f;
+								D2D1_TRIANGLE tri{};
+								tri.point1 = D2D1::Point2F(cx - half, cy - triH * 0.5f);
+								tri.point2 = D2D1::Point2F(cx + half, cy - triH * 0.5f);
+								tri.point3 = D2D1::Point2F(cx, cy + triH * 0.5f);
+								d2d->FillTriangle(tri, fore);
+							}
+						}
+						break;
+						case ColumnType::Image:
+						{
+							float _size = c_width < row_height ? c_width : row_height;
+							float left = (c_width - _size) / 2.0f;
+							float top = (row_height - _size) / 2.0f;
+							if (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex)
+							{
+								d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemBackColor);
+								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemForeColor,
 									r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
 								if (row.Cells.Count > c)
 								{
-									d2d->DrawString(row.Cells[c].Text,
-										abslocation.x + drawX + 4.0f,
-										abslocation.y + yf + text_top,
-										fore, font);
-								}
-
-								// Draw drop arrow on right
-								{
-									const float h = _r_height;
-									float iconSize = h * 0.38f;
-									if (iconSize < 8.0f) iconSize = 8.0f;
-									if (iconSize > 14.0f) iconSize = 14.0f;
-									const float padRight = 8.0f;
-									const float cx = abslocation.x + drawX + c_width - padRight - iconSize * 0.5f;
-									const float cy = abslocation.y + yf + h * 0.5f;
-									const float half = iconSize * 0.5f;
-									const float triH = iconSize * 0.55f;
-									D2D1_TRIANGLE tri{};
-									tri.point1 = D2D1::Point2F(cx - half, cy - triH * 0.5f);
-									tri.point2 = D2D1::Point2F(cx + half, cy - triH * 0.5f);
-									tri.point3 = D2D1::Point2F(cx, cy + triH * 0.5f);
-									d2d->FillTriangle(tri, fore);
+									if (row.Cells[c].Image)
+										d2d->DrawBitmap(row.Cells[c].Image,
+											abslocation.x + drawX + left,
+											abslocation.y + yf + top,
+											_size, _size
+										);
 								}
 							}
-							break;
-							case ColumnType::Image:
+							else
 							{
-								float _size = c_width < row_height ? c_width : row_height;
-								float left = (c_width - _size) / 2.0f;
-								float top = (row_height - _size) / 2.0f;
-								if (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex)
+								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->ForeColor,
+									r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
+								if (row.Cells.Count > c)
 								{
-									d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemBackColor);
-									d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemForeColor,
-										r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
-									if (row.Cells.Count > c)
-									{
-										if (row.Cells[c].Image)
-											d2d->DrawBitmap(row.Cells[c].Image,
-												abslocation.x + drawX + left,
-												abslocation.y + yf + top,
-												_size, _size
-											);
-									}
+									if (row.Cells[c].Image)
+										d2d->DrawBitmap(row.Cells[c].Image,
+											abslocation.x + drawX + left,
+											abslocation.y + yf + top,
+											_size, _size
+										);
 								}
-								else
-								{
-									d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->ForeColor,
-										r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
-									if (row.Cells.Count > c)
-									{
-										if (row.Cells[c].Image)
-											d2d->DrawBitmap(row.Cells[c].Image,
-												abslocation.x + drawX + left,
-												abslocation.y + yf + top,
-												_size, _size
-											);
-									}
-								}
-							}
-							break;
-							case ColumnType::Check:
-							{
-								float _size = c_width < row_height ? c_width : row_height;
-								if (_size > 24)_size = 24;
-								float left = (c_width - _size) / 2.0f;
-								float top = (row_height - _size) / 2.0f;
-								float _rsize = _size;
-								if (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex)
-								{
-									d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemBackColor);
-									d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemForeColor,
-										r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
-									if (row.Cells.Count > c)
-									{
-										d2d->DrawRect(
-											abslocation.x + drawX + left + (_rsize * 0.2),
-											abslocation.y + yf + top + (_rsize * 0.2),
-											_rsize * 0.6, _rsize * 0.6,
-											this->ForeColor);
-										if (row.Cells[c].Tag)
-										{
-											d2d->FillRect(
-												abslocation.x + drawX + left + (_rsize * 0.35),
-												abslocation.y + yf + top + (_rsize * 0.35),
-												_rsize * 0.3, _rsize * 0.3,
-												this->ForeColor);
-										}
-									}
-								}
-								else
-								{
-									d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->ForeColor,
-										r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
-									if (row.Cells.Count > c)
-									{
-										d2d->DrawRect(
-											abslocation.x + drawX + left + (_rsize * 0.2),
-											abslocation.y + yf + top + (_rsize * 0.2),
-											_rsize * 0.6, _rsize * 0.6,
-											this->ForeColor);
-										if (row.Cells[c].Tag)
-										{
-											d2d->FillRect(
-												abslocation.x + drawX + left + (_rsize * 0.35),
-												abslocation.y + yf + top + (_rsize * 0.35),
-												_rsize * 0.3, _rsize * 0.3,
-												this->ForeColor);
-										}
-									}
-								}
-							}
-							break;
-							default:
-								break;
 							}
 						}
-						d2d->PopDrawRect();
-						xf += colW;
+						break;
+						case ColumnType::Check:
+						{
+							float _size = c_width < row_height ? c_width : row_height;
+							if (_size > 24)_size = 24;
+							float left = (c_width - _size) / 2.0f;
+							float top = (row_height - _size) / 2.0f;
+							float _rsize = _size;
+							if (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex)
+							{
+								d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemBackColor);
+								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemForeColor,
+									r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
+								if (row.Cells.Count > c)
+								{
+									d2d->DrawRect(
+										abslocation.x + drawX + left + (_rsize * 0.2),
+										abslocation.y + yf + top + (_rsize * 0.2),
+										_rsize * 0.6, _rsize * 0.6,
+										this->ForeColor);
+									if (row.Cells[c].Tag)
+									{
+										d2d->FillRect(
+											abslocation.x + drawX + left + (_rsize * 0.35),
+											abslocation.y + yf + top + (_rsize * 0.35),
+											_rsize * 0.3, _rsize * 0.3,
+											this->ForeColor);
+									}
+								}
+							}
+							else
+							{
+								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->ForeColor,
+									r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
+								if (row.Cells.Count > c)
+								{
+									d2d->DrawRect(
+										abslocation.x + drawX + left + (_rsize * 0.2),
+										abslocation.y + yf + top + (_rsize * 0.2),
+										_rsize * 0.6, _rsize * 0.6,
+										this->ForeColor);
+									if (row.Cells[c].Tag)
+									{
+										d2d->FillRect(
+											abslocation.x + drawX + left + (_rsize * 0.35),
+											abslocation.y + yf + top + (_rsize * 0.35),
+											_rsize * 0.3, _rsize * 0.3,
+											this->ForeColor);
+									}
+								}
+							}
+						}
+						break;
+						default:
+							break;
+						}
 					}
+					d2d->PopDrawRect();
+					xf += colW;
 				}
 				yf += row_height;
 			}

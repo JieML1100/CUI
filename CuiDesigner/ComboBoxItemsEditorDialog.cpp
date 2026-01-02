@@ -1,6 +1,15 @@
 #include "ComboBoxItemsEditorDialog.h"
 #include <sstream>
 
+namespace
+{
+	constexpr int COL_DEFAULT = 0;
+	constexpr int COL_TEXT = 1;
+	constexpr int COL_UP = 2;
+	constexpr int COL_DOWN = 3;
+	constexpr int COL_DELETE = 4;
+}
+
 std::wstring ComboBoxItemsEditorDialog::Trim(std::wstring s)
 {
 	size_t start = 0;
@@ -10,59 +19,38 @@ std::wstring ComboBoxItemsEditorDialog::Trim(std::wstring s)
 	return s.substr(start, end - start);
 }
 
-void ComboBoxItemsEditorDialog::SyncButtons()
-{
-	if (!_grid || !_remove || !_up || !_down) return;
-	int idx = _grid->SelectedRowIndex;
-	bool hasSel = (idx >= 0 && idx < _grid->Rows.Count);
-	_remove->Enable = hasSel;
-	_up->Enable = hasSel && idx > 0;
-	_down->Enable = hasSel && idx >= 0 && idx + 1 < _grid->Rows.Count;
-}
-
-void ComboBoxItemsEditorDialog::AddItem(const std::wstring& text)
+void ComboBoxItemsEditorDialog::EnsureOneDefaultChecked()
 {
 	if (!_grid) return;
-	GridViewRow r;
-	r.Cells.Add(CellValue(text));
-	_grid->Rows.Add(r);
-	_grid->SelectedRowIndex = _grid->Rows.Count - 1;
-	_grid->SelectedColumnIndex = 0;
-	_grid->ChangeEditionSelected(0, _grid->SelectedRowIndex);
-	SyncButtons();
-}
+	if (_grid->Rows.Count <= 0) return;
 
-void ComboBoxItemsEditorDialog::RemoveSelected()
-{
-	if (!_grid) return;
-	int idx = _grid->SelectedRowIndex;
-	if (idx < 0 || idx >= _grid->Rows.Count) return;
-	_grid->Rows.RemoveAt(idx);
-	if (_grid->Rows.Count <= 0)
+	int checkedIndex = -1;
+	for (int i = 0; i < _grid->Rows.Count; i++)
 	{
-		_grid->SelectedRowIndex = -1;
-		_grid->SelectedColumnIndex = -1;
+		auto& row = _grid->Rows[i];
+		if (row.Cells.Count <= COL_DEFAULT) continue;
+		if (row.Cells[COL_DEFAULT].Tag)
+		{
+			checkedIndex = i;
+			break;
+		}
 	}
-	else
-	{
-		if (idx >= _grid->Rows.Count) idx = _grid->Rows.Count - 1;
-		_grid->SelectedRowIndex = idx;
-		_grid->SelectedColumnIndex = 0;
-	}
-	SyncButtons();
-}
 
-void ComboBoxItemsEditorDialog::MoveSelected(int delta)
-{
-	if (!_grid) return;
-	int idx = _grid->SelectedRowIndex;
-	int to = idx + delta;
-	if (idx < 0 || idx >= _grid->Rows.Count) return;
-	if (to < 0 || to >= _grid->Rows.Count) return;
-	_grid->Rows.Swap(idx, to);
-	_grid->SelectedRowIndex = to;
-	_grid->SelectedColumnIndex = 0;
-	SyncButtons();
+	if (checkedIndex < 0)
+	{
+		if (_grid->Rows[0].Cells.Count <= COL_DEFAULT)
+			_grid->Rows[0].Cells.resize((size_t)COL_DEFAULT + 1);
+		_grid->Rows[0].Cells[COL_DEFAULT].Tag = 1;
+		checkedIndex = 0;
+	}
+
+	for (int i = 0; i < _grid->Rows.Count; i++)
+	{
+		if (i == checkedIndex) continue;
+		auto& row = _grid->Rows[i];
+		if (row.Cells.Count <= COL_DEFAULT) continue;
+		row.Cells[COL_DEFAULT].Tag = 0;
+	}
 }
 
 void ComboBoxItemsEditorDialog::RefreshGridFromTarget()
@@ -73,9 +61,15 @@ void ComboBoxItemsEditorDialog::RefreshGridFromTarget()
 	for (int i = 0; i < _target->values.Count; i++)
 	{
 		GridViewRow r;
+		r.Cells.Add(CellValue(false));
 		r.Cells.Add(CellValue(_target->values[i]));
+		r.Cells.Add(CellValue(L""));
+		r.Cells.Add(CellValue(L""));
+		r.Cells.Add(CellValue(L""));
+		r.Cells[COL_DEFAULT].Tag = (i == _target->SelectedIndex) ? 1 : 0;
 		_grid->Rows.Add(r);
 	}
+	EnsureOneDefaultChecked();
 }
 
 ComboBoxItemsEditorDialog::ComboBoxItemsEditorDialog(ComboBox* target)
@@ -87,63 +81,127 @@ ComboBoxItemsEditorDialog::ComboBoxItemsEditorDialog(ComboBox* target)
 	this->BackColor = Colors::WhiteSmoke;
 	this->AllowResize = false;
 
-	auto title = this->AddControl(new Label(L"双击单元格可编辑；也可在下方输入后新增。", 12, 12));
+	auto title = this->AddControl(new Label(L"在表格内直接编辑：勾选默认项；按钮列可上移/下移/删除；点击底部“* 新行”可新增。", 12, 12));
 	title->Size = { 496, 20 };
 	title->Font = new ::Font(L"Microsoft YaHei", 12.0f);
 
-	_grid = this->AddControl(new GridView(12, 38, 496, 272));
+	_grid = this->AddControl(new GridView(12, 38, 496, 318));
 	_grid->Columns.Clear();
-	_grid->Columns.Add(GridViewColumn(L"Item", 460.0f, ColumnType::Text, true));
+	{
+		GridViewColumn c0(L"默认", 64.0f, ColumnType::Check, false);
+		GridViewColumn c1(L"Item", 270.0f, ColumnType::Text, true);
+		GridViewColumn c2(L"↑", 52.0f, ColumnType::Button, false);
+		c2.ButtonText = L"上移";
+		GridViewColumn c3(L"↓", 52.0f, ColumnType::Button, false);
+		c3.ButtonText = L"下移";
+		GridViewColumn c4(L"X", 52.0f, ColumnType::Button, false);
+		c4.ButtonText = L"删除";
+		_grid->Columns.Add(c0);
+		_grid->Columns.Add(c1);
+		_grid->Columns.Add(c2);
+		_grid->Columns.Add(c3);
+		_grid->Columns.Add(c4);
+	}
+	_grid->AllowUserToAddRows = true;
 	RefreshGridFromTarget();
-	_grid->SelectionChanged += [this](Control*) {
-		SyncButtons();
+
+	_grid->OnUserAddedRow += [this](GridView*, int newRowIndex)
+	{
+		if (!_grid) return;
+		if (newRowIndex < 0 || newRowIndex >= _grid->Rows.Count) return;
+		auto& row = _grid->Rows[newRowIndex];
+		if (row.Cells.Count < 5)
+			row.Cells.resize(5);
+		row.Cells[COL_DEFAULT].Tag = 0;
+		row.Cells[COL_TEXT].Text = L"";
+		if (_grid->Rows.Count == 1)
+			row.Cells[COL_DEFAULT].Tag = 1;
+		EnsureOneDefaultChecked();
+		_grid->ChangeEditionSelected(COL_TEXT, newRowIndex);
 	};
 
-	_newItem = this->AddControl(new TextBox(L"", 12, 318, 320, 28));
-	_add = this->AddControl(new Button(L"新增", 340, 318, 80, 28));
-	_remove = this->AddControl(new Button(L"删除", 428, 318, 80, 28));
+	_grid->OnGridViewButtonClick += [this](GridView*, int c, int r)
+	{
+		if (!_grid) return;
+		if (r < 0 || r >= _grid->Rows.Count) return;
+		if (c == COL_UP)
+		{
+			if (r <= 0) return;
+			_grid->Rows.Swap(r, r - 1);
+			_grid->SelectedRowIndex = r - 1;
+			_grid->SelectedColumnIndex = COL_TEXT;
+			_grid->PostRender();
+		}
+		else if (c == COL_DOWN)
+		{
+			if (r + 1 >= _grid->Rows.Count) return;
+			_grid->Rows.Swap(r, r + 1);
+			_grid->SelectedRowIndex = r + 1;
+			_grid->SelectedColumnIndex = COL_TEXT;
+			_grid->PostRender();
+		}
+		else if (c == COL_DELETE)
+		{
+			_grid->Rows.RemoveAt(r);
+			if (_grid->Rows.Count <= 0)
+			{
+				_grid->SelectedRowIndex = -1;
+				_grid->SelectedColumnIndex = -1;
+			}
+			else
+			{
+				int sel = r;
+				if (sel >= _grid->Rows.Count) sel = _grid->Rows.Count - 1;
+				_grid->SelectedRowIndex = sel;
+				_grid->SelectedColumnIndex = COL_TEXT;
+			}
+			EnsureOneDefaultChecked();
+			_grid->PostRender();
+		}
+	};
 
-	_up = this->AddControl(new Button(L"上移", 340, 350, 80, 28));
-	_down = this->AddControl(new Button(L"下移", 428, 350, 80, 28));
+	_grid->OnGridViewCheckStateChanged += [this](GridView*, int c, int r, bool v)
+	{
+		if (!_grid) return;
+		if (c != COL_DEFAULT) return;
+		if (r < 0 || r >= _grid->Rows.Count) return;
+		(void)v;
+		EnsureOneDefaultChecked();
+		_grid->PostRender();
+	};
 
 	_ok = this->AddControl(new Button(L"确定", 12, 366, 110, 34));
 	_cancel = this->AddControl(new Button(L"取消", 132, 366, 110, 34));
 
-	SyncButtons();
-
-	_add->OnMouseClick += [this](Control*, MouseEventArgs) {
-		if (!_grid) return;
-		std::wstring t = _newItem ? Trim(_newItem->Text) : L"";
-		AddItem(t);
-		if (_newItem) _newItem->Text = L"";
-	};
-	_remove->OnMouseClick += [this](Control*, MouseEventArgs) {
-		RemoveSelected();
-	};
-	_up->OnMouseClick += [this](Control*, MouseEventArgs) {
-		MoveSelected(-1);
-	};
-	_down->OnMouseClick += [this](Control*, MouseEventArgs) {
-		MoveSelected(+1);
-	};
-
 	_ok->OnMouseClick += [this](Control*, MouseEventArgs) {
 		if (!_target || !_grid) { this->Close(); return; }
+		_grid->ChangeEditionSelected(-1, -1);
 
 		_target->values.Clear();
+		int selectedIndex = -1;
 		for (int i = 0; i < _grid->Rows.Count; i++)
 		{
-			if (_grid->Rows[i].Cells.Count <= 0) continue;
-			auto t = Trim(_grid->Rows[i].Cells[0].Text);
+			auto& row = _grid->Rows[i];
+			if (row.Cells.Count <= COL_TEXT) continue;
+			auto t = Trim(row.Cells[COL_TEXT].Text);
 			if (t.empty()) continue;
+			const int outIndex = _target->values.Count;
 			_target->values.Add(t);
+			if (row.Cells.Count > COL_DEFAULT && row.Cells[COL_DEFAULT].Tag)
+				selectedIndex = outIndex;
 		}
 		// 防御性修正
-		if (_target->SelectedIndex < 0) _target->SelectedIndex = 0;
-		if (_target->SelectedIndex >= _target->values.Count) _target->SelectedIndex = std::max(0, _target->values.Count - 1);
+		if (selectedIndex < 0) selectedIndex = 0;
+		if (selectedIndex >= _target->values.Count) selectedIndex = std::max(0, _target->values.Count - 1);
+		_target->SelectedIndex = 0;
 		if (_target->values.Count > 0)
 		{
+			_target->SelectedIndex = selectedIndex;
 			_target->Text = _target->values[_target->SelectedIndex];
+		}
+		else
+		{
+			_target->Text = L"";
 		}
 
 		Applied = true;

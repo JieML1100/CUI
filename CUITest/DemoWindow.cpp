@@ -145,7 +145,7 @@ void DemoWindow::bt2_OnMouseClick(class Control* sender, MouseEventArgs e)
 {
 	OpenFileDialog ofd;
 
-	ofd.Filter = MakeDialogFilterStrring("图片文件", "*.jpg;*.png;*.bmp;*.svg;*.webp");
+	ofd.Filter = MakeDialogFilterStrring("图片文件", "*.jpg;*.jpeg;*.png;*.bmp;*.svg;*.webp");
 	ofd.SupportMultiDottedExtensions = true;
 	ofd.Title = "选择一个图片文件";
 	if (ofd.ShowDialog(this->Handle) == DialogResult::OK)
@@ -153,24 +153,24 @@ void DemoWindow::bt2_OnMouseClick(class Control* sender, MouseEventArgs e)
 		if (picturebox1->Image)
 		{
 			picturebox1->Image->Release();
-		}
-		if (this->Image && this->Image != picturebox1->Image)
-		{
-			this->Image->Release();
+			picturebox1->Image = this->Image = NULL;
 		}
 		FileInfo file(ofd.SelectedPaths[0]);
 		if (file.Extension() == ".svg" || file.Extension() == ".SVG")
 		{
-			auto bytes = File::ReadAllBytes(ofd.SelectedPaths[0]);
-			this->Image = ToBitmapFromSvg(this->Render, (char*)bytes.data());
+			auto svg = File::ReadAllText(file.FullName());
+			this->Image = ToBitmapFromSvg(this->Render, svg.c_str());
 			picturebox1->SetImageEx(this->Image, false);
 		}
 		else
 		{
-			auto bytes = File::ReadAllBytes(ofd.SelectedPaths[0]);
-			auto img = BitmapSource::FromBuffer(bytes.data(), bytes.size());
-			this->Image = this->Render->CreateBitmap(img->GetWicBitmap());
-			picturebox1->SetImageEx(this->Image, false);
+			if (StringHelper::Contains(".jpg.jpeg.png.bmp.webp", StringHelper::ToLower(file.Extension())))
+			{
+				auto img = BitmapSource::FromFile(Convert::string_to_wstring(ofd.SelectedPaths[0]));
+				this->Image = this->Render->CreateBitmap(img->GetWicBitmap());
+				picturebox1->SetImageEx(this->Image, false);
+				img.reset();
+			}
 		}
 		this->Invalidate();
 	}
@@ -197,20 +197,21 @@ void DemoWindow::iconButton_OnMouseClick(class Control* sender, MouseEventArgs e
 
 void DemoWindow::picturebox1_OnDropFile(class Control* sender, List<std::wstring> files)
 {
-	if (sender->Image)
+	if (picturebox1->Image)
 	{
-		sender->Image->Release();
-		sender->Image = NULL;
+		picturebox1->Image->Release();
+		picturebox1->Image = this->Image = NULL;
 	}
 	FileInfo file(Convert::wstring_to_string(files[0]));
 	if (file.Extension() == ".svg" || file.Extension() == ".SVG")
 	{
-		this->Image = ToBitmapFromSvg(this->Render, (char*)File::ReadAllBytes(Convert::wstring_to_string(files[0]).c_str()).data());
+		auto svg = File::ReadAllText(file.FullName());
+		this->Image = ToBitmapFromSvg(this->Render, svg.c_str());
 		picturebox1->SetImageEx(this->Image, false);
 	}
 	else
 	{
-		if (StringHelper::Contains(".png.PNG.jpg.JPG.jpeg.JPEG.bmp.BMP", file.Extension()))
+		if (StringHelper::Contains(".png.jpg.jpeg.bmp.webp", StringHelper::ToLower(file.Extension())))
 		{
 			auto img = BitmapSource::FromFile(files[0]);
 			this->Image = this->Render->CreateBitmap(img->GetWicBitmap());
