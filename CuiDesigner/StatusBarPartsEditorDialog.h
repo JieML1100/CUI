@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file StatusBarPartsEditorDialog.h
+ * @brief StatusBarPartsEditorDialog：编辑 StatusBar 分段的对话框。
+ */
 #include "../CUI/GUI/Form.h"
 #include "../CUI/GUI/Label.h"
 #include "../CUI/GUI/Button.h"

@@ -1,4 +1,9 @@
 ﻿#pragma once
+
+/**
+ * @file Application.h
+ * @brief Application：应用级全局状态与工具方法（Legacy）。
+ */
 /*---如果Utils和Graphics源代码包含在此项目中则直接引用本地项目---*/
 //#define _LIB
 #include <CppUtils/Utils/Utils.h>

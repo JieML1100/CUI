@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file ToolBar.h
+ * @brief ToolBar：工具栏容器（Legacy）。
+ */
 #include "Panel.h"
 #include "Button.h"
 

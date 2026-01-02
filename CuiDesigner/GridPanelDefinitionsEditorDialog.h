@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file GridPanelDefinitionsEditorDialog.h
+ * @brief GridPanelDefinitionsEditorDialog：编辑 GridPanel 行/列定义的对话框。
+ */
 #include "../CUI/GUI/Form.h"
 #include "../CUI/GUI/Label.h"
 #include "../CUI/GUI/RichTextBox.h"

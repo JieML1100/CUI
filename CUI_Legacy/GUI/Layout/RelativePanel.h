@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file RelativePanel.h
+ * @brief RelativePanel：相对约束布局容器（Legacy）。
+ */
 #include "../Panel.h"
 #include "LayoutEngine.h"
 #include "LayoutTypes.h"

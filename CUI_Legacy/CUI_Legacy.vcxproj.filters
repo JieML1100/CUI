@@ -123,6 +123,9 @@
     <ClInclude Include="GUI\GridView.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\MediaPlayer.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="GUI\Control.cpp">
@@ -216,6 +219,9 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Menu.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\MediaPlayer.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
   </ItemGroup>

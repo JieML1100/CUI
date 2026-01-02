@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file Form.h
+ * @brief Form：顶层窗口与消息分发（Legacy）。
+ */
 #include "Control.h"
 #include "Application.h"
 #include "Button.h"

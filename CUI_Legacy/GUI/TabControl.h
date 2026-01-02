@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file TabControl.h
+ * @brief TabControl/TabPage：选项卡控件（Legacy）。
+ */
 #include "Control.h"
 #include "Panel.h"
 #pragma comment(lib, "Imm32.lib")

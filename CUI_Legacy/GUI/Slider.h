@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file Slider.h
+ * @brief Slider：滑动条控件（Legacy）。
+ */
 #include "Control.h"
 #include <algorithm>
 

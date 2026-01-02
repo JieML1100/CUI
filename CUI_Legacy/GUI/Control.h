@@ -1,5 +1,14 @@
 #pragma once
 
+/**
+ * @file Control.h
+ * @brief Control：控件基类与基础类型定义（Legacy）。
+ *
+ * 包含：
+ * - UIClass/CursorKind/ImageSizeMode 等基础枚举
+ * - 控件事件类型（Event<>）与基类 Control
+ */
+
 
 /*---如果Utils和Graphics源代码包含在此项目中则直接引用本地项目---*/
 //#define _LIB
@@ -59,6 +68,7 @@ enum class UIClass : int
 	UI_StatusBar,
 	UI_Slider,
 	UI_WebBrowser,
+	UI_MediaPlayer,
 	UI_StackPanel,
 	UI_GridPanel,
 	UI_DockPanel,

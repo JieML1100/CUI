@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file StackPanel.h
+ * @brief StackPanel：线性布局容器（Legacy）。
+ */
 #include "../Panel.h"
 #include "LayoutEngine.h"
 #include "LayoutTypes.h"

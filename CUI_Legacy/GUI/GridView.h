@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file GridView.h
+ * @brief GridView：表格控件（Legacy）。
+ */
 #include "Control.h"
 #include <functional>
 #pragma comment(lib, "Imm32.lib")

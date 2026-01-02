@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file Panel.h
+ * @brief Panel：容器控件（Legacy）。
+ */
 #include "Control.h"
 #include "Layout/LayoutEngine.h"
 #pragma comment(lib, "Imm32.lib")

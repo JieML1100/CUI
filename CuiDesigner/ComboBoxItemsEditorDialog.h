@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file ComboBoxItemsEditorDialog.h
+ * @brief ComboBoxItemsEditorDialog：编辑 ComboBox 下拉项的对话框。
+ */
 #include "../CUI/GUI/Form.h"
 #include "../CUI/GUI/Label.h"
 #include "../CUI/GUI/Button.h"

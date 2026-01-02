@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file TreeViewNodesEditorDialog.h
+ * @brief TreeViewNodesEditorDialog：编辑 TreeView 节点树的对话框。
+ */
 #include "../CUI/GUI/Form.h"
 #include "../CUI/GUI/Label.h"
 #include "../CUI/GUI/RichTextBox.h"

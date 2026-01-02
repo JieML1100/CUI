@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file DockPanel.h
+ * @brief DockPanel：停靠布局容器（Legacy）。
+ */
 #include "../Panel.h"
 #include "LayoutEngine.h"
 #include "LayoutTypes.h"

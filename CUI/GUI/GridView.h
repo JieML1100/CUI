@@ -15,13 +15,28 @@ enum class ColumnType
 	ComboBox,
 };
 
+/**
+ * @file GridView.h
+ * @brief GridView：表格控件（列定义 + 行数据 + 编辑/排序/滚动）。
+ *
+ * 特性概览：
+ * - 多列类型：Text/Image/Check/Button/ComboBox
+ * - 支持单元格编辑（文本/组合框）与按钮点击事件
+ * - 支持列头点击排序（可为列配置 SortFunc）
+ * - 支持平滑滚动（ScrollYOffset）与行级滚动（ScrollRowPosition）
+ */
+
 class CellValue;
 class GridViewColumn
 {
 public:
+	/** @brief 列标题。 */
 	std::wstring Name = L"";
+	/** @brief 列宽（像素）。 */
 	float Width = 120;
+	/** @brief 列类型。 */
 	ColumnType Type = ColumnType::Text;
+	/** @brief 是否允许编辑。 */
 	bool CanEdit = true;
 	// ComboBox 列：下拉选项列表（当 Count>0 时默认选中第 0 项）
 	List<std::wstring> ComboBoxItems = List<std::wstring>();
@@ -29,6 +44,10 @@ public:
 	std::wstring ButtonText = L"";
 	std::function<int(const CellValue& lhs, const CellValue& rhs)> SortFunc = nullptr;
 	GridViewColumn(std::wstring name = L"", float width = 120.0F, ColumnType type = ColumnType::Text, bool canEdit = false);
+	/**
+	 * @brief 设置排序比较函数。
+	 * @return 比较结果：<0 lhs<rhs，0 相等，>0 lhs>rhs。
+	 */
 	void SetSortFunc(std::function<int(const CellValue& lhs, const CellValue& rhs)> func)
 	{
 		SortFunc = std::move(func);
@@ -64,6 +83,7 @@ public:
 	CursorKind QueryCursor(int xof, int yof) override;
 	GridView(int x = 0, int y = 0, int width = 120, int height = 20);
 	~GridView() override;
+	/** @brief 表头字体（为空则使用默认字体/继承字体）。 */
 	class Font* HeadFont = NULL;
 	bool InScroll = false;
 	bool InHScroll = false;
@@ -76,7 +96,7 @@ public:
 	float Boder = 1.5f;
 	D2D1_COLOR_F HeadBackColor = Colors::Snow3;
 	D2D1_COLOR_F HeadForeColor = Colors::Black;
-	// Pixel-based vertical scroll offset for smooth/position scrolling.
+	/** @brief 像素级垂直滚动偏移（用于平滑滚动/位置滚动）。 */
 	float ScrollYOffset = 0.0f;
 	int ScrollRowPosition = 0;
 	int SelectedColumnIndex = -1;
@@ -105,6 +125,7 @@ public:
 	float EditTextMargin = 3.0f;
 	
 	// 新行相关属性
+	/** @brief 新增行区域：是否允许用户手动添加新行。 */
 	bool AllowUserToAddRows = false;           // 是否允许用户手动添加新行
 	bool AllowUserToDeleteRows = true;         // 是否允许用户删除行
 	D2D1_COLOR_F NewRowBackColor = { 0.95f, 0.95f, 0.95f, 1.0f };  // 新行背景色
@@ -118,9 +139,13 @@ public:
 	float ScrollXOffset = 0.0f;
 	GridViewRow& SelectedRow();
 	std::wstring& SelectedValue();
+	/** @brief 清空列与行数据。 */
 	void Clear();
+	/** @brief 切换编辑光标/选择到指定单元格。 */
 	void ChangeEditionSelected(int col, int row);
+	/** @brief 调整行集合大小。 */
 	void ReSizeRows(int count);
+	/** @brief 按指定列排序。 */
 	void SortByColumn(int col, bool ascending = true);
 private:
 	float _vScrollThumbGrabOffsetY = 0.0f;
@@ -220,6 +245,7 @@ private:
 	void AddNewRow();
 public:
 	void Update() override;
+	/** @brief 根据内容自动调整某列宽度。 */
 	void AutoSizeColumn(int col);
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 };

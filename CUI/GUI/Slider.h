@@ -2,6 +2,21 @@
 #include "Control.h"
 #include <algorithm>
 
+/**
+ * @file Slider.h
+ * @brief Slider：滑动条控件。
+ *
+ * 约定：
+ * - 通过 Min/Max/Value 表示数值范围
+ * - 拖拽滑块会更新 Value，并触发 OnValueChanged
+ * - 可启用 SnapToStep 以 Step 为步进对 Value 进行吸附
+ */
+
+/**
+ * @brief 数值变化事件。
+ * @param oldValue 变化前的值。
+ * @param newValue 变化后的值。
+ */
 typedef Event<void(class Control*, float oldValue, float newValue)> ValueChangedEvent;
 
 class Slider : public Control
@@ -55,18 +70,28 @@ private:
 	}
 
 public:
+	/** @brief 值变化事件。 */
 	ValueChangedEvent OnValueChanged;
 
+	/** @brief 轨道背景色。 */
 	D2D1_COLOR_F TrackBackColor = D2D1_COLOR_F{ 0.65f, 0.65f, 0.65f, 0.60f };
+	/** @brief 已填充轨道颜色。 */
 	D2D1_COLOR_F TrackForeColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.85f };
+	/** @brief 滑块填充色。 */
 	D2D1_COLOR_F ThumbColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.95f };
+	/** @brief 滑块边框色。 */
 	D2D1_COLOR_F ThumbBorderColor = D2D1_COLOR_F{ 0.10f, 0.10f, 0.10f, 0.35f };
 
+	/** @brief 轨道高度（像素）。 */
 	float TrackHeight = 4.0f;
+	/** @brief 滑块半径（像素）。 */
 	float ThumbRadius = 8.0f;
+	/** @brief 步进值（用于 SnapToStep）。 */
 	float Step = 1.0f;
+	/** @brief 是否启用步进吸附。 */
 	bool SnapToStep = false;
 
+	/** @brief 创建滑动条。 */
 	Slider(int x, int y, int width = 240, int height = 32);
 	virtual UIClass Type() override;
 

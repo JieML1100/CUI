@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file WrapPanel.h
+ * @brief WrapPanel：自动换行布局容器（Legacy）。
+ */
 #include "../Panel.h"
 #include "LayoutEngine.h"
 #include "LayoutTypes.h"

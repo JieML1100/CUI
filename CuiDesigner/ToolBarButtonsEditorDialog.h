@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file ToolBarButtonsEditorDialog.h
+ * @brief ToolBarButtonsEditorDialog：编辑 ToolBar 按钮集合的对话框。
+ */
 #include "../CUI/GUI/Form.h"
 #include "../CUI/GUI/Label.h"
 #include "../CUI/GUI/Button.h"

@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file Menu.h
+ * @brief Menu/MenuItem：菜单栏与下拉菜单控件（Legacy）。
+ */
 #include "Control.h"
 #include <vector>
 

@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file LayoutTypes.h
+ * @brief 布局基础类型与枚举（Legacy）。
+ */
 #include <cstdint>
 #include <float.h>
 

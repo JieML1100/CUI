@@ -5,7 +5,17 @@
 #include <map>
 #include <vector>
 
-// 相对定位约束
+/**
+ * @file RelativePanel.h
+ * @brief RelativePanel：通过相对约束进行定位的容器。
+ */
+
+/**
+ * @brief 相对定位约束。
+ *
+ * 该结构描述 child 与其它兄弟控件/面板边界之间的关系。
+ * 注意：若约束存在循环依赖，布局引擎会尝试检测并避免无穷递归（实现中采用拓扑排序）。
+ */
 struct RelativeConstraints {
     Control* AlignLeftWith = nullptr;
     Control* AlignRightWith = nullptr;
@@ -23,7 +33,12 @@ struct RelativeConstraints {
     bool CenterVertical = false;
 };
 
-// RelativePanel 布局引擎
+/**
+ * @brief RelativePanel 布局引擎。
+ *
+ * - 约束以 child 为 key 进行存储
+ * - 排列阶段会根据依赖关系进行拓扑排序
+ */
 class RelativeLayoutEngine : public LayoutEngine {
 private:
     std::map<Control*, RelativeConstraints> _constraints;
@@ -33,11 +48,16 @@ private:
     bool HasCycle(Control* start, Control* current, std::map<Control*, int>& visited);
     
 public:
+    /** @brief 设置某个子控件的相对约束。 */
     void SetConstraints(Control* child, const RelativeConstraints& constraints) {
         _constraints[child] = constraints;
         Invalidate();
     }
     
+    /**
+     * @brief 获取某个子控件的相对约束。
+     * @return 不存在时返回 nullptr。
+     */
     RelativeConstraints* GetConstraints(Control* child) {
         auto it = _constraints.find(child);
         if (it != _constraints.end())
@@ -49,7 +69,9 @@ public:
     void Arrange(Control* container, D2D1_RECT_F finalRect) override;
 };
 
-// RelativePanel 控件类
+/**
+ * @brief RelativePanel 控件类。
+ */
 class RelativePanel : public Panel {
 private:
     RelativeLayoutEngine* _relativeEngine;

@@ -129,6 +129,9 @@
     <ClInclude Include="GUI\DCompLayeredHost.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\MediaPlayer.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="GUI\Control.cpp">
@@ -228,6 +231,9 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\DCompLayeredHost.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\MediaPlayer.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
   </ItemGroup>

@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file DemoWindow.h
+ * @brief CUITest 演示窗口声明（用于示例/测试）。
+ */
 #include <iostream>
 #include "../CUI/GUI/Form.h"
 #include "../CUI/GUI/Layout/Layout.h"

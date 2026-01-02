@@ -1,4 +1,9 @@
 ﻿#pragma once
+
+/**
+ * @file PictureBox.h
+ * @brief PictureBox：图片显示控件（Legacy）。
+ */
 #include "Control.h"
 #pragma comment(lib, "Imm32.lib")
 class PictureBox : public Control

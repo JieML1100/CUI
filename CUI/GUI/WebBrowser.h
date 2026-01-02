@@ -18,9 +18,21 @@
 struct IDCompositionVisual;
 struct IDCompositionRectangleClip;
 
+/**
+ * @file WebBrowser.h
+ * @brief WebBrowser：基于 WebView2 的浏览器控件（Composition 模式）。
+ *
+ * 关键点：
+ * - 运行时使用 WebView2 CompositionController 并挂载到 Form 提供的 DirectComposition 容器层
+ * - 设计器模式下不会创建真实 WebView2（避免生成 `<exe>.WebView2` 目录），仅绘制占位
+ * - 鼠标输入需要显式转发给 WebView2（见 ForwardMouseMessageToWebView）
+ * - Navigate/SetHtml 支持“延迟执行”：未就绪时会缓存到 _pendingUrl/_pendingHtml
+ */
+
 class WebBrowser : public Control
 {
 public:
+	/** @brief 创建 WebBrowser。 */
 	WebBrowser(int x, int y, int width, int height);
 	~WebBrowser() override;
 
@@ -29,22 +41,38 @@ public:
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 
 	// WebView2 Composition 光标支持：返回 system cursor id（可用于 LoadCursor(MAKEINTRESOURCE)）
+	/**
+	 * @brief 获取 WebView2 当前建议的系统光标 id。
+	 * @return true 表示可用。
+	 */
 	bool TryGetSystemCursorId(UINT32& outId) const;
 
+	/** @brief 导航到指定 URL（未就绪时会缓存）。 */
 	void Navigate(const std::wstring& url);
+	/** @brief 直接设置 HTML（NavigateToString，未就绪时会缓存）。 */
 	void SetHtml(const std::wstring& html);
+	/** @brief 重新加载当前页面。 */
 	void Reload();
 
+	/**
+	 * @brief 异步执行脚本。
+	 * @param script JS 脚本。
+	 * @param callback 回调返回 HRESULT 与 JSON 字符串结果（WebView2 约定）。
+	 */
 	void ExecuteScriptAsync(const std::wstring& script,
 		std::function<void(HRESULT hr, const std::wstring& jsonResult)> callback = {});
 
+	/** @brief 异步获取当前页面 HTML（实现依赖注入的 JS）。 */
 	void GetHtmlAsync(std::function<void(HRESULT hr, const std::wstring& html)> callback);
+	/** @brief 异步设置匹配元素的 innerHTML。 */
 	void SetElementInnerHtmlAsync(const std::wstring& cssSelector, const std::wstring& html,
 		std::function<void(HRESULT hr)> callback = {});
+	/** @brief 异步查询匹配元素的 outerHTML 列表（以 JSON 数组返回）。 */
 	void QuerySelectorAllOuterHtmlAsync(const std::wstring& cssSelector,
 		std::function<void(HRESULT hr, const std::wstring& jsonArray)> callback);
 
 	// 是否可见且就绪
+	/** @brief WebView 是否已创建且当前控件可见。 */
 	bool IsWebViewVisible() const { return _webviewReady && this->Visible; }
 
 private:

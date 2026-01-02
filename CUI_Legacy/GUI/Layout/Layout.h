@@ -1,5 +1,10 @@
 #pragma once
 
+/**
+ * @file Layout.h
+ * @brief Layout：布局系统聚合头（Legacy）。
+ */
+
 // 布局系统头文件 - 包含所有布局相关类
 
 #include "LayoutTypes.h"

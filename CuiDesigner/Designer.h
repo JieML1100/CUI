@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file Designer.h
+ * @brief Designer：CUI 可视化设计器主窗口。
+ */
 #include "../CUI/GUI/Form.h"
 #include "DesignerCanvas.h"
 #include "ToolBox.h"

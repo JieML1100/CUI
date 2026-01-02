@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file MenuItemsEditorDialog.h
+ * @brief MenuItemsEditorDialog：编辑菜单项结构的对话框。
+ */
 #include "../CUI/GUI/Form.h"
 #include "../CUI/GUI/Label.h"
 #include "../CUI/GUI/RichTextBox.h"

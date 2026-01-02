@@ -1,5 +1,11 @@
 ﻿#pragma once
+
+/**
+ * @file Button.h
+ * @brief Button：基础按钮控件（Legacy）。
+ */
 #include "Control.h"
+/** @brief 基础按钮控件。 */
 class Button : public Control
 {
 public:

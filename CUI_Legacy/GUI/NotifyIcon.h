@@ -1,4 +1,9 @@
 ﻿#pragma once
+
+/**
+ * @file NotifyIcon.h
+ * @brief NotifyIcon：系统托盘图标与菜单封装（Legacy）。
+ */
 #include <string>
 #include <vector>
 #include "Control.h"

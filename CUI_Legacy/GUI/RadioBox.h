@@ -1,4 +1,9 @@
 ﻿#pragma once
+
+/**
+ * @file RadioBox.h
+ * @brief RadioBox：单选框风格控件（Legacy）。
+ */
 #include "Control.h"
 #pragma comment(lib, "Imm32.lib")
 class RadioBox : public Control

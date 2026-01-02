@@ -1,5 +1,12 @@
 #pragma once
+
+/**
+ * @file TreeView.h
+ * @brief TreeView：树形控件（Legacy）。
+ */
 #include "Control.h"
+
+/** @brief 树节点（拥有子节点，析构时通常会释放 Children）。 */
 class TreeNode
 {
 public:
@@ -12,6 +19,7 @@ public:
 	~TreeNode();
 	int UnfoldedCount();
 };
+/** @brief 树形控件。 */
 class TreeView : public Control
 {
 private:

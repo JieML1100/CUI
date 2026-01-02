@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file RichTextBox.h
+ * @brief RichTextBox：富文本/大文本输入控件（Legacy）。
+ */
 #include "Control.h"
 #pragma comment(lib, "Imm32.lib")
 class RichTextBox : public Control

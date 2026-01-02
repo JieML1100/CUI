@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file PasswordBox.h
+ * @brief PasswordBox：密码输入框（Legacy）。
+ */
 #include "Control.h"
 #pragma comment(lib, "Imm32.lib")
 class PasswordBox : public Control

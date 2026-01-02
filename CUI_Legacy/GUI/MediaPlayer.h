@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file MediaPlayer.h
+ * @brief MediaPlayer：媒体播放器控件（Legacy）。
+ */
 #include "Control.h"
 #include <wrl/client.h>
 #include <mfapi.h>
@@ -20,18 +25,6 @@
 #include <condition_variable>
 
 using Microsoft::WRL::ComPtr;
-
-/**
- * @file MediaPlayer.h
- * @brief MediaPlayer：基于 Windows Media Foundation 的媒体播放器控件。
- *
- * 设计概览：
- * - 通过 Media Foundation 进行解复用/解码与时钟驱动
- * - 视频侧包含 D3D11/DXGI 互操作与位图更新（见实现）
- * - 音频侧包含 WASAPI 输出与（可选）变速保音调处理（WSOLA）
- *
- * 注意：该头文件包含较多平台相关依赖（MF/EVR/D3D/WASAPI），仅在 Windows/MSVC 环境下使用。
- */
 
 #if defined(_MSC_VER)
 // Media Foundation + EVR
@@ -82,14 +75,8 @@ class WsolaTimeStretch;
 class MediaPlayerCallback : public IMFAsyncCallback
 {
 public:
-	/** @brief 构造回调对象（由 MediaPlayer 创建并管理）。 */
 	MediaPlayerCallback(MediaPlayer* player);
 	virtual ~MediaPlayerCallback();
-	/**
-	 * @brief 与宿主 MediaPlayer 解绑定。
-	 *
-	 * 用于析构/关闭流程，避免回调线程访问已释放对象。
-	 */
 	void DetachPlayer();
 
 	STDMETHODIMP QueryInterface(REFIID riid, void** ppv);
@@ -105,34 +92,21 @@ private:
 
 inline void MediaPlayerCallback::DetachPlayer() { _player = nullptr; }
 
-/** @brief 媒体加载完成事件。 */
-typedef Event<void(class Control*)> MediaOpenedEvent;
-/** @brief 媒体播放结束事件。 */
-typedef Event<void(class Control*)> MediaEndedEvent;
-/** @brief 媒体加载/播放失败事件。 */
-typedef Event<void(class Control*)> MediaFailedEvent;
-/** @brief 播放位置变化事件（秒）。 */
-typedef Event<void(class Control*, double)> MediaPositionChangedEvent;
+// 媒体播放器事件定义
+typedef Event<void(class Control*)> MediaOpenedEvent;              // 媒体加载完成事件
+typedef Event<void(class Control*)> MediaEndedEvent;               // 媒体播放结束事件
+typedef Event<void(class Control*)> MediaFailedEvent;              // 媒体加载/播放失败事件
+typedef Event<void(class Control*, double)> MediaPositionChangedEvent;  // 播放位置变化事件
 
 // ============================================================================
 // MediaPlayer - 媒体播放器控件
 // ============================================================================
-
-/**
- * @brief MediaPlayer：媒体播放器控件。
- *
- * 对外契约：
- * - Load 加载媒体；Play/Pause/Stop/Seek 控制播放
- * - 通过 OnMediaOpened/OnMediaEnded/OnMediaFailed/OnPositionChanged 观察状态
- * - RenderMode 控制视频的缩放/裁剪策略
- */
 class MediaPlayer : public Control
 {
 	friend class MediaPlayerCallback; // 允许回调访问私有成员
 	friend class VideoSampleGrabberCallback; // 允许视频帧回调访问私有成员
 public:
 	// 播放状态枚举
-	/** @brief 播放状态。 */
 	enum class PlayState
 	{
 		Stopped,  // 停止
@@ -141,7 +115,6 @@ public:
 	};
 
 	// 视频渲染模式
-	/** @brief 视频渲染模式（缩放与对齐策略）。 */
 	enum class VideoRenderMode
 	{
 		Fit,        // 适应（等比缩放，居中显示，默认）
@@ -278,19 +251,14 @@ public:
 	/// <param name="y">控件Y坐标</param>
 	/// <param name="width">控件宽度</param>
 	/// <param name="height">控件高度</param>
-	/** @brief 创建媒体播放器控件。 */
 	MediaPlayer(int x, int y, int width = 640, int height = 360);
 	virtual ~MediaPlayer();
 
 	// ========== 事件 ==========
-	/** @brief 媒体加载完成时触发。 */
-	MediaOpenedEvent OnMediaOpened;
-	/** @brief 媒体播放结束时触发。 */
-	MediaEndedEvent OnMediaEnded;
-	/** @brief 媒体加载/播放失败时触发。 */
-	MediaFailedEvent OnMediaFailed;
-	/** @brief 播放位置变化时触发（秒）。 */
-	MediaPositionChangedEvent OnPositionChanged;
+	MediaOpenedEvent OnMediaOpened;              // 媒体加载完成时触发
+	MediaEndedEvent OnMediaEnded;                // 媒体播放结束时触发
+	MediaFailedEvent OnMediaFailed;              // 媒体加载/播放失败时触发
+	MediaPositionChangedEvent OnPositionChanged; // 播放位置变化时触发
 
 	// ========== 重写基类方法 ==========
 	virtual UIClass Type() override;

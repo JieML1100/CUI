@@ -21,12 +21,25 @@
 
 struct ID2D1Bitmap;
 
+/**
+ * @file Control.h
+ * @brief CUI 控件基类及基础事件/枚举定义。
+ *
+ * 约定：
+ * - UI 对象通常具有线程亲和性（应在创建它的 UI 线程访问/更新）。
+ * - 资源所有权需显式：Font/Image 默认由控件“接管并释放”，也可通过 Set*Ex 关闭接管。
+ * - 布局相关属性（Margin/Padding/Anchor/Grid/Dock/MinSize/MaxSize）由布局引擎与容器协同使用。
+ */
+
 inline Font* GetDefaultFontObject()
 {
 	static Font defaultFont(L"Arial", 18.0f);
 	return &defaultFont;
 }
 
+/**
+ * @brief 图片在控件区域内的绘制方式。
+ */
 enum class ImageSizeMode : char
 {
 	Normal,
@@ -34,6 +47,10 @@ enum class ImageSizeMode : char
 	StretchIamge,
 	Zoom
 };
+
+/**
+ * @brief 运行时 UI 类型标识，用于 RTTI/序列化/设计器等场景。
+ */
 enum class UIClass : int
 {
 	UI_Base,
@@ -68,6 +85,9 @@ enum class UIClass : int
 	UI_CUSTOM
 };
 
+/**
+ * @brief 光标类型。
+ */
 enum class CursorKind : uint8_t
 {
 	Arrow,
@@ -81,6 +101,11 @@ enum class CursorKind : uint8_t
 	No
 };
 
+/**
+ * @brief 控件通用事件回调类型别名。
+ *
+ * sender 一般为触发事件的控件指针。
+ */
 typedef Event<void(class Control*, EventArgs)> EventHandler;
 typedef Event<void(class Control*)> CheckedEvent;
 typedef Event<void(class Control*, MouseEventArgs)> MouseWheelEvent;
@@ -108,6 +133,18 @@ typedef Event<void(class Control*, List<std::wstring>)> DropFileEvent;
 typedef Event<void(class Control*, std::wstring)> DropTextEvent;
 typedef Event<void(class Control*)> SelectionChangedEvent;
 
+/**
+ * @brief 所有可视控件的基类。
+ *
+ * 控件是轻量对象，主要职责：
+ * - 保存几何（Location/Size）、颜色（Back/Fore/Border）、文本、资源指针（Font/Image）等属性
+ * - 处理输入消息（ProcessMessage）并触发相应事件
+ * - 参与布局：提供 MeasureCore/ApplyLayout，且通过 RequestLayout 通知父容器重排
+ *
+ * 所有权说明：
+ * - Font：通过属性 Font 设置时默认由控件接管并在替换/析构时释放；可用 SetFontEx 指定不接管。
+ * - Image：通过属性 Image 设置时默认由控件接管并在替换/析构时 Release；可用 SetImageEx 指定不接管。
+ */
 class Control
 {
 protected:
@@ -176,44 +213,79 @@ protected:
 	friend class Panel;
 	friend class Form;
 public:
+	/** @brief 勾选状态变化事件（CheckBox/RadioBox 等）。 */
 	CheckedEvent OnChecked = CheckedEvent();
+	/** @brief 鼠标滚轮事件。 */
 	MouseWheelEvent OnMouseWheel = MouseWheelEvent();
+	/** @brief 鼠标移动事件。 */
 	MouseMoveEvent OnMouseMove = MouseMoveEvent();
+	/** @brief 鼠标抬起事件。 */
 	MouseUpEvent OnMouseUp = MouseUpEvent();
+	/** @brief 鼠标按下事件。 */
 	MouseDownEvent OnMouseDown = MouseDownEvent();
+	/** @brief 鼠标双击事件。 */
 	MouseDoubleClickEvent OnMouseDoubleClick = MouseDoubleClickEvent();
+	/** @brief 鼠标单击事件。 */
 	MouseClickEvent OnMouseClick = MouseClickEvent();
+	/** @brief 鼠标进入控件事件。 */
 	MouseEnterEvent OnMouseEnter = MouseEnterEvent();
+	/** @brief 鼠标离开控件事件。 */
 	MouseLeavedEvent OnMouseLeaved = MouseLeavedEvent();
+	/** @brief 键盘抬起事件。 */
 	KeyUpEvent OnKeyUp = KeyUpEvent();
+	/** @brief 键盘按下事件。 */
 	KeyDownEvent OnKeyDown = KeyDownEvent();
+	/** @brief 绘制事件（通常由窗口的渲染循环触发）。 */
 	PaintEvent OnPaint = PaintEvent();
 	GridViewCheckStateChangedEvent OnGridViewCheckStateChanged = GridViewCheckStateChangedEvent();
+	/** @brief 关闭事件（如按钮触发关闭请求）。 */
 	CloseEvent OnClose = CloseEvent();
+	/** @brief 位置移动事件。 */
 	MovedEvent OnMoved = MovedEvent();
+	/** @brief 尺寸变化事件。 */
 	SizeChangedEvent OnSizeChanged = SizeChangedEvent();
 	SelectedChangedEvent OnSelectedChanged = SelectedChangedEvent();
 	ScrollChangedEvent OnScrollChanged = ScrollChangedEvent();
+	/** @brief 文本变化事件。 */
 	TextChangedEvent OnTextChanged = TextChangedEvent();
+	/** @brief 字符输入事件（已解析为 wchar_t）。 */
 	CharInputEvent OnCharInput = CharInputEvent();
+	/** @brief 获得焦点事件。 */
 	GotFocusEvent OnGotFocus = GotFocusEvent();
+	/** @brief 失去焦点事件。 */
 	LostFocusEvent OnLostFocus = LostFocusEvent();
+	/** @brief 文件拖放事件。 */
 	DropFileEvent OnDropFile = DropFileEvent();
+	/** @brief 文本拖放事件。 */
 	DropTextEvent OnDropText = DropTextEvent();
 	class Form* ParentForm;
 	class Control* Parent;
+	/** @brief 文本是否发生变化（用于渲染或布局的脏标记）。 */
 	bool TextChanged = true;
 	bool Enable;
 	bool Visible;
 	bool Checked;
+	/** @brief 用户自定义数据槽（不由框架解释）。 */
 	UINT64 Tag;
+	/** @brief 子控件集合。 */
 	List<Control*> Children;
+	/** @brief 图片绘制模式。 */
 	ImageSizeMode SizeMode = ImageSizeMode::Zoom;
+	/** @brief 创建基础控件。 */
 	Control();
+	/** @brief 虚析构：释放由控件接管的资源（Font/Image）等。 */
 	virtual ~Control();
+	/** @brief 返回运行时类型标识。 */
 	virtual UIClass Type();
+	/** @brief 更新控件状态（逻辑更新）。 */
 	virtual void Update();
+	/** @brief 渲染完成后的后处理（例如动画/失效区域上报）。 */
 	virtual void PostRender();
+	/**
+	 * @brief 获取动画导致的额外无效区域。
+	 * @param outRect 输出需要重绘的区域。
+	 * @return true 表示 outRect 有效。
+	 */
 	virtual bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) { (void)outRect; return false; }
 	PROPERTY(class Font*, Font);
 	GET(class Font*, Font);
@@ -251,6 +323,10 @@ public:
 			SetChildrenParentForm(c->Children[i], form);
 		}
 	}
+	/**
+	 * @brief 从子控件列表移除一个控件。
+	 * @param c 需要移除的控件。
+	 */
 	void RemoveControl(Control* c);
 	READONLY_PROPERTY(POINT, AbsLocation);
 	GET(POINT, AbsLocation);
@@ -336,15 +412,31 @@ public:
 	GET(SIZE, MaxSize);
 	SET(SIZE, MaxSize);
 	
+	/**
+	 * @brief 测量阶段：返回控件期望尺寸。
+	 * @param availableSize 可用空间（由父布局提供）。
+	 */
 	virtual SIZE MeasureCore(SIZE availableSize);
+	/**
+	 * @brief 布局应用：由布局引擎/父容器设置最终位置与尺寸。
+	 */
 	void ApplyLayout(POINT location, SIZE size);
 
 	CursorKind Cursor = CursorKind::Arrow;
+	/**
+	 * @brief 根据命中区域返回光标类型。
+	 * @param xof 相对于控件客户区的 X。
+	 * @param yof 相对于控件客户区的 Y。
+	 */
 	virtual CursorKind QueryCursor(int xof, int yof) { (void)xof; (void)yof; return this->Cursor; }
 	virtual bool HitTestChildren() const { return true; }
 	virtual void RenderImage();
 	virtual SIZE ActualSize();
 	void setTextPrivate(std::wstring);
 	bool IsSelected();
+	/**
+	 * @brief 处理窗口消息并分发到控件。
+	 * @return true 表示已处理。
+	 */
 	virtual bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof);
 };

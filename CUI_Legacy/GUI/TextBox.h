@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file TextBox.h
+ * @brief TextBox：文本输入控件（Legacy）。
+ */
 #include "Control.h"
 #pragma comment(lib, "Imm32.lib")
 class TextBox : public Control

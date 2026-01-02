@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file CodeGenerator.h
+ * @brief CodeGenerator：将 Designer 模型导出为 C++ 代码的生成器。
+ */
 #include "DesignerTypes.h"
 #include <string>
 #include <vector>

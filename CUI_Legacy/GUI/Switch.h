@@ -1,4 +1,9 @@
 ﻿#pragma once
+
+/**
+ * @file Switch.h
+ * @brief Switch：开关控件（Legacy）。
+ */
 #include "Control.h"
 #pragma comment(lib, "Imm32.lib")
 class Switch : public Control

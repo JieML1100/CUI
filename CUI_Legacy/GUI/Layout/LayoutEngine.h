@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file LayoutEngine.h
+ * @brief LayoutEngine：布局引擎定义（Legacy）。
+ */
 #include "../Control.h"
 #include "LayoutTypes.h"
 #include <vector>

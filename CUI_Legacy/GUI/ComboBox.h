@@ -1,6 +1,12 @@
 #pragma once
+
+/**
+ * @file ComboBox.h
+ * @brief ComboBox：下拉选择控件（Legacy）。
+ */
 #include "Control.h"
 #pragma comment(lib, "Imm32.lib")
+/** @brief 下拉选择控件。 */
 class ComboBox : public Control
 {
 #define COMBO_MIN_SCROLL_BLOCK 16

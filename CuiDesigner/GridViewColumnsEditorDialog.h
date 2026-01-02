@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file GridViewColumnsEditorDialog.h
+ * @brief GridViewColumnsEditorDialog：编辑 GridView 列配置的对话框。
+ */
 #include "../CUI/GUI/Form.h"
 #include "../CUI/GUI/Label.h"
 #include "../CUI/GUI/Button.h"

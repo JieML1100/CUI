@@ -1,4 +1,9 @@
 ﻿#pragma once
+
+/**
+ * @file RoundTextBox.h
+ * @brief RoundTextBox：圆角文本框（Legacy）。
+ */
 #include "Control.h"
 #include "TextBox.h"
 #pragma comment(lib, "Imm32.lib")

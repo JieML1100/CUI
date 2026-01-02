@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file TabControlPagesEditorDialog.h
+ * @brief TabControlPagesEditorDialog：编辑 TabControl 页面列表的对话框。
+ */
 #include "../CUI/GUI/Form.h"
 #include "../CUI/GUI/Label.h"
 #include "../CUI/GUI/Button.h"

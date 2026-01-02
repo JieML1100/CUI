@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file StatusBar.h
+ * @brief StatusBar：状态栏控件（Legacy）。
+ */
 #include "Panel.h"
 #include "Label.h"
 

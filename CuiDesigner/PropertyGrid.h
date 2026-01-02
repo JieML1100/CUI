@@ -1,4 +1,9 @@
 #pragma once
+
+/**
+ * @file PropertyGrid.h
+ * @brief PropertyGrid：设计器属性面板（显示/编辑控件属性）。
+ */
 #include "../CUI/GUI/Panel.h"
 #include "../CUI/GUI/Label.h"
 #include "../CUI/GUI/CheckBox.h"
