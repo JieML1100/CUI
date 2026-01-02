@@ -24,9 +24,6 @@
     <ClCompile Include="DemoWindow.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="DemoWindow1.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DemoWindow.h">
@@ -36,9 +33,6 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="imgs.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="DemoWindow1.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

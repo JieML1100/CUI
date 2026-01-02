@@ -1,7 +1,7 @@
 #pragma once
 #include <iostream>
-#include "GUI/Form.h"
-#include "GUI/Layout/Layout.h"
+#include "../CUI/GUI/Form.h"
+#include "../CUI/GUI/Layout/Layout.h"
 #include "CustomControls.h"
 class DemoWindow : public Form
 {
@@ -42,6 +42,7 @@ public:
     Switch* sw2;
 
     WebBrowser* web1;
+    MediaPlayer* mediaPlayer;
 
     Menu* menu1;
     ToolBar* toolbar1;

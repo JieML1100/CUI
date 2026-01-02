@@ -1,5 +1,4 @@
 ﻿#include "DemoWindow.h"
-#include "DemoWindow1.h"
 #pragma comment(linker, "/subsystem:\"windows\" /entry:\"mainCRTStartup\"")
 int main()
 {

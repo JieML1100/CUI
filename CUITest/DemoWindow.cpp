@@ -1,6 +1,7 @@
 #include "DemoWindow.h"
 #include "imgs.h"
 #include "../CUI/nanosvg.h"
+#include "../CUI/GUI/MediaPlayer.h"
 ID2D1Bitmap* ToBitmapFromSvg(D2DGraphics1* g, const char* data) {
 	if (!g || !data) return NULL;
 	int len = strlen(data) + 1;
@@ -241,7 +242,7 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 	menu1 = this->AddControl(new Menu(0, 0, this->Size.cx, 28));
 	menu1->BarBackColor = D2D1_COLOR_F{ 1,1,1,0.08f };
 	menu1->DropBackColor = D2D1_COLOR_F{ 0.12f,0.12f,0.12f,0.92f };
-	menu1->OnMenuCommand += std::bind_front(&DemoWindow::menu_OnCommand, this);
+	menu1->OnMenuCommand += [this](class Control* sender, int id) { this->menu_OnCommand(sender, id); };
 	{
 		auto file = menu1->AddItem(L"文件");
 		file->AddSubItem(L"打开", 101);
@@ -284,7 +285,7 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 	slider1->Min = 0;
 	slider1->Max = 10000;
 	slider1->Value = 50;
-	slider1->OnValueChanged += std::bind_front(&DemoWindow::slider1_OnValueChanged, this);
+	slider1->OnValueChanged += [this](class Control* sender, float oldValue, float newValue) { this->slider1_OnValueChanged(sender, oldValue, newValue); };
 
 	label1 = this->AddControl(new Label(L"Label", 10, (int)slider1->Bottom + 6));
 	label1->OnMouseWheel += std::bind_front(&DemoWindow::label1_OnMouseWheel, this);
@@ -299,14 +300,14 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 	combobox1 = this->AddControl(new ComboBox(L"item1", 10, this->LastChild()->Bottom + 5, 120, 24));
 	combobox1->ExpandCount = 8;
 	for (int i = 0; i < 100; i++) {
-		combobox1->values.Add(StringHelper::Format(L"item%d", i));
+		combobox1->Items.Add(StringHelper::Format(L"item%d", i));
 	}
 	checkbox1 = this->AddControl(new CheckBox(L"CheckBox", combobox1->Right + 5, button1->Top));
 	radiobox1 = this->AddControl(new RadioBox(L"RadioBox1", combobox1->Right + 5, this->LastChild()->Bottom + 5));
 	radiobox1->Checked = true;
 	radiobox2 = this->AddControl(new RadioBox(L"RadioBox2", combobox1->Right + 5, this->LastChild()->Bottom + 5));
-	radiobox1->OnChecked += std::bind_front(&DemoWindow::radiobox1_OnChecked, this);
-	radiobox2->OnChecked += std::bind_front(&DemoWindow::radiobox2_OnChecked, this);
+	radiobox1->OnChecked += [this](class Control* sender) { this->radiobox1_OnChecked(sender); };
+	radiobox2->OnChecked += [this](class Control* sender) { this->radiobox2_OnChecked(sender); };
 
 	textbox2 = this->AddControl(new RichTextBox(L"RichTextBox", 260, button1->Top, 800, 155));
 	textbox2->BackColor = D2D1_COLOR_F{ 1,1,1,0.25f };
@@ -330,10 +331,11 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 	tabControl1->AddPage(L"Icon Buttons")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
 	tabControl1->AddPage(L"Layout Demo")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
 	tabControl1->AddPage(L"WebBrowser")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
+	tabControl1->AddPage(L"Media Player")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
 	tabControl1->get(0)->AddControl(new Label(L"基本容器", 10, 10));
 
 	bt2 = tabControl1->get(0)->AddControl(new Button(L"打开图片", 120, 10, 120, 24));
-	bt2->OnMouseClick += std::bind_front(&DemoWindow::bt2_OnMouseClick, this);
+	bt2->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->bt2_OnMouseClick(sender, e); };
 	panel1 = tabControl1->get(0)->AddControl(new Panel(10, 40, 400, 200));
 
 	TreeView* tree = tabControl1->get(0)->AddControl(new TreeView(420, 10, 360, 230));
@@ -360,7 +362,7 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 	picturebox1 = panel1->AddControl(new PictureBox(120, 10, 260, 120));
 	picturebox1->Image = this->Image;
 	picturebox1->SizeMode = ImageSizeMode::StretchIamge;
-	picturebox1->OnDropFile += std::bind_front(&DemoWindow::picturebox1_OnDropFile, this);
+	picturebox1->OnDropFile += [this](class Control* sender, List<std::wstring> files) { this->picturebox1_OnDropFile(sender, files); };
 	panel1->AddControl(new Label(L"Progress Bar", 10, picturebox1->Bottom + 5));
 	progressbar1 = panel1->AddControl(new ProgressBar(120, picturebox1->Bottom + 5, 260, 24));
 	gridview1 = tabControl1->get(1)->AddControl(new GridView(10, 24, 1000, 200));
@@ -415,11 +417,11 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 
 	sw1 = tabControl1->get(1)->AddControl(new Switch(10, 5));
 	sw1->Checked = gridview1->Visible;
-	sw1->OnMouseClick += std::bind_front(&DemoWindow::sw1_OnMouseClick, this);
+	sw1->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->sw1_OnMouseClick(sender, e); };
 
 	sw2 = tabControl1->get(1)->AddControl(new Switch(72, 5));
 	sw2->Checked = gridview1->Visible;
-	sw2->OnMouseClick += std::bind_front(&DemoWindow::sw2_OnMouseClick, this);
+	sw2->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->sw2_OnMouseClick(sender, e); };
 	for (int i = 0; i < 5; i++)
 	{
 		Button* ingButton = tabControl1->get(2)->AddControl(new Button(L"", 10 + (44 * i), 10, 40, 40));
@@ -543,6 +545,217 @@ DemoWindow::DemoWindow() : Form(L"", { 0,0 }, { 1280,640 })
 		web1->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
 
 		web1->Navigate(L"https://www.bing.com");
+	}
+
+	// ========== 媒体播放器演示 ==========
+	{
+		auto page = tabControl1->get(5);
+		
+		// 标题标签
+		Label* titleLabel = page->AddControl(new Label(L"媒体播放器 - 支持 MP4/MKV/AVI/MOV/WMV/MP3/WAV/FLAC 等格式", 10, 10));
+		titleLabel->ForeColor = Colors::LightGray;
+
+		// 创建媒体播放器
+		mediaPlayer = page->AddControl(new MediaPlayer(10, 40, 1180, 350));
+		mediaPlayer->Margin = Thickness(10, 40, 10, 120);
+		mediaPlayer->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
+		mediaPlayer->AutoPlay = true;
+		mediaPlayer->Loop = false;
+		MediaPlayer* mp = mediaPlayer;
+
+		// 控制面板
+		Panel* controlPanel = page->AddControl(new Panel(10, 400, 1180, 90));
+		controlPanel->Margin = Thickness(10, 0, 10, 10);
+		controlPanel->AnchorStyles = AnchorStyles::Left | AnchorStyles::Right | AnchorStyles::Bottom;
+		controlPanel->BackColor = D2D1_COLOR_F{ 0.15f, 0.15f, 0.15f, 0.95f };
+		controlPanel->BolderColor = D2D1_COLOR_F{ 0.3f, 0.3f, 0.3f, 1.0f };
+
+		// 打开按钮
+		Button* btnOpen = controlPanel->AddControl(new Button(L"📁 打开文件", 10, 10, 100, 35));
+		btnOpen->BackColor = D2D1_COLOR_F{ 0.25f, 0.35f, 0.55f, 1.0f };
+		btnOpen->OnMouseClick += [this](class Control* sender, MouseEventArgs e) {
+			(void)sender; (void)e;
+			if (!mediaPlayer) return;
+
+			OpenFileDialog ofd;
+			ofd.Filter = MakeDialogFilterStrring("媒体文件", "*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.mp3;*.wav;*.flac;*.m4a;*.wma;*.aac");
+			ofd.SupportMultiDottedExtensions = true;
+			ofd.Title = "选择媒体文件";
+			if (ofd.ShowDialog(this->Handle) == DialogResult::OK && !ofd.SelectedPaths.empty())
+			{
+				mediaPlayer->Load(Convert::string_to_wstring(ofd.SelectedPaths[0]));
+			}
+		};
+
+		// 播放按钮
+		Button* btnPlay = controlPanel->AddControl(new Button(L"▶ 播放", 120, 10, 80, 35));
+		btnPlay->BackColor = D2D1_COLOR_F{ 0.2f, 0.6f, 0.2f, 1.0f };
+		btnPlay->OnMouseClick += [mp](class Control* sender, MouseEventArgs e) {
+			(void)sender; (void)e;
+			mp->Play();
+		};
+
+		// 暂停按钮
+		Button* btnPause = controlPanel->AddControl(new Button(L"⏸ 暂停", 210, 10, 80, 35));
+		btnPause->BackColor = D2D1_COLOR_F{ 0.6f, 0.5f, 0.2f, 1.0f };
+		btnPause->OnMouseClick += [mp](class Control* sender, MouseEventArgs e) {
+			(void)sender; (void)e;
+			mp->Pause();
+		};
+
+		// 停止按钮
+		Button* btnStop = controlPanel->AddControl(new Button(L"⏹ 停止", 300, 10, 80, 35));
+		btnStop->BackColor = D2D1_COLOR_F{ 0.6f, 0.2f, 0.2f, 1.0f };
+		btnStop->OnMouseClick += [mp](class Control* sender, MouseEventArgs e) {
+			(void)sender; (void)e;
+			mp->Stop();
+		};
+
+		// 渲染模式下拉框
+		Label* renderModeLabel = controlPanel->AddControl(new Label(L"🖼 模式", 390, 18));
+		renderModeLabel->ForeColor = Colors::White;
+
+		ComboBox* renderModeCombo = controlPanel->AddControl(new ComboBox(L"适应", 450, 12, 100, 30));
+		renderModeCombo->Items.push_back(L"适应");      // Fit
+		renderModeCombo->Items.push_back(L"填充");      // Fill
+		renderModeCombo->Items.push_back(L"拉伸");      // Stretch
+		renderModeCombo->Items.push_back(L"居中");      // Center
+		renderModeCombo->Items.push_back(L"均匀填充"); // UniformToFill
+		renderModeCombo->SelectedIndex = 0; // 默认适应
+		renderModeCombo->OnSelectionChanged += [mp](class Control* sender) {
+			ComboBox* combo = (ComboBox*)sender;
+			switch (combo->SelectedIndex)
+			{
+			case 0: mp->RenderMode = MediaPlayer::VideoRenderMode::Fit; break;
+			case 1: mp->RenderMode = MediaPlayer::VideoRenderMode::Fill; break;
+			case 2: mp->RenderMode = MediaPlayer::VideoRenderMode::Stretch; break;
+			case 3: mp->RenderMode = MediaPlayer::VideoRenderMode::Center; break;
+			case 4: mp->RenderMode = MediaPlayer::VideoRenderMode::UniformToFill; break;
+			}
+		};
+
+		// 循环播放复选框
+		CheckBox* loopCheckBox = controlPanel->AddControl(new CheckBox(L"🔁 循环", 560, 15));
+		loopCheckBox->ForeColor = Colors::White;
+		loopCheckBox->OnChecked += [mp](class Control* sender) {
+			mp->Loop = ((CheckBox*)sender)->Checked;
+		};
+
+		// 音量标签和滑块
+		Label* volumeLabel = controlPanel->AddControl(new Label(L"🔊 音量", 650, 18));
+		volumeLabel->ForeColor = Colors::White;
+
+		Slider* volumeSlider = controlPanel->AddControl(new Slider(710, 15, 120, 30));
+		volumeSlider->Min = 0;
+		volumeSlider->Max = 100;
+		volumeSlider->Value = 80;
+		volumeSlider->OnValueChanged += [mp](class Control* sender, float oldValue, float newValue) {
+			(void)sender; (void)oldValue;
+			mp->Volume = newValue / 100.0;
+		};
+		mp->Volume = 0.8;
+
+		// 播放速率标签和滑块
+		Label* speedLabel = controlPanel->AddControl(new Label(L"⚡ 速度", 850, 18));
+		speedLabel->ForeColor = Colors::White;
+
+		Slider* speedSlider = controlPanel->AddControl(new Slider(910, 15, 120, 30));
+		speedSlider->Min = 25;
+		speedSlider->Max = 200;
+		speedSlider->Value = 100;
+		speedSlider->OnValueChanged += [mp, speedLabel](class Control* sender, float oldValue, float newValue) {
+			(void)sender; (void)oldValue;
+			mp->PlaybackRate = newValue / 100.0f;
+			speedLabel->Text = StringHelper::Format(L"⚡ 速度 %.1fx", newValue / 100.0f);
+			speedLabel->PostRender();
+		};
+
+		// 进度条
+		Label* progressLabel = controlPanel->AddControl(new Label(L"⏱ 进度", 10, 55));
+		progressLabel->ForeColor = Colors::White;
+
+		Slider* progressSlider = controlPanel->AddControl(new Slider(60, 52, 1000, 30));
+		progressSlider->Margin = Thickness(60, 0, 120, 0);
+		progressSlider->AnchorStyles = AnchorStyles::Left | AnchorStyles::Right | AnchorStyles::Bottom;
+		progressSlider->Min = 0;
+		progressSlider->Max = 1000;
+		progressSlider->Value = 0;
+		auto progressUpdating = std::make_shared<bool>(false);
+		progressSlider->OnValueChanged += [mp, progressUpdating](class Control* sender, float oldValue, float newValue) {
+			(void)sender; (void)oldValue;
+			if (*progressUpdating) return;
+			if (mp->Duration > 0) {
+				mp->Position = (newValue / 1000.0) * mp->Duration;
+			}
+		};
+
+		// 状态标签（显示时间和文件信息）
+		Label* statusLabel = controlPanel->AddControl(new Label(L"未加载媒体", 1070, 55));
+		statusLabel->Margin = Thickness(0, 0, 10, 0);
+		statusLabel->AnchorStyles = AnchorStyles::Right | AnchorStyles::Bottom;
+		statusLabel->ForeColor = Colors::LightGray;
+		statusLabel->Width = 150;
+
+		// 订阅媒体播放器事件
+		mediaPlayer->OnMediaOpened += [statusLabel, progressSlider, titleLabel](class Control* sender) {
+			MediaPlayer* player = (MediaPlayer*)sender;
+			
+			// 提取文件名
+			std::wstring filePath = player->MediaFile;
+			size_t pos = filePath.find_last_of(L"\\/");
+			std::wstring fileName = (pos != std::wstring::npos) ? filePath.substr(pos + 1) : filePath;
+			
+			// 更新标题
+			std::wstring info = StringHelper::Format(L"媒体播放器 - %ws [%dx%d]", 
+				fileName.c_str(), 
+				player->VideoSize.cx, 
+				player->VideoSize.cy);
+			titleLabel->Text = info;
+			titleLabel->PostRender();
+			
+			// 更新状态
+			std::wstring status = StringHelper::Format(L"总时长: %d:%02d", 
+				(int)player->Duration / 60, 
+				(int)player->Duration % 60);
+			statusLabel->Text = status;
+			statusLabel->PostRender();
+		};
+
+		mediaPlayer->OnMediaEnded += [statusLabel](class Control* sender) {
+			(void)sender;
+			statusLabel->Text = L"播放结束";
+			statusLabel->PostRender();
+		};
+
+		mediaPlayer->OnPositionChanged += [statusLabel, progressSlider, progressUpdating](class Control* sender, double position) {
+			MediaPlayer* player = (MediaPlayer*)sender;
+			
+			// 格式化时间显示
+			int currentMin = (int)position / 60;
+			int currentSec = (int)position % 60;
+			int totalMin = (int)player->Duration / 60;
+			int totalSec = (int)player->Duration % 60;
+			
+			std::wstring status = StringHelper::Format(L"%d:%02d / %d:%02d", 
+				currentMin, currentSec, totalMin, totalSec);
+			statusLabel->Text = status;
+			statusLabel->PostRender();
+			
+			// 更新进度条
+			if (player->Duration > 0) {
+				*progressUpdating = true;
+				progressSlider->Value = (float)(position / player->Duration * 1000.0);
+				*progressUpdating = false;
+			}
+		};
+
+		mediaPlayer->OnMediaFailed += [statusLabel, titleLabel](class Control* sender) {
+			(void)sender;
+			statusLabel->Text = L"加载失败";
+			statusLabel->PostRender();
+			titleLabel->Text = L"媒体播放器 - 加载失败，请检查文件格式";
+			titleLabel->PostRender();
+		};
 	}
 
 	this->BackColor = Colors::grey31;

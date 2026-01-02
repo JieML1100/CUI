@@ -8,7 +8,6 @@
 #include <shellapi.h>
 #include <dwmapi.h>
 #include <windowsx.h>
-#pragma comment(lib, "Dwmapi.lib")
 
 HCURSOR Form::GetSystemCursor(CursorKind kind)
 {

@@ -117,3 +117,4 @@ dkms.conf
 /CUI_Legacy/Win32/Release/CUI_Legacy
 /CUI_Legacy/Release
 /Release/CUITest.exe.WebView2/EBWebView
+/CUITest/CUITest/x64

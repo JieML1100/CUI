@@ -24,6 +24,11 @@
 #include "Taskbar.h"
 #include "NotifyIcon.h"
 #include "WebBrowser.h"
+#include "MediaPlayer.h"
+
+#if defined(_MSC_VER)
+#pragma comment(lib, "Dwmapi.lib")
+#endif
 
 struct IDCompositionDevice;
 struct IDCompositionVisual;

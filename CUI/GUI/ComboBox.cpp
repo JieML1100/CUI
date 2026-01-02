@@ -5,6 +5,14 @@
 #define COMBO_MIN_SCROLL_BLOCK 16
 UIClass ComboBox::Type() { return UIClass::UI_ComboBox; }
 
+GET_CPP(ComboBox, List<std::wstring>&, Items)
+{
+	return this->values;
+}
+SET_CPP(ComboBox, List<std::wstring>&, Items)
+{
+	this->values = value;
+}
 CursorKind ComboBox::QueryCursor(int xof, int yof)
 {
 	if (!this->Enable) return CursorKind::Arrow;

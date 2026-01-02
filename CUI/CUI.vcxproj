@@ -235,6 +235,7 @@
     <ClInclude Include="GUI\WebBrowser.h" />
     <ClInclude Include="GUI\TextBox.h" />
     <ClInclude Include="GUI\TreeView.h" />
+    <ClInclude Include="GUI\MediaPlayer.h" />
     <ClInclude Include="GUI\Layout\LayoutTypes.h" />
     <ClInclude Include="GUI\Layout\LayoutEngine.h" />
     <ClInclude Include="GUI\Layout\StackPanel.h" />
@@ -273,6 +274,7 @@
     <ClCompile Include="GUI\WebBrowser.cpp" />
     <ClCompile Include="GUI\TextBox.cpp" />
     <ClCompile Include="GUI\TreeView.cpp" />
+    <ClCompile Include="GUI\MediaPlayer.cpp" />
     <ClCompile Include="GUI\Layout\StackPanel.cpp" />
     <ClCompile Include="GUI\Layout\GridPanel.cpp" />
     <ClCompile Include="GUI\Layout\DockPanel.cpp" />

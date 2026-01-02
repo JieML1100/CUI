@@ -7,9 +7,6 @@
 
 #include <wrl.h>
 #include <wrl/client.h>
-
-#pragma comment(lib, "Ole32.lib")
-
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
 

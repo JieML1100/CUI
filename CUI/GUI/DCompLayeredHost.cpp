@@ -7,8 +7,6 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 
-#pragma comment(lib, "dcomp.lib")
-
 using Microsoft::WRL::ComPtr;
 
 DCompLayeredHost::DCompLayeredHost(HWND hwnd)

@@ -9,6 +9,7 @@ private:
 	bool isDraggingScroll = false;
 	float _scrollThumbGrabOffsetY = 0.0f;
 	void UpdateScrollDrag(float posY);
+	List<std::wstring> values;
 public:
 	virtual UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
@@ -22,7 +23,9 @@ public:
 	int ExpandScroll = 0;
 	bool Expand = false;
 	int SelectedIndex = 0;
-	List<std::wstring> values;
+	PROPERTY(List<std::wstring>&, Items);
+	GET(List<std::wstring>&, Items);
+	SET(List<std::wstring>&, Items);
 	float Boder = 1.5f;
 	ComboBox(std::wstring text, int x, int y, int width = 120, int height = 24);
 	SIZE ActualSize() override;

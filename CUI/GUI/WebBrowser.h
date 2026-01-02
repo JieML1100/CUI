@@ -8,6 +8,12 @@
 #include <WebView2.h>
 #include <wrl/client.h>
 
+#if defined(_MSC_VER)
+#pragma comment(lib, "Ole32.lib")
+// WebView2 loader（需要调用方提供对应的 lib 搜索路径，通常通过 NuGet targets 解决）
+#pragma comment(lib, "WebView2LoaderStatic.lib")
+#endif
+
 // Forward declarations for DirectComposition
 struct IDCompositionVisual;
 struct IDCompositionRectangleClip;

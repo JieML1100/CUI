@@ -59,6 +59,7 @@ enum class UIClass : int
 	UI_StatusBar,
 	UI_Slider,
 	UI_WebBrowser,
+	UI_MediaPlayer,
 	UI_StackPanel,
 	UI_GridPanel,
 	UI_DockPanel,

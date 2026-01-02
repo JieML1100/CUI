@@ -1359,16 +1359,16 @@ void GridView::ToggleComboBoxEditor(int col, int row)
 	this->_cellComboBox->Font = this->Font;
 	this->_cellComboBox->Location = POINT{ x, y };
 	this->_cellComboBox->Size = SIZE{ (w > 0 ? w : 1), (h > 0 ? h : 1) };
-	this->_cellComboBox->values = column.ComboBoxItems;
+	this->_cellComboBox->Items = column.ComboBoxItems;
 	this->_cellComboBox->SelectedIndex = (int)cell.Tag;
 	if (this->_cellComboBox->SelectedIndex < 0) this->_cellComboBox->SelectedIndex = 0;
-	if (this->_cellComboBox->SelectedIndex >= this->_cellComboBox->values.Count)
-		this->_cellComboBox->SelectedIndex = (this->_cellComboBox->values.Count > 0) ? (this->_cellComboBox->values.Count - 1) : 0;
-	this->_cellComboBox->Text = (this->_cellComboBox->values.Count > 0) ? this->_cellComboBox->values[this->_cellComboBox->SelectedIndex] : L"";
+	if (this->_cellComboBox->SelectedIndex >= this->_cellComboBox->Items.Count)
+		this->_cellComboBox->SelectedIndex = (this->_cellComboBox->Items.Count > 0) ? (this->_cellComboBox->Items.Count - 1) : 0;
+	this->_cellComboBox->Text = (this->_cellComboBox->Items.Count > 0) ? this->_cellComboBox->Items[this->_cellComboBox->SelectedIndex] : L"";
 
 	int expandCount = 4;
-	if (this->_cellComboBox->values.Count > 0)
-		expandCount = std::min(4, this->_cellComboBox->values.Count);
+	if (this->_cellComboBox->Items.Count > 0)
+		expandCount = std::min(4, this->_cellComboBox->Items.Count);
 	if (expandCount < 1) expandCount = 1;
 	this->_cellComboBox->ExpandCount = expandCount;
 
