@@ -16,7 +16,7 @@
 - **控件与布局**：提供多种布局容器（如 Stack/Grid/Dock/Wrap/Relative 等）
 - **事件与输入**：完善的鼠标/键盘/焦点/拖放事件，支持 IME 中文输入
 - **资源支持**：内置 SVG 渲染（nanosvg 已包含）
-- **WebView2 集成**：媒体播放器（MediaPlayer）
+- **多媒体功能 集成**：媒体播放器（MediaPlayer）
 - **WebView2 集成**：可嵌入现代 Web 内容（基于 Microsoft WebView2）
 - **设计器工作流**：拖放编辑属性、实时预览、JSON 设计文件保存/加载、自动生成 C++ 代码
 
