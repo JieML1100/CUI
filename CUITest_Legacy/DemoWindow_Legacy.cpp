@@ -265,12 +265,13 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
 		help->AddSubItem(L"关于", 201);
 	}
 
-	toolbar1 = this->AddControl(new ToolBar(0, this->Size.cy - this->HeadHeight - 24, this->Size.cx, 24));
+	toolbar1 = this->AddControl(new ToolBar(0, 0, this->Size.cx, 32));
+	toolbar1->Top = menu1->Bottom;
 	auto tbNew = toolbar1->AddToolButton(L"I'm", 90);
 	auto tbSave = toolbar1->AddToolButton(L"a", 90);
 	auto tbRun = toolbar1->AddToolButton(L"Toolbar", 90);
 
-	statusbar1 = this->AddControl(new StatusBar(0, this->Size.cy - this->HeadHeight - 26, this->Size.cx, 26));
+	statusbar1 = this->AddControl(new StatusBar(0, 0, this->Size.cx, 26));
 	statusbar1->AddPart(L"0 part", -1);
 	statusbar1->AddPart(L"1 part/120", 120);
 	statusbar1->AddPart(L"2 part/100", 100);
@@ -280,7 +281,6 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
 	tbSave->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: a"; this->label1->PostRender(); this->statusbar1->SetPartText(0, L"ToolBar: a"); this->statusbar1->PostRender(); };
 	tbRun->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: Toolbar"; this->label1->PostRender(); this->statusbar1->SetPartText(0, L"ToolBar: Toolbar"); this->statusbar1->PostRender(); };
 
-	toolbar1->Top = menu1->Bottom;
 	slider1 = this->AddControl(new Slider(10, toolbar1->Bottom + 8, 320, 32));
 	slider1->Min = 0;
 	slider1->Max = 10000;
@@ -330,6 +330,7 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
 	tabControl1->AddPage(L"Grid View")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
 	tabControl1->AddPage(L"Icon Buttons")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
 	tabControl1->AddPage(L"Layout Demo")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
+	tabControl1->AddPage(L"WebBrowser")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
 	tabControl1->AddPage(L"Media Player")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
 	tabControl1->get(0)->AddControl(new Label(L"基本容器", 10, 10));
 
@@ -538,7 +539,7 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
 	// ========== 媒体播放器演示 ==========
 	{
 		auto page = tabControl1->get(4);
-		
+
 		// 标题标签
 		Label* titleLabel = page->AddControl(new Label(L"媒体播放器 - 支持 MP4/MKV/AVI/MOV/WMV/MP3/WAV/FLAC 等格式", 10, 10));
 		titleLabel->ForeColor = Colors::LightGray;
@@ -573,7 +574,7 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
 			{
 				mediaPlayer->Load(Convert::string_to_wstring(ofd.SelectedPaths[0]));
 			}
-		};
+			};
 
 		// 播放按钮
 		Button* btnPlay = controlPanel->AddControl(new Button(L"▶ 播放", 120, 10, 80, 35));
@@ -581,7 +582,7 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
 		btnPlay->OnMouseClick += [mp](class Control* sender, MouseEventArgs e) {
 			(void)sender; (void)e;
 			mp->Play();
-		};
+			};
 
 		// 暂停按钮
 		Button* btnPause = controlPanel->AddControl(new Button(L"⏸ 暂停", 210, 10, 80, 35));
@@ -589,7 +590,7 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
 		btnPause->OnMouseClick += [mp](class Control* sender, MouseEventArgs e) {
 			(void)sender; (void)e;
 			mp->Pause();
-		};
+			};
 
 		// 停止按钮
 		Button* btnStop = controlPanel->AddControl(new Button(L"⏹ 停止", 300, 10, 80, 35));
@@ -597,7 +598,7 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
 		btnStop->OnMouseClick += [mp](class Control* sender, MouseEventArgs e) {
 			(void)sender; (void)e;
 			mp->Stop();
-		};
+			};
 
 		// 渲染模式下拉框
 		Label* renderModeLabel = controlPanel->AddControl(new Label(L"🖼 模式", 390, 18));
@@ -620,14 +621,14 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
 			case 3: mp->RenderMode = MediaPlayer::VideoRenderMode::Center; break;
 			case 4: mp->RenderMode = MediaPlayer::VideoRenderMode::UniformToFill; break;
 			}
-		};
+			};
 
 		// 循环播放复选框
 		CheckBox* loopCheckBox = controlPanel->AddControl(new CheckBox(L"🔁 循环", 560, 15));
 		loopCheckBox->ForeColor = Colors::White;
 		loopCheckBox->OnChecked += [mp](class Control* sender) {
 			mp->Loop = ((CheckBox*)sender)->Checked;
-		};
+			};
 
 		// 音量标签和滑块
 		Label* volumeLabel = controlPanel->AddControl(new Label(L"🔊 音量", 650, 18));
@@ -640,7 +641,7 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
 		volumeSlider->OnValueChanged += [mp](class Control* sender, float oldValue, float newValue) {
 			(void)sender; (void)oldValue;
 			mp->Volume = newValue / 100.0;
-		};
+			};
 		mp->Volume = 0.8;
 
 		// 播放速率标签和滑块
@@ -656,7 +657,7 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
 			mp->PlaybackRate = newValue / 100.0f;
 			speedLabel->Text = StringHelper::Format(L"⚡ 速度 %.1fx", newValue / 100.0f);
 			speedLabel->PostRender();
-		};
+			};
 
 		// 进度条
 		Label* progressLabel = controlPanel->AddControl(new Label(L"⏱ 进度", 10, 55));
@@ -675,7 +676,7 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
 			if (mp->Duration > 0) {
 				mp->Position = (newValue / 1000.0) * mp->Duration;
 			}
-		};
+			};
 
 		// 状态标签（显示时间和文件信息）
 		Label* statusLabel = controlPanel->AddControl(new Label(L"未加载媒体", 1070, 55));
@@ -687,55 +688,55 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
 		// 订阅媒体播放器事件
 		mediaPlayer->OnMediaOpened += [statusLabel, progressSlider, titleLabel](class Control* sender) {
 			MediaPlayer* player = (MediaPlayer*)sender;
-			
+
 			// 提取文件名
 			std::wstring filePath = player->MediaFile;
 			size_t pos = filePath.find_last_of(L"\\/");
 			std::wstring fileName = (pos != std::wstring::npos) ? filePath.substr(pos + 1) : filePath;
-			
+
 			// 更新标题
-			std::wstring info = StringHelper::Format(L"媒体播放器 - %ws [%dx%d]", 
-				fileName.c_str(), 
-				player->VideoSize.cx, 
+			std::wstring info = StringHelper::Format(L"媒体播放器 - %ws [%dx%d]",
+				fileName.c_str(),
+				player->VideoSize.cx,
 				player->VideoSize.cy);
 			titleLabel->Text = info;
 			titleLabel->PostRender();
-			
+
 			// 更新状态
-			std::wstring status = StringHelper::Format(L"总时长: %d:%02d", 
-				(int)player->Duration / 60, 
+			std::wstring status = StringHelper::Format(L"总时长: %d:%02d",
+				(int)player->Duration / 60,
 				(int)player->Duration % 60);
 			statusLabel->Text = status;
 			statusLabel->PostRender();
-		};
+			};
 
 		mediaPlayer->OnMediaEnded += [statusLabel](class Control* sender) {
 			(void)sender;
 			statusLabel->Text = L"播放结束";
 			statusLabel->PostRender();
-		};
+			};
 
 		mediaPlayer->OnPositionChanged += [statusLabel, progressSlider, progressUpdating](class Control* sender, double position) {
 			MediaPlayer* player = (MediaPlayer*)sender;
-			
+
 			// 格式化时间显示
 			int currentMin = (int)position / 60;
 			int currentSec = (int)position % 60;
 			int totalMin = (int)player->Duration / 60;
 			int totalSec = (int)player->Duration % 60;
-			
-			std::wstring status = StringHelper::Format(L"%d:%02d / %d:%02d", 
+
+			std::wstring status = StringHelper::Format(L"%d:%02d / %d:%02d",
 				currentMin, currentSec, totalMin, totalSec);
 			statusLabel->Text = status;
 			statusLabel->PostRender();
-			
+
 			// 更新进度条
 			if (player->Duration > 0) {
 				*progressUpdating = true;
 				progressSlider->Value = (float)(position / player->Duration * 1000.0);
 				*progressUpdating = false;
 			}
-		};
+			};
 
 		mediaPlayer->OnMediaFailed += [statusLabel, titleLabel](class Control* sender) {
 			(void)sender;
@@ -743,7 +744,7 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
 			statusLabel->PostRender();
 			titleLabel->Text = L"媒体播放器 - 加载失败，请检查文件格式";
 			titleLabel->PostRender();
-		};
+			};
 	}
 
 	this->BackColor = Colors::grey31;
@@ -754,7 +755,7 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
 		if (this->menu1) this->menu1->Width = this->Size.cx;
 		if (this->toolbar1) {
 			this->toolbar1->Width = this->Size.cx;
-			this->toolbar1->Top = this->menu1 ? this->menu1->Bottom : 0;
+			this->toolbar1->Top = this->menu1 ? this->menu1->Height : 0;
 		}
 		if (this->statusbar1) {
 			this->statusbar1->Width = this->Size.cx;

@@ -958,9 +958,15 @@ void Form::ScaleControlTreeForDpi(UINT fromDpi, UINT toDpi)
 				scale(c->operator[](i));
 		};
 
-	for (auto c : this->Controls) scale(c);
-	if (this->MainMenu) scale((Control*)this->MainMenu);
-	if (this->MainStatusBar) scale((Control*)this->MainStatusBar);
+	for (auto c : this->Controls)
+	{
+		// 跳过MainMenu和MainStatusBar，它们会在后面单独处理，避免重复缩放
+		if (c == (Control*)this->MainMenu || c == (Control*)this->MainStatusBar)
+			continue;
+		scale(c);
+	}
+	//if (this->MainMenu) scale((Control*)this->MainMenu);
+	//if (this->MainStatusBar) scale((Control*)this->MainStatusBar);
 	if (this->ForegroundControl) scale(this->ForegroundControl);
 }
 
