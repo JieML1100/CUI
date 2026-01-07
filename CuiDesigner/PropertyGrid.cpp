@@ -1,5 +1,5 @@
 #include "PropertyGrid.h"
-#include "../CUI/GUI/Form.h"
+#include "../CUI_Legacy/GUI/Form.h"
 #include "ComboBoxItemsEditorDialog.h"
 #include "GridViewColumnsEditorDialog.h"
 #include "TabControlPagesEditorDialog.h"
@@ -9,18 +9,18 @@
 #include "MenuItemsEditorDialog.h"
 #include "StatusBarPartsEditorDialog.h"
 #include "DesignerCanvas.h"
-#include "../CUI/GUI/ComboBox.h"
-#include "../CUI/GUI/Slider.h"
-#include "../CUI/GUI/ProgressBar.h"
-#include "../CUI/GUI/PictureBox.h"
-#include "../CUI/GUI/TreeView.h"
-#include "../CUI/GUI/TabControl.h"
-#include "../CUI/GUI/ToolBar.h"
-#include "../CUI/GUI/StatusBar.h"
-#include "../CUI/GUI/MediaPlayer.h"
-#include "../CUI/GUI/Layout/StackPanel.h"
-#include "../CUI/GUI/Layout/WrapPanel.h"
-#include "../CUI/GUI/Layout/DockPanel.h"
+#include "../CUI_Legacy/GUI/ComboBox.h"
+#include "../CUI_Legacy/GUI/Slider.h"
+#include "../CUI_Legacy/GUI/ProgressBar.h"
+#include "../CUI_Legacy/GUI/PictureBox.h"
+#include "../CUI_Legacy/GUI/TreeView.h"
+#include "../CUI_Legacy/GUI/TabControl.h"
+#include "../CUI_Legacy/GUI/ToolBar.h"
+#include "../CUI_Legacy/GUI/StatusBar.h"
+#include "../CUI_Legacy/GUI/MediaPlayer.h"
+#include "../CUI_Legacy/GUI/Layout/StackPanel.h"
+#include "../CUI_Legacy/GUI/Layout/WrapPanel.h"
+#include "../CUI_Legacy/GUI/Layout/DockPanel.h"
 #include <commdlg.h>
 #include <windowsx.h>
 #include <sstream>
@@ -1315,12 +1315,12 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 		{
 			ctrl->GridColumnSpan = std::stoi(value);
 		}
-		else if (propertyName == L"SelectIndex")
+		else if (propertyName == L"SelectedIndex")
 		{
 			if (ctrl->Type() == UIClass::UI_TabControl)
 			{
 				auto* tc = (TabControl*)ctrl;
-				tc->SelectIndex = std::stoi(value);
+				tc->SelectedIndex = std::stoi(value);
 			}
 			else if (ctrl->Type() == UIClass::UI_ComboBox)
 			{
@@ -1756,7 +1756,7 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 	if (control->Type == UIClass::UI_TabControl)
 	{
 		auto* tc = (TabControl*)ctrl;
-		CreatePropertyItem(L"SelectIndex", std::to_wstring(tc->SelectIndex), yOffset);
+		CreatePropertyItem(L"SelectedIndex", std::to_wstring(tc->SelectedIndex), yOffset);
 		CreatePropertyItem(L"TitleHeight", std::to_wstring(tc->TitleHeight), yOffset);
 		CreatePropertyItem(L"TitleWidth", std::to_wstring(tc->TitleWidth), yOffset);
 	}
@@ -1809,7 +1809,7 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 	if (control->Type == UIClass::UI_ComboBox)
 	{
 		auto* cb = (ComboBox*)ctrl;
-		CreatePropertyItem(L"SelectIndex", std::to_wstring(cb->SelectedIndex), yOffset);
+		CreatePropertyItem(L"SelectedIndex", std::to_wstring(cb->SelectedIndex), yOffset);
 	}
 	if (control->Type == UIClass::UI_Slider)
 	{

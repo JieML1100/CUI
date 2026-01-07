@@ -4,13 +4,13 @@
  * @file Designer.h
  * @brief Designer：CUI 可视化设计器主窗口。
  */
-#include "../CUI/GUI/Form.h"
+#include "../CUI_Legacy/GUI/Form.h"
 #include "DesignerCanvas.h"
 #include "ToolBox.h"
 #include "PropertyGrid.h"
 #include "CodeGenerator.h"
-#include "../CUI/GUI/Button.h"
-#include "../CUI/GUI/Label.h"
+#include "../CUI_Legacy/GUI/Button.h"
+#include "../CUI_Legacy/GUI/Label.h"
 
 class Designer : public Form
 {

@@ -1,7 +1,7 @@
 #include "ToolBox.h"
-#include "../CUI/GUI/Label.h"
-#include "../CUI/GUI/Form.h"
-#include "../CUI/nanosvg.h"
+#include "../CUI_Legacy/GUI/Label.h"
+#include "../CUI_Legacy/GUI/Form.h"
+#include "../CUI_Legacy/nanosvg.h"
 #include <CppUtils/Graphics/BitmapSource.h>
 #include <CppUtils/Graphics/Factory.h>
 #include <vector>
@@ -10,7 +10,7 @@
 
 const char* _ico = R"(<svg t="1766410686901" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="5087" data-darkreader-inline-fill="" width="200" height="200"><path d="M496 895.2L138.4 771.2c-6.4-2.4-10.4-8-10.4-15.2V287.2l368 112v496z m32 0l357.6-124c6.4-2.4 10.4-8 10.4-15.2V287.2l-368 112v496z m-400-640l384 112 384-112-379.2-125.6c-3.2-0.8-7.2-0.8-10.4 0L128 255.2z" p-id="5088" fill="#1afa29" data-darkreader-inline-fill="" style="--darkreader-inline-fill: var(--darkreader-background-1afa29, #11ce4a);"></path></svg>)";
 
-static ID2D1Bitmap* ToBitmapFromSvg(D2DGraphics1* g, const char* data)
+static ID2D1Bitmap* ToBitmapFromSvg(D2DGraphics* g, const char* data)
 {
 	if (!g || !data) return NULL;
 	int len = (int)strlen(data) + 1;
@@ -26,7 +26,7 @@ static ID2D1Bitmap* ToBitmapFromSvg(D2DGraphics1* g, const char* data)
 		percen = 4096.0f / maxv;
 	}
 	auto renderSource = BitmapSource::CreateEmpty(image->width * percen, image->height * percen);
-	auto subg = new D2DGraphics1(renderSource.get());
+	auto subg = new D2DGraphics(renderSource.get());
 	NSVGshape* shape;
 	NSVGpath* path;
 	subg->BeginRender();
@@ -54,7 +54,7 @@ static ID2D1Bitmap* ToBitmapFromSvg(D2DGraphics1* g, const char* data)
 			}
 			skin->Close();
 		}
-		auto _get_svg_brush = [](NSVGpaint paint, float opacity, D2DGraphics1* g) ->ID2D1Brush* {
+		auto _get_svg_brush = [](NSVGpaint paint, float opacity, D2DGraphics* g) ->ID2D1Brush* {
 			const auto ic2fc = [](int colorInt, float opacity)->D2D1_COLOR_F {
 				return D2D1_COLOR_F{ (float)GetRValue(colorInt) / 255.0f ,(float)GetGValue(colorInt) / 255.0f ,(float)GetBValue(colorInt) / 255.0f ,opacity };
 			};

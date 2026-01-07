@@ -1,824 +1,897 @@
 #include "DemoWindow_Legacy.h"
+
 #include "imgs.h"
-#include "../CUI_Legacy/nanosvg.h"
-#include "../CUI_Legacy/GUI/MediaPlayer.h"
-ID2D1Bitmap* ToBitmapFromSvg(D2DGraphics* g, const char* data) {
-	if (!g || !data) return NULL;
-	int len = strlen(data) + 1;
-	char* svg_text = new char[len];
-	memcpy(svg_text, data, len);
-	NSVGimage* image = nsvgParse(svg_text, "px", 96.0f);
-	delete[] svg_text;
-	if (!image) return NULL;
-	float percen = 1.0f;
-	if (image->width > 4096 || image->height > 4096) {
-		float maxv = image->width > image->height ? image->width : image->height;
-		percen = 4096.0f / maxv;
-	}
-	auto renderSource = BitmapSource::CreateEmpty(image->width * percen, image->height * percen);
-	auto subg = new D2DGraphics(renderSource.get());
-	NSVGshape* shape;
-	NSVGpath* path;
-	subg->BeginRender();
-	subg->Clear(D2D1::ColorF(0, 0, 0, 0));
-	for (shape = image->shapes; shape != NULL; shape = shape->next) {
-		auto geo = Factory::CreateGeomtry();
-		if (geo) {
-			ID2D1GeometrySink* skin = NULL;
-			geo->Open(&skin);
-			if (skin) {
-				for (path = shape->paths; path != NULL; path = path->next) {
-					for (int i = 0; i < path->npts - 1; i += 3) {
-						float* p = &path->pts[i * 2];
-						if (i == 0)
-							skin->BeginFigure({ p[0] * percen, p[1] * percen }, D2D1_FIGURE_BEGIN_FILLED);
-						skin->AddBezier({ {p[2] * percen, p[3] * percen},{p[4] * percen, p[5] * percen},{p[6] * percen, p[7] * percen} });
+#include "../CUI/nanosvg.h"
+
+#include <memory>
+
+namespace {
+
+	ID2D1Bitmap* ToBitmapFromSvg(D2DGraphics* g, const char* data)
+	{
+		if (!g || !data) return NULL;
+		int len = (int)strlen(data) + 1;
+		char* svg_text = new char[len];
+		memcpy(svg_text, data, len);
+		NSVGimage* image = nsvgParse(svg_text, "px", 96.0f);
+		delete[] svg_text;
+		if (!image) return NULL;
+		float percen = 1.0f;
+		if (image->width > 4096 || image->height > 4096)
+		{
+			float maxv = image->width > image->height ? image->width : image->height;
+			percen = 4096.0f / maxv;
+		}
+		auto renderSource = BitmapSource::CreateEmpty(image->width * percen, image->height * percen);
+		auto subg = new D2DGraphics(renderSource.get());
+		NSVGshape* shape;
+		NSVGpath* path;
+		subg->BeginRender();
+		subg->Clear(D2D1::ColorF(0, 0, 0, 0));
+		for (shape = image->shapes; shape != NULL; shape = shape->next)
+		{
+			auto geo = Factory::CreateGeomtry();
+			if (geo)
+			{
+				ID2D1GeometrySink* skin = NULL;
+				geo->Open(&skin);
+				if (skin)
+				{
+					for (path = shape->paths; path != NULL; path = path->next)
+					{
+						for (int i = 0; i < path->npts - 1; i += 3)
+						{
+							float* p = &path->pts[i * 2];
+							if (i == 0)
+								skin->BeginFigure({ p[0] * percen, p[1] * percen }, D2D1_FIGURE_BEGIN_FILLED);
+							skin->AddBezier({ {p[2] * percen, p[3] * percen},{p[4] * percen, p[5] * percen},{p[6] * percen, p[7] * percen} });
+						}
+						skin->EndFigure(path->closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
 					}
-					skin->EndFigure(path->closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
 				}
+				skin->Close();
 			}
-			skin->Close();
-		}
-		auto _get_svg_brush = [](NSVGpaint paint, float opacity, D2DGraphics* g) ->ID2D1Brush* {
-			const auto ic2fc = [](int colorInt, float opacity)->D2D1_COLOR_F {
-				return D2D1_COLOR_F{ (float)GetRValue(colorInt) / 255.0f ,(float)GetGValue(colorInt) / 255.0f ,(float)GetBValue(colorInt) / 255.0f ,opacity };
+
+			auto getSvgBrush = [](NSVGpaint paint, float opacity, D2DGraphics* g) -> ID2D1Brush*
+				{
+					const auto ic2fc = [](int colorInt, float opacity) -> D2D1_COLOR_F
+						{
+							return D2D1_COLOR_F{ (float)GetRValue(colorInt) / 255.0f ,(float)GetGValue(colorInt) / 255.0f ,(float)GetBValue(colorInt) / 255.0f ,opacity };
+						};
+					switch (paint.type)
+					{
+					case NSVG_PAINT_NONE:
+						return NULL;
+					case NSVG_PAINT_COLOR:
+						return g->CreateSolidColorBrush(ic2fc(paint.color, opacity));
+					case NSVG_PAINT_LINEAR_GRADIENT:
+					{
+						std::vector<D2D1_GRADIENT_STOP> cols;
+						for (int i = 0; i < paint.gradient->nstops; i++)
+						{
+							auto stop = paint.gradient->stops[i];
+							cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
+						}
+						return g->CreateLinearGradientBrush(cols.data(), cols.size());
+					}
+					case NSVG_PAINT_RADIAL_GRADIENT:
+					{
+						std::vector<D2D1_GRADIENT_STOP> cols;
+						for (int i = 0; i < paint.gradient->nstops; i++)
+						{
+							auto stop = paint.gradient->stops[i];
+							cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
+						}
+						return g->CreateRadialGradientBrush(cols.data(), cols.size(), { paint.gradient->fx,paint.gradient->fy });
+					}
+					}
+					return NULL;
 				};
-			switch (paint.type) {
-			case NSVG_PAINT_NONE: {
-				return NULL;
-			}break;
-			case NSVG_PAINT_COLOR: {
-				return g->CreateSolidColorBrush(ic2fc(paint.color, opacity));
-			}break;
-			case NSVG_PAINT_LINEAR_GRADIENT: {
-				std::vector<D2D1_GRADIENT_STOP> cols;
-				for (int i = 0; i < paint.gradient->nstops; i++) {
-					auto stop = paint.gradient->stops[i];
-					cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
-				}
-				return g->CreateLinearGradientBrush(cols.data(), cols.size());
-			}break;
-			case NSVG_PAINT_RADIAL_GRADIENT: {
-				std::vector<D2D1_GRADIENT_STOP> cols;
-				for (int i = 0; i < paint.gradient->nstops; i++) {
-					auto stop = paint.gradient->stops[i];
-					cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
-				}
-				return g->CreateRadialGradientBrush(cols.data(), cols.size(), { paint.gradient->fx,paint.gradient->fy });
-			} break;
+
+			ID2D1Brush* brush = getSvgBrush(shape->fill, shape->opacity, subg);
+			if (brush)
+			{
+				subg->FillGeometry(geo, brush);
+				brush->Release();
 			}
-			return NULL;
-			};
-		ID2D1Brush* brush = _get_svg_brush(shape->fill, shape->opacity, subg);
-		if (brush) {
-			subg->FillGeometry(geo, brush);
-			brush->Release();
+			brush = getSvgBrush(shape->stroke, shape->opacity, subg);
+			if (brush)
+			{
+				subg->DrawGeometry(geo, brush, shape->strokeWidth);
+				brush->Release();
+			}
+			geo->Release();
 		}
-		brush = _get_svg_brush(shape->stroke, shape->opacity, subg);
-		if (brush) {
-			subg->DrawGeometry(geo, brush, shape->strokeWidth);
-			brush->Release();
-		}
-		geo->Release();
+		nsvgDelete(image);
+		subg->EndRender();
+
+		auto result = g->CreateBitmap(renderSource);
+		renderSource->GetWicBitmap()->Release();
+		delete subg;
+
+		return result;
 	}
-	nsvgDelete(image);
-	subg->EndRender();
 
+	std::wstring FileNameFromPath(const std::wstring& path)
+	{
+		size_t pos = path.find_last_of(L"\\/");
+		return (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
+	}
 
-	auto result = g->CreateBitmap(renderSource);
-	renderSource->GetWicBitmap()->Release();
-	delete subg;
-
-	return result;
 }
-void DemoWindow_Legacy::label1_OnMouseWheel(class Control* sender, MouseEventArgs e)
+
+DemoWindow_Legacy::~DemoWindow_Legacy()
 {
-	this->label1->Text = StringHelper::Format(L"MouseWheel Delta=[%d]", e.Delta);
-	this->label1->PostRender();
+	if (_notify)
+	{
+		_notify->HideNotifyIcon();
+		delete _notify;
+		_notify = nullptr;
+	}
+	if (_taskbar)
+	{
+		delete _taskbar;
+		_taskbar = nullptr;
+	}
+	for (auto& b : _bmps)
+	{
+		if (b)
+		{
+			b->Release();
+			b = nullptr;
+		}
+	}
+	for (auto& i : _icons)
+	{
+		if (i)
+		{
+			i->Release();
+			i = nullptr;
+		}
+	}
 }
 
-void DemoWindow_Legacy::button1_OnMouseClick(class Control* sender, MouseEventArgs e)
+void DemoWindow_Legacy::Ui_UpdateStatus(const std::wstring& text)
 {
-	sender->Text = StringHelper::Format(L"独立Tag计数[%d]", sender->Tag++);
-	sender->PostRender();
+	if (_topStatus)
+	{
+		_topStatus->Text = text;
+		_topStatus->PostRender();
+	}
+	if (_statusbar)
+	{
+		_statusbar->SetPartText(0, text);
+		_statusbar->PostRender();
+	}
 }
 
-void DemoWindow_Legacy::menu_OnCommand(class Control* sender, int id)
+void DemoWindow_Legacy::Ui_UpdateProgress(float value01)
+{
+	if (value01 < 0.0f) value01 = 0.0f;
+	if (value01 > 1.0f) value01 = 1.0f;
+	if (_progress)
+	{
+		_progress->PercentageValue = value01;
+		_progress->PostRender();
+	}
+	if (_taskbar)
+	{
+		_taskbar->SetValue((ULONGLONG)(value01 * 1000.0f), 1000);
+	}
+}
+
+void DemoWindow_Legacy::Menu_OnCommand(class Control* sender, int id)
 {
 	(void)sender;
 	switch (id)
 	{
 	case 101:
-		this->label1->Text = L"Menu: 文件 -> 打开";
-		this->label1->PostRender();
+		Ui_UpdateStatus(L"Menu: 文件 -> 打开");
 		break;
 	case 102:
-		PostMessage(this->Handle, WM_CLOSE, 0, 0);
+		this->Close();
 		break;
 	case 201:
-		this->label1->Text = L"Menu: 帮助 -> 关于";
-		this->label1->PostRender();
+		Ui_UpdateStatus(L"Menu: 帮助 -> 关于");
 		break;
 	}
 }
 
-void DemoWindow_Legacy::slider1_OnValueChanged(class Control* sender, float oldValue, float newValue)
+void DemoWindow_Legacy::Basic_OnMouseWheel(class Control* sender, MouseEventArgs e)
 {
 	(void)sender;
-	(void)oldValue;
-	this->label1->Text = StringHelper::Format(L"Slider Value=%.0f", newValue);
-	this->label1->PostRender();
+	Ui_UpdateStatus(StringHelper::Format(L"MouseWheel Delta=[%d]", e.Delta));
 }
 
-void DemoWindow_Legacy::radiobox1_OnChecked(class Control* sender)
+void DemoWindow_Legacy::Basic_OnButtonClick(class Control* sender, MouseEventArgs e)
 {
-	this->radiobox2->Checked = false;
-	this->radiobox2->PostRender();
+	(void)e;
+	sender->Text = StringHelper::Format(L"点击计数[%d]", sender->Tag++);
+	sender->PostRender();
+	Ui_UpdateStatus(L"Button: OnMouseClick");
 }
 
-void DemoWindow_Legacy::radiobox2_OnChecked(class Control* sender)
+void DemoWindow_Legacy::Basic_OnRadioChecked(class Control* sender)
 {
-	this->radiobox1->Checked = false;
-	this->radiobox1->PostRender();
+	if (!_rb1 || !_rb2) return;
+	if (sender == _rb1 && _rb1->Checked)
+	{
+		_rb2->Checked = false;
+		_rb2->PostRender();
+		Ui_UpdateStatus(L"Radio: 选中 A");
+	}
+	else if (sender == _rb2 && _rb2->Checked)
+	{
+		_rb1->Checked = false;
+		_rb1->PostRender();
+		Ui_UpdateStatus(L"Radio: 选中 B");
+	}
 }
 
-void DemoWindow_Legacy::bt2_OnMouseClick(class Control* sender, MouseEventArgs e)
+void DemoWindow_Legacy::Basic_OnIconButtonClick(class Control* sender, MouseEventArgs e)
 {
+	(void)sender;
+	(void)e;
+	MessageBoxW(this->Handle, L"Icon Button Clicked", L"CUI", MB_OK);
+}
+
+void DemoWindow_Legacy::Picture_OnOpenImage(class Control* sender, MouseEventArgs e)
+{
+	(void)sender;
+	(void)e;
+	if (!_picture) return;
+
 	OpenFileDialog ofd;
-
 	ofd.Filter = MakeDialogFilterStrring("图片文件", "*.jpg;*.jpeg;*.png;*.bmp;*.svg;*.webp");
 	ofd.SupportMultiDottedExtensions = true;
 	ofd.Title = "选择一个图片文件";
-	if (ofd.ShowDialog(this->Handle) == DialogResult::OK)
-	{
-		if (picturebox1->Image)
-		{
-			picturebox1->Image->Release();
-			picturebox1->Image = this->Image = NULL;
-		}
-		FileInfo file(ofd.SelectedPaths[0]);
-		if (file.Extension() == ".svg" || file.Extension() == ".SVG")
-		{
-			auto svg = File::ReadAllText(file.FullName());
-			this->Image = ToBitmapFromSvg(this->Render, svg.c_str());
-			picturebox1->SetImageEx(this->Image, false);
-		}
-		else
-		{
-			if (StringHelper::Contains(".jpg.jpeg.png.bmp.webp", StringHelper::ToLower(file.Extension())))
-			{
-				auto img = BitmapSource::FromFile(Convert::string_to_wstring(ofd.SelectedPaths[0]));
-				this->Image = this->Render->CreateBitmap(img->GetWicBitmap());
-				picturebox1->SetImageEx(this->Image, false);
-				img.reset();
-			}
-		}
-		this->Invalidate();
-	}
-}
+	if (ofd.ShowDialog(this->Handle) != DialogResult::OK || ofd.SelectedPaths.empty())
+		return;
 
-void DemoWindow_Legacy::sw1_OnMouseClick(class Control* sender, MouseEventArgs e)
-{
-	Switch* sw = (Switch*)sender;
-	this->gridview1->Enable = sw->Checked;
+	if (_picture->Image)
+	{
+		_picture->Image->Release();
+		_picture->Image = nullptr;
+	}
+
+	FileInfo file(ofd.SelectedPaths[0]);
+	if (file.Extension() == ".svg" || file.Extension() == ".SVG")
+	{
+		auto svg = File::ReadAllText(file.FullName());
+		_picture->SetImageEx(ToBitmapFromSvg(this->Render, svg.c_str()), false);
+	}
+	else if (StringHelper::Contains(".jpg.jpeg.png.bmp.webp", StringHelper::ToLower(file.Extension())))
+	{
+		auto img = BitmapSource::FromFile(Convert::string_to_wstring(ofd.SelectedPaths[0]));
+		_picture->SetImageEx(this->Render->CreateBitmap(img->GetWicBitmap()), false);
+		img.reset();
+	}
+
+	Ui_UpdateStatus(L"PictureBox: 已加载图片");
 	this->Invalidate();
 }
 
-void DemoWindow_Legacy::sw2_OnMouseClick(class Control* sender, MouseEventArgs e)
+void DemoWindow_Legacy::Picture_OnDropFile(class Control* sender, List<std::wstring> files)
 {
-	Switch* sw = (Switch*)sender;
-	this->gridview1->Visible = sw->Checked;
-	this->Invalidate();
-}
+	(void)sender;
+	if (!_picture || files.empty()) return;
 
-void DemoWindow_Legacy::iconButton_OnMouseClick(class Control* sender, MouseEventArgs e)
-{
-	MessageBoxW(this->Handle, L"clicked...", L"title", MB_OK);
-}
-
-void DemoWindow_Legacy::picturebox1_OnDropFile(class Control* sender, List<std::wstring> files)
-{
-	if (picturebox1->Image)
+	if (_picture->Image)
 	{
-		picturebox1->Image->Release();
-		picturebox1->Image = this->Image = NULL;
+		_picture->Image->Release();
+		_picture->Image = nullptr;
 	}
+
 	FileInfo file(Convert::wstring_to_string(files[0]));
 	if (file.Extension() == ".svg" || file.Extension() == ".SVG")
 	{
 		auto svg = File::ReadAllText(file.FullName());
-		this->Image = ToBitmapFromSvg(this->Render, svg.c_str());
-		picturebox1->SetImageEx(this->Image, false);
+		_picture->SetImageEx(ToBitmapFromSvg(this->Render, svg.c_str()), false);
+	}
+	else if (StringHelper::Contains(".png.jpg.jpeg.bmp.webp", StringHelper::ToLower(file.Extension())))
+	{
+		auto img = BitmapSource::FromFile(files[0]);
+		_picture->SetImageEx(this->Render->CreateBitmap(img->GetWicBitmap()), false);
+		img.reset();
+	}
+	Ui_UpdateStatus(L"PictureBox: 拖拽载入");
+	this->Invalidate();
+}
+
+void DemoWindow_Legacy::Data_OnToggleEnable(class Control* sender, MouseEventArgs e)
+{
+	(void)e;
+	if (!_grid) return;
+	auto sw = (Switch*)sender;
+	_grid->Enable = sw->Checked;
+	Ui_UpdateStatus(sw->Checked ? L"GridView: Enable" : L"GridView: Disable");
+	this->Invalidate();
+}
+
+void DemoWindow_Legacy::Data_OnToggleVisible(class Control* sender, MouseEventArgs e)
+{
+	(void)e;
+	if (!_grid) return;
+	auto sw = (Switch*)sender;
+	_grid->Visible = sw->Checked;
+	Ui_UpdateStatus(sw->Checked ? L"GridView: Visible" : L"GridView: Hidden");
+	this->Invalidate();
+}
+
+void DemoWindow_Legacy::System_OnNotifyToggle(class Control* sender, MouseEventArgs e)
+{
+	(void)sender;
+	(void)e;
+	if (!_notify) return;
+	_notifyVisible = !_notifyVisible;
+	if (_notifyVisible)
+	{
+		_notify->ShowNotifyIcon();
+		Ui_UpdateStatus(L"NotifyIcon: Show");
 	}
 	else
 	{
-		if (StringHelper::Contains(".png.jpg.jpeg.bmp.webp", StringHelper::ToLower(file.Extension())))
-		{
-			auto img = BitmapSource::FromFile(files[0]);
-			this->Image = this->Render->CreateBitmap(img->GetWicBitmap());
-			picturebox1->SetImageEx(this->Image, false);
-		}
+		_notify->HideNotifyIcon();
+		Ui_UpdateStatus(L"NotifyIcon: Hide");
 	}
-	this->Invalidate();
 }
-DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"", { 0,0 }, { 1280,640 })
-{
-	bmps[0] = ToBitmapFromSvg(this->Render, _0_ico);
-	bmps[1] = ToBitmapFromSvg(this->Render, _1_ico);
-	bmps[2] = ToBitmapFromSvg(this->Render, _2_ico);
-	bmps[3] = ToBitmapFromSvg(this->Render, _3_ico);
-	bmps[4] = ToBitmapFromSvg(this->Render, _4_ico);
-	bmps[5] = ToBitmapFromSvg(this->Render, _5_ico);
-	bmps[6] = ToBitmapFromSvg(this->Render, _6_ico);
-	bmps[7] = ToBitmapFromSvg(this->Render, _7_ico);
-	bmps[8] = ToBitmapFromSvg(this->Render, _8_ico);
-	bmps[9] = ToBitmapFromSvg(this->Render, _9_ico);
-	icos[0] = ToBitmapFromSvg(this->Render, icon0);
-	icos[1] = ToBitmapFromSvg(this->Render, icon1);
-	icos[2] = ToBitmapFromSvg(this->Render, icon2);
-	icos[3] = ToBitmapFromSvg(this->Render, icon3);
-	icos[4] = ToBitmapFromSvg(this->Render, icon4);
 
-	menu1 = this->AddControl(new Menu(0, 0, this->Size.cx, 28));
-	menu1->BarBackColor = D2D1_COLOR_F{ 1,1,1,0.08f };
-	menu1->DropBackColor = D2D1_COLOR_F{ 0.12f,0.12f,0.12f,0.92f };
-	menu1->OnMenuCommand += [this](class Control* sender, int id) { this->menu_OnCommand(sender, id); };
+void DemoWindow_Legacy::System_OnBalloonTip(class Control* sender, MouseEventArgs e)
+{
+	(void)sender;
+	(void)e;
+	if (!_notify) return;
+	_notify->ShowBalloonTip("CUI", "NotifyIcon Balloon Tip", 3000, NIIF_INFO);
+	Ui_UpdateStatus(L"NotifyIcon: BalloonTip");
+}
+
+void DemoWindow_Legacy::BuildMenuToolStatus()
+{
+	_menu = this->AddControl(new Menu(0, 0, this->Size.cx, 28));
+	_menu->BarBackColor = D2D1_COLOR_F{ 1,1,1,0.08f };
+	_menu->DropBackColor = D2D1_COLOR_F{ 0.12f,0.12f,0.12f,0.92f };
+	_menu->OnMenuCommand += [this](class Control* sender, int id) { this->Menu_OnCommand(sender, id); };
 	{
-		auto file = menu1->AddItem(L"文件");
+		auto file = _menu->AddItem(L"文件");
 		file->AddSubItem(L"打开", 101);
-		auto recent = file->AddSubItem(L"最近打开");
-		recent->AddSubItem(L"project_a.cui", 111);
-		recent->AddSubItem(L"project_b.cui", 112);
-		recent->AddSeparator();
-		recent->AddSubItem(L"清空列表", 113);
 		file->AddSeparator();
 		file->AddSubItem(L"退出", 102);
 
-		auto settings = menu1->AddItem(L"设置");
-		auto theme = settings->AddSubItem(L"主题");
-		theme->AddSubItem(L"浅色", 301);
-		theme->AddSubItem(L"深色", 302);
-		settings->AddSeparator();
-		settings->AddSubItem(L"重置", 303);
-
-		auto help = menu1->AddItem(L"帮助");
+		auto help = _menu->AddItem(L"帮助");
 		help->AddSubItem(L"关于", 201);
 	}
 
-	toolbar1 = this->AddControl(new ToolBar(0, 0, this->Size.cx, 32));
-	toolbar1->Top = menu1->Bottom;
-	auto tbNew = toolbar1->AddToolButton(L"I'm", 90);
-	auto tbSave = toolbar1->AddToolButton(L"a", 90);
-	auto tbRun = toolbar1->AddToolButton(L"Toolbar", 90);
+	_toolbar = this->AddControl(new ToolBar(0, 0, this->Size.cx, 32));
+	_toolbar->Top = _menu->Bottom;
+	auto tb1 = _toolbar->AddToolButton(L"Basic", 80);
+	auto tb2 = _toolbar->AddToolButton(L"Data", 80);
+	auto tb3 = _toolbar->AddToolButton(L"System", 80);
+	tb1->OnMouseClick += [this](class Control* s, MouseEventArgs e) { (void)s; (void)e; if (_tabs) _tabs->SelectedIndex = 0; Ui_UpdateStatus(L"ToolBar: Basic"); };
+	tb2->OnMouseClick += [this](class Control* s, MouseEventArgs e) { (void)s; (void)e; if (_tabs) _tabs->SelectedIndex = 2; Ui_UpdateStatus(L"ToolBar: Data"); };
+	tb3->OnMouseClick += [this](class Control* s, MouseEventArgs e) { (void)s; (void)e; if (_tabs) _tabs->SelectedIndex = 4; Ui_UpdateStatus(L"ToolBar: System"); };
 
-	statusbar1 = this->AddControl(new StatusBar(0, 0, this->Size.cx, 26));
-	statusbar1->AddPart(L"0 part", -1);
-	statusbar1->AddPart(L"1 part/120", 120);
-	statusbar1->AddPart(L"2 part/100", 100);
-	statusbar1->AddPart(L"3 part/80", 80);
+	_statusbar = this->AddControl(new StatusBar(0, 0, this->Size.cx, 26));
+	_statusbar->AddPart(L"Ready", -1);
+	_statusbar->AddPart(L"CUI", 120);
+}
 
-	tbNew->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: I'm"; this->label1->PostRender(); this->statusbar1->SetPartText(0, L"ToolBar: I'm"); this->statusbar1->PostRender(); };
-	tbSave->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: a"; this->label1->PostRender(); this->statusbar1->SetPartText(0, L"ToolBar: a"); this->statusbar1->PostRender(); };
-	tbRun->OnMouseClick += [&](class Control* s, MouseEventArgs e) { (void)s; (void)e; this->label1->Text = L"ToolBar: Toolbar"; this->label1->PostRender(); this->statusbar1->SetPartText(0, L"ToolBar: Toolbar"); this->statusbar1->PostRender(); };
+void DemoWindow_Legacy::BuildTabs()
+{
+	int top = _toolbar ? _toolbar->Bottom : 0;
 
-	slider1 = this->AddControl(new Slider(10, toolbar1->Bottom + 8, 320, 32));
-	slider1->Min = 0;
-	slider1->Max = 10000;
-	slider1->Value = 50;
-	slider1->OnValueChanged += [this](class Control* sender, float oldValue, float newValue) { this->slider1_OnValueChanged(sender, oldValue, newValue); };
-
-	label1 = this->AddControl(new Label(L"Label", 10, (int)slider1->Bottom + 6));
-	label1->OnMouseWheel += std::bind_front(&DemoWindow_Legacy::label1_OnMouseWheel, this);
-
-	clabel1 = this->AddControl(new CustomLabel1(L"Custom Label", 400, label1->Top));
-	button1 = this->AddControl(new Button(L"BUTTON1", 10, this->LastChild()->Bottom + 5, 120, 24));
-	button1->OnMouseClick += std::bind_front(&DemoWindow_Legacy::button1_OnMouseClick, this);
-	textbox0 = this->AddControl(new TextBox(L"TextBox", 10, this->LastChild()->Bottom + 5, 120, 20));
-	textbox1 = this->AddControl(new CustomTextBox1(L"Custom TextBox", 10, this->LastChild()->Bottom + 5, 120, 20));
-	textbox3 = this->AddControl(new RoundTextBox(L"RoundTextBox", 10, this->LastChild()->Bottom + 5, 120, 20));
-	pwdbox1 = this->AddControl(new PasswordBox(L"pwd", 10, this->LastChild()->Bottom + 5, 120, 20));
-	combobox1 = this->AddControl(new ComboBox(L"item1", 10, this->LastChild()->Bottom + 5, 120, 24));
-	combobox1->ExpandCount = 8;
-	for (int i = 0; i < 100; i++) {
-		combobox1->Items.Add(StringHelper::Format(L"item%d", i));
-	}
-	checkbox1 = this->AddControl(new CheckBox(L"CheckBox", combobox1->Right + 5, button1->Top));
-	radiobox1 = this->AddControl(new RadioBox(L"RadioBox1", combobox1->Right + 5, this->LastChild()->Bottom + 5));
-	radiobox1->Checked = true;
-	radiobox2 = this->AddControl(new RadioBox(L"RadioBox2", combobox1->Right + 5, this->LastChild()->Bottom + 5));
-	radiobox1->OnChecked += [this](class Control* sender) { this->radiobox1_OnChecked(sender); };
-	radiobox2->OnChecked += [this](class Control* sender) { this->radiobox2_OnChecked(sender); };
-
-	textbox2 = this->AddControl(new RichTextBox(L"RichTextBox", 260, button1->Top, 800, 155));
-	textbox2->BackColor = D2D1_COLOR_F{ 1,1,1,0.25f };
-	textbox2->FocusedColor = D2D1_COLOR_F{ 1,1,1,0.5f };
-	textbox2->AllowMultiLine = true;
-	textbox2->ScrollToEnd();
-	textbox2->Margin = Thickness(0, 0, 15, 0);
-	textbox2->AnchorStyles = AnchorStyles::Left | AnchorStyles::Right;
-	textbox2->OnDropText += [](class Control* sender, std::wstring text) {
-		RichTextBox* rtb = (RichTextBox*)sender;
-		rtb->AppendText(text);
-		rtb->ScrollToEnd();
-		rtb->PostRender();
+	_topSlider = this->AddControl(new Slider(10, top + 6, 320, 30));
+	_topSlider->Min = 0;
+	_topSlider->Max = 1000;
+	_topSlider->Value = 250;
+	_topSlider->OnValueChanged += [this](class Control* sender, float oldValue, float newValue)
+		{
+			(void)sender;
+			(void)oldValue;
+			Ui_UpdateProgress(newValue / 1000.0f);
+			Ui_UpdateStatus(StringHelper::Format(L"Slider Value=%.0f", newValue));
 		};
-	tabControl1 = this->AddControl(new TabControl(10, combobox1->Bottom + 5, 1200, 300));
-	tabControl1->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.0f };
-	tabControl1->Margin = Thickness(0, 0, 15, 40);
-	tabControl1->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
-	tabControl1->AddPage(L"Page 1")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
-	tabControl1->AddPage(L"Grid View")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
-	tabControl1->AddPage(L"Icon Buttons")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
-	tabControl1->AddPage(L"Layout Demo")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
-	tabControl1->AddPage(L"Media Player")->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.3f };
-	tabControl1->get(0)->AddControl(new Label(L"基本容器", 10, 10));
 
-	bt2 = tabControl1->get(0)->AddControl(new Button(L"打开图片", 120, 10, 120, 24));
-	bt2->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->bt2_OnMouseClick(sender, e); };
-	panel1 = tabControl1->get(0)->AddControl(new Panel(10, 40, 400, 200));
+	_topStatus = this->AddControl(new Label(L"CUI 全组件演示（CUITest）", 350, top + 10));
+	_topStatus->ForeColor = Colors::LightGray;
+	_topStatus->OnMouseWheel += [this](class Control* sender, MouseEventArgs e) { this->Basic_OnMouseWheel(sender, e); };
 
-	TreeView* tree = tabControl1->get(0)->AddControl(new TreeView(420, 10, 360, 230));
-	tree->Font = new Font(L"宋体", 24);
-	tree->BackColor = D2D1_COLOR_F{ 1,1,1,0.25f };
-	for (int i = 0; i < 3; i++) {
-		auto sub = new TreeNode(StringHelper::Format(L"item%d", i), bmps[1]);
-		sub->Expand = true;
-		tree->Root->Children.push_back(sub);
-		sub->Tag = i;
-		for (int j = 0; j < 3; j++) {
-			auto ssub = new TreeNode(StringHelper::Format(L"item%d-%d", i, j), bmps[2]);
-			sub->Children.push_back(ssub);
-			ssub->Tag = i * j;
-			for (int n = 0; n < 10; n++) {
-				auto sssub = new TreeNode(StringHelper::Format(L"item%d-%d-%d", i, j, n), bmps[3]);
-				ssub->Children.push_back(sssub);
-				sssub->Tag = i * j * n;
-			}
-		}
-	}
+	_tabs = this->AddControl(new TabControl(10, _topSlider->Bottom + 8, this->Size.cx - 20, this->Size.cy - (_topSlider->Bottom + 8) - 10));
+	_tabs->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.0f };
+	_tabs->Margin = Thickness(10, 0, 10, 40);
+	_tabs->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
 
-	panel1->AddControl(new Label(L"图片框", 10, 10));
-	picturebox1 = panel1->AddControl(new PictureBox(120, 10, 260, 120));
-	picturebox1->Image = this->Image;
-	picturebox1->SizeMode = ImageSizeMode::StretchIamge;
-	picturebox1->OnDropFile += [this](class Control* sender, List<std::wstring> files) { this->picturebox1_OnDropFile(sender, files); };
-	panel1->AddControl(new Label(L"Progress Bar", 10, picturebox1->Bottom + 5));
-	progressbar1 = panel1->AddControl(new ProgressBar(120, picturebox1->Bottom + 5, 260, 24));
-	gridview1 = tabControl1->get(1)->AddControl(new GridView(10, 24, 1000, 200));
-	gridview1->HeadFont = new Font(L"Arial", 16);
-	gridview1->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-	gridview1->Font = new Font(L"Arial", 16);
-	gridview1->Margin = Thickness(10, 32, 10, 10);
-	gridview1->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
-	gridview1->AllowUserToAddRows = false;
+	auto pBasic = _tabs->AddPage(L"基础控件");
+	auto pContainers = _tabs->AddPage(L"容器与图像");
+	auto pData = _tabs->AddPage(L"数据控件");
+	auto pLayout = _tabs->AddPage(L"布局容器");
+	auto pSystem = _tabs->AddPage(L"系统集成");
+	auto pMedia = _tabs->AddPage(L"MediaPlayer");
 
-	gridview1->Columns.Add(GridViewColumn(L"Image", 80, ColumnType::Image));
+	BuildTab_Basic(pBasic);
+	BuildTab_Containers(pContainers);
+	BuildTab_Data(pData);
+	BuildTab_Layout(pLayout);
+	BuildTab_System(pSystem);
+	BuildTab_Media(pMedia);
+}
 
-	GridViewColumn comColumn = GridViewColumn(L"ComboBox", 80, ColumnType::ComboBox);
-	comColumn.ComboBoxItems.push_back(L"Item 1");
-	comColumn.ComboBoxItems.push_back(L"Item 2");
-	comColumn.ComboBoxItems.push_back(L"Item 3");
-	gridview1->Columns.Add(comColumn);
+void DemoWindow_Legacy::BuildTab_Basic(TabPage* page)
+{
+	page->AddControl(new Label(L"Button / Label / TextBox / ComboBox / CheckBox / RadioBox / RichTextBox", 10, 10));
+	page->AddControl(new CustomLabel1(L"CustomLabel1（渐变绘制）", 10, 38));
 
-	GridViewColumn textColumn = GridViewColumn(L"Text", 100, ColumnType::Text, false);
-	textColumn.SetSortFunc([](const CellValue& lhs, const CellValue& rhs) -> int {
-		wchar_t* end1 = nullptr;
-		wchar_t* end2 = nullptr;
-		long long a = wcstoll(lhs.Text.c_str(), &end1, 10);
-		long long b = wcstoll(rhs.Text.c_str(), &end2, 10);
-		if (end1 == lhs.Text.c_str()) a = 0;
-		if (end2 == rhs.Text.c_str()) b = 0;
-		if (a == b) return 0;
-		return (a < b) ? -1 : 1;
-		});
-	gridview1->Columns.Add(textColumn);
+	_basicButton = page->AddControl(new Button(L"点击计数[0]", 10, 70, 160, 28));
+	_basicButton->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->Basic_OnButtonClick(sender, e); };
 
-	GridViewColumn buttonColumn = GridViewColumn(L"Button", 80, ColumnType::Button);
-	buttonColumn.ButtonText = L"OK";
-	gridview1->Columns.Add(buttonColumn);
+	_basicEnableCheck = page->AddControl(new CheckBox(L"启用输入框", 180, 74));
+	_basicEnableCheck->Checked = true;
 
+	auto tb1 = page->AddControl(new TextBox(L"TextBox", 10, 110, 200, 26));
+	auto tb2 = page->AddControl(new CustomTextBox1(L"CustomTextBox1", 10, 145, 200, 26));
+	auto tb3 = page->AddControl(new RoundTextBox(L"RoundTextBox", 10, 180, 200, 26));
+	auto pwd = page->AddControl(new PasswordBox(L"pwd", 10, 215, 200, 26));
 
-	gridview1->Columns.Add(GridViewColumn(L"Check", 80, ColumnType::Check));
-	gridview1->Columns.Add(GridViewColumn(L"Edit", 200, ColumnType::Text, true));
-	for (int i = 0; i < 64; i++)
-	{
-		GridViewRow row;
-		row.Cells = {
-			bmps[i % 10] ,
-			i % 2 == 0,
-			std::to_wstring(Random::Next()) ,
-			L"",
-			i % 3 == 0 ,
-			std::to_wstring(Random::Next())
+	_basicEnableCheck->OnChecked += [tb1, tb2, tb3, pwd](class Control* sender)
+		{
+			bool en = ((CheckBox*)sender)->Checked;
+			tb1->Enable = en;
+			tb2->Enable = en;
+			tb3->Enable = en;
+			pwd->Enable = en;
+			tb1->PostRender();
+			tb2->PostRender();
+			tb3->PostRender();
+			pwd->PostRender();
 		};
-		gridview1->Rows.Add(row);
-	}
 
-	sw1 = tabControl1->get(1)->AddControl(new Switch(10, 5));
-	sw1->Checked = gridview1->Visible;
-	sw1->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->sw1_OnMouseClick(sender, e); };
+	auto combo = page->AddControl(new ComboBox(L"item0", 240, 110, 180, 28));
+	combo->ExpandCount = 8;
+	for (int i = 0; i < 30; i++) combo->Items.Add(StringHelper::Format(L"item%d", i));
+	combo->OnSelectionChanged += [this, combo](class Control* sender)
+		{
+			(void)sender;
+			Ui_UpdateStatus(StringHelper::Format(L"ComboBox: %s", combo->Text.c_str()));
+		};
 
-	sw2 = tabControl1->get(1)->AddControl(new Switch(72, 5));
-	sw2->Checked = gridview1->Visible;
-	sw2->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->sw2_OnMouseClick(sender, e); };
+	_rb1 = page->AddControl(new RadioBox(L"选项 A", 240, 150));
+	_rb2 = page->AddControl(new RadioBox(L"选项 B", 240, 180));
+	_rb1->Checked = true;
+	_rb1->OnChecked += [this](class Control* sender) { this->Basic_OnRadioChecked(sender); };
+	_rb2->OnChecked += [this](class Control* sender) { this->Basic_OnRadioChecked(sender); };
+
+	auto rich = page->AddControl(new RichTextBox(L"RichTextBox: 支持拖拽文本到此处\r\n", 10, 260, 700, 220));
+	rich->AllowMultiLine = true;
+	rich->ScrollToEnd();
+	rich->OnDropText += [](class Control* sender, std::wstring text)
+		{
+			RichTextBox* rtb = (RichTextBox*)sender;
+			rtb->AppendText(text);
+			rtb->ScrollToEnd();
+			rtb->PostRender();
+		};
+
+	page->AddControl(new Label(L"Icon Buttons:", 740, 70));
 	for (int i = 0; i < 5; i++)
 	{
-		Button* ingButton = tabControl1->get(2)->AddControl(new Button(L"", 10 + (44 * i), 10, 40, 40));
-		ingButton->Image = icos[i];
-		ingButton->SizeMode = ImageSizeMode::CenterImage;
-		ingButton->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-		ingButton->Boder = 2.0f;
-		ingButton->OnMouseClick += std::bind_front(&DemoWindow_Legacy::iconButton_OnMouseClick, this);
+		Button* iconBtn = page->AddControl(new Button(L"", 740 + (44 * i), 95, 40, 40));
+		iconBtn->Image = _icons[i];
+		iconBtn->SizeMode = ImageSizeMode::CenterImage;
+		iconBtn->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
+		iconBtn->Boder = 2.0f;
+		iconBtn->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->Basic_OnIconButtonClick(sender, e); };
 	}
+}
 
-	// ========== 布局系统演示 ==========
+void DemoWindow_Legacy::BuildTab_Containers(TabPage* page)
+{
+	page->AddControl(new Label(L"Panel / PictureBox / ProgressBar / Switch（拖拽文件到图片框）", 10, 10));
+
+	auto openBtn = page->AddControl(new Button(L"打开图片", 10, 40, 120, 28));
+	openBtn->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->Picture_OnOpenImage(sender, e); };
+
+	auto panel = page->AddControl(new Panel(10, 78, 520, 320));
+	panel->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
+	panel->BolderColor = D2D1_COLOR_F{ 1,1,1,0.12f };
+
+	panel->AddControl(new Label(L"PictureBox", 10, 10));
+	_picture = panel->AddControl(new PictureBox(110, 10, 390, 210));
+	_picture->SizeMode = ImageSizeMode::StretchIamge;
+	_picture->OnDropFile += [this](class Control* sender, List<std::wstring> files) { this->Picture_OnDropFile(sender, files); };
+
+	panel->AddControl(new Label(L"ProgressBar", 10, 235));
+	_progress = panel->AddControl(new ProgressBar(110, 230, 390, 24));
+	_progress->PercentageValue = 0.25f;
+
+	auto swEnable = page->AddControl(new Switch(panel->Right + 20, panel->Top + 10));
+	page->AddControl(new Label(L"Enable Panel", swEnable->Right + 8, swEnable->Top));
+	swEnable->Checked = true;
+	swEnable->OnMouseClick += [panel, this](class Control* sender, MouseEventArgs e)
+		{
+			(void)e;
+			panel->Enable = ((Switch*)sender)->Checked;
+			Ui_UpdateStatus(panel->Enable ? L"Panel: Enable" : L"Panel: Disable");
+			this->Invalidate();
+		};
+
+	auto swVisible = page->AddControl(new Switch(panel->Right + 20, panel->Top + 50));
+	page->AddControl(new Label(L"Visible PictureBox", swVisible->Right + 8, swVisible->Top));
+	swVisible->Checked = true;
+	swVisible->OnMouseClick += [this](class Control* sender, MouseEventArgs e)
+		{
+			(void)e;
+			if (!_picture) return;
+			_picture->Visible = ((Switch*)sender)->Checked;
+			Ui_UpdateStatus(_picture->Visible ? L"PictureBox: Visible" : L"PictureBox: Hidden");
+			this->Invalidate();
+		};
+
+	page->AddControl(new Label(L"提示：顶部 Slider 同时驱动 ProgressBar 与 Taskbar 进度。", 10, 420));
+}
+
+void DemoWindow_Legacy::BuildTab_Data(TabPage* page)
+{
+	page->AddControl(new Label(L"TreeView / GridView / Switch", 10, 10));
+
+	TreeView* tree = page->AddControl(new TreeView(10, 40, 360, 420));
+	tree->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Bottom;
+	tree->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
+	for (int i = 0; i < 4; i++)
 	{
-		auto layoutPage = tabControl1->get(3);
-		layoutPage->AddControl(new Label(L"布局系统演示", 10, 10));
-
-		// StackPanel 示例
-		auto stackLabel = layoutPage->AddControl(new Label(L"StackPanel:", 10, 40));
-		auto stack = layoutPage->AddControl(new StackPanel(10, 60, 280, 200));
-		stack->SetOrientation(Orientation::Vertical);
-		stack->SetSpacing(5);
-		stack->BackColor = D2D1_COLOR_F{ 0.2f, 0.2f, 0.2f, 0.5f };
-
-		auto stackBtn1 = new Button(L"按钮 1 (200px)", 0, 0, 200, 25);
-		auto stackBtn2 = new Button(L"按钮 2 (180px)", 0, 0, 180, 25);
-		auto stackBtn3 = new Button(L"按钮 3 (220px)", 0, 0, 220, 25);
-		stack->AddControl(stackBtn1);
-		stack->AddControl(stackBtn2);
-		stack->AddControl(stackBtn3);
-
-		// GridPanel 示例
-		auto gridLabel = layoutPage->AddControl(new Label(L"GridPanel:", 300, 40));
-		auto grid = layoutPage->AddControl(new GridPanel(300, 60, 280, 200));
-		grid->BackColor = D2D1_COLOR_F{ 0.2f, 0.2f, 0.2f, 0.5f };
-
-		grid->AddRow(GridLength::Auto());
-		grid->AddRow(GridLength::Star(1.0f));
-		grid->AddRow(GridLength::Pixels(30));
-		grid->AddColumn(GridLength::Star(1.0f));
-		grid->AddColumn(GridLength::Star(1.0f));
-
-		auto gridTitle = new Label(L"标题", 0, 0);
-		gridTitle->GridRow = 0;
-		gridTitle->GridColumn = 0;
-		gridTitle->GridColumnSpan = 2;
-		gridTitle->HAlign = HorizontalAlignment::Center;
-
-		auto gridContent1 = new Button(L"内容1", 0, 0, 100, 80);
-		gridContent1->GridRow = 1;
-		gridContent1->GridColumn = 0;
-		gridContent1->Margin = Thickness(5);
-
-		auto gridContent2 = new Button(L"内容2", 0, 0, 100, 80);
-		gridContent2->GridRow = 1;
-		gridContent2->GridColumn = 1;
-		gridContent2->Margin = Thickness(5);
-
-		auto gridFooter = new Label(L"底部", 0, 0);
-		gridFooter->GridRow = 2;
-		gridFooter->GridColumn = 0;
-		gridFooter->GridColumnSpan = 2;
-		gridFooter->HAlign = HorizontalAlignment::Center;
-
-		grid->AddControl(gridTitle);
-		grid->AddControl(gridContent1);
-		grid->AddControl(gridContent2);
-		grid->AddControl(gridFooter);
-
-		// DockPanel 示例
-		auto dockLabel = layoutPage->AddControl(new Label(L"DockPanel:", 590, 40));
-		auto dock = layoutPage->AddControl(new DockPanel(590, 60, 280, 200));
-		dock->BackColor = D2D1_COLOR_F{ 0.2f, 0.2f, 0.2f, 0.5f };
-		dock->SetLastChildFill(true);
-
-		auto dockTop = new Label(L"Top", 0, 0);
-		dockTop->BackColor = D2D1_COLOR_F{ 0.3f, 0.3f, 0.5f, 0.7f };
-		dockTop->Size = SIZE{ 280, 30 };
-		dockTop->DockPosition = Dock::Top;
-
-		auto dockBottom = new Label(L"Bottom", 0, 0);
-		dockBottom->BackColor = D2D1_COLOR_F{ 0.5f, 0.3f, 0.3f, 0.7f };
-		dockBottom->Size = SIZE{ 280, 30 };
-		dockBottom->DockPosition = Dock::Bottom;
-
-		auto dockLeft = new Label(L"Left", 0, 0);
-		dockLeft->BackColor = D2D1_COLOR_F{ 0.3f, 0.5f, 0.3f, 0.7f };
-		dockLeft->Size = SIZE{ 60, 140 };
-		dockLeft->DockPosition = Dock::Left;
-
-		auto dockFill = new Label(L"Fill", 0, 0);
-		dockFill->BackColor = D2D1_COLOR_F{ 0.4f, 0.4f, 0.4f, 0.7f };
-		dockFill->DockPosition = Dock::Fill;
-
-		dock->AddControl(dockTop);
-		dock->AddControl(dockBottom);
-		dock->AddControl(dockLeft);
-		dock->AddControl(dockFill);
-
-		// WrapPanel 示例
-		auto wrapLabel = layoutPage->AddControl(new Label(L"WrapPanel:", 880, 40));
-		auto wrap = layoutPage->AddControl(new WrapPanel(880, 60, 300, 200));
-		wrap->SetOrientation(Orientation::Horizontal);
-		wrap->BackColor = D2D1_COLOR_F{ 0.2f, 0.2f, 0.2f, 0.5f };
-
-		for (int i = 1; i <= 8; i++) {
-			auto wrapBtn = new Button(
-				StringHelper::Format(L"Btn%d", i),
-				0, 0,
-				60,
-				25
-			);
-			wrap->AddControl(wrapBtn);
+		auto sub = new TreeNode(StringHelper::Format(L"node%d", i), _bmps[i % 10]);
+		sub->Expand = true;
+		tree->Root->Children.push_back(sub);
+		for (int j = 0; j < 6; j++)
+		{
+			auto ssub = new TreeNode(StringHelper::Format(L"node%d-%d", i, j), _bmps[(i + j) % 10]);
+			sub->Children.push_back(ssub);
 		}
 	}
 
-	// ========== 媒体播放器演示 ==========
+	_grid = page->AddControl(new GridView(390, 70, 980, 390));
+	_grid->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
+	_grid->AllowUserToAddRows = false;
+	_grid->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
+	_grid->HeadFont = new Font(L"Arial", 16);
+	_grid->Font = new Font(L"Arial", 16);
+
+	_grid->Columns.Add(GridViewColumn(L"Image", 80, ColumnType::Image));
+	GridViewColumn comColumn = GridViewColumn(L"ComboBox", 120, ColumnType::ComboBox);
+	comColumn.ComboBoxItems = { L"Item 1", L"Item 2", L"Item 3" };
+	_grid->Columns.Add(comColumn);
+	_grid->Columns.Add(GridViewColumn(L"Check", 80, ColumnType::Check));
+	GridViewColumn textColumn = GridViewColumn(L"Text", 160, ColumnType::Text, true);
+	_grid->Columns.Add(textColumn);
+	GridViewColumn buttonColumn = GridViewColumn(L"Button", 80, ColumnType::Button);
+	buttonColumn.ButtonText = L"OK";
+	_grid->Columns.Add(buttonColumn);
+
+	for (int i = 0; i < 48; i++)
 	{
-		auto page = tabControl1->get(4);
+		GridViewRow row;
+		row.Cells = { _bmps[i % 10], L"Item 1", i % 2 == 0, std::to_wstring(Random::Next()), L"" };
+		_grid->Rows.Add(row);
+	}
 
-		// 标题标签
-		Label* titleLabel = page->AddControl(new Label(L"媒体播放器 - 支持 MP4/MKV/AVI/MOV/WMV/MP3/WAV/FLAC 等格式", 10, 10));
-		titleLabel->ForeColor = Colors::LightGray;
+	_gridEnableSwitch = page->AddControl(new Switch(390, 40));
+	_gridEnableSwitch->Checked = true;
+	_gridEnableSwitch->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->Data_OnToggleEnable(sender, e); };
+	page->AddControl(new Label(L"Enable", 460, 43));
 
-		// 创建媒体播放器
-		mediaPlayer = page->AddControl(new MediaPlayer(10, 40, 1180, 350));
-		mediaPlayer->Margin = Thickness(10, 40, 10, 120);
-		mediaPlayer->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
-		mediaPlayer->AutoPlay = true;
-		mediaPlayer->Loop = false;
-		MediaPlayer* mp = mediaPlayer;
+	_gridVisibleSwitch = page->AddControl(new Switch(520, 40));
+	_gridVisibleSwitch->Checked = true;
+	_gridVisibleSwitch->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->Data_OnToggleVisible(sender, e); };
+	page->AddControl(new Label(L"Visible", 590, 43));
+}
 
-		// 控制面板
-		Panel* controlPanel = page->AddControl(new Panel(10, 400, 1180, 90));
-		controlPanel->Margin = Thickness(10, 0, 10, 10);
-		controlPanel->AnchorStyles = AnchorStyles::Left | AnchorStyles::Right | AnchorStyles::Bottom;
-		controlPanel->BackColor = D2D1_COLOR_F{ 0.15f, 0.15f, 0.15f, 0.95f };
-		controlPanel->BolderColor = D2D1_COLOR_F{ 0.3f, 0.3f, 0.3f, 1.0f };
+void DemoWindow_Legacy::BuildTab_Layout(TabPage* page)
+{
+	page->AddControl(new Label(L"StackPanel / GridPanel / DockPanel / WrapPanel / RelativePanel", 10, 10));
 
-		// 打开按钮
-		Button* btnOpen = controlPanel->AddControl(new Button(L"📁 打开文件", 10, 10, 100, 35));
-		btnOpen->BackColor = D2D1_COLOR_F{ 0.25f, 0.35f, 0.55f, 1.0f };
-		btnOpen->OnMouseClick += [this](class Control* sender, MouseEventArgs e) {
-			(void)sender; (void)e;
-			if (!mediaPlayer) return;
+	auto stack = page->AddControl(new StackPanel(10, 40, 260, 220));
+	stack->SetOrientation(Orientation::Vertical);
+	stack->SetSpacing(6);
+	stack->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
+	stack->AddControl(new Button(L"Stack A", 0, 0, 180, 26));
+	stack->AddControl(new Button(L"Stack B", 0, 0, 200, 26));
+	stack->AddControl(new Button(L"Stack C", 0, 0, 160, 26));
 
+	auto grid = page->AddControl(new GridPanel(290, 40, 320, 220));
+	grid->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
+	grid->AddRow(GridLength::Auto());
+	grid->AddRow(GridLength::Star(1.0f));
+	grid->AddRow(GridLength::Pixels(30));
+	grid->AddColumn(GridLength::Star(1.0f));
+	grid->AddColumn(GridLength::Star(1.0f));
+	{
+		auto title = new Label(L"GridPanel Title", 0, 0);
+		title->GridRow = 0;
+		title->GridColumn = 0;
+		title->GridColumnSpan = 2;
+		title->HAlign = HorizontalAlignment::Center;
+		grid->AddControl(title);
+		auto c1 = new Button(L"(0,1)", 0, 0, 80, 80);
+		c1->GridRow = 1;
+		c1->GridColumn = 0;
+		c1->Margin = Thickness(6);
+		grid->AddControl(c1);
+		auto c2 = new Button(L"(1,1)", 0, 0, 80, 80);
+		c2->GridRow = 1;
+		c2->GridColumn = 1;
+		c2->Margin = Thickness(6);
+		grid->AddControl(c2);
+		auto footer = new Label(L"Footer", 0, 0);
+		footer->GridRow = 2;
+		footer->GridColumn = 0;
+		footer->GridColumnSpan = 2;
+		footer->HAlign = HorizontalAlignment::Center;
+		grid->AddControl(footer);
+	}
+
+	auto dock = page->AddControl(new DockPanel(630, 40, 320, 220));
+	dock->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
+	dock->SetLastChildFill(true);
+	{
+		auto top = new Label(L"Top", 0, 0);
+		top->Size = SIZE{ 320, 28 };
+		top->DockPosition = Dock::Top;
+		dock->AddControl(top);
+		auto left = new Label(L"Left", 0, 0);
+		left->Size = SIZE{ 60, 150 };
+		left->DockPosition = Dock::Left;
+		dock->AddControl(left);
+		auto bottom = new Label(L"Bottom", 0, 0);
+		bottom->Size = SIZE{ 320, 28 };
+		bottom->DockPosition = Dock::Bottom;
+		dock->AddControl(bottom);
+		auto fill = new Label(L"Fill", 0, 0);
+		fill->DockPosition = Dock::Fill;
+		dock->AddControl(fill);
+	}
+
+	auto wrap = page->AddControl(new WrapPanel(970, 40, 360, 220));
+	wrap->SetOrientation(Orientation::Horizontal);
+	wrap->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
+	for (int i = 1; i <= 10; i++)
+	{
+		wrap->AddControl(new Button(StringHelper::Format(L"Btn%d", i), 0, 0, 70, 26));
+	}
+
+	auto rp = page->AddControl(new RelativePanel(10, 280, 500, 250));
+	rp->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
+	page->AddControl(new Label(L"RelativePanel（相对约束）", 10, 260));
+
+	auto b = rp->AddControl(new Button(L"居中", 0, 0, 100, 26));
+
+	RelativeConstraints cd;
+	cd.CenterHorizontal = true;
+	cd.CenterVertical = true;
+	rp->SetConstraints(b, cd);
+}
+
+void DemoWindow_Legacy::BuildTab_System(TabPage* page)
+{
+	page->AddControl(new Label(L"NotifyIcon / Taskbar", 10, 10));
+	page->AddControl(new Label(L"Taskbar：顶部 Slider 会同步设置任务栏进度条（ITaskbarList3）", 10, 40));
+
+	auto btnToggle = page->AddControl(new Button(L"显示/隐藏托盘图标", 10, 80, 180, 30));
+	btnToggle->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->System_OnNotifyToggle(sender, e); };
+
+	auto btnBalloon = page->AddControl(new Button(L"气泡提示", 200, 80, 120, 30));
+	btnBalloon->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->System_OnBalloonTip(sender, e); };
+
+	page->AddControl(new Label(L"提示：右键托盘图标可弹出菜单。", 10, 125));
+}
+
+void DemoWindow_Legacy::BuildTab_Media(TabPage* page)
+{
+	Label* titleLabel = page->AddControl(new Label(L"MediaPlayer（打开后立即播放；含进度条/拖动跳转/时间显示）", 10, 10));
+	titleLabel->ForeColor = Colors::LightGray;
+
+	_media = page->AddControl(new MediaPlayer(10, 40, 1200, 380));
+	_media->Margin = Thickness(10, 40, 10, 140);
+	_media->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
+	_media->AutoPlay = true;
+	_media->Loop = false;
+	MediaPlayer* mp = _media;
+
+	Panel* controlPanel = page->AddControl(new Panel(10, 430, 1200, 110));
+	controlPanel->Margin = Thickness(10, 0, 10, 10);
+	controlPanel->AnchorStyles = AnchorStyles::Left | AnchorStyles::Right | AnchorStyles::Bottom;
+	controlPanel->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
+	controlPanel->BolderColor = D2D1_COLOR_F{ 1,1,1,0.12f };
+
+	auto progressUpdating = std::make_shared<bool>(false);
+
+	Button* btnOpen = controlPanel->AddControl(new Button(L"打开", 10, 10, 80, 30));
+	btnOpen->OnMouseClick += [this](class Control* sender, MouseEventArgs e)
+		{
+			(void)sender;
+			(void)e;
+			if (!_media) return;
 			OpenFileDialog ofd;
 			ofd.Filter = MakeDialogFilterStrring("媒体文件", "*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.mp3;*.wav;*.flac;*.m4a;*.wma;*.aac");
 			ofd.SupportMultiDottedExtensions = true;
 			ofd.Title = "选择媒体文件";
 			if (ofd.ShowDialog(this->Handle) == DialogResult::OK && !ofd.SelectedPaths.empty())
 			{
-				mediaPlayer->Load(Convert::string_to_wstring(ofd.SelectedPaths[0]));
+				std::wstring file = Convert::string_to_wstring(ofd.SelectedPaths[0]);
+				_media->Load(file);
+				_media->Play();
+				Ui_UpdateStatus(L"MediaPlayer: 已打开并播放 " + FileNameFromPath(file));
 			}
-			};
+		};
 
-		// 播放按钮
-		Button* btnPlay = controlPanel->AddControl(new Button(L"▶ 播放", 120, 10, 80, 35));
-		btnPlay->BackColor = D2D1_COLOR_F{ 0.2f, 0.6f, 0.2f, 1.0f };
-		btnPlay->OnMouseClick += [mp](class Control* sender, MouseEventArgs e) {
-			(void)sender; (void)e;
-			mp->Play();
-			};
+	Button* btnPlay = controlPanel->AddControl(new Button(L"播放", 100, 10, 70, 30));
+	btnPlay->OnMouseClick += [mp](class Control* sender, MouseEventArgs e) { (void)sender; (void)e; mp->Play(); };
+	Button* btnPause = controlPanel->AddControl(new Button(L"暂停", 180, 10, 70, 30));
+	btnPause->OnMouseClick += [mp](class Control* sender, MouseEventArgs e) { (void)sender; (void)e; mp->Pause(); };
+	Button* btnStop = controlPanel->AddControl(new Button(L"停止", 260, 10, 70, 30));
+	btnStop->OnMouseClick += [mp](class Control* sender, MouseEventArgs e) { (void)sender; (void)e; mp->Stop(); };
 
-		// 暂停按钮
-		Button* btnPause = controlPanel->AddControl(new Button(L"⏸ 暂停", 210, 10, 80, 35));
-		btnPause->BackColor = D2D1_COLOR_F{ 0.6f, 0.5f, 0.2f, 1.0f };
-		btnPause->OnMouseClick += [mp](class Control* sender, MouseEventArgs e) {
-			(void)sender; (void)e;
-			mp->Pause();
-			};
-
-		// 停止按钮
-		Button* btnStop = controlPanel->AddControl(new Button(L"⏹ 停止", 300, 10, 80, 35));
-		btnStop->BackColor = D2D1_COLOR_F{ 0.6f, 0.2f, 0.2f, 1.0f };
-		btnStop->OnMouseClick += [mp](class Control* sender, MouseEventArgs e) {
-			(void)sender; (void)e;
-			mp->Stop();
-			};
-
-		// 渲染模式下拉框
-		Label* renderModeLabel = controlPanel->AddControl(new Label(L"🖼 模式", 390, 18));
-		renderModeLabel->ForeColor = Colors::White;
-
-		ComboBox* renderModeCombo = controlPanel->AddControl(new ComboBox(L"适应", 450, 12, 100, 30));
-		renderModeCombo->Items.push_back(L"适应");      // Fit
-		renderModeCombo->Items.push_back(L"填充");      // Fill
-		renderModeCombo->Items.push_back(L"拉伸");      // Stretch
-		renderModeCombo->Items.push_back(L"居中");      // Center
-		renderModeCombo->Items.push_back(L"均匀填充"); // UniformToFill
-		renderModeCombo->SelectedIndex = 0; // 默认适应
-		renderModeCombo->OnSelectionChanged += [mp](class Control* sender) {
-			ComboBox* combo = (ComboBox*)sender;
-			switch (combo->SelectedIndex)
-			{
-			case 0: mp->RenderMode = MediaPlayer::VideoRenderMode::Fit; break;
-			case 1: mp->RenderMode = MediaPlayer::VideoRenderMode::Fill; break;
-			case 2: mp->RenderMode = MediaPlayer::VideoRenderMode::Stretch; break;
-			case 3: mp->RenderMode = MediaPlayer::VideoRenderMode::Center; break;
-			case 4: mp->RenderMode = MediaPlayer::VideoRenderMode::UniformToFill; break;
-			}
-			};
-
-		// 循环播放复选框
-		CheckBox* loopCheckBox = controlPanel->AddControl(new CheckBox(L"🔁 循环", 560, 15));
-		loopCheckBox->ForeColor = Colors::White;
-		loopCheckBox->OnChecked += [mp](class Control* sender) {
-			mp->Loop = ((CheckBox*)sender)->Checked;
-			};
-
-		// 音量标签和滑块
-		Label* volumeLabel = controlPanel->AddControl(new Label(L"🔊 音量", 650, 18));
-		volumeLabel->ForeColor = Colors::White;
-
-		Slider* volumeSlider = controlPanel->AddControl(new Slider(710, 15, 120, 30));
-		volumeSlider->Min = 0;
-		volumeSlider->Max = 100;
-		volumeSlider->Value = 80;
-		volumeSlider->OnValueChanged += [mp](class Control* sender, float oldValue, float newValue) {
-			(void)sender; (void)oldValue;
+	controlPanel->AddControl(new Label(L"音量", 340, 16));
+	Slider* volume = controlPanel->AddControl(new Slider(390, 12, 140, 30));
+	volume->Min = 0;
+	volume->Max = 100;
+	volume->Value = 80;
+	volume->OnValueChanged += [mp](class Control* sender, float oldValue, float newValue)
+		{
+			(void)sender;
+			(void)oldValue;
 			mp->Volume = newValue / 100.0;
-			};
-		mp->Volume = 0.8;
+		};
+	mp->Volume = 0.8;
 
-		// 播放速率标签和滑块
-		Label* speedLabel = controlPanel->AddControl(new Label(L"⚡ 速度", 850, 18));
-		speedLabel->ForeColor = Colors::White;
-
-		Slider* speedSlider = controlPanel->AddControl(new Slider(910, 15, 120, 30));
-		speedSlider->Min = 25;
-		speedSlider->Max = 200;
-		speedSlider->Value = 100;
-		speedSlider->OnValueChanged += [mp, speedLabel](class Control* sender, float oldValue, float newValue) {
-			(void)sender; (void)oldValue;
+	controlPanel->AddControl(new Label(L"速度", 540, 16));
+	Slider* speed = controlPanel->AddControl(new Slider(590, 12, 140, 30));
+	speed->Min = 25;
+	speed->Max = 200;
+	speed->Value = 100;
+	speed->OnValueChanged += [mp](class Control* sender, float oldValue, float newValue)
+		{
+			(void)sender;
+			(void)oldValue;
 			mp->PlaybackRate = newValue / 100.0f;
-			speedLabel->Text = StringHelper::Format(L"⚡ 速度 %.1fx", newValue / 100.0f);
-			speedLabel->PostRender();
-			};
+		};
 
-		// 进度条
-		Label* progressLabel = controlPanel->AddControl(new Label(L"⏱ 进度", 10, 55));
-		progressLabel->ForeColor = Colors::White;
+	CheckBox* loop = controlPanel->AddControl(new CheckBox(L"循环", 740, 16));
+	loop->OnChecked += [mp](class Control* sender) { mp->Loop = ((CheckBox*)sender)->Checked; };
 
-		Slider* progressSlider = controlPanel->AddControl(new Slider(60, 52, 1000, 30));
-		progressSlider->Margin = Thickness(60, 0, 120, 0);
-		progressSlider->AnchorStyles = AnchorStyles::Left | AnchorStyles::Right | AnchorStyles::Bottom;
-		progressSlider->Min = 0;
-		progressSlider->Max = 1000;
-		progressSlider->Value = 0;
-		auto progressUpdating = std::make_shared<bool>(false);
-		progressSlider->OnValueChanged += [mp, progressUpdating](class Control* sender, float oldValue, float newValue) {
-			(void)sender; (void)oldValue;
+	Label* progressLabel = controlPanel->AddControl(new Label(L"进度", 10, 62));
+	progressLabel->ForeColor = Colors::LightGray;
+
+	Slider* progressSlider = controlPanel->AddControl(new Slider(60, 58, 900, 30));
+	progressSlider->Min = 0;
+	progressSlider->Max = 1000;
+	progressSlider->Value = 0;
+	progressSlider->AnchorStyles = AnchorStyles::Left | AnchorStyles::Right | AnchorStyles::Bottom;
+
+	Label* timeLabel = controlPanel->AddControl(new Label(L"00:00 / 00:00", 970, 62));
+	timeLabel->ForeColor = Colors::LightGray;
+	timeLabel->AnchorStyles = AnchorStyles::Right | AnchorStyles::Bottom;
+	timeLabel->Width = 200;
+
+	progressSlider->OnValueChanged += [mp, progressUpdating](class Control* sender, float oldValue, float newValue)
+		{
+			(void)sender;
+			(void)oldValue;
 			if (*progressUpdating) return;
-			if (mp->Duration > 0) {
+			if (mp->Duration > 0)
+			{
 				mp->Position = (newValue / 1000.0) * mp->Duration;
 			}
-			};
+		};
 
-		// 状态标签（显示时间和文件信息）
-		Label* statusLabel = controlPanel->AddControl(new Label(L"未加载媒体", 1070, 55));
-		statusLabel->Margin = Thickness(0, 0, 10, 0);
-		statusLabel->AnchorStyles = AnchorStyles::Right | AnchorStyles::Bottom;
-		statusLabel->ForeColor = Colors::LightGray;
-		statusLabel->Width = 150;
-
-		// 订阅媒体播放器事件
-		mediaPlayer->OnMediaOpened += [statusLabel, progressSlider, titleLabel](class Control* sender) {
+	_media->OnMediaOpened += [this, titleLabel, timeLabel, progressSlider, progressUpdating](class Control* sender)
+		{
 			MediaPlayer* player = (MediaPlayer*)sender;
-
-			// 提取文件名
-			std::wstring filePath = player->MediaFile;
-			size_t pos = filePath.find_last_of(L"\\/");
-			std::wstring fileName = (pos != std::wstring::npos) ? filePath.substr(pos + 1) : filePath;
-
-			// 更新标题
-			std::wstring info = StringHelper::Format(L"媒体播放器 - %ws [%dx%d]",
-				fileName.c_str(),
-				player->VideoSize.cx,
-				player->VideoSize.cy);
-			titleLabel->Text = info;
+			std::wstring fileName = FileNameFromPath(player->MediaFile);
+			titleLabel->Text = StringHelper::Format(L"MediaPlayer - %s", fileName.c_str());
 			titleLabel->PostRender();
+			*progressUpdating = true;
+			progressSlider->Value = 0;
+			*progressUpdating = false;
+			int total = (int)player->Duration;
+			timeLabel->Text = StringHelper::Format(L"00:00 / %02d:%02d", total / 60, total % 60);
+			timeLabel->PostRender();
+			Ui_UpdateStatus(L"MediaPlayer: MediaOpened");
+		};
 
-			// 更新状态
-			std::wstring status = StringHelper::Format(L"总时长: %d:%02d",
-				(int)player->Duration / 60,
-				(int)player->Duration % 60);
-			statusLabel->Text = status;
-			statusLabel->PostRender();
-			};
-
-		mediaPlayer->OnMediaEnded += [statusLabel](class Control* sender) {
+	_media->OnMediaEnded += [timeLabel, this](class Control* sender)
+		{
 			(void)sender;
-			statusLabel->Text = L"播放结束";
-			statusLabel->PostRender();
-			};
+			timeLabel->Text = L"播放结束";
+			timeLabel->PostRender();
+			Ui_UpdateStatus(L"MediaPlayer: Ended");
+		};
 
-		mediaPlayer->OnPositionChanged += [statusLabel, progressSlider, progressUpdating](class Control* sender, double position) {
+	_media->OnMediaFailed += [timeLabel, titleLabel, this](class Control* sender)
+		{
+			(void)sender;
+			titleLabel->Text = L"MediaPlayer - 加载失败";
+			titleLabel->PostRender();
+			timeLabel->Text = L"加载失败";
+			timeLabel->PostRender();
+			Ui_UpdateStatus(L"MediaPlayer: Failed");
+		};
+
+	_media->OnPositionChanged += [timeLabel, progressSlider, progressUpdating](class Control* sender, double position)
+		{
 			MediaPlayer* player = (MediaPlayer*)sender;
-
-			// 格式化时间显示
-			int currentMin = (int)position / 60;
-			int currentSec = (int)position % 60;
-			int totalMin = (int)player->Duration / 60;
-			int totalSec = (int)player->Duration % 60;
-
-			std::wstring status = StringHelper::Format(L"%d:%02d / %d:%02d",
-				currentMin, currentSec, totalMin, totalSec);
-			statusLabel->Text = status;
-			statusLabel->PostRender();
-
-			// 更新进度条
-			if (player->Duration > 0) {
+			int cur = (int)position;
+			int total = (int)player->Duration;
+			if (total < 0) total = 0;
+			timeLabel->Text = StringHelper::Format(L"%02d:%02d / %02d:%02d", cur / 60, cur % 60, total / 60, total % 60);
+			timeLabel->PostRender();
+			if (player->Duration > 0)
+			{
 				*progressUpdating = true;
 				progressSlider->Value = (float)(position / player->Duration * 1000.0);
 				*progressUpdating = false;
 			}
-			};
+		};
+}
 
-		mediaPlayer->OnMediaFailed += [statusLabel, titleLabel](class Control* sender) {
-			(void)sender;
-			statusLabel->Text = L"加载失败";
-			statusLabel->PostRender();
-			titleLabel->Text = L"媒体播放器 - 加载失败，请检查文件格式";
-			titleLabel->PostRender();
-			};
-	}
+DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
+{
+	_bmps[0] = ToBitmapFromSvg(this->Render, _0_ico);
+	_bmps[1] = ToBitmapFromSvg(this->Render, _1_ico);
+	_bmps[2] = ToBitmapFromSvg(this->Render, _2_ico);
+	_bmps[3] = ToBitmapFromSvg(this->Render, _3_ico);
+	_bmps[4] = ToBitmapFromSvg(this->Render, _4_ico);
+	_bmps[5] = ToBitmapFromSvg(this->Render, _5_ico);
+	_bmps[6] = ToBitmapFromSvg(this->Render, _6_ico);
+	_bmps[7] = ToBitmapFromSvg(this->Render, _7_ico);
+	_bmps[8] = ToBitmapFromSvg(this->Render, _8_ico);
+	_bmps[9] = ToBitmapFromSvg(this->Render, _9_ico);
+	_icons[0] = ToBitmapFromSvg(this->Render, icon0);
+	_icons[1] = ToBitmapFromSvg(this->Render, icon1);
+	_icons[2] = ToBitmapFromSvg(this->Render, icon2);
+	_icons[3] = ToBitmapFromSvg(this->Render, icon3);
+	_icons[4] = ToBitmapFromSvg(this->Render, icon4);
+
+	_taskbar = new Taskbar(this->Handle);
+	_notify = new NotifyIcon();
+	_notify->InitNotifyIcon(this->Handle, 1);
+	_notify->SetIcon(LoadIcon(NULL, IDI_APPLICATION));
+	_notify->SetToolTip("CUI Demo");
+	_notify->ClearMenu();
+	_notify->AddMenuItem(NotifyIconMenuItem("Show Window", 1));
+	_notify->AddMenuSeparator();
+	_notify->AddMenuItem(NotifyIconMenuItem("Exit", 3));
+	_notify->OnNotifyIconMenuClick += [&](NotifyIcon* sender, int menuId)
+		{
+			switch (menuId)
+			{
+			case 1:
+				ShowWindow(sender->hWnd, SW_SHOWNORMAL);
+				break;
+			case 3:
+				PostMessage(sender->hWnd, WM_CLOSE, 0, 0);
+				break;
+			}
+		};
+	_notify->ShowNotifyIcon();
+	_notifyVisible = true;
+
+	BuildMenuToolStatus();
+	BuildTabs();
 
 	this->BackColor = Colors::grey31;
 	this->SizeMode = ImageSizeMode::StretchIamge;
 
-	this->OnSizeChanged += [&](class Form* sender) {
-		(void)sender;
-		if (this->menu1) this->menu1->Width = this->Size.cx;
-		if (this->toolbar1) {
-			this->toolbar1->Width = this->Size.cx;
-			this->toolbar1->Top = this->menu1 ? this->menu1->Height : 0;
-		}
-		if (this->statusbar1) {
-			this->statusbar1->Width = this->Size.cx;
-			this->statusbar1->Top = this->Size.cy - this->HeadHeight - this->statusbar1->Height;
-		}
+	this->OnSizeChanged += [&](class Form* sender)
+		{
+			(void)sender;
+			if (_menu) _menu->Width = this->Size.cx;
+			if (_toolbar)
+			{
+				_toolbar->Width = this->Size.cx;
+				_toolbar->Top = _menu ? _menu->Height : 0;
+			}
+			if (_statusbar)
+			{
+				_statusbar->Width = this->Size.cx;
+				_statusbar->Top = this->Size.cy - this->HeadHeight - _statusbar->Height;
+			}
 		};
 }
-
-NotifyIcon* TestNotifyIcon(HWND handle)
-{
-	NotifyIcon* notifyIcon = new NotifyIcon();
-	notifyIcon->InitNotifyIcon(handle, 1);
-	notifyIcon->SetIcon(LoadIcon(NULL, IDI_APPLICATION));
-	notifyIcon->SetToolTip(Convert::Utf8ToAnsi("应用程序").c_str());
-	notifyIcon->ShowNotifyIcon();
-
-	notifyIcon->AddMenuItem(NotifyIconMenuItem(Convert::Utf8ToAnsi("打开主窗口").c_str(), 1));
-
-
-	NotifyIconMenuItem settingsMenu(Convert::Utf8ToAnsi("设置").c_str(), 2);
-	settingsMenu.AddSubItem(NotifyIconMenuItem(Convert::Utf8ToAnsi("音频设置").c_str(), 21));
-	settingsMenu.AddSubItem(NotifyIconMenuItem(Convert::Utf8ToAnsi("显示设置").c_str(), 22));
-	settingsMenu.AddSubItem(NotifyIconMenuItem::CreateSeparator());
-	settingsMenu.AddSubItem(NotifyIconMenuItem(Convert::Utf8ToAnsi("高级设置").c_str(), 23));
-
-	notifyIcon->AddMenuItem(settingsMenu);
-
-	notifyIcon->AddMenuSeparator();
-	notifyIcon->AddMenuItem(NotifyIconMenuItem(Convert::Utf8ToAnsi("退出").c_str(), 3));
-
-
-	notifyIcon->OnNotifyIconMenuClick += [&](NotifyIcon* sender, int menuId) {
-		switch (menuId) {
-		case 1:
-			ShowWindow(sender->hWnd, SW_SHOWNORMAL);
-			break;
-		case 21:
-			break;
-		case 22:
-			break;
-		case 23:
-			break;
-		case 3:
-			PostMessage(sender->hWnd, WM_CLOSE, 0, 0);
-			break;
-		}
-		};
-
-	return notifyIcon;
-}
-/*
-sample:
-#pragma comment(linker, "/subsystem:\"windows\" /entry:\"mainCRTStartup\"")
-int main() {
-	auto form = DemoWindow_Legacy();
-	form.Show();
-	NotifyIcon* notifyIcon = TestNotifyIcon(form.Handle);
-	int index = 0;
-	while (1) {
-		Form::DoEvent();
-		if (Application::Forms.size() == 0)
-			break;
-	}
-	notifyIcon->HideNotifyIcon();
-	return 0;
-}
-*/

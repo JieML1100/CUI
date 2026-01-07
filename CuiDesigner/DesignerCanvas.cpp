@@ -1,33 +1,33 @@
 #include "DesignerCanvas.h"
 #include <CppUtils/Utils/json.h>
 #include <CppUtils/Utils/Convert.h>
-#include "../CUI/GUI/Label.h"
-#include "../CUI/GUI/Button.h"
-#include "../CUI/GUI/TextBox.h"
-#include "../CUI/GUI/CheckBox.h"
-#include "../CUI/GUI/RadioBox.h"
-#include "../CUI/GUI/ComboBox.h"
-#include "../CUI/GUI/ProgressBar.h"
-#include "../CUI/GUI/Slider.h"
-#include "../CUI/GUI/PictureBox.h"
-#include "../CUI/GUI/Switch.h"
-#include "../CUI/GUI/RichTextBox.h"
-#include "../CUI/GUI/PasswordBox.h"
-#include "../CUI/GUI/RoundTextBox.h"
-#include "../CUI/GUI/GridView.h"
-#include "../CUI/GUI/TreeView.h"
-#include "../CUI/GUI/TabControl.h"
-#include "../CUI/GUI/ToolBar.h"
-#include "../CUI/GUI/Menu.h"
-#include "../CUI/GUI/StatusBar.h"
-#include "../CUI/GUI/WebBrowser.h"
-#include "../CUI/GUI/MediaPlayer.h"
-#include "../CUI/GUI/Layout/StackPanel.h"
-#include "../CUI/GUI/Layout/GridPanel.h"
-#include "../CUI/GUI/Layout/DockPanel.h"
-#include "../CUI/GUI/Layout/WrapPanel.h"
-#include "../CUI/GUI/Layout/RelativePanel.h"
-#include "../CUI/GUI/Form.h"
+#include "FakeWebBrowser.h"
+#include "../CUI_Legacy/GUI/Label.h"
+#include "../CUI_Legacy/GUI/Button.h"
+#include "../CUI_Legacy/GUI/TextBox.h"
+#include "../CUI_Legacy/GUI/CheckBox.h"
+#include "../CUI_Legacy/GUI/RadioBox.h"
+#include "../CUI_Legacy/GUI/ComboBox.h"
+#include "../CUI_Legacy/GUI/ProgressBar.h"
+#include "../CUI_Legacy/GUI/Slider.h"
+#include "../CUI_Legacy/GUI/PictureBox.h"
+#include "../CUI_Legacy/GUI/Switch.h"
+#include "../CUI_Legacy/GUI/RichTextBox.h"
+#include "../CUI_Legacy/GUI/PasswordBox.h"
+#include "../CUI_Legacy/GUI/RoundTextBox.h"
+#include "../CUI_Legacy/GUI/GridView.h"
+#include "../CUI_Legacy/GUI/TreeView.h"
+#include "../CUI_Legacy/GUI/TabControl.h"
+#include "../CUI_Legacy/GUI/ToolBar.h"
+#include "../CUI_Legacy/GUI/Menu.h"
+#include "../CUI_Legacy/GUI/StatusBar.h"
+#include "../CUI_Legacy/GUI/MediaPlayer.h"
+#include "../CUI_Legacy/GUI/Layout/StackPanel.h"
+#include "../CUI_Legacy/GUI/Layout/GridPanel.h"
+#include "../CUI_Legacy/GUI/Layout/DockPanel.h"
+#include "../CUI_Legacy/GUI/Layout/WrapPanel.h"
+#include "../CUI_Legacy/GUI/Layout/RelativePanel.h"
+#include "../CUI_Legacy/GUI/Form.h"
 #include <windowsx.h>
 #include <algorithm>
 #include <cmath>
@@ -1152,7 +1152,7 @@ RECT DesignerCanvas::ClampRectToBounds(RECT r, const RECT& bounds, bool keepSize
 bool DesignerCanvas::TryHandleTabHeaderClick(POINT ptCanvas)
 {
 	// DesignerCanvas 自己处理选中/拖拽，导致 TabControl 无法收到点击切页。
-	// 这里在画布层模拟 TabControl 标题栏点击，设置 SelectIndex。
+	// 这里在画布层模拟 TabControl 标题栏点击，设置 SelectedIndex。
 	TabControl* bestTc = nullptr;
 	std::shared_ptr<DesignerControl> bestDc = nullptr;
 	int bestArea = INT_MAX;
@@ -1186,14 +1186,14 @@ bool DesignerCanvas::TryHandleTabHeaderClick(POINT ptCanvas)
 	if (idx < 0) idx = 0;
 	if (idx >= bestTc->Count) idx = bestTc->Count - 1;
 
-	int oldIdx = bestTc->SelectIndex;
-	bestTc->SelectIndex = idx;
+	int oldIdx = bestTc->SelectedIndex;
+	bestTc->SelectedIndex = idx;
 	for (int i = 0; i < bestTc->Count; i++)
 	{
 		auto* page = bestTc->operator[](i);
 		if (!page) continue;
-		page->Visible = (i == bestTc->SelectIndex);
-		if (i == bestTc->SelectIndex)
+		page->Visible = (i == bestTc->SelectedIndex);
+		if (i == bestTc->SelectedIndex)
 		{
 			page->Location = POINT{ 0,(int)bestTc->TitleHeight };
 			SIZE s = bestTc->Size;
@@ -1483,9 +1483,9 @@ Control* DesignerCanvas::NormalizeContainerForDrop(Control* container)
 			tc->AddPage(L"Page 1");
 		}
 		if (tc->Count <= 0) return tc;
-		if (tc->SelectIndex < 0) tc->SelectIndex = 0;
-		if (tc->SelectIndex >= tc->Count) tc->SelectIndex = tc->Count - 1;
-		return tc->operator[](tc->SelectIndex);
+		if (tc->SelectedIndex < 0) tc->SelectedIndex = 0;
+		if (tc->SelectedIndex >= tc->Count) tc->SelectedIndex = tc->Count - 1;
+		return tc->operator[](tc->SelectedIndex);
 	}
 	return container;
 }
@@ -2292,7 +2292,7 @@ void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
 		break;
 	}
 	case UIClass::UI_WebBrowser:
-		newControl = new WebBrowser(centerX, centerY, 500, 360);
+		newControl = new FakeWebBrowser(centerX, centerY, 500, 360);
 		typeName = L"WebBrowser";
 		break;
 	case UIClass::UI_MediaPlayer:
@@ -3337,7 +3337,7 @@ bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* 
 			else if (dc->Type == UIClass::UI_TabControl)
 			{
 				auto* tc = (TabControl*)c;
-				extra["selectIndex"] = tc->SelectIndex;
+				extra["selectedIndex"] = tc->SelectedIndex;
 				extra["titleHeight"] = tc->TitleHeight;
 				extra["titleWidth"] = tc->TitleWidth;
 				Json pages = Json::array();
@@ -3677,7 +3677,7 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 			case UIClass::UI_ToolBar: return new ToolBar(0, 0, 360, 34);
 			case UIClass::UI_Menu: return new Menu(0, 0, 600, 28);
 			case UIClass::UI_StatusBar: return new StatusBar(0, 0, 600, 26);
-			case UIClass::UI_WebBrowser: return new WebBrowser(0, 0, 500, 360);
+			case UIClass::UI_WebBrowser: return new FakeWebBrowser(0, 0, 500, 360);
 			case UIClass::UI_MediaPlayer: return new MediaPlayer(0, 0, 640, 360);
 			default: return nullptr;
 			}
@@ -3825,7 +3825,7 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 				else if (it.type == UIClass::UI_TabControl)
 				{
 					auto* tc = (TabControl*)c;
-					tc->SelectIndex = it.extra.value("selectIndex", tc->SelectIndex);
+					tc->SelectedIndex = it.extra.value("selectedIndex", tc->SelectedIndex);
 					tc->TitleHeight = it.extra.value("titleHeight", tc->TitleHeight);
 					tc->TitleWidth = it.extra.value("titleWidth", tc->TitleWidth);
 					if (it.extra.contains("pages") && it.extra["pages"].is_array())

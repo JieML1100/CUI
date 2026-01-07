@@ -9,24 +9,24 @@
 #include <map>
 
 // 生成时需要访问具体控件类型的公开字段/方法
-#include "../CUI/GUI/ComboBox.h"
-#include "../CUI/GUI/GridView.h"
-#include "../CUI/GUI/TabControl.h"
-#include "../CUI/GUI/ToolBar.h"
-#include "../CUI/GUI/Button.h"
-#include "../CUI/GUI/ProgressBar.h"
-#include "../CUI/GUI/Slider.h"
-#include "../CUI/GUI/PictureBox.h"
-#include "../CUI/GUI/TreeView.h"
-#include "../CUI/GUI/Menu.h"
-#include "../CUI/GUI/StatusBar.h"
-#include "../CUI/GUI/MediaPlayer.h"
+#include "../CUI_Legacy/GUI/ComboBox.h"
+#include "../CUI_Legacy/GUI/GridView.h"
+#include "../CUI_Legacy/GUI/TabControl.h"
+#include "../CUI_Legacy/GUI/ToolBar.h"
+#include "../CUI_Legacy/GUI/Button.h"
+#include "../CUI_Legacy/GUI/ProgressBar.h"
+#include "../CUI_Legacy/GUI/Slider.h"
+#include "../CUI_Legacy/GUI/PictureBox.h"
+#include "../CUI_Legacy/GUI/TreeView.h"
+#include "../CUI_Legacy/GUI/Menu.h"
+#include "../CUI_Legacy/GUI/StatusBar.h"
+#include "../CUI_Legacy/GUI/MediaPlayer.h"
 
-#include "../CUI/GUI/Layout/GridPanel.h"
-#include "../CUI/GUI/Layout/StackPanel.h"
-#include "../CUI/GUI/Layout/DockPanel.h"
-#include "../CUI/GUI/Layout/WrapPanel.h"
-#include "../CUI/GUI/Layout/RelativePanel.h"
+#include "../CUI_Legacy/GUI/Layout/GridPanel.h"
+#include "../CUI_Legacy/GUI/Layout/StackPanel.h"
+#include "../CUI_Legacy/GUI/Layout/DockPanel.h"
+#include "../CUI_Legacy/GUI/Layout/WrapPanel.h"
+#include "../CUI_Legacy/GUI/Layout/RelativePanel.h"
 
 static bool IsLayoutContainerType(UIClass t)
 {
@@ -832,7 +832,7 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	if (dc->Type == UIClass::UI_TabControl)
 	{
 		auto* tc = (TabControl*)ctrl;
-		code << indentStr << name << "->SelectIndex = " << tc->SelectIndex << ";\n";
+		code << indentStr << name << "->SelectedIndex = " << tc->SelectedIndex << ";\n";
 	}
 
 	// ToolBar 基本参数

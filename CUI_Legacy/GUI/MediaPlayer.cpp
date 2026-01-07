@@ -2485,34 +2485,6 @@ void MediaPlayer::Update()
 			}
 		}
 	}
-
-	// 文字提示（无视频/无帧）
-	std::wstring statusText;
-	if (_mediaLoaded)
-	{
-		switch (_playState)
-		{
-		case PlayState::Playing: statusText = _hasVideo ? L"播放中（等待视频帧）" : L"播放中"; break;
-		case PlayState::Paused: statusText = L"已暂停"; break;
-		case PlayState::Stopped: statusText = L"已停止"; break;
-		}
-	}
-	else
-	{
-		statusText = L"拖放媒体文件到此处";
-	}
-
-	auto font = this->Font;
-	if (!font) font = GetDefaultFontObject();
-	auto textLayout = d2d->CreateStringLayout(statusText, size.cx, size.cy, font);
-	if (textLayout)
-	{
-		auto textSize = D2DGraphics::GetTextLayoutSize(textLayout);
-		float textX = abs.x + (size.cx - textSize.width) * 0.5f;
-		float textY = abs.y + (size.cy - textSize.height) * 0.5f;
-		d2d->DrawStringLayout(textLayout, textX, textY, this->ForeColor);
-		textLayout->Release();
-	}
 }
 
 bool MediaPlayer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)

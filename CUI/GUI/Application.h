@@ -12,7 +12,6 @@
  *
  * 该类不负责窗口渲染本身，而是提供：
  * - 窗口(Form)注册表
- * - 设计器模式开关
  * - 路径/应用名获取
  * - 用户数据目录与注册表键
  */
@@ -26,19 +25,6 @@ public:
 	 * 注意：指针所有权不属于该容器（仅用于查找/分发）。
 	 */
 	static Dictionary<HWND, class Form*> Forms;
-	/**
-	 * @brief 设计器模式：用于在设计时禁用一些会产生副作用的真实组件（例如 WebView2）。
-	 */
-	static bool DesignMode;
-	/**
-	 * @brief 设置设计器模式。
-	 * @param value true 表示启用设计器模式。
-	 */
-	static void SetDesignMode(bool value);
-	/**
-	 * @brief 获取是否处于设计器模式。
-	 */
-	static bool IsDesignMode();
 	/**
 	 * @brief 返回当前可执行文件完整路径。
 	 */

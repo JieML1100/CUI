@@ -196,8 +196,8 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 			_target->operator[](i)->Text = titles[i];
 		}
 
-		if (_target->SelectIndex < 0) _target->SelectIndex = 0;
-		if (_target->SelectIndex >= _target->Count) _target->SelectIndex = _target->Count - 1;
+		if (_target->SelectedIndex < 0) _target->SelectedIndex = 0;
+		if (_target->SelectedIndex >= _target->Count) _target->SelectedIndex = _target->Count - 1;
 
 		Applied = true;
 		_target->PostRender();

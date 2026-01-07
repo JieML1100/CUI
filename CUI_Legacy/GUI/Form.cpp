@@ -2309,6 +2309,15 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 					if (form->HitTestCaptionButtons(ptClient, k))
 						return HTCLIENT;
 				}
+				if (IsZoomed(hWnd))
+				{
+					// 最大化状态下禁止鼠标拖拽边缘/角落调整窗口大小
+					if (lr == HTLEFT || lr == HTRIGHT || lr == HTTOP || lr == HTBOTTOM ||
+						lr == HTTOPLEFT || lr == HTTOPRIGHT || lr == HTBOTTOMLEFT || lr == HTBOTTOMRIGHT)
+					{
+						return HTCLIENT;
+					}
+				}
 				if (!form->AllowResize)
 				{
 					// 禁用边缘/角落 resize，只保留标题栏拖动与正常客户区

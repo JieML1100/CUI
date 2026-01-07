@@ -4,10 +4,10 @@
  * @file GridViewColumnsEditorDialog.h
  * @brief GridViewColumnsEditorDialog：编辑 GridView 列配置的对话框。
  */
-#include "../CUI/GUI/Form.h"
-#include "../CUI/GUI/Label.h"
-#include "../CUI/GUI/Button.h"
-#include "../CUI/GUI/GridView.h"
+#include "../CUI_Legacy/GUI/Form.h"
+#include "../CUI_Legacy/GUI/Label.h"
+#include "../CUI_Legacy/GUI/Button.h"
+#include "../CUI_Legacy/GUI/GridView.h"
 
 class GridViewColumnsEditorDialog : public Form
 {

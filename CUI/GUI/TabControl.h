@@ -22,8 +22,8 @@ public:
 /**
  * @brief TabControl：带标题栏的分页容器。
  *
- * - SelectIndex 为当前选中页索引（0-based）
- * - Update 内会根据 SelectIndex 维护各页 Visible，并绘制标题栏
+ * - SelectedIndex 为当前选中页索引（0-based）
+ * - Update 内会根据 SelectedIndex 维护各页 Visible，并绘制标题栏
  * - 为兼容 WebBrowser 等“原生子窗口控件”，切换页时会触发一次同步（见 TabControl.cpp）
  */
 class TabControl : public Control
@@ -33,7 +33,7 @@ public:
 	D2D1_COLOR_F TitleBackColor = Colors::LightYellow3;
 	D2D1_COLOR_F SelectedTitleBackColor = Colors::LightYellow1;
 	/** @brief 当前选中页索引（0-based）。 */
-	int SelectIndex = 0;
+	int SelectedIndex = 0;
 	/** @brief 标题栏高度（像素）。 */
 	int TitleHeight = 24;
 	/** @brief 单个标题宽度（像素）。 */

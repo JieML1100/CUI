@@ -136,7 +136,6 @@ static std::wstring JsonUnquote(const std::wstring& json)
 
 void WebBrowser::EnsureInitialized()
 {
-	if (Application::IsDesignMode()) return;
 	if (_initialized) return;
 	if (!this->ParentForm || !this->ParentForm->Handle) return;
 
@@ -373,20 +372,6 @@ void WebBrowser::EnsureControllerBounds()
 
 void WebBrowser::Update()
 {
-	// 设计器中不创建真实 WebView2，避免生成 "<exe>.WebView2" 目录。
-	// 仅绘制黑色占位矩形即可。
-	if (Application::IsDesignMode())
-	{
-		// 注意：TabControl 为了同步原生控件显示/隐藏，会对所有页递归调用 WebBrowser::Update()
-		//（包括当前不可见的页）。设计模式下必须尊重 IsVisual，否则隐藏页也会被绘制出来。
-		if (!this->IsVisual || !this->Visible) return;
-		if (!this->ParentForm || !this->ParentForm->Render) return;
-		auto abs = this->AbsLocation;
-		auto sz = this->ActualSize();
-		this->ParentForm->Render->FillRect((float)abs.x, (float)abs.y, (float)sz.cx, (float)sz.cy, Colors::Black);
-		return;
-	}
-
 	EnsureInitialized();
 	EnsureControllerBounds();
 

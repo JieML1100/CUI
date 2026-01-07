@@ -4,11 +4,11 @@
  * @file TreeViewNodesEditorDialog.h
  * @brief TreeViewNodesEditorDialog：编辑 TreeView 节点树的对话框。
  */
-#include "../CUI/GUI/Form.h"
-#include "../CUI/GUI/Label.h"
-#include "../CUI/GUI/RichTextBox.h"
-#include "../CUI/GUI/Button.h"
-#include "../CUI/GUI/TreeView.h"
+#include "../CUI_Legacy/GUI/Form.h"
+#include "../CUI_Legacy/GUI/Label.h"
+#include "../CUI_Legacy/GUI/RichTextBox.h"
+#include "../CUI_Legacy/GUI/Button.h"
+#include "../CUI_Legacy/GUI/TreeView.h"
 
 class TreeViewNodesEditorDialog : public Form
 {

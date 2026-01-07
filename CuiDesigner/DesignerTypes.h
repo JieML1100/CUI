@@ -4,7 +4,7 @@
  * @file DesignerTypes.h
  * @brief 设计器数据模型与辅助类型定义（控件树、属性、布局等）。
  */
-#include "../CUI/GUI/Control.h"
+#include "../CUI_Legacy/GUI/Control.h"
 #include <string>
 #include <map>
 #include <unordered_map>

@@ -4,7 +4,7 @@
  * @file DesignerCanvas.h
  * @brief DesignerCanvas：设计器画布与控件选中/拖拽交互实现。
  */
-#include "../CUI/GUI/Panel.h"
+#include "../CUI_Legacy/GUI/Panel.h"
 #include "DesignerTypes.h"
 #include <vector>
 #include <memory>

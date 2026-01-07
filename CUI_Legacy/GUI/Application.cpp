@@ -82,18 +82,6 @@ namespace
 }
 Dictionary<HWND, class Form*>  Application::Forms = Dictionary<HWND, class Form*>();
 
-bool Application::DesignMode = false;
-
-void Application::SetDesignMode(bool value)
-{
-	DesignMode = value;
-}
-
-bool Application::IsDesignMode()
-{
-	return DesignMode;
-}
-
 std::string Application::ExecutablePath()
 {
 	char path[MAX_PATH];

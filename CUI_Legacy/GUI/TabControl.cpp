@@ -56,7 +56,7 @@ TabPage* TabControl::AddPage(std::wstring name)
 	}
 	for (int i = 0; i < this->Count; i++)
 	{
-		this->operator[](i)->Visible = (this->SelectIndex == i);
+		this->operator[](i)->Visible = (this->SelectedIndex == i);
 	}
 	// 新增页后也同步一次原生子窗口（避免被隐藏页“遗留显示”）
 	SyncNativeChildWindowsForAllPages(this);
@@ -90,19 +90,19 @@ void TabControl::Update()
 		
 		if (this->Count > 0)
 		{
-			if (this->SelectIndex < 0)this->SelectIndex = 0;
-			if (this->SelectIndex >= this->Count)this->SelectIndex = this->Count - 1;
+			if (this->SelectedIndex < 0)this->SelectedIndex = 0;
+			if (this->SelectedIndex >= this->Count)this->SelectedIndex = this->Count - 1;
 
 			for (int i = 0; i < this->Count; i++)
 			{
-				this->operator[](i)->Visible = this->SelectIndex == i;
+				this->operator[](i)->Visible = this->SelectedIndex == i;
 				auto textsize = font->GetTextSize(this->operator[](i)->Text);
 				float lf = (TitleWidth - textsize.width) / 2.0f;
 				if (lf < 0)lf = 0;
 				float tf = (TitleHeight - textsize.height) / 2.0f;
 				if (tf < 0)tf = 0;
 				d2d->PushDrawRect(abslocation.x + (TitleWidth * i), abslocation.y, TitleWidth, TitleHeight);
-				if (i == this->SelectIndex)
+				if (i == this->SelectedIndex)
 					d2d->FillRect(abslocation.x + (TitleWidth * i), abslocation.y, TitleWidth, TitleHeight, this->SelectedTitleBackColor);
 				else
 					d2d->FillRect(abslocation.x + (TitleWidth * i), abslocation.y, TitleWidth, TitleHeight, this->TitleBackColor);
@@ -110,7 +110,7 @@ void TabControl::Update()
 				d2d->DrawRect(abslocation.x + (TitleWidth * i), abslocation.y, TitleWidth, TitleHeight, this->BolderColor, this->Boder);
 				d2d->PopDrawRect();
 			}
-			TabPage* page = (TabPage*)this->operator[](this->SelectIndex);
+			TabPage* page = (TabPage*)this->operator[](this->SelectedIndex);
 			page->Location = POINT{ 0,(int)this->TitleHeight };
 			{
 				SIZE s = this->Size;
@@ -119,10 +119,10 @@ void TabControl::Update()
 			}
 			page->Update();
 
-			if (this->_lastSelectIndex != this->SelectIndex)
+			if (this->_lastSelectIndex != this->SelectedIndex)
 			{
 				SyncNativeChildWindowsForAllPages(this);
-				this->_lastSelectIndex = this->SelectIndex;
+				this->_lastSelectIndex = this->SelectedIndex;
 			}
 		}
 		d2d->DrawRect(abslocation.x, abslocation.y + this->TitleHeight, size.cx, size.cy - this->TitleHeight, this->BolderColor, this->Boder);
@@ -148,9 +148,9 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 
 	if (this->Count > 0)
 	{
-		if (this->SelectIndex < 0)this->SelectIndex = 0;
-		if (this->SelectIndex >= this->Count)this->SelectIndex = this->Count - 1;
-		TabPage* page = (TabPage*)this->operator[](this->SelectIndex);
+		if (this->SelectedIndex < 0)this->SelectedIndex = 0;
+		if (this->SelectedIndex >= this->Count)this->SelectedIndex = this->Count - 1;
+		TabPage* page = (TabPage*)this->operator[](this->SelectedIndex);
 
 		// 先处理标题栏点击（切换页）：
 		if (message == WM_LBUTTONDOWN && yof < this->TitleHeight)
@@ -158,19 +158,19 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 			if (xof < (this->Count * this->TitleWidth))
 			{
 				int newSelected = xof / this->TitleWidth;
-				if (this->SelectIndex != newSelected)
+				if (this->SelectedIndex != newSelected)
 				{
-					this->SelectIndex = newSelected;
+					this->SelectedIndex = newSelected;
 					this->OnSelectedChanged(this);
 				}
 				for (int i = 0; i < this->Count; i++)
 				{
-					this->operator[](i)->Visible = (i == this->SelectIndex);
+					this->operator[](i)->Visible = (i == this->SelectedIndex);
 				}
 
 				// 同步隐藏页的 WebBrowser 之类的原生子窗口
 				SyncNativeChildWindowsForAllPages(this);
-				this->_lastSelectIndex = this->SelectIndex;
+				this->_lastSelectIndex = this->SelectedIndex;
 
 				this->_capturedChild = NULL;
 				if (GetCapture() == this->ParentForm->Handle)

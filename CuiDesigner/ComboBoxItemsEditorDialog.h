@@ -4,11 +4,11 @@
  * @file ComboBoxItemsEditorDialog.h
  * @brief ComboBoxItemsEditorDialog：编辑 ComboBox 下拉项的对话框。
  */
-#include "../CUI/GUI/Form.h"
-#include "../CUI/GUI/Label.h"
-#include "../CUI/GUI/Button.h"
-#include "../CUI/GUI/ComboBox.h"
-#include "../CUI/GUI/GridView.h"
+#include "../CUI_Legacy/GUI/Form.h"
+#include "../CUI_Legacy/GUI/Label.h"
+#include "../CUI_Legacy/GUI/Button.h"
+#include "../CUI_Legacy/GUI/ComboBox.h"
+#include "../CUI_Legacy/GUI/GridView.h"
 
 class ComboBoxItemsEditorDialog : public Form
 {

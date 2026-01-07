@@ -4,8 +4,8 @@
  * @file ToolBox.h
  * @brief ToolBox：设计器工具箱（控件类型选择）。
  */
-#include "../CUI/GUI/Panel.h"
-#include "../CUI/GUI/Button.h"
+#include "../CUI_Legacy/GUI/Panel.h"
+#include "../CUI_Legacy/GUI/Button.h"
 #include "DesignerTypes.h"
 #include <functional>
 
