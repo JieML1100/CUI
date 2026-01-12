@@ -691,7 +691,94 @@ void DemoWindow::BuildTab_Web(TabPage* page)
 	_web = page->AddControl(new WebBrowser(10, 40, 1200, 420));
 	_web->Margin = Thickness(10, 40, 10, 10);
 	_web->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
-	_web->Navigate(L"https://www.bing.com");
+
+	// JS -> C++: window.CUI.invoke(name, payload)
+	_web->RegisterJsInvokeHandler(L"native.echo", [](const std::wstring& payload) {
+		return L"echo: " + payload;
+		});
+	_web->RegisterJsInvokeHandler(L"native.time", [](const std::wstring& payload) {
+		(void)payload;
+		SYSTEMTIME st{};
+		GetLocalTime(&st);
+		return StringHelper::Format(L"%04d-%02d-%02d %02d:%02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+		});
+
+	std::wstring html =
+		L"<!doctype html>"
+		L"<html><head><meta charset='utf-8'/>"
+		L"<style>body{font-family:Segoe UI,Arial; padding:14px;}"
+		L"button{padding:8px 12px; margin-right:8px;}"
+		L".box{margin-top:10px; padding:10px; background:#f4f4f4; border-radius:6px;}"
+		L"code{background:#eee; padding:2px 4px; border-radius:4px;}"
+		L"</style></head><body>"
+		L"<h3>CUI WebBrowser 互操作示例</h3>"
+		L"<div>JS 调用 C++：<code>await window.CUI.invoke('native.time','')</code></div>"
+		L"<div style='margin-top:8px;'>"
+		L"  <button id='btnTime'>获取时间（JS->C++）</button>"
+		L"  <button id='btnEcho'>回声（JS->C++）</button>"
+		L"</div>"
+		L"<div class='box'>输出：<span id='out'>(none)</span></div>"
+		L"<div class='box'>C++ 调用 JS：<span id='fromNative'>(none)</span></div>"
+		L"<script>"
+		L"window.setFromNative=function(text){ document.getElementById('fromNative').textContent=String(text); return 'ok'; };"
+		L"document.getElementById('btnTime').onclick=async function(){"
+		L"  try{ const r = await window.CUI.invoke('native.time',''); document.getElementById('out').textContent=r; }"
+		L"  catch(e){ document.getElementById('out').textContent='ERR: '+e; }"
+		L"};"
+		L"document.getElementById('btnEcho').onclick=async function(){"
+		L"  try{ const r = await window.CUI.invoke('native.echo','hello from js'); document.getElementById('out').textContent=r; }"
+		L"  catch(e){ document.getElementById('out').textContent='ERR: '+e; }"
+		L"};"
+		L"</script></body></html>";
+
+	_web->SetHtml(html);
+
+	auto jsStringLiteral = [](const std::wstring& s) -> std::wstring
+	{
+		std::wstring out;
+		out.reserve(s.size() + 8);
+		out.push_back(L'\"');
+		for (wchar_t c : s)
+		{
+			switch (c)
+			{
+			case L'\\': out += L"\\\\"; break;
+			case L'\"': out += L"\\\""; break;
+			case L'\r': out += L"\\r"; break;
+			case L'\n': out += L"\\n"; break;
+			case L'\t': out += L"\\t"; break;
+			default:
+				if (c >= 0 && c < 0x20)
+				{
+					wchar_t buf[8];
+					swprintf_s(buf, L"\\u%04x", (unsigned)c);
+					out += buf;
+				}
+				else
+				{
+					out.push_back(c);
+				}
+				break;
+			}
+		}
+		out.push_back(L'\"');
+		return out;
+	};
+
+	// 原生按钮：演示 C++ -> JS（ExecuteScriptAsync）
+	auto btn = page->AddControl(new Button(L"C++ 调用 JS（写入 fromNative）", 10, 10, 260, 24));
+	btn->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top;
+	btn->OnMouseClick += [this, jsStringLiteral](class Control* sender, MouseEventArgs e)
+		{
+			(void)sender;
+			(void)e;
+			if (!_web) return;
+			SYSTEMTIME st{};
+			GetLocalTime(&st);
+			std::wstring text = StringHelper::Format(L"from C++ at %02d:%02d:%02d", st.wHour, st.wMinute, st.wSecond);
+			std::wstring script = L"window.setFromNative(" + jsStringLiteral(text) + L");";
+			_web->ExecuteScriptAsync(script);
+		};
 }
 
 void DemoWindow::BuildTab_Media(TabPage* page)

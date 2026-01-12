@@ -2,6 +2,7 @@
 #include "Control.h"
 
 #include <functional>
+#include <unordered_map>
 #include <string>
 
 // WebView2 (NuGet: Microsoft.Web.WebView2)
@@ -62,6 +63,19 @@ public:
 	void ExecuteScriptAsync(const std::wstring& script,
 		std::function<void(HRESULT hr, const std::wstring& jsonResult)> callback = {});
 
+	/**
+	 * @brief Web 与 C++ 互操作：注册 JS 调用的处理器。
+	 *
+	 * JS 侧通过：`window.CUI.invoke(name, payload)` 调用。
+	 * - name: 字符串
+	 * - payload: 字符串（建议传 JSON 文本）
+	 * 返回：Promise<string>
+	 */
+	using JsInvokeHandler = std::function<std::wstring(const std::wstring& payload)>;
+	void RegisterJsInvokeHandler(const std::wstring& name, JsInvokeHandler handler);
+	void UnregisterJsInvokeHandler(const std::wstring& name);
+	void ClearJsInvokeHandlers();
+
 	/** @brief 异步获取当前页面 HTML（实现依赖注入的 JS）。 */
 	void GetHtmlAsync(std::function<void(HRESULT hr, const std::wstring& html)> callback);
 	/** @brief 异步设置匹配元素的 innerHTML。 */
@@ -77,10 +91,14 @@ public:
 
 private:
 	void EnsureInitialized();
+	void EnsureInteropInstalled();
 	void EnsureControllerBounds();
 	bool ForwardMouseMessageToWebView(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof);
 
 	static std::wstring JsStringLiteral(const std::wstring& s);
+	static std::wstring UrlEncodeUtf8(const std::wstring& s);
+	static std::wstring UrlDecodeUtf8(const std::wstring& s);
+	static bool TryParseCuiUrl(const std::wstring& url, std::wstring& outAction, std::unordered_map<std::wstring, std::wstring>& outQuery);
 
 private:
 	bool _initialized = false;
@@ -107,6 +125,9 @@ private:
 	UINT32 _lastSystemCursorId = 0;
 	bool _hasSystemCursorId = false;
 	EventRegistrationToken _cursorChangedToken{};
+	EventRegistrationToken _webMessageToken{};
+	bool _interopInstalled = false;
+	std::unordered_map<std::wstring, JsInvokeHandler> _invokeHandlers;
 
 	// RootVisualTarget attach state (解决隐藏页残留显示)
 	bool _rootAttached = false;

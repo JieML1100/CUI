@@ -1,14 +1,29 @@
 #include "WebBrowser.h"
 #include "Form.h"
 
+#include <CppUtils/Utils/Convert.h>
+
 #include <windowsx.h>
 #include <algorithm>
 #include <dcomp.h>
+#include <unordered_map>
 
 #include <wrl.h>
 #include <wrl/client.h>
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
+
+static int HexVal(wchar_t c);
+
+static std::wstring ToW(const std::string& s)
+{
+	return Convert::Utf8ToUnicode(s);
+}
+
+static std::string ToU8(const std::wstring& s)
+{
+	return Convert::UnicodeToUtf8(s);
+}
 
 WebBrowser::WebBrowser(int x, int y, int width, int height)
 {
@@ -31,6 +46,11 @@ WebBrowser::WebBrowser(int x, int y, int width, int height)
 
 WebBrowser::~WebBrowser()
 {
+	if (_webview && _webMessageToken.value != 0)
+	{
+		_webview->remove_WebMessageReceived(_webMessageToken);
+		_webMessageToken.value = 0;
+	}
 	_webview.Reset();
 	if (_compositionController && _cursorChangedToken.value != 0)
 	{
@@ -75,6 +95,116 @@ std::wstring WebBrowser::JsStringLiteral(const std::wstring& s)
 	}
 	out.push_back(L'"');
 	return out;
+}
+
+std::wstring WebBrowser::UrlEncodeUtf8(const std::wstring& s)
+{
+	static auto isUnreserved = [](unsigned char c) -> bool
+	{
+		if (c >= 'a' && c <= 'z') return true;
+		if (c >= 'A' && c <= 'Z') return true;
+		if (c >= '0' && c <= '9') return true;
+		switch (c)
+		{
+		case '-': case '_': case '.': case '~': return true;
+		default: return false;
+		}
+	};
+
+	std::string u8 = ToU8(s);
+	std::wstring out;
+	out.reserve(u8.size() * 3);
+	for (unsigned char c : u8)
+	{
+		if (isUnreserved(c))
+		{
+			out.push_back((wchar_t)c);
+		}
+		else
+		{
+			wchar_t buf[4];
+			swprintf_s(buf, L"%%%02X", (unsigned)c);
+			out.append(buf);
+		}
+	}
+	return out;
+}
+
+std::wstring WebBrowser::UrlDecodeUtf8(const std::wstring& s)
+{
+	std::string bytes;
+	bytes.reserve(s.size());
+	for (size_t i = 0; i < s.size(); i++)
+	{
+		wchar_t c = s[i];
+		if (c == L'%' && i + 2 < s.size())
+		{
+			int h1 = HexVal(s[i + 1]);
+			int h2 = HexVal(s[i + 2]);
+			if (h1 >= 0 && h2 >= 0)
+			{
+				bytes.push_back((char)((h1 << 4) | h2));
+				i += 2;
+				continue;
+			}
+		}
+		// encodeURIComponent 不会把空格变成 '+'，但这里兼容一下
+		if (c == L'+')
+			bytes.push_back(' ');
+		else
+			bytes.push_back((char)(c & 0xFF));
+	}
+	return ToW(bytes);
+}
+
+bool WebBrowser::TryParseCuiUrl(const std::wstring& url, std::wstring& outAction, std::unordered_map<std::wstring, std::wstring>& outQuery)
+{
+	outAction.clear();
+	outQuery.clear();
+
+	constexpr const wchar_t* kPrefix = L"cui://";
+	if (url.rfind(kPrefix, 0) != 0) return false;
+
+	std::wstring rest = url.substr(wcslen(kPrefix));
+	// action?key=val&key2=val2
+	size_t qpos = rest.find(L'?');
+	std::wstring action = (qpos == std::wstring::npos) ? rest : rest.substr(0, qpos);
+	if (action.empty()) return false;
+	outAction = action;
+
+	if (qpos == std::wstring::npos) return true;
+	std::wstring query = rest.substr(qpos + 1);
+
+	size_t pos = 0;
+	while (pos < query.size())
+	{
+		size_t amp = query.find(L'&', pos);
+		std::wstring pair = (amp == std::wstring::npos) ? query.substr(pos) : query.substr(pos, amp - pos);
+		pos = (amp == std::wstring::npos) ? query.size() : amp + 1;
+		if (pair.empty()) continue;
+		size_t eq = pair.find(L'=');
+		std::wstring k = (eq == std::wstring::npos) ? pair : pair.substr(0, eq);
+		std::wstring v = (eq == std::wstring::npos) ? L"" : pair.substr(eq + 1);
+		if (k.empty()) continue;
+		outQuery[k] = v;
+	}
+	return true;
+}
+
+void WebBrowser::RegisterJsInvokeHandler(const std::wstring& name, JsInvokeHandler handler)
+{
+	_invokeHandlers[name] = std::move(handler);
+}
+
+void WebBrowser::UnregisterJsInvokeHandler(const std::wstring& name)
+{
+	auto it = _invokeHandlers.find(name);
+	if (it != _invokeHandlers.end()) _invokeHandlers.erase(it);
+}
+
+void WebBrowser::ClearJsInvokeHandlers()
+{
+	_invokeHandlers.clear();
 }
 
 static int HexVal(wchar_t c)
@@ -251,6 +381,7 @@ void WebBrowser::EnsureInitialized()
 					}
 
 					_webviewReady = (SUCCEEDED(_lastGetWebViewHr) && _webview != nullptr);
+					EnsureInteropInstalled();
 
 					// 导航完成时触发重绘（仅用于占位提示更新；实际页面由 WebView2 自身渲染）
 					if (_webview)
@@ -313,6 +444,136 @@ void WebBrowser::EnsureInitialized()
 		_lastInitHr = hrStart;
 		this->PostRender();
 	}
+}
+
+void WebBrowser::EnsureInteropInstalled()
+{
+	if (_interopInstalled) return;
+	if (!_webviewReady || !_webview) return;
+
+	// 1) 注入 JS 桥：window.CUI.invoke(name, payload) -> postMessage("cui://invoke?..."), 并监听回包
+	// 2) C++ 侧回包：postMessage("cui://resp?...&result=...")
+	std::wstring bridgeJs =
+		L"(function(){"
+		L" if(window.CUI && window.CUI.__installed) return;"
+		L" if(!window.chrome || !chrome.webview || !chrome.webview.postMessage) return;"
+		L" const pending = new Map();"
+		L" let seq = 0;"
+		L" function enc(s){ return encodeURIComponent(s==null?'':String(s)); }"
+		L" function post(url){ chrome.webview.postMessage(url); }"
+		L" chrome.webview.addEventListener('message', function(ev){"
+		L"   try{"
+		L"     const msg = String(ev.data||'');"
+		L"     if(!msg.startsWith('cui://resp?')) return;"
+		L"     const q = msg.substring('cui://resp?'.length);"
+		L"     const params = new URLSearchParams(q);"
+		L"     const id = params.get('id');"
+		L"     const ok = params.get('ok') === '1';"
+		L"     const res = decodeURIComponent(params.get('result')||'');"
+		L"     const err = decodeURIComponent(params.get('error')||'');"
+		L"     const p = pending.get(id);"
+		L"     if(!p) return;"
+		L"     pending.delete(id);"
+		L"     ok ? p.resolve(res) : p.reject(new Error(err||'CUI invoke failed'));"
+		L"   }catch(e){}"
+		L" });"
+		L" window.CUI = {"
+		L"   __installed:true,"
+		L"   invoke: function(name, payload){"
+		L"     const id = String(++seq);"
+		L"     const url = 'cui://invoke?id='+id+'&name='+enc(name)+'&payload='+enc(payload);"
+		L"     return new Promise(function(resolve,reject){"
+		L"       pending.set(id,{resolve:resolve,reject:reject});"
+		L"       post(url);"
+		L"     });"
+		L"   },"
+		L"   notify: function(name, payload){"
+		L"     const url = 'cui://notify?name='+enc(name)+'&payload='+enc(payload);"
+		L"     post(url);"
+		L"   }"
+		L" };"
+		L"})();";
+
+	// 让桥在每次文档创建时都存在（Navigate / NavigateToString 都覆盖）
+	ComPtr<ICoreWebView2_4> web4;
+	if (SUCCEEDED(_webview.As(&web4)) && web4)
+	{
+		web4->AddScriptToExecuteOnDocumentCreated(bridgeJs.c_str(), nullptr);
+	}
+	else
+	{
+		// 退化：直接执行一次（对当前页有效）
+		ExecuteScriptAsync(bridgeJs);
+	}
+
+	// WebMessageReceived：接收 JS -> C++
+	_webMessageToken.value = 0;
+	_webview->add_WebMessageReceived(
+		Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+			[this](ICoreWebView2* sender, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT
+			{
+				(void)sender;
+				if (!args || !_webview) return S_OK;
+
+				LPWSTR raw = nullptr;
+				if (FAILED(args->TryGetWebMessageAsString(&raw)) || !raw) return S_OK;
+				std::wstring msg(raw);
+				CoTaskMemFree(raw);
+
+				std::wstring action;
+				std::unordered_map<std::wstring, std::wstring> q;
+				if (!TryParseCuiUrl(msg, action, q)) return S_OK;
+
+				auto get = [&](const wchar_t* k) -> std::wstring
+				{
+					auto it = q.find(k);
+					return (it == q.end()) ? L"" : it->second;
+				};
+
+				if (action == L"invoke")
+				{
+					std::wstring id = get(L"id");
+					std::wstring name = UrlDecodeUtf8(get(L"name"));
+					std::wstring payload = UrlDecodeUtf8(get(L"payload"));
+
+					std::wstring ok = L"0";
+					std::wstring result;
+					std::wstring error;
+
+					auto it = _invokeHandlers.find(name);
+					if (it != _invokeHandlers.end() && it->second)
+					{
+						try
+						{
+							result = it->second(payload);
+							ok = L"1";
+						}
+						catch (...)
+						{
+							error = L"handler exception";
+						}
+					}
+					else
+					{
+						error = L"handler not found: " + name;
+					}
+
+					std::wstring resp =
+						L"cui://resp?id=" + UrlEncodeUtf8(id) +
+						L"&ok=" + ok +
+						L"&result=" + UrlEncodeUtf8(result) +
+						L"&error=" + UrlEncodeUtf8(error);
+					_webview->PostWebMessageAsString(resp.c_str());
+				}
+				else if (action == L"notify")
+				{
+					// 预留：如需可在这里扩展 OnNotify 事件
+				}
+				return S_OK;
+			}).Get(),
+		&_webMessageToken);
+
+	_interopInstalled = true;
 }
 
 void WebBrowser::EnsureControllerBounds()
