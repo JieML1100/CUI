@@ -34,6 +34,17 @@ static float ClampRate(float rate)
 	if (!(rate > 0.0f)) return 1.0f;
 	return (float)std::clamp(rate, 0.25f, 4.0f);
 }
+void MediaPlayer::OnRenderTargetRecreated()
+{
+	Control::OnRenderTargetRecreated();
+	if (_videoBitmap)
+	{
+		if (_ownsVideoBitmap) _videoBitmap->Release();
+		_videoBitmap = nullptr;
+		_ownsVideoBitmap = false;
+	}
+	this->PostRender();
+}
 
 // 调试输出函数
 static void DebugOutputHr(const wchar_t* context, HRESULT hr)

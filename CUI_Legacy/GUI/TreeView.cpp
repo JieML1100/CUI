@@ -471,3 +471,17 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 	}
 	return true;
 }
+
+void TreeView::OnRenderTargetRecreated()
+{
+	Control::OnRenderTargetRecreated();
+	std::function<void(TreeNode*)> clear;
+	clear = [&](TreeNode* n)
+		{
+			if (!n) return;
+			n->Image = nullptr;
+			for (auto c : n->Children) clear(c);
+		};
+	clear(this->Root);
+	this->PostRender();
+}

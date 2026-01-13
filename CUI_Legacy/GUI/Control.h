@@ -430,6 +430,9 @@ public:
 	 */
 	virtual CursorKind QueryCursor(int xof, int yof) { (void)xof; (void)yof; return this->Cursor; }
 	virtual bool HitTestChildren() const { return true; }
+	// 当底层 render target 因设备变化被重建时调用（例如 RDP 断开/重连）。
+	// 默认实现会清空缓存的 Image，避免继续使用旧的 ID2D1Bitmap。
+	virtual void OnRenderTargetRecreated();
 	virtual void RenderImage();
 	virtual SIZE ActualSize();
 	void setTextPrivate(std::wstring);

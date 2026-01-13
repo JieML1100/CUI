@@ -301,6 +301,7 @@ public:
 
 	static void ConvertNV12ToBGRA(const uint8_t* nv12, size_t nv12Bytes, UINT32 nv12Stride, UINT32 srcW, UINT32 srcH, UINT32 cropX, UINT32 cropY, UINT32 w, UINT32 h, std::vector<uint8_t>& outBGRA);
 	virtual UIClass Type() override;
+	void OnRenderTargetRecreated() override;
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 
@@ -346,11 +347,11 @@ public:
 
 	// ========== 属性 ==========
 	// 播放状态（只读）
-	PROPERTY(PlayState, State);
+	READONLY_PROPERTY(PlayState, State);
 	GET(PlayState, State);
 
 	// 媒体文件路径（只读）
-	PROPERTY(std::wstring, MediaFile);
+	READONLY_PROPERTY(std::wstring, MediaFile);
 	GET(std::wstring, MediaFile);
 
 	// 当前播放位置（秒），可读写
@@ -401,15 +402,15 @@ public:
 	GET(bool, UsingNv12VideoOutput);
 
 	// 是否包含视频（只读）
-	PROPERTY(bool, HasVideo);
+	READONLY_PROPERTY(bool, HasVideo);
 	GET(bool, HasVideo);
 
 	// 是否包含音频（只读）
-	PROPERTY(bool, HasAudio);
+	READONLY_PROPERTY(bool, HasAudio);
 	GET(bool, HasAudio);
 
 	// 视频尺寸（只读）
-	PROPERTY(SIZE, VideoSize);
+	READONLY_PROPERTY(SIZE, VideoSize);
 	GET(SIZE, VideoSize);
 
 	// 播放进度 (0.0 - 1.0)（只读）

@@ -204,6 +204,8 @@ public:
 	/** @brief 覆盖层渲染器（用于前景控件/临时浮层等）。 */
 	D2DGraphics1* OverlayRender = nullptr;
 	class DCompLayeredHost* _dcompHost = nullptr;
+	bool _recoveringDeviceLost = false;
+	void RecoverRenderIfNeeded();
 	int HeadHeight = 24;
 	D2D1_COLOR_F BackColor = Colors::WhiteSmoke;
 	D2D1_COLOR_F ForeColor = Colors::Black;

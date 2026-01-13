@@ -19,6 +19,12 @@
 #include "Factory.h"
 #include "BitmapSource.h"
 
+// 当 D2D render target 因为设备变化（RDP 断开/重连、显示器切换等）被重建后，
+// Graphics 会向窗口发送该消息，GUI 层可借此清理/重建设备相关资源（例如缓存的 ID2D1Bitmap）。
+#ifndef WM_CUI_RENDER_TARGET_RECREATED
+#define WM_CUI_RENDER_TARGET_RECREATED (WM_APP + 0x5A1)
+#endif
+
 #pragma comment(lib,"d2d1.lib")
 
 #ifndef _LIB
@@ -236,6 +242,9 @@ protected:
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> Default_Brush_Back;
 	Microsoft::WRL::ComPtr<IWICBitmap> pWicTargetBitmap;
 	SurfaceKind surfaceKind = SurfaceKind::None;
+	// 记录逻辑 DPI（用于重建 render target 后重新应用；默认 96 表示不做系统 DPI 缩放）
+	FLOAT _dpiX = 96.0f;
+	FLOAT _dpiY = 96.0f;
 };
 
 class CompatibleGraphics : public D2DGraphics {

@@ -333,6 +333,22 @@ void Control::SetImageEx(ID2D1Bitmap* value, bool takeOwnership)
 	this->_ownsImage = takeOwnership;
 	this->PostRender();
 }
+
+void Control::OnRenderTargetRecreated()
+{
+	// 递归通知子控件（部分控件可能会缓存更多 device dependent 资源）。
+	for (int i = 0; i < this->Count; i++)
+	{
+		auto c = this->operator[](i);
+		if (c) c->OnRenderTargetRecreated();
+	}
+
+	// 清空 Image：不强行接管外部资源，避免误 Release；但能防止继续绘制失效 bitmap。
+	if (this->_image)
+	{
+		this->SetImageEx(nullptr, false);
+	}
+}
 void Control::RenderImage()
 {
 	if (this->_image)

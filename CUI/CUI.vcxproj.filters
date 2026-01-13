@@ -84,9 +84,6 @@
     <ClInclude Include="GUI\NotifyIcon.h">
       <Filter>GUI</Filter>
     </ClInclude>
-    <ClInclude Include="nanosvg.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
     <ClInclude Include="GUI\WebBrowser.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -130,6 +127,9 @@
       <Filter>GUI</Filter>
     </ClInclude>
     <ClInclude Include="GUI\MediaPlayer.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="nanosvg.h">
       <Filter>GUI</Filter>
     </ClInclude>
   </ItemGroup>
@@ -197,9 +197,6 @@
     <ClCompile Include="GUI\NotifyIcon.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
-    <ClCompile Include="nanosvg.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
     <ClCompile Include="GUI\WebBrowser.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
@@ -234,6 +231,9 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\MediaPlayer.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="nanosvg.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
   </ItemGroup>

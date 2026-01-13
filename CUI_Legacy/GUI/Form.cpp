@@ -13,6 +13,10 @@
 #define WM_DPICHANGED 0x02E0
 #endif
 
+#ifndef WM_CUI_RENDER_TARGET_RECREATED
+#define WM_CUI_RENDER_TARGET_RECREATED (WM_APP + 0x5A1)
+#endif
+
 HCURSOR Form::GetSystemCursor(CursorKind kind)
 {
 	static std::unordered_map<CursorKind, HCURSOR> cache;
@@ -2217,6 +2221,26 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 	Form* form = (Form*)(GetWindowLongPtrW(hWnd, GWLP_USERDATA) ^ 0xFFFFFFFFFFFFFFFF);
 	if ((ULONG64)form != 0xFFFFFFFFFFFFFFFF && Application::Forms.ContainsKey(form->Handle))
 	{
+		if (message == WM_CUI_RENDER_TARGET_RECREATED)
+		{
+			// 清理所有可能持有旧 ID2D1Bitmap 的缓存，避免继续绘制导致 EndDraw 永远失败。
+			if (form->Image)
+			{
+				form->Image->Release();
+				form->Image = nullptr;
+			}
+			for (auto c : form->Controls)
+			{
+				if (c) c->OnRenderTargetRecreated();
+			}
+			if (form->ForegroundControl) form->ForegroundControl->OnRenderTargetRecreated();
+			if (form->MainMenu) ((Control*)form->MainMenu)->OnRenderTargetRecreated();
+			if (form->MainStatusBar) ((Control*)form->MainStatusBar)->OnRenderTargetRecreated();
+			form->_hasRenderedOnce = false;
+			form->Invalidate(true);
+			return 0;
+		}
+
 		if (message == WM_DPICHANGED)
 		{
 			RECT* suggested = (RECT*)lParam;
@@ -2274,8 +2298,10 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 					return 0;
 				}
 
-				if (form->ControlChanged || !form->_hasRenderedOnce)
-					form->UpdateDirtyRect(ps.rcPaint, true);
+				// 关键：RDP 断开/重连、DWM/显示设备变化后，系统可能会直接触发 WM_PAINT。
+				// 此时即使 ControlChanged==false 也必须按 rcPaint 进行重绘，否则会出现“画面不再刷新”。
+				bool force = (form->ControlChanged || !form->_hasRenderedOnce);
+				form->UpdateDirtyRect(ps.rcPaint, force);
 			}
 			EndPaint(hWnd, &ps);
 			return 0;

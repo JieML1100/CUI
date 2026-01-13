@@ -121,3 +121,6 @@ dkms.conf
 /CUITest_Legacy/x64
 /CUITest_Legacy/CUITest_Legacy/x64/Release
 /MediaLibrary/.vs/MediaLibrary
+/CppUtils/Graphics/x64/Release
+/CppUtils/CppUtils/x64/Release
+/CppUtils/UtilsTest/x64/Release

@@ -92,6 +92,11 @@ public:
 	virtual void EndRender();
 	virtual void ReSize(UINT width, UINT height);
 
+	// 设备/交换链丢失（远程桌面重连、显卡切换、驱动重启等）时，渲染对象可能需要上层重建。
+	bool IsDeviceLost() const { return _deviceLost; }
+	HRESULT GetLastEndDrawHr() const { return _lastEndDrawHr; }
+	HRESULT GetLastPresentHr() const { return _lastPresentHr; }
+
 	HRESULT EnsureDeviceContext();
 
 	void Clear(D2D1_COLOR_F color);
@@ -253,6 +258,10 @@ protected:
 
 	SurfaceKind surfaceKind = SurfaceKind::None;
 	bool wicDirty = false;
+
+	HRESULT _lastEndDrawHr = S_OK;
+	HRESULT _lastPresentHr = S_OK;
+	bool _deviceLost = false;
 };
 
 class CompatibleGraphics1 : public D2DGraphics1 {

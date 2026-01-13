@@ -1211,7 +1211,73 @@ IDCompositionVisual* Form::GetWebContainerVisual() const
 
 void Form::CommitComposition()
 {
-	if (_dcompHost) _dcompHost->Commit();
+	if (_dcompHost) {
+		HRESULT hr = _dcompHost->Commit();
+		if (FAILED(hr)) {
+			RecoverRenderIfNeeded();
+		}
+	}
+}
+
+void Form::RecoverRenderIfNeeded()
+{
+	if (_recoveringDeviceLost)
+		return;
+	_recoveringDeviceLost = true;
+
+	// 只有在句柄存在时才尝试恢复
+	if (!this->Handle || !::IsWindow(this->Handle))
+	{
+		_recoveringDeviceLost = false;
+		return;
+	}
+
+	bool need = false;
+	if (this->Render && this->Render->IsDeviceLost()) need = true;
+	if (this->OverlayRender && this->OverlayRender->IsDeviceLost()) need = true;
+	if (!need)
+	{
+		_recoveringDeviceLost = false;
+		return;
+	}
+
+	// 先释放旧渲染对象/host
+	if (this->OverlayRender)
+	{
+		delete this->OverlayRender;
+		this->OverlayRender = nullptr;
+	}
+	if (this->Render)
+	{
+		delete this->Render;
+		this->Render = nullptr;
+	}
+	if (this->_dcompHost)
+	{
+		delete this->_dcompHost;
+		this->_dcompHost = nullptr;
+	}
+
+	// 重新尝试启用 DComp 分层；失败则回退到普通 HWND swapchain
+	_dcompHost = new DCompLayeredHost(this->Handle);
+	if (_dcompHost && SUCCEEDED(_dcompHost->Initialize()) &&
+		_dcompHost->GetBaseSwapChain() && _dcompHost->GetOverlaySwapChain())
+	{
+		Render = new CompositionSwapChainGraphics1(_dcompHost->GetBaseSwapChain());
+		OverlayRender = new CompositionSwapChainGraphics1(_dcompHost->GetOverlaySwapChain());
+	}
+	else
+	{
+		delete _dcompHost;
+		_dcompHost = nullptr;
+		Render = new HwndGraphics1(this->Handle);
+		OverlayRender = nullptr;
+	}
+
+	SyncRenderSizeToClient();
+	this->_hasRenderedOnce = false;
+	this->Invalidate(this->_dcompHost != nullptr);
+	_recoveringDeviceLost = false;
 }
 
 void Form::SetLayoutEngine(class LayoutEngine* engine)
@@ -1688,6 +1754,7 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 
 	this->Render->PopDrawRect();
 	this->Render->EndRender();
+	RecoverRenderIfNeeded();
 
 	this->CommitComposition();
 
@@ -1738,6 +1805,7 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 
 		this->OverlayRender->PopDrawRect();
 		this->OverlayRender->EndRender();
+		RecoverRenderIfNeeded();
 
 		this->CommitComposition();
 	}

@@ -3115,7 +3115,7 @@ void MediaPlayer::Play()
 			_playThread = std::thread([this] { PlaybackThreadMain(); });
 		}
 		_playState = PlayState::Playing;
-		this->Position = 0.0; // 触发 OnPositionChanged
+		this->Position = this->Position; // 触发 OnPositionChanged
 		_threadPlaying = true;
 		_threadCv.notify_all();
 		this->PostRender();

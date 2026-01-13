@@ -53,6 +53,8 @@ D2DGraphics::D2DGraphics(const InitOptions& options) {
 D2DGraphics::~D2DGraphics() = default;
 
 void D2DGraphics::SetDpi(FLOAT dpiX, FLOAT dpiY) {
+	_dpiX = dpiX;
+	_dpiY = dpiY;
 	if (pRenderTarget) {
 		pRenderTarget->SetDpi(dpiX, dpiY);
 	}
@@ -1403,9 +1405,11 @@ HRESULT HwndGraphics::InitDevice() {
 	UINT width = std::max<UINT>(1, static_cast<UINT>(rc.right - rc.left));
 	UINT height = std::max<UINT>(1, static_cast<UINT>(rc.bottom - rc.top));
 
-	D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
-		D2D1_RENDER_TARGET_TYPE_DEFAULT,
-		D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+	auto makeProps = [&](D2D1_RENDER_TARGET_TYPE type) {
+		return D2D1::RenderTargetProperties(
+			type,
+			D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+	};
 
 	D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProps = D2D1::HwndRenderTargetProperties(
 		hwnd,
@@ -1413,13 +1417,19 @@ HRESULT HwndGraphics::InitDevice() {
 		D2D1_PRESENT_OPTIONS_IMMEDIATELY);
 
 	ComPtr<ID2D1HwndRenderTarget> target;
-	HRESULT hr = _D2DFactory->CreateHwndRenderTarget(props, hwndProps, &target);
+	HRESULT hr = _D2DFactory->CreateHwndRenderTarget(makeProps(D2D1_RENDER_TARGET_TYPE_DEFAULT), hwndProps, &target);
 	if (FAILED(hr)) {
-		return hr;
+		// RDP 断开/重连、驱动重启等场景下硬件 RT 有时会创建失败；回退到软件 RT 以保证可用性。
+		hr = _D2DFactory->CreateHwndRenderTarget(makeProps(D2D1_RENDER_TARGET_TYPE_SOFTWARE), hwndProps, &target);
+		if (FAILED(hr)) {
+			return hr;
+		}
 	}
 
 	pHwndRenderTarget = target;
 	pRenderTarget = pHwndRenderTarget;
+	// render target 重建后 DPI 会回到默认/系统 DPI；这里强制恢复到逻辑 DPI
+	pRenderTarget->SetDpi(_dpiX, _dpiY);
 	surfaceKind = SurfaceKind::Hwnd;
 	return ConfigDefaultObjects();
 }
@@ -1430,18 +1440,54 @@ HwndGraphics::HwndGraphics(HWND hWnd) {
 }
 
 void HwndGraphics::ReSize(UINT width, UINT height) {
+	bool recreatedFromNull = false;
 	if (!pHwndRenderTarget) {
-		return;
+		// 典型场景：之前因 D2DERR_RECREATE_TARGET ResetTarget() 后 InitDevice 失败，
+		// 这时 pHwndRenderTarget 为空；需要在后续 Resize/Render 时继续尝试恢复。
+		if (FAILED(InitDevice())) {
+			return;
+		}
+		recreatedFromNull = true;
 	}
 	width = std::max<UINT>(1, width);
 	height = std::max<UINT>(1, height);
-	pHwndRenderTarget->Resize(D2D1::SizeU(width, height));
+	HRESULT hr = pHwndRenderTarget->Resize(D2D1::SizeU(width, height));
+	if (recreatedFromNull) {
+		::PostMessageW(hwnd, WM_CUI_RENDER_TARGET_RECREATED, 0, 0);
+	}
+	if (hr == D2DERR_RECREATE_TARGET) {
+		// 典型触发场景：远程桌面断开/重连、显示设备切换等导致 render target 失效。
+		ResetTarget();
+		if (SUCCEEDED(InitDevice())) {
+			::PostMessageW(hwnd, WM_CUI_RENDER_TARGET_RECREATED, 0, 0);
+			::InvalidateRect(hwnd, nullptr, FALSE);
+			::UpdateWindow(hwnd);
+		}
+	}
 }
 
 void HwndGraphics::BeginRender() {
+	if (!pRenderTarget) {
+		// 从“无 target”状态尝试恢复（例如 InitDevice 曾临时失败）。
+		if (SUCCEEDED(InitDevice())) {
+			::PostMessageW(hwnd, WM_CUI_RENDER_TARGET_RECREATED, 0, 0);
+		}
+	}
 	D2DGraphics::BeginRender();
 }
 
 void HwndGraphics::EndRender() {
-	D2DGraphics::EndRender();
+	if (!pRenderTarget) {
+		return;
+	}
+	HRESULT hr = pRenderTarget->EndDraw();
+	if (hr == D2DERR_RECREATE_TARGET) {
+		// 目标丢失：重建 HwndRenderTarget（下一次渲染即可恢复）。
+		ResetTarget();
+		if (SUCCEEDED(InitDevice())) {
+			::PostMessageW(hwnd, WM_CUI_RENDER_TARGET_RECREATED, 0, 0);
+			::InvalidateRect(hwnd, nullptr, FALSE);
+			::UpdateWindow(hwnd);
+		}
+	}
 }
