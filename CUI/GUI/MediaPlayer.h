@@ -6,15 +6,12 @@
 #include <mfidl.h>
 #include <evr.h>
 #include <d3d11.h>
-#include <d3d11_1.h>
 #include <dxgi1_2.h>
-#include <d2d1_1.h>
 #include <shlwapi.h>
 #include <mutex>
 #include <vector>
 #include <memory>
 #include <objbase.h>
-#include <algorithm>
 
 #include <mfreadwrite.h>
 #include <mmdeviceapi.h>
@@ -161,6 +158,10 @@ private:
 	std::wstring _mediaFile;          // 当前加载的媒体文件路径
 	bool _autoPlay = true;            // 是否自动播放
 	bool _loop = false;               // 是否循环播放
+	bool _enableHardwareDecode = true; // 是否尝试启用硬件解码/硬件变换（SourceReader/DXVA；失败自动回退）
+	bool _usingHardwareDecode = false; // 本次 InitSourceReader 是否以“允许DXVA+硬件变换(best-effort)”模式创建成功
+	bool _preferNv12VideoOutput = true; // 是否优先让 SourceReader 输出 NV12（关闭 MF video processing，降低 ReadSample 负担；失败回退 RGB）
+	bool _usingNv12VideoOutput = false; // 当前视频输出是否为 NV12
 	double _position = 0.0;           // 当前播放位置（秒）
 	double _duration = 0.0;           // 媒体总时长（秒）
 	std::atomic<double> _volume{ 1.0 }; // 音量 (0.0-1.0)
@@ -180,64 +181,9 @@ private:
 	ComPtr<IDXGISwapChain1> _swapChain;               // DXGI交换链
 	ComPtr<IMFVideoDisplayControl> _videoDisplayControl;  // 视频显示控制
 	ComPtr<VideoSampleGrabberCallback> _videoSampleCallback;  // 视频帧回调
-	
-	// ========== 零拷贝硬件加速支持 ==========
-	ComPtr<IMFDXGIDeviceManager> _dxgiDeviceManager;  // DXGI设备管理器（零拷贝关键）
-	UINT _dxgiResetToken = 0;                         // DXGI设备重置令牌
-	ComPtr<IMFSample> _currentVideoSample;            // 保持当前视频 sample 存活，避免底层 surface 被解码器过早复用
-	ComPtr<ID3D11Texture2D> _currentVideoTexture;     // 当前视频帧纹理（GPU端）
-	ComPtr<ID3D11Texture2D> _currentVideoTextureBgra; // BGRA格式的当前视频帧纹理
-	UINT64 _currentVideoTextureBgraFrame = 0;         // 当前BGRA纹理的帧计数
-	bool _currentVideoTextureBgraFromPool = false;    // BGRA纹理是否来自纹理池
-	UINT64 _currentVideoTextureFrameId = 0;           // 当前视频纹理帧ID（更新时使用）
-	LONGLONG _currentVideoTextureSampleTime = (std::numeric_limits<LONGLONG>::min)(); // 当前纹理对应的 sample time（100ns，可能未知）
-	UINT64 _lastBgraConvertedFrameId = 0;             // 上一帧转换的YUV->BGRA帧ID
-
-	// D3D11 Video Processor
-	ComPtr<ID3D11VideoDevice> _videoDevice;
-	ComPtr<ID3D11VideoContext> _videoContext;
-	ComPtr<ID3D11VideoProcessorEnumerator> _videoProcessorEnum;
-	ComPtr<ID3D11VideoProcessor> _videoProcessor;
-	UINT _vpWidth = 0;
-	UINT _vpHeight = 0;
-	DXGI_FORMAT _vpInputFormat = DXGI_FORMAT_UNKNOWN;
-	ComPtr<ID2D1Bitmap1> _d2dVideoBitmap;             // 零拷贝D2D位图（与D3D纹理共享）
-	ComPtr<ID3D11Texture2D> _d2dVideoBitmapSourceTexture; // 创建_d2dVideoBitmap所使用的源纹理（用于判断是否需要重建）
-	UINT64 _d2dVideoBitmapSourceFrameId = 0;         // 创建_d2dVideoBitmap时对应的视频帧ID（用于按帧重建）
-	std::mutex _textureMutex;                         // 纹理访问互斥锁
-	bool _useZeroCopy = true;                         // 是否启用零拷贝模式
-	bool _recreateD2DBitmapEveryFrame = true;         // 兼容性开关：每帧重建 D2D bitmap（避免画面更新频率异常）
-	bool _videoProcessingEnabled = false;             // SourceReader Video Processor 是否启用
-	bool _usingHardwareDecoding = false;              // 是否正在使用硬件解码 (SourceReader)
-	
-	// 纹理池（减少频繁分配/释放，提升超高分性能）
-	struct TexturePoolEntry {
-		ComPtr<ID3D11Texture2D> texture;
-		UINT64 lastUsedFrame = 0;
-		bool inUse = false;
-	};
-	std::vector<TexturePoolEntry> _texturePool;       // 纹理池
-	std::mutex _texturePoolMutex;                     // 纹理池互斥锁
-	std::atomic<UINT64> _frameCounter{ 0 };           // 帧计数器（用于LRU；跨线程递增）
-	static constexpr size_t MAX_TEXTURE_POOL_SIZE = 12; // 最大纹理池大小 (4K双/多缓冲需要更多余量)
-
-	// ========== 诊断：渲染/解码性能统计（每秒输出一次） ==========
-	std::atomic<UINT64> _statDecodedFrames{ 0 };       // 解码线程产出帧数（GPU纹理帧）
-	std::atomic<UINT64> _statRenderUpdates{ 0 };       // UI Update() 调用次数（有视频时）
-	std::atomic<UINT64> _statYuvToBgraCalls{ 0 };      // VideoProcessorBlt 调用次数
-	std::atomic<UINT64> _statYuvToBgraQpcTicks{ 0 };   // VideoProcessorBlt 耗时累计（QPC ticks）
-	std::atomic<UINT64> _statVideoGpuSyncCalls{ 0 };   // VideoProcessorBlt 后 GPU 同步次数
-	std::atomic<UINT64> _statVideoGpuSyncQpcTicks{ 0 };// GPU 同步等待耗时累计（QPC ticks）
-	std::atomic<UINT64> _statCreateD2DBitmapCalls{ 0 };// CreateBitmapFromDxgiSurface 次数
-	std::atomic<UINT64> _statCreateD2DBitmapQpcTicks{ 0 }; // CreateBitmapFromDxgiSurface 耗时累计（QPC ticks）
-	std::atomic<LONGLONG> _statLastReportQpc{ 0 };     // 上次输出时刻（QPC）
-	bool _forceVideoGpuSync = true;                   // 诊断开关：强制 GPU 同步确保帧可见（可能降低性能）
-	ComPtr<ID3D11Query> _videoGpuSyncQuery;           // D3D11 event query（用于等待 GPU 完成写入）
-	
-	// CPU后备路径（兼容性）
 	std::vector<uint8_t> _videoFrame;                 // 视频帧数据缓冲
-	UINT32 _videoInputStride = 0;                     // SourceReader 解码输出的输入stride（来自 MF_MT_DEFAULT_STRIDE；不要用输出stride覆盖）
-	UINT32 _videoStride = 0;                          // 视频帧步长
+	UINT32 _videoFrameStride = 0;                     // 当前 _videoFrame 的步长（用于 UI 上传；通常为 width*4）
+	UINT32 _videoStride = 0;                          // 解码输出 stride（来自 MF_MT_DEFAULT_STRIDE；NV12 时为 Y plane stride）
 	GUID _videoSubtype = GUID_NULL;                   // SourceReader 实际视频子类型
 	UINT32 _videoBytesPerPixel = 4;                   // 视频像素字节数（3=RGB24, 4=RGB32/ARGB32）
 	bool _videoBottomUp = false;                      // 是否为倒置图像（stride<0）
@@ -246,7 +192,6 @@ private:
 	UINT32 _videoCropY = 0;                           // 可视区域Y偏移（像素）
 	std::mutex _videoFrameMutex;                      // 视频帧互斥锁
 	bool _videoFrameReady = false;                    // 视频帧就绪标志
-	LONGLONG _videoFrameSampleTime = (std::numeric_limits<LONGLONG>::min)(); // CPU帧对应的 sample time（100ns，可能未知）
 	
 	// ========== 媒体信息 ==========
 	bool _hasVideo = false;           // 是否包含视频
@@ -265,8 +210,6 @@ private:
 	// ========== SourceReader + WASAPI 后端（软件解码后备方案） ==========
 	bool _useSourceReader = true;                     // 是否使用SourceReader模式
 	ComPtr<IMFSourceReader> _sourceReader;            // 媒体源读取器
-	std::atomic<LONGLONG> _seekTargetHns{ (std::numeric_limits<LONGLONG>::min)() }; // 请求 seek 的目标时间（100ns）；min 表示无
-	std::atomic<UINT64> _seekSerial{ 0 };             // seek 序号（每次 Seek++），用于线程间同步
 	DWORD _srVideoStream = (DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM;  // 视频流索引
 	DWORD _srAudioStream = (DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM;  // 音频流索引
 	DWORD _actualVideoStreamIndex = (DWORD)-1;        // 实际视频流索引
@@ -277,15 +220,6 @@ private:
 	std::atomic<bool> _needSyncReset{ false };        // 需要重置同步标志
 	std::mutex _threadMutex;                          // 线程互斥锁
 	std::condition_variable _threadCv;                // 线程条件变量
-
-	// ========== SourceReader 异步打开（避免播放中切换文件卡 UI 线程） ==========
-	std::thread _openThread;                          // 后台打开线程（串行处理 Load 请求）
-	std::atomic<bool> _openThreadExit{ false };       // 打开线程退出标志
-	std::mutex _openMutex;                           // 打开线程互斥锁
-	std::condition_variable _openCv;                  // 打开线程条件变量
-	bool _openHasRequest = false;                     // 是否有待处理的打开请求
-	std::wstring _openRequestFile;                    // 待打开文件路径
-	std::atomic<UINT64> _openSerial{ 0 };             // 打开请求序号（每次 Load++），用于取消旧请求
 
 	// WASAPI 音频输出
 	ComPtr<IMMDeviceEnumerator> _mmDeviceEnumerator;  // 音频设备枚举器
@@ -314,8 +248,6 @@ private:
 	void UpdateVideoFormatFromSourceReader();         // 从sourceReader更新视频格式
 	bool WriteAudioToWasapi(const BYTE* data, UINT32 bytes);  // 将音频数据写入WASAPI
 	void StopSourceReaderPlayback(bool shutdown);     // 停止SourceReader播放（可选关闭WASAPI/Reader）
-	void EnsureOpenWorker();                          // 确保后台打开线程已启动
-	void OpenWorkerMain();                            // 后台打开线程主函数
 
 	// ========== 视频渲染 ==========
 	ID2D1Bitmap* _videoBitmap = nullptr;              // 视频位图
@@ -330,15 +262,9 @@ private:
 	HRESULT CreateMediaSource(const std::wstring& url);  // 创建媒体源
 	HRESULT CreateTopology();                         // 创建媒体拓扑
 	HRESULT InitializeD3D();                          // 初始化Direct3D
-	HRESULT InitializeDXGIDeviceManager();            // 初始化DXGI设备管理器（零拷贝）
 	HRESULT InitializeVideoRenderer();                // 初始化视频渲染器
-	void OnVideoFrame(const BYTE* data, DWORD size, LONGLONG sampleTime = (std::numeric_limits<LONGLONG>::min)());  // 视频帧回调（CPU路径）
-	void OnVideoFrameTexture(ID3D11Texture2D* texture, UINT subresourceIndex = 0, LONGLONG sampleTime = (std::numeric_limits<LONGLONG>::min)(), IMFSample* sample = nullptr);  // 视频帧回调（GPU零拷贝路径；可选保持 sample）
-	ID3D11Texture2D* AcquireTextureFromPool(UINT width, UINT height);  // 从池获取纹理
-	void ReleaseTextureToPool(ID3D11Texture2D* texture);  // 释放纹理回池
-	void CleanupTexturePool();                        // 清理未使用的纹理
+	void OnVideoFrame(const BYTE* data, DWORD size);  // 视频帧回调
 	void RefreshVideoFormatFromSource();              // 从媒体源刷新视频格式
-	ID3D11Texture2D* ConvertTextureToBgraForD2D(ID3D11Texture2D* srcTexture, UINT64 sharedFrameId); // 转换纹理为BGRA格式 (带SubresourceIndex信息)
 	HRESULT StartPlayback();                          // 开始播放
 	HRESULT StartPlaybackInternal(bool usePosition, double positionSeconds);  // 内部开始播放
 	HRESULT PausePlayback();                          // 暂停播放
@@ -348,6 +274,7 @@ private:
 	HRESULT SetPlaybackRateImpl(float rate);          // 设置播放速率实现
 	void ReleaseResources();                          // 释放资源
 	void UpdateVideoBitmap();                         // 更新视频位图
+	void ReportPerfStatsIfDue();                      // 输出每秒性能统计（调试用）
 
 public:
 	// ========== 构造/析构 ==========
@@ -372,7 +299,7 @@ public:
 	/** @brief 播放位置变化时触发（秒）。 */
 	MediaPositionChangedEvent OnPositionChanged;
 
-	// ========== 重写基类方法 ==========
+	static void ConvertNV12ToBGRA(const uint8_t* nv12, size_t nv12Bytes, UINT32 nv12Stride, UINT32 srcW, UINT32 srcH, UINT32 cropX, UINT32 cropY, UINT32 w, UINT32 h, std::vector<uint8_t>& outBGRA);
 	virtual UIClass Type() override;
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
@@ -432,7 +359,7 @@ public:
 	SET(double, Position);
 
 	// 媒体总时长（秒）（只读）
-	READONLY_PROPERTY(double, Duration);
+	PROPERTY(double, Duration);
 	GET(double, Duration);
 
 	// 音量 (0.0-1.0)，可读写
@@ -455,6 +382,24 @@ public:
 	GET(bool, Loop);
 	SET(bool, Loop);
 
+	// 是否尝试启用硬件解码/硬件变换（SourceReader/DXVA），可读写
+	PROPERTY(bool, EnableHardwareDecode);
+	GET(bool, EnableHardwareDecode);
+	SET(bool, EnableHardwareDecode);
+
+	// 当前是否处于“best-effort 硬件模式”（只读；仅表示 SourceReader 创建策略，最终是否真走硬解取决于系统解码器/驱动）
+	READONLY_PROPERTY(bool, UsingHardwareDecode);
+	GET(bool, UsingHardwareDecode);
+
+	// 是否优先使用 NV12 视频输出（可读写，best-effort；失败会回退 RGB）
+	PROPERTY(bool, PreferNv12VideoOutput);
+	GET(bool, PreferNv12VideoOutput);
+	SET(bool, PreferNv12VideoOutput);
+
+	// 当前是否正在使用 NV12 视频输出（只读）
+	READONLY_PROPERTY(bool, UsingNv12VideoOutput);
+	GET(bool, UsingNv12VideoOutput);
+
 	// 是否包含视频（只读）
 	READONLY_PROPERTY(bool, HasVideo);
 	GET(bool, HasVideo);
@@ -475,5 +420,34 @@ public:
 	PROPERTY(VideoRenderMode, RenderMode);
 	GET(VideoRenderMode, RenderMode);
 	SET(VideoRenderMode, RenderMode);
+
+private:
+	// ========== 诊断：性能统计（每秒输出一次） ==========
+	std::atomic<UINT64> _statReadSampleCalls{ 0 };
+	std::atomic<UINT64> _statReadSampleQpcTicks{ 0 };
+	std::atomic<UINT64> _statReadSampleVideoCalls{ 0 };
+	std::atomic<UINT64> _statReadSampleVideoQpcTicks{ 0 };
+	std::atomic<UINT64> _statReadSampleAudioCalls{ 0 };
+	std::atomic<UINT64> _statReadSampleAudioQpcTicks{ 0 };
+	std::atomic<UINT64> _statSamplesToContigCalls{ 0 };
+	std::atomic<UINT64> _statSamplesToContigQpcTicks{ 0 };
+
+	std::atomic<UINT64> _statDecodedVideoFrames{ 0 };
+	std::atomic<UINT64> _statVideoConvertCalls{ 0 };
+	std::atomic<UINT64> _statVideoConvertQpcTicks{ 0 };
+	std::atomic<UINT64> _statVideoConvertBytes{ 0 };
+
+	std::atomic<UINT64> _statAudioWriteCalls{ 0 };
+	std::atomic<UINT64> _statAudioWriteQpcTicks{ 0 };
+	std::atomic<UINT64> _statAudioWriteBytes{ 0 };
+
+	std::atomic<UINT64> _statRenderUpdates{ 0 };
+	std::atomic<UINT64> _statVideoUploadCalls{ 0 };
+	std::atomic<UINT64> _statVideoUploadQpcTicks{ 0 };
+	std::atomic<UINT64> _statVideoUploadBytes{ 0 };
+	std::atomic<UINT64> _statDrawBitmapCalls{ 0 };
+	std::atomic<UINT64> _statDrawBitmapQpcTicks{ 0 };
+
+	std::atomic<LONGLONG> _statLastReportQpc{ 0 };
 };
 

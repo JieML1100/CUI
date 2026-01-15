@@ -2,7 +2,6 @@
 
 #include "MediaPlayer.h"
 #include "Form.h"
-#include <CppUtils/Graphics/Graphics1.h>
 #include <d3d11_1.h>
 #include <d2d1helper.h>
 #include <algorithm>
@@ -15,12 +14,20 @@
 #include <functiondiscoverykeys_devpkey.h>
 #include <avrt.h>
 
+#include <ppl.h>
+
 #include <atomic>
-#include <windows.h>
+
+// ============================================================================
+// MediaPlayer - Windows 原生媒体播放器控件实现
+// ============================================================================
+// 基于 Windows Media Foundation 实现的高性能媒体播放器
+// 支持以下功能：
+// - 视频和音频播放
+// - 播放控制：播放、暂停、停止、进度跳转
 
 // 常量定义
 static constexpr double HNS_PER_SEC = 10000000.0;  // 100-nanosecond 单位与秒的转换
-static constexpr LONGLONG VIDEO_TS_REORDER_TOLERANCE_HNS = 20000; // 2ms：允许轻微抖动，避免误丢帧
 
 static float ClampRate(float rate)
 {
@@ -31,25 +38,33 @@ static float ClampRate(float rate)
 // 调试输出函数
 static void DebugOutputHr(const wchar_t* context, HRESULT hr)
 {
-	wchar_t sysMsg[256] = {};
-	DWORD flags = FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
-	DWORD len = FormatMessageW(flags, nullptr, (DWORD)hr, 0, sysMsg, (DWORD)_countof(sysMsg), nullptr);
-	// 去掉末尾换行，避免重复换行
-	if (len > 0)
-	{
-		while (len > 0 && (sysMsg[len - 1] == L'\r' || sysMsg[len - 1] == L'\n'))
-		{
-			sysMsg[len - 1] = 0;
-			len--;
-		}
-	}
-
-	wchar_t buf[768] = {};
-	if (sysMsg[0])
-		swprintf_s(buf, L"%s: 0x%08X (%s)\n", context ? context : L"", (unsigned)hr, sysMsg);
-	else
-		swprintf_s(buf, L"%s: 0x%08X\n", context ? context : L"", (unsigned)hr);
+	wchar_t buf[512] = {};
+	swprintf_s(buf, L"%s: 0x%08X\n", context ? context : L"", (unsigned)hr);
 	OutputDebugStringW(buf);
+}
+
+static LARGE_INTEGER QpcNow()
+{
+	LARGE_INTEGER t{};
+	QueryPerformanceCounter(&t);
+	return t;
+}
+
+static LARGE_INTEGER QpcFreq()
+{
+	static LARGE_INTEGER f{};
+	static std::atomic<bool> inited{ false };
+	bool expected = false;
+	if (inited.compare_exchange_strong(expected, true))
+		QueryPerformanceFrequency(&f);
+	return f;
+}
+
+static double QpcTicksToMs(UINT64 ticks)
+{
+	const auto f = QpcFreq();
+	if (f.QuadPart <= 0) return 0.0;
+	return (double)ticks * 1000.0 / (double)f.QuadPart;
 }
 
 static inline uint8_t Clip8(int v)
@@ -57,8 +72,9 @@ static inline uint8_t Clip8(int v)
 	return (uint8_t)((v < 0) ? 0 : (v > 255 ? 255 : v));
 }
 
-// NV12 (Y + interleaved UV) -> BGRA（CPU 后备路径）
-static void ConvertNV12ToBGRA(
+// NV12 (Y + interleaved UV) -> BGRA
+// 说明：这是 CPU 后备/分析路径，目标是把 MF 的 video processing 从 ReadSample 里挪出来，便于定位瓶颈。
+void MediaPlayer::ConvertNV12ToBGRA(
 	const uint8_t* nv12,
 	size_t nv12Bytes,
 	UINT32 yStride,
@@ -70,10 +86,8 @@ static void ConvertNV12ToBGRA(
 	UINT32 visibleH,
 	std::vector<uint8_t>& outBgra)
 {
-	outBgra.clear();
 	if (!nv12 || yStride == 0 || width == 0 || height == 0 || visibleW == 0 || visibleH == 0) return;
-
-	// NV12 UV 采样为 2x2：crop 与可视尺寸需对齐到偶数。
+	// 需要保证 UV 对齐：NV12 的 UV 采样为 2x2
 	const UINT32 cx = cropX & ~1u;
 	const UINT32 cy = cropY & ~1u;
 	UINT32 w = (visibleW & ~1u);
@@ -83,6 +97,7 @@ static void ConvertNV12ToBGRA(
 	if (cx + w > width) w = (width - cx) & ~1u;
 	if (w == 0 || h == 0) return;
 
+	// stride 需要能覆盖可视宽度，否则会越界
 	if (yStride <= cx) return;
 	UINT32 maxWByStride = (yStride - cx) & ~1u;
 	if (w > maxWByStride) w = maxWByStride;
@@ -94,6 +109,7 @@ static void ConvertNV12ToBGRA(
 	if (w > maxWByUvStride) w = maxWByUvStride;
 	if (w == 0) return;
 
+	// 检查 buffer 大小：Y plane + UV plane
 	const UINT32 uvRows = (height + 1) / 2;
 	const size_t yBytes = (size_t)yStride * (size_t)height;
 	const size_t uvBytes = (size_t)uvStride * (size_t)uvRows;
@@ -104,7 +120,8 @@ static void ConvertNV12ToBGRA(
 	const uint8_t* uvPlane = nv12 + yBytes;
 
 	outBgra.resize((size_t)w * (size_t)h * 4);
-	for (UINT32 row = 0; row < h; row++)
+
+	auto convertRow = [&](UINT32 row)
 	{
 		const uint8_t* yRow = yPlane + (size_t)(cy + row) * (size_t)yStride + cx;
 		const uint8_t* uvRow = uvPlane + (size_t)((cy + row) / 2) * (size_t)uvStride + cx;
@@ -119,6 +136,7 @@ static void ConvertNV12ToBGRA(
 			const int C0 = (c0 < 0) ? 0 : c0;
 			const int C1 = (c1 < 0) ? 0 : c1;
 
+			// BT.601-ish integer approximation.
 			const int rAdd = 409 * V;
 			const int gAdd = -100 * U - 208 * V;
 			const int bAdd = 516 * U;
@@ -139,50 +157,17 @@ static void ConvertNV12ToBGRA(
 			dst[(size_t)(col + 1) * 4 + 2] = Clip8(r);
 			dst[(size_t)(col + 1) * 4 + 3] = 0xFF;
 		}
+	};
+
+	// 4K 帧行数大，按行并行可明显降低 VConv；小帧保持串行减少调度开销。
+	if (h >= 256)
+	{
+		Concurrency::parallel_for(0, (int)h, [&](int r) { convertRow((UINT32)r); });
 	}
-}
-
-static bool GetAdapterLuidFromD3D11Device(ID3D11Device* dev, LUID& luid)
-{
-	if (!dev) return false;
-	ComPtr<IDXGIDevice> dxgiDev;
-	if (FAILED(dev->QueryInterface(IID_PPV_ARGS(&dxgiDev))) || !dxgiDev) return false;
-	ComPtr<IDXGIAdapter> adapter;
-	if (FAILED(dxgiDev->GetAdapter(&adapter)) || !adapter) return false;
-	DXGI_ADAPTER_DESC desc{};
-	if (FAILED(adapter->GetDesc(&desc))) return false;
-	luid = desc.AdapterLuid;
-	return true;
-}
-
-static bool GetAdapterLuidFromD2DDeviceContext(ID2D1DeviceContext* ctx, LUID& luid)
-{
-	if (!ctx) return false;
-	ComPtr<ID2D1Device> d2dDev;
-	ctx->GetDevice(&d2dDev);
-	if (!d2dDev) return false;
-	ComPtr<IDXGIDevice> dxgiDev;
-	if (FAILED(d2dDev->QueryInterface(IID_PPV_ARGS(&dxgiDev))) || !dxgiDev) return false;
-	ComPtr<IDXGIAdapter> adapter;
-	if (FAILED(dxgiDev->GetAdapter(&adapter)) || !adapter) return false;
-	DXGI_ADAPTER_DESC desc{};
-	if (FAILED(adapter->GetDesc(&desc))) return false;
-	luid = desc.AdapterLuid;
-	return true;
-}
-
-static bool IsD2DContextCompatibleWithTexture(ID2D1DeviceContext* d2dCtx, ID3D11Texture2D* tex)
-{
-	if (!d2dCtx || !tex) return false;
-	ComPtr<ID3D11Device> d3dDev;
-	tex->GetDevice(&d3dDev);
-	if (!d3dDev) return false;
-
-	LUID d2dLuid{};
-	LUID d3dLuid{};
-	if (!GetAdapterLuidFromD2DDeviceContext(d2dCtx, d2dLuid)) return false;
-	if (!GetAdapterLuidFromD3D11Device(d3dDev.Get(), d3dLuid)) return false;
-	return (d2dLuid.HighPart == d3dLuid.HighPart) && (d2dLuid.LowPart == d3dLuid.LowPart);
+	else
+	{
+		for (UINT32 row = 0; row < h; row++) convertRow(row);
+	}
 }
 
 #pragma comment(lib, "d3d11.lib")
@@ -900,7 +885,7 @@ public:
 	STDMETHODIMP OnProcessSample(
 		REFGUID guidMajorMediaType,
 		DWORD,
-		LONGLONG llSampleTime,
+		LONGLONG,
 		LONGLONG,
 		const BYTE* pSampleBuffer,
 		DWORD dwSampleSize)
@@ -909,7 +894,7 @@ public:
 		MediaPlayer* player = _player;
 		if (!player) return S_OK;
 		if (!pSampleBuffer || dwSampleSize == 0) return S_OK;
-		player->OnVideoFrame(pSampleBuffer, dwSampleSize, llSampleTime);
+		player->OnVideoFrame(pSampleBuffer, dwSampleSize);
 		return S_OK;
 	}
 
@@ -947,11 +932,6 @@ MediaPlayer::MediaPlayer(int x, int y, int width, int height)
 MediaPlayer::~MediaPlayer()
 {
 	if (_eventCallback) _eventCallback->DetachPlayer();
-	// 先停止后台打开线程，避免其在 MFShutdown 后仍调用 MF API。
-	_openThreadExit = true;
-	_openCv.notify_all();
-	if (_openThread.joinable())
-		_openThread.join();
 	_threadExit = true;
 	_threadPlaying = false;
 	_threadCv.notify_all();
@@ -968,78 +948,12 @@ MediaPlayer::~MediaPlayer()
 	}
 }
 
-void MediaPlayer::EnsureOpenWorker()
-{
-	if (_openThread.joinable()) return;
-	_openThreadExit = false;
-	_openThread = std::thread([this] { OpenWorkerMain(); });
-}
-
-void MediaPlayer::OpenWorkerMain()
-{
-	// SourceReader 创建/解析通常需要 COM。
-	HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-	const bool didCo = SUCCEEDED(hrCo);
-
-	while (!_openThreadExit.load())
-	{
-		std::wstring file;
-		UINT64 serial = 0;
-		{
-			std::unique_lock lk(_openMutex);
-			_openCv.wait(lk, [&] { return _openThreadExit.load() || _openHasRequest; });
-			if (_openThreadExit.load()) break;
-			file = _openRequestFile;
-			serial = _openSerial.load(std::memory_order_acquire);
-			_openHasRequest = false;
-		}
-
-		// 如果期间有更新的请求，尽量丢弃旧请求。
-		if (serial != _openSerial.load(std::memory_order_acquire))
-			continue;
-
-		// 停掉旧播放（可能会阻塞），但在后台线程执行，不再卡 UI。
-		if (_playThread.joinable() || _threadPlaying.load() || _sourceReader)
-			StopSourceReaderPlayback(true);
-
-		if (serial != _openSerial.load(std::memory_order_acquire))
-			continue;
-
-		// 重新初始化 SourceReader
-		if (!InitSourceReader(file))
-		{
-			_mediaLoaded = false;
-			_playState = PlayState::Stopped;
-			OnMediaFailed(this);
-			PostRender();
-			continue;
-		}
-
-		if (serial != _openSerial.load(std::memory_order_acquire))
-		{
-			// 已有更新的打开请求：当前 reader 会在下一轮 Stop/Shutdown 里回收。
-			continue;
-		}
-
-		_mediaFile = file;
-		_mediaLoaded = true;
-		_position = 0.0;
-		_playState = PlayState::Stopped;
-		OnMediaOpened(this);
-		PostRender();
-
-		if (_autoPlay)
-			Play();
-	}
-
-	if (didCo)
-		CoUninitialize();
-}
-
 HRESULT MediaPlayer::InitializeMF()
 {
 	HRESULT hr = S_OK;
 
+	// Media Foundation 组件/解析器/渲染器大量依赖 COM。
+	// CUI 工程不保证入口处已初始化 COM，因此这里做一次兼容式初始化。
 	_coInitHr = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 	if (_coInitHr == RPC_E_CHANGED_MODE)
 	{
@@ -1053,6 +967,10 @@ HRESULT MediaPlayer::InitializeMF()
 		return _coInitHr;
 	}
 
+	// 初始化 Media Foundation
+	// 注意：MFSTARTUP_LITE 可能导致 Media Session 的工作队列/异步事件不完整，
+	// 从而出现“拓扑永远不 Ready、Play/Seek 无反应、无音视频输出”的现象。
+	// 这里使用完整启动以确保 Media Session 正常工作。
 	hr = MFStartup(MF_VERSION, 0);
 	if (FAILED(hr)) return hr;
 
@@ -1063,14 +981,6 @@ HRESULT MediaPlayer::InitializeMF()
 	// 初始化 Direct3D
 	hr = InitializeD3D();
 	if (FAILED(hr)) return hr;
-
-	// 初始化 DXGI Device Manager（零拷贝硬件加速关键）
-	hr = InitializeDXGIDeviceManager();
-	if (FAILED(hr))
-	{
-		DebugOutputHr(L"InitializeDXGIDeviceManager failed, fallback to CPU copy", hr);
-		_useZeroCopy = false;  // 降级到CPU拷贝模式
-	}
 
 	return hr;
 }
@@ -1134,135 +1044,10 @@ bool MediaPlayer::ConfigureSourceReaderVideoType()
 {
 	if (!_sourceReader) return false;
 
-	// ========== 硬件加速路径：使用原生格式（NV12/YUV）==========
-	if (_usingHardwareDecoding)
-	{
-		// 获取原生媒体类型（以便获取尺寸/帧率信息）
-		ComPtr<IMFMediaType> nativeType;
-		HRESULT hr = _sourceReader->GetNativeMediaType(_srVideoStream, 0, &nativeType);
-		if (FAILED(hr) || !nativeType)
-		{
-			DebugOutputHr(L"SourceReader: Failed to get native media type", hr);
-			return false;
-		}
-
-		UINT32 width = 0, height = 0;
-		MFGetAttributeSize(nativeType.Get(), MF_MT_FRAME_SIZE, &width, &height);
-
-		struct VideoFormat { GUID subtype; const wchar_t* name; };
-		VideoFormat preferredFormats[8];
-		int formatCount = 0;
-
-		// 只有当零拷贝启用且具备 D3D11 VideoProcessor 能力时，才优先选择 YUV 输出。
-		// 否则优先 RGB32，避免后续 YUV->BGRA 转换失败（部分环境共享 D3D device 不支持 VIDEO_SUPPORT）。
-		const bool preferGpuYuv = (_useZeroCopy && _dxgiDeviceManager && _videoDevice && _videoContext);
-		if (!_videoProcessingEnabled)
-		{
-			// video processing disabled 时，只有在我们具备 GPU YUV->BGRA 能力时才真正“偏好 NV12”。
-			// 否则优先输出 RGB32/ARGB32，避免后续零拷贝渲染把 NV12 surface 当 BGRA 使用。
-			const bool canGpuYuvToBgra = preferGpuYuv;
-			if (canGpuYuvToBgra)
-				DebugOutputHr(L"SourceReader: Video Processing disabled, preferring Native YUV (GPU convert)", S_OK);
-			else
-				DebugOutputHr(L"SourceReader: Video Processing disabled, GPU YUV convert unavailable; preferring RGB32", S_OK);
-			
-			GUID nativeSubtype = GUID_NULL;
-			if (SUCCEEDED(nativeType->GetGUID(MF_MT_SUBTYPE, &nativeSubtype)))
-			{
-				// 仅当 nativeSubtype 本身就是未压缩 YUV 且我们能在 GPU 上转 BGRA 时，才把它放进候选的最前面。
-				if (canGpuYuvToBgra)
-				{
-					if (nativeSubtype == MFVideoFormat_NV12)
-						preferredFormats[formatCount++] = { MFVideoFormat_NV12, L"NV12" };
-					else if (nativeSubtype == MFVideoFormat_P010)
-						preferredFormats[formatCount++] = { MFVideoFormat_P010, L"P010" };
-					else if (nativeSubtype == MFVideoFormat_YUY2)
-						preferredFormats[formatCount++] = { MFVideoFormat_YUY2, L"YUY2" };
-				}
-			}
-			// 若无法 GPU 转换，则优先 RGB32/ARGB32。
-			if (!canGpuYuvToBgra)
-			{
-				preferredFormats[formatCount++] = { MFVideoFormat_RGB32, L"RGB32" };
-				preferredFormats[formatCount++] = { MFVideoFormat_ARGB32, L"ARGB32" };
-			}
-			// 保留 YUV 作为备选（某些链路可能不支持 RGB 输出）。
-			preferredFormats[formatCount++] = { MFVideoFormat_NV12, L"NV12" };
-			preferredFormats[formatCount++] = { MFVideoFormat_P010, L"P010" };
-			preferredFormats[formatCount++] = { MFVideoFormat_YUY2, L"YUY2" };
-			// 若 canGpuYuvToBgra==true，则最后仍把 RGB 放进来作为兜底。
-			if (canGpuYuvToBgra)
-			{
-				preferredFormats[formatCount++] = { MFVideoFormat_RGB32, L"RGB32" };
-				preferredFormats[formatCount++] = { MFVideoFormat_ARGB32, L"ARGB32" };
-			}
-		}
-		else if (preferGpuYuv)
-		{
-			preferredFormats[formatCount++] = { MFVideoFormat_NV12, L"NV12" };
-			preferredFormats[formatCount++] = { MFVideoFormat_P010, L"P010" };
-			preferredFormats[formatCount++] = { MFVideoFormat_YUY2, L"YUY2" };
-			preferredFormats[formatCount++] = { MFVideoFormat_RGB32, L"RGB32" };
-			preferredFormats[formatCount++] = { MFVideoFormat_ARGB32, L"ARGB32" };
-		}
-		else
-		{
-			// 非零拷贝或无法进行 GPU YUV->BGRA 转换：优先 RGB32 以便直接显示
-			preferredFormats[formatCount++] = { MFVideoFormat_RGB32, L"RGB32" };
-			preferredFormats[formatCount++] = { MFVideoFormat_ARGB32, L"ARGB32" };
-			preferredFormats[formatCount++] = { MFVideoFormat_NV12, L"NV12" };
-			preferredFormats[formatCount++] = { MFVideoFormat_P010, L"P010" };
-			preferredFormats[formatCount++] = { MFVideoFormat_YUY2, L"YUY2" };
-		}
-
-		// 正常偏好：优先 RGB32 以支持零拷贝 D2D 渲染
-		for (int i = 0; i < formatCount; i++)
-		{
-			const auto& fmt = preferredFormats[i];
-			ComPtr<IMFMediaType> outputType;
-			hr = MFCreateMediaType(&outputType);
-			if (FAILED(hr)) continue;
-
-			outputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-			outputType->SetGUID(MF_MT_SUBTYPE, fmt.subtype);
-
-			// 复制尺寸信息
-			if (width > 0 && height > 0)
-			{
-				MFSetAttributeSize(outputType.Get(), MF_MT_FRAME_SIZE, width, height);
-			}
-
-			// 复制帧率
-			UINT32 numerator = 0, denominator = 0;
-			if (SUCCEEDED(MFGetAttributeRatio(nativeType.Get(), MF_MT_FRAME_RATE, &numerator, &denominator)))
-			{
-				MFSetAttributeRatio(outputType.Get(), MF_MT_FRAME_RATE, numerator, denominator);
-			}
-
-			// 复制像素宽高比
-			if (SUCCEEDED(MFGetAttributeRatio(nativeType.Get(), MF_MT_PIXEL_ASPECT_RATIO, &numerator, &denominator)))
-			{
-				MFSetAttributeRatio(outputType.Get(), MF_MT_PIXEL_ASPECT_RATIO, numerator, denominator);
-			}
-
-			// 尝试设置
-			hr = _sourceReader->SetCurrentMediaType(_srVideoStream, nullptr, outputType.Get());
-			if (SUCCEEDED(hr))
-			{
-				wchar_t msg[256];
-				swprintf_s(msg, L"SourceReader: Using accelerated format: %s", fmt.name);
-				DebugOutputHr(msg, S_OK);
-				
-				// 刷新视频格式信息
-				UpdateVideoFormatFromSourceReader();
-				return true;
-			}
-		}
-
-		DebugOutputHr(L"SourceReader: Failed to set any accelerated format, falling back to software RGB32", E_FAIL);
-	}
-
+	// 尝试多种视频格式以提高兼容性
+	// RGB32 (BGRA) 是最兼容的格式，Direct2D 原生支持
 	GUID formats[] = {
+		MFVideoFormat_NV12,
 		MFVideoFormat_RGB32,
 		MFVideoFormat_ARGB32,
 		MFVideoFormat_RGB24,
@@ -1270,6 +1055,8 @@ bool MediaPlayer::ConfigureSourceReaderVideoType()
 
 	for (int i = 0; i < (int)(sizeof(formats) / sizeof(formats[0])); i++)
 	{
+		if (!_preferNv12VideoOutput && formats[i] == MFVideoFormat_NV12)
+			continue;
 		ComPtr<IMFMediaType> mt;
 		if (FAILED(MFCreateMediaType(&mt)) || !mt) continue;
 		if (FAILED(mt->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video))) continue;
@@ -1281,6 +1068,8 @@ bool MediaPlayer::ConfigureSourceReaderVideoType()
 		HRESULT hr = _sourceReader->SetCurrentMediaType(_srVideoStream, nullptr, mt.Get());
 		if (SUCCEEDED(hr))
 		{
+			_usingNv12VideoOutput = (formats[i] == MFVideoFormat_NV12);
+			// 刷新当前视频格式信息（尺寸/stride/像素格式/aperture）
 			UpdateVideoFormatFromSourceReader();
 			return true;
 		}
@@ -1362,41 +1151,25 @@ void MediaPlayer::UpdateVideoFormatFromSourceReader()
 		if (SUCCEEDED(mt->GetGUID(MF_MT_SUBTYPE, &subtype)))
 		{
 			UINT32 bytesPerPixel = 4;
-			const wchar_t* subtypeName = L"Unknown";
 			if (subtype == MFVideoFormat_RGB32 || subtype == MFVideoFormat_ARGB32)
 			{
 				// RGB32/ARGB32: 每像素4字节
 				bytesPerPixel = 4;
-				subtypeName = (subtype == MFVideoFormat_RGB32) ? L"RGB32" : L"ARGB32";
 				if (stride == 0) stride = w * 4;
+			}
+			else if (subtype == MFVideoFormat_NV12)
+			{
+				// NV12: 8-bit 4:2:0 (Y + interleaved UV). 这里的 stride 指的是 Y plane stride。
+				// NV12 不应该按 bottom-up 解释（负 stride 常见于 RGB 位图）。
+				bottomUp = false;
+				bytesPerPixel = 1;
+				if (stride == 0 || stride < w) stride = w;
 			}
 			else if (subtype == MFVideoFormat_RGB24)
 			{
 				// RGB24: 每像素3字节，但需要对齐到4字节边界
 				bytesPerPixel = 3;
-				subtypeName = L"RGB24";
 				if (stride == 0) stride = ((w * 3 + 3) / 4) * 4;
-			}
-			else if (subtype == MFVideoFormat_NV12)
-			{
-				// NV12: YUV 4:2:0 (1.5 bytes/pixel overall)
-				bytesPerPixel = 0;
-				subtypeName = L"NV12";
-				if (stride == 0) stride = w;
-			}
-			else if (subtype == MFVideoFormat_P010)
-			{
-				// P010: 10-bit 4:2:0 (2 bytes per Y sample, overall not an integer bpp)
-				bytesPerPixel = 0;
-				subtypeName = L"P010";
-				if (stride == 0) stride = w * 2;
-			}
-			else if (subtype == MFVideoFormat_YUY2)
-			{
-				// YUY2: 4:2:2 packed (2 bytes/pixel)
-				bytesPerPixel = 2;
-				subtypeName = L"YUY2";
-				if (stride == 0) stride = w * 2;
 			}
 			else
 			{
@@ -1410,11 +1183,10 @@ void MediaPlayer::UpdateVideoFormatFromSourceReader()
 				_videoSubtype = subtype;
 				_videoBytesPerPixel = bytesPerPixel;
 				_videoBottomUp = bottomUp;
-				_videoInputStride = stride;
 			}
 			
 			wchar_t dbgMsg[256];
-			swprintf_s(dbgMsg, L"Video format: %dx%d, subtype=%s, stride=%u, bpp=%u, bottomUp=%d\n", w, h, subtypeName, stride, bytesPerPixel, bottomUp ? 1 : 0);
+			swprintf_s(dbgMsg, L"Video format: %dx%d, stride=%u, bpp=%u, bottomUp=%d\n", w, h, stride, bytesPerPixel, bottomUp ? 1 : 0);
 			OutputDebugStringW(dbgMsg);
 		}
 		else
@@ -1427,8 +1199,6 @@ void MediaPlayer::UpdateVideoFormatFromSourceReader()
 			_videoBottomUp = false;
 		}
 		
-		// 注意：_videoStride 用于 CPU 输出帧（BGRA）步长，会在写入 _videoFrame 时被设置为 w*4。
-		// 这里保存输入 stride 到 _videoInputStride，避免“第一帧后 stride 被输出值覆盖”导致后续帧解析失败。
 		_videoStride = stride;
 	}
 }
@@ -1437,129 +1207,109 @@ bool MediaPlayer::InitSourceReader(const std::wstring& url)
 {
 	ShutdownSourceReader();
 
-	ComPtr<IMFAttributes> attr;
-	HRESULT hr = MFCreateAttributes(&attr, 10);
-	if (FAILED(hr)) { DebugOutputHr(L"SourceReader: MFCreateAttributes", hr); return false; }
-	
-	bool videoProcessingEnabled = false;
-	_usingHardwareDecoding = false;
+	HRESULT hr = S_OK;
+	_usingHardwareDecode = false;
+	_usingNv12VideoOutput = false;
 
-	if (_useZeroCopy && _dxgiDeviceManager)
+	// 第一阶段：尽量在 Win7 环境也可用的方式启用“硬件变换/硬解”(由系统解码器+驱动决定)，
+	// 但仍保持输出为 RGB32（通过 SourceReader 的 video processing），以便复用现有 CPU->D2D 位图渲染链路。
+	if (_enableHardwareDecode)
 	{
-		hr = attr->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, _dxgiDeviceManager.Get());
+		ComPtr<IMFAttributes> attr;
+		hr = MFCreateAttributes(&attr, 10);
+		if (FAILED(hr)) { DebugOutputHr(L"SourceReader: MFCreateAttributes(HW)", hr); return false; }
+
 		(void)attr->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
-		videoProcessingEnabled = false;
-		_usingHardwareDecoding = true;
-		DebugOutputHr(L"SourceReader: DXGI Device Manager attached (Hardware Transforms Enabled)", S_OK);
+		// 不设置 MF_SOURCE_READER_DISABLE_DXVA，让 MF 自行选择 DXVA/软件路径。
+		// 若优先 NV12，则关闭 MF video processing（否则会把颜色转换成本算进 ReadSample）。
+		(void)attr->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, _preferNv12VideoOutput ? FALSE : TRUE);
+
+		hr = MFCreateSourceReaderFromURL(url.c_str(), attr.Get(), &_sourceReader);
+		if (FAILED(hr) && hr == E_INVALIDARG)
+		{
+			// 某些系统/解码器对 HW_TRANSFORMS 属性不接受（返回 E_INVALIDARG），做一次温和降级再试。
+			DebugOutputHr(L"SourceReader: HW init got E_INVALIDARG, retry without HW_TRANSFORMS", hr);
+			attr.Reset();
+			if (SUCCEEDED(MFCreateAttributes(&attr, 8)))
+			{
+				(void)attr->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, _preferNv12VideoOutput ? FALSE : TRUE);
+				hr = MFCreateSourceReaderFromURL(url.c_str(), attr.Get(), &_sourceReader);
+			}
+		}
+		if (SUCCEEDED(hr) && _sourceReader)
+		{
+			_usingHardwareDecode = true;
+			DebugOutputHr(L"SourceReader: HW transforms/DXVA mode (best-effort)", S_OK);
+		}
 	}
-	else
+
+	// 失败回退：维持原先强制软解配置（最稳）
+	if (!_sourceReader)
 	{
+		ComPtr<IMFAttributes> attr;
+		hr = MFCreateAttributes(&attr, 8);
+		if (FAILED(hr)) { DebugOutputHr(L"SourceReader: MFCreateAttributes(SW)", hr); return false; }
 		(void)attr->SetUINT32(MF_SOURCE_READER_DISABLE_DXVA, TRUE);
 		(void)attr->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, FALSE);
 		(void)attr->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
-		videoProcessingEnabled = true;
-		_usingHardwareDecoding = false;
-		DebugOutputHr(L"SourceReader: Software decode (CPU) mode", S_OK);
-	}
 
-	hr = MFCreateSourceReaderFromURL(url.c_str(), attr.Get(), &_sourceReader);
-
-	if (FAILED(hr) && _usingHardwareDecoding && hr == E_INVALIDARG)
-	{
-		DebugOutputHr(L"SourceReader: Hardware creation failed with E_INVALIDARG, retrying without HW_TRANSFORMS flag...", hr);
-		attr.Reset();
-		if (SUCCEEDED(MFCreateAttributes(&attr, 10)))
+		hr = MFCreateSourceReaderFromURL(url.c_str(), attr.Get(), &_sourceReader);
+		if (FAILED(hr))
 		{
-			(void)attr->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, _dxgiDeviceManager.Get());
-			hr = MFCreateSourceReaderFromURL(url.c_str(), attr.Get(), &_sourceReader);
+			DebugOutputHr(L"SourceReader: MFCreateSourceReaderFromURL failed (final)", hr);
+			_lastMfError = hr;
+			return false;
 		}
-	}
-	
-	if (FAILED(hr) && _usingHardwareDecoding)
-	{
-		DebugOutputHr(L"SourceReader: Hardware creation failed. Fallback to SOFTWARE mode...", hr);
-		
-		attr.Reset();
-		if (SUCCEEDED(MFCreateAttributes(&attr, 5)))
-		{
-			(void)attr->SetUINT32(MF_SOURCE_READER_DISABLE_DXVA, TRUE);
-			(void)attr->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, FALSE);
-			(void)attr->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
-			videoProcessingEnabled = true;
-			_usingHardwareDecoding = false;
-
-			hr = MFCreateSourceReaderFromURL(url.c_str(), attr.Get(), &_sourceReader);
-		}
+		DebugOutputHr(L"SourceReader: SW decode mode", S_OK);
 	}
 
-	if (FAILED(hr))
-	{
-		DebugOutputHr(L"SourceReader: MFCreateSourceReaderFromURL failed (final)", hr);
-		_lastMfError = hr;
-		return false;
-	}
-
-	_videoProcessingEnabled = videoProcessingEnabled;
-
-	// 使用“真实流索引”(0..N-1)进行选择与后续 ReadSample，避免某些源/驱动对 FIRST_* 常量兼容性不佳。
-	DWORD videoIndex = (DWORD)-1;
-	DWORD audioIndex = (DWORD)-1;
-	for (DWORD i = 0; ; i++)
-	{
-		ComPtr<IMFMediaType> mt;
-		HRESULT hrNt = _sourceReader->GetNativeMediaType(i, 0, &mt);
-		if (hrNt == MF_E_INVALIDSTREAMNUMBER) break;
-		if (FAILED(hrNt) || !mt) continue;
-		GUID major{};
-		if (FAILED(mt->GetGUID(MF_MT_MAJOR_TYPE, &major))) continue;
-		if (major == MFMediaType_Video && videoIndex == (DWORD)-1) videoIndex = i;
-		if (major == MFMediaType_Audio && audioIndex == (DWORD)-1) audioIndex = i;
-		if (videoIndex != (DWORD)-1 && audioIndex != (DWORD)-1) break;
-	}
-
+	// Ensure streams are selected.
 	(void)_sourceReader->SetStreamSelection((DWORD)MF_SOURCE_READER_ALL_STREAMS, FALSE);
-	if (videoIndex != (DWORD)-1)
+	(void)_sourceReader->SetStreamSelection(_srVideoStream, TRUE);
+	(void)_sourceReader->SetStreamSelection(_srAudioStream, TRUE);
+
+	if (!ConfigureSourceReaderVideoType())
 	{
-		_srVideoStream = videoIndex;
-		_hasVideo = true;
-		DebugOutputHr(L"SourceReader: Video stream discovered", S_OK);
-		(void)_sourceReader->SetStreamSelection(_srVideoStream, TRUE);
+		// Some files are audio-only.
+		_hasVideo = false;
 	}
 	else
 	{
-		_hasVideo = false;
-		DebugOutputHr(L"SourceReader: No video stream discovered", S_FALSE);
+		_hasVideo = true;
+		UpdateVideoFormatFromSourceReader();
 	}
-	if (audioIndex != (DWORD)-1)
+
+	if (InitWasapi() && ConfigureSourceReaderAudioTypeFromMixFormat())
 	{
-		_srAudioStream = audioIndex;
 		_hasAudio = true;
-		DebugOutputHr(L"SourceReader: Audio stream discovered", S_OK);
-		(void)_sourceReader->SetStreamSelection(_srAudioStream, TRUE);
 	}
 	else
 	{
 		_hasAudio = false;
-		DebugOutputHr(L"SourceReader: No audio stream discovered", S_FALSE);
 	}
 
-	if (_hasVideo)
+	// Find actual stream indices
+	_actualVideoStreamIndex = (DWORD)-1;
+	_actualAudioStreamIndex = (DWORD)-1;
+	for (DWORD i = 0; ; i++)
 	{
-		if (!ConfigureSourceReaderVideoType())
-			_hasVideo = false;
-		else
-			UpdateVideoFormatFromSourceReader();
-	}
-	if (_hasAudio)
-	{
-		if (InitWasapi() && ConfigureSourceReaderAudioTypeFromMixFormat())
-			_hasAudio = true;
-		else
-			_hasAudio = false;
-	}
+		ComPtr<IMFMediaType> mt;
+		HRESULT hr = _sourceReader->GetCurrentMediaType(i, &mt);
+		if (FAILED(hr)) break;
 
-	_actualVideoStreamIndex = _hasVideo ? _srVideoStream : (DWORD)-1;
-	_actualAudioStreamIndex = _hasAudio ? _srAudioStream : (DWORD)-1;
+		BOOL selected = FALSE;
+		if (SUCCEEDED(_sourceReader->GetStreamSelection(i, &selected)) && selected)
+		{
+			GUID majorType;
+			if (SUCCEEDED(mt->GetMajorType(&majorType)))
+			{
+				if (majorType == MFMediaType_Video && _actualVideoStreamIndex == (DWORD)-1)
+					_actualVideoStreamIndex = i;
+				else if (majorType == MFMediaType_Audio && _actualAudioStreamIndex == (DWORD)-1)
+					_actualAudioStreamIndex = i;
+			}
+		}
+	}
 
 	// Duration
 	PROPVARIANT var;
@@ -1586,13 +1336,6 @@ void MediaPlayer::StopSourceReaderPlayback(bool shutdown)
 	_threadPlaying = false;
 	_needSyncReset = true;
 	if (_audioClient) (void)_audioClient->Stop();
-	// 关键：Load() 会在 UI 线程同步等待 join。
-	// 先 Flush/取消流选择，尽量打断正在进行的 ReadSample 管线，降低“打开新文件卡住”的时间。
-	if (_sourceReader)
-	{
-		(void)_sourceReader->SetStreamSelection((DWORD)MF_SOURCE_READER_ALL_STREAMS, FALSE);
-		(void)_sourceReader->Flush(MF_SOURCE_READER_ALL_STREAMS);
-	}
 	if (_playThread.joinable())
 	{
 		_threadExit = true;
@@ -1612,6 +1355,11 @@ bool MediaPlayer::WriteAudioToWasapi(const BYTE* data, UINT32 bytes)
 	if (!_audioClient || !_audioRenderClient || !_audioMixFormat) return false;
 	if (!data || bytes == 0) return true;
 
+	_statAudioWriteCalls.fetch_add(1, std::memory_order_relaxed);
+	_statAudioWriteBytes.fetch_add(bytes, std::memory_order_relaxed);
+	const LARGE_INTEGER t0 = QpcNow();
+
+	// 防止卡死：若音频引擎未推进（padding 永远满）或外部已请求停止，避免在此无限等待。
 	const ULONGLONG startTick = GetTickCount64();
 
 	UINT32 offset = 0;
@@ -1657,199 +1405,44 @@ bool MediaPlayer::WriteAudioToWasapi(const BYTE* data, UINT32 bytes)
 		if (FAILED(hr)) { DebugOutputHr(L"WASAPI: ReleaseBuffer", hr); return false; }
 		offset += framesToWrite * bytesPerFrame;
 	}
+	const LARGE_INTEGER t1 = QpcNow();
+	_statAudioWriteQpcTicks.fetch_add((UINT64)(t1.QuadPart - t0.QuadPart), std::memory_order_relaxed);
 	return true;
 }
 
 void MediaPlayer::PlaybackThreadMain()
 {
 	HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-	LONGLONG firstVideoPts = -1;
-	LONGLONG lastVideoPts = LLONG_MIN;
-	LONGLONG lastPtsObserved = LLONG_MIN;
-	double avgFrameDurationHns = 0.0;
-	LONGLONG maxVideoPtsSeen = LLONG_MIN;
-
-	struct PendingVideoFrame
-	{
-		LONGLONG pts = 0;
-		UINT subresourceIndex = 0;
-		UINT64 seq = 0;
-		ComPtr<IMFSample> sample;
-		ComPtr<ID3D11Texture2D> texture;
-	};
-	std::vector<PendingVideoFrame> pendingVideo;
-	pendingVideo.reserve(8);
-	UINT64 pendingSeq = 0;
-	UINT32 debugVideoTsLogCount = 0;
-	static constexpr UINT32 kDebugVideoTsLogFirstN = 120;
-	bool triedRecoverInvalidStream = false;
-	bool triedRecoverResetPipeline = false;
+	// Simple A/V sync based on timestamps.
+	LONGLONG firstTs = -1;
 	LARGE_INTEGER freq{};
 	QueryPerformanceFrequency(&freq);
 	LARGE_INTEGER startQpc{};
 	QueryPerformanceCounter(&startQpc);
 
-	uint64_t lastSeekSerial = _seekSerial.load(std::memory_order_acquire);
-	LONGLONG activeSeekTargetHns = _seekTargetHns.load(std::memory_order_acquire);
-	bool waitingFirstFrameAfterSeek = false;
-
-	auto PaceVideoToPts = [&](LONGLONG pts)
-	{
-		if (firstVideoPts < 0)
-		{
-			firstVideoPts = pts;
-			QueryPerformanceCounter(&startQpc);
-		}
-		float rate = _playbackRate.load();
-		if (rate < 0.01f) rate = 1.0f;
-		const double relSec = (double)(pts - firstVideoPts) / HNS_PER_SEC;
-		double targetElapsedSec = relSec / rate;
-		for (;;)
-		{
-			if (_threadExit || !_threadPlaying) break;
-			if (_needSyncReset) break;
-			LARGE_INTEGER now{};
-			QueryPerformanceCounter(&now);
-			double elapsedSec = (double)(now.QuadPart - startQpc.QuadPart) / (double)freq.QuadPart;
-			double delta = targetElapsedSec - elapsedSec;
-			if (delta <= 0.005) break;
-
-			DWORD ms = (DWORD)std::clamp(delta * 1000.0, 1.0, 50.0);
-			Sleep(ms);
-			rate = _playbackRate.load();
-			if (rate < 0.01f) rate = 1.0f;
-			targetElapsedSec = relSec / rate;
-		}
-	};
-
-	auto UpdateAvgFrameDuration = [&](LONGLONG pts, IMFSample* s)
-	{
-		LONGLONG dur = 0;
-		if (s && SUCCEEDED(s->GetSampleDuration(&dur)) && dur > 0)
-		{
-			// 使用样本 duration（若可用），通常更可靠。
-			if (avgFrameDurationHns <= 0.0) avgFrameDurationHns = (double)dur;
-			else avgFrameDurationHns = avgFrameDurationHns * 0.90 + (double)dur * 0.10;
-			return;
-		}
-		if (lastPtsObserved != LLONG_MIN)
-		{
-			LONGLONG diff = pts - lastPtsObserved;
-			if (diff > 0 && diff < (LONGLONG)(HNS_PER_SEC * 2.0))
-			{
-				if (avgFrameDurationHns <= 0.0) avgFrameDurationHns = (double)diff;
-				else avgFrameDurationHns = avgFrameDurationHns * 0.95 + (double)diff * 0.05;
-			}
-		}
-		lastPtsObserved = pts;
-	};
-
-
-	auto ComputeReorderDelayHns = [&]() -> LONGLONG
-	{
-		// 固定“前视”延迟，用于吸收 B 帧/时间戳抖动。
-		// 取 ~1.5 帧时长，限制在 5ms..150ms，避免引入过大 AV 延迟。
-		double d = avgFrameDurationHns;
-		if (!(d > 0.0)) d = HNS_PER_SEC / 60.0;
-		LONGLONG w = (LONGLONG)std::llround(d * 1.5);
-		w = (LONGLONG)std::clamp<double>((double)w, 50000.0, 150000.0);
-		return w;
-	};
-
-	auto SelectVideoPts = [&](IMFSample* s, LONGLONG fallbackTs) -> LONGLONG
-	{
-		LONGLONG pts = fallbackTs;
-		LONGLONG st = 0;
-		bool hasSt = (s && SUCCEEDED(s->GetSampleTime(&st)));
-		if (hasSt) pts = st;
-
-		// 某些链路下 GetSampleTime 可能给的是 DTS/解码顺序时间。
-		// 如果 DecodeTimestamp 存在且与 sampleTime 相同，而 ReadSample 的 ts 又不同，则更倾向使用 ReadSample ts。
-		UINT64 dec = 0;
-		bool hasDec = (s && SUCCEEDED(s->GetUINT64(MFSampleExtension_DecodeTimestamp, &dec)));
-		if (hasSt && hasDec && (LONGLONG)dec == st && fallbackTs != st)
-		{
-			pts = fallbackTs;
-		}
-
-		if (s && debugVideoTsLogCount < kDebugVideoTsLogFirstN)
-		{
-			LONGLONG dur = 0;
-			bool hasDur = (SUCCEEDED(s->GetSampleDuration(&dur)));
-			wchar_t msg[512]{};
-			swprintf_s(
-				msg,
-				L"[MediaPlayer TS] ts=%lld st=%s%lld dts=%s%llu dur=%s%lld -> pts=%lld\n",
-				(long long)fallbackTs,
-				hasSt ? L"" : L"(na)", (long long)(hasSt ? st : 0),
-				hasDec ? L"" : L"(na)", (unsigned long long)(hasDec ? dec : 0),
-				hasDur ? L"" : L"(na)", (long long)(hasDur ? dur : 0),
-				(long long)pts);
-			OutputDebugStringW(msg);
-			debugVideoTsLogCount++;
-		}
-
-		return pts;
-	};
-
-	// 以 PTS（其次 seq）有序插入，确保输出稳定且按呈现时间。
-	auto InsertPendingVideoSorted = [&](PendingVideoFrame&& f)
-	{
-		const auto it = std::upper_bound(
-			pendingVideo.begin(), pendingVideo.end(), f,
-			[](const PendingVideoFrame& a, const PendingVideoFrame& b)
-			{
-				if (a.pts != b.pts) return a.pts < b.pts;
-				return a.seq < b.seq;
-			});
-		pendingVideo.insert(it, std::move(f));
-	};
-
 	while (!_threadExit)
 	{
+		// Wait until playing.
 		{
 			std::unique_lock lk(_threadMutex);
 			_threadCv.wait(lk, [&] { return _threadExit || _threadPlaying.load(); });
 			if (_threadExit) break;
 		}
 
-		firstVideoPts = -1;
-		lastVideoPts = LLONG_MIN;
-		lastPtsObserved = LLONG_MIN;
-		avgFrameDurationHns = 0.0;
-		maxVideoPtsSeen = LLONG_MIN;
-		pendingVideo.clear();
-		pendingSeq = 0;
-		debugVideoTsLogCount = 0;
-		triedRecoverInvalidStream = false;
-		triedRecoverResetPipeline = false;
+		firstTs = -1;
 
+		// SourceReader 后端：始终保持音频输出开启；倍速由我们对 PCM 做时间缩放（允许变调但不断音）。
 		if (_audioClient && _hasAudio)
 			(void)_audioClient->Start();
 
 		while (_threadPlaying && !_threadExit)
 		{
-			{
-				const uint64_t currentSeekSerial = _seekSerial.load(std::memory_order_acquire);
-				if (currentSeekSerial != lastSeekSerial)
-				{
-					lastSeekSerial = currentSeekSerial;
-					activeSeekTargetHns = _seekTargetHns.load(std::memory_order_acquire);
-					waitingFirstFrameAfterSeek = true;
-					_needSyncReset = true;
-					pendingVideo.clear();
-					maxVideoPtsSeen = LLONG_MIN;
-				}
-			}
 		if (_needSyncReset)
 		{
-			firstVideoPts = -1;
-			lastVideoPts = LLONG_MIN;
-			lastPtsObserved = LLONG_MIN;
-			avgFrameDurationHns = 0.0;
-			maxVideoPtsSeen = LLONG_MIN;
-			pendingVideo.clear();
+			firstTs = -1;
 			if (_timeStretch) _timeStretch->Reset();
+			// 倍速/Seek 切换时，WASAPI 缓冲里可能还残留上一次 time-stretch 的音频。
+			// 这里通过 Stop+Reset 清空缓冲，避免回到 1.0x 后仍听到“被拉长的片段”。
 			if (_audioClient && _hasAudio)
 			{
 				(void)_audioClient->Stop();
@@ -1863,47 +1456,12 @@ void MediaPlayer::PlaybackThreadMain()
 		DWORD flags = 0;
 		LONGLONG ts = 0;
 		ComPtr<IMFSample> sample;
+		_statReadSampleCalls.fetch_add(1, std::memory_order_relaxed);
+		const LARGE_INTEGER tRead0 = QpcNow();
 		HRESULT hr = _sourceReader->ReadSample(MF_SOURCE_READER_ANY_STREAM, 0, &streamIndex, &flags, &ts, &sample);
-		if (FAILED(hr) && !triedRecoverInvalidStream && (hr == MF_E_INVALIDSTREAMNUMBER || hr == (HRESULT)0xC00D36B3))
-		{
-			triedRecoverInvalidStream = true;
-			DebugOutputHr(L"SourceReader: ReadSample invalid-stream, retrying after reselection...", hr);
-			if (_sourceReader)
-			{
-				(void)_sourceReader->SetStreamSelection((DWORD)MF_SOURCE_READER_ALL_STREAMS, FALSE);
-				if (_hasVideo) (void)_sourceReader->SetStreamSelection(_srVideoStream, TRUE);
-				if (_hasAudio) (void)_sourceReader->SetStreamSelection(_srAudioStream, TRUE);
-			}
-			hr = _sourceReader->ReadSample(MF_SOURCE_READER_ANY_STREAM, 0, &streamIndex, &flags, &ts, &sample);
-		}
-		if (FAILED(hr) && !triedRecoverResetPipeline && _sourceReader)
-		{
-			triedRecoverResetPipeline = true;
-			DebugOutputHr(L"SourceReader: ReadSample failed, attempting one-time pipeline reset...", hr);
-			(void)_sourceReader->Flush(MF_SOURCE_READER_ALL_STREAMS);
-			(void)_sourceReader->SetStreamSelection((DWORD)MF_SOURCE_READER_ALL_STREAMS, FALSE);
-			if (_hasVideo) (void)_sourceReader->SetStreamSelection(_srVideoStream, TRUE);
-			if (_hasAudio) (void)_sourceReader->SetStreamSelection(_srAudioStream, TRUE);
-
-			if (_hasVideo)
-				(void)ConfigureSourceReaderVideoType();
-			if (_hasAudio && _audioMixFormat)
-				(void)ConfigureSourceReaderAudioTypeFromMixFormat();
-
-			PROPVARIANT var;
-			PropVariantInit(&var);
-			var.vt = VT_I8;
-			var.hVal.QuadPart = (LONGLONG)std::llround(_position * HNS_PER_SEC);
-			HRESULT hrSeek = _sourceReader->SetCurrentPosition(GUID_NULL, var);
-			PropVariantClear(&var);
-			if (FAILED(hrSeek))
-			{
-				// 若 reset 后仍无法定位，避免在后续循环里不断触发异常/错误。
-				DebugOutputHr(L"SourceReader: pipeline reset SetCurrentPosition failed", hrSeek);
-			}
-			_needSyncReset = true;
-			hr = _sourceReader->ReadSample(MF_SOURCE_READER_ANY_STREAM, 0, &streamIndex, &flags, &ts, &sample);
-		}
+		const LARGE_INTEGER tRead1 = QpcNow();
+		const UINT64 readTicks = (UINT64)(tRead1.QuadPart - tRead0.QuadPart);
+		_statReadSampleQpcTicks.fetch_add(readTicks, std::memory_order_relaxed);
 		if (FAILED(hr))
 		{
 			_lastMfError = hr;
@@ -1918,55 +1476,19 @@ void MediaPlayer::PlaybackThreadMain()
 		{
 			if (_loop && _sourceReader)
 			{
-				HRESULT hrFlush = _sourceReader->Flush(MF_SOURCE_READER_ALL_STREAMS);
-				if (FAILED(hrFlush))
-					DebugOutputHr(L"SourceReader: Flush on loop failed", hrFlush);
+				// Loop: flush & seek to start, then continue.
+				(void)_sourceReader->Flush(MF_SOURCE_READER_ALL_STREAMS);
 				if (_timeStretch) _timeStretch->Reset();
 				PROPVARIANT var;
 				PropVariantInit(&var);
 				var.vt = VT_I8;
 				var.hVal.QuadPart = 0;
-				HRESULT hrSeek0 = _sourceReader->SetCurrentPosition(GUID_NULL, var);
+				(void)_sourceReader->SetCurrentPosition(GUID_NULL, var);
 				PropVariantClear(&var);
-				if (FAILED(hrSeek0))
-				{
-					// 某些媒体源不支持 seek；禁用 loop，按正常 ended 结束，避免反复异常。
-					DebugOutputHr(L"SourceReader: loop SetCurrentPosition(0) failed (loop disabled)", hrSeek0);
-					_loop = false;
-					_threadPlaying = false;
-					_playState = PlayState::Stopped;
-					OnMediaEnded(this);
-					break;
-				}
-
-				// 关键：上一轮末尾缓存的 sampleTime 通常很大；新一轮从 0 开始会被判定为“时间倒退”而被丢弃。
-				// 手动拖动进度条之所以能恢复，是因为 Seek() 会清空这些状态；loop 也必须做同样的清空。
-				{
-					std::scoped_lock lock(_textureMutex);
-					_currentVideoSample.Reset();
-					_currentVideoTexture.Reset();
-					_currentVideoTextureFrameId = 0;
-					_currentVideoTextureSampleTime = (std::numeric_limits<LONGLONG>::min)();
-					_lastBgraConvertedFrameId = 0;
-					_d2dVideoBitmap.Reset();
-					_d2dVideoBitmapSourceTexture.Reset();
-				}
-				{
-					std::scoped_lock lock(_videoFrameMutex);
-					_videoFrameReady = false;
-					_videoFrameSampleTime = (std::numeric_limits<LONGLONG>::min)();
-					_videoFrame.clear();
-				}
-				this->PostRender();
-
 				_needSyncReset = true;
-				// Loop: 让下一轮尽快输出第一帧，避免第二遍开头长时间“停在最后一帧”。
-				waitingFirstFrameAfterSeek = true;
-				activeSeekTargetHns = 0;
-				pendingVideo.clear();
-				maxVideoPtsSeen = LLONG_MIN;
 				_position = 0.0;
 				OnPositionChanged(this, _position);
+				// 仍然触发 ended 事件，便于 UI 更新
 				OnMediaEnded(this);
 				continue;
 			}
@@ -1977,6 +1499,56 @@ void MediaPlayer::PlaybackThreadMain()
 		}
 
 		if (!sample) continue;
+		if (firstTs < 0)
+		{
+			firstTs = ts;
+			QueryPerformanceCounter(&startQpc);
+		}
+
+		// Pace based on sample timestamp with playback rate
+		float rate = _playbackRate.load();
+		if (rate < 0.01f) rate = 1.0f; // 防止除零
+		
+		const double relSec = (double)(ts - firstTs) / HNS_PER_SEC;
+		double targetElapsedSec = relSec / rate;
+		
+		// 允许长时间等待（慢速播放），但保持可中断与对实时速率变化敏感。
+		for (;;)
+		{
+			if (_threadExit || !_threadPlaying) break;
+			if (_needSyncReset) break;
+			LARGE_INTEGER now{};
+			QueryPerformanceCounter(&now);
+			double elapsedSec = (double)(now.QuadPart - startQpc.QuadPart) / (double)freq.QuadPart;
+			double delta = targetElapsedSec - elapsedSec;
+			if (delta <= 0.005) break;
+
+			// 以小步 sleep，避免一次 Sleep 很久导致停止/换片不响应
+			DWORD ms = (DWORD)std::clamp(delta * 1000.0, 1.0, 50.0);
+			Sleep(ms);
+			// 若用户在等待期间调整了播放速率，下一轮会立刻按新速率重新评估
+			rate = _playbackRate.load();
+			if (rate < 0.01f) rate = 1.0f;
+			targetElapsedSec = relSec / rate;
+		}
+
+		_position = (double)ts / HNS_PER_SEC;
+		OnPositionChanged(this, _position);
+
+		ComPtr<IMFMediaBuffer> buf;
+		_statSamplesToContigCalls.fetch_add(1, std::memory_order_relaxed);
+		const LARGE_INTEGER tContig0 = QpcNow();
+		hr = sample->ConvertToContiguousBuffer(&buf);
+		const LARGE_INTEGER tContig1 = QpcNow();
+		_statSamplesToContigQpcTicks.fetch_add((UINT64)(tContig1.QuadPart - tContig0.QuadPart), std::memory_order_relaxed);
+		if (FAILED(hr) || !buf) continue;
+		BYTE* p = nullptr;
+		DWORD maxLen = 0, curLen = 0;
+		hr = buf->Lock(&p, &maxLen, &curLen);
+		if (FAILED(hr) || !p || curLen == 0) continue;
+
+		// 关键修复：不要仅依赖 _actualVideoStreamIndex/_actualAudioStreamIndex。
+		// 对某些文件/解码器，streamIndex 的映射或类型会变化；若误把音频当视频会出现严重花屏。
 		GUID majorType{};
 		if (_sourceReader)
 		{
@@ -1986,36 +1558,18 @@ void MediaPlayer::PlaybackThreadMain()
 		}
 		const bool isVideo = (majorType == MFMediaType_Video);
 		const bool isAudio = (majorType == MFMediaType_Audio);
-
-		// 注意：ReadSample 返回的 ts 在不同链路下可能并非 PTS。
-		// 这里仅对视频样本做“呈现时间”选择/诊断输出，避免音频混入导致判断错误。
-		LONGLONG pts = ts;
 		if (isVideo)
 		{
-			pts = SelectVideoPts(sample.Get(), ts);
-			UpdateAvgFrameDuration(pts, sample.Get());
+			_statReadSampleVideoCalls.fetch_add(1, std::memory_order_relaxed);
+			_statReadSampleVideoQpcTicks.fetch_add(readTicks, std::memory_order_relaxed);
 		}
-
-		// Seek 后快速丢弃目标之前的 preroll 视频帧，避免长时间堆积/等待导致画面“卡住”。
-		if (isVideo && waitingFirstFrameAfterSeek && activeSeekTargetHns != (std::numeric_limits<LONGLONG>::min)())
+		else if (isAudio)
 		{
-			// 容忍一定范围的“略早于目标”，避免永远等不到第一帧。
-			static constexpr LONGLONG kSeekToleranceHns = 2500000; // 250ms
-			if (pts + kSeekToleranceHns < activeSeekTargetHns)
-				continue;
+			_statReadSampleAudioCalls.fetch_add(1, std::memory_order_relaxed);
+			_statReadSampleAudioQpcTicks.fetch_add(readTicks, std::memory_order_relaxed);
 		}
 
-		// 位置必须单调递增：SourceReader 的 ReadSample 可能跨流返回非时间戳顺序的 sample。
-		// 如果直接用 ts 覆盖，会导致进度与画面出现“倒退”。
-		{
-			double newPos = (double)pts / HNS_PER_SEC;
-			if (newPos > _position)
-			{
-				_position = newPos;
-				OnPositionChanged(this, _position);
-			}
-		}
-
+		// 若发生类型变化，刷新视频格式信息（尺寸/stride/像素格式）。
 		if ((flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) != 0 && isVideo)
 		{
 			UpdateVideoFormatFromSourceReader();
@@ -2024,254 +1578,121 @@ void MediaPlayer::PlaybackThreadMain()
 		if (isVideo)
 		{
 			_actualVideoStreamIndex = streamIndex;
+			_hasVideo = true;
 			if (_videoSize.cx <= 0 || _videoSize.cy <= 0)
 				UpdateVideoFormatFromSourceReader();
-
-			bool textureProcessed = false;
-			if (_useZeroCopy && _dxgiDeviceManager && _usingHardwareDecoding)
+			
+			// 统一转换为 BGRA32，消除像素格式/stride 差异导致的花屏。
+			// 注意：部分解码链路会输出带 padding 的帧，并通过 aperture 指定真实可视区域。
+			const LONG frameW = _videoFrameSize.cx;
+			const LONG frameH = _videoFrameSize.cy;
+			const LONG w = _videoSize.cx;
+			const LONG h = _videoSize.cy;
+			const UINT32 cropX = _videoCropX;
+			const UINT32 cropY = _videoCropY;
+			if (frameW > 0 && frameH > 0 && w > 0 && h > 0)
 			{
-				DWORD bufferCount = 0;
-				HRESULT lastHr = sample->GetBufferCount(&bufferCount);
-				if (SUCCEEDED(lastHr) && bufferCount > 0)
+				_statDecodedVideoFrames.fetch_add(1, std::memory_order_relaxed);
+				_statVideoConvertCalls.fetch_add(1, std::memory_order_relaxed);
+				const LARGE_INTEGER tVid0 = QpcNow();
+				GUID subtype{};
+				UINT32 srcStride = 0;
+				UINT32 bpp = 4;
+				bool bottomUp = false;
 				{
-					for (DWORD i = 0; i < bufferCount; i++)
-					{
-						ComPtr<IMFMediaBuffer> mediaBuffer;
-						lastHr = sample->GetBufferByIndex(i, &mediaBuffer);
-						if (FAILED(lastHr) || !mediaBuffer) continue;
-
-						ComPtr<IMFDXGIBuffer> dxgiBuffer;
-						lastHr = mediaBuffer.As(&dxgiBuffer);
-						if (FAILED(lastHr) || !dxgiBuffer) continue;
-
-						ComPtr<ID3D11Texture2D> texture;
-						UINT subresourceIndex = 0;
-						lastHr = dxgiBuffer->GetResource(__uuidof(ID3D11Texture2D), (void**)&texture);
-						if (SUCCEEDED(lastHr) && texture)
-						{
-							HRESULT hrSub = dxgiBuffer->GetSubresourceIndex(&subresourceIndex);
-							if (FAILED(hrSub))
-								subresourceIndex = 0;
-						}
-						
-						if (FAILED(lastHr) || !texture) continue;
-
-						// 有些硬解码链路可能按“解码顺序”输出（B 帧），导致 PTS 非单调。
-						// 这里先按 PTS 缓冲重排，再按正确顺序节拍/呈现，避免顺序错乱。
-						PendingVideoFrame pv;
-						pv.pts = pts;
-						pv.subresourceIndex = subresourceIndex;
-						pv.seq = ++pendingSeq;
-						pv.sample = sample;
-						pv.texture = texture;
-						InsertPendingVideoSorted(std::move(pv));
-						if (maxVideoPtsSeen == LLONG_MIN || pts > maxVideoPtsSeen)
-							maxVideoPtsSeen = pts;
-						textureProcessed = true;
-
-						// Seek 后第一帧：跳过重排窗口，尽快输出一帧到 UI。
-						if (waitingFirstFrameAfterSeek && !pendingVideo.empty())
-						{
-							PendingVideoFrame frame = std::move(pendingVideo.back());
-							pendingVideo.clear();
-							firstVideoPts = -1;
-							lastVideoPts = LLONG_MIN;
-							maxVideoPtsSeen = frame.pts;
-							waitingFirstFrameAfterSeek = false;
-							PaceVideoToPts(frame.pts);
-							OnVideoFrameTexture(frame.texture.Get(), frame.subresourceIndex, frame.pts, frame.sample.Get());
-							break;
-						}
-
-						// 恒定前视重排：当最早帧已经“足够早于”maxPtsSeen 时就输出它。
-						// 这样既能纠正 B 帧/抖动，又避免过大缓存导致 AV 不同步。
-						static constexpr size_t kMaxReorderFrames = 32;
-						const LONGLONG reorderDelay = ComputeReorderDelayHns();
-						for (;;)
-						{
-							if (pendingVideo.empty()) break;
-							const LONGLONG minPts = pendingVideo.front().pts;
-							const bool ready = (maxVideoPtsSeen != LLONG_MIN) && (minPts <= (maxVideoPtsSeen - reorderDelay));
-							const bool tooMany = pendingVideo.size() > kMaxReorderFrames;
-							if (!ready && !tooMany)
-								
-								break;
-
-							PendingVideoFrame frame = std::move(pendingVideo.front());
-							pendingVideo.erase(pendingVideo.begin());
-
-							if (lastVideoPts != LLONG_MIN && frame.pts < lastVideoPts)
-							{
-								// 小幅回退更像时间戳量化/抖动：夹紧到 lastVideoPts 而非丢帧。
-								const LONGLONG back = lastVideoPts - frame.pts;
-								if (back <= (VIDEO_TS_REORDER_TOLERANCE_HNS * 6))
-								{
-									frame.pts = lastVideoPts;
-								}
-								else
-								{
-									// 大幅回退通常是 seek/discontinuity：重置节拍基准而不是持续乱序。
-									firstVideoPts = frame.pts;
-									QueryPerformanceCounter(&startQpc);
-									lastVideoPts = frame.pts;
-									PaceVideoToPts(frame.pts);
-									OnVideoFrameTexture(frame.texture.Get(), frame.subresourceIndex, frame.pts, frame.sample.Get());
-									continue;
-								}
-							}
-							lastVideoPts = frame.pts;
-
-							PaceVideoToPts(frame.pts);
-							OnVideoFrameTexture(frame.texture.Get(), frame.subresourceIndex, frame.pts, frame.sample.Get());
-						}
-
-						static bool firstSuccess = true;
-						if (firstSuccess)
-						{
-							D3D11_TEXTURE2D_DESC desc;
-							texture->GetDesc(&desc);
-							wchar_t msg[256];
-							swprintf_s(msg, L"Zero-copy GPU texture obtained: %dx%d, Format: %d, Index: %u", desc.Width, desc.Height, desc.Format, subresourceIndex);
-							DebugOutputHr(msg, S_OK);
-							firstSuccess = false;
-						}
-						break;
-					}
+					std::scoped_lock lock(_videoFrameMutex);
+					subtype = _videoSubtype;
+					srcStride = _videoStride;
+					bpp = (_videoBytesPerPixel == 0) ? 4 : _videoBytesPerPixel;
+					bottomUp = _videoBottomUp;
 				}
 
-				if (!textureProcessed)
+				if (subtype == MFVideoFormat_NV12)
 				{
-					static bool warnedOnce = false;
-					if (!warnedOnce)
+					// NV12: p points to NV12 contiguous buffer.
+					if (srcStride == 0) srcStride = (UINT32)frameW;
+					std::vector<uint8_t> converted;
+					ConvertNV12ToBGRA(p, (size_t)curLen, srcStride, (UINT32)frameW, (UINT32)frameH, cropX, cropY, (UINT32)w, (UINT32)h, converted);
+					if (!converted.empty())
 					{
-						DebugOutputHr(L"Zero-copy: Failed to extract GPU texture from sample (no IMFDXGIBuffer), falling back to CPU", lastHr);
-						warnedOnce = true;
-					}
-				}
-			}
-
-			if (textureProcessed) continue;
-
-			// 非零拷贝路径（CPU / RGB）仍按当前帧 PTS 节拍并确保单调。
-			PaceVideoToPts(pts);
-			if (lastVideoPts != LLONG_MIN && pts < lastVideoPts)
-				continue;
-			lastVideoPts = pts;
-		}
-
-		ComPtr<IMFMediaBuffer> buf;
-		hr = sample->ConvertToContiguousBuffer(&buf);
-		if (FAILED(hr) || !buf) continue;
-		BYTE* p = nullptr;
-		DWORD maxLen = 0, curLen = 0;
-		hr = buf->Lock(&p, &maxLen, &curLen);
-		if (FAILED(hr) || !p || curLen == 0) continue;
-
-		if (isVideo)
-		{
-				const LONG frameW = _videoFrameSize.cx;
-				const LONG frameH = _videoFrameSize.cy;
-				const LONG w = _videoSize.cx;
-				const LONG h = _videoSize.cy;
-				const UINT32 cropX = _videoCropX;
-				const UINT32 cropY = _videoCropY;
-				if (frameW > 0 && frameH > 0 && w > 0 && h > 0)
-				{
-					UINT32 srcStride = 0;
-					UINT32 bpp = 4;
-					bool bottomUp = false;
-					GUID subtype = GUID_NULL;
-					{
-						std::scoped_lock lock(_videoFrameMutex);
-						srcStride = _videoInputStride;
-						bpp = (_videoBytesPerPixel == 0) ? 4 : _videoBytesPerPixel;
-						bottomUp = _videoBottomUp;
-						subtype = _videoSubtype;
-					}
-
-					// NV12：需要显式做 YUV->BGRA 转换（否则会把 NV12 当 32bpp memcpy，导致画面异常）。
-					if (subtype == MFVideoFormat_NV12)
-					{
-						std::vector<uint8_t> converted;
-						ConvertNV12ToBGRA(
-							p,
-							(size_t)curLen,
-							srcStride ? srcStride : (UINT32)frameW,
-							(UINT32)frameW,
-							(UINT32)frameH,
-							cropX,
-							cropY,
-							(UINT32)w,
-							(UINT32)h,
-							converted);
-						if (!converted.empty())
 						{
-							{
-								std::scoped_lock lock(_videoFrameMutex);
-								_videoFrame = std::move(converted);
-								_videoStride = (UINT32)w * 4;
-								_videoFrameReady = true;
-								_videoFrameSampleTime = pts;
-							}
-							this->PostRender();
+							std::scoped_lock lock(_videoFrameMutex);
+							_videoFrame = std::move(converted);
+							_videoFrameStride = (UINT32)w * 4;
+							_videoFrameReady = true;
 						}
+						const LARGE_INTEGER tVid1 = QpcNow();
+						_statVideoConvertQpcTicks.fetch_add((UINT64)(tVid1.QuadPart - tVid0.QuadPart), std::memory_order_relaxed);
+						_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
+						this->PostRender();
 					}
 					else
 					{
+						const LARGE_INTEGER tVid1 = QpcNow();
+						_statVideoConvertQpcTicks.fetch_add((UINT64)(tVid1.QuadPart - tVid0.QuadPart), std::memory_order_relaxed);
+					}
+					continue;
+				}
 
-						const UINT32 minStride = (UINT32)frameW * bpp;
-						if (srcStride == 0) srcStride = minStride;
-						if (srcStride < minStride) srcStride = minStride;
-						const UINT32 needed = srcStride * (UINT32)frameH;
-						if (curLen >= needed)
+
+				const UINT32 minStride = (UINT32)frameW * bpp;
+				if (srcStride == 0) srcStride = minStride;
+				if (srcStride < minStride) srcStride = minStride;
+				const UINT32 needed = srcStride * (UINT32)frameH;
+				if (curLen >= needed)
+				{
+					std::vector<uint8_t> converted;
+					converted.resize((size_t)w * (size_t)h * 4);
+					const UINT32 cropWBytes = (UINT32)w * 4;
+					for (LONG row = 0; row < h; row++)
+					{
+						LONG rawRow = (LONG)cropY + row;
+						if (rawRow < 0 || rawRow >= frameH) break;
+						LONG srcRow = bottomUp ? (frameH - 1 - rawRow) : rawRow;
+						const BYTE* srcRowPtr = p + (size_t)srcRow * (size_t)srcStride + (size_t)cropX * (size_t)bpp;
+						uint8_t* dstRowPtr = converted.data() + (size_t)row * (size_t)w * 4;
+
+						if (bpp == 4)
 						{
-							std::vector<uint8_t> converted;
-							converted.resize((size_t)w * (size_t)h * 4);
-							const UINT32 cropWBytes = (UINT32)w * 4;
-							for (LONG row = 0; row < h; row++)
+							memcpy(dstRowPtr, srcRowPtr, (size_t)cropWBytes);
+						}
+						else if (bpp == 3)
+						{
+							// MFVideoFormat_RGB24 在 Windows 上通常为 BGR24
+							for (LONG x = 0; x < w; x++)
 							{
-								LONG rawRow = (LONG)cropY + row;
-								if (rawRow < 0 || rawRow >= frameH) break;
-								LONG srcRow = bottomUp ? (frameH - 1 - rawRow) : rawRow;
-								const BYTE* srcRowPtr = p + (size_t)srcRow * (size_t)srcStride + (size_t)cropX * (size_t)bpp;
-								uint8_t* dstRowPtr = converted.data() + (size_t)row * (size_t)w * 4;
-
-								if (bpp == 4)
-								{
-									memcpy(dstRowPtr, srcRowPtr, (size_t)cropWBytes);
-								}
-								else if (bpp == 3)
-								{
-									// MFVideoFormat_RGB24 在 Windows 上通常为 BGR24
-									for (LONG x = 0; x < w; x++)
-									{
-										const BYTE* s = srcRowPtr + (size_t)x * 3;
-										uint8_t* d = dstRowPtr + (size_t)x * 4;
-										d[0] = s[0];
-										d[1] = s[1];
-										d[2] = s[2];
-										d[3] = 0xFF;
-									}
-								}
-								else
-								{
-									// Unknown: best effort treat as 32bpp.
-									memcpy(dstRowPtr, srcRowPtr, (size_t)cropWBytes);
-								}
+								const BYTE* s = srcRowPtr + (size_t)x * 3;
+								uint8_t* d = dstRowPtr + (size_t)x * 4;
+								d[0] = s[0];
+								d[1] = s[1];
+								d[2] = s[2];
+								d[3] = 0xFF;
 							}
-
-							{
-								std::scoped_lock lock(_videoFrameMutex);
-								_videoFrame = std::move(converted);
-								_videoStride = (UINT32)w * 4;
-								_videoFrameReady = true;
-								_videoFrameSampleTime = pts;
-							}
-							this->PostRender();
+						}
+						else
+						{
+							// Unknown: best effort treat as 32bpp.
+							memcpy(dstRowPtr, srcRowPtr, (size_t)cropWBytes);
 						}
 					}
+
+					{
+						std::scoped_lock lock(_videoFrameMutex);
+						_videoFrame = std::move(converted);
+						_videoFrameStride = (UINT32)w * 4;
+						_videoFrameReady = true;
+					}
+					const LARGE_INTEGER tVid1 = QpcNow();
+					_statVideoConvertQpcTicks.fetch_add((UINT64)(tVid1.QuadPart - tVid0.QuadPart), std::memory_order_relaxed);
+					_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
+					this->PostRender();
 				}
-			
+				else
+				{
+					const LARGE_INTEGER tVid1 = QpcNow();
+					_statVideoConvertQpcTicks.fetch_add((UINT64)(tVid1.QuadPart - tVid0.QuadPart), std::memory_order_relaxed);
+				}
+			}
 		}
 		else if (isAudio)
 		{
@@ -2416,128 +1837,42 @@ HRESULT MediaPlayer::InitializeD3D()
 {
 	HRESULT hr = S_OK;
 
-	// 尽量复用 CppUtils/Graphics1 的共享 D3D11 设备。
-	// 这可以保证 D2D 的 DeviceContext 与视频纹理属于同一个 DXGI device，
-	// 从而让 CreateBitmapFromDxgiSurface（零拷贝）可用。
-	_d3dDevice.Reset();
-	_d3dContext.Reset();
-	if (SUCCEEDED(Graphics1_EnsureSharedD3DDevice()))
-	{
-		if (auto* sharedDev = Graphics1_GetSharedD3DDevice())
-		{
-			_d3dDevice = sharedDev;
-			sharedDev->GetImmediateContext(&_d3dContext);
-			DebugOutputHr(L"D3D11: Using shared Graphics1 device", S_OK);
-		}
-	}
-	if (_d3dDevice && _d3dContext)
-	{
-		hr = S_OK;
-	}
-	else
-	{
+	// 创建 D3D11 设备
+	D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
+	D3D_FEATURE_LEVEL featureLevel;
+	UINT createDeviceFlags = 0;
 
-		// 创建独立 D3D11 设备（关键：添加 VIDEO_SUPPORT 标志以启用硬件视频解码）
-		D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0 };
-		D3D_FEATURE_LEVEL featureLevel;
-		UINT createDeviceFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;  // BGRA互操作 + 视频解码支持
+	hr = D3D11CreateDevice(
+		nullptr,
+		D3D_DRIVER_TYPE_HARDWARE,
+		0,
+		createDeviceFlags,
+		featureLevels,
+		2,
+		D3D11_SDK_VERSION,
+		&_d3dDevice,
+		&featureLevel,
+		&_d3dContext
+	);
 
-#ifdef _DEBUG
-	createDeviceFlags |= D3D11_CREATE_DEVICE_DEBUG;
-#endif
-
+	if (FAILED(hr))
+	{
+		// 如果硬件加速失败，尝试 WARP
 		hr = D3D11CreateDevice(
 			nullptr,
-			D3D_DRIVER_TYPE_HARDWARE,
+			D3D_DRIVER_TYPE_WARP,
 			0,
 			createDeviceFlags,
 			featureLevels,
-			4,
+			2,
 			D3D11_SDK_VERSION,
 			&_d3dDevice,
 			&featureLevel,
 			&_d3dContext
 		);
-
-		if (FAILED(hr))
-		{
-			DebugOutputHr(L"D3D11: Hardware device creation failed, trying WARP", hr);
-			// 如果硬件加速失败，尝试 WARP（但WARP不支持DXVA，需要移除VIDEO_SUPPORT标志）
-			createDeviceFlags &= ~D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
-			hr = D3D11CreateDevice(
-				nullptr,
-				D3D_DRIVER_TYPE_WARP,
-				0,
-				createDeviceFlags,
-				featureLevels,
-				4,
-				D3D11_SDK_VERSION,
-				&_d3dDevice,
-				&featureLevel,
-				&_d3dContext
-			);
-			if (SUCCEEDED(hr))
-			{
-				_useZeroCopy = false;  // WARP不支持零拷贝
-				DebugOutputHr(L"D3D11: WARP device created (zero-copy disabled)", S_OK);
-			}
-		}
-		else
-		{
-			DebugOutputHr(L"D3D11: Hardware device created with VIDEO_SUPPORT", S_OK);
-		}
-	}
-
-	// 初始化 D3D11 Video Processor 接口（用于 NV12/P010/YUY2 -> BGRA 转换，供 D2D 渲染）
-	_videoDevice.Reset();
-	_videoContext.Reset();
-	_videoProcessorEnum.Reset();
-	_videoProcessor.Reset();
-	_vpWidth = 0;
-	_vpHeight = 0;
-	_vpInputFormat = DXGI_FORMAT_UNKNOWN;
-	if (SUCCEEDED(hr) && _d3dDevice && _d3dContext)
-	{
-		(void)_d3dDevice.As(&_videoDevice);
-		(void)_d3dContext.As(&_videoContext);
-
-		// 创建 GPU 同步查询对象
-		D3D11_QUERY_DESC queryDesc{};
-		queryDesc.Query = D3D11_QUERY_EVENT;
-		queryDesc.MiscFlags = 0;
-		if (FAILED(_d3dDevice->CreateQuery(&queryDesc, &_videoGpuSyncQuery)))
-		{
-			_videoGpuSyncQuery.Reset();
-		}
 	}
 
 	return hr;
-}
-
-HRESULT MediaPlayer::InitializeDXGIDeviceManager()
-{
-	if (!_d3dDevice) return E_POINTER;
-
-	HRESULT hr = S_OK;
-
-	// 创建 DXGI Device Manager（零拷贝关键组件）
-	hr = MFCreateDXGIDeviceManager(&_dxgiResetToken, &_dxgiDeviceManager);
-	if (FAILED(hr))
-	{
-		DebugOutputHr(L"MFCreateDXGIDeviceManager failed", hr);
-		return hr;
-	}
-
-	// 将 D3D11 设备注册到 Device Manager
-	hr = _dxgiDeviceManager->ResetDevice(_d3dDevice.Get(), _dxgiResetToken);
-	if (FAILED(hr))
-	{
-		DebugOutputHr(L"DXGI ResetDevice failed", hr);
-		_dxgiDeviceManager.Reset();
-		return hr;
-	}
-
-	return S_OK;
 }
 
 HRESULT MediaPlayer::CreateMediaSource(const std::wstring& url)
@@ -2707,15 +2042,17 @@ HRESULT MediaPlayer::CreateTopology()
 
 HRESULT MediaPlayer::InitializeVideoRenderer()
 {
+	// 完全自渲染路径不依赖 EVR/窗口
 	return S_OK;
 }
 
-void MediaPlayer::OnVideoFrame(const BYTE* data, DWORD size, LONGLONG sampleTime)
+void MediaPlayer::OnVideoFrame(const BYTE* data, DWORD size)
 {
 	if (!data || size == 0) return;
 	if (_videoSize.cx <= 0 || _videoSize.cy <= 0) return;
 	if (_videoFrameSize.cx <= 0 || _videoFrameSize.cy <= 0) return;
 
+	// SampleGrabber 的输出可能带行对齐 padding；推断 stride 并规范化成连续 BGRA32(width*4)。
 	const UINT32 frameW = (UINT32)_videoFrameSize.cx;
 	const UINT32 frameH = (UINT32)_videoFrameSize.cy;
 	const UINT32 w = (UINT32)_videoSize.cx;
@@ -2751,305 +2088,12 @@ void MediaPlayer::OnVideoFrame(const BYTE* data, DWORD size, LONGLONG sampleTime
 
 	{
 		std::scoped_lock lock(_videoFrameMutex);
-		if (sampleTime != (std::numeric_limits<LONGLONG>::min)() &&
-			_videoFrameSampleTime != (std::numeric_limits<LONGLONG>::min)() &&
-			(sampleTime + VIDEO_TS_REORDER_TOLERANCE_HNS) < _videoFrameSampleTime)
-		{
-			return;
-		}
-		_videoStride = expectedStride;
+		_videoFrameStride = expectedStride;
 		_videoFrame = std::move(normalized);
 		_videoFrameReady = true;
-		_videoFrameSampleTime = sampleTime;
 	}
 	// CUI 是完全自渲染框架：需要主动 Invalidate 才会刷新画面。
 	this->PostRender();
-}
-
-void MediaPlayer::OnVideoFrameTexture(ID3D11Texture2D* texture, UINT subresourceIndex, LONGLONG sampleTime, IMFSample* sample)
-{
-	if (!texture || !_d3dDevice) return;
-
-	// 注意：IMFDXGIBuffer::GetSubresourceIndex 返回的是 D3D11 subresource index（mip + array slice）。
-	// VideoProcessor InputView 需要的是 ArraySlice；这里将 subresourceIndex 转换为 array slice。
-	D3D11_TEXTURE2D_DESC desc{};
-	texture->GetDesc(&desc);
-	UINT mipLevels = desc.MipLevels ? desc.MipLevels : 1;
-	UINT arraySlice = subresourceIndex / mipLevels;
-	if (desc.ArraySize > 0 && arraySlice >= desc.ArraySize)
-	{
-		static bool warnedOnce = false;
-		if (!warnedOnce)
-		{
-			wchar_t msg[256];
-			swprintf_s(msg, L"Zero-copy: subresourceIndex->ArraySlice out of range (sub=%u, mip=%u, slice=%u, array=%u); fallback to 0", subresourceIndex, mipLevels, arraySlice, desc.ArraySize);
-			DebugOutputHr(msg, S_OK);
-			warnedOnce = true;
-		}
-		arraySlice = 0;
-	}
-	if (arraySlice > 0xFF)
-	{
-		static bool warnedOnce = false;
-		if (!warnedOnce)
-		{
-			wchar_t msg[256];
-			swprintf_s(msg, L"Zero-copy: ArraySlice=%u cannot be encoded in frameId high 8 bits; fallback to 0", arraySlice);
-			DebugOutputHr(msg, S_OK);
-			warnedOnce = true;
-		}
-		arraySlice = 0;
-	}
-
-	const UINT64 frameId = _frameCounter.fetch_add(1, std::memory_order_relaxed) + 1;
-	_statDecodedFrames.fetch_add(1, std::memory_order_relaxed);
-	const UINT64 encodedFrameId = (frameId & 0x00FFFFFFFFFFFFFF) | ((UINT64)arraySlice << 56);
-
-	// 零拷贝路径：直接使用解码器输出的 D3D11 纹理
-	{
-		std::scoped_lock lock(_textureMutex);
-		if (sampleTime != (std::numeric_limits<LONGLONG>::min)() &&
-			_currentVideoTextureSampleTime != (std::numeric_limits<LONGLONG>::min)() &&
-			(sampleTime + VIDEO_TS_REORDER_TOLERANCE_HNS) < _currentVideoTextureSampleTime)
-		{
-			return;
-		}
-		// 保持 sample 存活，避免解码器过早复用底层 surface 造成“内容与 PTS 不匹配”。
-		_currentVideoSample.Reset();
-		if (sample)
-			_currentVideoSample = sample;
-		// 显式管理引用计数：AddRef 后 Attach，确保恰好持有 1 个引用。
-		texture->AddRef();
-		_currentVideoTexture.Attach(texture);
-		_currentVideoTextureFrameId = encodedFrameId;
-		_currentVideoTextureSampleTime = sampleTime;
-	}
-}
-
-ID3D11Texture2D* MediaPlayer::ConvertTextureToBgraForD2D(ID3D11Texture2D* srcTexture, UINT64 sharedFrameId)
-{
-	if (!srcTexture || !_d3dDevice || !_d3dContext) return nullptr;
-	if (!_videoDevice || !_videoContext) return nullptr;
-
-	D3D11_TEXTURE2D_DESC srcDesc{};
-	srcTexture->GetDesc(&srcDesc);
-	if (srcDesc.Width == 0 || srcDesc.Height == 0) return nullptr;
-
-	if (srcDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM)
-	{
-		srcTexture->AddRef();
-		return srcTexture;
-	}
-
-	const bool isYuv =
-		srcDesc.Format == DXGI_FORMAT_NV12 ||
-		srcDesc.Format == DXGI_FORMAT_P010 ||
-		srcDesc.Format == DXGI_FORMAT_YUY2 ||
-		srcDesc.Format == DXGI_FORMAT_420_OPAQUE;
-	if (!isYuv) return nullptr;
-
-	UINT arraySlice = (UINT)(sharedFrameId >> 56);
-	if (srcDesc.ArraySize > 0 && arraySlice >= srcDesc.ArraySize)
-		arraySlice = 0;
-	if (!_videoProcessorEnum || !_videoProcessor || _vpWidth != srcDesc.Width || _vpHeight != srcDesc.Height || _vpInputFormat != srcDesc.Format)
-	{
-		_videoProcessor.Reset();
-		_videoProcessorEnum.Reset();
-		_vpWidth = srcDesc.Width;
-		_vpHeight = srcDesc.Height;
-		_vpInputFormat = srcDesc.Format;
-
-		D3D11_VIDEO_PROCESSOR_CONTENT_DESC contentDesc{};
-		contentDesc.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
-		contentDesc.InputWidth = srcDesc.Width;
-		contentDesc.InputHeight = srcDesc.Height;
-		contentDesc.OutputWidth = srcDesc.Width;
-		contentDesc.OutputHeight = srcDesc.Height;
-		contentDesc.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
-
-		HRESULT hr = _videoDevice->CreateVideoProcessorEnumerator(&contentDesc, &_videoProcessorEnum);
-		if (FAILED(hr) || !_videoProcessorEnum)
-		{
-			DebugOutputHr(L"VideoProcessor: CreateVideoProcessorEnumerator failed", hr);
-			return nullptr;
-		}
-
-		hr = _videoDevice->CreateVideoProcessor(_videoProcessorEnum.Get(), 0, &_videoProcessor);
-		if (FAILED(hr) || !_videoProcessor)
-		{
-			DebugOutputHr(L"VideoProcessor: CreateVideoProcessor failed", hr);
-			return nullptr;
-		}
-	}
-
-	ComPtr<ID3D11Texture2D> outTex;
-	bool createdNewOutput = true;
-
-	ID3D11Texture2D* pooled = AcquireTextureFromPool(srcDesc.Width, srcDesc.Height);
-	if (!pooled) return nullptr;
-	outTex.Attach(pooled);
-
-	ComPtr<ID3D11VideoProcessorOutputView> outView;
-	{
-		D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ov{};
-		ov.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
-		ov.Texture2D.MipSlice = 0;
-		HRESULT hr = _videoDevice->CreateVideoProcessorOutputView(outTex.Get(), _videoProcessorEnum.Get(), &ov, &outView);
-		if (FAILED(hr) || !outView)
-		{
-			DebugOutputHr(L"VideoProcessor: CreateVideoProcessorOutputView failed", hr);
-			ReleaseTextureToPool(outTex.Get());
-			return nullptr;
-		}
-	}
-
-	ComPtr<ID3D11VideoProcessorInputView> inView;
-	{
-		D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC iv{};
-		iv.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-		iv.Texture2D.MipSlice = 0;
-		iv.Texture2D.ArraySlice = arraySlice;
-		HRESULT hr = _videoDevice->CreateVideoProcessorInputView(srcTexture, _videoProcessorEnum.Get(), &iv, &inView);
-		if (FAILED(hr) || !inView)
-		{
-			DebugOutputHr(L"VideoProcessor: CreateVideoProcessorInputView failed", hr);
-			ReleaseTextureToPool(outTex.Get());
-			return nullptr;
-		}
-	}
-
-	D3D11_VIDEO_PROCESSOR_STREAM stream{};
-	stream.Enable = TRUE;
-	stream.pInputSurface = inView.Get();
-
-	LARGE_INTEGER __qpcBefore{};
-	const BOOL __hasBefore = QueryPerformanceCounter(&__qpcBefore);
-	HRESULT hr = _videoContext->VideoProcessorBlt(_videoProcessor.Get(), outView.Get(), 0, 1, &stream);
-	LARGE_INTEGER __qpcAfter{};
-	if (__hasBefore && QueryPerformanceCounter(&__qpcAfter))
-	{
-		_statYuvToBgraCalls.fetch_add(1, std::memory_order_relaxed);
-		_statYuvToBgraQpcTicks.fetch_add((UINT64)(__qpcAfter.QuadPart - __qpcBefore.QuadPart), std::memory_order_relaxed);
-	}
-	if (FAILED(hr))
-	{
-		DebugOutputHr(L"VideoProcessor: VideoProcessorBlt failed", hr);
-		ReleaseTextureToPool(outTex.Get());
-		return nullptr;
-	}
-
-	if (_forceVideoGpuSync)
-	{
-		_d3dContext->Flush();
-	}
-
-	if (_currentVideoTextureBgra && _currentVideoTextureBgraFromPool)
-	{
-		if (_currentVideoTextureBgra.Get() != outTex.Get())
-		{
-			ReleaseTextureToPool(_currentVideoTextureBgra.Get());
-		}
-	}
-
-	if (!_currentVideoTextureBgra || _currentVideoTextureBgra.Get() != outTex.Get())
-	{
-		_currentVideoTextureBgra = outTex;
-		_currentVideoTextureBgraFromPool = true;
-		_currentVideoTextureBgraFrame = _frameCounter.load(std::memory_order_relaxed);
-	}
-	if (createdNewOutput)
-	{
-		_d2dVideoBitmap.Reset();
-		_d2dVideoBitmapSourceTexture.Reset();
-	}
-
-	return outTex.Detach();
-}
-
-ID3D11Texture2D* MediaPlayer::AcquireTextureFromPool(UINT width, UINT height)
-{
-	if (!_d3dDevice || width == 0 || height == 0) return nullptr;
-	
-	std::scoped_lock lock(_texturePoolMutex);
-	
-	for (auto& entry : _texturePool)
-	{
-		if (!entry.inUse && entry.texture)
-		{
-			D3D11_TEXTURE2D_DESC desc;
-			entry.texture->GetDesc(&desc);
-			if (desc.Width == width && desc.Height == height)
-			{
-				entry.inUse = true;
-				entry.lastUsedFrame = _frameCounter.load(std::memory_order_relaxed);
-				entry.texture->AddRef();
-				return entry.texture.Get();
-			}
-		}
-	}
-	
-	D3D11_TEXTURE2D_DESC desc = {};
-	desc.Width = width;
-	desc.Height = height;
-	desc.MipLevels = 1;
-	desc.ArraySize = 1;
-	desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-	desc.SampleDesc.Count = 1;
-	desc.Usage = D3D11_USAGE_DEFAULT;
-	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-	desc.MiscFlags = 0;  // 同一 D3D11 device 上 D2D 可直接从 DXGI surface 读取，无需 shared 纹理
-	
-	ComPtr<ID3D11Texture2D> newTexture;
-	HRESULT hr = _d3dDevice->CreateTexture2D(&desc, nullptr, &newTexture);
-	if (FAILED(hr))
-	{
-		DebugOutputHr(L"CreateTexture2D for pool failed", hr);
-		return nullptr;
-	}
-	
-	if (_texturePool.size() < MAX_TEXTURE_POOL_SIZE)
-	{
-		TexturePoolEntry entry;
-		entry.texture = newTexture;
-		entry.inUse = true;
-		entry.lastUsedFrame = _frameCounter.load(std::memory_order_relaxed);
-		_texturePool.push_back(entry);
-	}
-	
-	newTexture->AddRef();
-	return newTexture.Get();
-}
-
-void MediaPlayer::ReleaseTextureToPool(ID3D11Texture2D* texture)
-{
-	if (!texture) return;
-	
-	std::scoped_lock lock(_texturePoolMutex);
-	
-	for (auto& entry : _texturePool)
-	{
-		if (entry.texture.Get() == texture)
-		{
-			entry.inUse = false;
-			return;
-		}
-	}
-}
-
-void MediaPlayer::CleanupTexturePool()
-{
-	std::scoped_lock lock(_texturePoolMutex);
-	
-	const UINT64 now = _frameCounter.load(std::memory_order_relaxed);
-	const UINT64 threshold = (now > 60) ? (now - 60) : 0;
-	
-	_texturePool.erase(
-		std::remove_if(_texturePool.begin(), _texturePool.end(),
-			[threshold](const TexturePoolEntry& entry) {
-				return !entry.inUse && entry.lastUsedFrame < threshold;
-			}),
-		_texturePool.end()
-	);
 }
 
 void MediaPlayer::RefreshVideoFormatFromSource()
@@ -3102,70 +2146,16 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 	if (!_initialized) return false;
 	if (!this->ParentForm) return false;
 
-	const bool switchingWhileActive = (_useSourceReader && (_playThread.joinable() || _threadPlaying.load() || _sourceReader));
-	if (switchingWhileActive)
-	{
-		// 关键：播放中切换文件时，Stop+join+MFCreateSourceReaderFromURL 可能会同步卡住 UI。
-		// 这里改为：UI 线程只清状态并投递请求，后台线程串行执行 stop+open。
-		EnsureOpenWorker();
-		_openSerial.fetch_add(1, std::memory_order_acq_rel);
-		{
-			std::scoped_lock lk(_openMutex);
-			_openRequestFile = mediaFile;
-			_openHasRequest = true;
-		}
-		_openCv.notify_one();
-
-		// 立即停止播放与清空旧画面（用户感知：立刻响应，而不是卡住）。
-		_threadPlaying = false;
-		_needSyncReset = true;
-		if (_audioClient) (void)_audioClient->Stop();
-		_mediaFile = mediaFile;
-		_mediaLoaded = false;
-		_position = 0.0;
-		_duration = 0.0;
-		_hasVideo = false;
-		_hasAudio = false;
-		_videoSize = SIZE{ 0,0 };
-		_playState = PlayState::Stopped;
-		{
-			std::scoped_lock lock(_videoFrameMutex);
-			_videoFrame.clear();
-			_videoFrameReady = false;
-			_videoInputStride = 0;
-			_videoStride = 0;
-			_videoSubtype = GUID_NULL;
-			_videoBytesPerPixel = 4;
-			_videoBottomUp = false;
-			_videoFrameSize = SIZE{ 0,0 };
-			_videoCropX = 0;
-			_videoCropY = 0;
-		}
-		{
-			std::scoped_lock lock(_textureMutex);
-			_currentVideoSample.Reset();
-			_currentVideoTexture.Reset();
-			_currentVideoTextureFrameId = 0;
-			_currentVideoTextureSampleTime = (std::numeric_limits<LONGLONG>::min)();
-			_lastBgraConvertedFrameId = 0;
-			_d2dVideoBitmap.Reset();
-			_d2dVideoBitmapSourceTexture.Reset();
-		}
-		if (_videoBitmap && _ownsVideoBitmap)
-			_videoBitmap->Release();
-		_videoBitmap = nullptr;
-		_ownsVideoBitmap = false;
-		PostRender();
-		return true;
-	}
-
+	// 若之前在 SourceReader 后端播放，先彻底停掉线程/音频，避免后续后端切换时状态互相干扰。
 	if (_playThread.joinable() || _threadPlaying.load() || _sourceReader)
 	{
 		StopSourceReaderPlayback(true);
 	}
 
+	// Prefer SourceReader+WASAPI path for maximum compatibility in a self-rendered UI.
 	if (_useSourceReader)
 	{
+		// 上面已 StopSourceReaderPlayback(true)
 		_mediaFile = mediaFile;
 		_mediaLoaded = false;
 		_position = 0.0;
@@ -3177,7 +2167,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 			std::scoped_lock lock(_videoFrameMutex);
 			_videoFrame.clear();
 			_videoFrameReady = false;
-			_videoInputStride = 0;
+			_videoFrameStride = 0;
 			_videoStride = 0;
 			_videoSubtype = GUID_NULL;
 			_videoBytesPerPixel = 4;
@@ -3202,11 +2192,13 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 		OnMediaOpened(this);
 		this->PostRender();
 
+		// AutoPlay
 		if (_autoPlay)
 			Play();
 		return true;
 	}
 
+	// 每次加载重建 session，避免旧拓扑状态残留
 	if (FAILED(CreateMediaSession())) return false;
 
 	HRESULT hr = S_OK;
@@ -3217,6 +2209,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 	_hasPendingStartPosition = false;
 	_pendingStartPosition = 0.0;
 
+	// 清理之前的资源（不再 Shutdown session）
 	_mediaSource.Reset();
 	_topology.Reset();
 	_videoDisplayControl.Reset();
@@ -3230,7 +2223,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 	{
 		std::scoped_lock lock(_videoFrameMutex);
 		_videoFrame.clear();
-		_videoInputStride = 0;
+		_videoFrameStride = 0;
 		_videoStride = 0;
 		_videoFrameReady = false;
 	}
@@ -3307,7 +2300,6 @@ void MediaPlayer::Play()
 			_playThread = std::thread([this] { PlaybackThreadMain(); });
 		}
 		_playState = PlayState::Playing;
-		this->Position = this->Position; // 触发 OnPositionChanged
 		_threadPlaying = true;
 		_threadCv.notify_all();
 		this->PostRender();
@@ -3394,42 +2386,16 @@ void MediaPlayer::Seek(double seconds)
 		if (!_sourceReader) return;
 		seconds = std::max(0.0, std::min(seconds, _duration));
 		if (_timeStretch) _timeStretch->Reset();
-
-		// 发布 seek 目标：播放线程会丢弃目标之前的 preroll 帧，并在命中目标时立刻重置节拍基准。
-		const LONGLONG targetHns = (LONGLONG)std::llround(seconds * HNS_PER_SEC);
-		_seekTargetHns.store(targetHns, std::memory_order_release);
-		_seekSerial.fetch_add(1, std::memory_order_acq_rel);
-		_needSyncReset = true;
-
-		// 清空旧画面（避免 UI 长时间停留在上一帧造成“卡住”错觉）。
-		{
-			std::scoped_lock lock(_textureMutex);
-			_currentVideoSample.Reset();
-			_currentVideoTexture.Reset();
-			_currentVideoTextureFrameId = 0;
-			_currentVideoTextureSampleTime = (std::numeric_limits<LONGLONG>::min)();
-			_lastBgraConvertedFrameId = 0;
-			_d2dVideoBitmap.Reset();
-			_d2dVideoBitmapSourceTexture.Reset();
-		}
-		{
-			std::scoped_lock lock(_videoFrameMutex);
-			_videoFrameReady = false;
-			_videoFrameSampleTime = (std::numeric_limits<LONGLONG>::min)();
-			_videoFrame.clear();
-		}
-
-		// Flush：丢弃 SourceReader 内部已排队的旧 sample（Seek 后否则会继续吐旧帧一段时间）。
-		(void)_sourceReader->Flush(MF_SOURCE_READER_ALL_STREAMS);
 		PROPVARIANT var;
 		PropVariantInit(&var);
 		var.vt = VT_I8;
-		var.hVal.QuadPart = targetHns;
+		var.hVal.QuadPart = (LONGLONG)(seconds * HNS_PER_SEC);
 		HRESULT hr = _sourceReader->SetCurrentPosition(GUID_NULL, var);
 		PropVariantClear(&var);
 		if (FAILED(hr))
 			DebugOutputHr(L"SourceReader: SetCurrentPosition failed", hr);
 		_position = seconds;
+		_needSyncReset = true;
 		OnPositionChanged(this, _position);
 		this->PostRender();
 		return;
@@ -3574,33 +2540,12 @@ void MediaPlayer::ReleaseResources()
 	_mediaSource.Reset();
 	_topology.Reset();
 	_videoDisplayControl.Reset();
-	
-	// 释放零拷贝资源
-	{
-		std::scoped_lock lock(_textureMutex);
-		_currentVideoSample.Reset();
-		_currentVideoTexture.Reset();
-		_currentVideoTextureFrameId = 0;
-		_currentVideoTextureSampleTime = (std::numeric_limits<LONGLONG>::min)();
-		if (_currentVideoTextureBgra && _currentVideoTextureBgraFromPool)
-		{
-			ReleaseTextureToPool(_currentVideoTextureBgra.Get());
-		}
-		_currentVideoTextureBgra.Reset();
-		_currentVideoTextureBgraFromPool = false;
-		_currentVideoTextureBgraFrame = 0;
-		_lastBgraConvertedFrameId = 0;
-		_d2dVideoBitmap.Reset();
-		_d2dVideoBitmapSourceTexture.Reset();
-	}
-	
 	{
 		std::scoped_lock lock(_videoFrameMutex);
 		_videoFrame.clear();
-		_videoInputStride = 0;
+		_videoFrameStride = 0;
 		_videoStride = 0;
 		_videoFrameReady = false;
-		_videoFrameSampleTime = (std::numeric_limits<LONGLONG>::min)();
 	}
 	_mediaLoaded = false;
 	_hasVideo = false;
@@ -3625,54 +2570,7 @@ void MediaPlayer::UpdateVideoBitmap()
 void MediaPlayer::Update()
 {
 	if (!this->IsVisual) return;
-
-	// 诊断：每秒输出一次 FPS/耗时统计（尽量低开销）
-	auto MaybeReportPerf = [this]()
-	{
-		LARGE_INTEGER freq{};
-		if (!QueryPerformanceFrequency(&freq) || freq.QuadPart <= 0) return;
-		LARGE_INTEGER now{};
-		if (!QueryPerformanceCounter(&now)) return;
-
-		LONGLONG last = _statLastReportQpc.load(std::memory_order_relaxed);
-		if (last == 0)
-		{
-			_statLastReportQpc.store(now.QuadPart, std::memory_order_relaxed);
-			return;
-		}
-
-		const double elapsedSec = double(now.QuadPart - last) / double(freq.QuadPart);
-		if (elapsedSec < 1.0) return;
-
-		// 取并清零本周期计数
-		const UINT64 decoded = _statDecodedFrames.exchange(0, std::memory_order_relaxed);
-		const UINT64 updates = _statRenderUpdates.exchange(0, std::memory_order_relaxed);
-		const UINT64 y2bCalls = _statYuvToBgraCalls.exchange(0, std::memory_order_relaxed);
-		const UINT64 y2bTicks = _statYuvToBgraQpcTicks.exchange(0, std::memory_order_relaxed);
-		const UINT64 bmpCalls = _statCreateD2DBitmapCalls.exchange(0, std::memory_order_relaxed);
-		const UINT64 bmpTicks = _statCreateD2DBitmapQpcTicks.exchange(0, std::memory_order_relaxed);
-
-		double y2bMsTotal = (y2bTicks ? (double(y2bTicks) * 1000.0 / double(freq.QuadPart)) : 0.0);
-		double bmpMsTotal = (bmpTicks ? (double(bmpTicks) * 1000.0 / double(freq.QuadPart)) : 0.0);
-		double y2bMsAvg = (y2bCalls ? (y2bMsTotal / double(y2bCalls)) : 0.0);
-		double bmpMsAvg = (bmpCalls ? (bmpMsTotal / double(bmpCalls)) : 0.0);
-
-		wchar_t buf[512]{};
-		swprintf_s(
-			buf,
-			L"[MediaPlayer Perf] decoded=%.1ffps, update=%.1ffps, yuv2bgra=%llu (%.2fms avg, %.1fms/s), d2dbitmap=%llu (%.2fms avg, %.1fms/s)\n",
-			double(decoded) / elapsedSec,
-			double(updates) / elapsedSec,
-			(unsigned long long)y2bCalls,
-			y2bMsAvg,
-			y2bMsTotal / elapsedSec,
-			(unsigned long long)bmpCalls,
-			bmpMsAvg,
-			bmpMsTotal / elapsedSec);
-		OutputDebugStringW(buf);
-
-		_statLastReportQpc.store(now.QuadPart, std::memory_order_relaxed);
-	};
+	_statRenderUpdates.fetch_add(1, std::memory_order_relaxed);
 
 	auto abs = this->AbsLocation;
 	auto size = this->ActualSize();
@@ -3685,13 +2583,6 @@ void MediaPlayer::Update()
 	{
 		UpdatePositionFromClock(false);
 	}
-	
-	// 定期清理纹理池（每60帧清理一次）
-	const UINT64 frameCounter = _frameCounter.load(std::memory_order_relaxed);
-	if (_useZeroCopy && (frameCounter % 60 == 0))
-	{
-		CleanupTexturePool();
-	}
 
 	// 背景
 	d2d->FillRect(abs.x, abs.y, size.cx, size.cy, this->BackColor);
@@ -3699,188 +2590,22 @@ void MediaPlayer::Update()
 	// 有视频：尝试更新并绘制最新帧
 	if (_hasVideo && _mediaLoaded)
 	{
-		_statRenderUpdates.fetch_add(1, std::memory_order_relaxed);
-		MaybeReportPerf();
-
-		// ========== 零拷贝GPU路径 ==========
-		ComPtr<ID3D11Texture2D> currentTexture;
-		ComPtr<IMFSample> currentSample;
-		UINT64 currentTextureFrameId = 0;
-		{
-			std::scoped_lock lock(_textureMutex);
-			currentTexture = _currentVideoTexture;
-			currentSample = _currentVideoSample;
-			currentTextureFrameId = _currentVideoTextureFrameId;
-		}
-		if (_useZeroCopy && currentTexture)
-		{
-			// 若解码器输出为 NV12/P010/YUY2，先转成 BGRA 纹理（仍在 GPU 上），再交给 D2D 绘制。
-			ComPtr<ID3D11Texture2D> textureForD2D;
-			textureForD2D = currentTexture;
-			D3D11_TEXTURE2D_DESC srcDesc{};
-			currentTexture->GetDesc(&srcDesc);
-			const bool isYuv =
-				srcDesc.Format == DXGI_FORMAT_NV12 ||
-				srcDesc.Format == DXGI_FORMAT_P010 ||
-				srcDesc.Format == DXGI_FORMAT_YUY2 ||
-				srcDesc.Format == DXGI_FORMAT_420_OPAQUE;
-			if (isYuv)
-			{
-				// 避免在同一帧上重复做 YUV->BGRA（CUI 可能会在无新帧时多次 Update/重绘）
-				if (currentTextureFrameId != 0 && _lastBgraConvertedFrameId == currentTextureFrameId && _currentVideoTextureBgra)
-				{
-					textureForD2D = _currentVideoTextureBgra;
-				}
-				else
-				{
-					// 必须传入 currentTextureFrameId，因为其中包含了 subresource index，
-					// 且必须使用锁内获取的快照值，防止与后台线程产生竞争。
-					ID3D11Texture2D* bgra = ConvertTextureToBgraForD2D(currentTexture.Get(), currentTextureFrameId);
-					if (bgra)
-					{
-						textureForD2D.Attach(bgra);
-						_lastBgraConvertedFrameId = currentTextureFrameId;
-						// YUV->BGRA 输出纹理可复用：尽量不要每帧销毁 bitmap。
-					}
-					else
-					{
-						// 无法在 GPU 上把 YUV 转为 BGRA：降级到 CPU 路径。
-						_useZeroCopy = false;
-						_d2dVideoBitmap.Reset();
-						_d2dVideoBitmapSourceTexture.Reset();
-					}
-				}
-			}
-
-			// 如果本帧已经降级（例如 GPU YUV->BGRA 不可用），不要继续走 CreateBitmapFromDxgiSurface。
-			if (_useZeroCopy)
-			{
-				auto rt = d2d->GetRenderTargetRaw();
-				if (rt)
-				{
-					ComPtr<ID2D1DeviceContext> d2dContext;
-					if (SUCCEEDED(rt->QueryInterface(__uuidof(ID2D1DeviceContext), (void**)&d2dContext)) && d2dContext)
-					{
-						if (!IsD2DContextCompatibleWithTexture(d2dContext.Get(), textureForD2D.Get()))
-						{
-							_useZeroCopy = false;
-							_d2dVideoBitmap.Reset();
-							_d2dVideoBitmapSourceTexture.Reset();
-						}
-
-						if (_useZeroCopy)
-						{
-							if (_recreateD2DBitmapEveryFrame || !_d2dVideoBitmap || !_d2dVideoBitmapSourceTexture || _d2dVideoBitmapSourceTexture.Get() != textureForD2D.Get())
-							{
-								_d2dVideoBitmap.Reset();
-								_d2dVideoBitmapSourceTexture.Reset();
-								ComPtr<IDXGISurface> dxgiSurface;
-								if (textureForD2D && SUCCEEDED(textureForD2D->QueryInterface(__uuidof(IDXGISurface), (void**)&dxgiSurface)) && dxgiSurface)
-								{
-									D2D1_BITMAP_PROPERTIES1 bitmapProperties = D2D1::BitmapProperties1(
-										D2D1_BITMAP_OPTIONS_NONE,
-										D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
-										96.0f,
-										96.0f);
-
-									LARGE_INTEGER __qpcBefore{};
-									const BOOL __hasBefore = QueryPerformanceCounter(&__qpcBefore);
-									HRESULT hr = d2dContext->CreateBitmapFromDxgiSurface(dxgiSurface.Get(), &bitmapProperties, &_d2dVideoBitmap);
-									LARGE_INTEGER __qpcAfter{};
-									if (__hasBefore && QueryPerformanceCounter(&__qpcAfter))
-									{
-										_statCreateD2DBitmapCalls.fetch_add(1, std::memory_order_relaxed);
-										_statCreateD2DBitmapQpcTicks.fetch_add((UINT64)(__qpcAfter.QuadPart - __qpcBefore.QuadPart), std::memory_order_relaxed);
-									}
-
-									if (FAILED(hr))
-									{
-										_useZeroCopy = false;
-										_d2dVideoBitmap.Reset();
-										_d2dVideoBitmapSourceTexture.Reset();
-									}
-									else
-									{
-										_d2dVideoBitmapSourceTexture = textureForD2D;
-									}
-								}
-							}
-
-							if (_d2dVideoBitmap)
-							{
-								float destX = (float)abs.x;
-								float destY = (float)abs.y;
-								float destWidth = (float)size.cx;
-								float destHeight = (float)size.cy;
-
-								float videoWidth = (float)_videoSize.cx;
-								float videoHeight = (float)_videoSize.cy;
-
-								switch (_renderMode)
-								{
-								case VideoRenderMode::Fit:
-								{
-									float scaleX = destWidth / videoWidth;
-									float scaleY = destHeight / videoHeight;
-									float scale = (scaleX < scaleY) ? scaleX : scaleY;
-									float scaledWidth = videoWidth * scale;
-									float scaledHeight = videoHeight * scale;
-									destX += (destWidth - scaledWidth) * 0.5f;
-									destY += (destHeight - scaledHeight) * 0.5f;
-									destWidth = scaledWidth;
-									destHeight = scaledHeight;
-								}
-								break;
-								case VideoRenderMode::Fill:
-								case VideoRenderMode::UniformToFill:
-								{
-									float scaleX = destWidth / videoWidth;
-									float scaleY = destHeight / videoHeight;
-									float scale = (scaleX > scaleY) ? scaleX : scaleY;
-									float scaledWidth = videoWidth * scale;
-									float scaledHeight = videoHeight * scale;
-									destX += (destWidth - scaledWidth) * 0.5f;
-									destY += (destHeight - scaledHeight) * 0.5f;
-									destWidth = scaledWidth;
-									destHeight = scaledHeight;
-								}
-								break;
-								case VideoRenderMode::Center:
-								{
-									destX += (destWidth - videoWidth) * 0.5f;
-									destY += (destHeight - videoHeight) * 0.5f;
-									destWidth = videoWidth;
-									destHeight = videoHeight;
-								}
-								break;
-								case VideoRenderMode::Stretch:
-								default:
-									break;
-								}
-
-								D2D1_RECT_F destRect = D2D1::RectF(destX, destY, destX + destWidth, destY + destHeight);
-								d2dContext->DrawBitmap(_d2dVideoBitmap.Get(), destRect);
-								return;
-							}
-						}
-					}
-				}
-			}
-		}
-		
-		// ========== CPU后备路径（兼容性）==========
 		std::vector<uint8_t> frame;
 		UINT32 stride = 0;
+		bool hasNewFrame = false;
 		{
 			std::scoped_lock lock(_videoFrameMutex);
 			if (_videoFrameReady)
 			{
-				frame = _videoFrame;
-				stride = _videoStride;
+				frame.swap(_videoFrame);
+				stride = _videoFrameStride;
+				_videoFrameReady = false;
+				hasNewFrame = true;
 			}
 		}
 
-		if (!frame.empty() && _videoSize.cx > 0 && _videoSize.cy > 0 && stride > 0)
+		// 只有在有新帧时才上传；否则继续绘制上一帧，避免闪烁（背景黑屏）。
+		if (hasNewFrame && !frame.empty() && _videoSize.cx > 0 && _videoSize.cy > 0 && stride > 0)
 		{
 			// 如果视频尺寸发生变化，必须重建 bitmap，否则右侧/下侧可能残留旧像素（常见表现为绿色条）。
 			if (_videoBitmap)
@@ -3911,6 +2636,9 @@ void MediaPlayer::Update()
 
 			if (_videoBitmap)
 			{
+				_statVideoUploadCalls.fetch_add(1, std::memory_order_relaxed);
+				_statVideoUploadBytes.fetch_add((UINT64)frame.size(), std::memory_order_relaxed);
+				const LARGE_INTEGER tUp0 = QpcNow();
 				const UINT32 w = (UINT32)_videoSize.cx;
 				const UINT32 h = (UINT32)_videoSize.cy;
 				const UINT32 expectedStride = w * 4;
@@ -3937,85 +2665,179 @@ void MediaPlayer::Update()
 					// stride 元数据不可信但数据是连续的：按 expectedStride 写入
 					_videoBitmap->CopyFromMemory(nullptr, frame.data(), expectedStride);
 				}
-				
-				// 根据渲染模式计算目标矩形
-				float destX = (float)abs.x;
-				float destY = (float)abs.y;
-				float destWidth = (float)size.cx;
-				float destHeight = (float)size.cy;
-				
-				float videoWidth = (float)_videoSize.cx;
-				float videoHeight = (float)_videoSize.cy;
-				
-				switch (_renderMode)
-				{
-				case VideoRenderMode::Fit: // 等比缩放，居中显示（默认）
-					{
-						float scaleX = destWidth / videoWidth;
-						float scaleY = destHeight / videoHeight;
-						float scale = (scaleX < scaleY) ? scaleX : scaleY;
-						
-						float scaledWidth = videoWidth * scale;
-						float scaledHeight = videoHeight * scale;
-						
-						destX += (destWidth - scaledWidth) * 0.5f;
-						destY += (destHeight - scaledHeight) * 0.5f;
-						destWidth = scaledWidth;
-						destHeight = scaledHeight;
-					}
-					break;
-					
-				case VideoRenderMode::Fill: // 等比缩放，裁剪以填满
-					{
-						float scaleX = destWidth / videoWidth;
-						float scaleY = destHeight / videoHeight;
-						float scale = (scaleX > scaleY) ? scaleX : scaleY;
-						
-						float scaledWidth = videoWidth * scale;
-						float scaledHeight = videoHeight * scale;
-						
-						destX += (destWidth - scaledWidth) * 0.5f;
-						destY += (destHeight - scaledHeight) * 0.5f;
-						destWidth = scaledWidth;
-						destHeight = scaledHeight;
-					}
-					break;
-					
-				case VideoRenderMode::Stretch: // 拉伸填充，可能变形
-					// 使用控件完整尺寸，不需要调整
-					break;
-					
-				case VideoRenderMode::Center: // 原始尺寸，居中显示
-					{
-						destX += (destWidth - videoWidth) * 0.5f;
-						destY += (destHeight - videoHeight) * 0.5f;
-						destWidth = videoWidth;
-						destHeight = videoHeight;
-					}
-					break;
-					
-				case VideoRenderMode::UniformToFill: // 均匀填充（同Fill）
-					{
-						float scaleX = destWidth / videoWidth;
-						float scaleY = destHeight / videoHeight;
-						float scale = (scaleX > scaleY) ? scaleX : scaleY;
-						
-						float scaledWidth = videoWidth * scale;
-						float scaledHeight = videoHeight * scale;
-						
-						destX += (destWidth - scaledWidth) * 0.5f;
-						destY += (destHeight - scaledHeight) * 0.5f;
-						destWidth = scaledWidth;
-						destHeight = scaledHeight;
-					}
-					break;
-				}
-				
-				d2d->DrawBitmap(_videoBitmap, destX, destY, destWidth, destHeight);
-				return;
+				const LARGE_INTEGER tUp1 = QpcNow();
+				_statVideoUploadQpcTicks.fetch_add((UINT64)(tUp1.QuadPart - tUp0.QuadPart), std::memory_order_relaxed);
 			}
 		}
+
+		// 没有新帧也要继续绘制上一帧，避免闪烁
+		if (_videoBitmap && _videoSize.cx > 0 && _videoSize.cy > 0)
+		{
+			// 根据渲染模式计算目标矩形
+			float destX = (float)abs.x;
+			float destY = (float)abs.y;
+			float destWidth = (float)size.cx;
+			float destHeight = (float)size.cy;
+			
+			float videoWidth = (float)_videoSize.cx;
+			float videoHeight = (float)_videoSize.cy;
+			
+			switch (_renderMode)
+			{
+			case VideoRenderMode::Fit: // 等比缩放，居中显示（默认）
+				{
+					float scaleX = destWidth / videoWidth;
+					float scaleY = destHeight / videoHeight;
+					float scale = (scaleX < scaleY) ? scaleX : scaleY;
+					
+					float scaledWidth = videoWidth * scale;
+					float scaledHeight = videoHeight * scale;
+					
+					destX += (destWidth - scaledWidth) * 0.5f;
+					destY += (destHeight - scaledHeight) * 0.5f;
+					destWidth = scaledWidth;
+					destHeight = scaledHeight;
+				}
+				break;
+				
+			case VideoRenderMode::Fill: // 等比缩放，裁剪以填满
+				{
+					float scaleX = destWidth / videoWidth;
+					float scaleY = destHeight / videoHeight;
+					float scale = (scaleX > scaleY) ? scaleX : scaleY;
+					
+					float scaledWidth = videoWidth * scale;
+					float scaledHeight = videoHeight * scale;
+					
+					destX += (destWidth - scaledWidth) * 0.5f;
+					destY += (destHeight - scaledHeight) * 0.5f;
+					destWidth = scaledWidth;
+					destHeight = scaledHeight;
+				}
+				break;
+				
+			case VideoRenderMode::Stretch: // 拉伸填充，可能变形
+				// 使用控件完整尺寸，不需要调整
+				break;
+				
+			case VideoRenderMode::Center: // 原始尺寸，居中显示
+				{
+					destX += (destWidth - videoWidth) * 0.5f;
+					destY += (destHeight - videoHeight) * 0.5f;
+					destWidth = videoWidth;
+					destHeight = videoHeight;
+				}
+				break;
+				
+			case VideoRenderMode::UniformToFill: // 均匀填充（同Fill）
+				{
+					float scaleX = destWidth / videoWidth;
+					float scaleY = destHeight / videoHeight;
+					float scale = (scaleX > scaleY) ? scaleX : scaleY;
+					
+					float scaledWidth = videoWidth * scale;
+					float scaledHeight = videoHeight * scale;
+					
+					destX += (destWidth - scaledWidth) * 0.5f;
+					destY += (destHeight - scaledHeight) * 0.5f;
+					destWidth = scaledWidth;
+					destHeight = scaledHeight;
+				}
+				break;
+			}
+			
+			_statDrawBitmapCalls.fetch_add(1, std::memory_order_relaxed);
+			const LARGE_INTEGER tDraw0 = QpcNow();
+			d2d->DrawBitmap(_videoBitmap, destX, destY, destWidth, destHeight);
+			const LARGE_INTEGER tDraw1 = QpcNow();
+			_statDrawBitmapQpcTicks.fetch_add((UINT64)(tDraw1.QuadPart - tDraw0.QuadPart), std::memory_order_relaxed);
+			ReportPerfStatsIfDue();
+			return;
+		}
 	}
+	ReportPerfStatsIfDue();
+}
+
+void MediaPlayer::ReportPerfStatsIfDue()
+{
+	if (!_mediaLoaded) return;
+
+	const auto freq = QpcFreq();
+	if (freq.QuadPart <= 0) return;
+
+	const LONGLONG now = QpcNow().QuadPart;
+	LONGLONG last = _statLastReportQpc.load(std::memory_order_relaxed);
+	if (last != 0 && (now - last) < freq.QuadPart) return;
+	if (!_statLastReportQpc.compare_exchange_strong(last, now, std::memory_order_relaxed))
+		return;
+
+	const double intervalSec = (last == 0) ? 1.0 : (double)(now - last) / (double)freq.QuadPart;
+	if (intervalSec <= 0.0) return;
+
+	const UINT64 rsCalls = _statReadSampleCalls.exchange(0, std::memory_order_relaxed);
+	const UINT64 rsTicks = _statReadSampleQpcTicks.exchange(0, std::memory_order_relaxed);
+	const UINT64 rsVC = _statReadSampleVideoCalls.exchange(0, std::memory_order_relaxed);
+	const UINT64 rsVT = _statReadSampleVideoQpcTicks.exchange(0, std::memory_order_relaxed);
+	const UINT64 rsAC = _statReadSampleAudioCalls.exchange(0, std::memory_order_relaxed);
+	const UINT64 rsAT = _statReadSampleAudioQpcTicks.exchange(0, std::memory_order_relaxed);
+	const UINT64 contigCalls = _statSamplesToContigCalls.exchange(0, std::memory_order_relaxed);
+	const UINT64 contigTicks = _statSamplesToContigQpcTicks.exchange(0, std::memory_order_relaxed);
+	const UINT64 vFrames = _statDecodedVideoFrames.exchange(0, std::memory_order_relaxed);
+	const UINT64 vConvCalls = _statVideoConvertCalls.exchange(0, std::memory_order_relaxed);
+	const UINT64 vConvTicks = _statVideoConvertQpcTicks.exchange(0, std::memory_order_relaxed);
+	const UINT64 vConvBytes = _statVideoConvertBytes.exchange(0, std::memory_order_relaxed);
+	const UINT64 aCalls = _statAudioWriteCalls.exchange(0, std::memory_order_relaxed);
+	const UINT64 aTicks = _statAudioWriteQpcTicks.exchange(0, std::memory_order_relaxed);
+	const UINT64 aBytes = _statAudioWriteBytes.exchange(0, std::memory_order_relaxed);
+	const UINT64 uCalls = _statVideoUploadCalls.exchange(0, std::memory_order_relaxed);
+	const UINT64 uTicks = _statVideoUploadQpcTicks.exchange(0, std::memory_order_relaxed);
+	const UINT64 uBytes = _statVideoUploadBytes.exchange(0, std::memory_order_relaxed);
+	const UINT64 dCalls = _statDrawBitmapCalls.exchange(0, std::memory_order_relaxed);
+	const UINT64 dTicks = _statDrawBitmapQpcTicks.exchange(0, std::memory_order_relaxed);
+	const UINT64 updCalls = _statRenderUpdates.exchange(0, std::memory_order_relaxed);
+
+	const double fps = (intervalSec > 0.0) ? (double)vFrames / intervalSec : 0.0;
+	const double readAvgMs = (rsCalls > 0) ? QpcTicksToMs(rsTicks) / (double)rsCalls : 0.0;
+	const double readVAvgMs = (rsVC > 0) ? QpcTicksToMs(rsVT) / (double)rsVC : 0.0;
+	const double readAAvgMs = (rsAC > 0) ? QpcTicksToMs(rsAT) / (double)rsAC : 0.0;
+	const double contigAvgMs = (contigCalls > 0) ? QpcTicksToMs(contigTicks) / (double)contigCalls : 0.0;
+	const double vConvAvgMs = (vConvCalls > 0) ? QpcTicksToMs(vConvTicks) / (double)vConvCalls : 0.0;
+	const double aAvgMs = (aCalls > 0) ? QpcTicksToMs(aTicks) / (double)aCalls : 0.0;
+	const double upAvgMs = (uCalls > 0) ? QpcTicksToMs(uTicks) / (double)uCalls : 0.0;
+	const double drawAvgMs = (dCalls > 0) ? QpcTicksToMs(dTicks) / (double)dCalls : 0.0;
+	const double vConvMBs = (intervalSec > 0.0) ? ((double)vConvBytes / (1024.0 * 1024.0)) / intervalSec : 0.0;
+	const double upMBs = (intervalSec > 0.0) ? ((double)uBytes / (1024.0 * 1024.0)) / intervalSec : 0.0;
+	const double aMBs = (intervalSec > 0.0) ? ((double)aBytes / (1024.0 * 1024.0)) / intervalSec : 0.0;
+
+	wchar_t buf[512] = {};
+	swprintf_s(
+		buf,
+		L"[MediaPlayer][Legacy][%.2fs] mode=%s nv12=%s upd=%llu fps=%.1f | ReadSample %llux %.3fms (V:%llux %.3fms A:%llux %.3fms) | Contig %llux %.3fms | VConv %llux %.3fms %.1fMB/s | Upload %llux %.3fms %.1fMB/s | Draw %llux %.3fms | Audio %llux %.3fms %.1fMB/s\n",
+		intervalSec,
+		(_usingHardwareDecode ? L"HW" : L"SW"),
+		(_usingNv12VideoOutput ? L"Y" : L"N"),
+		(unsigned long long)updCalls,
+		fps,
+		(unsigned long long)rsCalls,
+		readAvgMs,
+		(unsigned long long)rsVC,
+		readVAvgMs,
+		(unsigned long long)rsAC,
+		readAAvgMs,
+		(unsigned long long)contigCalls,
+		contigAvgMs,
+		(unsigned long long)vConvCalls,
+		vConvAvgMs,
+		vConvMBs,
+		(unsigned long long)uCalls,
+		upAvgMs,
+		upMBs,
+		(unsigned long long)dCalls,
+		drawAvgMs,
+		(unsigned long long)aCalls,
+		aAvgMs,
+		aMBs);
+	OutputDebugStringW(buf);
 }
 
 bool MediaPlayer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
@@ -4165,6 +2987,36 @@ GET_CPP(MediaPlayer, bool, Loop)
 SET_CPP(MediaPlayer, bool, Loop)
 {
 	_loop = value;
+}
+
+GET_CPP(MediaPlayer, bool, EnableHardwareDecode)
+{
+	return _enableHardwareDecode;
+}
+
+SET_CPP(MediaPlayer, bool, EnableHardwareDecode)
+{
+	_enableHardwareDecode = value;
+}
+
+GET_CPP(MediaPlayer, bool, UsingHardwareDecode)
+{
+	return _usingHardwareDecode;
+}
+
+GET_CPP(MediaPlayer, bool, PreferNv12VideoOutput)
+{
+	return _preferNv12VideoOutput;
+}
+
+SET_CPP(MediaPlayer, bool, PreferNv12VideoOutput)
+{
+	_preferNv12VideoOutput = value;
+}
+
+GET_CPP(MediaPlayer, bool, UsingNv12VideoOutput)
+{
+	return _usingNv12VideoOutput;
 }
 
 GET_CPP(MediaPlayer, bool, HasVideo)
