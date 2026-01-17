@@ -55,6 +55,7 @@ enum class UIClass : int
 {
 	UI_Base,
 	UI_Label,
+	UI_LinkLabel,
 	UI_Button,
 	UI_PictureBox,
 	UI_TextBox,

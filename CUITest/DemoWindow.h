@@ -58,8 +58,10 @@ private:
     // Basic tab
     Button* _basicButton = nullptr;
     CheckBox* _basicEnableCheck = nullptr;
+    LinkLabel* _basicLink = nullptr;
     RadioBox* _rb1 = nullptr;
     RadioBox* _rb2 = nullptr;
+
 
     // Containers tab
     PictureBox* _picture = nullptr;

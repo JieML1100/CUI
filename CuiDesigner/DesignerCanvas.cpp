@@ -3,6 +3,7 @@
 #include <CppUtils/Utils/Convert.h>
 #include "FakeWebBrowser.h"
 #include "../CUI_Legacy/GUI/Label.h"
+#include "../CUI_Legacy/GUI/LinkLabel.h"
 #include "../CUI_Legacy/GUI/Button.h"
 #include "../CUI_Legacy/GUI/TextBox.h"
 #include "../CUI_Legacy/GUI/CheckBox.h"
@@ -2186,6 +2187,10 @@ void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
 		newControl = new Label(L"标签", centerX, centerY);
 		typeName = L"Label";
 		break;
+	case UIClass::UI_LinkLabel:
+		newControl = new LinkLabel(L"链接标签", centerX, centerY);
+		typeName = L"LinkLabel";
+		break;
 	case UIClass::UI_Button:
 		newControl = new Button(L"按钮", centerX, centerY, 120, 30);
 		typeName = L"Button";
@@ -2526,6 +2531,7 @@ static bool IsExportableDesignType(UIClass t)
 	switch (t)
 	{
 	case UIClass::UI_Label:
+	case UIClass::UI_LinkLabel:
 	case UIClass::UI_Button:
 	case UIClass::UI_TextBox:
 	case UIClass::UI_RichTextBox:
@@ -2563,6 +2569,7 @@ static std::wstring ExportTypeName(UIClass t)
 	switch (t)
 	{
 	case UIClass::UI_Label: return L"Label";
+	case UIClass::UI_LinkLabel: return L"LinkLabel";
 	case UIClass::UI_Button: return L"Button";
 	case UIClass::UI_TextBox: return L"TextBox";
 	case UIClass::UI_RichTextBox: return L"RichTextBox";
@@ -2717,8 +2724,9 @@ namespace
 	{
 		switch (t)
 		{
-		case UIClass::UI_Label: return "Label";
-		case UIClass::UI_Button: return "Button";
+			case UIClass::UI_Label: return "Label";
+			case UIClass::UI_LinkLabel: return "LinkLabel";
+			case UIClass::UI_Button: return "Button";
 		case UIClass::UI_TextBox: return "TextBox";
 		case UIClass::UI_RichTextBox: return "RichTextBox";
 		case UIClass::UI_PasswordBox: return "PasswordBox";
@@ -2751,6 +2759,7 @@ namespace
 	static bool TryParseUIClass(const std::string& s, UIClass& out)
 	{
 		if (s == "Label") { out = UIClass::UI_Label; return true; }
+		if (s == "LinkLabel") { out = UIClass::UI_LinkLabel; return true; }
 		if (s == "Button") { out = UIClass::UI_Button; return true; }
 		if (s == "TextBox") { out = UIClass::UI_TextBox; return true; }
 		if (s == "RichTextBox") { out = UIClass::UI_RichTextBox; return true; }
@@ -3653,7 +3662,8 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 		{
 			switch (type)
 			{
-			case UIClass::UI_Label: return new Label(L"标签", 0, 0);
+	case UIClass::UI_Label: return new Label(L"标签", 0, 0);
+			case UIClass::UI_LinkLabel: return new LinkLabel(L"链接标签", 0, 0);
 			case UIClass::UI_Button: return new Button(L"按钮", 0, 0, 120, 30);
 			case UIClass::UI_TextBox: return new TextBox(L"", 0, 0, 200, 25);
 			case UIClass::UI_RichTextBox: return new RichTextBox(L"", 0, 0, 300, 160);

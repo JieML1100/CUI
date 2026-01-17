@@ -9,6 +9,7 @@
 #include "MenuItemsEditorDialog.h"
 #include "StatusBarPartsEditorDialog.h"
 #include "DesignerCanvas.h"
+#include "../CUI_Legacy/GUI/LinkLabel.h"
 #include "../CUI_Legacy/GUI/ComboBox.h"
 #include "../CUI_Legacy/GUI/Slider.h"
 #include "../CUI_Legacy/GUI/ProgressBar.h"
@@ -1628,6 +1629,12 @@ void PropertyGrid::UpdatePropertyFromBool(std::wstring propertyName, bool value)
 		if (ctrl->Type() == UIClass::UI_MediaPlayer)
 			((MediaPlayer*)ctrl)->Loop = value;
 	}
+	else if (propertyName == L"Visited")
+	{
+		if (ctrl->Type() == UIClass::UI_LinkLabel)
+			((LinkLabel*)ctrl)->Visited = value;
+	}
+
 
 	if (auto* p = dynamic_cast<Panel*>(ctrl->Parent))
 	{
@@ -1705,6 +1712,11 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 	// 基本属性
 	CreatePropertyItem(L"Name", control->Name, yOffset);
 	CreatePropertyItem(L"Text", ctrl->Text, yOffset);
+	if (control->Type == UIClass::UI_LinkLabel)
+	{
+		auto* link = (LinkLabel*)ctrl;
+		CreateBoolPropertyItem(L"Visited", link->Visited, yOffset);
+	}
 	{
 		auto* shared = _canvas ? _canvas->GetDesignedFormSharedFont() : nullptr;
 		::Font* f = ctrl->Font;

@@ -426,6 +426,19 @@ void DemoWindow_Legacy::BuildTab_Basic(TabPage* page)
 	_basicEnableCheck = page->AddControl(new CheckBox(L"启用输入框", 180, 74));
 	_basicEnableCheck->Checked = true;
 
+	_basicLink = page->AddControl(new LinkLabel(L"查看文档", 320, 74));
+	_basicLink->OnMouseClick += [this](class Control* sender, MouseEventArgs e)
+		{
+			(void)sender;
+			(void)e;
+			if (_basicLink)
+			{
+				_basicLink->Visited = true;
+				_basicLink->PostRender();
+			}
+			Ui_UpdateStatus(L"LinkLabel: OnMouseClick");
+		};
+
 	auto tb1 = page->AddControl(new TextBox(L"TextBox", 10, 110, 200, 26));
 	auto tb2 = page->AddControl(new CustomTextBox1(L"CustomTextBox1", 10, 145, 200, 26));
 	auto tb3 = page->AddControl(new RoundTextBox(L"RoundTextBox", 10, 180, 200, 26));

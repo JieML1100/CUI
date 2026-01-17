@@ -6,6 +6,7 @@
 #include "ComboBox.h"
 #include "GridView.h"
 #include "Label.h"
+#include "LinkLabel.h"
 #include "Panel.h"
 #include "PasswordBox.h"
 #include "PictureBox.h"

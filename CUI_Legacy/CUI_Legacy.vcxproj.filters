@@ -111,6 +111,9 @@
     <ClInclude Include="GUI\Label.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\LinkLabel.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\CheckBox.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -153,6 +156,9 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Label.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\LinkLabel.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Panel.cpp">

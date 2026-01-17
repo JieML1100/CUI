@@ -197,6 +197,7 @@
     <ClInclude Include="GUI\Form.h" />
     <ClInclude Include="GUI\GridView.h" />
     <ClInclude Include="GUI\Label.h" />
+    <ClInclude Include="GUI\LinkLabel.h" />
     <ClInclude Include="GUI\MediaPlayer.h" />
     <ClInclude Include="GUI\Menu.h" />
     <ClInclude Include="GUI\NotifyIcon.h" />
@@ -234,6 +235,7 @@
     <ClCompile Include="GUI\Form.cpp" />
     <ClCompile Include="GUI\GridView.cpp" />
     <ClCompile Include="GUI\Label.cpp" />
+    <ClCompile Include="GUI\LinkLabel.cpp" />
     <ClCompile Include="GUI\MediaPlayer.cpp" />
     <ClCompile Include="GUI\Menu.cpp" />
     <ClCompile Include="GUI\NotifyIcon.cpp" />

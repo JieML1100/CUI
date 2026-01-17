@@ -344,6 +344,7 @@ std::string CodeGenerator::GetControlTypeName(UIClass type)
 	switch (type)
 	{
 	case UIClass::UI_Label: return "Label";
+	case UIClass::UI_LinkLabel: return "LinkLabel";
 	case UIClass::UI_Button: return "Button";
 	case UIClass::UI_TextBox: return "TextBox";
 	case UIClass::UI_RichTextBox: return "RichTextBox";
@@ -381,6 +382,8 @@ std::string CodeGenerator::GetIncludeForType(UIClass type)
 	case UIClass::UI_TabControl:
 	case UIClass::UI_TabPage:
 		return "GUI/TabControl.h";
+	case UIClass::UI_LinkLabel:
+		return "GUI/LinkLabel.h";
 	case UIClass::UI_ToolBar:
 		return "GUI/ToolBar.h";
 	case UIClass::UI_StackPanel:
@@ -577,6 +580,7 @@ std::string CodeGenerator::GenerateControlInstantiation(const std::shared_ptr<De
 	switch (dc->Type)
 	{
 	case UIClass::UI_Label:
+	case UIClass::UI_LinkLabel:
 	case UIClass::UI_CheckBox:
 	case UIClass::UI_RadioBox:
 		code << "L\"" << EscapeWStringLiteral(ctrl->Text) << "\", "
@@ -635,13 +639,13 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	std::string name = GetVarName(dc);
 
 	// 尺寸：Label/CheckBox/RadioBox 构造函数无 size
-	if (dc->Type == UIClass::UI_Label || dc->Type == UIClass::UI_CheckBox || dc->Type == UIClass::UI_RadioBox)
+	if (dc->Type == UIClass::UI_Label || dc->Type == UIClass::UI_LinkLabel || dc->Type == UIClass::UI_CheckBox || dc->Type == UIClass::UI_RadioBox)
 	{
 		code << indentStr << name << "->Size = {" << ctrl->Size.cx << ", " << ctrl->Size.cy << "};\n";
 	}
 
 	// 对于不在构造函数中写入 Text 的控件：补齐 Text
-	if (dc->Type != UIClass::UI_Label && dc->Type != UIClass::UI_Button &&
+	if (dc->Type != UIClass::UI_Label && dc->Type != UIClass::UI_LinkLabel && dc->Type != UIClass::UI_Button &&
 		dc->Type != UIClass::UI_CheckBox && dc->Type != UIClass::UI_RadioBox &&
 		dc->Type != UIClass::UI_TextBox && dc->Type != UIClass::UI_RichTextBox &&
 		dc->Type != UIClass::UI_PasswordBox && dc->Type != UIClass::UI_ComboBox)
@@ -649,6 +653,7 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 		if (!ctrl->Text.empty())
 			code << indentStr << name << "->Text = L\"" << EscapeWStringLiteral(ctrl->Text) << "\";\n";
 	}
+
 
 	if (!ctrl->Enable)
 		code << indentStr << name << "->Enable = false;\n";

@@ -70,6 +70,7 @@ public:
 	{
 		return {
 			{ UIClass::UI_Label, L"Label", L"标签", {100, 20}, false },
+			{ UIClass::UI_LinkLabel, L"LinkLabel", L"链接标签", {120, 20}, false },
 			{ UIClass::UI_Button, L"Button", L"按钮", {120, 30}, false },
 			{ UIClass::UI_TextBox, L"TextBox", L"文本框", {200, 25}, false },
 			{ UIClass::UI_PasswordBox, L"PasswordBox", L"密码框", {200, 25}, false },
