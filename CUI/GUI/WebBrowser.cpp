@@ -46,6 +46,17 @@ WebBrowser::WebBrowser(int x, int y, int width, int height)
 
 WebBrowser::~WebBrowser()
 {
+	if (_webview)
+	{
+		if (_navStartingToken.value != 0) { _webview->remove_NavigationStarting(_navStartingToken); _navStartingToken.value = 0; }
+		if (_navCompletedToken.value != 0) { _webview->remove_NavigationCompleted(_navCompletedToken); _navCompletedToken.value = 0; }
+		if (_contentLoadingToken.value != 0) { _webview->remove_ContentLoading(_contentLoadingToken); _contentLoadingToken.value = 0; }
+		if (_sourceChangedToken.value != 0) { _webview->remove_SourceChanged(_sourceChangedToken); _sourceChangedToken.value = 0; }
+		if (_historyChangedToken.value != 0) { _webview->remove_HistoryChanged(_historyChangedToken); _historyChangedToken.value = 0; }
+		if (_documentTitleChangedToken.value != 0) { _webview->remove_DocumentTitleChanged(_documentTitleChangedToken); _documentTitleChangedToken.value = 0; }
+		if (_newWindowRequestedToken.value != 0) { _webview->remove_NewWindowRequested(_newWindowRequestedToken); _newWindowRequestedToken.value = 0; }
+		if (_processFailedToken.value != 0) { _webview->remove_ProcessFailed(_processFailedToken); _processFailedToken.value = 0; }
+	}
 	if (_webview && _webMessageToken.value != 0)
 	{
 		_webview->remove_WebMessageReceived(_webMessageToken);
@@ -275,6 +286,9 @@ void WebBrowser::EnsureInitialized()
 	_lastGetWebViewHr = E_PENDING;
 	_webviewReady = false;
 	_navCompletedCount = 0;
+	_isNavigating = false;
+	_cachedSource.clear();
+	_cachedTitle.clear();
 
 	_lastCoInitHr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
@@ -383,29 +397,207 @@ void WebBrowser::EnsureInitialized()
 					_webviewReady = (SUCCEEDED(_lastGetWebViewHr) && _webview != nullptr);
 					EnsureInteropInstalled();
 
-					// 导航完成时触发重绘（仅用于占位提示更新；实际页面由 WebView2 自身渲染）
+					// WebView2 事件注册
 					if (_webview)
 					{
-						EventRegistrationToken tok{};
+						_navStartingToken.value = 0;
+						_webview->add_NavigationStarting(
+							Callback<ICoreWebView2NavigationStartingEventHandler>(
+								[this](ICoreWebView2* sender, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT
+								{
+									(void)sender;
+									WebBrowser::NavigationStartingArgs ev;
+									LPWSTR raw = nullptr;
+									if (args && SUCCEEDED(args->get_Uri(&raw)) && raw)
+									{
+										ev.Uri = raw;
+										CoTaskMemFree(raw);
+									}
+									BOOL isUser = FALSE;
+									BOOL isRedirected = FALSE;
+									if (args)
+									{
+										args->get_IsUserInitiated(&isUser);
+										args->get_IsRedirected(&isRedirected);
+									}
+									ev.IsUserInitiated = (isUser != FALSE);
+									ev.IsRedirected = (isRedirected != FALSE);
+									_isNavigating = true;
+									OnNavigationStarting(this, ev);
+									if (args && ev.Cancel)
+										args->put_Cancel(TRUE);
+									return S_OK;
+								}).Get(),
+							&_navStartingToken);
+
+						_navCompletedToken.value = 0;
 						_webview->add_NavigationCompleted(
 							Callback<ICoreWebView2NavigationCompletedEventHandler>(
 								[this](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT
 								{
+									(void)sender;
+									WebBrowser::NavigationCompletedArgs ev;
+									BOOL isSuccess = FALSE;
+									COREWEBVIEW2_WEB_ERROR_STATUS status = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+									UINT64 navId = 0;
+									if (args)
+									{
+										args->get_IsSuccess(&isSuccess);
+										args->get_WebErrorStatus(&status);
+										args->get_NavigationId(&navId);
+									}
+									ev.IsSuccess = (isSuccess != FALSE);
+									ev.WebErrorStatus = status;
+									ev.NavigationId = navId;
+									LPWSTR raw = nullptr;
+									if (_webview && SUCCEEDED(_webview->get_Source(&raw)) && raw)
+									{
+										ev.Uri = raw;
+										_cachedSource = ev.Uri;
+										CoTaskMemFree(raw);
+									}
+#if defined(__ICoreWebView2NavigationCompletedEventArgs2_INTERFACE_DEFINED__)
+									// HttpStatusCode 需要较新的 WebView2 SDK，旧版本保持默认值
+#endif
+
+									_isNavigating = false;
+									OnNavigationCompleted(this, ev);
+									if (!ev.IsSuccess)
+										OnNavigationFailed(this, ev);
 									_navCompletedCount++;
 									this->PostRender();
 									return S_OK;
 								}).Get(),
-							&tok);
+							&_navCompletedToken);
 
-						// 内容加载完成时也触发重绘
+						_contentLoadingToken.value = 0;
 						_webview->add_ContentLoading(
 							Callback<ICoreWebView2ContentLoadingEventHandler>(
 								[this](ICoreWebView2* sender, ICoreWebView2ContentLoadingEventArgs* args) -> HRESULT
 								{
+									(void)sender;
+									WebBrowser::ContentLoadingArgs ev;
+									BOOL isError = FALSE;
+									UINT64 navId = 0;
+									if (args)
+									{
+										args->get_IsErrorPage(&isError);
+										args->get_NavigationId(&navId);
+									}
+									ev.IsErrorPage = (isError != FALSE);
+									ev.NavigationId = navId;
+									OnContentLoading(this, ev);
 									this->PostRender();
 									return S_OK;
 								}).Get(),
-							&tok);
+							&_contentLoadingToken);
+
+							// DOMContentLoaded 事件改为 JS 注入触发（兼容旧 WebView2 SDK）
+
+						_sourceChangedToken.value = 0;
+						_webview->add_SourceChanged(
+							Callback<ICoreWebView2SourceChangedEventHandler>(
+								[this](ICoreWebView2* sender, ICoreWebView2SourceChangedEventArgs* args) -> HRESULT
+								{
+									(void)sender;
+									WebBrowser::SourceChangedArgs ev;
+									BOOL isNew = FALSE;
+									if (args)
+										args->get_IsNewDocument(&isNew);
+									ev.IsNewDocument = (isNew != FALSE);
+									LPWSTR raw = nullptr;
+									if (_webview && SUCCEEDED(_webview->get_Source(&raw)) && raw)
+									{
+										ev.Uri = raw;
+										_cachedSource = ev.Uri;
+										CoTaskMemFree(raw);
+									}
+									OnSourceChanged(this, ev);
+									return S_OK;
+								}).Get(),
+							&_sourceChangedToken);
+
+						_historyChangedToken.value = 0;
+						_webview->add_HistoryChanged(
+							Callback<ICoreWebView2HistoryChangedEventHandler>(
+								[this](ICoreWebView2* sender, IUnknown* args) -> HRESULT
+								{
+									(void)sender;
+									(void)args;
+									WebBrowser::HistoryChangedArgs ev;
+									BOOL canBack = FALSE;
+									BOOL canForward = FALSE;
+									if (_webview)
+									{
+										_webview->get_CanGoBack(&canBack);
+										_webview->get_CanGoForward(&canForward);
+									}
+									ev.CanGoBack = (canBack != FALSE);
+									ev.CanGoForward = (canForward != FALSE);
+									OnHistoryChanged(this, ev);
+									return S_OK;
+								}).Get(),
+							&_historyChangedToken);
+
+						_documentTitleChangedToken.value = 0;
+						_webview->add_DocumentTitleChanged(
+							Callback<ICoreWebView2DocumentTitleChangedEventHandler>(
+								[this](ICoreWebView2* sender, IUnknown* args) -> HRESULT
+								{
+									(void)sender;
+									(void)args;
+									WebBrowser::DocumentTitleChangedArgs ev;
+									LPWSTR raw = nullptr;
+									if (_webview && SUCCEEDED(_webview->get_DocumentTitle(&raw)) && raw)
+									{
+										ev.Title = raw;
+										_cachedTitle = ev.Title;
+										CoTaskMemFree(raw);
+									}
+									OnDocumentTitleChanged(this, ev);
+									return S_OK;
+								}).Get(),
+							&_documentTitleChangedToken);
+
+						_newWindowRequestedToken.value = 0;
+						_webview->add_NewWindowRequested(
+							Callback<ICoreWebView2NewWindowRequestedEventHandler>(
+								[this](ICoreWebView2* sender, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT
+								{
+									(void)sender;
+									WebBrowser::NewWindowRequestedArgs ev;
+									LPWSTR raw = nullptr;
+									if (args && SUCCEEDED(args->get_Uri(&raw)) && raw)
+									{
+										ev.Uri = raw;
+										CoTaskMemFree(raw);
+									}
+									BOOL isUser = FALSE;
+									if (args)
+										args->get_IsUserInitiated(&isUser);
+									ev.IsUserInitiated = (isUser != FALSE);
+									OnNewWindowRequested(this, ev);
+									if (args && ev.Handled)
+										args->put_Handled(TRUE);
+									return S_OK;
+								}).Get(),
+							&_newWindowRequestedToken);
+
+						_processFailedToken.value = 0;
+						_webview->add_ProcessFailed(
+							Callback<ICoreWebView2ProcessFailedEventHandler>(
+								[this](ICoreWebView2* sender, ICoreWebView2ProcessFailedEventArgs* args) -> HRESULT
+								{
+									(void)sender;
+									WebBrowser::ProcessFailedArgs ev;
+									COREWEBVIEW2_PROCESS_FAILED_KIND kind = COREWEBVIEW2_PROCESS_FAILED_KIND_UNKNOWN_PROCESS_EXITED;
+									if (args)
+										args->get_ProcessFailedKind(&kind);
+									ev.Kind = kind;
+									OnProcessFailed(this, ev);
+									return S_OK;
+								}).Get(),
+							&_processFailedToken);
 					}
 
 					// 处理延迟的 Navigate/Html
@@ -461,6 +653,9 @@ void WebBrowser::EnsureInteropInstalled()
 		L" let seq = 0;"
 		L" function enc(s){ return encodeURIComponent(s==null?'':String(s)); }"
 		L" function post(url){ chrome.webview.postMessage(url); }"
+		L" function notifyDom(){ try{ post('cui://domcontentloaded'); }catch(e){} }"
+		L" if(document.readyState === 'loading'){ document.addEventListener('DOMContentLoaded', notifyDom, {once:true}); }"
+		L" else { setTimeout(notifyDom,0); }"
 		L" chrome.webview.addEventListener('message', function(ev){"
 		L"   try{"
 		L"     const msg = String(ev.data||'');"
@@ -522,7 +717,12 @@ void WebBrowser::EnsureInteropInstalled()
 
 				std::wstring action;
 				std::unordered_map<std::wstring, std::wstring> q;
-				if (!TryParseCuiUrl(msg, action, q)) return S_OK;
+				if (!TryParseCuiUrl(msg, action, q))
+				{
+					WebBrowser::WebMessageReceivedArgs ev{ msg };
+					OnWebMessageReceived(this, ev);
+					return S_OK;
+				}
 
 				auto get = [&](const wchar_t* k) -> std::wstring
 				{
@@ -568,6 +768,17 @@ void WebBrowser::EnsureInteropInstalled()
 				else if (action == L"notify")
 				{
 					// 预留：如需可在这里扩展 OnNotify 事件
+				}
+				else if (action == L"domcontentloaded")
+				{
+					WebBrowser::DomContentLoadedArgs ev;
+					ev.NavigationId = 0;
+					OnDOMContentLoaded(this, ev);
+				}
+				else
+				{
+					WebBrowser::WebMessageReceivedArgs ev{ msg };
+					OnWebMessageReceived(this, ev);
 				}
 				return S_OK;
 			}).Get(),
@@ -747,6 +958,92 @@ void WebBrowser::Reload()
 	if (_webview)
 	{
 		_webview->Reload();
+	}
+}
+
+void WebBrowser::Stop()
+{
+	if (_webview)
+	{
+		_webview->Stop();
+	}
+}
+
+void WebBrowser::GoBack()
+{
+	if (_webview)
+	{
+		_webview->GoBack();
+	}
+}
+
+void WebBrowser::GoForward()
+{
+	if (_webview)
+	{
+		_webview->GoForward();
+	}
+}
+
+bool WebBrowser::CanGoBack() const
+{
+	if (!_webview) return false;
+	BOOL v = FALSE;
+	_webview->get_CanGoBack(&v);
+	return v != FALSE;
+}
+
+bool WebBrowser::CanGoForward() const
+{
+	if (!_webview) return false;
+	BOOL v = FALSE;
+	_webview->get_CanGoForward(&v);
+	return v != FALSE;
+}
+
+std::wstring WebBrowser::GetSource() const
+{
+	if (_webview)
+	{
+		LPWSTR raw = nullptr;
+		if (SUCCEEDED(_webview->get_Source(&raw)) && raw)
+		{
+			std::wstring s = raw;
+			CoTaskMemFree(raw);
+			return s;
+		}
+	}
+	return _cachedSource;
+}
+
+std::wstring WebBrowser::GetDocumentTitle() const
+{
+	if (_webview)
+	{
+		LPWSTR raw = nullptr;
+		if (SUCCEEDED(_webview->get_DocumentTitle(&raw)) && raw)
+		{
+			std::wstring s = raw;
+			CoTaskMemFree(raw);
+			return s;
+		}
+	}
+	return _cachedTitle;
+}
+
+double WebBrowser::GetZoomFactor() const
+{
+	if (!_controller) return 1.0;
+	double f = 1.0;
+	_controller->get_ZoomFactor(&f);
+	return f;
+}
+
+void WebBrowser::SetZoomFactor(double factor)
+{
+	if (_controller)
+	{
+		_controller->put_ZoomFactor(factor);
 	}
 }
 

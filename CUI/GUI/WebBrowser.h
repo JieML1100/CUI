@@ -41,6 +41,83 @@ public:
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 
+	// 事件参数定义
+	struct NavigationStartingArgs
+	{
+		std::wstring Uri;
+		bool IsUserInitiated = false;
+		bool IsRedirected = false;
+		bool Cancel = false;
+	};
+
+	struct NavigationCompletedArgs
+	{
+		std::wstring Uri;
+		UINT64 NavigationId = 0;
+		bool IsSuccess = false;
+		bool IsHttpErrorStatus = false;
+		int HttpStatusCode = 0;
+		COREWEBVIEW2_WEB_ERROR_STATUS WebErrorStatus = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+	};
+
+	struct ContentLoadingArgs
+	{
+		UINT64 NavigationId = 0;
+		bool IsErrorPage = false;
+		bool IsInSameDocument = false;
+	};
+
+	struct DomContentLoadedArgs
+	{
+		UINT64 NavigationId = 0;
+	};
+
+	struct SourceChangedArgs
+	{
+		std::wstring Uri;
+		bool IsNewDocument = false;
+	};
+
+	struct HistoryChangedArgs
+	{
+		bool CanGoBack = false;
+		bool CanGoForward = false;
+	};
+
+	struct DocumentTitleChangedArgs
+	{
+		std::wstring Title;
+	};
+
+	struct NewWindowRequestedArgs
+	{
+		std::wstring Uri;
+		bool IsUserInitiated = false;
+		bool Handled = false;
+	};
+
+	struct ProcessFailedArgs
+	{
+		COREWEBVIEW2_PROCESS_FAILED_KIND Kind = COREWEBVIEW2_PROCESS_FAILED_KIND_UNKNOWN_PROCESS_EXITED;
+	};
+
+	struct WebMessageReceivedArgs
+	{
+		std::wstring Message;
+	};
+
+	// 事件定义
+	typedef Event<void(class WebBrowser*, NavigationStartingArgs&)> NavigationStartingEvent;
+	typedef Event<void(class WebBrowser*, const NavigationCompletedArgs&)> NavigationCompletedEvent;
+	typedef Event<void(class WebBrowser*, const ContentLoadingArgs&)> ContentLoadingEvent;
+	typedef Event<void(class WebBrowser*, const DomContentLoadedArgs&)> DomContentLoadedEvent;
+	typedef Event<void(class WebBrowser*, const SourceChangedArgs&)> SourceChangedEvent;
+	typedef Event<void(class WebBrowser*, const HistoryChangedArgs&)> HistoryChangedEvent;
+	typedef Event<void(class WebBrowser*, const DocumentTitleChangedArgs&)> DocumentTitleChangedEvent;
+	typedef Event<void(class WebBrowser*, NewWindowRequestedArgs&)> NewWindowRequestedEvent;
+	typedef Event<void(class WebBrowser*, const ProcessFailedArgs&)> ProcessFailedEvent;
+	typedef Event<void(class WebBrowser*, const WebMessageReceivedArgs&)> WebMessageReceivedEvent;
+
 	// WebView2 Composition 光标支持：返回 system cursor id（可用于 LoadCursor(MAKEINTRESOURCE)）
 	/**
 	 * @brief 获取 WebView2 当前建议的系统光标 id。
@@ -54,6 +131,26 @@ public:
 	void SetHtml(const std::wstring& html);
 	/** @brief 重新加载当前页面。 */
 	void Reload();
+	/** @brief 停止加载。 */
+	void Stop();
+	/** @brief 后退。 */
+	void GoBack();
+	/** @brief 前进。 */
+	void GoForward();
+	/** @brief 是否可后退。 */
+	bool CanGoBack() const;
+	/** @brief 是否可前进。 */
+	bool CanGoForward() const;
+	/** @brief 获取当前来源 URL（可能为空）。 */
+	std::wstring GetSource() const;
+	/** @brief 获取文档标题（可能为空）。 */
+	std::wstring GetDocumentTitle() const;
+	/** @brief 当前是否处于导航/加载状态。 */
+	bool IsNavigating() const { return _isNavigating; }
+	/** @brief 获取缩放比例。 */
+	double GetZoomFactor() const;
+	/** @brief 设置缩放比例。 */
+	void SetZoomFactor(double factor);
 
 	/**
 	 * @brief 异步执行脚本。
@@ -89,6 +186,19 @@ public:
 	/** @brief WebView 是否已创建且当前控件可见。 */
 	bool IsWebViewVisible() const { return _webviewReady && this->Visible; }
 
+	// WebView2 事件
+	NavigationStartingEvent OnNavigationStarting = NavigationStartingEvent();
+	NavigationCompletedEvent OnNavigationCompleted = NavigationCompletedEvent();
+	NavigationCompletedEvent OnNavigationFailed = NavigationCompletedEvent();
+	ContentLoadingEvent OnContentLoading = ContentLoadingEvent();
+	DomContentLoadedEvent OnDOMContentLoaded = DomContentLoadedEvent();
+	SourceChangedEvent OnSourceChanged = SourceChangedEvent();
+	HistoryChangedEvent OnHistoryChanged = HistoryChangedEvent();
+	DocumentTitleChangedEvent OnDocumentTitleChanged = DocumentTitleChangedEvent();
+	NewWindowRequestedEvent OnNewWindowRequested = NewWindowRequestedEvent();
+	ProcessFailedEvent OnProcessFailed = ProcessFailedEvent();
+	WebMessageReceivedEvent OnWebMessageReceived = WebMessageReceivedEvent();
+
 private:
 	void EnsureInitialized();
 	void EnsureInteropInstalled();
@@ -108,6 +218,9 @@ private:
 	HRESULT _lastGetWebViewHr = S_OK;
 	HRESULT _lastCoInitHr = S_OK;
 	int _navCompletedCount = 0;
+	bool _isNavigating = false;
+	std::wstring _cachedSource;
+	std::wstring _cachedTitle;
 
 	std::wstring _pendingUrl;
 	std::wstring _pendingHtml;
@@ -126,6 +239,15 @@ private:
 	bool _hasSystemCursorId = false;
 	EventRegistrationToken _cursorChangedToken{};
 	EventRegistrationToken _webMessageToken{};
+	EventRegistrationToken _navStartingToken{};
+	EventRegistrationToken _navCompletedToken{};
+	EventRegistrationToken _contentLoadingToken{};
+	EventRegistrationToken _domContentLoadedToken{};
+	EventRegistrationToken _sourceChangedToken{};
+	EventRegistrationToken _historyChangedToken{};
+	EventRegistrationToken _documentTitleChangedToken{};
+	EventRegistrationToken _newWindowRequestedToken{};
+	EventRegistrationToken _processFailedToken{};
 	bool _interopInstalled = false;
 	std::unordered_map<std::wstring, JsInvokeHandler> _invokeHandlers;
 
