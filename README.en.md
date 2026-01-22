@@ -1,6 +1,6 @@
 # CUI - Modern Windows GUI Framework
 
-[English](README.en.md) | [简体中文](README.md) | [Full Documentation](ReadMeFull.en.md.md)
+[English](README.en.md) | [简体中文](README.md) | [Full Documentation](ReadMeFull.en.md)
 
 [完整文档(中文)](ReadMeFull.md)
 
