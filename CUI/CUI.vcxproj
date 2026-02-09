@@ -212,6 +212,7 @@
     <ClInclude Include="GUI\Button.h" />
     <ClInclude Include="GUI\CheckBox.h" />
     <ClInclude Include="GUI\ComboBox.h" />
+    <ClInclude Include="GUI\DateTimePicker.h" />
     <ClInclude Include="GUI\Control.h" />
     <ClInclude Include="GUI\DCompLayeredHost.h" />
     <ClInclude Include="GUI\Form.h" />
@@ -252,6 +253,7 @@
     <ClCompile Include="GUI\Button.cpp" />
     <ClCompile Include="GUI\CheckBox.cpp" />
     <ClCompile Include="GUI\ComboBox.cpp" />
+    <ClCompile Include="GUI\DateTimePicker.cpp" />
     <ClCompile Include="GUI\Control.cpp" />
     <ClCompile Include="GUI\DCompLayeredHost.cpp" />
     <ClCompile Include="GUI\Form.cpp" />

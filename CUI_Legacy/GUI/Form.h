@@ -9,6 +9,7 @@
 #include "Button.h"
 #include "CheckBox.h"
 #include "ComboBox.h"
+#include "DateTimePicker.h"
 #include "GridView.h"
 #include "Label.h"
 #include "LinkLabel.h"

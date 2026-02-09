@@ -85,6 +85,7 @@ enum class UIClass : int
 	UI_DockPanel,
 	UI_WrapPanel,
 	UI_RelativePanel,
+	UI_DateTimePicker,
 	UI_CUSTOM
 };
 

@@ -438,6 +438,21 @@ void DemoWindow_Legacy::BuildTab_Basic(TabPage* page)
 			Ui_UpdateStatus(StringHelper::Format(L"ComboBox: %s", combo->Text.c_str()));
 		};
 
+	page->AddControl(new Label(L"DateTimePicker", 450, 110));
+	auto dtBoth = page->AddControl(new DateTimePicker(L"", 450, 140, 200, 28));
+	dtBoth->AllowModeSwitch = true;
+	dtBoth->OnSelectionChanged += [this, dtBoth](class Control* sender)
+		{
+			(void)sender;
+			Ui_UpdateStatus(StringHelper::Format(L"DateTimePicker: %s", dtBoth->Text.c_str()));
+		};
+	auto dtDate = page->AddControl(new DateTimePicker(L"", 450, 175, 200, 28));
+	dtDate->Mode = DateTimePickerMode::DateOnly;
+	dtDate->AllowModeSwitch = false;
+	auto dtTime = page->AddControl(new DateTimePicker(L"", 450, 210, 200, 28));
+	dtTime->Mode = DateTimePickerMode::TimeOnly;
+	dtTime->AllowModeSwitch = false;
+
 	_rb1 = page->AddControl(new RadioBox(L"选项 A", 240, 150));
 	_rb2 = page->AddControl(new RadioBox(L"选项 B", 240, 180));
 	_rb1->Checked = true;

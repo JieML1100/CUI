@@ -387,16 +387,24 @@ static void DismissComboBoxForegroundOnOutsideMouseDown(Form* f, POINT contentMo
 	if (!f->ForegroundControl || !f->ForegroundControl->Visible || !f->ForegroundControl->Enable) return;
 	if (PointInControlRect(f->ForegroundControl, contentMouse)) return;
 
-	if (f->ForegroundControl->Type() != UIClass::UI_ComboBox) return;
-	auto* cb = (ComboBox*)f->ForegroundControl;
-	if (!cb->Expand) return;
-
-	cb->Expand = false;
-	if (f->ForegroundControl == cb)
-		f->ForegroundControl = NULL;
-
-	cb->PostRender();
-	f->Invalidate(true);
+	if (f->ForegroundControl->Type() == UIClass::UI_ComboBox)
+	{
+		auto* cb = (ComboBox*)f->ForegroundControl;
+		if (!cb->Expand) return;
+		cb->Expand = false;
+		if (f->ForegroundControl == cb)
+			f->ForegroundControl = NULL;
+		cb->PostRender();
+		f->Invalidate(true);
+		return;
+	}
+	if (f->ForegroundControl->Type() == UIClass::UI_DateTimePicker)
+	{
+		auto* dtp = (DateTimePicker*)f->ForegroundControl;
+		if (!dtp->Expand) return;
+		dtp->SetExpanded(false);
+		return;
+	}
 }
 
 CursorKind Form::QueryCursorAt(POINT mouseClient, POINT contentMouse)

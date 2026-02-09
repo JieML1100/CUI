@@ -120,6 +120,9 @@
     <ClInclude Include="GUI\ComboBox.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\DateTimePicker.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\GridView.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -150,6 +153,9 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\ComboBox.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\DateTimePicker.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\GridView.cpp">
