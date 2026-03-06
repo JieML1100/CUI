@@ -21,17 +21,10 @@ void CheckBox::Update()
 {
 	if (this->IsVisual == false)return;
 	bool isUnderMouse = this->ParentForm->UnderMouse == this;
-	bool isSelected = this->ParentForm->Selected == this;
 	auto d2d = this->ParentForm->Render;
-	auto abslocation = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
-	if (last_width > size.cx)
-	{
-		absRect.right += last_width - size.cx;
-		size.cx = last_width;
-	}
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	float clipW = last_width > size.cx ? (float)last_width : (float)size.cx;
+	this->BeginRender(clipW, (float)size.cy);
 	{
 		auto col = this->ForeColor;
 		if (isUnderMouse)
@@ -40,24 +33,24 @@ void CheckBox::Update()
 		}
 		auto font = this->Font;
 		auto textSize = font->GetTextSize(this->Text);
-		d2d->DrawString(this->Text, abslocation.x + textSize.height + 2, abslocation.y, col, font);
+		d2d->DrawString(this->Text, textSize.height + 2, 0, col, font);
 		d2d->DrawRect(
-			abslocation.x + (textSize.height * 0.2), abslocation.y + (textSize.height * 0.2),
-			textSize.height * 0.6, textSize.height * 0.6,
+			textSize.height * 0.2f, textSize.height * 0.2f,
+			textSize.height * 0.6f, textSize.height * 0.6f,
 			col);
 		if (this->Checked)
 		{
 			d2d->FillRect(
-				abslocation.x + (textSize.height * 0.35), abslocation.y + (textSize.height * 0.35),
-				textSize.height * 0.3, textSize.height * 0.3,
+				textSize.height * 0.35f, textSize.height * 0.35f,
+				textSize.height * 0.3f, textSize.height * 0.3f,
 				col);
 		}
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, clipW, (float)size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
-	d2d->PopDrawRect();
+	this->EndRender();
 	last_width = size.cx;
 }
 bool CheckBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)

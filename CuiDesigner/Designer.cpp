@@ -26,6 +26,36 @@ namespace
 	{
 		::MessageBoxW(ownerForm->Handle, text.c_str(), caption.c_str(), MB_OK | MB_SETFOREGROUND);
 	}
+
+	static SIZE GetLogicalDesignerContentSize(Form* form)
+	{
+		if (!form)
+			return SIZE{ 0, 0 };
+
+		float dpiScale = form->GetDpiScale();
+		if (dpiScale <= 0.0f)
+			dpiScale = 1.0f;
+
+		if (form->Handle && ::IsWindow(form->Handle))
+		{
+			RECT rc{};
+			::GetClientRect(form->Handle, &rc);
+			int contentWidth = (int)((float)(rc.right - rc.left) / dpiScale);
+			int topPhysical = (form->VisibleHead ? form->HeadHeight : 0);
+			int contentHeight = (int)((float)((rc.bottom - rc.top) - topPhysical) / dpiScale);
+			if (contentWidth < 0) contentWidth = 0;
+			if (contentHeight < 0) contentHeight = 0;
+			return SIZE{ contentWidth, contentHeight };
+		}
+
+		SIZE size = form->Size;
+		int topLogical = (int)((float)(form->VisibleHead ? form->HeadHeight : 0) / dpiScale);
+		size.cx = (int)((float)size.cx / dpiScale);
+		size.cy = (int)((float)size.cy / dpiScale) - topLogical;
+		if (size.cx < 0) size.cx = 0;
+		if (size.cy < 0) size.cy = 0;
+		return size;
+	}
 }
 
 Designer::Designer() : Form(L"CUI 窗口设计器", { 0,0 }, { 1400, 840 })
@@ -100,7 +130,8 @@ void Designer::InitializeComponents()
 	
 	// 工具箱（左侧）
 	int toolBoxWidth = 150;
-	int formHeight = this->Size.cy;
+	SIZE contentSize = GetLogicalDesignerContentSize(this);
+	int formHeight = contentSize.cy;
 	_toolBox = new ToolBox(10, toolbarHeight + 10, toolBoxWidth, formHeight - toolbarHeight - 40);
 	_toolBox->OnControlSelected += [this](UIClass type) {
 		OnToolBoxControlSelected(type);
@@ -109,7 +140,7 @@ void Designer::InitializeComponents()
 	
 	// 属性面板（右侧）
 	int propertyGridWidth = 250;
-	int formWidth = this->Size.cx;
+	int formWidth = contentSize.cx;
 	_propertyGrid = new PropertyGrid(formWidth - propertyGridWidth - 10, toolbarHeight + 10, 
 		propertyGridWidth, formHeight - toolbarHeight - 40);
 	this->AddControl(_propertyGrid);
@@ -128,8 +159,9 @@ void Designer::InitializeComponents()
 
 	// 窗口大小变化时：自动调整内部控件布局
 	auto doLayout = [this, toolbarHeight, toolBoxWidth, propertyGridWidth]() {
-		int w = this->Size.cx;
-		int h = this->Size.cy;
+		SIZE contentSize = GetLogicalDesignerContentSize(this);
+		int w = contentSize.cx;
+		int h = contentSize.cy;
 		int usableH = h - toolbarHeight - 40;
 		if (usableH < 50) usableH = 50;
 		if (_toolBox)

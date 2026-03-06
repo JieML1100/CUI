@@ -205,6 +205,11 @@ public:
 
 	void PushDrawRect(float left, float top, float width, float height);
 	void PopDrawRect();
+
+	// 本地坐标渲染辅助：设置平移变换 + 裁剪，控件内部以 (0,0) 为原点绘制。
+	void PushLocalTransform(float tx, float ty, float clipW, float clipH);
+	void PopLocalTransform();
+
 	void SetAntialiasMode(D2D1_ANTIALIAS_MODE antialiasMode);
 	void SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE antialiasMode);
 
@@ -262,6 +267,8 @@ protected:
 	HRESULT _lastEndDrawHr = S_OK;
 	HRESULT _lastPresentHr = S_OK;
 	bool _deviceLost = false;
+
+	std::vector<D2D1_MATRIX_3X2_F> _transformStack;
 };
 
 class CompatibleGraphics : public D2DGraphics {

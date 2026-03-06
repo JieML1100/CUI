@@ -1334,6 +1334,24 @@ void D2DGraphics::PopDrawRect() {
 	if (!ctx) return;
 	ctx->PopAxisAlignedClip();
 }
+void D2DGraphics::PushLocalTransform(float tx, float ty, float clipW, float clipH) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	D2D1_MATRIX_3X2_F current;
+	ctx->GetTransform(&current);
+	_transformStack.push_back(current);
+	ctx->SetTransform(D2D1::Matrix3x2F::Translation(tx, ty));
+	ctx->PushAxisAlignedClip(D2D1::RectF(0.f, 0.f, clipW, clipH), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+}
+void D2DGraphics::PopLocalTransform() {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	ctx->PopAxisAlignedClip();
+	if (!_transformStack.empty()) {
+		ctx->SetTransform(_transformStack.back());
+		_transformStack.pop_back();
+	}
+}
 void D2DGraphics::SetAntialiasMode(D2D1_ANTIALIAS_MODE antialiasMode) {
 	auto* ctx = pDeviceContext.Get();
 	if (!ctx) return;

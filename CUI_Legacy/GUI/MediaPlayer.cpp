@@ -2795,10 +2795,9 @@ void MediaPlayer::Update()
 	if (!this->IsVisual) return;
 	_statRenderUpdates.fetch_add(1, std::memory_order_relaxed);
 
-	auto abs = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
 	auto d2d = this->ParentForm->Render;
+	this->BeginRender();
 
 	// 更新播放位置（用于进度条）
 	// 关键修复：SourceReader 模式下 position 由播放线程驱动，不能再用 MediaSession 时钟覆盖，否则会来回跳。
@@ -2808,7 +2807,7 @@ void MediaPlayer::Update()
 	}
 
 	// 背景
-	d2d->FillRect(abs.x, abs.y, size.cx, size.cy, this->BackColor);
+	d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
 
 	// 有视频：尝试更新并绘制最新帧
 	if (_hasVideo && _mediaLoaded)
@@ -2897,8 +2896,8 @@ void MediaPlayer::Update()
 		if (_videoBitmap && _videoSize.cx > 0 && _videoSize.cy > 0)
 		{
 			// 根据渲染模式计算目标矩形
-			float destX = (float)abs.x;
-			float destY = (float)abs.y;
+			float destX = 0.0f;
+			float destY = 0.0f;
 			float destWidth = (float)size.cx;
 			float destHeight = (float)size.cy;
 			
@@ -2974,10 +2973,12 @@ void MediaPlayer::Update()
 			d2d->DrawBitmap(_videoBitmap, destX, destY, destWidth, destHeight);
 			const LARGE_INTEGER tDraw1 = QpcNow();
 			_statDrawBitmapQpcTicks.fetch_add((UINT64)(tDraw1.QuadPart - tDraw0.QuadPart), std::memory_order_relaxed);
+			this->EndRender();
 			ReportPerfStatsIfDue();
 			return;
 		}
 	}
+	this->EndRender();
 	ReportPerfStatsIfDue();
 }
 

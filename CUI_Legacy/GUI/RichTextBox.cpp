@@ -327,7 +327,6 @@ bool RichTextBox::GetCaretMetrics(int caretIndex, float& outX, float& outY, floa
 void RichTextBox::DrawScroll()
 {
 	auto d2d = this->ParentForm->Render;
-	auto abslocation = this->AbsLocation;
 	auto font = this->Font;
 	auto size = this->ActualSize();
 	float _render_width = this->Width - (TextMargin * 2.0f);
@@ -348,8 +347,9 @@ void RichTextBox::DrawScroll()
 		float per = (float)this->OffsetY / (float)max_scroll;
 		float scroll_tmp_y = per * scroll_block_move_space;
 		float scroll_block_top = scroll_tmp_y;
-		d2d->FillRoundRect(abslocation.x + (this->Width - 8.0f), abslocation.y, 8.0f, this->Height, this->ScrollBackColor, 4.0f);
-		d2d->FillRoundRect(abslocation.x + (this->Width - 8.0f), abslocation.y + scroll_block_top, 8.0f, scroll_block_height, this->ScrollForeColor, 4.0f);
+		// 局部坐标：滚动条 X = Width - 8，Y = 0
+		d2d->FillRoundRect(this->Width - 8.0f, 0, 8.0f, this->Height, this->ScrollBackColor, 4.0f);
+		d2d->FillRoundRect(this->Width - 8.0f, scroll_block_top, 8.0f, scroll_block_height, this->ScrollForeColor, 4.0f);
 	}
 }
 
@@ -723,15 +723,13 @@ void RichTextBox::Update()
 	bool isUnderMouse = this->ParentForm->UnderMouse == this;
 	auto d2d = this->ParentForm->Render;
 	auto font = this->Font;
-	auto abslocation = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
 	bool isSelected = this->ParentForm->Selected == this;
 	this->_caretRectCacheValid = false;
 
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	this->BeginRender();
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, isSelected ? this->FocusedColor : this->BackColor);
+		d2d->FillRect(0, 0, size.cx, size.cy, isSelected ? this->FocusedColor : this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -754,15 +752,14 @@ void RichTextBox::Update()
 				{
 					selectedPos = { (int)(cx), (int)(cy) };
 					{
-						const float ax = (float)abslocation.x + cx;
-						const float ay = (float)abslocation.y + cy;
 						const float ah = (ch > 0.0f) ? ch : font->FontHeight;
-						this->_caretRectCache = { ax - 2.0f, ay - 2.0f, ax + 2.0f, ay + ah + 2.0f };
+						auto abs = this->AbsLocation;
+						this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ah + 2.0f };
 						this->_caretRectCacheValid = true;
 					}
 					d2d->DrawLine(
-						{ (float)abslocation.x + cx, (float)abslocation.y + cy },
-						{ (float)abslocation.x + cx, (float)abslocation.y + cy + ch },
+						{ cx, cy },
+						{ cx, cy + ch },
 						Colors::Black);
 				}
 
@@ -786,8 +783,8 @@ void RichTextBox::Update()
 					if (top > viewBottom) break;
 
 					EnsureBlockLayout(i, renderWidth, renderHeight);
-					float drawY = ((float)abslocation.y + TextMargin) + (top - this->OffsetY);
-					float drawX = (float)abslocation.x + TextMargin;
+					float drawY = TextMargin + (top - this->OffsetY);
+					float drawX = TextMargin;
 
 					if (isSelected && selLen != 0)
 					{
@@ -829,8 +826,8 @@ void RichTextBox::Update()
 					for (auto sr : selRange)
 					{
 						d2d->FillRect(
-							sr.left + abslocation.x + TextMargin,
-							(sr.top + abslocation.y + TextMargin) - this->OffsetY,
+							sr.left + TextMargin,
+							(sr.top + TextMargin) - this->OffsetY,
 							sr.width,
 							sr.height,
 							this->SelectedBackColor);
@@ -841,16 +838,17 @@ void RichTextBox::Update()
 					if (selLen == 0 && !selRange.empty())
 					{
 						const auto caret = selRange[0];
-						const float ax = caret.left + (float)abslocation.x + TextMargin;
-						const float ay = (caret.top + (float)abslocation.y + TextMargin) - this->OffsetY;
+						const float lx = caret.left + TextMargin;
+						const float ly = (caret.top + TextMargin) - this->OffsetY;
 						const float ah = caret.height > 0 ? caret.height : font->FontHeight;
-						this->_caretRectCache = { ax - 2.0f, ay - 2.0f, ax + 2.0f, ay + ah + 2.0f };
+						auto abs = this->AbsLocation;
+						this->_caretRectCache = { abs.x + lx - 2.0f, abs.y + ly - 2.0f, abs.x + lx + 2.0f, abs.y + ly + ah + 2.0f };
 						this->_caretRectCacheValid = true;
 					}
 					if (!selRange.empty())
 						d2d->DrawLine(
-							{ selRange[0].left + abslocation.x + TextMargin,(selRange[0].top + abslocation.y + TextMargin) - this->OffsetY },
-							{ selRange[0].left + abslocation.x + TextMargin,(selRange[0].top + abslocation.y + selRange[0].height + TextMargin) - this->OffsetY },
+							{ selRange[0].left + TextMargin, (selRange[0].top + TextMargin) - this->OffsetY },
+							{ selRange[0].left + TextMargin, (selRange[0].top + selRange[0].height + TextMargin) - this->OffsetY },
 							Colors::Black);
 				}
 				if (!selRange.empty())
@@ -861,13 +859,13 @@ void RichTextBox::Update()
 					selectedPos.x += this->TextMargin;
 				}
 				d2d->DrawStringLayout(this->layOutCache,
-					(float)abslocation.x + TextMargin, ((float)abslocation.y + TextMargin) - this->OffsetY,
+					TextMargin, TextMargin - this->OffsetY,
 					this->ForeColor);
 			}
 			else
 			{
 				d2d->DrawStringLayout(this->layOutCache,
-					(float)abslocation.x + TextMargin, ((float)abslocation.y + TextMargin) - this->OffsetY,
+					TextMargin, TextMargin - this->OffsetY,
 					this->ForeColor);
 			}
 		}
@@ -875,25 +873,26 @@ void RichTextBox::Update()
 		{
 			if (isSelected)
 			{
-				const float ax = (float)TextMargin + (float)abslocation.x;
-				const float ay = (float)abslocation.y;
+				const float lx = (float)TextMargin;
+				const float ly = 0.0f;
 				const float ah = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
-				this->_caretRectCache = { ax - 2.0f, ay - 2.0f, ax + 2.0f, ay + ah + 2.0f };
+				auto abs = this->AbsLocation;
+				this->_caretRectCache = { abs.x + lx - 2.0f, abs.y + ly - 2.0f, abs.x + lx + 2.0f, abs.y + ly + ah + 2.0f };
 				this->_caretRectCacheValid = true;
 				d2d->DrawLine(
-					{ (float)TextMargin + (float)abslocation.x , (float)abslocation.y },
-					{ (float)TextMargin + (float)abslocation.x , (float)abslocation.y + 16.0f },
+					{ lx, ly },
+					{ lx, ly + 16.0f },
 					Colors::Black);
 			}
 		}
 		this->DrawScroll();
-		d2d->DrawRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BolderColor, this->Boder);
+		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
-	d2d->PopDrawRect();
+	this->EndRender();
 }
 
 bool RichTextBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)

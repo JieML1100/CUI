@@ -139,24 +139,20 @@ void DateTimePicker::Update()
 {
 	if (!this->IsVisual) return;
 	auto d2d = this->ParentForm->Render;
-	auto abs = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
-	if (this->Expand)
-		absRect.bottom = absRect.top + size.cy;
 
 	bool isUnderMouse = this->ParentForm->UnderMouse == this;
 	bool isSelected = this->ParentForm->Selected == this;
 	bool inlineTime = IsInlineTimeMode();
 
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	this->BeginRender((float)size.cx, (float)size.cy);
 	{
 		const float round = std::min(this->Round, (float)this->Height * 0.5f);
 		D2D1_COLOR_F baseColor = this->BackColor;
 		if (isUnderMouse && !this->Expand)
 			baseColor = D2D1_COLOR_F{ 0.96f, 0.96f, 0.96f, 1.0f };
 
-		d2d->FillRoundRect((float)abs.x, (float)abs.y, (float)this->Width, (float)this->Height, baseColor, round);
+		d2d->FillRoundRect(0, 0, (float)this->Width, (float)this->Height, baseColor, round);
 
 		auto font = this->Font;
 		if (inlineTime)
@@ -165,8 +161,6 @@ void DateTimePicker::Update()
 			if (GetInlineTimeLayout(layout))
 			{
 				auto toAbs = [&](D2D1_RECT_F r) -> D2D1_RECT_F {
-					r.left += abs.x; r.right += abs.x;
-					r.top += abs.y; r.bottom += abs.y;
 					return r;
 					};
 
@@ -228,23 +222,23 @@ void DateTimePicker::Update()
 
 				std::wstring colon = L":";
 				auto colonSize = font->GetTextSize(colon);
-				float colonX = abs.x + layout.contentLeft + layout.contentWidth * 0.5f - colonSize.width * 0.5f;
-				float colonY = abs.y + layout.timeTop + (layout.timeHeight - colonSize.height) * 0.5f;
+				float colonX = layout.contentLeft + layout.contentWidth * 0.5f - colonSize.width * 0.5f;
+				float colonY = layout.timeTop + (layout.timeHeight - colonSize.height) * 0.5f;
 				d2d->DrawString(colon, colonX, colonY, this->SecondaryTextColor, font);
 			}
 			else
 			{
 				auto textSize = font->GetTextSize(this->Text);
-				float textX = (float)abs.x + 10.0f;
-				float textY = (float)abs.y + std::max(0.0f, ((float)this->Height - textSize.height) * 0.5f);
+				float textX = 10.0f;
+				float textY = std::max(0.0f, ((float)this->Height - textSize.height) * 0.5f);
 				d2d->DrawString(this->Text, textX, textY, this->ForeColor, font);
 			}
 		}
 		else
 		{
 			auto textSize = font->GetTextSize(this->Text);
-			float textX = (float)abs.x + 10.0f;
-			float textY = (float)abs.y + std::max(0.0f, ((float)this->Height - textSize.height) * 0.5f);
+			float textX = 10.0f;
+			float textY = std::max(0.0f, ((float)this->Height - textSize.height) * 0.5f);
 			d2d->DrawString(this->Text, textX, textY, this->ForeColor, font);
 
 			// 下拉箭头
@@ -254,8 +248,8 @@ void DateTimePicker::Update()
 				if (iconSize < 8.0f) iconSize = 8.0f;
 				if (iconSize > 12.0f) iconSize = 12.0f;
 				const float padRight = 10.0f;
-				const float cx = (float)abs.x + (float)this->Width - padRight - iconSize * 0.5f;
-				const float cy = (float)abs.y + h * 0.5f;
+				const float cx = (float)this->Width - padRight - iconSize * 0.5f;
+				const float cy = h * 0.5f;
 				const float half = iconSize * 0.5f;
 				const float triH = iconSize * 0.6f;
 				D2D1_TRIANGLE tri{};
@@ -276,7 +270,7 @@ void DateTimePicker::Update()
 		}
 
 		D2D1_COLOR_F borderColor = isSelected ? FocusBorderColor : this->BolderColor;
-		d2d->DrawRoundRect((float)abs.x + (this->Boder * 0.5f), (float)abs.y + (this->Boder * 0.5f),
+		d2d->DrawRoundRect(this->Boder * 0.5f, this->Boder * 0.5f,
 			(float)this->Width - this->Boder, (float)this->Height - this->Boder,
 			borderColor, this->Boder, round);
 
@@ -285,8 +279,8 @@ void DateTimePicker::Update()
 			LayoutMetrics layout{};
 			if (GetLayoutMetrics(layout))
 			{
-				float dropX = (float)abs.x;
-				float dropY = (float)abs.y + (float)this->Height;
+				float dropX = 0.0f;
+				float dropY = (float)this->Height;
 				float dropW = (float)this->Width;
 				float dropH = layout.dropHeight;
 				d2d->FillRoundRect(dropX, dropY, dropW, dropH, this->DropBackColor, round);
@@ -295,8 +289,6 @@ void DateTimePicker::Update()
 					this->DropBorderColor, this->Boder, round);
 
 				auto toAbs = [&](D2D1_RECT_F r) -> D2D1_RECT_F {
-					r.left += abs.x; r.right += abs.x;
-					r.top += abs.y; r.bottom += abs.y;
 					return r;
 					};
 
@@ -346,9 +338,9 @@ void DateTimePicker::Update()
 
 					std::wstring monthText = StringHelper::Format(L"%04d年%02d月", _viewYear, _viewMonth);
 					auto monthSize = font->GetTextSize(monthText);
-					float monthCenterX = abs.x + layout.contentLeft + layout.contentWidth * 0.5f;
+					float monthCenterX = layout.contentLeft + layout.contentWidth * 0.5f;
 					float monthX = monthCenterX - monthSize.width * 0.5f;
-					float monthY = abs.y + layout.monthHeaderTop + (layout.monthHeaderHeight - monthSize.height) * 0.5f;
+					float monthY = layout.monthHeaderTop + (layout.monthHeaderHeight - monthSize.height) * 0.5f;
 					d2d->DrawString(monthText, monthX, monthY, this->ForeColor, font);
 
 					// 星期标题
@@ -357,8 +349,8 @@ void DateTimePicker::Update()
 					{
 						std::wstring w = weekNames[i];
 						auto ts = font->GetTextSize(w);
-						float cx = abs.x + layout.contentLeft + layout.cellWidth * (i + 0.5f);
-						float ty = abs.y + layout.weekTop + (layout.weekHeight - ts.height) * 0.5f;
+						float cx = layout.contentLeft + layout.cellWidth * (i + 0.5f);
+						float ty = layout.weekTop + (layout.weekHeight - ts.height) * 0.5f;
 						float tx = cx - ts.width * 0.5f;
 						d2d->DrawString(w, tx, ty, this->SecondaryTextColor, font);
 					}
@@ -373,8 +365,8 @@ void DateTimePicker::Update()
 						if (day < 1 || day > days) continue;
 						int row = i / 7;
 						int col = i % 7;
-						float left = abs.x + layout.contentLeft + layout.cellWidth * col;
-						float top = abs.y + layout.gridTop + layout.cellHeight * row;
+						float left = layout.contentLeft + layout.cellWidth * col;
+						float top = layout.gridTop + layout.cellHeight * row;
 						D2D1_RECT_F rect{ left, top, left + layout.cellWidth, top + layout.cellHeight };
 
 						bool isSelectedDate = (_value.wYear == _viewYear && _value.wMonth == _viewMonth && _value.wDay == day);
@@ -458,8 +450,8 @@ void DateTimePicker::Update()
 					// 冒号
 					std::wstring colon = L":";
 					auto colonSize = font->GetTextSize(colon);
-					float colonX = abs.x + layout.contentLeft + layout.contentWidth * 0.5f - colonSize.width * 0.5f;
-					float colonY = abs.y + layout.timeTop + (layout.timeHeight - colonSize.height) * 0.5f;
+					float colonX = layout.contentLeft + layout.contentWidth * 0.5f - colonSize.width * 0.5f;
+					float colonY = layout.timeTop + (layout.timeHeight - colonSize.height) * 0.5f;
 					d2d->DrawString(colon, colonX, colonY, this->SecondaryTextColor, font);
 				}
 			}
@@ -467,10 +459,10 @@ void DateTimePicker::Update()
 
 		if (!this->Enable)
 		{
-			d2d->FillRect((float)abs.x, (float)abs.y, (float)size.cx, (float)size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+			d2d->FillRect(0.0f, 0.0f, (float)size.cx, (float)size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 		}
 	}
-	d2d->PopDrawRect();
+	this->EndRender();
 }
 
 bool DateTimePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)

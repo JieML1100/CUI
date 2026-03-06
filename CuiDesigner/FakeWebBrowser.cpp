@@ -13,11 +13,21 @@ void FakeWebBrowser::Update()
 	if (!this->IsVisual || !this->Visible) return;
 	if (!this->ParentForm || !this->ParentForm->Render) return;
 
-	auto abs = this->AbsLocation;
 	auto sz = this->ActualSize();
-	auto absRect = this->AbsRect;
+	auto* d2d = this->ParentForm->Render;
+	this->BeginRender();
+	{
+		d2d->FillRect(0.0f, 0.0f, (float)sz.cx, (float)sz.cy, Colors::Black);
+		d2d->DrawRect(0.0f, 0.0f, (float)sz.cx, (float)sz.cy, Colors::DimGrey, 1.0f);
 
-	this->ParentForm->Render->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
-	this->ParentForm->Render->FillRect((float)abs.x, (float)abs.y, (float)sz.cx, (float)sz.cy, Colors::Black);
-	this->ParentForm->Render->PopDrawRect();
+		auto labelFont = this->Font ? this->Font : GetDefaultFontObject();
+		std::wstring label = L"WebBrowser";
+		auto textSize = labelFont->GetTextSize(label);
+		float textX = ((float)sz.cx - textSize.width) * 0.5f;
+		float textY = ((float)sz.cy - textSize.height) * 0.5f;
+		if (textX < 8.0f) textX = 8.0f;
+		if (textY < 8.0f) textY = 8.0f;
+		d2d->DrawString(label, textX, textY, Colors::WhiteSmoke, labelFont);
+	}
+	this->EndRender();
 }

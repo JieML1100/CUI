@@ -534,9 +534,10 @@ void DemoWindow::BuildTab_Data(TabPage* page)
 {
 	page->AddControl(new Label(L"TreeView / GridView / Switch", 10, 10));
 
-	TreeView* tree = page->AddControl(new TreeView(10, 40, 360, 420));
+	TreeView* tree = page->AddControl(new TreeView(10, 40, 360, 400));
 	tree->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Bottom;
 	tree->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
+	tree->Margin = Thickness(10, 40, 0, 10);
 	for (int i = 0; i < 4; i++)
 	{
 		auto sub = new TreeNode(StringHelper::Format(L"node%d", i), _bmps[i % 10]);
@@ -551,6 +552,7 @@ void DemoWindow::BuildTab_Data(TabPage* page)
 
 	_grid = page->AddControl(new GridView(390, 70, 980, 390));
 	_grid->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
+	_grid->Margin = Thickness(390, 70, 10, 10);
 	_grid->AllowUserToAddRows = false;
 	_grid->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
 	_grid->HeadFont = new Font(L"Arial", 16);
@@ -980,16 +982,19 @@ DemoWindow::DemoWindow() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
 	this->OnSizeChanged += [&](class Form* sender)
 		{
 			(void)sender;
-			if (_menu) _menu->Width = this->Size.cx;
+			// Size.cx/cy and HeadHeight are in physical pixels; control Width/Top are in logical (96-DPI) units
+			const float dpiSc = this->GetDpiScale();
+			const int logW = (int)(this->Size.cx / dpiSc);
+			if (_menu) _menu->Width = logW;
 			if (_toolbar)
 			{
-				_toolbar->Width = this->Size.cx;
+				_toolbar->Width = logW;
 				_toolbar->Top = _menu ? _menu->Height : 0;
 			}
 			if (_statusbar)
 			{
-				_statusbar->Width = this->Size.cx;
-				_statusbar->Top = this->Size.cy - this->HeadHeight - _statusbar->Height;
+				_statusbar->Width = logW;
+				_statusbar->Top = (int)((this->Size.cy - this->HeadHeight) / dpiSc) - _statusbar->Height;
 			}
 		};
 }

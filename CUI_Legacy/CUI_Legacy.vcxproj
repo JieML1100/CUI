@@ -21,7 +21,7 @@
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
-    <ProjectGuid>{D8014E27-FFD7-4E76-807B-9BAADC58C8AD}</ProjectGuid>
+    <ProjectGuid>{4ced323f-40d7-4933-83be-bfdd6f5dc8d4}</ProjectGuid>
     <RootNamespace>CUI_Legacy</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
@@ -31,7 +31,6 @@
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
-    <IntDir>$(Platform)\$(Configuration)\CUI_Legacy\</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
@@ -39,14 +38,12 @@
     <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
-    <IntDir>$(Platform)\$(Configuration)\CUI_Legacy\</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
-    <IntDir>$(Platform)\$(Configuration)\CUI_Legacy\</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
@@ -54,7 +51,6 @@
     <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
-    <IntDir>$(Platform)\$(Configuration)\CUI_Legacy\</IntDir>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -92,7 +88,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>WIN32;_LIB;_WIN32_WINNT=0x0601;WINVER=0x0601;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -115,7 +111,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>WIN32;_LIB;_WIN32_WINNT=0x0601;WINVER=0x0601;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -137,7 +133,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>_LIB;_WIN32_WINNT=0x0601;WINVER=0x0601;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -160,7 +156,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>_LIB;_WIN32_WINNT=0x0601;WINVER=0x0601;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -199,7 +195,6 @@
     <ClInclude Include="GUI\GridView.h" />
     <ClInclude Include="GUI\Label.h" />
     <ClInclude Include="GUI\LinkLabel.h" />
-    <ClInclude Include="GUI\MediaPlayer.h" />
     <ClInclude Include="GUI\Menu.h" />
     <ClInclude Include="GUI\NotifyIcon.h" />
     <ClInclude Include="GUI\Panel.h" />
@@ -217,6 +212,7 @@
     <ClInclude Include="GUI\StatusBar.h" />
     <ClInclude Include="GUI\TextBox.h" />
     <ClInclude Include="GUI\TreeView.h" />
+    <ClInclude Include="GUI\MediaPlayer.h" />
     <ClInclude Include="GUI\Layout\LayoutTypes.h" />
     <ClInclude Include="GUI\Layout\LayoutEngine.h" />
     <ClInclude Include="GUI\Layout\StackPanel.h" />
@@ -238,7 +234,6 @@
     <ClCompile Include="GUI\GridView.cpp" />
     <ClCompile Include="GUI\Label.cpp" />
     <ClCompile Include="GUI\LinkLabel.cpp" />
-    <ClCompile Include="GUI\MediaPlayer.cpp" />
     <ClCompile Include="GUI\Menu.cpp" />
     <ClCompile Include="GUI\NotifyIcon.cpp" />
     <ClCompile Include="GUI\Panel.cpp" />
@@ -256,6 +251,7 @@
     <ClCompile Include="GUI\StatusBar.cpp" />
     <ClCompile Include="GUI\TextBox.cpp" />
     <ClCompile Include="GUI\TreeView.cpp" />
+    <ClCompile Include="GUI\MediaPlayer.cpp" />
     <ClCompile Include="GUI\Layout\StackPanel.cpp" />
     <ClCompile Include="GUI\Layout\GridPanel.cpp" />
     <ClCompile Include="GUI\Layout\DockPanel.cpp" />
@@ -263,6 +259,10 @@
     <ClCompile Include="GUI\Layout\RelativePanel.cpp" />
     <ClCompile Include="nanosvg.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <ImportGroup Label="ExtensionTargets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
 </Project>

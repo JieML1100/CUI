@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "GridView.h"
 #include "Form.h"
 #include <algorithm>
@@ -446,7 +446,6 @@ int GridView::GetGridViewRenderRowCount(GridView* ct)
 void GridView::DrawScroll()
 {
 	auto d2d = this->ParentForm->Render;
-	auto abslocation = this->AbsLocation;
 	auto font = this->Font;
 	auto size = this->ActualSize();
 
@@ -474,8 +473,8 @@ void GridView::DrawScroll()
 				per = std::clamp(this->ScrollYOffset / maxScrollY, 0.0f, 1.0f);
 			const float thumbTop = per * moveSpace;
 
-			d2d->FillRoundRect(abslocation.x + _render_width, abslocation.y, l.ScrollBarSize, _render_height, this->ScrollBackColor, 4.0f);
-			d2d->FillRoundRect(abslocation.x + _render_width, abslocation.y + thumbTop, l.ScrollBarSize, thumbH, this->ScrollForeColor, 4.0f);
+			d2d->FillRoundRect(_render_width, 0, l.ScrollBarSize, _render_height, this->ScrollBackColor, 4.0f);
+			d2d->FillRoundRect(_render_width, thumbTop, l.ScrollBarSize, thumbH, this->ScrollForeColor, 4.0f);
 		}
 	}
 
@@ -488,10 +487,9 @@ void GridView::DrawScroll()
 void GridView::DrawHScroll(const ScrollLayout& l)
 {
 	auto d2d = this->ParentForm->Render;
-	auto abslocation = this->AbsLocation;
 
-	const float barX = (float)abslocation.x;
-	const float barY = (float)abslocation.y + l.RenderHeight;
+	const float barX = 0.0f;
+	const float barY = l.RenderHeight;
 	const float barW = l.RenderWidth;
 	const float barH = l.ScrollBarSize;
 
@@ -518,9 +516,8 @@ void GridView::DrawHScroll(const ScrollLayout& l)
 void GridView::DrawCorner(const ScrollLayout& l)
 {
 	auto d2d = this->ParentForm->Render;
-	auto abslocation = this->AbsLocation;
-	const float x = (float)abslocation.x + l.RenderWidth;
-	const float y = (float)abslocation.y + l.RenderHeight;
+	const float x = l.RenderWidth;
+	const float y = l.RenderHeight;
 	d2d->FillRect(x, y, l.ScrollBarSize, l.ScrollBarSize, this->ScrollBackColor);
 }
 
@@ -598,12 +595,10 @@ void GridView::Update()
 	bool isUnderMouse = this->ParentForm->UnderMouse == this;
 	bool isSelected = this->ParentForm->Selected == this;
 	auto d2d = this->ParentForm->Render;
-	auto abslocation = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	this->BeginRender();
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BackColor);
+		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -667,13 +662,13 @@ void GridView::Update()
 				if (draw_x_offset < 0)draw_x_offset = 0;
 				float draw_y_offset = (head_height - head_font_height) / 2.0f;
 				if (draw_y_offset < 0)draw_y_offset = 0;
-				d2d->PushDrawRect(abslocation.x + clipX, abslocation.y, clipW, head_height);
+				d2d->PushDrawRect(clipX, 0, clipW, head_height);
 				{
-					d2d->FillRect(abslocation.x + drawX, abslocation.y, c_width, head_height, this->HeadBackColor);
-					d2d->DrawRect(abslocation.x + drawX, abslocation.y, c_width, head_height, this->HeadForeColor, 2.f);
+					d2d->FillRect(drawX, 0, c_width, head_height, this->HeadBackColor);
+					d2d->DrawRect(drawX, 0, c_width, head_height, this->HeadForeColor, 2.f);
 					d2d->DrawString(this->Columns[i].Name,
-						abslocation.x + drawX + draw_x_offset,
-						abslocation.y + draw_y_offset,
+						drawX + draw_x_offset,
+						draw_y_offset,
 						this->HeadForeColor, head_font);
 				}
 				d2d->PopDrawRect();
@@ -717,7 +712,7 @@ void GridView::Update()
 					c_width = colW;
 
 					float _r_height = row_height;
-					d2d->PushDrawRect(abslocation.x + clipX, abslocation.y + clipY, clipW, clipH);
+					d2d->PushDrawRect(clipX, clipY, clipW, clipH);
 					{
 						switch (this->Columns[c].Type)
 						{
@@ -745,8 +740,8 @@ void GridView::Update()
 										float offsetY = (_r_height - textSize.height) * 0.5f;
 										if (offsetY < 0.0f) offsetY = 0.0f;
 
-										d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->EditBackColor);
-										d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->SelectedItemForeColor,
+										d2d->FillRect(drawX, yf, c_width, _r_height, this->EditBackColor);
+										d2d->DrawRect(drawX, yf, c_width, _r_height, this->SelectedItemForeColor,
 											r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
 
 										int sels = EditSelectionStart <= EditSelectionEnd ? EditSelectionStart : EditSelectionEnd;
@@ -759,8 +754,8 @@ void GridView::Update()
 											for (auto sr : selRange)
 											{
 												d2d->FillRect(
-													sr.left + abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX,
-													(sr.top + abslocation.y + yf) + offsetY,
+													sr.left + drawX + this->EditTextMargin - this->EditOffsetX,
+													(sr.top + yf) + offsetY,
 													sr.width, sr.height,
 													this->EditSelectedBackColor);
 											}
@@ -768,8 +763,8 @@ void GridView::Update()
 										else
 										{
 											d2d->DrawLine(
-												{ selRange[0].left + abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + abslocation.y + yf) - offsetY },
-												{ selRange[0].left + abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + abslocation.y + yf + selRange[0].height) + offsetY },
+												{ selRange[0].left + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + yf) - offsetY },
+												{ selRange[0].left + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + yf + selRange[0].height) + offsetY },
 												Colors::Black);
 										}
 
@@ -777,7 +772,7 @@ void GridView::Update()
 										if (selLen != 0)
 										{
 											d2d->DrawStringLayoutEffect(lot,
-												(float)abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX, ((float)abslocation.y + yf) + offsetY,
+												drawX + this->EditTextMargin - this->EditOffsetX, (yf) + offsetY,
 												this->EditForeColor,
 												DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
 												this->EditSelectedForeColor,
@@ -786,7 +781,7 @@ void GridView::Update()
 										else
 										{
 											d2d->DrawStringLayout(lot,
-												(float)abslocation.x + drawX + this->EditTextMargin - this->EditOffsetX, ((float)abslocation.y + yf) + offsetY,
+												drawX + this->EditTextMargin - this->EditOffsetX, (yf) + offsetY,
 												this->EditForeColor);
 										}
 										lot->Release();
@@ -794,35 +789,35 @@ void GridView::Update()
 								}
 								else
 								{
-									d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->SelectedItemBackColor);
-									d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->SelectedItemForeColor,
+									d2d->FillRect(drawX, yf, c_width, _r_height, this->SelectedItemBackColor);
+									d2d->DrawRect(drawX, yf, c_width, _r_height, this->SelectedItemForeColor,
 										r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
 									if (row.Cells.Count > c)
 										d2d->DrawString(row.Cells[c].Text,
-											abslocation.x + drawX + 1.0f,
-											abslocation.y + yf + text_top,
+											drawX + 1.0f,
+											yf + text_top,
 											this->SelectedItemForeColor, font);
 								}
 							}
 							else if (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex)
 							{
-								d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemBackColor);
-								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemForeColor,
+								d2d->FillRect(drawX, yf, c_width, _r_height, this->UnderMouseItemBackColor);
+								d2d->DrawRect(drawX, yf, c_width, _r_height, this->UnderMouseItemForeColor,
 									r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
 								if (row.Cells.Count > c)
 									d2d->DrawString(row.Cells[c].Text,
-										abslocation.x + drawX + 1.0f,
-										abslocation.y + yf + text_top,
+										drawX + 1.0f,
+										yf + text_top,
 										this->UnderMouseItemForeColor, font);
 							}
 							else
 							{
-								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->ForeColor,
+								d2d->DrawRect(drawX, yf, c_width, _r_height, this->ForeColor,
 									r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
 								if (row.Cells.Count > c)
 									d2d->DrawString(row.Cells[c].Text,
-										abslocation.x + drawX + 1.0f,
-										abslocation.y + yf + text_top,
+										drawX + 1.0f,
+										yf + text_top,
 										this->ForeColor, font);
 							}
 						}
@@ -839,15 +834,15 @@ void GridView::Update()
 							if (isPressed) back = this->ButtonPressedBackColor;
 							else if (isHot) back = this->ButtonHoverBackColor;
 
-							d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, back);
+							d2d->FillRect(drawX, yf, c_width, _r_height, back);
 
 							// 3D Border: raised vs sunken
 							const float px = 1.0f;
-							d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->ButtonBorderDarkColor, 1.0f);
+							d2d->DrawRect(drawX, yf, c_width, _r_height, this->ButtonBorderDarkColor, 1.0f);
 							if (c_width > 2.0f && _r_height > 2.0f)
 							{
 								auto innerColor = isPressed ? this->ScrollForeColor : this->ButtonBorderLightColor;
-								d2d->DrawRect(abslocation.x + drawX + px, abslocation.y + yf + px,
+								d2d->DrawRect(drawX + px, yf + px,
 									c_width - (px * 2.0f), _r_height - (px * 2.0f),
 									innerColor, 1.0f);
 							}
@@ -864,8 +859,8 @@ void GridView::Update()
 								if (ty < 0.0f) ty = 0.0f;
 								if (isPressed) { tx += 1.0f; ty += 1.0f; }
 								d2d->DrawString(buttonText,
-									abslocation.x + drawX + tx,
-									abslocation.y + yf + ty,
+									drawX + tx,
+									yf + ty,
 									this->ForeColor, font);
 							}
 						}
@@ -894,14 +889,14 @@ void GridView::Update()
 							}
 
 							if (fill)
-								d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, back);
-							d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, border,
+								d2d->FillRect(drawX, yf, c_width, _r_height, back);
+							d2d->DrawRect(drawX, yf, c_width, _r_height, border,
 								r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
 							if (row.Cells.Count > c)
 							{
 								d2d->DrawString(row.Cells[c].Text,
-									abslocation.x + drawX + 4.0f,
-									abslocation.y + yf + text_top,
+									drawX + 4.0f,
+									yf + text_top,
 									fore, font);
 							}
 
@@ -912,8 +907,8 @@ void GridView::Update()
 								if (iconSize < 8.0f) iconSize = 8.0f;
 								if (iconSize > 14.0f) iconSize = 14.0f;
 								const float padRight = 8.0f;
-								const float cx = abslocation.x + drawX + c_width - padRight - iconSize * 0.5f;
-								const float cy = abslocation.y + yf + h * 0.5f;
+								const float cx = drawX + c_width - padRight - iconSize * 0.5f;
+								const float cy = yf + h * 0.5f;
 								const float half = iconSize * 0.5f;
 								const float triH = iconSize * 0.55f;
 								D2D1_TRIANGLE tri{};
@@ -931,29 +926,29 @@ void GridView::Update()
 							float top = (row_height - _size) / 2.0f;
 							if (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex)
 							{
-								d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemBackColor);
-								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemForeColor,
+								d2d->FillRect(drawX, yf, c_width, _r_height, this->UnderMouseItemBackColor);
+								d2d->DrawRect(drawX, yf, c_width, _r_height, this->UnderMouseItemForeColor,
 									r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
 								if (row.Cells.Count > c)
 								{
 									if (auto* bmp = row.Cells[c].GetImageBitmap(d2d))
 										d2d->DrawBitmap(bmp,
-											abslocation.x + drawX + left,
-											abslocation.y + yf + top,
+											drawX + left,
+											yf + top,
 											_size, _size
 										);
 								}
 							}
 							else
 							{
-								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->ForeColor,
+								d2d->DrawRect(drawX, yf, c_width, _r_height, this->ForeColor,
 									r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
 								if (row.Cells.Count > c)
 								{
 									if (auto* bmp = row.Cells[c].GetImageBitmap(d2d))
 										d2d->DrawBitmap(bmp,
-											abslocation.x + drawX + left,
-											abslocation.y + yf + top,
+											drawX + left,
+											yf + top,
 											_size, _size
 										);
 								}
@@ -969,21 +964,21 @@ void GridView::Update()
 							float _rsize = _size;
 							if (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex)
 							{
-								d2d->FillRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemBackColor);
-								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->UnderMouseItemForeColor,
+								d2d->FillRect(drawX, yf, c_width, _r_height, this->UnderMouseItemBackColor);
+								d2d->DrawRect(drawX, yf, c_width, _r_height, this->UnderMouseItemForeColor,
 									r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
 								if (row.Cells.Count > c)
 								{
 									d2d->DrawRect(
-										abslocation.x + drawX + left + (_rsize * 0.2),
-										abslocation.y + yf + top + (_rsize * 0.2),
+										drawX + left + (_rsize * 0.2),
+										yf + top + (_rsize * 0.2),
 										_rsize * 0.6, _rsize * 0.6,
 										this->ForeColor);
 									if (row.Cells[c].Tag)
 									{
 										d2d->FillRect(
-											abslocation.x + drawX + left + (_rsize * 0.35),
-											abslocation.y + yf + top + (_rsize * 0.35),
+											drawX + left + (_rsize * 0.35),
+											yf + top + (_rsize * 0.35),
 											_rsize * 0.3, _rsize * 0.3,
 											this->ForeColor);
 									}
@@ -991,20 +986,20 @@ void GridView::Update()
 							}
 							else
 							{
-								d2d->DrawRect(abslocation.x + drawX, abslocation.y + yf, c_width, _r_height, this->ForeColor,
+								d2d->DrawRect(drawX, yf, c_width, _r_height, this->ForeColor,
 									r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
 								if (row.Cells.Count > c)
 								{
 									d2d->DrawRect(
-										abslocation.x + drawX + left + (_rsize * 0.2),
-										abslocation.y + yf + top + (_rsize * 0.2),
+										drawX + left + (_rsize * 0.2),
+										yf + top + (_rsize * 0.2),
 										_rsize * 0.6, _rsize * 0.6,
 										this->ForeColor);
 									if (row.Cells[c].Tag)
 									{
 										d2d->FillRect(
-											abslocation.x + drawX + left + (_rsize * 0.35),
-											abslocation.y + yf + top + (_rsize * 0.35),
+											drawX + left + (_rsize * 0.35),
+											yf + top + (_rsize * 0.35),
 											_rsize * 0.3, _rsize * 0.3,
 											this->ForeColor);
 									}
@@ -1053,18 +1048,18 @@ void GridView::Update()
 							const float clipX = drawX;
 							const float clipW = c_width;
 
-							d2d->PushDrawRect(abslocation.x + clipX, abslocation.y + newRowY, clipW, newRowHeight);
+							d2d->PushDrawRect(clipX, newRowY, clipW, newRowHeight);
 							{
 								// 绘制新行背景
-								d2d->FillRect(abslocation.x + drawX, abslocation.y + newRowY, c_width, newRowHeight, this->NewRowBackColor);
+								d2d->FillRect(drawX, newRowY, c_width, newRowHeight, this->NewRowBackColor);
 								
 								// 绘制新行单元格内容（空单元格样式）
 								if (c == 0)
 								{
 									// 在第一列显示新行指示符 (*)
 									float asteriskSize = font_height * 0.5f;
-									float asteriskX = abslocation.x + drawX + text_top;
-									float asteriskY = abslocation.y + newRowY + text_top;
+									float asteriskX = drawX + text_top;
+									float asteriskY = newRowY + text_top;
 									
 									// 绘制星号
 									d2d->DrawString(L"*",
@@ -1082,7 +1077,7 @@ void GridView::Update()
 								}
 								
 								// 绘制单元格边框
-								d2d->DrawRect(abslocation.x + drawX, abslocation.y + newRowY, c_width, newRowHeight, this->NewRowForeColor, 1.0f);
+								d2d->DrawRect(drawX, newRowY, c_width, newRowHeight, this->NewRowForeColor, 1.0f);
 							}
 							d2d->PopDrawRect();
 							xf += colW;
@@ -1092,30 +1087,30 @@ void GridView::Update()
 			}
 			
 			d2d->PushDrawRect(
-				(float)abslocation.x,
-				(float)abslocation.y,
+				0.0f,
+				0.0f,
 				(float)size.cx,
 				(float)size.cy);
 			{
 				if (this->ParentForm->UnderMouse == this)
 				{
-					d2d->DrawRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BolderColor, 4);
+					d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, 4);
 				}
 				else
 				{
-					d2d->DrawRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BolderColor, 2);
+					d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, 2);
 				}
 			}
 			d2d->PopDrawRect();
 			this->DrawScroll();
 		}
-		d2d->DrawRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BolderColor, this->Boder);
+		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
-	d2d->PopDrawRect();
+	this->EndRender();
 }
 
 bool GridView::IsNewRowArea(int x, int y)

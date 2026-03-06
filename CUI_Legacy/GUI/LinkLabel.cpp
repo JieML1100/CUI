@@ -15,18 +15,11 @@ void LinkLabel::Update()
 {
 	if (!this->IsVisual) return;
 	auto d2d = this->ParentForm->Render;
-	auto abslocation = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
 	auto font = this->Font;
 
-	if (last_width > size.cx)
-	{
-		absRect.right += last_width - size.cx;
-		size.cx = last_width;
-	}
-
-	d2d->PushDrawRect(absRect.left, absRect.top, FLT_MAX, FLT_MAX);
+	float clipW = last_width > size.cx ? (float)last_width : FLT_MAX;
+	this->BeginRender(clipW, FLT_MAX);
 	{
 		if (this->Image)
 		{
@@ -36,21 +29,22 @@ void LinkLabel::Update()
 		bool hover = this->ParentForm && this->ParentForm->UnderMouse == this;
 		auto textColor = hover ? this->HoverColor : (this->Visited ? this->VisitedColor : this->ForeColor);
 		auto underlineColor = hover ? this->HoverColor : this->UnderlineColor;
-		d2d->DrawString(this->Text, abslocation.x, abslocation.y, textColor, font);
+		d2d->DrawString(this->Text, 0, 0, textColor, font);
 
 		auto textSize = font->GetTextSize(this->Text);
-		float underlineY = abslocation.y + textSize.height - 1.0f;
-		d2d->DrawLine({ (float)abslocation.x, underlineY },
-			{ (float)abslocation.x + textSize.width, underlineY },
+		float underlineY = textSize.height - 1.0f;
+		d2d->DrawLine({ 0.0f, underlineY },
+			{ textSize.width, underlineY },
 			underlineColor, 1.0f);
 	}
 
 	if (!this->Enable)
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		float w = last_width > size.cx ? (float)last_width : (float)size.cx;
+		d2d->FillRect(0, 0, w, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 
-	d2d->PopDrawRect();
+	this->EndRender();
 	last_width = size.cx;
 }
 

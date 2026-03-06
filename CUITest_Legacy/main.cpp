@@ -1,9 +1,9 @@
-﻿#include "DemoWindow_Legacy.h"
+﻿#include "DemoWindow.h"
 #pragma comment(linker, "/subsystem:\"windows\" /entry:\"mainCRTStartup\"")
 int main()
 {
 	Application::EnsureDpiAwareness();
-	DemoWindow_Legacy fm;
+	DemoWindow fm;
 	fm.Show();
 	while (1)
 	{

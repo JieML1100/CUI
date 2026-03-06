@@ -251,7 +251,9 @@ public:
 
 		POINT client{ pt.x, pt.y };
 		ScreenToClient(_form->Handle, &client);
-		POINT contentMouse{ client.x, client.y - _form->ClientTop() };
+		// physical→logical: OS gives physical px; controls live in logical (96-DPI) coords
+		const float sc_ = _form->GetDpiScale();
+		POINT contentMouse{ (LONG)(client.x / sc_), (LONG)((client.y - _form->ClientTop()) / sc_) };
 		if (_form->VisibleHead && client.y < _form->ClientTop())
 			return S_OK;
 
@@ -292,7 +294,8 @@ public:
 
 		POINT client{ pt.x, pt.y };
 		ScreenToClient(_form->Handle, &client);
-		POINT contentMouse{ client.x, client.y - _form->ClientTop() };
+		const float sc_ = _form->GetDpiScale();
+		POINT contentMouse{ (LONG)(client.x / sc_), (LONG)((client.y - _form->ClientTop()) / sc_) };
 		if (_form->VisibleHead && client.y < _form->ClientTop())
 			return S_OK;
 
@@ -441,7 +444,8 @@ void Form::UpdateCursorFromCurrentMouse()
 	POINT mouse{};
 	GetCursorPos(&mouse);
 	ScreenToClient(this->Handle, &mouse);
-	POINT contentMouse{ mouse.x, mouse.y - ClientTop() };
+	const float sc = GetDpiScale();
+	POINT contentMouse{ (LONG)(mouse.x / sc), (LONG)((mouse.y - ClientTop()) / sc) };
 	UpdateCursor(mouse, contentMouse);
 }
 
@@ -493,9 +497,10 @@ bool Form::TryGetCaptionButtonRect(CaptionButtonKind kind, RECT& out)
 {
 	if (!this->VisibleHead || this->HeadHeight <= 0) return false;
 
-	int xRight = this->Size.cx;
-	int h = this->HeadHeight;
-	int w = this->HeadHeight;
+	const float sc = GetDpiScale();
+	int xRight = (int)(this->Size.cx / sc);  // logical width
+	int h = (int)(this->HeadHeight / sc);    // logical = _headHeightBase96
+	int w = h;
 
 	auto place = [&](CaptionButtonKind k, bool enabled) -> std::optional<RECT>
 		{
@@ -524,18 +529,21 @@ bool Form::TryGetCaptionButtonRect(CaptionButtonKind kind, RECT& out)
 
 bool Form::HitTestCaptionButtons(POINT ptClient, CaptionButtonKind& outKind)
 {
+	// ptClient is in physical pixels (from OS); TryGetCaptionButtonRect returns logical rects
+	const float sc = GetDpiScale();
+	POINT logPt{ (LONG)(ptClient.x / sc), (LONG)(ptClient.y / sc) };
 	RECT r{};
-	if (TryGetCaptionButtonRect(CaptionButtonKind::Close, r) && PtInRect(&r, ptClient))
+	if (TryGetCaptionButtonRect(CaptionButtonKind::Close, r) && PtInRect(&r, logPt))
 	{
 		outKind = CaptionButtonKind::Close;
 		return true;
 	}
-	if (TryGetCaptionButtonRect(CaptionButtonKind::Maximize, r) && PtInRect(&r, ptClient))
+	if (TryGetCaptionButtonRect(CaptionButtonKind::Maximize, r) && PtInRect(&r, logPt))
 	{
 		outKind = CaptionButtonKind::Maximize;
 		return true;
 	}
-	if (TryGetCaptionButtonRect(CaptionButtonKind::Minimize, r) && PtInRect(&r, ptClient))
+	if (TryGetCaptionButtonRect(CaptionButtonKind::Minimize, r) && PtInRect(&r, logPt))
 	{
 		outKind = CaptionButtonKind::Minimize;
 		return true;
@@ -649,9 +657,15 @@ void Form::InvalidateControl(Control* c, int inflatePx, bool immediate)
 {
 	if (!c || !this->Handle) return;
 	if (!c->IsVisual) return;
+	// AbsRect is in logical (96-DPI) coords; convert to physical client pixels for InvalidateRect
 	RECT rc = ToRECT(c->AbsRect, inflatePx);
-	OffsetRect(&rc, 0, ClientTop());
-	Invalidate(rc, immediate);
+	const float sc = GetDpiScale();
+	RECT physRc;
+	physRc.left   = (LONG)std::floor(rc.left   * sc);
+	physRc.top    = (LONG)std::floor(rc.top    * sc) + ClientTop();  // ClientTop is physical
+	physRc.right  = (LONG)std::ceil (rc.right  * sc);
+	physRc.bottom = (LONG)std::ceil (rc.bottom * sc) + ClientTop();
+	Invalidate(physRc, immediate);
 }
 
 void Form::InvalidateAnimatedControls(bool immediate)
@@ -916,7 +930,9 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 
 
 	Application::Forms.Add(this->Handle, this);
+
 	Render = new HwndGraphics(this->Handle);
+	OverlayRender = nullptr;
 	ResetImageCache();
 	ClearCaptionStates();
 	// 注意：不要在构造阶段仅缩放字体/标题栏，否则会导致“画面变大但窗口/命中区域不一致”。
@@ -978,12 +994,6 @@ void Form::CleanupResources()
 		delete c;
 	}
 	this->Controls.Clear();
-	if (this->_scaledDefaultFont)
-	{
-		delete this->_scaledDefaultFont;
-		this->_scaledDefaultFont = nullptr;
-		this->_scaledDefaultFontDpi = 0;
-	}
 
 	this->Selected = nullptr;
 	this->UnderMouse = nullptr;
@@ -1000,6 +1010,11 @@ void Form::CleanupResources()
 	this->_font = nullptr;
 	this->_ownsFont = false;
 
+	if (OverlayRender)
+	{
+		delete OverlayRender;
+		OverlayRender = nullptr;
+	}
 	if (Render)
 	{
 		delete Render;
@@ -1014,92 +1029,27 @@ void Form::CleanupResources()
 
 Font* Form::GetScaledDefaultFont()
 {
-	const UINT dpi = this->_dpi ? this->_dpi : 96;
-	if (this->_scaledDefaultFont && this->_scaledDefaultFontDpi == dpi)
-		return this->_scaledDefaultFont;
-	if (this->_scaledDefaultFont)
-	{
-		delete this->_scaledDefaultFont;
-		this->_scaledDefaultFont = nullptr;
-	}
-	// 以默认字体为基准按 DPI 缩放字号
-	auto base = GetDefaultFontObject();
-	const float size = Application::ScaleFloat(base->FontSize, 96, dpi);
-	_scaledDefaultFont = new Font(base->FontName, size);
-	_scaledDefaultFontDpi = dpi;
-	return _scaledDefaultFont;
-}
-
-void Form::ScaleControlTreeForDpi(UINT fromDpi, UINT toDpi)
-{
-	if (fromDpi == 0) fromDpi = 96;
-	if (toDpi == 0) toDpi = 96;
-	if (fromDpi == toDpi) return;
-
-	std::function<void(Control*)> scale;
-	scale = [&](Control* c)
-		{
-			if (!c) return;
-			c->_location.x = Application::ScaleInt(c->_location.x, fromDpi, toDpi);
-			c->_location.y = Application::ScaleInt(c->_location.y, fromDpi, toDpi);
-			c->_size.cx = Application::ScaleInt(c->_size.cx, fromDpi, toDpi);
-			c->_size.cy = Application::ScaleInt(c->_size.cy, fromDpi, toDpi);
-			c->_layoutBaseLocation.x = Application::ScaleInt(c->_layoutBaseLocation.x, fromDpi, toDpi);
-			c->_layoutBaseLocation.y = Application::ScaleInt(c->_layoutBaseLocation.y, fromDpi, toDpi);
-			c->_layoutBaseSize.cx = Application::ScaleInt(c->_layoutBaseSize.cx, fromDpi, toDpi);
-			c->_layoutBaseSize.cy = Application::ScaleInt(c->_layoutBaseSize.cy, fromDpi, toDpi);
-			c->_minSize.cx = Application::ScaleInt(c->_minSize.cx, fromDpi, toDpi);
-			c->_minSize.cy = Application::ScaleInt(c->_minSize.cy, fromDpi, toDpi);
-			if (c->_maxSize.cx != INT_MAX) c->_maxSize.cx = Application::ScaleInt(c->_maxSize.cx, fromDpi, toDpi);
-			if (c->_maxSize.cy != INT_MAX) c->_maxSize.cy = Application::ScaleInt(c->_maxSize.cy, fromDpi, toDpi);
-			c->_margin.Left = Application::ScaleFloat(c->_margin.Left, fromDpi, toDpi);
-			c->_margin.Top = Application::ScaleFloat(c->_margin.Top, fromDpi, toDpi);
-			c->_margin.Right = Application::ScaleFloat(c->_margin.Right, fromDpi, toDpi);
-			c->_margin.Bottom = Application::ScaleFloat(c->_margin.Bottom, fromDpi, toDpi);
-			c->_padding.Left = Application::ScaleFloat(c->_padding.Left, fromDpi, toDpi);
-			c->_padding.Top = Application::ScaleFloat(c->_padding.Top, fromDpi, toDpi);
-			c->_padding.Right = Application::ScaleFloat(c->_padding.Right, fromDpi, toDpi);
-			c->_padding.Bottom = Application::ScaleFloat(c->_padding.Bottom, fromDpi, toDpi);
-
-			if (c->_font && c->_ownsFont)
-			{
-				c->_font->FontSize = Application::ScaleFloat(c->_font->FontSize, fromDpi, toDpi);
-			}
-			for (int i = 0; i < c->Count; i++)
-				scale(c->operator[](i));
-		};
-
-	for (auto c : this->Controls)
-	{
-		// 跳过MainMenu和MainStatusBar，它们会在后面单独处理，避免重复缩放
-		if (c == (Control*)this->MainMenu || c == (Control*)this->MainStatusBar)
-			continue;
-		scale(c);
-	}
-	//if (this->MainMenu) scale((Control*)this->MainMenu);
-	//if (this->MainStatusBar) scale((Control*)this->MainStatusBar);
-	if (this->ForegroundControl) scale(this->ForegroundControl);
+	// D2D 通过 SetDpi 已在物理像素层面正确缩放，字体大小保持 96-DPI 设计值即可
+	return GetDefaultFontObject();
 }
 
 void Form::ApplyDpiChange(UINT newDpi)
 {
 	if (newDpi == 0) newDpi = 96;
-	UINT oldContentDpi = this->_contentDpi ? this->_contentDpi : 96;
+	if (this->_dpi == newDpi) return;
 	this->_dpi = newDpi;
-	if (oldContentDpi == newDpi) return;
 
-	// 标题栏与默认字体（基于 96DPI 基准计算，避免累积误差）
+	// 标题栏高度保持物理像素（OS 命中测试使用），从 96-DPI 基准重新计算避免累积误差
 	this->HeadHeight = Application::ScaleInt(this->_headHeightBase96, 96, newDpi);
-	this->_scaledDefaultFontDpi = 0; // 让 GetScaledDefaultFont() 重新生成
 
-	if (this->_font && this->_ownsFont)
-		this->_font->FontSize = Application::ScaleFloat(this->_font->FontSize, oldContentDpi, newDpi);
+	// 通过 D2D SetDpi 让渲染引擎在逻辑坐标系（96-DPI 设计值）中工作，
+	// 无需再对控件树的位置/大小/字体进行缩放——D2D 内部映射到正确的物理像素。
+	if (this->Render)        this->Render->SetDpi((FLOAT)newDpi, (FLOAT)newDpi);
+	if (this->OverlayRender) this->OverlayRender->SetDpi((FLOAT)newDpi, (FLOAT)newDpi);
 
-	ScaleControlTreeForDpi(oldContentDpi, newDpi);
-	this->_contentDpi = newDpi;
 	this->InvalidateLayout();
 	this->_hasRenderedOnce = false;
-	this->Invalidate(true);
+	this->Invalidate(false);
 }
 
 void Form::SyncRenderSizeToClient()
@@ -1110,7 +1060,9 @@ void Form::SyncRenderSizeToClient()
 	UINT width = (UINT)std::max<LONG>(1, rc.right - rc.left);
 	UINT height = (UINT)std::max<LONG>(1, rc.bottom - rc.top);
 	this->Render->ReSize(width, height);
-	this->CommitComposition();
+	if (this->OverlayRender) this->OverlayRender->ReSize(width, height);
+	if (this->Render)        this->Render->SetDpi((FLOAT)_dpi, (FLOAT)_dpi);
+	if (this->OverlayRender) this->OverlayRender->SetDpi((FLOAT)_dpi, (FLOAT)_dpi);
 }
 
 void Form::EnsureInitialDpiApplied()
@@ -1122,14 +1074,10 @@ void Form::EnsureInitialDpiApplied()
 	Application::EnsureDpiAwareness();
 	UINT dpi = Application::GetDpiForWindow(this->Handle);
 	if (dpi == 0) dpi = 96;
-	this->_dpi = dpi;
-	if (this->_contentDpi == 0) this->_contentDpi = 96;
 	if (this->_headHeightBase96 <= 0) this->_headHeightBase96 = 24;
 
-	// 如果当前 DPI != 基准 DPI(96)，则：
-	// 1) 先把窗口大小/位置缩放到匹配 DPI（保持当前中心点不变）
-	// 2) 再把控件树/字体/标题栏一起做一次 96->dpi 的缩放
-	// 1) 窗口大小：如果系统尚未通过 WM_DPICHANGED 的建议矩形帮我们调好，则这里按 96->dpi 缩放一次
+	// 窗口物理尺寸：按 96→dpi 缩放，使窗口在屏幕上占据与设计値相同的视角
+	// 控件树保持 96-DPI 逻辑坐标，D2D 通过 SetDpi 完成物理像素映射，无需缩放控件树
 	if (!this->_initialWindowRectApplied)
 	{
 		RECT wr{};
@@ -1141,14 +1089,12 @@ void Form::EnsureInitialDpiApplied()
 		const int x = wr.left + (oldW - newW) / 2;
 		const int y = wr.top + (oldH - newH) / 2;
 		SetWindowPos(this->Handle, NULL, x, y, newW, newH, SWP_NOZORDER | SWP_NOACTIVATE);
-		// 某些情况下（尤其是首次显示前）SetWindowPos 不一定能及时触发有效的 WM_SIZE -> swapchain resize。
-		// 这里强制同步一次渲染目标尺寸，避免扩大后的区域未被绘制而看起来“透明”。
 		SyncRenderSizeToClient();
 		this->_hasRenderedOnce = false;
-		this->Invalidate(true);
+		this->Invalidate(false);
 	}
 
-	// 2) 控件树：无论窗口创建时是否收到过 WM_DPICHANGED，都在首次 Show 前把控件树缩放到当前 DPI
+	// 更新 HeadHeight（物理像素）并为渲染目标设置 DPI
 	ApplyDpiChange(dpi);
 }
 
@@ -1201,20 +1147,6 @@ void Form::ResetImageCache()
 	_imageCacheTarget = nullptr;
 }
 
-IDCompositionDevice* Form::GetDCompDevice() const
-{
-	return nullptr;
-}
-
-IDCompositionVisual* Form::GetWebContainerVisual() const
-{
-	return nullptr;
-}
-
-void Form::CommitComposition()
-{
-}
-
 void Form::RecoverRenderIfNeeded()
 {
 	if (_recoveringDeviceLost)
@@ -1230,10 +1162,18 @@ void Form::RecoverRenderIfNeeded()
 
 	bool need = false;
 	if (this->Render && this->Render->IsDeviceLost()) need = true;
+	if (this->OverlayRender && this->OverlayRender->IsDeviceLost()) need = true;
 	if (!need)
 	{
 		_recoveringDeviceLost = false;
 		return;
+	}
+
+	// 先释放旧渲染对象
+	if (this->OverlayRender)
+	{
+		delete this->OverlayRender;
+		this->OverlayRender = nullptr;
 	}
 	if (this->Render)
 	{
@@ -1242,10 +1182,11 @@ void Form::RecoverRenderIfNeeded()
 	}
 
 	Render = new HwndGraphics(this->Handle);
+	OverlayRender = nullptr;
 
 	SyncRenderSizeToClient();
 	this->_hasRenderedOnce = false;
-	this->Invalidate(true);
+	this->Invalidate(false);
 	_recoveringDeviceLost = false;
 }
 
@@ -1265,6 +1206,10 @@ void Form::PerformLayout()
 	{
 		// 默认布局：支持控件的 Anchor 和 Margin
 		SIZE clientSize = this->ClientSize;
+		// physical→logical: layout coords match D2D logical (96-DPI) space
+		const float dpiScL = GetDpiScale();
+		clientSize.cx = (LONG)(clientSize.cx / dpiScL);
+		clientSize.cy = (LONG)(clientSize.cy / dpiScL);
 		float contentLeft = 0.0f;
 		float contentTop = 0.0f;
 		float contentWidth = (float)clientSize.cx;
@@ -1385,6 +1330,10 @@ void Form::PerformLayout()
 		if (_needsLayout || _layoutEngine->NeedsLayout())
 		{
 			SIZE clientSize = this->ClientSize;
+			// physical→logical: layout coords match D2D logical (96-DPI) space
+			const float dpiScL = GetDpiScale();
+			clientSize.cx = (LONG)(clientSize.cx / dpiScL);
+			clientSize.cy = (LONG)(clientSize.cy / dpiScL);
 			_layoutEngine->Measure(nullptr, clientSize);
 			
 			D2D1_RECT_F finalRect = { 
@@ -1538,10 +1487,17 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 	{
 		PerformLayout();
 	}
-	RECT drawRc = dirty;
+	// dirty rect from OS is in physical pixels; D2D after SetDpi works in logical coords
+	const float dpiSc = GetDpiScale();
+	auto toLogical = [&](RECT r) -> RECT {
+		return RECT{ (LONG)std::floor(r.left / dpiSc), (LONG)std::floor(r.top / dpiSc),
+		             (LONG)std::ceil (r.right / dpiSc), (LONG)std::ceil (r.bottom / dpiSc) };
+	};
+	RECT logClientRc = toLogical(clientRc);
+	RECT drawRc = toLogical(dirty);
 	if (force || !this->_hasRenderedOnce)
 	{
-		drawRc = clientRc;
+		drawRc = logClientRc;
 	}
 
 	this->Render->BeginRender();
@@ -1560,24 +1516,26 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 
 	if (VisibleHead)
 	{
-		RECT headRc{ 0, 0, this->Size.cx, this->HeadHeight };
+		const float logW = this->Size.cx / dpiSc;
+		const float logH = this->HeadHeight / dpiSc;
+		RECT headRc{ 0, 0, (LONG)logW, (LONG)logH };
 		if (RectIntersects(drawRc, headRc))
 		{
-			this->Render->FillRect(0, 0, this->Size.cx, this->HeadHeight, this->HeadBackColor);
+			this->Render->FillRect(0, 0, logW, logH, this->HeadBackColor);
 			auto font = this->GetFont();
-			float headTextTop = (this->HeadHeight - font->FontHeight) * 0.5f;
+			float headTextTop = (logH - font->FontHeight) * 0.5f;
 			if (headTextTop < 0.0f)
 				headTextTop = 0.0f;
-			this->Render->PushDrawRect(0, 0, this->Size.cx, this->HeadHeight);
+			this->Render->PushDrawRect(0, 0, logW, logH);
 			if (this->CenterTitle)
 			{
 				auto tSize = font->GetTextSize(this->Text);
-				float textRangeWidth = this->Size.cx;
+				float textRangeWidth = logW;
 				int buttonCount = 0;
 				if (this->MinBox) buttonCount++;
 				if (this->MaxBox) buttonCount++;
 				if (this->CloseBox) buttonCount++;
-				textRangeWidth -= (this->HeadHeight * buttonCount);
+				textRangeWidth -= (logH * buttonCount);
 				float headTextLeft = (textRangeWidth - tSize.width) * 0.5f;
 				if (headTextLeft < 0.0f)
 					headTextLeft = 0.0f;
@@ -1661,14 +1619,16 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 			this->Render->PopDrawRect();
 		}
 	}
-	const int top = ClientTop();
+	const int top = (int)(ClientTop() / dpiSc);  // logical head height
+	const int logContentW = (int)(this->Size.cx / dpiSc);
+	const int logContentH = (int)(this->Size.cy / dpiSc);
 	RECT contentDirty = drawRc;
 	contentDirty.top -= top;
 	contentDirty.bottom -= top;
 	if (contentDirty.top < 0) contentDirty.top = 0;
 	if (contentDirty.left < 0) contentDirty.left = 0;
-	if (contentDirty.right > this->Size.cx) contentDirty.right = this->Size.cx;
-	if (contentDirty.bottom > (this->Size.cy - top)) contentDirty.bottom = (this->Size.cy - top);
+	if (contentDirty.right > logContentW) contentDirty.right = logContentW;
+	if (contentDirty.bottom > (logContentH - top)) contentDirty.bottom = (logContentH - top);
 
 	if (contentDirty.right > contentDirty.left && contentDirty.bottom > contentDirty.top)
 	{
@@ -1679,6 +1639,12 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 		{
 			auto c = this->Controls[i]; if (!c->Visible)continue;
 			// 主菜单/置顶控件在有 Overlay 时由 Overlay 层单独绘制，避免重复
+			if (this->OverlayRender)
+			{
+				if (c == this->ForegroundControl) continue;
+				if (c == this->MainMenu) continue;
+				if (this->MainStatusBar && this->MainStatusBar->TopMost && c == this->MainStatusBar) continue;
+			}
 			// 状态栏（TopMost=true）单独绘制，避免被普通控件覆盖
 			if (this->MainStatusBar && this->MainStatusBar->TopMost && c == this->MainStatusBar)
 				continue;
@@ -1696,6 +1662,7 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 		}
 
 		// 如果主菜单展开/前景控件可见，它们应覆盖在状态栏之上
+		if (!this->OverlayRender)
 		{
 			if (this->MainMenu && this->MainMenu->Visible)
 			{
@@ -1718,7 +1685,55 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 	this->Render->EndRender();
 	RecoverRenderIfNeeded();
 
-	this->CommitComposition();
+	if (this->OverlayRender)
+	{
+		auto* oldRender = this->Render;
+		RECT fullClient{};
+		::GetClientRect(this->Handle, &fullClient);
+		// physical→logical for D2D overlay
+		const float ovLogW = (fullClient.right  - fullClient.left) / dpiSc;
+		const float ovLogH = (fullClient.bottom - fullClient.top)  / dpiSc;
+
+		this->OverlayRender->BeginRender();
+		this->OverlayRender->ClearTransform();
+		this->OverlayRender->Clear(D2D1_COLOR_F{ 0.0f,0.0f,0.0f,0.0f });
+		this->OverlayRender->PushDrawRect(0.0f, 0.0f, ovLogW, ovLogH);
+
+		const int ovTop = (int)(ClientTop() / dpiSc);  // logical head height
+		RECT overlayContent{};
+		overlayContent.left   = 0;
+		overlayContent.top    = 0;
+		overlayContent.right  = (LONG)ovLogW;
+		overlayContent.bottom = (LONG)ovLogH - ovTop;
+
+		if (overlayContent.right > overlayContent.left && overlayContent.bottom > overlayContent.top)
+		{
+			this->OverlayRender->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, (float)ovTop));
+			this->OverlayRender->PushDrawRect((float)overlayContent.left, (float)overlayContent.top, (float)(overlayContent.right - overlayContent.left), (float)(overlayContent.bottom - overlayContent.top));
+
+			this->Render = this->OverlayRender;
+			if (this->MainStatusBar && this->MainStatusBar->TopMost && this->MainStatusBar->Visible)
+			{
+				this->MainStatusBar->Update();
+			}
+			if (this->MainMenu && this->MainMenu->Visible)
+			{
+				this->MainMenu->Update();
+			}
+			if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl != (Control*)this->MainMenu)
+			{
+				this->ForegroundControl->Update();
+			}
+			this->Render = oldRender;
+
+			this->OverlayRender->PopDrawRect();
+			this->OverlayRender->ClearTransform();
+		}
+
+		this->OverlayRender->PopDrawRect();
+		this->OverlayRender->EndRender();
+		RecoverRenderIfNeeded();
+	}
 
 	this->ControlChanged = false;
 	this->_hasRenderedOnce = true;
@@ -1759,8 +1774,9 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	POINT mouse;
 	GetCursorPos(&mouse);
 	ScreenToClient(this->Handle, &mouse);
-	const int top = ClientTop();
-	POINT contentMouse{ mouse.x, mouse.y - top };
+	const int top = ClientTop();  // physical HeadHeight, for title bar (OS-level) comparisons
+	const float sc = GetDpiScale();
+	POINT contentMouse{ (LONG)(mouse.x / sc), (LONG)((mouse.y - top) / sc) };
 	Control* HitControl = NULL;
 	switch (message)
 	{
@@ -1879,11 +1895,8 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			if (!(this->VisibleHead && mouse.y < top))
 			{
 				Control* hit = HitTestControlAt(contentMouse);
-				if (!(hit && hit->Type() == UIClass::UI_WebBrowser))
-				{
-					if (::GetFocus() != this->Handle)
-						::SetFocus(this->Handle);
-				}
+				if (::GetFocus() != this->Handle)
+					::SetFocus(this->Handle);
 			}
 		}
 
@@ -2040,11 +2053,13 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		UINT height = HIWORD(lParam);
 		GetClientRect(this->Handle, &rec);
 		this->Render->ReSize(width, height);
+		if (this->OverlayRender) this->OverlayRender->ReSize(width, height);
+		if (this->Render)        this->Render->SetDpi((FLOAT)this->_dpi, (FLOAT)this->_dpi);
+		if (this->OverlayRender) this->OverlayRender->SetDpi((FLOAT)this->_dpi, (FLOAT)this->_dpi);
 		this->InvalidateLayout();
-		this->CommitComposition();
 		this->_hasRenderedOnce = false;
 		this->OnSizeChanged(this);
-		this->Invalidate(true);
+		this->Invalidate(false);
 	}
 	break;
 	case WM_MOVE:
@@ -2132,8 +2147,9 @@ void Form::RenderImage()
 		auto size = bmp->GetSize();
 		if (size.width > 0 && size.height > 0)
 		{
-			// 自绘标题栏属于 client 区域的一部分：背景图应铺满整个窗口区域（0..Size）
-			auto asize = this->Size;
+			// 自绘标题栏属于 client 区域的一部分：背景图应铺满整个窗口区域（D2D 逻辑坐标）
+			const float rSc = GetDpiScale();
+			const struct { float cx, cy; } asize = { this->Size.cx / rSc, this->Size.cy / rSc };
 			switch (this->SizeMode)
 			{
 			case ImageSizeMode::Normal:
@@ -2276,7 +2292,7 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 			// 尺寸/DPI 变化后，强制同步渲染目标尺寸并安排一次重绘，避免出现新区域未刷新。
 			form->SyncRenderSizeToClient();
 			form->_hasRenderedOnce = false;
-			form->Invalidate(true);
+			form->Invalidate(false);
 			// 若窗口尚未首次显示，控件树可能还未构造完成：此时只记录 DPI，真正缩放留到 Show 前。
 			if (!form->_initialDpiApplied)
 			{
@@ -2288,6 +2304,18 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 		}
 
 		form->ProcessMessage(message, wParam, lParam, 0, 0);
+
+		// After any button-up, release lingering mouse capture from child controls
+		// (TabControl / GridView call SetCapture for drag tracking; if the mouse moves
+		// to the resize border before the button is released, the hit-test in
+		// ProcessMessage finds no control there, so the child never receives its
+		// WM_LBUTTONUP and never calls ReleaseCapture — leaving capture stuck and
+		// blocking the OS from starting a window-resize drag via WM_NCHITTEST).
+		if ((message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP)
+			&& GetCapture() == hWnd && !form->_capTracking)
+		{
+			ReleaseCapture();
+		}
 
 		switch (message)
 		{
@@ -2314,27 +2342,7 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 					return 0;
 				}
 
-				bool hasVisibleWebBrowser = false;
-				std::function<void(Control*)> checkWebBrowser;
-				checkWebBrowser = [&](Control* c) {
-					if (!c || !c->Visible) return;
-					if (c->Type() == UIClass::UI_WebBrowser) {
-						hasVisibleWebBrowser = true;
-						return;
-					}
-					for (int i = 0; i < c->Count && !hasVisibleWebBrowser; i++)
-						checkWebBrowser(c->operator[](i));
-				};
-				
-				for (auto c : form->Controls)
-					if (!hasVisibleWebBrowser)
-						checkWebBrowser(c);
-				if (!hasVisibleWebBrowser && form->MainMenu)
-					checkWebBrowser((Control*)form->MainMenu);
-				if (!hasVisibleWebBrowser && form->ForegroundControl)
-					checkWebBrowser(form->ForegroundControl);
-				
-				if (hasVisibleWebBrowser || form->ControlChanged || !form->_hasRenderedOnce)
+				if (form->ControlChanged || !form->_hasRenderedOnce)
 					form->UpdateDirtyRect(ps.rcPaint, true);
 			}
 			EndPaint(hWnd, &ps);

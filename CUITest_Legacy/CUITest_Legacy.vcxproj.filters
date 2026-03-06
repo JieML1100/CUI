@@ -21,19 +21,22 @@
     <ClCompile Include="CustomControls.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="DemoWindow_Legacy.cpp">
+    <ClCompile Include="DemoWindow.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="CustomControls.h">
+    <ClInclude Include="DemoWindow.h">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="DemoWindow_Legacy.h">
+    <ClInclude Include="CustomControls.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="imgs.h">
       <Filter>头文件</Filter>
     </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
   </ItemGroup>
 </Project>

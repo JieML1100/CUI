@@ -284,6 +284,15 @@ public:
 	virtual UIClass Type();
 	/** @brief 更新控件状态（逻辑更新）。 */
 	virtual void Update();
+	/**
+	 * @brief 在控件局部坐标系中开始渲染（设置平移变换 + 裁剪矩形）。
+	 * 结束时必须调用对应的 EndRender()。
+	 * clipW/clipH 默认使用 ActualSize()；可显式传入（如需扩展裁剪区域）。
+	 */
+	void BeginRender();
+	void BeginRender(float clipW, float clipH);
+	/** @brief 结束局部坐标渲染，恢复之前的变换状态。 */
+	void EndRender();
 	/** @brief 渲染完成后的后处理（例如动画/失效区域上报）。 */
 	virtual void PostRender();
 	/**

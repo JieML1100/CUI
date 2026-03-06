@@ -307,14 +307,12 @@ void TextBox::Update()
 	textSize = font->GetTextSize(this->Text, FLT_MAX, render_height);
 	float OffsetY = (this->Height - textSize.height) * 0.5f;
 	if (OffsetY < 0.0f)OffsetY = 0.0f;
-	auto abslocation = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
 	bool isSelected = this->ParentForm->Selected == this;
 	this->_caretRectCacheValid = false;
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	this->BeginRender();
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, isSelected ? this->FocusedColor : this->BackColor);
+		d2d->FillRect(0, 0, size.cx, size.cy, isSelected ? this->FocusedColor : this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -333,8 +331,8 @@ void TextBox::Update()
 					for (auto sr : selRange)
 					{
 						d2d->FillRect(
-							sr.left + abslocation.x + TextMargin - OffsetX,
-							(sr.top + abslocation.y) + OffsetY,
+							sr.left + TextMargin - OffsetX,
+							sr.top + OffsetY,
 							sr.width, sr.height,
 							this->SelectedBackColor);
 					}
@@ -344,20 +342,21 @@ void TextBox::Update()
 					if (!selRange.empty())
 					{
 						const auto caret = selRange[0];
-						const float cx = caret.left + (float)abslocation.x + TextMargin - OffsetX;
-						const float cy = caret.top + (float)abslocation.y + OffsetY;
+						const float cx = caret.left + TextMargin - OffsetX;
+						const float cy = caret.top + OffsetY;
 						const float ch = caret.height > 0 ? caret.height : font->FontHeight;
-						this->_caretRectCache = { cx - 2.0f, cy - 2.0f, cx + 2.0f, cy + ch + 2.0f };
+						auto abs = this->AbsLocation;
+						this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ch + 2.0f };
 						this->_caretRectCacheValid = true;
 						d2d->DrawLine(
-							{ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y) + OffsetY },
-							{ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y + selRange[0].height) + OffsetY },
+							{ selRange[0].left + TextMargin - OffsetX, selRange[0].top + OffsetY },
+							{ selRange[0].left + TextMargin - OffsetX, selRange[0].top + selRange[0].height + OffsetY },
 							Colors::Black);
 					}
 				}
 				auto lot = Factory::CreateStringLayout(this->Text, FLT_MAX, render_height, font->FontObject);
 				d2d->DrawStringLayoutEffect(lot,
-					(float)abslocation.x + TextMargin - OffsetX, ((float)abslocation.y) + OffsetY,
+					TextMargin - OffsetX, OffsetY,
 					this->ForeColor,
 					DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
 					this->SelectedForeColor,
@@ -368,7 +367,7 @@ void TextBox::Update()
 			{
 				auto lot = Factory::CreateStringLayout(this->Text, FLT_MAX, render_height, font->FontObject);
 				d2d->DrawStringLayout(lot,
-					(float)abslocation.x + TextMargin - OffsetX, ((float)abslocation.y) + OffsetY,
+					TextMargin - OffsetX, OffsetY,
 					this->ForeColor);
 				lot->Release();
 			}
@@ -377,28 +376,29 @@ void TextBox::Update()
 		{
 			if (isSelected)
 			{
-				const float cx = (float)TextMargin + (float)abslocation.x - OffsetX;
-				const float cy = (float)abslocation.y + OffsetY;
+				const float cx = (float)TextMargin - OffsetX;
+				const float cy = OffsetY;
 				const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
-				this->_caretRectCache = { cx - 2.0f, cy - 2.0f, cx + 2.0f, cy + ch + 2.0f };
+				auto abs = this->AbsLocation;
+				this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ch + 2.0f };
 				this->_caretRectCacheValid = true;
 				d2d->DrawLine(
-					{ (float)TextMargin + (float)abslocation.x - OffsetX, (float)abslocation.y + OffsetY },
-					{ (float)TextMargin + (float)abslocation.x - OffsetX, (float)abslocation.y + OffsetY + 16.0f },
+					{ (float)TextMargin - OffsetX, OffsetY },
+					{ (float)TextMargin - OffsetX, OffsetY + 16.0f },
 					Colors::Black);
 			}
 		}
-		d2d->DrawRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BolderColor, this->Boder);
+		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
 		if (!this->Enable)
 		{
-			d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+			d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 		}
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
-	d2d->PopDrawRect();
+	this->EndRender();
 }
 
 bool TextBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)

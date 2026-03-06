@@ -15,33 +15,25 @@ Switch::Switch(int x, int y, int width, int height)
 void Switch::Update()
 {
 	if (this->IsVisual == false)return;
-	bool isUnderMouse = this->ParentForm->UnderMouse == this;
-	bool isSelected = this->ParentForm->Selected == this;
 	auto d2d = this->ParentForm->Render;
-	auto abslocation = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
-	if (last_width > size.cx)
-	{
-		absRect.right += last_width - size.cx;
-		size.cx = last_width;
-	}
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	float clipW = last_width > size.cx ? (float)last_width : (float)size.cx;
+	this->BeginRender(clipW, (float)size.cy);
 	{
 		float r = size.cy / 2.0f;
-		float x1 = abslocation.x + r;
-		float x2 = abslocation.x + (size.cx - r);
-		float y = abslocation.y + r;
+		float x1 = r;
+		float x2 = size.cx - r;
+		float y = r;
 		d2d->FillEllipse({ x1,y }, r, r, this->Checked ? Colors::Green : Colors::Red);
-		d2d->FillEllipse({ x2,y },r,r , this->Checked ? Colors::Green : Colors::Red);
-		d2d->FillRect(x1, abslocation.y, x2 - x1, size.cy, this->Checked ? Colors::Green : Colors::Red);
-		d2d->FillEllipse({ this->Checked ? x2 : x1,y },r - 2.0f,r - 2.0f , Colors::White);
+		d2d->FillEllipse({ x2,y }, r, r, this->Checked ? Colors::Green : Colors::Red);
+		d2d->FillRect(x1, 0, x2 - x1, size.cy, this->Checked ? Colors::Green : Colors::Red);
+		d2d->FillEllipse({ this->Checked ? x2 : x1, y }, r - 2.0f, r - 2.0f, Colors::White);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, clipW, (float)size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
-	d2d->PopDrawRect();
+	this->EndRender();
 	last_width = size.cx;
 }
 bool Switch::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)

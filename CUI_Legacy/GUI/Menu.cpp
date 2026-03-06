@@ -60,23 +60,21 @@ void MenuItem::Update()
 {
 	if (!this->IsVisual) return;
 	auto d2d = this->ParentForm->Render;
-	auto abs = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	this->BeginRender();
 	{
 		bool hover = (this->ParentForm->UnderMouse == this);
 		if (hover)
-			d2d->FillRect(abs.x, abs.y, size.cx, size.cy, HoverBackColor);
+			d2d->FillRect(0, 0, size.cx, size.cy, HoverBackColor);
 
 		auto font = this->Font;
 		auto ts = font->GetTextSize(this->Text);
 		float tx = 10.0f;
 		float ty = ((float)this->Height - ts.height) * 0.5f;
 		if (ty < 0) ty = 0;
-		d2d->DrawString(this->Text, abs.x + tx, abs.y + ty, this->ForeColor, font);
+		d2d->DrawString(this->Text, tx, ty, this->ForeColor, font);
 	}
-	d2d->PopDrawRect();
+	this->EndRender();
 }
 
 bool MenuItem::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
@@ -202,14 +200,11 @@ void Menu::Update()
 		this->ParentForm->MainMenu = this;
 	}
 	auto d2d = this->ParentForm->Render;
-	auto abs = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
-	absRect.bottom = absRect.top + size.cy;
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	this->BeginRender((float)size.cx, (float)size.cy);
 	{
-		d2d->FillRect(abs.x, abs.y, (float)this->Width, (float)BarHeight, BarBackColor);
-		d2d->DrawRect(abs.x, abs.y + (float)BarHeight - Boder, (float)this->Width, Boder, BarBorderColor, Boder);
+		d2d->FillRect(0, 0, (float)this->Width, (float)BarHeight, BarBackColor);
+		d2d->DrawRect(0, (float)BarHeight - Boder, (float)this->Width, Boder, BarBorderColor, Boder);
 
 		float x = 6.0f;
 		auto font = this->Font;
@@ -277,8 +272,8 @@ void Menu::Update()
 				MenuPanel p0;
 				p0.Owner = top;
 				p0.Items = &top->SubItems;
-				p0.X = abs.x + DropLeftLocal();
-				p0.Y = abs.y + DropTopLocal();
+				p0.X = DropLeftLocal();
+				p0.Y = DropTopLocal();
 				{
 					float maxw = (float)this->Width - DropLeftLocal();
 					p0.W = calcPanelWidth(*p0.Items, maxw);
@@ -368,7 +363,7 @@ void Menu::Update()
 			}
 		}
 	}
-	d2d->PopDrawRect();
+	this->EndRender();
 }
 
 bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)

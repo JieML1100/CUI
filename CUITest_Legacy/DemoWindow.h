@@ -1,18 +1,18 @@
 #pragma once
 
 /**
- * @file DemoWindow_Legacy.h
- * @brief CUITest_Legacy 演示窗口声明（用于示例/测试）。
+ * @file DemoWindow.h
+ * @brief CUITest 演示窗口声明（用于示例/测试）。
  */
 #include <iostream>
 #include "../CUI_Legacy/GUI/Form.h"
 #include "../CUI_Legacy/GUI/Layout/Layout.h"
 #include "CustomControls.h"
-class DemoWindow_Legacy : public Form
+class DemoWindow : public Form
 {
 public:
-    DemoWindow_Legacy();
-    ~DemoWindow_Legacy();
+    DemoWindow();
+    ~DemoWindow();
 
 private:
     void Menu_OnCommand(class Control* sender, int id);
@@ -61,6 +61,7 @@ private:
     RadioBox* _rb1 = nullptr;
     RadioBox* _rb2 = nullptr;
 
+
     // Containers tab
     PictureBox* _picture = nullptr;
     ProgressBar* _progress = nullptr;
@@ -70,8 +71,7 @@ private:
     Switch* _gridEnableSwitch = nullptr;
     Switch* _gridVisibleSwitch = nullptr;
 
-    // Web/Media
-    WebBrowser* _web = nullptr;
+    // Media
     MediaPlayer* _media = nullptr;
 
     // System integration

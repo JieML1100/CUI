@@ -18,17 +18,16 @@ void RoundTextBox::Update()
 	textSize = font->GetTextSize(Text, FLT_MAX, render_height);
 	float OffsetY = std::max((Height - textSize.height) * 0.5f, 0.0f);
 
-	auto abslocation = AbsLocation;
 	auto size = ActualSize();
-	auto absRect = AbsRect;
 	bool isSelected = ParentForm->Selected == this;
 	this->_caretRectCacheValid = false;
 
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	this->BeginRender();
 	{
-		d2d->FillRoundRect(abslocation.x, abslocation.y, size.cx, size.cy, isSelected ? FocusedColor : BackColor, TextMargin);
+		d2d->FillRoundRect(0, 0, size.cx, size.cy, isSelected ? FocusedColor : BackColor, TextMargin);
 		RenderImage();
-		d2d->PushDrawRect(absRect.left + TextMargin, absRect.top, (absRect.right - absRect.left) - (TextMargin * 2.0f), (absRect.bottom - absRect.top));
+		// 内部文本裁剪：本地坐标下从 TextMargin 开始
+		d2d->PushDrawRect(TextMargin, 0, (float)size.cx - TextMargin * 2.0f, (float)size.cy);
 
 		if (Text.size() > 0)
 		{
@@ -41,24 +40,25 @@ void RoundTextBox::Update()
 				auto selRange = font->HitTestTextRange(this->Text, (UINT32)sels, (UINT32)selLen);
 				for (auto sr : selRange)
 				{
-					d2d->FillRect(sr.left + abslocation.x + TextMargin - OffsetX, (sr.top + abslocation.y) + OffsetY, sr.width, sr.height, this->SelectedBackColor);
+					d2d->FillRect(sr.left + TextMargin - OffsetX, sr.top + OffsetY, sr.width, sr.height, this->SelectedBackColor);
 				}
 				if (selLen == 0 && !selRange.empty())
 				{
 					const auto caret = selRange[0];
-					const float cx = caret.left + (float)abslocation.x + TextMargin - OffsetX;
-					const float cy = caret.top + (float)abslocation.y + OffsetY;
+					const float cx = caret.left + TextMargin - OffsetX;
+					const float cy = caret.top + OffsetY;
 					const float ch = caret.height > 0 ? caret.height : font->FontHeight;
-					this->_caretRectCache = { cx - 2.0f, cy - 2.0f, cx + 2.0f, cy + ch + 2.0f };
+					auto abs = this->AbsLocation;
+					this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ch + 2.0f };
 					this->_caretRectCacheValid = true;
 				}
 				if (selLen == 0 && !selRange.empty())
-					d2d->DrawLine({ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y) + OffsetY },
-						{ selRange[0].left + abslocation.x + TextMargin - OffsetX,(selRange[0].top + abslocation.y + selRange[0].height) + OffsetY }, Colors::Black);
+					d2d->DrawLine({ selRange[0].left + TextMargin - OffsetX, selRange[0].top + OffsetY },
+						{ selRange[0].left + TextMargin - OffsetX, selRange[0].top + selRange[0].height + OffsetY }, Colors::Black);
 				auto lot = Factory::CreateStringLayout(this->Text, FLT_MAX, render_height, font->FontObject);
 				d2d->DrawStringLayoutEffect(lot,
-					(float)abslocation.x + TextMargin - OffsetX,
-					((float)abslocation.y) + OffsetY,
+					TextMargin - OffsetX,
+					OffsetY,
 					this->ForeColor,
 					DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
 					this->SelectedForeColor,
@@ -69,28 +69,29 @@ void RoundTextBox::Update()
 			{
 				auto lot = Factory::CreateStringLayout(this->Text, FLT_MAX, render_height, font->FontObject);
 				d2d->DrawStringLayout(lot,
-					(float)abslocation.x + TextMargin - OffsetX, ((float)abslocation.y) + OffsetY,
+					TextMargin - OffsetX, OffsetY,
 					this->ForeColor);
 				lot->Release();
 			}
 		}
 		else if (isSelected)
 		{
-			const float cx = (float)TextMargin + (float)abslocation.x - OffsetX;
-			const float cy = (float)abslocation.y + OffsetY;
+			const float cx = (float)TextMargin - OffsetX;
+			const float cy = OffsetY;
 			const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
-			this->_caretRectCache = { cx - 2.0f, cy - 2.0f, cx + 2.0f, cy + ch + 2.0f };
+			auto abs = this->AbsLocation;
+			this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ch + 2.0f };
 			this->_caretRectCacheValid = true;
-			d2d->DrawLine({ (float)TextMargin + (float)abslocation.x - OffsetX, (float)abslocation.y + OffsetY },
-				{ (float)TextMargin + (float)abslocation.x - OffsetX, (float)abslocation.y + OffsetY + 16.0f }, Colors::Black);
+			d2d->DrawLine({ (float)TextMargin - OffsetX, OffsetY },
+				{ (float)TextMargin - OffsetX, OffsetY + 16.0f }, Colors::Black);
 		}
 		d2d->PopDrawRect();
 	}
 
 	if (!Enable)
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 
-	d2d->PopDrawRect();
+	this->EndRender();
 }

@@ -152,22 +152,19 @@ void ToolBoxItem::Update()
 	bool isUnderMouse = this->ParentForm->UnderMouse == this;
 	bool isSelected = this->ParentForm->Selected == this;
 	auto d2d = this->ParentForm->Render;
-	auto abslocation = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
-
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	this->BeginRender();
 	{
 		float roundVal = this->Height * Round;
-		d2d->FillRoundRect(abslocation.x + (this->Boder * 0.5f), abslocation.y + (this->Boder * 0.5f), size.cx - this->Boder, size.cy - this->Boder, this->BackColor, roundVal);
+		d2d->FillRoundRect(this->Boder * 0.5f, this->Boder * 0.5f, size.cx - this->Boder, size.cy - this->Boder, this->BackColor, roundVal);
 		D2D1::ColorF color = isUnderMouse ? (isSelected ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.7f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.4f)) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f);
-		d2d->FillRoundRect(abslocation.x, abslocation.y, size.cx, size.cy, color, roundVal);
+		d2d->FillRoundRect(0, 0, size.cx, size.cy, color, roundVal);
 
 		float paddingLeft = 8.0f;
 		float gap = 8.0f;
 		float iconSize = 20.0f;
-		float iconLeft = (float)abslocation.x + paddingLeft;
-		float iconTop = (float)abslocation.y + ((float)size.cy - iconSize) / 2.0f;
+		float iconLeft = paddingLeft;
+		float iconTop = ((float)size.cy - iconSize) / 2.0f;
 		if (auto* bmp = GetIconBitmap(d2d))
 		{
 			d2d->DrawBitmap(bmp, iconLeft, iconTop, iconSize, iconSize);
@@ -175,18 +172,18 @@ void ToolBoxItem::Update()
 
 		auto font = this->Font;
 		auto textSize = font->GetTextSize(this->Text);
-		float textLeft = (float)abslocation.x + paddingLeft + iconSize + gap;
-		float textTop = (float)abslocation.y + (((float)size.cy - textSize.height) / 2.0f);
+		float textLeft = paddingLeft + iconSize + gap;
+		float textTop = (((float)size.cy - textSize.height) / 2.0f);
 		d2d->DrawString(this->Text, textLeft, textTop, this->ForeColor, this->Font);
 
-		d2d->DrawRoundRect(abslocation.x + (this->Boder * 0.5f), abslocation.y + (this->Boder * 0.5f),
+		d2d->DrawRoundRect(this->Boder * 0.5f, this->Boder * 0.5f,
 			size.cx - this->Boder, size.cy - this->Boder,
 			this->BolderColor, this->Boder, roundVal);
 	}
 
 	if (!this->Enable)
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
-	d2d->PopDrawRect();
+		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+	this->EndRender();
 }
 
 ToolBox::ToolBox(int x, int y, int width, int height)
@@ -303,16 +300,12 @@ void ToolBox::Update()
 	if (!TryGetScrollBarLocalRect(track, thumb)) return;
 
 	auto d2d = this->ParentForm->Render;
-	auto abs = this->AbsLocation;
-	auto absRect = this->AbsRect;
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	this->BeginRender();
 	{
-		D2D1_RECT_F atrack{ track.left + abs.x, track.top + abs.y, track.right + abs.x, track.bottom + abs.y };
-		D2D1_RECT_F athumb{ thumb.left + abs.x, thumb.top + abs.y, thumb.right + abs.x, thumb.bottom + abs.y };
-		d2d->FillRect(atrack.left, atrack.top, atrack.right - atrack.left, atrack.bottom - atrack.top, Colors::LightGray);
-		d2d->FillRect(athumb.left, athumb.top, athumb.right - athumb.left, athumb.bottom - athumb.top, Colors::DimGrey);
+		d2d->FillRect(track.left, track.top, track.right - track.left, track.bottom - track.top, Colors::LightGray);
+		d2d->FillRect(thumb.left, thumb.top, thumb.right - thumb.left, thumb.bottom - thumb.top, Colors::DimGrey);
 	}
-	d2d->PopDrawRect();
+	this->EndRender();
 }
 
 bool ToolBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)

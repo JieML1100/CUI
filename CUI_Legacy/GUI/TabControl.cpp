@@ -23,15 +23,8 @@ TabControl::TabControl(int x, int y, int width, int height)
 
 static void SyncNativeChildWindowsRecursive(Control* root)
 {
-	if (!root) return;
-	// 目前库里只有 WebBrowser 会创建真实 HWND 子窗口；后续有更多原生控件也可在此扩展
-	if (root->Type() == UIClass::UI_WebBrowser)
-	{
-		// 强制跑一次 Update：它会根据 IsVisual/Visible 同步宿主 HWND 的 Show/Hide/Bounds
-		root->Update();
-	}
-	for (int i = 0; i < root->Count; i++)
-		SyncNativeChildWindowsRecursive(root->operator[](i));
+	(void)root;
+	// Legacy：已移除 WebBrowser，无原生 HWND 子控件需要同步
 }
 
 static void SyncNativeChildWindowsForAllPages(TabControl* tc)
@@ -77,12 +70,10 @@ void TabControl::Update()
 	bool isSelected = this->ParentForm->Selected == this;
 	auto d2d = this->ParentForm->Render;
 	auto font = this->Font;
-	auto abslocation = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	this->BeginRender();
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BackColor);
+		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -101,13 +92,13 @@ void TabControl::Update()
 				if (lf < 0)lf = 0;
 				float tf = (TitleHeight - textsize.height) / 2.0f;
 				if (tf < 0)tf = 0;
-				d2d->PushDrawRect(abslocation.x + (TitleWidth * i), abslocation.y, TitleWidth, TitleHeight);
+				d2d->PushDrawRect((TitleWidth * i), 0, TitleWidth, TitleHeight);
 				if (i == this->SelectedIndex)
-					d2d->FillRect(abslocation.x + (TitleWidth * i), abslocation.y, TitleWidth, TitleHeight, this->SelectedTitleBackColor);
+					d2d->FillRect((TitleWidth * i), 0, TitleWidth, TitleHeight, this->SelectedTitleBackColor);
 				else
-					d2d->FillRect(abslocation.x + (TitleWidth * i), abslocation.y, TitleWidth, TitleHeight, this->TitleBackColor);
-				d2d->DrawString(this->operator[](i)->Text, abslocation.x + (TitleWidth * i) + lf, abslocation.y + tf, this->ForeColor, font);
-				d2d->DrawRect(abslocation.x + (TitleWidth * i), abslocation.y, TitleWidth, TitleHeight, this->BolderColor, this->Boder);
+					d2d->FillRect((TitleWidth * i), 0, TitleWidth, TitleHeight, this->TitleBackColor);
+				d2d->DrawString(this->operator[](i)->Text, (TitleWidth * i) + lf, tf, this->ForeColor, font);
+				d2d->DrawRect((TitleWidth * i), 0, TitleWidth, TitleHeight, this->BolderColor, this->Boder);
 				d2d->PopDrawRect();
 			}
 			TabPage* page = (TabPage*)this->operator[](this->SelectedIndex);
@@ -125,13 +116,13 @@ void TabControl::Update()
 				this->_lastSelectIndex = this->SelectedIndex;
 			}
 		}
-		d2d->DrawRect(abslocation.x, abslocation.y + this->TitleHeight, size.cx, size.cy - this->TitleHeight, this->BolderColor, this->Boder);
+		d2d->DrawRect(0, this->TitleHeight, size.cx, size.cy - this->TitleHeight, this->BolderColor, this->Boder);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
-	d2d->PopDrawRect();
+	this->EndRender();
 }
 bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {

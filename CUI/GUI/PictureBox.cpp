@@ -11,24 +11,20 @@ PictureBox::PictureBox(int x, int y, int width, int height)
 void PictureBox::Update()
 {
 	if (this->IsVisual == false)return;
-	bool isUnderMouse = this->ParentForm->UnderMouse == this;
-	bool isSelected = this->ParentForm->Selected == this;
 	auto d2d = this->ParentForm->Render;
-	auto abslocation = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	this->BeginRender();
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BackColor);
+		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
 		}
-		d2d->DrawRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BolderColor, this->Boder);
+		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
-	d2d->PopDrawRect();
+	this->EndRender();
 }

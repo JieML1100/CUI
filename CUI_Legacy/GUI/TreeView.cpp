@@ -231,8 +231,8 @@ void TreeView::DrawScroll() {
 			if (scrollBlockHeight < height * 0.1f) scrollBlockHeight = height * 0.1f;
 			float scrollPer = (float)this->ScrollIndex / (float)maxScroll;
 			float scrollBlockTop = scrollPer * (height - scrollBlockHeight);
-			this->ParentForm->Render->FillRoundRect(this->AbsLocation.x + width, this->AbsLocation.y, 8.0f, height, this->ScrollBackColor, 4.0f);
-			this->ParentForm->Render->FillRoundRect(this->AbsLocation.x + width, this->AbsLocation.y + scrollBlockTop, 8.0f, scrollBlockHeight, this->ScrollForeColor, 4.0f);
+			this->ParentForm->Render->FillRoundRect(width, 0, 8.0f, height, this->ScrollBackColor, 4.0f);
+			this->ParentForm->Render->FillRoundRect(width, scrollBlockTop, 8.0f, scrollBlockHeight, this->ScrollForeColor, 4.0f);
 		}
 	}
 }
@@ -242,13 +242,11 @@ void TreeView::Update()
 	bool isUnderMouse = this->ParentForm->UnderMouse == this;
 	auto d2d = this->ParentForm->Render;
 	auto font = this->Font;
-	auto abslocation = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
 	bool isSelected = this->ParentForm->Selected == this;
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	this->BeginRender();
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BackColor);
+		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -256,25 +254,25 @@ void TreeView::Update()
 
 		{
 			int curr = 0;
-			renderNodes(this, d2d, abslocation.x, abslocation.y, size.cx, size.cy, font->FontHeight, ScrollIndex, curr, 0, this->Root->Children);
+			renderNodes(this, d2d, 0, 0, size.cx, size.cy, font->FontHeight, ScrollIndex, curr, 0, this->Root->Children);
 			this->MaxRenderItems = curr;
 			int maxScroll = this->MaxRenderItems - (this->Height / (this->Font->FontHeight)) + 1;
 			if (maxScroll < 0)maxScroll = 0;
 			if (this->ScrollIndex > maxScroll) this->ScrollIndex = maxScroll;
 			this->DrawScroll();
-			d2d->DrawRect(abslocation.x, abslocation.y, size.cx, size.cy, this->ForeColor);
+			d2d->DrawRect(0, 0, size.cx, size.cy, this->ForeColor);
 
 		}
 		if (!this->Enable)
 		{
-			d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+			d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 		}
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
-	d2d->PopDrawRect();
+	this->EndRender();
 }
 bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {

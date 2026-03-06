@@ -43,15 +43,10 @@ SIZE ComboBox::ActualSize()
 void ComboBox::DrawScroll()
 {
 	auto d2d = this->ParentForm->Render;
-	auto abslocation = this->AbsLocation;
 	auto font = this->Font;
-	auto size = this->ActualSize();
 	if (this->values.Count > 0)
 	{
-		float _render_width = this->Width - 8;
 		float _render_height = this->Height * this->ExpandCount;
-		float font_height = font->FontHeight;
-		float row_height = font_height + 2.0f;
 		int render_count = this->ExpandCount;
 		if (render_count < this->values.Count)
 		{
@@ -59,13 +54,11 @@ void ComboBox::DrawScroll()
 			float scroll_block_height = ((float)render_count / (float)this->values.Count) * (float)_render_height;
 			if (scroll_block_height < COMBO_MIN_SCROLL_BLOCK)scroll_block_height = COMBO_MIN_SCROLL_BLOCK;
 			float scroll_block_move_space = _render_height - scroll_block_height;
-			float yt = scroll_block_height * 0.5f;
-			float yb = _render_height - (scroll_block_height * 0.5f);
 			float per = (float)this->ExpandScroll / (float)max_scroll;
-			float scroll_tmp_y = per * scroll_block_move_space;
-			float scroll_block_top = scroll_tmp_y;
-			d2d->FillRoundRect(abslocation.x + (this->Width - 8.0f), abslocation.y + this->Height, 8.0f, _render_height, this->ScrollBackColor, 4.0f);
-			d2d->FillRoundRect(abslocation.x + (this->Width - 8.0f), abslocation.y + scroll_block_top + this->Height, 8.0f, scroll_block_height, this->ScrollForeColor, 4.0f);
+			float scroll_block_top = per * scroll_block_move_space;
+			// 在局部坐标中：滚动条 X = Width - 8，Y = Height（下拉区起始）
+			d2d->FillRoundRect(this->Width - 8.0f, (float)this->Height, 8.0f, _render_height, this->ScrollBackColor, 4.0f);
+			d2d->FillRoundRect(this->Width - 8.0f, scroll_block_top + this->Height, 8.0f, scroll_block_height, this->ScrollForeColor, 4.0f);
 		}
 	}
 }
@@ -107,16 +100,10 @@ void ComboBox::Update()
 	bool isUnderMouse = this->ParentForm->UnderMouse == this;
 	bool isSelected = this->ParentForm->Selected == this;
 	auto d2d = this->ParentForm->Render;
-	auto abslocation = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
-	if (this->Expand)
+	this->BeginRender((float)size.cx, (float)size.cy);
 	{
-		absRect.bottom = absRect.top + size.cy;
-	}
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
-	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BackColor);
+		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -129,7 +116,7 @@ void ComboBox::Update()
 		{
 			drawLeft = drawTop = (this->Height - textSize.height) / 2.0f;
 		}
-		d2d->DrawString(this->Text, abslocation.x + drawLeft, abslocation.y + drawTop, this->ForeColor, font);
+		d2d->DrawString(this->Text, drawLeft, drawTop, this->ForeColor, font);
 		// 右侧展开符号：使用图形绘制，避免随 Font 改变，并在展开/收起时显示不同图案
 		{
 			const float h = (float)this->Height;
@@ -137,22 +124,20 @@ void ComboBox::Update()
 			if (iconSize < 8.0f) iconSize = 8.0f;
 			if (iconSize > 14.0f) iconSize = 14.0f;
 			const float padRight = 8.0f;
-			const float cx = abslocation.x + (float)this->Width - padRight - iconSize * 0.5f;
-			const float cy = abslocation.y + h * 0.5f;
+			const float cx = (float)this->Width - padRight - iconSize * 0.5f;
+			const float cy = h * 0.5f;
 			const float half = iconSize * 0.5f;
 			const float triH = iconSize * 0.55f;
 
 			D2D1_TRIANGLE tri{};
 			if (this->Expand)
 			{
-				// 已展开：上三角（提示可收起）
 				tri.point1 = D2D1::Point2F(cx - half, cy + triH * 0.5f);
 				tri.point2 = D2D1::Point2F(cx + half, cy + triH * 0.5f);
 				tri.point3 = D2D1::Point2F(cx, cy - triH * 0.5f);
 			}
 			else
 			{
-				// 未展开：下三角
 				tri.point1 = D2D1::Point2F(cx - half, cy - triH * 0.5f);
 				tri.point2 = D2D1::Point2F(cx + half, cy - triH * 0.5f);
 				tri.point3 = D2D1::Point2F(cx, cy + triH * 0.5f);
@@ -166,34 +151,34 @@ void ComboBox::Update()
 				if (i == _underMouseIndex)
 				{
 					int viewIndex = i - this->ExpandScroll;
-					d2d->FillRect(abslocation.x,
-						abslocation.y + ((viewIndex + 1) * this->Height),
+					d2d->FillRect(0,
+						(viewIndex + 1) * this->Height,
 						this->Width, this->Height, this->UnderMouseBackColor);
 					d2d->DrawString(
 						this->values[i],
-						abslocation.x + drawLeft,
-						abslocation.y + drawTop + (((i - this->ExpandScroll) + 1) * this->Height),
+						drawLeft,
+						drawTop + (((i - this->ExpandScroll) + 1) * this->Height),
 						UnderMouseForeColor, font);
 				}
 				else
 				{
 					d2d->DrawString(
 						this->values[i],
-						abslocation.x + drawLeft,
-						abslocation.y + drawTop + (((i - this->ExpandScroll) + 1) * this->Height),
+						drawLeft,
+						drawTop + (((i - this->ExpandScroll) + 1) * this->Height),
 						this->ForeColor, font);
 				}
 			}
 			this->DrawScroll();
-			d2d->DrawRect(abslocation.x, abslocation.y, size.cx, this->Height, this->BolderColor, this->Boder);
+			d2d->DrawRect(0, 0, size.cx, this->Height, this->BolderColor, this->Boder);
 		}
-		d2d->DrawRect(abslocation.x, abslocation.y, size.cx, size.cy, this->BolderColor, this->Boder);
+		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
-	d2d->PopDrawRect();
+	this->EndRender();
 }
 bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {

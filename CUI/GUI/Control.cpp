@@ -62,6 +62,26 @@ void Control::RequestLayout()
 		this->ParentForm->InvalidateLayout();
 	}
 }
+void Control::BeginRender()
+{
+	auto size = this->ActualSize();
+	BeginRender((float)size.cx, (float)size.cy);
+}
+void Control::BeginRender(float clipW, float clipH)
+{
+	if (!this->ParentForm || !this->ParentForm->Render) return;
+	auto abs = this->AbsLocation;
+	// HeadHeight is physical; divide by dpiScale to get logical units that match abs.y (logical)
+	const float dpiSc = this->ParentForm->GetDpiScale();
+	const float top = (this->ParentForm->VisibleHead ? this->ParentForm->HeadHeight / dpiSc : 0.0f);
+	this->ParentForm->Render->PushLocalTransform((float)abs.x, (float)abs.y + top, clipW, clipH);
+}
+void Control::EndRender()
+{
+	if (!this->ParentForm || !this->ParentForm->Render) return;
+	this->ParentForm->Render->PopLocalTransform();
+}
+
 void Control::PostRender()
 {
 	if (!this->IsVisual || !this->ParentForm) return;
@@ -346,7 +366,6 @@ void Control::RenderImage()
 	auto* bmp = this->EnsureImageCache();
 	if (bmp)
 	{
-		auto absLocation = this->AbsLocation;
 		auto size = bmp->GetSize();
 		if (size.width > 0 && size.height > 0)
 		{
@@ -355,17 +374,17 @@ void Control::RenderImage()
 			{
 			case ImageSizeMode::Normal:
 			{
-				this->ParentForm->Render->DrawBitmap(bmp, (float)absLocation.x, (float)absLocation.y, size.width, size.height);
+				this->ParentForm->Render->DrawBitmap(bmp, 0.0f, 0.0f, size.width, size.height);
 			}
 			break;
 			case ImageSizeMode::CenterImage:
 			{
-				this->ParentForm->Render->DrawBitmap(bmp, absLocation.x + ((asize.cx - size.width) / 2.0f), absLocation.y + ((asize.cy - size.height) / 2.0f), size.width, size.height);
+				this->ParentForm->Render->DrawBitmap(bmp, (asize.cx - size.width) / 2.0f, (asize.cy - size.height) / 2.0f, size.width, size.height);
 			}
 			break;
 			case ImageSizeMode::StretchIamge:
 			{
-				this->ParentForm->Render->DrawBitmap(bmp, (float)absLocation.x, (float)absLocation.y, (float)asize.cx, (float)asize.cy);
+				this->ParentForm->Render->DrawBitmap(bmp, 0.0f, 0.0f, (float)asize.cx, (float)asize.cy);
 			}
 			break;
 			case ImageSizeMode::Zoom:
@@ -374,7 +393,7 @@ void Control::RenderImage()
 				float tp = xp < yp ? xp : yp;
 				float tw = size.width * tp, th = size.height * tp;
 				float xf = (asize.cx - tw) / 2.0f, yf = (asize.cy - th) / 2.0f;
-				this->ParentForm->Render->DrawBitmap(bmp, absLocation.x + xf, absLocation.y + yf, tw, th);
+				this->ParentForm->Render->DrawBitmap(bmp, xf, yf, tw, th);
 			}
 			break;
 			default:

@@ -791,13 +791,15 @@ void WebBrowser::EnsureControllerBounds()
 {
 	if (!this->ParentForm || !this->ParentForm->Handle) return;
 
-	int w = std::max(1, this->Width);
-	int h = std::max(1, this->Height);
+	// All Win32/DComp coordinates must be in physical pixels
+	const float dpiSc = (this->ParentForm ? this->ParentForm->GetDpiScale() : 1.0f);
+	int w = std::max(1, (int)(this->Width  * dpiSc));
+	int h = std::max(1, (int)(this->Height * dpiSc));
 
 	POINT abs = this->AbsLocation;
 	int top = (this->ParentForm && this->ParentForm->VisibleHead) ? this->ParentForm->HeadHeight : 0;
-	int x = abs.x;
-	int y = abs.y + top;
+	int x = (int)(abs.x * dpiSc);
+	int y = (int)(abs.y * dpiSc) + top;
 
 	const bool parentEnabled = ::IsWindowEnabled(this->ParentForm->Handle) != FALSE;
 	const bool visible = (parentEnabled && this->IsVisual && this->Visible && _webviewReady);
@@ -847,11 +849,8 @@ void WebBrowser::Update()
 	EnsureInitialized();
 	EnsureControllerBounds();
 
-	if (!this->ParentForm || !this->ParentForm->Render) return;
-
-	auto abs = this->AbsLocation;
-	auto sz = this->ActualSize();
 }
+
 
 bool WebBrowser::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {
@@ -908,7 +907,9 @@ bool WebBrowser::ForwardMouseMessageToWebView(UINT message, WPARAM wParam, LPARA
 	if (GetKeyState(VK_CONTROL) & 0x8000) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_CONTROL);
 	if (GetKeyState(VK_SHIFT) & 0x8000) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_SHIFT);
 
-	POINT pt{ xof, yof };
+	// xof/yof are in logical (96-DPI) units; SendMouseInput expects physical pixels within the DComp visual
+	const float dpiSc = (this->ParentForm ? this->ParentForm->GetDpiScale() : 1.0f);
+	POINT pt{ (LONG)(xof * dpiSc), (LONG)(yof * dpiSc) };
 	_compositionController->SendMouseInput(kind, vkeys, mouseData, pt);
 
 	// 尽量同步光标（Form 的 UpdateCursor 会覆盖一次，这里在鼠标移动时再补一刀）

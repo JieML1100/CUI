@@ -1,124 +1,123 @@
-#include "DemoWindow_Legacy.h"
+#include "DemoWindow.h"
 
 #include "imgs.h"
-#include "../CUI/nanosvg.h"
+#include "../CUI_Legacy/nanosvg.h"
 
 #include <memory>
 
 namespace {
 
-	std::shared_ptr<BitmapSource> ToBitmapFromSvg(const char* data)
+std::shared_ptr<BitmapSource> ToBitmapFromSvg(const char* data)
+{
+	if (!data) return {};
+	int len = (int)strlen(data) + 1;
+	char* svg_text = new char[len];
+	memcpy(svg_text, data, len);
+	NSVGimage* image = nsvgParse(svg_text, "px", 96.0f);
+	delete[] svg_text;
+	if (!image) return {};
+	float percen = 1.0f;
+	if (image->width > 4096 || image->height > 4096)
 	{
-		if (!data) return {};
-		int len = (int)strlen(data) + 1;
-		char* svg_text = new char[len];
-		memcpy(svg_text, data, len);
-		NSVGimage* image = nsvgParse(svg_text, "px", 96.0f);
-		delete[] svg_text;
-		if (!image) return {};
-		float percen = 1.0f;
-		if (image->width > 4096 || image->height > 4096)
+		float maxv = image->width > image->height ? image->width : image->height;
+		percen = 4096.0f / maxv;
+	}
+	auto renderSource = BitmapSource::CreateEmpty(image->width * percen, image->height * percen);
+	auto subg = new D2DGraphics(renderSource.get());
+	NSVGshape* shape;
+	NSVGpath* path;
+	subg->BeginRender();
+	subg->Clear(D2D1::ColorF(0, 0, 0, 0));
+	for (shape = image->shapes; shape != NULL; shape = shape->next)
+	{
+		auto geo = Factory::CreateGeomtry();
+		if (geo)
 		{
-			float maxv = image->width > image->height ? image->width : image->height;
-			percen = 4096.0f / maxv;
-		}
-		auto renderSource = BitmapSource::CreateEmpty(image->width * percen, image->height * percen);
-		auto subg = new D2DGraphics(renderSource.get());
-		NSVGshape* shape;
-		NSVGpath* path;
-		subg->BeginRender();
-		subg->Clear(D2D1::ColorF(0, 0, 0, 0));
-		for (shape = image->shapes; shape != NULL; shape = shape->next)
-		{
-			auto geo = Factory::CreateGeomtry();
-			if (geo)
+			ID2D1GeometrySink* skin = NULL;
+			geo->Open(&skin);
+			if (skin)
 			{
-				ID2D1GeometrySink* skin = NULL;
-				geo->Open(&skin);
-				if (skin)
+				for (path = shape->paths; path != NULL; path = path->next)
 				{
-					for (path = shape->paths; path != NULL; path = path->next)
+					for (int i = 0; i < path->npts - 1; i += 3)
 					{
-						for (int i = 0; i < path->npts - 1; i += 3)
-						{
-							float* p = &path->pts[i * 2];
-							if (i == 0)
-								skin->BeginFigure({ p[0] * percen, p[1] * percen }, D2D1_FIGURE_BEGIN_FILLED);
-							skin->AddBezier({ {p[2] * percen, p[3] * percen},{p[4] * percen, p[5] * percen},{p[6] * percen, p[7] * percen} });
-						}
-						skin->EndFigure(path->closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
+						float* p = &path->pts[i * 2];
+						if (i == 0)
+							skin->BeginFigure({ p[0] * percen, p[1] * percen }, D2D1_FIGURE_BEGIN_FILLED);
+						skin->AddBezier({ {p[2] * percen, p[3] * percen},{p[4] * percen, p[5] * percen},{p[6] * percen, p[7] * percen} });
 					}
+					skin->EndFigure(path->closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
 				}
-				skin->Close();
 			}
-
-			auto getSvgBrush = [](NSVGpaint paint, float opacity, D2DGraphics* g) -> ID2D1Brush*
-				{
-					const auto ic2fc = [](int colorInt, float opacity) -> D2D1_COLOR_F
-						{
-							return D2D1_COLOR_F{ (float)GetRValue(colorInt) / 255.0f ,(float)GetGValue(colorInt) / 255.0f ,(float)GetBValue(colorInt) / 255.0f ,opacity };
-						};
-					switch (paint.type)
-					{
-					case NSVG_PAINT_NONE:
-						return NULL;
-					case NSVG_PAINT_COLOR:
-						return g->CreateSolidColorBrush(ic2fc(paint.color, opacity));
-					case NSVG_PAINT_LINEAR_GRADIENT:
-					{
-						std::vector<D2D1_GRADIENT_STOP> cols;
-						for (int i = 0; i < paint.gradient->nstops; i++)
-						{
-							auto stop = paint.gradient->stops[i];
-							cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
-						}
-						return g->CreateLinearGradientBrush(cols.data(), cols.size());
-					}
-					case NSVG_PAINT_RADIAL_GRADIENT:
-					{
-						std::vector<D2D1_GRADIENT_STOP> cols;
-						for (int i = 0; i < paint.gradient->nstops; i++)
-						{
-							auto stop = paint.gradient->stops[i];
-							cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
-						}
-						return g->CreateRadialGradientBrush(cols.data(), cols.size(), { paint.gradient->fx,paint.gradient->fy });
-					}
-					}
-					return NULL;
-				};
-
-			ID2D1Brush* brush = getSvgBrush(shape->fill, shape->opacity, subg);
-			if (brush)
-			{
-				subg->FillGeometry(geo, brush);
-				brush->Release();
-			}
-			brush = getSvgBrush(shape->stroke, shape->opacity, subg);
-			if (brush)
-			{
-				subg->DrawGeometry(geo, brush, shape->strokeWidth);
-				brush->Release();
-			}
-			geo->Release();
+			skin->Close();
 		}
-		nsvgDelete(image);
-		subg->EndRender();
 
-		delete subg;
+		auto getSvgBrush = [](NSVGpaint paint, float opacity, D2DGraphics* g) -> ID2D1Brush*
+			{
+				const auto ic2fc = [](int colorInt, float opacity) -> D2D1_COLOR_F
+					{
+						return D2D1_COLOR_F{ (float)GetRValue(colorInt) / 255.0f ,(float)GetGValue(colorInt) / 255.0f ,(float)GetBValue(colorInt) / 255.0f ,opacity };
+					};
+				switch (paint.type)
+				{
+				case NSVG_PAINT_NONE:
+					return NULL;
+				case NSVG_PAINT_COLOR:
+					return g->CreateSolidColorBrush(ic2fc(paint.color, opacity));
+				case NSVG_PAINT_LINEAR_GRADIENT:
+				{
+					std::vector<D2D1_GRADIENT_STOP> cols;
+					for (int i = 0; i < paint.gradient->nstops; i++)
+					{
+						auto stop = paint.gradient->stops[i];
+						cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
+					}
+					return g->CreateLinearGradientBrush(cols.data(), cols.size());
+				}
+				case NSVG_PAINT_RADIAL_GRADIENT:
+				{
+					std::vector<D2D1_GRADIENT_STOP> cols;
+					for (int i = 0; i < paint.gradient->nstops; i++)
+					{
+						auto stop = paint.gradient->stops[i];
+						cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
+					}
+					return g->CreateRadialGradientBrush(cols.data(), cols.size(), { paint.gradient->fx,paint.gradient->fy });
+				}
+				}
+				return NULL;
+			};
 
-		return renderSource;
+		ID2D1Brush* brush = getSvgBrush(shape->fill, shape->opacity, subg);
+		if (brush)
+		{
+			subg->FillGeometry(geo, brush);
+			brush->Release();
+		}
+		brush = getSvgBrush(shape->stroke, shape->opacity, subg);
+		if (brush)
+		{
+			subg->DrawGeometry(geo, brush, shape->strokeWidth);
+			brush->Release();
+		}
+		geo->Release();
 	}
+	nsvgDelete(image);
+	subg->EndRender();
+	delete subg;
 
-	std::wstring FileNameFromPath(const std::wstring& path)
-	{
-		size_t pos = path.find_last_of(L"\\/");
-		return (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
-	}
+	return renderSource;
+}
+
+std::wstring FileNameFromPath(const std::wstring& path)
+{
+	size_t pos = path.find_last_of(L"\\/");
+	return (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
+}
 
 }
 
-DemoWindow_Legacy::~DemoWindow_Legacy()
+DemoWindow::~DemoWindow()
 {
 	if (_notify)
 	{
@@ -133,7 +132,7 @@ DemoWindow_Legacy::~DemoWindow_Legacy()
 	}
 }
 
-void DemoWindow_Legacy::Ui_UpdateStatus(const std::wstring& text)
+void DemoWindow::Ui_UpdateStatus(const std::wstring& text)
 {
 	if (_topStatus)
 	{
@@ -147,7 +146,7 @@ void DemoWindow_Legacy::Ui_UpdateStatus(const std::wstring& text)
 	}
 }
 
-void DemoWindow_Legacy::Ui_UpdateProgress(float value01)
+void DemoWindow::Ui_UpdateProgress(float value01)
 {
 	if (value01 < 0.0f) value01 = 0.0f;
 	if (value01 > 1.0f) value01 = 1.0f;
@@ -162,7 +161,7 @@ void DemoWindow_Legacy::Ui_UpdateProgress(float value01)
 	}
 }
 
-void DemoWindow_Legacy::Menu_OnCommand(class Control* sender, int id)
+void DemoWindow::Menu_OnCommand(class Control* sender, int id)
 {
 	(void)sender;
 	switch (id)
@@ -179,13 +178,13 @@ void DemoWindow_Legacy::Menu_OnCommand(class Control* sender, int id)
 	}
 }
 
-void DemoWindow_Legacy::Basic_OnMouseWheel(class Control* sender, MouseEventArgs e)
+void DemoWindow::Basic_OnMouseWheel(class Control* sender, MouseEventArgs e)
 {
 	(void)sender;
 	Ui_UpdateStatus(StringHelper::Format(L"MouseWheel Delta=[%d]", e.Delta));
 }
 
-void DemoWindow_Legacy::Basic_OnButtonClick(class Control* sender, MouseEventArgs e)
+void DemoWindow::Basic_OnButtonClick(class Control* sender, MouseEventArgs e)
 {
 	(void)e;
 	sender->Text = StringHelper::Format(L"点击计数[%d]", sender->Tag++);
@@ -193,7 +192,7 @@ void DemoWindow_Legacy::Basic_OnButtonClick(class Control* sender, MouseEventArg
 	Ui_UpdateStatus(L"Button: OnMouseClick");
 }
 
-void DemoWindow_Legacy::Basic_OnRadioChecked(class Control* sender)
+void DemoWindow::Basic_OnRadioChecked(class Control* sender)
 {
 	if (!_rb1 || !_rb2) return;
 	if (sender == _rb1 && _rb1->Checked)
@@ -210,14 +209,14 @@ void DemoWindow_Legacy::Basic_OnRadioChecked(class Control* sender)
 	}
 }
 
-void DemoWindow_Legacy::Basic_OnIconButtonClick(class Control* sender, MouseEventArgs e)
+void DemoWindow::Basic_OnIconButtonClick(class Control* sender, MouseEventArgs e)
 {
 	(void)sender;
 	(void)e;
 	MessageBoxW(this->Handle, L"Icon Button Clicked", L"CUI", MB_OK);
 }
 
-void DemoWindow_Legacy::Picture_OnOpenImage(class Control* sender, MouseEventArgs e)
+void DemoWindow::Picture_OnOpenImage(class Control* sender, MouseEventArgs e)
 {
 	(void)sender;
 	(void)e;
@@ -248,7 +247,7 @@ void DemoWindow_Legacy::Picture_OnOpenImage(class Control* sender, MouseEventArg
 	this->Invalidate();
 }
 
-void DemoWindow_Legacy::Picture_OnDropFile(class Control* sender, List<std::wstring> files)
+void DemoWindow::Picture_OnDropFile(class Control* sender, List<std::wstring> files)
 {
 	(void)sender;
 	if (!_picture || files.empty()) return;
@@ -270,7 +269,7 @@ void DemoWindow_Legacy::Picture_OnDropFile(class Control* sender, List<std::wstr
 	this->Invalidate();
 }
 
-void DemoWindow_Legacy::Data_OnToggleEnable(class Control* sender, MouseEventArgs e)
+void DemoWindow::Data_OnToggleEnable(class Control* sender, MouseEventArgs e)
 {
 	(void)e;
 	if (!_grid) return;
@@ -280,7 +279,7 @@ void DemoWindow_Legacy::Data_OnToggleEnable(class Control* sender, MouseEventArg
 	this->Invalidate();
 }
 
-void DemoWindow_Legacy::Data_OnToggleVisible(class Control* sender, MouseEventArgs e)
+void DemoWindow::Data_OnToggleVisible(class Control* sender, MouseEventArgs e)
 {
 	(void)e;
 	if (!_grid) return;
@@ -290,7 +289,7 @@ void DemoWindow_Legacy::Data_OnToggleVisible(class Control* sender, MouseEventAr
 	this->Invalidate();
 }
 
-void DemoWindow_Legacy::System_OnNotifyToggle(class Control* sender, MouseEventArgs e)
+void DemoWindow::System_OnNotifyToggle(class Control* sender, MouseEventArgs e)
 {
 	(void)sender;
 	(void)e;
@@ -306,9 +305,9 @@ void DemoWindow_Legacy::System_OnNotifyToggle(class Control* sender, MouseEventA
 		_notify->HideNotifyIcon();
 		Ui_UpdateStatus(L"NotifyIcon: Hide");
 	}
-}
+	}
 
-void DemoWindow_Legacy::System_OnBalloonTip(class Control* sender, MouseEventArgs e)
+void DemoWindow::System_OnBalloonTip(class Control* sender, MouseEventArgs e)
 {
 	(void)sender;
 	(void)e;
@@ -317,7 +316,7 @@ void DemoWindow_Legacy::System_OnBalloonTip(class Control* sender, MouseEventArg
 	Ui_UpdateStatus(L"NotifyIcon: BalloonTip");
 }
 
-void DemoWindow_Legacy::BuildMenuToolStatus()
+void DemoWindow::BuildMenuToolStatus()
 {
 	_menu = this->AddControl(new Menu(0, 0, this->Size.cx, 28));
 	_menu->BarBackColor = D2D1_COLOR_F{ 1,1,1,0.08f };
@@ -338,6 +337,7 @@ void DemoWindow_Legacy::BuildMenuToolStatus()
 	auto tb1 = _toolbar->AddToolButton(L"Basic", 80);
 	auto tb2 = _toolbar->AddToolButton(L"Data", 80);
 	auto tb3 = _toolbar->AddToolButton(L"System", 80);
+
 	tb1->OnMouseClick += [this](class Control* s, MouseEventArgs e) { (void)s; (void)e; if (_tabs) _tabs->SelectedIndex = 0; Ui_UpdateStatus(L"ToolBar: Basic"); };
 	tb2->OnMouseClick += [this](class Control* s, MouseEventArgs e) { (void)s; (void)e; if (_tabs) _tabs->SelectedIndex = 2; Ui_UpdateStatus(L"ToolBar: Data"); };
 	tb3->OnMouseClick += [this](class Control* s, MouseEventArgs e) { (void)s; (void)e; if (_tabs) _tabs->SelectedIndex = 4; Ui_UpdateStatus(L"ToolBar: System"); };
@@ -347,7 +347,7 @@ void DemoWindow_Legacy::BuildMenuToolStatus()
 	_statusbar->AddPart(L"CUI", 120);
 }
 
-void DemoWindow_Legacy::BuildTabs()
+void DemoWindow::BuildTabs()
 {
 	int top = _toolbar ? _toolbar->Bottom : 0;
 
@@ -387,9 +387,9 @@ void DemoWindow_Legacy::BuildTabs()
 	BuildTab_Media(pMedia);
 }
 
-void DemoWindow_Legacy::BuildTab_Basic(TabPage* page)
+void DemoWindow::BuildTab_Basic(TabPage* page)
 {
-	page->AddControl(new Label(L"Button / Label / TextBox / ComboBox / CheckBox / RadioBox / RichTextBox", 10, 10));
+	page->AddControl(new Label(L"Button / Label / LinkLabel / TextBox / ComboBox / CheckBox / RadioBox / RichTextBox", 10, 10));
 	page->AddControl(new CustomLabel1(L"CustomLabel1（渐变绘制）", 10, 38));
 
 	_basicButton = page->AddControl(new Button(L"点击计数[0]", 10, 70, 160, 28));
@@ -482,7 +482,7 @@ void DemoWindow_Legacy::BuildTab_Basic(TabPage* page)
 	}
 }
 
-void DemoWindow_Legacy::BuildTab_Containers(TabPage* page)
+void DemoWindow::BuildTab_Containers(TabPage* page)
 {
 	page->AddControl(new Label(L"Panel / PictureBox / ProgressBar / Switch（拖拽文件到图片框）", 10, 10));
 
@@ -528,13 +528,14 @@ void DemoWindow_Legacy::BuildTab_Containers(TabPage* page)
 	page->AddControl(new Label(L"提示：顶部 Slider 同时驱动 ProgressBar 与 Taskbar 进度。", 10, 420));
 }
 
-void DemoWindow_Legacy::BuildTab_Data(TabPage* page)
+void DemoWindow::BuildTab_Data(TabPage* page)
 {
 	page->AddControl(new Label(L"TreeView / GridView / Switch", 10, 10));
 
 	TreeView* tree = page->AddControl(new TreeView(10, 40, 360, 420));
 	tree->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Bottom;
 	tree->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
+	tree->Margin = Thickness(10, 40, 0, 10);
 	for (int i = 0; i < 4; i++)
 	{
 		auto sub = new TreeNode(StringHelper::Format(L"node%d", i), _bmps[i % 10]);
@@ -549,6 +550,7 @@ void DemoWindow_Legacy::BuildTab_Data(TabPage* page)
 
 	_grid = page->AddControl(new GridView(390, 70, 980, 390));
 	_grid->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
+	_grid->Margin = Thickness(390, 70, 10, 10);
 	_grid->AllowUserToAddRows = false;
 	_grid->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
 	_grid->HeadFont = new Font(L"Arial", 16);
@@ -583,7 +585,7 @@ void DemoWindow_Legacy::BuildTab_Data(TabPage* page)
 	page->AddControl(new Label(L"Visible", 590, 43));
 }
 
-void DemoWindow_Legacy::BuildTab_Layout(TabPage* page)
+void DemoWindow::BuildTab_Layout(TabPage* page)
 {
 	page->AddControl(new Label(L"StackPanel / GridPanel / DockPanel / WrapPanel / RelativePanel", 10, 10));
 
@@ -668,7 +670,7 @@ void DemoWindow_Legacy::BuildTab_Layout(TabPage* page)
 	rp->SetConstraints(b, cd);
 }
 
-void DemoWindow_Legacy::BuildTab_System(TabPage* page)
+void DemoWindow::BuildTab_System(TabPage* page)
 {
 	page->AddControl(new Label(L"NotifyIcon / Taskbar", 10, 10));
 	page->AddControl(new Label(L"Taskbar：顶部 Slider 会同步设置任务栏进度条（ITaskbarList3）", 10, 40));
@@ -682,7 +684,8 @@ void DemoWindow_Legacy::BuildTab_System(TabPage* page)
 	page->AddControl(new Label(L"提示：右键托盘图标可弹出菜单。", 10, 125));
 }
 
-void DemoWindow_Legacy::BuildTab_Media(TabPage* page)
+
+void DemoWindow::BuildTab_Media(TabPage* page)
 {
 	Label* titleLabel = page->AddControl(new Label(L"MediaPlayer（打开后立即播放；含进度条/拖动跳转/时间显示）", 10, 10));
 	titleLabel->ForeColor = Colors::LightGray;
@@ -756,7 +759,7 @@ void DemoWindow_Legacy::BuildTab_Media(TabPage* page)
 	CheckBox* loop = controlPanel->AddControl(new CheckBox(L"循环", 740, 16));
 	loop->OnChecked += [mp](class Control* sender) { mp->Loop = ((CheckBox*)sender)->Checked; };
 
-	Label* progressLabel = controlPanel->AddControl(new Label(L"进度", 10, 62));
+	Label* progressLabel = controlPanel->AddControl(new Label(L"进度", 10, 84));
 	progressLabel->ForeColor = Colors::LightGray;
 
 	Slider* progressSlider = controlPanel->AddControl(new Slider(60, 58, 900, 30));
@@ -765,9 +768,9 @@ void DemoWindow_Legacy::BuildTab_Media(TabPage* page)
 	progressSlider->Value = 0;
 	progressSlider->AnchorStyles = AnchorStyles::Left | AnchorStyles::Right | AnchorStyles::Bottom;
 
-	Label* timeLabel = controlPanel->AddControl(new Label(L"00:00 / 00:00", 970, 62));
+	Label* timeLabel = controlPanel->AddControl(new Label(L"00:00 / 00:00", 970, 40));
 	timeLabel->ForeColor = Colors::LightGray;
-	timeLabel->AnchorStyles = AnchorStyles::Right | AnchorStyles::Bottom;
+	timeLabel->AnchorStyles = AnchorStyles::Right | AnchorStyles::Top;
 	timeLabel->Width = 200;
 
 	progressSlider->OnValueChanged += [mp, progressUpdating](class Control* sender, float oldValue, float newValue)
@@ -831,7 +834,7 @@ void DemoWindow_Legacy::BuildTab_Media(TabPage* page)
 		};
 }
 
-DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
+DemoWindow::DemoWindow() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
 {
 	_bmps[0] = ToBitmapFromSvg(_0_ico);
 	_bmps[1] = ToBitmapFromSvg(_1_ico);
@@ -882,16 +885,19 @@ DemoWindow_Legacy::DemoWindow_Legacy() : Form(L"CUI Test Demo", { 0,0 }, { 1400,
 	this->OnSizeChanged += [&](class Form* sender)
 		{
 			(void)sender;
-			if (_menu) _menu->Width = this->Size.cx;
+			// Size.cx/cy and HeadHeight are in physical pixels; control Width/Top are in logical (96-DPI) units
+			const float dpiSc = this->GetDpiScale();
+			const int logW = (int)(this->Size.cx / dpiSc);
+			if (_menu) _menu->Width = logW;
 			if (_toolbar)
 			{
-				_toolbar->Width = this->Size.cx;
+				_toolbar->Width = logW;
 				_toolbar->Top = _menu ? _menu->Height : 0;
 			}
 			if (_statusbar)
 			{
-				_statusbar->Width = this->Size.cx;
-				_statusbar->Top = this->Size.cy - this->HeadHeight - _statusbar->Height;
+				_statusbar->Width = logW;
+				_statusbar->Top = (int)((this->Size.cy - this->HeadHeight) / dpiSc) - _statusbar->Height;
 			}
 		};
 }

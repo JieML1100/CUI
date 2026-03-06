@@ -210,17 +210,15 @@ void StatusBar::Update()
 
 	if (!this->IsVisual || !this->ParentForm) return;
 	auto d2d = this->ParentForm->Render;
-	auto abs = this->AbsLocation;
-	auto absRect = this->AbsRect;
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	this->BeginRender();
 	{
 		for (float sx : _separatorsX)
 		{
-			float x = (float)abs.x + sx + (float)(Gap / 2);
-			float y1 = (float)abs.y + 5.0f;
-			float y2 = (float)abs.y + (float)this->Height - 5.0f;
+			float x = sx + (float)(Gap / 2);
+			float y1 = 5.0f;
+			float y2 = (float)this->Height - 5.0f;
 			d2d->DrawLine(x, y1, x, y2, _separatorColor, 1.0f);
 		}
 	}
-	d2d->PopDrawRect();
+	this->EndRender();
 }

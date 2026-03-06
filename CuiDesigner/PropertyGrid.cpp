@@ -643,16 +643,12 @@ void PropertyGrid::Update()
 	if (!TryGetScrollBarLocalRect(track, thumb)) return;
 
 	auto d2d = this->ParentForm->Render;
-	auto absRect = this->AbsRect;
-	auto abs = this->AbsLocation;
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	this->BeginRender();
 	{
-		D2D1_RECT_F atrack{ track.left + abs.x, track.top + abs.y, track.right + abs.x, track.bottom + abs.y };
-		D2D1_RECT_F athumb{ thumb.left + abs.x, thumb.top + abs.y, thumb.right + abs.x, thumb.bottom + abs.y };
-		d2d->FillRect(atrack.left, atrack.top, atrack.right - atrack.left, atrack.bottom - atrack.top, Colors::LightGray);
-		d2d->FillRect(athumb.left, athumb.top, athumb.right - athumb.left, athumb.bottom - athumb.top, Colors::DimGrey);
+		d2d->FillRect(track.left, track.top, track.right - track.left, track.bottom - track.top, Colors::LightGray);
+		d2d->FillRect(thumb.left, thumb.top, thumb.right - thumb.left, thumb.bottom - thumb.top, Colors::DimGrey);
 	}
-	d2d->PopDrawRect();
+	this->EndRender();
 }
 
 bool PropertyGrid::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)

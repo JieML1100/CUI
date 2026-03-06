@@ -123,16 +123,12 @@ private:
 	bool _resourcesCleaned = false;
 	// ---- DPI ----
 	UINT _dpi = 96;
-	UINT _contentDpi = 96; // 控件树/布局当前已应用的 DPI
 	bool _initialDpiApplied = false;
 	bool _initialWindowRectApplied = false;
 	int _headHeightBase96 = 24;
 	void SyncRenderSizeToClient();
-	Font* _scaledDefaultFont = nullptr;
-	UINT _scaledDefaultFontDpi = 0;
 	Font* GetScaledDefaultFont();
 	void ApplyDpiChange(UINT newDpi);
-	void ScaleControlTreeForDpi(UINT fromDpi, UINT toDpi);
 	void EnsureInitialDpiApplied();
 	// 鼠标 Hover/Leave 跟踪
 	bool _mouseLeaveTracking = false;
@@ -214,6 +210,8 @@ public:
 	bool _recoveringDeviceLost = false;
 	void RecoverRenderIfNeeded();
 	int HeadHeight = 24;
+	/** @brief Returns the current DPI-to-96 scale factor (e.g., 2.0 at 192 DPI). */
+	float GetDpiScale() const { return _dpi > 0 ? (_dpi / 96.0f) : 1.0f; }
 	D2D1_COLOR_F BackColor = Colors::WhiteSmoke;
 	D2D1_COLOR_F ForeColor = Colors::Black;
 	PROPERTY(std::shared_ptr<BitmapSource>, Image);

@@ -58,15 +58,13 @@ void Slider::Update()
 {
 	if (!this->IsVisual) return;
 	auto d2d = this->ParentForm->Render;
-	auto abs = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	this->BeginRender();
 	{
-		// track
-		float l = abs.x + TrackLeftLocal();
-		float r = abs.x + TrackRightLocal();
-		float cy = abs.y + TrackYLocal();
+		// track (TrackLeftLocal/RightLocal/YLocal 均为相对控件左上角的局部偏移)
+		float l = TrackLeftLocal();
+		float r = TrackRightLocal();
+		float cy = TrackYLocal();
 		float th = TrackHeight;
 		float top = cy - th * 0.5f;
 		float w = (r - l);
@@ -88,8 +86,8 @@ void Slider::Update()
 		(void)size;
 	}
 	if (!this->Enable)
-		d2d->FillRect(abs.x, abs.y, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
-	d2d->PopDrawRect();
+		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+	this->EndRender();
 }
 
 bool Slider::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
