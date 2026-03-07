@@ -155,70 +155,98 @@ void DateTimePicker::Update()
 		d2d->FillRoundRect(0, 0, (float)this->Width, (float)this->Height, baseColor, round);
 
 		auto font = this->Font;
+		auto drawTimeField = [&](const D2D1_RECT_F& fieldRect, const D2D1_RECT_F& upRect, const D2D1_RECT_F& downRect,
+			EditField field, const std::wstring& text, bool hoverUp, bool hoverDown)
+			{
+				bool showEditHighlight = isSelected && _editField == field;
+				D2D1_COLOR_F borderColor = showEditHighlight ? this->FocusBorderColor : this->DropBorderColor;
+				float borderWidth = showEditHighlight ? 1.5f : 1.0f;
+				d2d->FillRoundRect(fieldRect.left, fieldRect.top, fieldRect.right - fieldRect.left, fieldRect.bottom - fieldRect.top, this->PanelBackColor, 5.0f);
+
+				D2D1_COLOR_F spinBackColor = D2D1_COLOR_F{ 0.94f, 0.95f, 0.97f, 1.0f };
+				float spinLeft = std::min(upRect.left, downRect.left);
+				d2d->FillRect(spinLeft, fieldRect.top + 1.0f, fieldRect.right - spinLeft - 1.0f, fieldRect.bottom - fieldRect.top - 2.0f, spinBackColor);
+				if (hoverUp)
+					d2d->FillRect(upRect.left, upRect.top, upRect.right - upRect.left, upRect.bottom - upRect.top, this->HoverColor);
+				if (hoverDown)
+					d2d->FillRect(downRect.left, downRect.top, downRect.right - downRect.left, downRect.bottom - downRect.top, this->HoverColor);
+
+				float dividerY = upRect.bottom;
+				d2d->DrawLine(D2D1::Point2F(spinLeft + 1.0f, dividerY), D2D1::Point2F(fieldRect.right - 1.5f, dividerY), this->DropBorderColor, 1.0f);
+				d2d->DrawRoundRect(fieldRect.left, fieldRect.top, fieldRect.right - fieldRect.left, fieldRect.bottom - fieldRect.top, borderColor, borderWidth, 5.0f);
+
+				float textRight = spinLeft - 3.0f;
+				float textAreaWidth = std::max(0.0f, textRight - fieldRect.left);
+				auto textSize = font->GetTextSize(text);
+				float textX = fieldRect.left + std::max(0.0f, (textAreaWidth - textSize.width) * 0.5f);
+				float textY = fieldRect.top + std::max(0.0f, ((fieldRect.bottom - fieldRect.top) - textSize.height) * 0.5f);
+
+				if (showEditHighlight && !text.empty())
+				{
+					int activeIndex = _editBuffer.empty() ? 0 : (int)std::min<size_t>(_editBuffer.size(), text.size() - 1);
+					float cursorX = textX;
+					for (size_t i = 0; i < text.size(); ++i)
+					{
+						std::wstring ch(1, text[i]);
+						auto charSize = font->GetTextSize(ch);
+						if ((int)i == activeIndex)
+						{
+							float pillPadX = 3.0f;
+							float pillPadY = 2.0f;
+							d2d->FillRoundRect(cursorX - pillPadX, textY - pillPadY, charSize.width + pillPadX * 2.0f,
+								charSize.height + pillPadY * 2.0f, this->AccentColor, 4.0f);
+							d2d->DrawString(ch, cursorX, textY, Colors::White, font);
+						}
+						else
+						{
+							d2d->DrawString(ch, cursorX, textY, this->ForeColor, font);
+						}
+						cursorX += charSize.width;
+					}
+				}
+				else
+				{
+					d2d->DrawString(text, textX, textY, this->ForeColor, font);
+				}
+
+				auto drawArrowButton = [&](const D2D1_RECT_F& buttonRect, bool up, bool hovered)
+					{
+						float buttonWidth = buttonRect.right - buttonRect.left;
+						float buttonHeight = buttonRect.bottom - buttonRect.top;
+						float cx = buttonRect.left + buttonWidth * 0.5f;
+						float cy = buttonRect.top + buttonHeight * 0.5f + (up ? -0.5f : 0.5f);
+						float half = std::clamp(std::min(buttonWidth, buttonHeight) * 0.18f, 2.5f, 4.0f);
+						D2D1_TRIANGLE tri{};
+						if (up)
+						{
+							tri.point1 = D2D1::Point2F(cx - half, cy + half * 0.75f);
+							tri.point2 = D2D1::Point2F(cx + half, cy + half * 0.75f);
+							tri.point3 = D2D1::Point2F(cx, cy - half);
+						}
+						else
+						{
+							tri.point1 = D2D1::Point2F(cx - half, cy - half * 0.75f);
+							tri.point2 = D2D1::Point2F(cx + half, cy - half * 0.75f);
+							tri.point3 = D2D1::Point2F(cx, cy + half);
+						}
+						d2d->FillTriangle(tri, hovered ? this->ForeColor : this->SecondaryTextColor);
+					};
+
+				drawArrowButton(upRect, true, hoverUp);
+				drawArrowButton(downRect, false, hoverDown);
+			};
 		if (inlineTime)
 		{
 			LayoutMetrics layout{};
 			if (GetInlineTimeLayout(layout))
 			{
-				auto toAbs = [&](D2D1_RECT_F r) -> D2D1_RECT_F {
-					return r;
-					};
-
-				auto drawTimeBox = [&](D2D1_RECT_F rect, bool hoverUp, bool hoverDown, bool isEditing)
-					{
-						auto absRect = toAbs(rect);
-						d2d->FillRoundRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top, this->PanelBackColor, 5.0f);
-						D2D1_COLOR_F borderColor = isEditing ? this->FocusBorderColor : this->DropBorderColor;
-						float borderWidth = isEditing ? 1.5f : 1.0f;
-						d2d->DrawRoundRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top, borderColor, borderWidth, 5.0f);
-						if (hoverUp)
-							d2d->FillRect(absRect.right - 16.0f, absRect.top, 16.0f, (absRect.bottom - absRect.top) * 0.5f, this->HoverColor);
-						if (hoverDown)
-							d2d->FillRect(absRect.right - 16.0f, absRect.top + (absRect.bottom - absRect.top) * 0.5f, 16.0f, (absRect.bottom - absRect.top) * 0.5f, this->HoverColor);
-					};
-
-				drawTimeBox(layout.hourRect, _hoverPart == HitPart::HourUp, _hoverPart == HitPart::HourDown, _editField == EditField::Hour);
-				drawTimeBox(layout.minuteRect, _hoverPart == HitPart::MinuteUp, _hoverPart == HitPart::MinuteDown, _editField == EditField::Minute);
-
 				std::wstring hourText = GetTimeEditText(EditField::Hour, _value.wHour);
 				std::wstring minuteText = GetTimeEditText(EditField::Minute, _value.wMinute);
-				auto hSize = font->GetTextSize(hourText);
-				auto mSize = font->GetTextSize(minuteText);
 
-				auto hourAbs = toAbs(layout.hourRect);
-				auto minuteAbs = toAbs(layout.minuteRect);
-				float hx = hourAbs.left + (hourAbs.right - hourAbs.left - 16.0f - hSize.width) * 0.5f;
-				float hy = hourAbs.top + (hourAbs.bottom - hourAbs.top - hSize.height) * 0.5f;
-				float mx = minuteAbs.left + (minuteAbs.right - minuteAbs.left - 16.0f - mSize.width) * 0.5f;
-				float my = minuteAbs.top + (minuteAbs.bottom - minuteAbs.top - mSize.height) * 0.5f;
-				d2d->DrawString(hourText, hx, hy, this->ForeColor, font);
-				d2d->DrawString(minuteText, mx, my, this->ForeColor, font);
-
-				auto drawArrow = [&](float cx, float cy, bool up)
-					{
-						const float half = 4.5f;
-						D2D1_TRIANGLE tri{};
-						if (up)
-						{
-							tri.point1 = D2D1::Point2F(cx - half, cy + half);
-							tri.point2 = D2D1::Point2F(cx + half, cy + half);
-							tri.point3 = D2D1::Point2F(cx, cy - half);
-						}
-						else
-						{
-							tri.point1 = D2D1::Point2F(cx - half, cy - half);
-							tri.point2 = D2D1::Point2F(cx + half, cy - half);
-							tri.point3 = D2D1::Point2F(cx, cy + half);
-						}
-						d2d->FillTriangle(tri, this->SecondaryTextColor);
-					};
-
-				float hourRight = hourAbs.right - 8.0f;
-				float minuteRight = minuteAbs.right - 8.0f;
-				drawArrow(hourRight, hourAbs.top + (hourAbs.bottom - hourAbs.top) * 0.32f, true);
-				drawArrow(hourRight, hourAbs.top + (hourAbs.bottom - hourAbs.top) * 0.68f, false);
-				drawArrow(minuteRight, minuteAbs.top + (minuteAbs.bottom - minuteAbs.top) * 0.32f, true);
-				drawArrow(minuteRight, minuteAbs.top + (minuteAbs.bottom - minuteAbs.top) * 0.68f, false);
+				drawTimeField(layout.hourRect, layout.hourUpRect, layout.hourDownRect,
+					EditField::Hour, hourText, _hoverPart == HitPart::HourUp, _hoverPart == HitPart::HourDown);
+				drawTimeField(layout.minuteRect, layout.minuteUpRect, layout.minuteDownRect,
+					EditField::Minute, minuteText, _hoverPart == HitPart::MinuteUp, _hoverPart == HitPart::MinuteDown);
 
 				std::wstring colon = L":";
 				auto colonSize = font->GetTextSize(colon);
@@ -390,62 +418,13 @@ void DateTimePicker::Update()
 
 				if (layout.showTime)
 				{
-					auto drawTimeBox = [&](D2D1_RECT_F rect, bool hoverUp, bool hoverDown, bool isEditing)
-						{
-							auto absRect = toAbs(rect);
-							d2d->FillRoundRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top, this->PanelBackColor, 5.0f);
-							D2D1_COLOR_F borderColor = isEditing ? this->FocusBorderColor : this->DropBorderColor;
-							float borderWidth = isEditing ? 1.5f : 1.0f;
-							d2d->DrawRoundRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top, borderColor, borderWidth, 5.0f);
-							if (hoverUp)
-								d2d->FillRect(absRect.right - 16.0f, absRect.top, 16.0f, (absRect.bottom - absRect.top) * 0.5f, this->HoverColor);
-							if (hoverDown)
-								d2d->FillRect(absRect.right - 16.0f, absRect.top + (absRect.bottom - absRect.top) * 0.5f, 16.0f, (absRect.bottom - absRect.top) * 0.5f, this->HoverColor);
-						};
-
-					drawTimeBox(layout.hourRect, _hoverPart == HitPart::HourUp, _hoverPart == HitPart::HourDown, _editField == EditField::Hour);
-					drawTimeBox(layout.minuteRect, _hoverPart == HitPart::MinuteUp, _hoverPart == HitPart::MinuteDown, _editField == EditField::Minute);
-
 					std::wstring hourText = GetTimeEditText(EditField::Hour, _value.wHour);
 					std::wstring minuteText = GetTimeEditText(EditField::Minute, _value.wMinute);
-					auto hSize = font->GetTextSize(hourText);
-					auto mSize = font->GetTextSize(minuteText);
 
-					auto hourAbs = toAbs(layout.hourRect);
-					auto minuteAbs = toAbs(layout.minuteRect);
-					float hx = hourAbs.left + (hourAbs.right - hourAbs.left - 16.0f - hSize.width) * 0.5f;
-					float hy = hourAbs.top + (hourAbs.bottom - hourAbs.top - hSize.height) * 0.5f;
-					float mx = minuteAbs.left + (minuteAbs.right - minuteAbs.left - 16.0f - mSize.width) * 0.5f;
-					float my = minuteAbs.top + (minuteAbs.bottom - minuteAbs.top - mSize.height) * 0.5f;
-					d2d->DrawString(hourText, hx, hy, this->ForeColor, font);
-					d2d->DrawString(minuteText, mx, my, this->ForeColor, font);
-
-					// 上下三角
-					auto drawArrow = [&](float cx, float cy, bool up)
-						{
-							const float half = 4.5f;
-							D2D1_TRIANGLE tri{};
-							if (up)
-							{
-								tri.point1 = D2D1::Point2F(cx - half, cy + half);
-								tri.point2 = D2D1::Point2F(cx + half, cy + half);
-								tri.point3 = D2D1::Point2F(cx, cy - half);
-							}
-							else
-							{
-								tri.point1 = D2D1::Point2F(cx - half, cy - half);
-								tri.point2 = D2D1::Point2F(cx + half, cy - half);
-								tri.point3 = D2D1::Point2F(cx, cy + half);
-							}
-							d2d->FillTriangle(tri, this->SecondaryTextColor);
-						};
-
-					float hourRight = hourAbs.right - 8.0f;
-					float minuteRight = minuteAbs.right - 8.0f;
-					drawArrow(hourRight, hourAbs.top + (hourAbs.bottom - hourAbs.top) * 0.32f, true);
-					drawArrow(hourRight, hourAbs.top + (hourAbs.bottom - hourAbs.top) * 0.68f, false);
-					drawArrow(minuteRight, minuteAbs.top + (minuteAbs.bottom - minuteAbs.top) * 0.32f, true);
-					drawArrow(minuteRight, minuteAbs.top + (minuteAbs.bottom - minuteAbs.top) * 0.68f, false);
+					drawTimeField(layout.hourRect, layout.hourUpRect, layout.hourDownRect,
+						EditField::Hour, hourText, _hoverPart == HitPart::HourUp, _hoverPart == HitPart::HourDown);
+					drawTimeField(layout.minuteRect, layout.minuteUpRect, layout.minuteDownRect,
+						EditField::Minute, minuteText, _hoverPart == HitPart::MinuteUp, _hoverPart == HitPart::MinuteDown);
 
 					// 冒号
 					std::wstring colon = L":";
@@ -849,7 +828,18 @@ bool DateTimePicker::HandleTimeEditChar(wchar_t ch)
 			_editBuffer.clear();
 		_editBuffer.push_back(ch);
 		if (_editBuffer.size() >= 2)
-			CommitTimeEdit(true);
+		{
+			EditField completedField = _editField;
+			if (completedField == EditField::Hour)
+			{
+				CommitTimeEdit(false);
+				BeginTimeEdit(EditField::Minute);
+			}
+			else
+			{
+				CommitTimeEdit(true);
+			}
+		}
 		else
 			PostRender();
 		return true;
@@ -910,11 +900,13 @@ bool DateTimePicker::GetInlineTimeLayout(LayoutMetrics& out)
 	float centerX = out.contentLeft + out.contentWidth * 0.5f;
 	out.hourRect = { centerX - fieldW - gap, y, centerX - gap, y + out.timeHeight };
 	out.minuteRect = { centerX + gap, y, centerX + gap + fieldW, y + out.timeHeight };
-	const float arrowW = 16.0f;
-	out.hourUpRect = { out.hourRect.right - arrowW, y, out.hourRect.right, y + out.timeHeight * 0.5f };
-	out.hourDownRect = { out.hourRect.right - arrowW, y + out.timeHeight * 0.5f, out.hourRect.right, y + out.timeHeight };
-	out.minuteUpRect = { out.minuteRect.right - arrowW, y, out.minuteRect.right, y + out.timeHeight * 0.5f };
-	out.minuteDownRect = { out.minuteRect.right - arrowW, y + out.timeHeight * 0.5f, out.minuteRect.right, y + out.timeHeight };
+	float arrowW = std::clamp(out.timeHeight * 0.56f, 18.0f, 22.0f);
+	float splitGap = out.timeHeight >= 24.0f ? 2.0f : 1.0f;
+	float halfHeight = out.timeHeight * 0.5f;
+	out.hourUpRect = { out.hourRect.right - arrowW, y, out.hourRect.right, y + halfHeight - splitGap * 0.5f };
+	out.hourDownRect = { out.hourRect.right - arrowW, y + halfHeight + splitGap * 0.5f, out.hourRect.right, y + out.timeHeight };
+	out.minuteUpRect = { out.minuteRect.right - arrowW, y, out.minuteRect.right, y + halfHeight - splitGap * 0.5f };
+	out.minuteDownRect = { out.minuteRect.right - arrowW, y + halfHeight + splitGap * 0.5f, out.minuteRect.right, y + out.timeHeight };
 	out.dropHeight = 0.0f;
 	return true;
 }
@@ -993,11 +985,13 @@ bool DateTimePicker::GetLayoutMetrics(LayoutMetrics& out)
 		float centerX = out.contentLeft + out.contentWidth * 0.5f;
 		out.hourRect = { centerX - fieldW - gap, y, centerX - gap, y + out.timeHeight };
 		out.minuteRect = { centerX + gap, y, centerX + gap + fieldW, y + out.timeHeight };
-		const float arrowW = 16.0f;
-		out.hourUpRect = { out.hourRect.right - arrowW, y, out.hourRect.right, y + out.timeHeight * 0.5f };
-		out.hourDownRect = { out.hourRect.right - arrowW, y + out.timeHeight * 0.5f, out.hourRect.right, y + out.timeHeight };
-		out.minuteUpRect = { out.minuteRect.right - arrowW, y, out.minuteRect.right, y + out.timeHeight * 0.5f };
-		out.minuteDownRect = { out.minuteRect.right - arrowW, y + out.timeHeight * 0.5f, out.minuteRect.right, y + out.timeHeight };
+		float arrowW = std::clamp(out.timeHeight * 0.56f, 18.0f, 22.0f);
+		float splitGap = out.timeHeight >= 24.0f ? 2.0f : 1.0f;
+		float halfHeight = out.timeHeight * 0.5f;
+		out.hourUpRect = { out.hourRect.right - arrowW, y, out.hourRect.right, y + halfHeight - splitGap * 0.5f };
+		out.hourDownRect = { out.hourRect.right - arrowW, y + halfHeight + splitGap * 0.5f, out.hourRect.right, y + out.timeHeight };
+		out.minuteUpRect = { out.minuteRect.right - arrowW, y, out.minuteRect.right, y + halfHeight - splitGap * 0.5f };
+		out.minuteDownRect = { out.minuteRect.right - arrowW, y + halfHeight + splitGap * 0.5f, out.minuteRect.right, y + out.timeHeight };
 		y += out.timeHeight;
 	}
 
