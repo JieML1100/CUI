@@ -210,7 +210,11 @@ private:
 	HRESULT _lastMfError = S_OK;            // 最后一个 Media Foundation 错误
 
 	// ========== SourceReader + WASAPI 后端（软件解码后备方案） ==========
-	bool _useSourceReader = true;                     // 是否使用SourceReader模式
+	bool _preferSourceReader = true;                  // 默认优先使用SourceReader模式
+	bool _useSourceReader = true;                     // 当前媒体是否使用SourceReader模式
+	bool _useMediaSessionAudioCompanion = false;     // SourceReader 视频 + MediaSession 音频伴随模式
+	GUID _sourceReaderAudioSubtype = GUID_NULL;      // SourceReader 当前音频子类型
+	bool _sourceReaderAudioNegotiationFailed = false; // SourceReader 音频输出协商是否失败
 	ComPtr<IMFSourceReader> _sourceReader;            // 媒体源读取器
 	DWORD _srVideoStream = (DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM;  // 视频流索引
 	DWORD _srAudioStream = (DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM;  // 音频流索引
@@ -265,6 +269,7 @@ private:
 	void UpdatePositionFromClock(bool forceEvent);    // 从时钟更新位置
 	HRESULT CreateMediaSource(const std::wstring& url);  // 创建媒体源
 	HRESULT CreateTopology();                         // 创建媒体拓扑
+	HRESULT CreateAudioOnlyTopology();                // 创建仅音频拓扑
 	HRESULT InitializeD3D();                          // 初始化Direct3D
 	HRESULT InitializeVideoRenderer();                // 初始化视频渲染器
 	void OnVideoFrame(const BYTE* data, DWORD size);  // 视频帧回调

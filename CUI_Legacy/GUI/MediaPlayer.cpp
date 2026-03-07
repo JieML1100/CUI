@@ -29,6 +29,7 @@
 
 // 常量定义
 static constexpr double HNS_PER_SEC = 10000000.0;  // 100-nanosecond 单位与秒的转换
+static const GUID kMFAudioFormatMpegHeaac = { 0x00001610, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71 } };
 
 static void PrintLogWide(const wchar_t* text)
 {
@@ -218,6 +219,19 @@ static WAVEFORMATEX* CloneWaveFormat(const WAVEFORMATEX* wf)
 	return copy;
 }
 
+static bool IsPcmLikeAudioSubtype(const GUID& subtype)
+{
+	return subtype == MFAudioFormat_PCM || subtype == MFAudioFormat_Float;
+}
+
+static bool ShouldFallbackToMediaSessionForAudioSubtype(const GUID& subtype)
+{
+	if (subtype == GUID_NULL) return false;
+	if (IsPcmLikeAudioSubtype(subtype)) return false;
+	if (subtype == kMFAudioFormatMpegHeaac) return true;
+	return false;
+}
+
 static GUID GetMfAudioSubtypeFromWaveFormat(const WAVEFORMATEX* wf)
 {
 	if (!wf) return GUID_NULL;
@@ -246,6 +260,15 @@ static bool PopulateMfAudioTypeFromWaveFormat(IMFMediaType* mt, const WAVEFORMAT
 	if (FAILED(mt->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, wf->nAvgBytesPerSec))) return false;
 	(void)mt->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
 	return true;
+}
+
+static GUID GetAudioSubtypeFromMediaType(IMFMediaType* mt)
+{
+	if (!mt) return GUID_NULL;
+	GUID subtype = GUID_NULL;
+	if (FAILED(mt->GetGUID(MF_MT_SUBTYPE, &subtype)))
+		return GUID_NULL;
+	return subtype;
 }
 
 static WAVEFORMATEX* ResolveSharedModeWaveFormat(const WAVEFORMATEX* requested)
@@ -898,7 +921,8 @@ STDMETHODIMP MediaPlayerCallback::Invoke(IMFAsyncResult* pResult)
 	case MESessionTopologyStatus:
 	{
 		UINT32 status = 0;
-		if (SUCCEEDED(pEvent->GetUINT32(MF_EVENT_TOPOLOGY_STATUS, &status)))
+		HRESULT topoHr = pEvent->GetUINT32(MF_EVENT_TOPOLOGY_STATUS, &status);
+		if (SUCCEEDED(topoHr))
 		{
 			if (status == MF_TOPOSTATUS_READY)
 			{
@@ -918,6 +942,10 @@ STDMETHODIMP MediaPlayerCallback::Invoke(IMFAsyncResult* pResult)
 					}
 				}
 			}
+		}
+		else
+		{
+			DebugOutputHr(L"[MediaPlayer] topology status attribute missing", topoHr);
 		}
 		break;
 	}
@@ -1250,8 +1278,14 @@ bool MediaPlayer::ConfigureSourceReaderAudioTypeFromMixFormat()
 {
 	if (!_sourceReader) return false;
 	if (!_audioMixFormat) return false;
+	_sourceReaderAudioSubtype = GUID_NULL;
+	{
+		ComPtr<IMFMediaType> currentType;
+		if (SUCCEEDED(_sourceReader->GetCurrentMediaType(_srAudioStream, &currentType)) && currentType)
+			_sourceReaderAudioSubtype = GetAudioSubtypeFromMediaType(currentType.Get());
+	}
 
-	auto tryFormat = [&](const WAVEFORMATEX* waveFormat, const wchar_t* failContext, const wchar_t* successContext) -> bool
+	auto tryFormat = [&](const WAVEFORMATEX* waveFormat, const wchar_t* failContext) -> bool
 	{
 		WAVEFORMATEX* resolvedFormat = ResolveSharedModeWaveFormat(waveFormat);
 		if (!resolvedFormat) return false;
@@ -1271,14 +1305,13 @@ bool MediaPlayer::ConfigureSourceReaderAudioTypeFromMixFormat()
 			return false;
 		}
 		CoTaskMemFree(resolvedFormat);
-		PrintLogWide(successContext);
 		return true;
 	};
 
 	WAVEFORMATEX* originalMix = CloneWaveFormat(_audioMixFormat);
 	if (!originalMix) return false;
 
-	if (tryFormat(originalMix, L"SourceReader: SetCurrentMediaType(audio from mix) failed", L"[MediaPlayer] audio negotiated using device mix format\n"))
+	if (tryFormat(originalMix, L"SourceReader: SetCurrentMediaType(audio from mix) failed"))
 	{
 		CoTaskMemFree(originalMix);
 		return true;
@@ -1304,7 +1337,6 @@ bool MediaPlayer::ConfigureSourceReaderAudioTypeFromMixFormat()
 				CoTaskMemFree(resolvedNative);
 				CoTaskMemFree(nativeWave);
 				CoTaskMemFree(originalMix);
-				PrintLogWide(L"[MediaPlayer] audio negotiated using source native format\n");
 				return true;
 			}
 		}
@@ -1326,7 +1358,7 @@ bool MediaPlayer::ConfigureSourceReaderAudioTypeFromMixFormat()
 
 	for (int i = 0; i < 8; i++)
 	{
-		if (tryFormat(&candidates[i], L"SourceReader: SetCurrentMediaType(audio fallback) failed", L"[MediaPlayer] audio negotiated using fallback PCM format\n"))
+		if (tryFormat(&candidates[i], L"SourceReader: SetCurrentMediaType(audio fallback) failed"))
 		{
 			CoTaskMemFree(originalMix);
 			return true;
@@ -1424,6 +1456,9 @@ bool MediaPlayer::InitSourceReader(const std::wstring& url)
 	HRESULT hr = S_OK;
 	_usingHardwareDecode = false;
 	_usingNv12VideoOutput = false;
+	_sourceReaderAudioSubtype = GUID_NULL;
+	_sourceReaderAudioNegotiationFailed = false;
+	_useMediaSessionAudioCompanion = false;
 
 	// 第一阶段：尽量在 Win7 环境也可用的方式启用“硬件变换/硬解”(由系统解码器+驱动决定)，
 	// 但仍保持输出为 RGB32（通过 SourceReader 的 video processing），以便复用现有 CPU->D2D 位图渲染链路。
@@ -1500,9 +1535,9 @@ bool MediaPlayer::InitSourceReader(const std::wstring& url)
 	else
 	{
 		_hasAudio = false;
+		_sourceReaderAudioNegotiationFailed = (_sourceReaderAudioSubtype != GUID_NULL);
 		(void)_sourceReader->SetStreamSelection(_srAudioStream, FALSE);
 		ShutdownWasapi();
-		PrintLogWide(L"[MediaPlayer] audio output negotiation failed, audio stream disabled for video-only playback\n");
 	}
 
 	// Find actual stream indices
@@ -1552,6 +1587,9 @@ bool MediaPlayer::InitSourceReaderFromByteStream(IMFByteStream* byteStream)
 	HRESULT hr = S_OK;
 	_usingHardwareDecode = false;
 	_usingNv12VideoOutput = false;
+	_sourceReaderAudioSubtype = GUID_NULL;
+	_sourceReaderAudioNegotiationFailed = false;
+	_useMediaSessionAudioCompanion = false;
 
 	// 第一阶段：尽量启用硬件变换/硬解（最佳努力），保持与 URL 路径一致的策略。
 	if (_enableHardwareDecode)
@@ -1624,9 +1662,9 @@ bool MediaPlayer::InitSourceReaderFromByteStream(IMFByteStream* byteStream)
 	else
 	{
 		_hasAudio = false;
+		_sourceReaderAudioNegotiationFailed = (_sourceReaderAudioSubtype != GUID_NULL);
 		(void)_sourceReader->SetStreamSelection(_srAudioStream, FALSE);
 		ShutdownWasapi();
-		PrintLogWide(L"[MediaPlayer] audio output negotiation failed, audio stream disabled for video-only playback\n");
 	}
 
 	// Find actual stream indices
@@ -1679,6 +1717,8 @@ void MediaPlayer::StopSourceReaderPlayback(bool shutdown)
 	_threadPlaying = false;
 	_needSyncReset = true;
 	if (_audioClient) (void)_audioClient->Stop();
+	if (_useMediaSessionAudioCompanion && _mediaSession)
+		(void)StopPlayback();
 	if (_playThread.joinable())
 	{
 		_threadExit = true;
@@ -1690,6 +1730,14 @@ void MediaPlayer::StopSourceReaderPlayback(bool shutdown)
 	{
 		ShutdownWasapi();
 		ShutdownSourceReader();
+		ShutdownMediaSession();
+		_mediaSource.Reset();
+		_topology.Reset();
+		_topologyReady = false;
+		_pendingStart = false;
+		_hasPendingStartPosition = false;
+		_pendingStartPosition = 0.0;
+		_useMediaSessionAudioCompanion = false;
 	}
 }
 
@@ -1805,12 +1853,6 @@ void MediaPlayer::PlaybackThreadMain()
 		const LARGE_INTEGER tRead1 = QpcNow();
 		const UINT64 readTicks = (UINT64)(tRead1.QuadPart - tRead0.QuadPart);
 		_statReadSampleQpcTicks.fetch_add(readTicks, std::memory_order_relaxed);
-		if (QpcTicksToMs(readTicks) >= 200.0)
-		{
-			wchar_t slowBuf[256] = {};
-			swprintf_s(slowBuf, L"[MediaPlayer][slow] ReadSample took %.3f ms, flags=0x%08X, stream=%u\n", QpcTicksToMs(readTicks), (unsigned)flags, (unsigned)streamIndex);
-			PrintLogWide(slowBuf);
-		}
 		if (FAILED(hr))
 		{
 			_lastMfError = hr;
@@ -1891,12 +1933,6 @@ void MediaPlayer::PlaybackThreadMain()
 		const LARGE_INTEGER tContig1 = QpcNow();
 		const UINT64 contigTicks = (UINT64)(tContig1.QuadPart - tContig0.QuadPart);
 		_statSamplesToContigQpcTicks.fetch_add(contigTicks, std::memory_order_relaxed);
-		if (QpcTicksToMs(contigTicks) >= 200.0)
-		{
-			wchar_t slowBuf[256] = {};
-			swprintf_s(slowBuf, L"[MediaPlayer][slow] ConvertToContiguousBuffer took %.3f ms\n", QpcTicksToMs(contigTicks));
-			PrintLogWide(slowBuf);
-		}
 		if (FAILED(hr) || !buf) continue;
 		BYTE* p = nullptr;
 		DWORD maxLen = 0, curLen = 0;
@@ -1981,12 +2017,6 @@ void MediaPlayer::PlaybackThreadMain()
 						const UINT64 vConvTicks = (UINT64)(tVid1.QuadPart - tVid0.QuadPart);
 						_statVideoConvertQpcTicks.fetch_add(vConvTicks, std::memory_order_relaxed);
 						_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
-						if (QpcTicksToMs(vConvTicks) >= 200.0)
-						{
-							wchar_t slowBuf[256] = {};
-							swprintf_s(slowBuf, L"[MediaPlayer][slow] NV12->BGRA took %.3f ms for %ux%u\n", QpcTicksToMs(vConvTicks), (unsigned)w, (unsigned)h);
-							PrintLogWide(slowBuf);
-						}
 						this->PostRender();
 					}
 					else
@@ -2049,12 +2079,6 @@ void MediaPlayer::PlaybackThreadMain()
 					const UINT64 vConvTicks = (UINT64)(tVid1.QuadPart - tVid0.QuadPart);
 					_statVideoConvertQpcTicks.fetch_add(vConvTicks, std::memory_order_relaxed);
 					_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
-					if (QpcTicksToMs(vConvTicks) >= 200.0)
-					{
-						wchar_t slowBuf[256] = {};
-						swprintf_s(slowBuf, L"[MediaPlayer][slow] Video normalize took %.3f ms for %ux%u, subtype=%08X-%04X\n", QpcTicksToMs(vConvTicks), (unsigned)w, (unsigned)h, subtype.Data1, subtype.Data2);
-						PrintLogWide(slowBuf);
-					}
 					this->PostRender();
 				}
 				else
@@ -2343,8 +2367,14 @@ HRESULT MediaPlayer::CreateTopology()
 				UINT32 w = 0, h = 0;
 				if (SUCCEEDED(MFGetAttributeSize(currentType.Get(), MF_MT_FRAME_SIZE, &w, &h)) && w > 0 && h > 0)
 				{
+					_videoFrameSize = SIZE{ (LONG)w, (LONG)h };
 					_videoSize = SIZE{ (LONG)w, (LONG)h };
+					_videoCropX = 0;
+					_videoCropY = 0;
 					_videoStride = w * 4;
+					_videoSubtype = MFVideoFormat_RGB32;
+					_videoBytesPerPixel = 4;
+					_videoBottomUp = false;
 				}
 			}
 			hr = MFCreateTopologyNode(MF_TOPOLOGY_OUTPUT_NODE, &pOutputNode);
@@ -2354,19 +2384,35 @@ HRESULT MediaPlayer::CreateTopology()
 			ComPtr<IMFMediaType> pVideoType;
 			hr = MFCreateMediaType(&pVideoType);
 			if (FAILED(hr)) break;
+			if (currentType)
+				(void)currentType->CopyAllItems(pVideoType.Get());
 			hr = pVideoType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
 			if (FAILED(hr)) break;
 			// 选用 MFVideoFormat_RGB32：在部分机器/解码器组合下比 ARGB32 更稳定
 			// （仍然是 32bpp，内存布局可按 BGRA 处理，alpha 通道通常可忽略）
 			hr = pVideoType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
 			if (FAILED(hr)) break;
+			if (currentType)
+			{
+				UINT64 frameRate = 0;
+				UINT64 pixelAspect = 0;
+				UINT32 interlaceMode = MFVideoInterlace_Unknown;
+				if (SUCCEEDED(currentType->GetUINT64(MF_MT_FRAME_RATE, &frameRate)))
+					(void)pVideoType->SetUINT64(MF_MT_FRAME_RATE, frameRate);
+				if (SUCCEEDED(currentType->GetUINT64(MF_MT_PIXEL_ASPECT_RATIO, &pixelAspect)))
+					(void)pVideoType->SetUINT64(MF_MT_PIXEL_ASPECT_RATIO, pixelAspect);
+				if (SUCCEEDED(currentType->GetUINT32(MF_MT_INTERLACE_MODE, &interlaceMode)))
+					(void)pVideoType->SetUINT32(MF_MT_INTERLACE_MODE, interlaceMode);
+			}
 			// 尽量把期望的尺寸/步幅明确写入（否则某些解码链路会协商出带对齐的 stride，
 			// 导致我们按 width*4 取帧时出现错位或黑屏）
 			if (_videoSize.cx > 0 && _videoSize.cy > 0)
 			{
 				(void)MFSetAttributeSize(pVideoType.Get(), MF_MT_FRAME_SIZE, (UINT32)_videoSize.cx, (UINT32)_videoSize.cy);
 				(void)pVideoType->SetUINT32(MF_MT_DEFAULT_STRIDE, (UINT32)_videoSize.cx * 4);
+				(void)pVideoType->SetUINT32(MF_MT_SAMPLE_SIZE, (UINT32)_videoSize.cx * (UINT32)_videoSize.cy * 4);
 			}
+			(void)pVideoType->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
 			(void)pVideoType->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
 
 			_videoSampleCallback.Reset();
@@ -2411,6 +2457,88 @@ HRESULT MediaPlayer::CreateTopology()
 
 	_topology = pTopology;
 	return hr;
+}
+
+HRESULT MediaPlayer::CreateAudioOnlyTopology()
+{
+	HRESULT hr = S_OK;
+	ComPtr<IMFPresentationDescriptor> pSourcePD;
+	ComPtr<IMFTopology> pTopology;
+
+	hr = MFCreateTopology(&pTopology);
+	if (FAILED(hr)) return hr;
+
+	hr = _mediaSource->CreatePresentationDescriptor(&pSourcePD);
+	if (FAILED(hr)) return hr;
+
+	DWORD cSourceStreams = 0;
+	hr = pSourcePD->GetStreamDescriptorCount(&cSourceStreams);
+	if (FAILED(hr)) return hr;
+
+	bool addedAudio = false;
+	for (DWORD i = 0; i < cSourceStreams; i++)
+	{
+		BOOL fSelected = FALSE;
+		ComPtr<IMFStreamDescriptor> pSourceSD;
+		hr = pSourcePD->GetStreamDescriptorByIndex(i, &fSelected, &pSourceSD);
+		if (FAILED(hr) || !pSourceSD) break;
+
+		ComPtr<IMFMediaTypeHandler> pTypeHandler;
+		hr = pSourceSD->GetMediaTypeHandler(&pTypeHandler);
+		if (FAILED(hr) || !pTypeHandler) break;
+
+		GUID majorType = GUID_NULL;
+		hr = pTypeHandler->GetMajorType(&majorType);
+		if (FAILED(hr)) break;
+
+		if (majorType != MFMediaType_Audio)
+		{
+			if (fSelected)
+				(void)pSourcePD->DeselectStream(i);
+			continue;
+		}
+
+		if (!fSelected)
+		{
+			(void)pSourcePD->SelectStream(i);
+			fSelected = TRUE;
+		}
+		if (!fSelected) continue;
+
+		ComPtr<IMFTopologyNode> pSourceNode;
+		hr = MFCreateTopologyNode(MF_TOPOLOGY_SOURCESTREAM_NODE, &pSourceNode);
+		if (FAILED(hr)) break;
+		hr = pSourceNode->SetUnknown(MF_TOPONODE_SOURCE, _mediaSource.Get());
+		if (FAILED(hr)) break;
+		hr = pSourceNode->SetUnknown(MF_TOPONODE_PRESENTATION_DESCRIPTOR, pSourcePD.Get());
+		if (FAILED(hr)) break;
+		hr = pSourceNode->SetUnknown(MF_TOPONODE_STREAM_DESCRIPTOR, pSourceSD.Get());
+		if (FAILED(hr)) break;
+		hr = pTopology->AddNode(pSourceNode.Get());
+		if (FAILED(hr)) break;
+
+		ComPtr<IMFTopologyNode> pOutputNode;
+		hr = MFCreateTopologyNode(MF_TOPOLOGY_OUTPUT_NODE, &pOutputNode);
+		if (FAILED(hr)) break;
+
+		ComPtr<IMFActivate> pActivate;
+		hr = MFCreateAudioRendererActivate(&pActivate);
+		if (FAILED(hr)) break;
+
+		hr = pOutputNode->SetObject(pActivate.Get());
+		if (FAILED(hr)) break;
+		hr = pTopology->AddNode(pOutputNode.Get());
+		if (FAILED(hr)) break;
+		hr = pSourceNode->ConnectOutput(0, pOutputNode.Get(), 0);
+		if (FAILED(hr)) break;
+
+		addedAudio = true;
+	}
+
+	if (FAILED(hr)) return hr;
+	if (!addedAudio) return MF_E_INVALIDMEDIATYPE;
+	_topology = pTopology;
+	return S_OK;
 }
 
 HRESULT MediaPlayer::InitializeVideoRenderer()
@@ -2518,16 +2646,22 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 {
 	if (!_initialized) return false;
 	if (!this->ParentForm) return false;
+	const bool preferSourceReader = _preferSourceReader;
 
 	// 若之前在 SourceReader 后端播放，先彻底停掉线程/音频，避免后续后端切换时状态互相干扰。
 	if (_playThread.joinable() || _threadPlaying.load() || _sourceReader)
 	{
 		StopSourceReaderPlayback(true);
 	}
+	if (_mediaSession || _mediaSource || _topology)
+	{
+		ReleaseResources();
+	}
 
 	// Prefer SourceReader+WASAPI path for maximum compatibility in a self-rendered UI.
-	if (_useSourceReader)
+	if (preferSourceReader)
 	{
+		_useSourceReader = true;
 		// 上面已 StopSourceReaderPlayback(true)
 		_mediaFile = mediaFile;
 		_mediaLoaded = false;
@@ -2562,6 +2696,49 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 			OnMediaFailed(this);
 			return false;
 		}
+
+		if (_hasVideo && !_hasAudio && _sourceReaderAudioNegotiationFailed && ShouldFallbackToMediaSessionForAudioSubtype(_sourceReaderAudioSubtype))
+		{
+			if (FAILED(CreateMediaSession()) || FAILED(CreateMediaSource(mediaFile)) || FAILED(CreateAudioOnlyTopology()))
+			{
+				ShutdownMediaSession();
+				_mediaSource.Reset();
+				_topology.Reset();
+				_topologyReady = false;
+			}
+			else
+			{
+				_topologyReady = false;
+				_pendingStart = false;
+				_hasPendingStartPosition = false;
+				_pendingStartPosition = 0.0;
+				HRESULT topologyHr = _mediaSession->SetTopology(0, _topology.Get());
+				if (SUCCEEDED(topologyHr))
+				{
+					_useMediaSessionAudioCompanion = true;
+					_hasAudio = true;
+				}
+				else
+				{
+					DebugOutputHr(L"MediaSession audio companion SetTopology failed", topologyHr);
+					ShutdownMediaSession();
+					_mediaSource.Reset();
+					_topology.Reset();
+					_topologyReady = false;
+				}
+			}
+
+			_mediaLoaded = true;
+			_playState = PlayState::Stopped;
+			OnMediaOpened(this);
+			this->PostRender();
+
+			if (_autoPlay)
+				Play();
+			return true;
+		}
+		else
+		{
 		_mediaLoaded = true;
 		_playState = PlayState::Stopped;
 		OnMediaOpened(this);
@@ -2571,9 +2748,11 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 		if (_autoPlay)
 			Play();
 		return true;
+		}
 	}
 
 	// 每次加载重建 session，避免旧拓扑状态残留
+	_useSourceReader = false;
 	if (FAILED(CreateMediaSession())) return false;
 
 	HRESULT hr = S_OK;
@@ -2647,16 +2826,25 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 	// 自动播放：允许在拓扑未 Ready 时先 Start（Media Session 会排队等待拓扑完成）
 	if (_autoPlay)
 	{
-		HRESULT startHr = StartPlayback();
-		if (SUCCEEDED(startHr))
+		if (!_topologyReady)
 		{
+			_pendingStart = true;
 			_playState = PlayState::Playing;
 			this->PostRender();
 		}
 		else
 		{
-			_pendingStart = true;
-			DebugOutputHr(L"AutoPlay Start failed (will retry on topology ready)", startHr);
+			HRESULT startHr = StartPlayback();
+			if (SUCCEEDED(startHr))
+			{
+				_playState = PlayState::Playing;
+				this->PostRender();
+			}
+			else
+			{
+				_pendingStart = true;
+				DebugOutputHr(L"AutoPlay Start failed (will retry on topology ready)", startHr);
+			}
 		}
 	}
 
@@ -2775,6 +2963,26 @@ void MediaPlayer::Play()
 		_playState = PlayState::Playing;
 		_threadPlaying = true;
 		_threadCv.notify_all();
+		if (_useMediaSessionAudioCompanion && _mediaSession)
+		{
+			if (!_topologyReady)
+			{
+				_pendingStart = true;
+				_hasPendingStartPosition = false;
+			}
+			else
+			{
+				(void)StartPlayback();
+			}
+		}
+		this->PostRender();
+		return;
+	}
+	if (!_topologyReady)
+	{
+		_pendingStart = true;
+		_hasPendingStartPosition = false;
+		_playState = PlayState::Playing;
 		this->PostRender();
 		return;
 	}
@@ -2799,6 +3007,8 @@ void MediaPlayer::Pause()
 		_playState = PlayState::Paused;
 		_threadPlaying = false;
 		if (_audioClient) (void)_audioClient->Stop();
+		if (_useMediaSessionAudioCompanion && _mediaSession)
+			(void)PausePlayback();
 		this->PostRender();
 		return;
 	}
@@ -2820,6 +3030,8 @@ void MediaPlayer::Stop()
 		_playState = PlayState::Stopped;
 		_position = 0.0;
 		if (_timeStretch) _timeStretch->Reset();
+		if (_useMediaSessionAudioCompanion && _mediaSession)
+			(void)StopPlayback();
 		// Seek to start
 		if (_sourceReader)
 		{
@@ -2867,6 +3079,19 @@ void MediaPlayer::Seek(double seconds)
 		PropVariantClear(&var);
 		if (FAILED(hr))
 			DebugOutputHr(L"SourceReader: SetCurrentPosition failed", hr);
+		if (_useMediaSessionAudioCompanion && _mediaSession)
+		{
+			if (!_topologyReady)
+			{
+				_pendingStart = true;
+				_hasPendingStartPosition = true;
+				_pendingStartPosition = seconds;
+			}
+			else
+			{
+				(void)SetPositionImpl(seconds);
+			}
+		}
 		_position = seconds;
 		_needSyncReset = true;
 		OnPositionChanged(this, _position);
@@ -2878,11 +3103,6 @@ void MediaPlayer::Seek(double seconds)
 		_pendingStart = true;
 		_hasPendingStartPosition = true;
 		_pendingStartPosition = seconds;
-		HRESULT startHr = StartPlaybackInternal(true, seconds);
-		if (FAILED(startHr))
-		{
-			DebugOutputHr(L"Seek Start failed (pending)", startHr);
-		}
 		return;
 	}
 
@@ -3140,12 +3360,6 @@ void MediaPlayer::Update()
 				const LARGE_INTEGER tUp1 = QpcNow();
 				const UINT64 uploadTicks = (UINT64)(tUp1.QuadPart - tUp0.QuadPart);
 				_statVideoUploadQpcTicks.fetch_add(uploadTicks, std::memory_order_relaxed);
-				if (QpcTicksToMs(uploadTicks) >= 100.0)
-				{
-					wchar_t slowBuf[256] = {};
-					swprintf_s(slowBuf, L"[MediaPlayer][slow] CopyFromMemory took %.3f ms for %ux%u\n", QpcTicksToMs(uploadTicks), (unsigned)w, (unsigned)h);
-					PrintLogWide(slowBuf);
-				}
 			}
 		}
 
@@ -3231,12 +3445,6 @@ void MediaPlayer::Update()
 			const LARGE_INTEGER tDraw1 = QpcNow();
 			const UINT64 drawTicks = (UINT64)(tDraw1.QuadPart - tDraw0.QuadPart);
 			_statDrawBitmapQpcTicks.fetch_add(drawTicks, std::memory_order_relaxed);
-			if (QpcTicksToMs(drawTicks) >= 50.0)
-			{
-				wchar_t slowBuf[256] = {};
-				swprintf_s(slowBuf, L"[MediaPlayer][slow] DrawBitmap took %.3f ms\n", QpcTicksToMs(drawTicks));
-				PrintLogWide(slowBuf);
-			}
 			this->EndRender();
 			ReportPerfStatsIfDue();
 			return;
@@ -3348,6 +3556,10 @@ SET_CPP(MediaPlayer, double, Volume)
 					pVolume->SetMasterVolume((float)_volume.load(), nullptr);
 				}
 			}
+			if (_useMediaSessionAudioCompanion && _mediaSession)
+			{
+				SetVolumeImpl(_volume.load());
+			}
 		}
 		else
 		{
@@ -3371,6 +3583,10 @@ SET_CPP(MediaPlayer, float, PlaybackRate)
 		{
 			// SourceReader 模式：视频节奏由时间戳/倍速控制；音频由 PCM 时间缩放输出（允许变调但不断音）。
 			_needSyncReset = true;
+			if (_useMediaSessionAudioCompanion && _mediaSession)
+			{
+				SetPlaybackRateImpl(_playbackRate.load());
+			}
 		}
 		else
 		{
