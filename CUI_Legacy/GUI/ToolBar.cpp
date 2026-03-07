@@ -46,7 +46,7 @@ void ToolBar::LayoutItems()
 	{
 		auto c = this->operator[](i);
 		if (!c) continue;
-		c->Location = POINT{ x, y };
+		c->SetRuntimeLocation(POINT{ x, y });
 		c->Height = ItemHeight;
 		x += c->Width + Gap;
 	}
@@ -54,7 +54,30 @@ void ToolBar::LayoutItems()
 
 void ToolBar::Update()
 {
+	if (this->IsVisual == false) return;
 	LayoutItems();
-	Panel::Update();
+
+	auto d2d = this->ParentForm->Render;
+	auto size = this->ActualSize();
+	this->BeginRender();
+	{
+		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
+		if (this->Image)
+		{
+			this->RenderImage();
+		}
+		for (int i = 0; i < this->Count; i++)
+		{
+			auto c = this->operator[](i);
+			if (!c) continue;
+			c->Update();
+		}
+		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
+	}
+	if (!this->Enable)
+	{
+		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+	}
+	this->EndRender();
 }
 

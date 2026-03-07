@@ -218,7 +218,7 @@ void Menu::Update()
 			auto ts = font->GetTextSize(it->Text);
 			int w = (int)(ts.width + ItemPaddingX * 2.0f);
 			if (w < 50) w = 50;
-			it->Location = POINT{ (int)x, 0 };
+			it->SetRuntimeLocation(POINT{ (int)x, 0 });
 			it->Size = SIZE{ w, BarHeight };
 			x += (float)w;
 			it->ForeColor = this->_forecolor;

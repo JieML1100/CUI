@@ -369,7 +369,7 @@ void DemoWindow::BuildTabs()
 
 	_tabs = this->AddControl(new TabControl(10, _topSlider->Bottom + 8, this->Size.cx - 20, this->Size.cy - (_topSlider->Bottom + 8) - 10));
 	_tabs->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.0f };
-	_tabs->Margin = Thickness(10, 0, 10, 40);
+	_tabs->Margin = Thickness(10, (float)(_topSlider->Bottom + 8), 10, 40);
 	_tabs->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
 
 	auto pBasic = _tabs->AddPage(L"基础控件");

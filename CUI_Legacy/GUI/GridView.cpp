@@ -1371,7 +1371,7 @@ void GridView::ToggleComboBoxEditor(int col, int row)
 
 	this->_cellComboBox->ParentForm = this->ParentForm;
 	this->_cellComboBox->Font = this->Font;
-	this->_cellComboBox->Location = POINT{ x, y };
+	this->_cellComboBox->SetRuntimeLocation(POINT{ x, y });
 	this->_cellComboBox->Size = SIZE{ (w > 0 ? w : 1), (h > 0 ? h : 1) };
 	this->_cellComboBox->Items = column.ComboBoxItems;
 	this->_cellComboBox->SelectedIndex = (int)cell.Tag;

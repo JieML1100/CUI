@@ -259,9 +259,6 @@
     <ClCompile Include="GUI\Layout\RelativePanel.cpp" />
     <ClCompile Include="nanosvg.cpp" />
   </ItemGroup>
-  <ItemGroup>
-    <None Include="packages.config" />
-  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

@@ -17,7 +17,7 @@ Control::Control()
 	SizeMode(ImageSizeMode::Zoom),
 	_text(L"")
 {
-	this->_layoutBaseLocation = this->_location;
+	this->_layoutBaseLocation = POINT{ (LONG)this->_margin.Left, (LONG)this->_margin.Top };
 	this->_layoutBaseSize = this->_size;
 	this->_layoutBaseInitialized = true;
 }
@@ -176,11 +176,11 @@ void Control::RemoveControl(Control* c)
 GET_CPP(Control, POINT, AbsLocation)
 {
 	Control* tmpc = this;
-	POINT tmpl = tmpc->_location;
+	POINT tmpl = tmpc->Location;
 	while (tmpc->Parent)
 	{
 		tmpc = tmpc->Parent;
-		auto loc = tmpc->_location;
+		auto loc = tmpc->Location;
 		tmpl.x += loc.x;
 		tmpl.y += loc.y;
 	}
@@ -211,13 +211,19 @@ GET_CPP(Control, bool, IsVisual)
 }
 GET_CPP(Control, POINT, Location)
 {
-	return _location;
+	return POINT{ static_cast<int>(_margin.Left),static_cast<int>(_margin.Top) };
 }
 SET_CPP(Control, POINT, Location)
 {
-	this->OnMoved(this);
-	_location = value;
+	POINT oldLocation = this->Location;
 	this->UpdateLayoutBaseLocation(value);
+	_margin.Left = static_cast<float>(value.x);
+	_margin.Top = static_cast<float>(value.y);
+	this->RequestLayout();
+	if (oldLocation.x != static_cast<int>(_margin.Left) || oldLocation.y != static_cast<int>(_margin.Top))
+	{
+		this->OnMoved(this);
+	}
 	this->PostRender();
 }
 GET_CPP(Control, SIZE, Size)
@@ -238,9 +244,7 @@ GET_CPP(Control, int, Left)
 }
 SET_CPP(Control, int, Left)
 {
-	this->_location = POINT{ value,this->_location.y };
-	this->UpdateLayoutBaseLocation(this->_location);
-	this->PostRender();
+	this->Location = POINT{ value, (LONG)this->_margin.Top };
 }
 GET_CPP(Control, int, Top)
 {
@@ -248,9 +252,7 @@ GET_CPP(Control, int, Top)
 }
 SET_CPP(Control, int, Top)
 {
-	this->_location = POINT{ this->_location.x,value };
-	this->UpdateLayoutBaseLocation(this->_location);
-	this->PostRender();
+	this->Location = POINT{ (LONG)this->_margin.Left, value };
 }
 GET_CPP(Control, int, Width)
 {
@@ -507,8 +509,15 @@ SET_CPP(Control, Thickness, Margin)
 {
 	if (_margin != value)
 	{
+		POINT oldLocation = this->Location;
 		_margin = value;
+		_layoutBaseLocation = POINT{ (LONG)_margin.Left, (LONG)_margin.Top };
+		_layoutBaseInitialized = true;
 		this->RequestLayout();
+		if (oldLocation.x != static_cast<int>(_margin.Left) || oldLocation.y != static_cast<int>(_margin.Top))
+		{
+			this->OnMoved(this);
+		}
 		this->PostRender();
 	}
 }
@@ -670,12 +679,13 @@ SIZE Control::MeasureCore(SIZE availableSize)
 // 应用布局结果
 void Control::ApplyLayout(POINT location, SIZE size)
 {
-	bool locationChanged = (_location.x != location.x || _location.y != location.y);
+	bool locationChanged = (static_cast<int>(_margin.Left) != location.x || static_cast<int>(_margin.Top) != location.y);
 	bool sizeChanged = (_size.cx != size.cx || _size.cy != size.cy);
 
 	if (locationChanged)
 	{
-		_location = location;
+		_margin.Left = static_cast<float>(location.x);
+		_margin.Top = static_cast<float>(location.y);
 		this->OnMoved(this);
 	}
 
@@ -689,4 +699,17 @@ void Control::ApplyLayout(POINT location, SIZE size)
 	{
 		this->PostRender();
 	}
+}
+
+void Control::SetRuntimeLocation(POINT value)
+{
+	if (static_cast<int>(_margin.Left) == value.x && static_cast<int>(_margin.Top) == value.y)
+	{
+		return;
+	}
+
+	_margin.Left = static_cast<float>(value.x);
+	_margin.Top = static_cast<float>(value.y);
+	this->OnMoved(this);
+	this->PostRender();
 }

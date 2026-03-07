@@ -186,7 +186,7 @@ void StatusBar::LayoutItems()
 		int y = (this->Height - (int)ts.cy) / 2;
 		if (y < 0) y = 0;
 
-		part.LabelCtrl->Location = POINT{ x + _partInnerPadding, y };
+		part.LabelCtrl->SetRuntimeLocation(POINT{ x + _partInnerPadding, y });
 		part.LabelCtrl->ForeColor = this->ForeColor;
 
 		x += w;
@@ -205,13 +205,30 @@ void StatusBar::Update()
 		this->ParentForm->MainStatusBar = this;
 	}
 
-	LayoutItems();
-	Panel::Update();
+	if (this->IsVisual == false || !this->ParentForm) return;
 
-	if (!this->IsVisual || !this->ParentForm) return;
+	if (_needsLayout || (_layoutEngine && _layoutEngine->NeedsLayout()))
+	{
+		PerformLayout();
+	}
+
+	LayoutItems();
+
 	auto d2d = this->ParentForm->Render;
+	auto size = this->ActualSize();
 	this->BeginRender();
 	{
+		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
+		if (this->Image)
+		{
+			this->RenderImage();
+		}
+		for (int i = 0; i < this->Count; i++)
+		{
+			auto c = this->operator[](i);
+			if (!c) continue;
+			c->Update();
+		}
 		for (float sx : _separatorsX)
 		{
 			float x = sx + (float)(Gap / 2);
@@ -219,6 +236,11 @@ void StatusBar::Update()
 			float y2 = (float)this->Height - 5.0f;
 			d2d->DrawLine(x, y1, x, y2, _separatorColor, 1.0f);
 		}
+		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
+	}
+	if (!this->Enable)
+	{
+		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	this->EndRender();
 }

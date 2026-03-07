@@ -12,6 +12,10 @@
 #define WM_DPICHANGED 0x02E0
 #endif
 
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+
 HCURSOR Form::GetSystemCursor(CursorKind kind)
 {
 	static std::unordered_map<CursorKind, HCURSOR> cache;
@@ -76,6 +80,41 @@ static bool PointInControlRect(Control* c, POINT contentMouse)
 	auto sz = c->ActualSize();
 	return (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
 		contentMouse.x <= loc.x + sz.cx && contentMouse.y <= loc.y + sz.cy);
+}
+
+static void SyncFormWindowStyles(HWND hWnd, bool showInTaskBar, bool minBox, bool maxBox, bool closeBox, bool allowResize)
+{
+	if (!hWnd)
+		return;
+
+	LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
+	style &= ~(WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_THICKFRAME);
+	style |= WS_POPUP;
+	if (minBox)
+		style |= WS_MINIMIZEBOX;
+	if (allowResize)
+		style |= WS_THICKFRAME;
+	if (allowResize && maxBox)
+		style |= WS_MAXIMIZEBOX;
+	if (closeBox || minBox || (allowResize && maxBox))
+		style |= WS_SYSMENU;
+	SetWindowLongPtrW(hWnd, GWL_STYLE, style);
+
+	LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
+	exStyle &= ~(WS_EX_APPWINDOW | WS_EX_TOOLWINDOW);
+	exStyle |= showInTaskBar ? WS_EX_APPWINDOW : WS_EX_TOOLWINDOW;
+	SetWindowLongPtrW(hWnd, GWL_EXSTYLE, exStyle);
+
+	SetWindowPos(hWnd, NULL, 0, 0, 0, 0,
+		SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+	const int cornerPreference = 1;
+	DwmSetWindowAttribute(hWnd, DWMWA_WINDOW_CORNER_PREFERENCE, &cornerPreference, sizeof(cornerPreference));
+}
+
+static int GetCustomFrameInset()
+{
+	return GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
 }
 
 Control* Form::HitTestControlAt(POINT contentMouse)
@@ -712,7 +751,7 @@ GET_CPP(Form, SIZE, Size)
 	if (this->Handle)
 	{
 		RECT rect;
-		GetWindowRect(this->Handle, &rect);
+		GetClientRect(this->Handle, &rect);
 		SIZE size = { rect.right - rect.left,rect.bottom - rect.top };
 		return size;
 	}
@@ -852,6 +891,8 @@ SET_CPP(Form, bool, AllowResize)
 		this->MaxBox = this->_maxBoxBeforeAllowResize;
 	}
 
+	SyncFormWindowStyles(this->Handle, this->_showInTaskBar, this->MinBox, this->MaxBox, this->CloseBox, this->AllowResize);
+
 	ClearCaptionStates();
 	Invalidate(TitleBarRectClient(), true);
 }
@@ -863,22 +904,7 @@ GET_CPP(Form, bool, ShowInTaskBar)
 SET_CPP(Form, bool, ShowInTaskBar)
 {
 	this->_showInTaskBar = value;
-	if (this->Handle)
-	{
-		LONG_PTR exStyle = GetWindowLongPtr(this->Handle, GWL_EXSTYLE);
-
-		if (value)
-		{
-			exStyle &= ~WS_EX_TOOLWINDOW;
-			exStyle |= WS_EX_APPWINDOW;
-		}
-		else
-		{
-			exStyle |= WS_EX_TOOLWINDOW;
-			exStyle &= ~WS_EX_APPWINDOW;
-		}
-		SetWindowLongPtr(this->Handle, GWL_EXSTYLE, exStyle);
-	}
+	SyncFormWindowStyles(this->Handle, this->_showInTaskBar, this->MinBox, this->MaxBox, this->CloseBox, this->AllowResize);
 }
 
 Form::Form(std::wstring text, POINT _location, SIZE _size)
@@ -923,6 +949,7 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 		NULL,
 		GetModuleHandleW(0),
 		0);
+	SyncFormWindowStyles(this->Handle, this->_showInTaskBar, this->MinBox, this->MaxBox, this->CloseBox, this->AllowResize);
 	SetWindowLongPtrW(this->Handle, GWLP_USERDATA, (LONG_PTR)this ^ 0xFFFFFFFFFFFFFFFF);
 
 	DragAcceptFiles(this->Handle, TRUE);
@@ -974,6 +1001,7 @@ void Form::CleanupResources()
 
 	auto isOwnedByRootControls = [&](Control* node) -> bool
 		{
+		SyncFormWindowStyles(this->Handle, this->_showInTaskBar, this->MinBox, this->MaxBox, this->CloseBox, this->AllowResize);
 			if (!node) return false;
 			for (auto c : this->Controls)
 			{
@@ -1229,27 +1257,8 @@ void Form::PerformLayout()
 			HorizontalAlignment hAlign = control->HAlign;
 			VerticalAlignment vAlign = control->VAlign;
 
-			float baseLeft = (float)loc.x;
-			float baseTop = (float)loc.y;
-			if (anchor & AnchorStyles::Left)
-			{
-				if (margin.Left != 0.0f) baseLeft = margin.Left;
-			}
-			else
-			{
-				baseLeft += margin.Left;
-			}
-			if (anchor & AnchorStyles::Top)
-			{
-				if (margin.Top != 0.0f) baseTop = margin.Top;
-			}
-			else
-			{
-				baseTop += margin.Top;
-			}
-
-			float x = contentLeft + baseLeft;
-			float y = contentTop + baseTop;
+			float x = contentLeft + (float)loc.x;
+			float y = contentTop + (float)loc.y;
 			float w = (float)size.cx;
 			float h = (float)size.cy;
 
@@ -1352,7 +1361,7 @@ void Form::Show()
 {
 	EnsureInitialDpiApplied();
 	if (this->Icon) SendMessage(this->Handle, WM_SETICON, ICON_BIG, (LPARAM)this->Icon);
-	SetWindowLong(this->Handle, GWL_STYLE, WS_POPUP);
+	SyncFormWindowStyles(this->Handle, this->_showInTaskBar, this->MinBox, this->MaxBox, this->CloseBox, this->AllowResize);
 	ShowWindow(this->Handle, SW_SHOWNORMAL);
 	this->OnSizeChanged(this);
 	this->Invalidate(true);
@@ -1405,7 +1414,7 @@ void Form::ShowDialog(HWND parent)
 	}
 
 	if (this->Icon) SendMessage(this->Handle, WM_SETICON, ICON_BIG, (LPARAM)this->Icon);
-	SetWindowLong(this->Handle, GWL_STYLE, WS_POPUP);
+	SyncFormWindowStyles(this->Handle, this->_showInTaskBar, this->MinBox, this->MaxBox, this->CloseBox, this->AllowResize);
 	ShowWindow(this->Handle, SW_SHOWNORMAL);
 	this->OnSizeChanged(this);
 	this->Invalidate(true);
@@ -2319,6 +2328,26 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 
 		switch (message)
 		{
+		case WM_NCCALCSIZE:
+		{
+			if (wParam)
+			{
+				NCCALCSIZE_PARAMS* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
+				if (params)
+				{
+					if (IsZoomed(hWnd))
+					{
+						const int inset = GetCustomFrameInset();
+						params->rgrc[0].left += inset;
+						params->rgrc[0].right -= inset;
+						params->rgrc[0].top += inset;
+						params->rgrc[0].bottom -= inset;
+					}
+					return 0;
+				}
+			}
+			break;
+		}
 		case WM_SETCURSOR:
 		{
 			if (LOWORD(lParam) == HTCLIENT)

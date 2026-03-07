@@ -76,29 +76,8 @@ void Panel::PerformLayout()
 			HorizontalAlignment hAlign = child->HAlign;
 			VerticalAlignment vAlign = child->VAlign;
 
-			// Anchor 模式下：当锚定到 Left/Top 且对应 Margin 非 0 时，将 Margin 视为到边界的绑定距离
-			// （避免 Location 与 Margin 在 Left/Top 方向叠加导致的“边距翻倍”）
-			float baseLeft = (float)loc.x;
-			float baseTop = (float)loc.y;
-			if (anchor & AnchorStyles::Left)
-			{
-				if (margin.Left != 0.0f) baseLeft = margin.Left;
-			}
-			else
-			{
-				baseLeft += margin.Left;
-			}
-			if (anchor & AnchorStyles::Top)
-			{
-				if (margin.Top != 0.0f) baseTop = margin.Top;
-			}
-			else
-			{
-				baseTop += margin.Top;
-			}
-
-			float x = contentLeft + baseLeft;
-			float y = contentTop + baseTop;
+			float x = contentLeft + (float)loc.x;
+			float y = contentTop + (float)loc.y;
 			float w = (float)size.cx;
 			float h = (float)size.cy;
 
@@ -136,7 +115,7 @@ void Panel::PerformLayout()
 			}
 			else
 			{
-				// 未设置 Anchor 时，使用对齐属性（Left/Top 为兼容模式：保留 Location 语义）
+				// 未设置 Anchor 时，使用对齐属性；Left/Top 基准直接来自 Margin.Left/Top。
 				if (hAlign == HorizontalAlignment::Stretch)
 				{
 					x = contentLeft + margin.Left;

@@ -49,7 +49,7 @@ TabPage* TabControl::AddPage(std::wstring name)
 {
 	TabPage* result = this->AddControl(new TabPage(name));
 	result->BackColor = this->BackColor;
-	result->Location = POINT{ 0, this->TitleHeight };
+	result->SetRuntimeLocation(POINT{ 0, this->TitleHeight });
 	{
 		SIZE s = this->Size;
 		s.cy = std::max(0L, s.cy - this->TitleHeight);
@@ -110,7 +110,7 @@ void TabControl::Update()
 				d2d->PopDrawRect();
 			}
 			TabPage* page = (TabPage*)this->operator[](this->SelectedIndex);
-			page->Location = POINT{ 0,(int)this->TitleHeight };
+			page->SetRuntimeLocation(POINT{ 0,(int)this->TitleHeight });
 			{
 				SIZE s = this->Size;
 				s.cy = std::max(0L, s.cy - this->TitleHeight);

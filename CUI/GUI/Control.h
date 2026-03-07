@@ -152,7 +152,6 @@ typedef Event<void(class Control*)> SelectionChangedEvent;
 class Control
 {
 protected:
-	POINT _location = { 0,0 };
 	SIZE _size = { 120,20 };
 	D2D1_COLOR_F _backcolor = Colors::gray91;
 	D2D1_COLOR_F _forecolor = Colors::Black;
@@ -195,13 +194,15 @@ protected:
 	void EnsureLayoutBase()
 	{
 		if (_layoutBaseInitialized) return;
-		_layoutBaseLocation = _location;
+		_layoutBaseLocation = POINT{ (LONG)_margin.Left, (LONG)_margin.Top };
 		_layoutBaseSize = _size;
 		_layoutBaseInitialized = true;
 	}
 
 	void UpdateLayoutBaseLocation(POINT value)
 	{
+		_margin.Left = (float)value.x;
+		_margin.Top = (float)value.y;
 		_layoutBaseLocation = value;
 		_layoutBaseInitialized = true;
 	}
@@ -437,6 +438,11 @@ public:
 	 * @brief 布局应用：由布局引擎/父容器设置最终位置与尺寸。
 	 */
 	void ApplyLayout(POINT location, SIZE size);
+	/**
+	 * @brief 仅更新运行时实际坐标，不改写 Margin/LayoutBase。
+	 * 供 TabControl/Menu/ToolBar 等手动管理子控件位置的容器使用。
+	 */
+	void SetRuntimeLocation(POINT value);
 
 	CursorKind Cursor = CursorKind::Arrow;
 	/**
