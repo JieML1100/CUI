@@ -188,6 +188,129 @@ static bool IsFloatMixFormat(const WAVEFORMATEX* wf)
 	return false;
 }
 
+static size_t WaveFormatByteSize(const WAVEFORMATEX* wf)
+{
+	if (!wf) return 0;
+	return sizeof(WAVEFORMATEX) + wf->cbSize;
+}
+
+static WAVEFORMATEX* CloneWaveFormat(const WAVEFORMATEX* wf)
+{
+	if (!wf) return nullptr;
+	const size_t bytes = WaveFormatByteSize(wf);
+	auto* copy = (WAVEFORMATEX*)CoTaskMemAlloc(bytes);
+	if (!copy) return nullptr;
+	memcpy(copy, wf, bytes);
+	return copy;
+}
+
+static GUID GetMfAudioSubtypeFromWaveFormat(const WAVEFORMATEX* wf)
+{
+	if (!wf) return GUID_NULL;
+	if (wf->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) return MFAudioFormat_Float;
+	if (wf->wFormatTag == WAVE_FORMAT_PCM) return MFAudioFormat_PCM;
+	if (wf->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
+	{
+		auto* ext = (const WAVEFORMATEXTENSIBLE*)wf;
+		if (ext->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) return MFAudioFormat_Float;
+		if (ext->SubFormat == KSDATAFORMAT_SUBTYPE_PCM) return MFAudioFormat_PCM;
+	}
+	return GUID_NULL;
+}
+
+static bool PopulateMfAudioTypeFromWaveFormat(IMFMediaType* mt, const WAVEFORMATEX* wf)
+{
+	if (!mt || !wf) return false;
+	const GUID subtype = GetMfAudioSubtypeFromWaveFormat(wf);
+	if (subtype == GUID_NULL) return false;
+	if (FAILED(mt->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio))) return false;
+	if (FAILED(mt->SetGUID(MF_MT_SUBTYPE, subtype))) return false;
+	if (FAILED(mt->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, wf->nChannels))) return false;
+	if (FAILED(mt->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, wf->nSamplesPerSec))) return false;
+	if (FAILED(mt->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, wf->wBitsPerSample))) return false;
+	if (FAILED(mt->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, wf->nBlockAlign))) return false;
+	if (FAILED(mt->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, wf->nAvgBytesPerSec))) return false;
+	(void)mt->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+	return true;
+}
+
+static WAVEFORMATEX* ResolveSharedModeWaveFormat(const WAVEFORMATEX* requested)
+{
+	if (!requested) return nullptr;
+	ComPtr<IMMDeviceEnumerator> enumerator;
+	ComPtr<IMMDevice> device;
+	ComPtr<IAudioClient> audioClient;
+	HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
+	if (FAILED(hr)) return nullptr;
+	hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
+	if (FAILED(hr)) return nullptr;
+	hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&audioClient);
+	if (FAILED(hr)) return nullptr;
+	WAVEFORMATEX* closest = nullptr;
+	hr = audioClient->IsFormatSupported(AUDCLNT_SHAREMODE_SHARED, requested, &closest);
+	if (hr == S_OK)
+	{
+		if (closest) CoTaskMemFree(closest);
+		return CloneWaveFormat(requested);
+	}
+	if (hr == S_FALSE && closest)
+	{
+		WAVEFORMATEX* resolved = CloneWaveFormat(closest);
+		CoTaskMemFree(closest);
+		return resolved;
+	}
+	if (closest) CoTaskMemFree(closest);
+	return nullptr;
+}
+
+static void FillPcmWaveFormat(WAVEFORMATEXTENSIBLE& wf, WORD channels, DWORD sampleRate, WORD bitsPerSample, bool isFloat)
+{
+	ZeroMemory(&wf, sizeof(wf));
+	wf.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+	wf.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+	wf.Format.nChannels = channels;
+	wf.Format.nSamplesPerSec = sampleRate;
+	wf.Format.wBitsPerSample = bitsPerSample;
+	wf.Format.nBlockAlign = (WORD)(channels * (bitsPerSample / 8));
+	wf.Format.nAvgBytesPerSec = wf.Format.nSamplesPerSec * wf.Format.nBlockAlign;
+	wf.Samples.wValidBitsPerSample = bitsPerSample;
+	wf.dwChannelMask = (channels == 1) ? SPEAKER_FRONT_CENTER : ((channels == 2) ? (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT) : 0);
+	wf.SubFormat = isFloat ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT : KSDATAFORMAT_SUBTYPE_PCM;
+}
+
+static void FillSimpleWaveFormat(WAVEFORMATEX& wf, WORD channels, DWORD sampleRate, WORD bitsPerSample, bool isFloat)
+{
+	ZeroMemory(&wf, sizeof(wf));
+	wf.wFormatTag = isFloat ? WAVE_FORMAT_IEEE_FLOAT : WAVE_FORMAT_PCM;
+	wf.cbSize = 0;
+	wf.nChannels = channels;
+	wf.nSamplesPerSec = sampleRate;
+	wf.wBitsPerSample = bitsPerSample;
+	wf.nBlockAlign = (WORD)(channels * (bitsPerSample / 8));
+	wf.nAvgBytesPerSec = wf.nSamplesPerSec * wf.nBlockAlign;
+}
+
+static bool WaveFormatsEquivalent(const WAVEFORMATEX* a, const WAVEFORMATEX* b)
+{
+	if (!a || !b) return false;
+	if (a->wFormatTag != b->wFormatTag) return false;
+	if (a->nChannels != b->nChannels) return false;
+	if (a->nSamplesPerSec != b->nSamplesPerSec) return false;
+	if (a->wBitsPerSample != b->wBitsPerSample) return false;
+	if (a->nBlockAlign != b->nBlockAlign) return false;
+	if (a->nAvgBytesPerSec != b->nAvgBytesPerSec) return false;
+	if (a->cbSize != b->cbSize) return false;
+	if (a->wFormatTag == WAVE_FORMAT_EXTENSIBLE && a->cbSize >= sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX))
+	{
+		auto* ea = (const WAVEFORMATEXTENSIBLE*)a;
+		auto* eb = (const WAVEFORMATEXTENSIBLE*)b;
+		if (ea->SubFormat != eb->SubFormat) return false;
+		if (ea->dwChannelMask != eb->dwChannelMask) return false;
+		if (ea->Samples.wValidBitsPerSample != eb->Samples.wValidBitsPerSample) return false;
+	}
+	return true;
+}
+
 class WsolaTimeStretch
 {
 public:
@@ -987,6 +1110,11 @@ HRESULT MediaPlayer::InitializeMF()
 
 bool MediaPlayer::InitWasapi()
 {
+	return InitWasapiWithFormat(nullptr);
+}
+
+bool MediaPlayer::InitWasapiWithFormat(const WAVEFORMATEX* format)
+{
 	ShutdownWasapi();
 	HRESULT hr = S_OK;
 
@@ -999,8 +1127,33 @@ bool MediaPlayer::InitWasapi()
 	hr = _audioDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&_audioClient);
 	if (FAILED(hr)) { DebugOutputHr(L"WASAPI: Activate IAudioClient", hr); return false; }
 
-	hr = _audioClient->GetMixFormat(&_audioMixFormat);
-	if (FAILED(hr) || !_audioMixFormat) { DebugOutputHr(L"WASAPI: GetMixFormat", hr); return false; }
+	if (format)
+	{
+		WAVEFORMATEX* closest = nullptr;
+		hr = _audioClient->IsFormatSupported(AUDCLNT_SHAREMODE_SHARED, format, &closest);
+		if (hr == S_OK)
+		{
+			if (closest) CoTaskMemFree(closest);
+			_audioMixFormat = CloneWaveFormat(format);
+		}
+		else if (hr == S_FALSE && closest)
+		{
+			_audioMixFormat = CloneWaveFormat(closest);
+			CoTaskMemFree(closest);
+		}
+		else
+		{
+			if (closest) CoTaskMemFree(closest);
+			DebugOutputHr(L"WASAPI: IsFormatSupported", hr);
+			return false;
+		}
+		if (!_audioMixFormat) return false;
+	}
+	else
+	{
+		hr = _audioClient->GetMixFormat(&_audioMixFormat);
+		if (FAILED(hr) || !_audioMixFormat) { DebugOutputHr(L"WASAPI: GetMixFormat", hr); return false; }
+	}
 
 	// Use shared mode, event-driven not required.
 	REFERENCE_TIME bufferDuration = 1000000; // 100ms
@@ -1084,43 +1237,88 @@ bool MediaPlayer::ConfigureSourceReaderAudioTypeFromMixFormat()
 	if (!_sourceReader) return false;
 	if (!_audioMixFormat) return false;
 
-	ComPtr<IMFMediaType> mt;
-	if (FAILED(MFCreateMediaType(&mt)) || !mt) return false;
-	if (FAILED(mt->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio))) return false;
-
-	GUID subtype = MFAudioFormat_PCM;
-	if (_audioMixFormat->wFormatTag == WAVE_FORMAT_IEEE_FLOAT || _audioMixFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
+	auto tryFormat = [&](const WAVEFORMATEX* waveFormat, const wchar_t* failContext) -> bool
 	{
-		// If extensible, use SubFormat.
-		if (_audioMixFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
+		WAVEFORMATEX* resolvedFormat = ResolveSharedModeWaveFormat(waveFormat);
+		if (!resolvedFormat) return false;
+		ComPtr<IMFMediaType> mt;
+		if (FAILED(MFCreateMediaType(&mt)) || !mt) { CoTaskMemFree(resolvedFormat); return false; }
+		if (!PopulateMfAudioTypeFromWaveFormat(mt.Get(), resolvedFormat)) { CoTaskMemFree(resolvedFormat); return false; }
+		HRESULT hr = _sourceReader->SetCurrentMediaType(_srAudioStream, nullptr, mt.Get());
+		if (FAILED(hr))
 		{
-			auto* ext = (WAVEFORMATEXTENSIBLE*)_audioMixFormat;
-			if (ext->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)
-				subtype = MFAudioFormat_Float;
-			else if (ext->SubFormat == KSDATAFORMAT_SUBTYPE_PCM)
-				subtype = MFAudioFormat_PCM;
+			DebugOutputHr(failContext, hr);
+			CoTaskMemFree(resolvedFormat);
+			return false;
 		}
-		else
+		if (!InitWasapiWithFormat(resolvedFormat))
 		{
-			subtype = MFAudioFormat_Float;
+			CoTaskMemFree(resolvedFormat);
+			return false;
+		}
+		CoTaskMemFree(resolvedFormat);
+		return true;
+	};
+
+	WAVEFORMATEX* originalMix = CloneWaveFormat(_audioMixFormat);
+	if (!originalMix) return false;
+
+	if (tryFormat(originalMix, L"SourceReader: SetCurrentMediaType(audio from mix) failed"))
+	{
+		CoTaskMemFree(originalMix);
+		return true;
+	}
+
+	for (DWORD typeIndex = 0; ; typeIndex++)
+	{
+		ComPtr<IMFMediaType> nativeType;
+		HRESULT nativeHr = _sourceReader->GetNativeMediaType(_srAudioStream, typeIndex, &nativeType);
+		if (nativeHr == MF_E_NO_MORE_TYPES) break;
+		if (FAILED(nativeHr) || !nativeType) continue;
+
+		WAVEFORMATEX* nativeWave = nullptr;
+		UINT32 nativeWaveSize = 0;
+		if (FAILED(MFCreateWaveFormatExFromMFMediaType(nativeType.Get(), &nativeWave, &nativeWaveSize, MFWaveFormatExConvertFlag_Normal)) || !nativeWave)
+			continue;
+
+		WAVEFORMATEX* resolvedNative = ResolveSharedModeWaveFormat(nativeWave);
+		if (resolvedNative && WaveFormatsEquivalent(nativeWave, resolvedNative))
+		{
+			if (SUCCEEDED(_sourceReader->SetCurrentMediaType(_srAudioStream, nullptr, nativeType.Get())) && InitWasapiWithFormat(nativeWave))
+			{
+				CoTaskMemFree(resolvedNative);
+				CoTaskMemFree(nativeWave);
+				CoTaskMemFree(originalMix);
+				return true;
+			}
+		}
+		if (resolvedNative) CoTaskMemFree(resolvedNative);
+		CoTaskMemFree(nativeWave);
+	}
+
+	const WORD mixChannels = originalMix->nChannels ? originalMix->nChannels : 2;
+	const DWORD mixRate = originalMix->nSamplesPerSec ? originalMix->nSamplesPerSec : 48000;
+	WAVEFORMATEX candidates[8]{};
+	FillSimpleWaveFormat(candidates[0], mixChannels, mixRate, 16, false);
+	FillSimpleWaveFormat(candidates[1], 2, mixRate, 16, false);
+	FillSimpleWaveFormat(candidates[2], 2, 48000, 16, false);
+	FillSimpleWaveFormat(candidates[3], 2, 44100, 16, false);
+	FillSimpleWaveFormat(candidates[4], 1, 44100, 16, false);
+	FillSimpleWaveFormat(candidates[5], 1, 22050, 16, false);
+	FillSimpleWaveFormat(candidates[6], 2, 48000, 32, true);
+	FillSimpleWaveFormat(candidates[7], 2, 44100, 32, true);
+
+	for (const auto& candidate : candidates)
+	{
+		if (tryFormat(&candidate, L"SourceReader: SetCurrentMediaType(audio fallback) failed"))
+		{
+			CoTaskMemFree(originalMix);
+			return true;
 		}
 	}
-	if (FAILED(mt->SetGUID(MF_MT_SUBTYPE, subtype))) return false;
 
-	(void)mt->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, _audioMixFormat->nChannels);
-	(void)mt->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, _audioMixFormat->nSamplesPerSec);
-	(void)mt->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, _audioMixFormat->wBitsPerSample);
-	(void)mt->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, _audioMixFormat->nBlockAlign);
-	(void)mt->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, _audioMixFormat->nAvgBytesPerSec);
-	(void)mt->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-
-	HRESULT hr = _sourceReader->SetCurrentMediaType(_srAudioStream, nullptr, mt.Get());
-	if (FAILED(hr))
-	{
-		DebugOutputHr(L"SourceReader: SetCurrentMediaType(audio from mix) failed", hr);
-		return false;
-	}
-	return true;
+	CoTaskMemFree(originalMix);
+	return false;
 }
 
 void MediaPlayer::UpdateVideoFormatFromSourceReader()
@@ -1286,6 +1484,8 @@ bool MediaPlayer::InitSourceReader(const std::wstring& url)
 	else
 	{
 		_hasAudio = false;
+		(void)_sourceReader->SetStreamSelection(_srAudioStream, FALSE);
+		ShutdownWasapi();
 	}
 
 	// Find actual stream indices
@@ -1407,6 +1607,8 @@ bool MediaPlayer::InitSourceReaderFromByteStream(IMFByteStream* byteStream)
 	else
 	{
 		_hasAudio = false;
+		(void)_sourceReader->SetStreamSelection(_srAudioStream, FALSE);
+		ShutdownWasapi();
 	}
 
 	// Find actual stream indices
@@ -1820,7 +2022,10 @@ void MediaPlayer::PlaybackThreadMain()
 		else if (isAudio)
 		{
 			_actualAudioStreamIndex = streamIndex;
-			_hasAudio = true;
+			if (!_hasAudio || !_audioClient || !_audioRenderClient || !_audioMixFormat)
+			{
+				continue;
+			}
 
 			float rate = ClampRate(_playbackRate.load());
 			const bool isFloat = IsFloatMixFormat(_audioMixFormat);

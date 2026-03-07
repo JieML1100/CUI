@@ -244,6 +244,7 @@ private:
 	bool InitSourceReaderFromByteStream(IMFByteStream* byteStream); // 从字节流初始化SourceReader
 	void ShutdownSourceReader();                      // 关闭SourceReader
 	bool InitWasapi();                                // 初始化WASAPI音频输出
+	bool InitWasapiWithFormat(const WAVEFORMATEX* format); // 使用指定格式初始化WASAPI
 	void ShutdownWasapi();                            // 关闭WASAPI
 	void PlaybackThreadMain();                        // 播放线程主函数
 	bool ConfigureSourceReaderVideoType();            // 配置SourceReader视频类型

@@ -13,6 +13,7 @@
 #include <audioclient.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <avrt.h>
+#include <cstdio>
 
 #include <ppl.h>
 
@@ -29,6 +30,19 @@
 // 常量定义
 static constexpr double HNS_PER_SEC = 10000000.0;  // 100-nanosecond 单位与秒的转换
 
+static void PrintLogWide(const wchar_t* text)
+{
+	if (!text) return;
+	OutputDebugStringW(text);
+	const int len = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
+	if (len <= 0) return;
+	std::string utf8((size_t)len, '\0');
+	if (WideCharToMultiByte(CP_UTF8, 0, text, -1, utf8.data(), len, nullptr, nullptr) <= 0)
+		return;
+	printf("%s", utf8.c_str());
+	fflush(stdout);
+}
+
 static float ClampRate(float rate)
 {
 	if (!(rate > 0.0f)) return 1.0f;
@@ -40,7 +54,7 @@ static void DebugOutputHr(const wchar_t* context, HRESULT hr)
 {
 	wchar_t buf[512] = {};
 	swprintf_s(buf, L"%s: 0x%08X\n", context ? context : L"", (unsigned)hr);
-	OutputDebugStringW(buf);
+	PrintLogWide(buf);
 }
 
 static LARGE_INTEGER QpcNow()
@@ -186,6 +200,129 @@ static bool IsFloatMixFormat(const WAVEFORMATEX* wf)
 		return ext->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
 	}
 	return false;
+}
+
+static size_t WaveFormatByteSize(const WAVEFORMATEX* wf)
+{
+	if (!wf) return 0;
+	return sizeof(WAVEFORMATEX) + wf->cbSize;
+}
+
+static WAVEFORMATEX* CloneWaveFormat(const WAVEFORMATEX* wf)
+{
+	if (!wf) return nullptr;
+	const size_t bytes = WaveFormatByteSize(wf);
+	auto* copy = (WAVEFORMATEX*)CoTaskMemAlloc(bytes);
+	if (!copy) return nullptr;
+	memcpy(copy, wf, bytes);
+	return copy;
+}
+
+static GUID GetMfAudioSubtypeFromWaveFormat(const WAVEFORMATEX* wf)
+{
+	if (!wf) return GUID_NULL;
+	if (wf->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) return MFAudioFormat_Float;
+	if (wf->wFormatTag == WAVE_FORMAT_PCM) return MFAudioFormat_PCM;
+	if (wf->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
+	{
+		auto* ext = (const WAVEFORMATEXTENSIBLE*)wf;
+		if (ext->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) return MFAudioFormat_Float;
+		if (ext->SubFormat == KSDATAFORMAT_SUBTYPE_PCM) return MFAudioFormat_PCM;
+	}
+	return GUID_NULL;
+}
+
+static bool PopulateMfAudioTypeFromWaveFormat(IMFMediaType* mt, const WAVEFORMATEX* wf)
+{
+	if (!mt || !wf) return false;
+	const GUID subtype = GetMfAudioSubtypeFromWaveFormat(wf);
+	if (subtype == GUID_NULL) return false;
+	if (FAILED(mt->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio))) return false;
+	if (FAILED(mt->SetGUID(MF_MT_SUBTYPE, subtype))) return false;
+	if (FAILED(mt->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, wf->nChannels))) return false;
+	if (FAILED(mt->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, wf->nSamplesPerSec))) return false;
+	if (FAILED(mt->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, wf->wBitsPerSample))) return false;
+	if (FAILED(mt->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, wf->nBlockAlign))) return false;
+	if (FAILED(mt->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, wf->nAvgBytesPerSec))) return false;
+	(void)mt->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+	return true;
+}
+
+static WAVEFORMATEX* ResolveSharedModeWaveFormat(const WAVEFORMATEX* requested)
+{
+	if (!requested) return nullptr;
+	ComPtr<IMMDeviceEnumerator> enumerator;
+	ComPtr<IMMDevice> device;
+	ComPtr<IAudioClient> audioClient;
+	HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
+	if (FAILED(hr)) return nullptr;
+	hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
+	if (FAILED(hr)) return nullptr;
+	hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&audioClient);
+	if (FAILED(hr)) return nullptr;
+	WAVEFORMATEX* closest = nullptr;
+	hr = audioClient->IsFormatSupported(AUDCLNT_SHAREMODE_SHARED, requested, &closest);
+	if (hr == S_OK)
+	{
+		if (closest) CoTaskMemFree(closest);
+		return CloneWaveFormat(requested);
+	}
+	if (hr == S_FALSE && closest)
+	{
+		WAVEFORMATEX* resolved = CloneWaveFormat(closest);
+		CoTaskMemFree(closest);
+		return resolved;
+	}
+	if (closest) CoTaskMemFree(closest);
+	return nullptr;
+}
+
+static void FillPcmWaveFormat(WAVEFORMATEXTENSIBLE& wf, WORD channels, DWORD sampleRate, WORD bitsPerSample, bool isFloat)
+{
+	ZeroMemory(&wf, sizeof(wf));
+	wf.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+	wf.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+	wf.Format.nChannels = channels;
+	wf.Format.nSamplesPerSec = sampleRate;
+	wf.Format.wBitsPerSample = bitsPerSample;
+	wf.Format.nBlockAlign = (WORD)(channels * (bitsPerSample / 8));
+	wf.Format.nAvgBytesPerSec = wf.Format.nSamplesPerSec * wf.Format.nBlockAlign;
+	wf.Samples.wValidBitsPerSample = bitsPerSample;
+	wf.dwChannelMask = (channels == 1) ? SPEAKER_FRONT_CENTER : ((channels == 2) ? (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT) : 0);
+	wf.SubFormat = isFloat ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT : KSDATAFORMAT_SUBTYPE_PCM;
+}
+
+static void FillSimpleWaveFormat(WAVEFORMATEX& wf, WORD channels, DWORD sampleRate, WORD bitsPerSample, bool isFloat)
+{
+	ZeroMemory(&wf, sizeof(wf));
+	wf.wFormatTag = isFloat ? WAVE_FORMAT_IEEE_FLOAT : WAVE_FORMAT_PCM;
+	wf.cbSize = 0;
+	wf.nChannels = channels;
+	wf.nSamplesPerSec = sampleRate;
+	wf.wBitsPerSample = bitsPerSample;
+	wf.nBlockAlign = (WORD)(channels * (bitsPerSample / 8));
+	wf.nAvgBytesPerSec = wf.nSamplesPerSec * wf.nBlockAlign;
+}
+
+static bool WaveFormatsEquivalent(const WAVEFORMATEX* a, const WAVEFORMATEX* b)
+{
+	if (!a || !b) return false;
+	if (a->wFormatTag != b->wFormatTag) return false;
+	if (a->nChannels != b->nChannels) return false;
+	if (a->nSamplesPerSec != b->nSamplesPerSec) return false;
+	if (a->wBitsPerSample != b->wBitsPerSample) return false;
+	if (a->nBlockAlign != b->nBlockAlign) return false;
+	if (a->nAvgBytesPerSec != b->nAvgBytesPerSec) return false;
+	if (a->cbSize != b->cbSize) return false;
+	if (a->wFormatTag == WAVE_FORMAT_EXTENSIBLE && a->cbSize >= sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX))
+	{
+		auto* ea = (const WAVEFORMATEXTENSIBLE*)a;
+		auto* eb = (const WAVEFORMATEXTENSIBLE*)b;
+		if (ea->SubFormat != eb->SubFormat) return false;
+		if (ea->dwChannelMask != eb->dwChannelMask) return false;
+		if (ea->Samples.wValidBitsPerSample != eb->Samples.wValidBitsPerSample) return false;
+	}
+	return true;
 }
 
 class WsolaTimeStretch
@@ -987,6 +1124,11 @@ HRESULT MediaPlayer::InitializeMF()
 
 bool MediaPlayer::InitWasapi()
 {
+	return InitWasapiWithFormat(nullptr);
+}
+
+bool MediaPlayer::InitWasapiWithFormat(const WAVEFORMATEX* format)
+{
 	ShutdownWasapi();
 	HRESULT hr = S_OK;
 
@@ -999,8 +1141,33 @@ bool MediaPlayer::InitWasapi()
 	hr = _audioDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&_audioClient);
 	if (FAILED(hr)) { DebugOutputHr(L"WASAPI: Activate IAudioClient", hr); return false; }
 
-	hr = _audioClient->GetMixFormat(&_audioMixFormat);
-	if (FAILED(hr) || !_audioMixFormat) { DebugOutputHr(L"WASAPI: GetMixFormat", hr); return false; }
+	if (format)
+	{
+		WAVEFORMATEX* closest = nullptr;
+		hr = _audioClient->IsFormatSupported(AUDCLNT_SHAREMODE_SHARED, format, &closest);
+		if (hr == S_OK)
+		{
+			if (closest) CoTaskMemFree(closest);
+			_audioMixFormat = CloneWaveFormat(format);
+		}
+		else if (hr == S_FALSE && closest)
+		{
+			_audioMixFormat = CloneWaveFormat(closest);
+			CoTaskMemFree(closest);
+		}
+		else
+		{
+			if (closest) CoTaskMemFree(closest);
+			DebugOutputHr(L"WASAPI: IsFormatSupported", hr);
+			return false;
+		}
+		if (!_audioMixFormat) return false;
+	}
+	else
+	{
+		hr = _audioClient->GetMixFormat(&_audioMixFormat);
+		if (FAILED(hr) || !_audioMixFormat) { DebugOutputHr(L"WASAPI: GetMixFormat", hr); return false; }
+	}
 
 	// Use shared mode, event-driven not required.
 	REFERENCE_TIME bufferDuration = 1000000; // 100ms
@@ -1084,43 +1251,90 @@ bool MediaPlayer::ConfigureSourceReaderAudioTypeFromMixFormat()
 	if (!_sourceReader) return false;
 	if (!_audioMixFormat) return false;
 
-	ComPtr<IMFMediaType> mt;
-	if (FAILED(MFCreateMediaType(&mt)) || !mt) return false;
-	if (FAILED(mt->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio))) return false;
-
-	GUID subtype = MFAudioFormat_PCM;
-	if (_audioMixFormat->wFormatTag == WAVE_FORMAT_IEEE_FLOAT || _audioMixFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
+	auto tryFormat = [&](const WAVEFORMATEX* waveFormat, const wchar_t* failContext, const wchar_t* successContext) -> bool
 	{
-		// If extensible, use SubFormat.
-		if (_audioMixFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
+		WAVEFORMATEX* resolvedFormat = ResolveSharedModeWaveFormat(waveFormat);
+		if (!resolvedFormat) return false;
+		ComPtr<IMFMediaType> mt;
+		if (FAILED(MFCreateMediaType(&mt)) || !mt) { CoTaskMemFree(resolvedFormat); return false; }
+		if (!PopulateMfAudioTypeFromWaveFormat(mt.Get(), resolvedFormat)) { CoTaskMemFree(resolvedFormat); return false; }
+		HRESULT hr = _sourceReader->SetCurrentMediaType(_srAudioStream, nullptr, mt.Get());
+		if (FAILED(hr))
 		{
-			auto* ext = (WAVEFORMATEXTENSIBLE*)_audioMixFormat;
-			if (ext->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)
-				subtype = MFAudioFormat_Float;
-			else if (ext->SubFormat == KSDATAFORMAT_SUBTYPE_PCM)
-				subtype = MFAudioFormat_PCM;
+			DebugOutputHr(failContext, hr);
+			CoTaskMemFree(resolvedFormat);
+			return false;
 		}
-		else
+		if (!InitWasapiWithFormat(resolvedFormat))
 		{
-			subtype = MFAudioFormat_Float;
+			CoTaskMemFree(resolvedFormat);
+			return false;
+		}
+		CoTaskMemFree(resolvedFormat);
+		PrintLogWide(successContext);
+		return true;
+	};
+
+	WAVEFORMATEX* originalMix = CloneWaveFormat(_audioMixFormat);
+	if (!originalMix) return false;
+
+	if (tryFormat(originalMix, L"SourceReader: SetCurrentMediaType(audio from mix) failed", L"[MediaPlayer] audio negotiated using device mix format\n"))
+	{
+		CoTaskMemFree(originalMix);
+		return true;
+	}
+
+	for (DWORD typeIndex = 0; ; typeIndex++)
+	{
+		ComPtr<IMFMediaType> nativeType;
+		HRESULT nativeHr = _sourceReader->GetNativeMediaType(_srAudioStream, typeIndex, &nativeType);
+		if (nativeHr == MF_E_NO_MORE_TYPES) break;
+		if (FAILED(nativeHr) || !nativeType) continue;
+
+		WAVEFORMATEX* nativeWave = nullptr;
+		UINT32 nativeWaveSize = 0;
+		if (FAILED(MFCreateWaveFormatExFromMFMediaType(nativeType.Get(), &nativeWave, &nativeWaveSize, MFWaveFormatExConvertFlag_Normal)) || !nativeWave)
+			continue;
+
+		WAVEFORMATEX* resolvedNative = ResolveSharedModeWaveFormat(nativeWave);
+		if (resolvedNative && WaveFormatsEquivalent(nativeWave, resolvedNative))
+		{
+			if (SUCCEEDED(_sourceReader->SetCurrentMediaType(_srAudioStream, nullptr, nativeType.Get())) && InitWasapiWithFormat(nativeWave))
+			{
+				CoTaskMemFree(resolvedNative);
+				CoTaskMemFree(nativeWave);
+				CoTaskMemFree(originalMix);
+				PrintLogWide(L"[MediaPlayer] audio negotiated using source native format\n");
+				return true;
+			}
+		}
+		if (resolvedNative) CoTaskMemFree(resolvedNative);
+		CoTaskMemFree(nativeWave);
+	}
+
+	const WORD mixChannels = originalMix->nChannels ? originalMix->nChannels : 2;
+	const DWORD mixRate = originalMix->nSamplesPerSec ? originalMix->nSamplesPerSec : 48000;
+	WAVEFORMATEX candidates[8]{};
+	FillSimpleWaveFormat(candidates[0], mixChannels, mixRate, 16, false);
+	FillSimpleWaveFormat(candidates[1], 2, mixRate, 16, false);
+	FillSimpleWaveFormat(candidates[2], 2, 48000, 16, false);
+	FillSimpleWaveFormat(candidates[3], 2, 44100, 16, false);
+	FillSimpleWaveFormat(candidates[4], 1, 44100, 16, false);
+	FillSimpleWaveFormat(candidates[5], 1, 22050, 16, false);
+	FillSimpleWaveFormat(candidates[6], 2, 48000, 32, true);
+	FillSimpleWaveFormat(candidates[7], 2, 44100, 32, true);
+
+	for (int i = 0; i < 8; i++)
+	{
+		if (tryFormat(&candidates[i], L"SourceReader: SetCurrentMediaType(audio fallback) failed", L"[MediaPlayer] audio negotiated using fallback PCM format\n"))
+		{
+			CoTaskMemFree(originalMix);
+			return true;
 		}
 	}
-	if (FAILED(mt->SetGUID(MF_MT_SUBTYPE, subtype))) return false;
 
-	(void)mt->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, _audioMixFormat->nChannels);
-	(void)mt->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, _audioMixFormat->nSamplesPerSec);
-	(void)mt->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, _audioMixFormat->wBitsPerSample);
-	(void)mt->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, _audioMixFormat->nBlockAlign);
-	(void)mt->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, _audioMixFormat->nAvgBytesPerSec);
-	(void)mt->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-
-	HRESULT hr = _sourceReader->SetCurrentMediaType(_srAudioStream, nullptr, mt.Get());
-	if (FAILED(hr))
-	{
-		DebugOutputHr(L"SourceReader: SetCurrentMediaType(audio from mix) failed", hr);
-		return false;
-	}
-	return true;
+	CoTaskMemFree(originalMix);
+	return false;
 }
 
 void MediaPlayer::UpdateVideoFormatFromSourceReader()
@@ -1187,7 +1401,7 @@ void MediaPlayer::UpdateVideoFormatFromSourceReader()
 			
 			wchar_t dbgMsg[256];
 			swprintf_s(dbgMsg, L"Video format: %dx%d, stride=%u, bpp=%u, bottomUp=%d\n", w, h, stride, bytesPerPixel, bottomUp ? 1 : 0);
-			OutputDebugStringW(dbgMsg);
+			PrintLogWide(dbgMsg);
 		}
 		else
 		{
@@ -1286,6 +1500,9 @@ bool MediaPlayer::InitSourceReader(const std::wstring& url)
 	else
 	{
 		_hasAudio = false;
+		(void)_sourceReader->SetStreamSelection(_srAudioStream, FALSE);
+		ShutdownWasapi();
+		PrintLogWide(L"[MediaPlayer] audio output negotiation failed, audio stream disabled for video-only playback\n");
 	}
 
 	// Find actual stream indices
@@ -1407,6 +1624,9 @@ bool MediaPlayer::InitSourceReaderFromByteStream(IMFByteStream* byteStream)
 	else
 	{
 		_hasAudio = false;
+		(void)_sourceReader->SetStreamSelection(_srAudioStream, FALSE);
+		ShutdownWasapi();
+		PrintLogWide(L"[MediaPlayer] audio output negotiation failed, audio stream disabled for video-only playback\n");
 	}
 
 	// Find actual stream indices
@@ -1585,6 +1805,12 @@ void MediaPlayer::PlaybackThreadMain()
 		const LARGE_INTEGER tRead1 = QpcNow();
 		const UINT64 readTicks = (UINT64)(tRead1.QuadPart - tRead0.QuadPart);
 		_statReadSampleQpcTicks.fetch_add(readTicks, std::memory_order_relaxed);
+		if (QpcTicksToMs(readTicks) >= 200.0)
+		{
+			wchar_t slowBuf[256] = {};
+			swprintf_s(slowBuf, L"[MediaPlayer][slow] ReadSample took %.3f ms, flags=0x%08X, stream=%u\n", QpcTicksToMs(readTicks), (unsigned)flags, (unsigned)streamIndex);
+			PrintLogWide(slowBuf);
+		}
 		if (FAILED(hr))
 		{
 			_lastMfError = hr;
@@ -1663,7 +1889,14 @@ void MediaPlayer::PlaybackThreadMain()
 		const LARGE_INTEGER tContig0 = QpcNow();
 		hr = sample->ConvertToContiguousBuffer(&buf);
 		const LARGE_INTEGER tContig1 = QpcNow();
-		_statSamplesToContigQpcTicks.fetch_add((UINT64)(tContig1.QuadPart - tContig0.QuadPart), std::memory_order_relaxed);
+		const UINT64 contigTicks = (UINT64)(tContig1.QuadPart - tContig0.QuadPart);
+		_statSamplesToContigQpcTicks.fetch_add(contigTicks, std::memory_order_relaxed);
+		if (QpcTicksToMs(contigTicks) >= 200.0)
+		{
+			wchar_t slowBuf[256] = {};
+			swprintf_s(slowBuf, L"[MediaPlayer][slow] ConvertToContiguousBuffer took %.3f ms\n", QpcTicksToMs(contigTicks));
+			PrintLogWide(slowBuf);
+		}
 		if (FAILED(hr) || !buf) continue;
 		BYTE* p = nullptr;
 		DWORD maxLen = 0, curLen = 0;
@@ -1745,8 +1978,15 @@ void MediaPlayer::PlaybackThreadMain()
 							_videoFrameReady = true;
 						}
 						const LARGE_INTEGER tVid1 = QpcNow();
-						_statVideoConvertQpcTicks.fetch_add((UINT64)(tVid1.QuadPart - tVid0.QuadPart), std::memory_order_relaxed);
+						const UINT64 vConvTicks = (UINT64)(tVid1.QuadPart - tVid0.QuadPart);
+						_statVideoConvertQpcTicks.fetch_add(vConvTicks, std::memory_order_relaxed);
 						_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
+						if (QpcTicksToMs(vConvTicks) >= 200.0)
+						{
+							wchar_t slowBuf[256] = {};
+							swprintf_s(slowBuf, L"[MediaPlayer][slow] NV12->BGRA took %.3f ms for %ux%u\n", QpcTicksToMs(vConvTicks), (unsigned)w, (unsigned)h);
+							PrintLogWide(slowBuf);
+						}
 						this->PostRender();
 					}
 					else
@@ -1806,8 +2046,15 @@ void MediaPlayer::PlaybackThreadMain()
 						_videoFrameReady = true;
 					}
 					const LARGE_INTEGER tVid1 = QpcNow();
-					_statVideoConvertQpcTicks.fetch_add((UINT64)(tVid1.QuadPart - tVid0.QuadPart), std::memory_order_relaxed);
+					const UINT64 vConvTicks = (UINT64)(tVid1.QuadPart - tVid0.QuadPart);
+					_statVideoConvertQpcTicks.fetch_add(vConvTicks, std::memory_order_relaxed);
 					_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
+					if (QpcTicksToMs(vConvTicks) >= 200.0)
+					{
+						wchar_t slowBuf[256] = {};
+						swprintf_s(slowBuf, L"[MediaPlayer][slow] Video normalize took %.3f ms for %ux%u, subtype=%08X-%04X\n", QpcTicksToMs(vConvTicks), (unsigned)w, (unsigned)h, subtype.Data1, subtype.Data2);
+						PrintLogWide(slowBuf);
+					}
 					this->PostRender();
 				}
 				else
@@ -1820,7 +2067,10 @@ void MediaPlayer::PlaybackThreadMain()
 		else if (isAudio)
 		{
 			_actualAudioStreamIndex = streamIndex;
-			_hasAudio = true;
+			if (!_hasAudio || !_audioClient || !_audioRenderClient || !_audioMixFormat)
+			{
+				continue;
+			}
 
 			float rate = ClampRate(_playbackRate.load());
 			const bool isFloat = IsFloatMixFormat(_audioMixFormat);
@@ -2888,7 +3138,14 @@ void MediaPlayer::Update()
 					_videoBitmap->CopyFromMemory(nullptr, frame.data(), expectedStride);
 				}
 				const LARGE_INTEGER tUp1 = QpcNow();
-				_statVideoUploadQpcTicks.fetch_add((UINT64)(tUp1.QuadPart - tUp0.QuadPart), std::memory_order_relaxed);
+				const UINT64 uploadTicks = (UINT64)(tUp1.QuadPart - tUp0.QuadPart);
+				_statVideoUploadQpcTicks.fetch_add(uploadTicks, std::memory_order_relaxed);
+				if (QpcTicksToMs(uploadTicks) >= 100.0)
+				{
+					wchar_t slowBuf[256] = {};
+					swprintf_s(slowBuf, L"[MediaPlayer][slow] CopyFromMemory took %.3f ms for %ux%u\n", QpcTicksToMs(uploadTicks), (unsigned)w, (unsigned)h);
+					PrintLogWide(slowBuf);
+				}
 			}
 		}
 
@@ -2972,7 +3229,14 @@ void MediaPlayer::Update()
 			const LARGE_INTEGER tDraw0 = QpcNow();
 			d2d->DrawBitmap(_videoBitmap, destX, destY, destWidth, destHeight);
 			const LARGE_INTEGER tDraw1 = QpcNow();
-			_statDrawBitmapQpcTicks.fetch_add((UINT64)(tDraw1.QuadPart - tDraw0.QuadPart), std::memory_order_relaxed);
+			const UINT64 drawTicks = (UINT64)(tDraw1.QuadPart - tDraw0.QuadPart);
+			_statDrawBitmapQpcTicks.fetch_add(drawTicks, std::memory_order_relaxed);
+			if (QpcTicksToMs(drawTicks) >= 50.0)
+			{
+				wchar_t slowBuf[256] = {};
+				swprintf_s(slowBuf, L"[MediaPlayer][slow] DrawBitmap took %.3f ms\n", QpcTicksToMs(drawTicks));
+				PrintLogWide(slowBuf);
+			}
 			this->EndRender();
 			ReportPerfStatsIfDue();
 			return;
@@ -2984,84 +3248,7 @@ void MediaPlayer::Update()
 
 void MediaPlayer::ReportPerfStatsIfDue()
 {
-	if (!_mediaLoaded) return;
-
-	const auto freq = QpcFreq();
-	if (freq.QuadPart <= 0) return;
-
-	const LONGLONG now = QpcNow().QuadPart;
-	LONGLONG last = _statLastReportQpc.load(std::memory_order_relaxed);
-	if (last != 0 && (now - last) < freq.QuadPart) return;
-	if (!_statLastReportQpc.compare_exchange_strong(last, now, std::memory_order_relaxed))
-		return;
-
-	const double intervalSec = (last == 0) ? 1.0 : (double)(now - last) / (double)freq.QuadPart;
-	if (intervalSec <= 0.0) return;
-
-	const UINT64 rsCalls = _statReadSampleCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 rsTicks = _statReadSampleQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 rsVC = _statReadSampleVideoCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 rsVT = _statReadSampleVideoQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 rsAC = _statReadSampleAudioCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 rsAT = _statReadSampleAudioQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 contigCalls = _statSamplesToContigCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 contigTicks = _statSamplesToContigQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 vFrames = _statDecodedVideoFrames.exchange(0, std::memory_order_relaxed);
-	const UINT64 vConvCalls = _statVideoConvertCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 vConvTicks = _statVideoConvertQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 vConvBytes = _statVideoConvertBytes.exchange(0, std::memory_order_relaxed);
-	const UINT64 aCalls = _statAudioWriteCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 aTicks = _statAudioWriteQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 aBytes = _statAudioWriteBytes.exchange(0, std::memory_order_relaxed);
-	const UINT64 uCalls = _statVideoUploadCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 uTicks = _statVideoUploadQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 uBytes = _statVideoUploadBytes.exchange(0, std::memory_order_relaxed);
-	const UINT64 dCalls = _statDrawBitmapCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 dTicks = _statDrawBitmapQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 updCalls = _statRenderUpdates.exchange(0, std::memory_order_relaxed);
-
-	const double fps = (intervalSec > 0.0) ? (double)vFrames / intervalSec : 0.0;
-	const double readAvgMs = (rsCalls > 0) ? QpcTicksToMs(rsTicks) / (double)rsCalls : 0.0;
-	const double readVAvgMs = (rsVC > 0) ? QpcTicksToMs(rsVT) / (double)rsVC : 0.0;
-	const double readAAvgMs = (rsAC > 0) ? QpcTicksToMs(rsAT) / (double)rsAC : 0.0;
-	const double contigAvgMs = (contigCalls > 0) ? QpcTicksToMs(contigTicks) / (double)contigCalls : 0.0;
-	const double vConvAvgMs = (vConvCalls > 0) ? QpcTicksToMs(vConvTicks) / (double)vConvCalls : 0.0;
-	const double aAvgMs = (aCalls > 0) ? QpcTicksToMs(aTicks) / (double)aCalls : 0.0;
-	const double upAvgMs = (uCalls > 0) ? QpcTicksToMs(uTicks) / (double)uCalls : 0.0;
-	const double drawAvgMs = (dCalls > 0) ? QpcTicksToMs(dTicks) / (double)dCalls : 0.0;
-	const double vConvMBs = (intervalSec > 0.0) ? ((double)vConvBytes / (1024.0 * 1024.0)) / intervalSec : 0.0;
-	const double upMBs = (intervalSec > 0.0) ? ((double)uBytes / (1024.0 * 1024.0)) / intervalSec : 0.0;
-	const double aMBs = (intervalSec > 0.0) ? ((double)aBytes / (1024.0 * 1024.0)) / intervalSec : 0.0;
-
-	wchar_t buf[512] = {};
-	swprintf_s(
-		buf,
-		L"[MediaPlayer][%.2fs] mode=%s nv12=%s upd=%llu fps=%.1f | ReadSample %llux %.3fms (V:%llux %.3fms A:%llux %.3fms) | Contig %llux %.3fms | VConv %llux %.3fms %.1fMB/s | Upload %llux %.3fms %.1fMB/s | Draw %llux %.3fms | Audio %llux %.3fms %.1fMB/s\n",
-		intervalSec,
-		(_usingHardwareDecode ? L"HW" : L"SW"),
-		(_usingNv12VideoOutput ? L"Y" : L"N"),
-		(unsigned long long)updCalls,
-		fps,
-		(unsigned long long)rsCalls,
-		readAvgMs,
-		(unsigned long long)rsVC,
-		readVAvgMs,
-		(unsigned long long)rsAC,
-		readAAvgMs,
-		(unsigned long long)contigCalls,
-		contigAvgMs,
-		(unsigned long long)vConvCalls,
-		vConvAvgMs,
-		vConvMBs,
-		(unsigned long long)uCalls,
-		upAvgMs,
-		upMBs,
-		(unsigned long long)dCalls,
-		drawAvgMs,
-		(unsigned long long)aCalls,
-		aAvgMs,
-		aMBs);
-	OutputDebugStringW(buf);
+	return;
 }
 
 bool MediaPlayer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
