@@ -1250,15 +1250,14 @@ void Form::PerformLayout()
 			if (control->Type() == UIClass::UI_Menu) continue;
 			
 			control->EnsureLayoutBase();
-			POINT loc = control->_layoutBaseLocation;
 			SIZE size = control->_layoutBaseSize;
 			Thickness margin = control->Margin;
 			uint8_t anchor = control->AnchorStyles;
 			HorizontalAlignment hAlign = control->HAlign;
 			VerticalAlignment vAlign = control->VAlign;
 
-			float x = contentLeft + (float)loc.x;
-			float y = contentTop + (float)loc.y;
+			float x = contentLeft + margin.Left;
+			float y = contentTop + margin.Top;
 			float w = (float)size.cx;
 			float h = (float)size.cy;
 
@@ -1273,7 +1272,8 @@ void Form::PerformLayout()
 				// 左右都锚定：宽度随窗口变化
 				if ((anchor & AnchorStyles::Left) && (anchor & AnchorStyles::Right))
 				{
-					w = (float)clientSize.cx - margin.Right - x;
+					x = margin.Left;
+					w = contentWidth - margin.Left - margin.Right;
 					if (w < 0) w = 0;
 				}
 				// 只锚定右边：跟随右边缘
@@ -1281,17 +1281,26 @@ void Form::PerformLayout()
 				{
 					x = (float)clientSize.cx - margin.Right - w;
 				}
+				else
+				{
+					x = margin.Left;
+				}
 				
 				// 上下都锚定：高度随窗口变化
 				if ((anchor & AnchorStyles::Top) && (anchor & AnchorStyles::Bottom))
 				{
-					h = (float)clientSize.cy - margin.Bottom - y;
+					y = margin.Top;
+					h = contentHeight - margin.Top - margin.Bottom;
 					if (h < 0) h = 0;
 				}
 				// 只锚定下边：跟随下边缘
 				else if (anchor & AnchorStyles::Bottom)
 				{
 					y = (float)clientSize.cy - margin.Bottom - h;
+				}
+				else
+				{
+					y = margin.Top;
 				}
 			}
 			else

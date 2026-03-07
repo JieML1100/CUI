@@ -185,25 +185,14 @@ protected:
 	SIZE _minSize = {0, 0};
 	SIZE _maxSize = {INT_MAX, INT_MAX};
 
-	// 默认 Anchor/Margin 布局使用的“基准”位置/尺寸（不随 ApplyLayout 写回而变化）
-	// 用于保证重复 PerformLayout 幂等，避免位置/尺寸在多次布局时累计偏移。
-	POINT _layoutBaseLocation = { 0,0 };
+	// 默认布局只以 Margin 表达位置；这里仅保留尺寸基准，避免重复布局时尺寸累计漂移。
 	SIZE _layoutBaseSize = { 120,20 };
 	bool _layoutBaseInitialized = false;
 
 	void EnsureLayoutBase()
 	{
 		if (_layoutBaseInitialized) return;
-		_layoutBaseLocation = POINT{ (LONG)_margin.Left, (LONG)_margin.Top };
 		_layoutBaseSize = _size;
-		_layoutBaseInitialized = true;
-	}
-
-	void UpdateLayoutBaseLocation(POINT value)
-	{
-		_margin.Left = (float)value.x;
-		_margin.Top = (float)value.y;
-		_layoutBaseLocation = value;
 		_layoutBaseInitialized = true;
 	}
 

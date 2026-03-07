@@ -69,15 +69,14 @@ void Panel::PerformLayout()
 			if (!child || !child->Visible) continue;
 			
 			child->EnsureLayoutBase();
-			POINT loc = child->_layoutBaseLocation;
 			SIZE size = child->_layoutBaseSize;
 			Thickness margin = child->Margin;
 			uint8_t anchor = child->AnchorStyles;
 			HorizontalAlignment hAlign = child->HAlign;
 			VerticalAlignment vAlign = child->VAlign;
 
-			float x = contentLeft + (float)loc.x;
-			float y = contentTop + (float)loc.y;
+			float x = contentLeft + margin.Left;
+			float y = contentTop + margin.Top;
 			float w = (float)size.cx;
 			float h = (float)size.cy;
 
@@ -92,25 +91,35 @@ void Panel::PerformLayout()
 				// 左右都锚定：宽度随容器变化
 				if ((anchor & AnchorStyles::Left) && (anchor & AnchorStyles::Right))
 				{
-					w = (float)containerSize.cx - padding.Right - margin.Right - x;
+					x = contentLeft + margin.Left;
+					w = contentWidth - margin.Left - margin.Right;
 					if (w < 0) w = 0;
 				}
 				// 只锚定右边：跟随右边缘
 				else if (anchor & AnchorStyles::Right)
 				{
-					x = (float)containerSize.cx - padding.Right - margin.Right - w;
+					x = contentLeft + contentWidth - margin.Right - w;
+				}
+				else
+				{
+					x = contentLeft + margin.Left;
 				}
 				
 				// 上下都锚定：高度随容器变化
 				if ((anchor & AnchorStyles::Top) && (anchor & AnchorStyles::Bottom))
 				{
-					h = (float)containerSize.cy - padding.Bottom - margin.Bottom - y;
+					y = contentTop + margin.Top;
+					h = contentHeight - margin.Top - margin.Bottom;
 					if (h < 0) h = 0;
 				}
 				// 只锚定下边：跟随下边缘
 				else if (anchor & AnchorStyles::Bottom)
 				{
-					y = (float)containerSize.cy - padding.Bottom - margin.Bottom - h;
+					y = contentTop + contentHeight - margin.Bottom - h;
+				}
+				else
+				{
+					y = contentTop + margin.Top;
 				}
 			}
 			else

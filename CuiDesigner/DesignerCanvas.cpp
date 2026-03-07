@@ -610,7 +610,6 @@ void DesignerCanvas::LiftSelectedToRootForDrag()
 	auto* parent = moving->Parent;
 	if (!parent) return;
 	if (parent == _clientSurface) return;
-	if (!IsLayoutContainer(parent)) return;
 
 	const auto parentType = parent->Type();
 	const bool fromGrid = (parentType == UIClass::UI_GridPanel);
@@ -624,7 +623,8 @@ void DesignerCanvas::LiftSelectedToRootForDrag()
 	if (w < 0) w = 0;
 	if (h < 0) h = 0;
 
-	// 从布局容器移除，加入根客户区；这样拖动时不再受布局/裁剪限制
+	// 从原容器移除，加入根客户区；这样拖动时不再受父容器裁剪限制。
+	// 鼠标释放后再根据落点决定是否重新放回原容器或其他容器。
 	parent->RemoveControl(moving);
 	_clientSurface->AddControl(moving);
 	moving->Location = newLocal;
@@ -715,8 +715,9 @@ void DesignerCanvas::ApplyRectToControl(Control* c, const RECT& rectInCanvas)
 		auto m = c->Margin;
 		m.Left = (float)newLocal.x;
 		m.Top = (float)newLocal.y;
+		m.Right = 0.0f;
+		m.Bottom = 0.0f;
 		c->Margin = m;
-		c->Location = { 0,0 };
 		c->Size = { newW, newH };
 		if (auto* p = dynamic_cast<Panel*>(parent))
 		{
@@ -746,41 +747,19 @@ void DesignerCanvas::ApplyRectToControl(Control* c, const RECT& rectInCanvas)
 
 	auto m = c->Margin;
 	uint8_t a = c->AnchorStyles;
+	m.Left = (float)leftDist;
+	m.Top = (float)topDist;
 
 	// 水平：
 	if (a & AnchorStyles::Right)
 	{
 		m.Right = (float)rightDist;
 	}
-	if (a & AnchorStyles::Left)
-	{
-		// Left 锚定时：如果当前已经用 Margin.Left 表达，则保持这种语义；否则用 Location 表达
-		if (m.Left != 0.0f)
-			m.Left = (float)leftDist;
-		else
-			c->Location = { leftDist, c->Location.y };
-	}
-	else
-	{
-		// 没有 Left：运行时会用 loc.x + margin.Left
-		c->Location = { (int)std::lround((double)leftDist - (double)m.Left), c->Location.y };
-	}
 
 	// 垂直：
 	if (a & AnchorStyles::Bottom)
 	{
 		m.Bottom = (float)bottomDist;
-	}
-	if (a & AnchorStyles::Top)
-	{
-		if (m.Top != 0.0f)
-			m.Top = (float)topDist;
-		else
-			c->Location = { c->Location.x, topDist };
-	}
-	else
-	{
-		c->Location = { c->Location.x, (int)std::lround((double)topDist - (double)m.Top) };
 	}
 
 	// 尺寸：在 Left+Right / Top+Bottom 同时锚定时，运行时会由 margin 推导出 size。

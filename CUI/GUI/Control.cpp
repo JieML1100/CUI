@@ -17,7 +17,6 @@ Control::Control()
 	SizeMode(ImageSizeMode::Zoom),
 	_text(L"")
 {
-	this->_layoutBaseLocation = POINT{ (LONG)this->_margin.Left, (LONG)this->_margin.Top };
 	this->_layoutBaseSize = this->_size;
 	this->_layoutBaseInitialized = true;
 }
@@ -216,7 +215,6 @@ GET_CPP(Control, POINT, Location)
 SET_CPP(Control, POINT, Location)
 {
 	POINT oldLocation = this->Location;
-	this->UpdateLayoutBaseLocation(value);
 	_margin.Left = static_cast<float>(value.x);
 	_margin.Top = static_cast<float>(value.y);
 	this->RequestLayout();
@@ -511,8 +509,6 @@ SET_CPP(Control, Thickness, Margin)
 	{
 		POINT oldLocation = this->Location;
 		_margin = value;
-		_layoutBaseLocation = POINT{ (LONG)_margin.Left, (LONG)_margin.Top };
-		_layoutBaseInitialized = true;
 		this->RequestLayout();
 		if (oldLocation.x != static_cast<int>(_margin.Left) || oldLocation.y != static_cast<int>(_margin.Top))
 		{
