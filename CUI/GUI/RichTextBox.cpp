@@ -1085,15 +1085,15 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			}
 		}
 
-		auto pos = this->AbsLocation;
-		pos.x += this->selectedPos.x;
-		pos.y += this->selectedPos.y;
-		HIMC hImc = ImmGetContext(this->ParentForm->Handle);
-		COMPOSITIONFORM form;
-		form.dwStyle = CFS_RECT;
-		form.ptCurrentPos = pos;
-		form.rcArea = RECT{ pos.x, pos.y + this->Height, pos.x + 300, pos.y + 240 };
-		ImmSetCompositionWindow(hImc, &form);
+		if (this->ParentForm)
+		{
+			auto pos = this->AbsLocation;
+			pos.x += this->selectedPos.x;
+			pos.y += this->selectedPos.y;
+			float caretH = (this->Font && this->Font->FontHeight > 0.0f) ? this->Font->FontHeight : 16.0f;
+			this->ParentForm->SetImeCompositionWindowFromLogicalRect(
+				D2D1_RECT_F{ (float)pos.x, (float)pos.y, (float)pos.x + 1.0f, (float)pos.y + caretH });
+		}
 		if (wParam == VK_DELETE)
 		{
 			this->InputDelete();

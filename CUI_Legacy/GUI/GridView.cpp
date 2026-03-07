@@ -2383,14 +2383,12 @@ void GridView::EditSetImeCompositionWindow()
 	if (!TryGetCellRectLocal(this->EditingColumnIndex, this->EditingRowIndex, rect)) return;
 
 	auto pos = this->AbsLocation;
-	POINT pt{ pos.x + (int)rect.left, pos.y + (int)rect.top };
-	HIMC hImc = ImmGetContext(this->ParentForm->Handle);
-	if (!hImc) return;
-	COMPOSITIONFORM form;
-	form.dwStyle = CFS_RECT;
-	form.ptCurrentPos = pt;
-	form.rcArea = RECT{ pt.x, pt.y + (LONG)(rect.bottom - rect.top), pt.x + 400, pt.y + 240 };
-	ImmSetCompositionWindow(hImc, &form);
-	ImmReleaseContext(this->ParentForm->Handle, hImc);
+	this->ParentForm->SetImeCompositionWindowFromLogicalRect(
+		D2D1_RECT_F{
+			(float)pos.x + rect.left,
+			(float)pos.y + rect.top,
+			(float)pos.x + rect.right,
+			(float)pos.y + rect.bottom
+		});
 }
 #pragma endregion

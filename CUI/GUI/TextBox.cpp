@@ -516,13 +516,23 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 				return true;
 			}
 		}
-		auto pos = this->AbsLocation;
-		HIMC hImc = ImmGetContext(this->ParentForm->Handle);
-		COMPOSITIONFORM form;
-		form.dwStyle = CFS_RECT;
-		form.ptCurrentPos = pos;
-		form.rcArea = RECT{ pos.x, pos.y + this->Height, pos.x + 300, pos.y + 240 };
-		ImmSetCompositionWindow(hImc, &form);
+		if (this->ParentForm)
+		{
+			D2D1_RECT_F imeRect{};
+			if (this->_caretRectCacheValid)
+			{
+				imeRect = this->_caretRectCache;
+			}
+			else
+			{
+				auto abs = this->AbsLocation;
+				float caretX = (float)abs.x + this->TextMargin - this->OffsetX;
+				float caretY = (float)abs.y;
+				float caretH = (this->Font && this->Font->FontHeight > 0.0f) ? this->Font->FontHeight : 16.0f;
+				imeRect = D2D1_RECT_F{ caretX, caretY, caretX + 1.0f, caretY + caretH };
+			}
+			this->ParentForm->SetImeCompositionWindowFromLogicalRect(imeRect);
+		}
 		if (wParam == VK_DELETE)
 		{
 			this->InputDelete();

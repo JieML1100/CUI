@@ -3,6 +3,7 @@
 #include "DCompLayeredHost.h"
 #include <algorithm>
 #include <functional>
+#include <cmath>
 #include <unordered_map>
 #include <oleidl.h>
 #include <shellapi.h>
@@ -40,6 +41,48 @@ HCURSOR Form::GetSystemCursor(CursorKind kind)
 	HCURSOR h = LoadCursorW(NULL, id);
 	cache.emplace(kind, h);
 	return h;
+}
+
+void Form::SetImeCompositionWindowFromLogicalRect(const D2D1_RECT_F& logicalRect)
+{
+	if (!this->Handle || !::IsWindow(this->Handle)) return;
+
+	HIMC hImc = ImmGetContext(this->Handle);
+	if (!hImc) return;
+
+	float dpiScale = GetDpiScale();
+	if (dpiScale <= 0.0f) dpiScale = 1.0f;
+	float headLogical = this->VisibleHead ? ((float)this->HeadHeight / dpiScale) : 0.0f;
+
+	LONG left = (LONG)std::lround(logicalRect.left * dpiScale);
+	LONG top = (LONG)std::lround((logicalRect.top + headLogical) * dpiScale);
+	LONG right = (LONG)std::lround(logicalRect.right * dpiScale);
+	LONG bottom = (LONG)std::lround((logicalRect.bottom + headLogical) * dpiScale);
+	if (right < left) right = left;
+	if (bottom < top) bottom = top;
+
+	POINT anchor{ left, bottom };
+	COMPOSITIONFORM composition{};
+	composition.dwStyle = CFS_POINT;
+	composition.ptCurrentPos = anchor;
+	ImmSetCompositionWindow(hImc, &composition);
+
+	CANDIDATEFORM candidate{};
+	candidate.dwStyle = CFS_EXCLUDE;
+	candidate.ptCurrentPos = anchor;
+	candidate.rcArea = RECT{
+		left,
+		top,
+		(std::max)(left + 1, right),
+		(std::max)(top + 1, bottom)
+	};
+	for (DWORD index = 0; index < 4; ++index)
+	{
+		candidate.dwIndex = index;
+		ImmSetCandidateWindow(hImc, &candidate);
+	}
+
+	ImmReleaseContext(this->Handle, hImc);
 }
 
 void Form::ApplyCursor(CursorKind kind)

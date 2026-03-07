@@ -480,13 +480,13 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 	break;
 	case WM_KEYDOWN:
 	{
-		auto pos = this->AbsLocation;
-		HIMC hImc = ImmGetContext(this->ParentForm->Handle);
-		COMPOSITIONFORM form;
-		form.dwStyle = CFS_RECT;
-		form.ptCurrentPos = pos;
-		form.rcArea = RECT{ pos.x, pos.y + this->Height, pos.x + 300, pos.y + 240 };
-		ImmSetCompositionWindow(hImc, &form);
+		if (this->ParentForm)
+		{
+			auto pos = this->AbsLocation;
+			float caretH = (this->Font && this->Font->FontHeight > 0.0f) ? this->Font->FontHeight : 16.0f;
+			this->ParentForm->SetImeCompositionWindowFromLogicalRect(
+				D2D1_RECT_F{ (float)pos.x, (float)pos.y, (float)pos.x + 1.0f, (float)pos.y + caretH });
+		}
 		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
 		this->OnKeyDown(this, event_obj);
 		this->PostRender();

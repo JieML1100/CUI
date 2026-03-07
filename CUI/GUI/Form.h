@@ -212,6 +212,7 @@ public:
 	int HeadHeight = 24;
 	/** @brief Returns the current DPI-to-96 scale factor (e.g., 2.0 at 192 DPI). */
 	float GetDpiScale() const { return _dpi > 0 ? (_dpi / 96.0f) : 1.0f; }
+	void SetImeCompositionWindowFromLogicalRect(const D2D1_RECT_F& logicalRect);
 	D2D1_COLOR_F BackColor = Colors::WhiteSmoke;
 	D2D1_COLOR_F ForeColor = Colors::Black;
 	PROPERTY(std::shared_ptr<BitmapSource>, Image);
