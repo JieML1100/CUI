@@ -1,4 +1,4 @@
-#include "LinkLabel.h"
+﻿#include "LinkLabel.h"
 #include "Form.h"
 
 UIClass LinkLabel::Type() { return UIClass::UI_LinkLabel; }

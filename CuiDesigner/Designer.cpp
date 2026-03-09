@@ -1,4 +1,4 @@
-#include "Designer.h"
+﻿#include "Designer.h"
 #include <Windows.h>
 #include <commdlg.h>
 #include <commctrl.h>

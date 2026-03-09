@@ -1,4 +1,4 @@
-#include "DemoWindow.h"
+﻿#include "DemoWindow.h"
 
 #include "imgs.h"
 #include "../CUI/nanosvg.h"
@@ -7,113 +7,113 @@
 
 namespace {
 
-std::shared_ptr<BitmapSource> ToBitmapFromSvg(const char* data)
-{
-	if (!data) return {};
-	int len = (int)strlen(data) + 1;
-	char* svg_text = new char[len];
-	memcpy(svg_text, data, len);
-	NSVGimage* image = nsvgParse(svg_text, "px", 96.0f);
-	delete[] svg_text;
-	if (!image) return {};
-	float percen = 1.0f;
-	if (image->width > 4096 || image->height > 4096)
+	std::shared_ptr<BitmapSource> ToBitmapFromSvg(const char* data)
 	{
-		float maxv = image->width > image->height ? image->width : image->height;
-		percen = 4096.0f / maxv;
-	}
-	auto renderSource = BitmapSource::CreateEmpty(image->width * percen, image->height * percen);
-	auto subg = new D2DGraphics(renderSource.get());
-	NSVGshape* shape;
-	NSVGpath* path;
-	subg->BeginRender();
-	subg->Clear(D2D1::ColorF(0, 0, 0, 0));
-	for (shape = image->shapes; shape != NULL; shape = shape->next)
-	{
-		auto geo = Factory::CreateGeomtry();
-		if (geo)
+		if (!data) return {};
+		int len = (int)strlen(data) + 1;
+		char* svg_text = new char[len];
+		memcpy(svg_text, data, len);
+		NSVGimage* image = nsvgParse(svg_text, "px", 96.0f);
+		delete[] svg_text;
+		if (!image) return {};
+		float percen = 1.0f;
+		if (image->width > 4096 || image->height > 4096)
 		{
-			ID2D1GeometrySink* skin = NULL;
-			geo->Open(&skin);
-			if (skin)
+			float maxv = image->width > image->height ? image->width : image->height;
+			percen = 4096.0f / maxv;
+		}
+		auto renderSource = BitmapSource::CreateEmpty(image->width * percen, image->height * percen);
+		auto subg = new D2DGraphics(renderSource.get());
+		NSVGshape* shape;
+		NSVGpath* path;
+		subg->BeginRender();
+		subg->Clear(D2D1::ColorF(0, 0, 0, 0));
+		for (shape = image->shapes; shape != NULL; shape = shape->next)
+		{
+			auto geo = Factory::CreateGeomtry();
+			if (geo)
 			{
-				for (path = shape->paths; path != NULL; path = path->next)
+				ID2D1GeometrySink* skin = NULL;
+				geo->Open(&skin);
+				if (skin)
 				{
-					for (int i = 0; i < path->npts - 1; i += 3)
+					for (path = shape->paths; path != NULL; path = path->next)
 					{
-						float* p = &path->pts[i * 2];
-						if (i == 0)
-							skin->BeginFigure({ p[0] * percen, p[1] * percen }, D2D1_FIGURE_BEGIN_FILLED);
-						skin->AddBezier({ {p[2] * percen, p[3] * percen},{p[4] * percen, p[5] * percen},{p[6] * percen, p[7] * percen} });
+						for (int i = 0; i < path->npts - 1; i += 3)
+						{
+							float* p = &path->pts[i * 2];
+							if (i == 0)
+								skin->BeginFigure({ p[0] * percen, p[1] * percen }, D2D1_FIGURE_BEGIN_FILLED);
+							skin->AddBezier({ {p[2] * percen, p[3] * percen},{p[4] * percen, p[5] * percen},{p[6] * percen, p[7] * percen} });
+						}
+						skin->EndFigure(path->closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
 					}
-					skin->EndFigure(path->closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
 				}
+				skin->Close();
 			}
-			skin->Close();
-		}
 
-		auto getSvgBrush = [](NSVGpaint paint, float opacity, D2DGraphics* g) -> ID2D1Brush*
-			{
-				const auto ic2fc = [](int colorInt, float opacity) -> D2D1_COLOR_F
-					{
-						return D2D1_COLOR_F{ (float)GetRValue(colorInt) / 255.0f ,(float)GetGValue(colorInt) / 255.0f ,(float)GetBValue(colorInt) / 255.0f ,opacity };
-					};
-				switch (paint.type)
+			auto getSvgBrush = [](NSVGpaint paint, float opacity, D2DGraphics* g) -> ID2D1Brush*
 				{
-				case NSVG_PAINT_NONE:
+					const auto ic2fc = [](int colorInt, float opacity) -> D2D1_COLOR_F
+						{
+							return D2D1_COLOR_F{ (float)GetRValue(colorInt) / 255.0f ,(float)GetGValue(colorInt) / 255.0f ,(float)GetBValue(colorInt) / 255.0f ,opacity };
+						};
+					switch (paint.type)
+					{
+					case NSVG_PAINT_NONE:
+						return NULL;
+					case NSVG_PAINT_COLOR:
+						return g->CreateSolidColorBrush(ic2fc(paint.color, opacity));
+					case NSVG_PAINT_LINEAR_GRADIENT:
+					{
+						std::vector<D2D1_GRADIENT_STOP> cols;
+						for (int i = 0; i < paint.gradient->nstops; i++)
+						{
+							auto stop = paint.gradient->stops[i];
+							cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
+						}
+						return g->CreateLinearGradientBrush(cols.data(), cols.size());
+					}
+					case NSVG_PAINT_RADIAL_GRADIENT:
+					{
+						std::vector<D2D1_GRADIENT_STOP> cols;
+						for (int i = 0; i < paint.gradient->nstops; i++)
+						{
+							auto stop = paint.gradient->stops[i];
+							cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
+						}
+						return g->CreateRadialGradientBrush(cols.data(), cols.size(), { paint.gradient->fx,paint.gradient->fy });
+					}
+					}
 					return NULL;
-				case NSVG_PAINT_COLOR:
-					return g->CreateSolidColorBrush(ic2fc(paint.color, opacity));
-				case NSVG_PAINT_LINEAR_GRADIENT:
-				{
-					std::vector<D2D1_GRADIENT_STOP> cols;
-					for (int i = 0; i < paint.gradient->nstops; i++)
-					{
-						auto stop = paint.gradient->stops[i];
-						cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
-					}
-					return g->CreateLinearGradientBrush(cols.data(), cols.size());
-				}
-				case NSVG_PAINT_RADIAL_GRADIENT:
-				{
-					std::vector<D2D1_GRADIENT_STOP> cols;
-					for (int i = 0; i < paint.gradient->nstops; i++)
-					{
-						auto stop = paint.gradient->stops[i];
-						cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
-					}
-					return g->CreateRadialGradientBrush(cols.data(), cols.size(), { paint.gradient->fx,paint.gradient->fy });
-				}
-				}
-				return NULL;
-			};
+				};
 
-		ID2D1Brush* brush = getSvgBrush(shape->fill, shape->opacity, subg);
-		if (brush)
-		{
-			subg->FillGeometry(geo, brush);
-			brush->Release();
+			ID2D1Brush* brush = getSvgBrush(shape->fill, shape->opacity, subg);
+			if (brush)
+			{
+				subg->FillGeometry(geo, brush);
+				brush->Release();
+			}
+			brush = getSvgBrush(shape->stroke, shape->opacity, subg);
+			if (brush)
+			{
+				subg->DrawGeometry(geo, brush, shape->strokeWidth);
+				brush->Release();
+			}
+			geo->Release();
 		}
-		brush = getSvgBrush(shape->stroke, shape->opacity, subg);
-		if (brush)
-		{
-			subg->DrawGeometry(geo, brush, shape->strokeWidth);
-			brush->Release();
-		}
-		geo->Release();
+		nsvgDelete(image);
+		subg->EndRender();
+		delete subg;
+
+		return renderSource;
 	}
-	nsvgDelete(image);
-	subg->EndRender();
-	delete subg;
 
-	return renderSource;
-}
-
-std::wstring FileNameFromPath(const std::wstring& path)
-{
-	size_t pos = path.find_last_of(L"\\/");
-	return (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
-}
+	std::wstring FileNameFromPath(const std::wstring& path)
+	{
+		size_t pos = path.find_last_of(L"\\/");
+		return (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
+	}
 
 }
 
@@ -305,7 +305,7 @@ void DemoWindow::System_OnNotifyToggle(class Control* sender, MouseEventArgs e)
 		_notify->HideNotifyIcon();
 		Ui_UpdateStatus(L"NotifyIcon: Hide");
 	}
-	}
+}
 
 void DemoWindow::System_OnBalloonTip(class Control* sender, MouseEventArgs e)
 {
@@ -735,36 +735,36 @@ void DemoWindow::BuildTab_Web(TabPage* page)
 	_web->SetHtml(html);
 
 	auto jsStringLiteral = [](const std::wstring& s) -> std::wstring
-	{
-		std::wstring out;
-		out.reserve(s.size() + 8);
-		out.push_back(L'\"');
-		for (wchar_t c : s)
 		{
-			switch (c)
+			std::wstring out;
+			out.reserve(s.size() + 8);
+			out.push_back(L'\"');
+			for (wchar_t c : s)
 			{
-			case L'\\': out += L"\\\\"; break;
-			case L'\"': out += L"\\\""; break;
-			case L'\r': out += L"\\r"; break;
-			case L'\n': out += L"\\n"; break;
-			case L'\t': out += L"\\t"; break;
-			default:
-				if (c >= 0 && c < 0x20)
+				switch (c)
 				{
-					wchar_t buf[8];
-					swprintf_s(buf, L"\\u%04x", (unsigned)c);
-					out += buf;
+				case L'\\': out += L"\\\\"; break;
+				case L'\"': out += L"\\\""; break;
+				case L'\r': out += L"\\r"; break;
+				case L'\n': out += L"\\n"; break;
+				case L'\t': out += L"\\t"; break;
+				default:
+					if (c >= 0 && c < 0x20)
+					{
+						wchar_t buf[8];
+						swprintf_s(buf, L"\\u%04x", (unsigned)c);
+						out += buf;
+					}
+					else
+					{
+						out.push_back(c);
+					}
+					break;
 				}
-				else
-				{
-					out.push_back(c);
-				}
-				break;
 			}
-		}
-		out.push_back(L'\"');
-		return out;
-	};
+			out.push_back(L'\"');
+			return out;
+		};
 
 	// 原生按钮：演示 C++ -> JS（ExecuteScriptAsync）
 	auto btn = page->AddControl(new Button(L"C++ 调用 JS（写入 fromNative）", 10, 10, 260, 24));

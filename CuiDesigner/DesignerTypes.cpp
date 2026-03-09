@@ -1,4 +1,4 @@
-#include "DesignerTypes.h"
+﻿#include "DesignerTypes.h"
 
 DesignerControl::ResizeHandle DesignerControl::HitTestHandle(POINT pt, int handleSize)
 {

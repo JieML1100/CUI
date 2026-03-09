@@ -1,4 +1,4 @@
-#include "PropertyGrid.h"
+﻿#include "PropertyGrid.h"
 #include "../CUI_Legacy/GUI/Form.h"
 #include "ComboBoxItemsEditorDialog.h"
 #include "GridViewColumnsEditorDialog.h"

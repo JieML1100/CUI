@@ -1,4 +1,4 @@
-#include "FakeWebBrowser.h"
+﻿#include "FakeWebBrowser.h"
 #include "../CUI_Legacy/GUI/Form.h"
 
 FakeWebBrowser::FakeWebBrowser(int x, int y, int width, int height)

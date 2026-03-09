@@ -1,4 +1,4 @@
-#include "TabControlPagesEditorDialog.h"
+﻿#include "TabControlPagesEditorDialog.h"
 #include <sstream>
 #include <unordered_set>
 

@@ -1,6 +1,5 @@
-#include "BitmapSource.h"
+﻿#include "BitmapSource.h"
 #include "Factory.h"
-#include "../Utils/Convert.h"
 #include <algorithm>
 
 using Microsoft::WRL::ComPtr;
@@ -222,7 +221,13 @@ std::vector<std::shared_ptr<BitmapSource>> BitmapSource::FromGifFile(const char*
 	if (!path) {
 		return {};
 	}
-	return FromGifFile(Convert::string_to_wstring(path));
+	auto MultiByteToWide_ = [](const std::string& str, uint32_t codePage)->std::wstring {
+		int len = MultiByteToWideChar(codePage, 0, str.c_str(), static_cast<int>(str.length()), NULL, 0);
+		std::wstring wstr(len, L'\0');
+		MultiByteToWideChar(codePage, 0, str.c_str(), static_cast<int>(str.length()), &wstr[0], len);
+		return wstr;
+		};
+	return FromGifFile(MultiByteToWide_(path, CP_ACP));
 }
 
 std::vector<std::shared_ptr<BitmapSource>> BitmapSource::FromGifBuffer(const void* data, size_t size) {

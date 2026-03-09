@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "Control.h"
 #include "Panel.h"
 #pragma comment(lib, "Imm32.lib")

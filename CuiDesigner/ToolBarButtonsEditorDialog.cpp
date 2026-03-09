@@ -1,4 +1,4 @@
-#include "ToolBarButtonsEditorDialog.h"
+﻿#include "ToolBarButtonsEditorDialog.h"
 #include <sstream>
 
 namespace

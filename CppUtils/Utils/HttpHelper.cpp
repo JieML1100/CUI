@@ -1,25 +1,99 @@
 ﻿#include "HttpHelper.h"
 #include "Utils.h"
-#include <Winhttp.h>
+#include "httplib.h"
+#include <sstream>
+#include <iomanip>
 
-#pragma comment(lib, "winhttp.lib")
-std::string HttpHelper::UrlEncode(const std::string str) {
+// ---------- 内部辅助函数 ----------
+
+// 将 "Key: Value\r\nKey2: Value2" 格式的字符串解析为 httplib::Headers
+static httplib::Headers ParseHeaders(const std::string& headers, const std::string& cookies) {
+	httplib::Headers result;
+
+	auto addLine = [&](const std::string& line) {
+		auto pos = line.find(": ");
+		if (pos != std::string::npos) {
+			std::string key = line.substr(0, pos);
+			std::string val = line.substr(pos + 2);
+			while (!val.empty() && (val.back() == '\r' || val.back() == '\n' || val.back() == ' '))
+				val.pop_back();
+			if (!key.empty() && !val.empty())
+				result.emplace(key, val);
+		}
+	};
+
+	std::istringstream ss(headers);
+	std::string line;
+	while (std::getline(ss, line)) {
+		if (!line.empty() && line.back() == '\r') line.pop_back();
+		addLine(line);
+	}
+
+	if (!cookies.empty()) {
+		// 支持 "Cookie: value" 或纯 "name=value" 两种格式
+		if (cookies.substr(0, 8) == "Cookie: ")
+			addLine(cookies);
+		else
+			result.emplace("Cookie", cookies);
+	}
+
+	return result;
+}
+
+// 将完整 URL 拆分为 baseUrl（scheme+host+port）和 path（含查询串）
+static void SplitUrl(const std::string& url, std::string& baseUrl, std::string& path) {
+	size_t schemeEnd = url.find("://");
+	size_t hostStart = (schemeEnd == std::string::npos) ? 0 : schemeEnd + 3;
+	size_t pathStart = url.find('/', hostStart);
+
+	if (pathStart == std::string::npos) {
+		// 没有路径部分，检查是否有查询串
+		size_t queryStart = url.find('?', hostStart);
+		if (queryStart != std::string::npos) {
+			baseUrl = url.substr(0, queryStart);
+			path = url.substr(queryStart);
+		}
+		else {
+			baseUrl = url;
+			path = "/";
+		}
+	}
+	else {
+		baseUrl = url.substr(0, pathStart);
+		path = url.substr(pathStart);
+	}
+
+	if (schemeEnd == std::string::npos)
+		baseUrl = "http://" + baseUrl;
+}
+
+// 从已解析的 headers 中取 Content-Type，找不到返回默认值
+static std::string GetContentType(const httplib::Headers& hdrs,
+	const std::string& defaultType = "application/x-www-form-urlencoded") {
+	auto it = hdrs.find("Content-Type");
+	if (it != hdrs.end()) return it->second;
+	return defaultType;
+}
+
+// ---------- 工具函数（保持不变） ----------
+
+std::string HttpHelper::UrlEncode(std::string str) {
 	auto input = Convert::AnsiToUtf8(str);
 	std::ostringstream encoded;
 	for (uint8_t c : input) {
-		if (
-			(c >= ' ' && c <= '~')
-			) {
-			encoded << c;
+		if (c >= ' ' && c <= '~') {
+			encoded << static_cast<char>(c);
 		}
 		else {
-			encoded << '%' << std::uppercase << std::setw(2) << std::setfill('0') << std::hex << static_cast<int>(c);
+			encoded << '%' << std::uppercase << std::setw(2) << std::setfill('0')
+				<< std::hex << static_cast<int>(c);
 		}
 	}
 	return encoded.str();
 }
+
 std::string HttpHelper::CheckUrl(std::string input) {
-	auto replace = [](std::string str, const char* old_str, const char* new_str) {
+	auto replace = [](std::string& str, const char* old_str, const char* new_str) {
 		size_t len_old = strlen(old_str);
 		size_t len_new = strlen(new_str);
 		size_t pos = str.find(old_str);
@@ -28,564 +102,123 @@ std::string HttpHelper::CheckUrl(std::string input) {
 			pos = str.find(old_str, pos + len_new);
 		}
 		};
-	replace(input, " ", "%20");
+	replace(input, " ",  "%20");
 	replace(input, "\"", "%22");
-	replace(input, "#", "%23");
-	replace(input, "%", "%25");
-	replace(input, "&", "%26");
-	replace(input, "(", "%28");
-	replace(input, ")", "%29");
-	replace(input, "+", "%2B");
-	replace(input, ",", "%2C");
-	replace(input, "/", "%2F");
-	replace(input, ":", "%3A");
-	replace(input, ";", "%3B");
-	replace(input, "<", "%3C");
-	replace(input, "=", "%3D");
-	replace(input, ">", "%3E");
-	replace(input, "?", "%3F");
-	replace(input, "@", "%40");
+	replace(input, "#",  "%23");
+	replace(input, "%",  "%25");
+	replace(input, "&",  "%26");
+	replace(input, "(",  "%28");
+	replace(input, ")",  "%29");
+	replace(input, "+",  "%2B");
+	replace(input, ",",  "%2C");
+	replace(input, "/",  "%2F");
+	replace(input, ":",  "%3A");
+	replace(input, ";",  "%3B");
+	replace(input, "<",  "%3C");
+	replace(input, "=",  "%3D");
+	replace(input, ">",  "%3E");
+	replace(input, "?",  "%3F");
+	replace(input, "@",  "%40");
 	replace(input, "\\", "%5C");
-	replace(input, "|", "%7C");
+	replace(input, "|",  "%7C");
 	return UrlEncode(input);
 }
+
 std::string HttpHelper::GetHostNameFromURL(std::string url) {
-	if (url._Starts_with("https://")) {
-		url;
-	}
-	else if (!url._Starts_with("http://")) {
+	if (!url._Starts_with("https://") && !url._Starts_with("http://"))
 		url = "http://" + url;
-	}
 	std::string hostName;
 	size_t pos = url.find("//");
 	if (pos != std::string::npos) {
 		pos += 2;
 		size_t endPos = url.find('/', pos);
-		if (endPos != std::string::npos) {
-			hostName = url.substr(pos, endPos - pos);
-		}
-		else {
-			hostName = url.substr(pos);
-		}
+		hostName = (endPos != std::string::npos) ? url.substr(pos, endPos - pos) : url.substr(pos);
 	}
 	return hostName;
 }
-std::string HttpHelper::Get(std::string url, std::string headers, std::string cookies) {
-	HINTERNET hSession = nullptr, hConnect = nullptr, hRequest = nullptr;
+// ---------- 同步 GET ----------
+std::string HttpHelper::Get(const std::string& url,
+	const std::string& headers, const std::string& cookies) {
+	std::string baseUrl, path;
+	SplitUrl(url, baseUrl, path);
+
+	httplib::Client cli(baseUrl);
+	cli.set_follow_location(true);
+
+	auto hdrs = ParseHeaders(headers, cookies);
+	auto res = cli.Get(path, hdrs);
+	if (res && res->status >= 200 && res->status < 300)
+		return res->body;
+	return "";
+}
+
+// ---------- 同步 POST ----------
+std::string HttpHelper::Post(const std::string& url, const std::string& body,
+	const std::string& headers, const std::string& cookies) {
+	std::string baseUrl, path;
+	SplitUrl(url, baseUrl, path);
+
+	httplib::Client cli(baseUrl);
+	cli.set_follow_location(true);
+
+	auto hdrs = ParseHeaders(headers, cookies);
+	std::string contentType = GetContentType(hdrs);
+	// Content-Type 已包含在 hdrs 中，Post 时需从 headers 中移除以避免重复
+	hdrs.erase("Content-Type");
+
+	auto res = cli.Post(path, hdrs, body, contentType);
+	if (res && res->status >= 200 && res->status < 300)
+		return res->body;
+	return "";
+}
+
+// ---------- 流式 GET ----------
+std::string HttpHelper::GetStream(const std::string& url,
+	const std::string& headers, const std::string& cookies,
+	HTTP_STREAM_CALLBACK callback) {
+	std::string baseUrl, path;
+	SplitUrl(url, baseUrl, path);
+
+	httplib::Client cli(baseUrl);
+	cli.set_follow_location(true);
+
+	auto hdrs = ParseHeaders(headers, cookies);
 	std::string response;
-	url = UrlEncode(url);
 
-	// Parse URL components
-	URL_COMPONENTS urlComp;
-	ZeroMemory(&urlComp, sizeof(urlComp));
-	urlComp.dwStructSize = sizeof(urlComp);
-
-	wchar_t hostName[256];
-	wchar_t urlPath[256];
-	urlComp.lpszHostName = hostName;
-	urlComp.dwHostNameLength = _countof(hostName);
-	urlComp.lpszUrlPath = urlPath;
-	urlComp.dwUrlPathLength = _countof(urlPath);
-	std::wstring wUrl(url.begin(), url.end());
-	if (!WinHttpCrackUrl(wUrl.c_str(), static_cast<DWORD>(wUrl.length()), 0, &urlComp)) {
-		std::cerr << "Error: Unable to crack URL." << std::endl;
-		return "";
-	}
-
-	// Initialize WinHTTP session
-	hSession = WinHttpOpen(L"WinHTTP Example/1.0",
-		WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-		WINHTTP_NO_PROXY_NAME,
-		WINHTTP_NO_PROXY_BYPASS, 0);
-	if (!hSession) {
-		std::cerr << "Error: WinHttpOpen failed." << std::endl;
-		return "";
-	}
-
-	// Connect to server
-	hConnect = WinHttpConnect(hSession, urlComp.lpszHostName, urlComp.nPort, 0);
-	if (!hConnect) {
-		std::cerr << "Error: WinHttpConnect failed." << std::endl;
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Prepare the GET request
-	hRequest = WinHttpOpenRequest(hConnect, L"GET", urlComp.lpszUrlPath,
-		nullptr, WINHTTP_NO_REFERER,
-		WINHTTP_DEFAULT_ACCEPT_TYPES,
-		(urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0);
-	if (!hRequest) {
-		std::cerr << "Error: WinHttpOpenRequest failed." << std::endl;
-		WinHttpCloseHandle(hConnect);
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Set headers
-	std::wstring wHeaders(headers.begin(), headers.end());
-	if (!headers.empty()) {
-		WinHttpAddRequestHeaders(hRequest, wHeaders.c_str(), static_cast<DWORD>(-1L), WINHTTP_ADDREQ_FLAG_ADD);
-	}
-
-	// Set cookies
-	if (!cookies.empty()) {
-		std::wstring wCookies(cookies.begin(), cookies.end());
-		WinHttpAddRequestHeaders(hRequest, wCookies.c_str(), static_cast<DWORD>(-1L), WINHTTP_ADDREQ_FLAG_ADD);
-	}
-
-	// Send the request
-	BOOL bResult = WinHttpSendRequest(hRequest,
-		WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-		WINHTTP_NO_REQUEST_DATA, 0,
-		0, 0);
-	if (!bResult) {
-		std::cerr << "Error: WinHttpSendRequest failed." << std::endl;
-		WinHttpCloseHandle(hRequest);
-		WinHttpCloseHandle(hConnect);
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Receive the response
-	bResult = WinHttpReceiveResponse(hRequest, nullptr);
-	if (!bResult) {
-		std::cerr << "Error: WinHttpReceiveResponse failed." << std::endl;
-		WinHttpCloseHandle(hRequest);
-		WinHttpCloseHandle(hConnect);
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Read the response data
-	DWORD dwSize = 0;
-	DWORD dwDownloaded = 0;
-	LPSTR pszOutBuffer;
-	do {
-		// Check for available data
-		dwSize = 0;
-		if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) {
-			std::cerr << "Error: WinHttpQueryDataAvailable failed." << std::endl;
-			break;
-		}
-
-		// Allocate space for the buffer
-		pszOutBuffer = new char[dwSize + 1];
-		if (!pszOutBuffer) {
-			std::cerr << "Error: Out of memory." << std::endl;
-			dwSize = 0;
-			break;
-		}
-
-		// Read the data
-		ZeroMemory(pszOutBuffer, dwSize + 1);
-		if (!WinHttpReadData(hRequest, (LPVOID)pszOutBuffer, dwSize, &dwDownloaded)) {
-			std::cerr << "Error: WinHttpReadData failed." << std::endl;
-		}
-		else {
-			response.append(pszOutBuffer, dwDownloaded);
-		}
-
-		// Free the memory
-		delete[] pszOutBuffer;
-
-	} while (dwSize > 0);
-
-	// Cleanup
-	WinHttpCloseHandle(hRequest);
-	WinHttpCloseHandle(hConnect);
-	WinHttpCloseHandle(hSession);
+	cli.Get(path, hdrs,
+		[&](const char* data, size_t len) -> bool {
+			std::string chunk(data, len);
+			response += chunk;
+			if (callback) callback(chunk);
+			return true;
+		});
 
 	return response;
 }
-std::string HttpHelper::GetStream(std::string url, std::string headers, std::string cookies, HTTP_STREAM_CALLBACK callback) {
-	HINTERNET hSession = nullptr, hConnect = nullptr, hRequest = nullptr;
+
+// ---------- 流式 POST ----------
+std::string HttpHelper::PostStream(const std::string& url, const std::string& body,
+	const std::string& headers, const std::string& cookies,
+	HTTP_STREAM_CALLBACK callback) {
+	std::string baseUrl, path;
+	SplitUrl(url, baseUrl, path);
+
+	httplib::Client cli(baseUrl);
+	cli.set_follow_location(true);
+
+	auto hdrs = ParseHeaders(headers, cookies);
+	std::string contentType = GetContentType(hdrs);
+	hdrs.erase("Content-Type");
+
 	std::string response;
-	url = UrlEncode(url);
 
-	// Parse URL components
-	URL_COMPONENTS urlComp;
-	ZeroMemory(&urlComp, sizeof(urlComp));
-	urlComp.dwStructSize = sizeof(urlComp);
-
-	wchar_t hostName[256];
-	wchar_t urlPath[256];
-	urlComp.lpszHostName = hostName;
-	urlComp.dwHostNameLength = _countof(hostName);
-	urlComp.lpszUrlPath = urlPath;
-	urlComp.dwUrlPathLength = _countof(urlPath);
-	std::wstring wUrl(url.begin(), url.end());
-	if (!WinHttpCrackUrl(wUrl.c_str(), static_cast<DWORD>(wUrl.length()), 0, &urlComp)) {
-		std::cerr << "Error: Unable to crack URL." << std::endl;
-		return "";
-	}
-
-	// Initialize WinHTTP session
-	hSession = WinHttpOpen(L"WinHTTP Example/1.0",
-		WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-		WINHTTP_NO_PROXY_NAME,
-		WINHTTP_NO_PROXY_BYPASS, 0);
-	if (!hSession) {
-		std::cerr << "Error: WinHttpOpen failed." << std::endl;
-		return "";
-	}
-
-	// Connect to server
-	hConnect = WinHttpConnect(hSession, urlComp.lpszHostName, urlComp.nPort, 0);
-	if (!hConnect) {
-		std::cerr << "Error: WinHttpConnect failed." << std::endl;
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Prepare the GET request
-	hRequest = WinHttpOpenRequest(hConnect, L"GET", urlComp.lpszUrlPath,
-		nullptr, WINHTTP_NO_REFERER,
-		WINHTTP_DEFAULT_ACCEPT_TYPES,
-		(urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0);
-	if (!hRequest) {
-		std::cerr << "Error: WinHttpOpenRequest failed." << std::endl;
-		WinHttpCloseHandle(hConnect);
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Set headers
-	std::wstring wHeaders(headers.begin(), headers.end());
-	if (!headers.empty()) {
-		WinHttpAddRequestHeaders(hRequest, wHeaders.c_str(), static_cast<DWORD>(-1L), WINHTTP_ADDREQ_FLAG_ADD);
-	}
-
-	// Set cookies
-	if (!cookies.empty()) {
-		std::wstring wCookies(cookies.begin(), cookies.end());
-		WinHttpAddRequestHeaders(hRequest, wCookies.c_str(), static_cast<DWORD>(-1L), WINHTTP_ADDREQ_FLAG_ADD);
-	}
-
-	// Send the request
-	BOOL bResult = WinHttpSendRequest(hRequest,
-		WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-		WINHTTP_NO_REQUEST_DATA, 0,
-		0, 0);
-	if (!bResult) {
-		std::cerr << "Error: WinHttpSendRequest failed." << std::endl;
-		WinHttpCloseHandle(hRequest);
-		WinHttpCloseHandle(hConnect);
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Receive the response
-	bResult = WinHttpReceiveResponse(hRequest, nullptr);
-	if (!bResult) {
-		std::cerr << "Error: WinHttpReceiveResponse failed." << std::endl;
-		WinHttpCloseHandle(hRequest);
-		WinHttpCloseHandle(hConnect);
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Read the response data
-	DWORD dwSize = 0;
-	DWORD dwDownloaded = 0;
-	LPSTR pszOutBuffer;
-	do {
-		// Check for available data
-		dwSize = 0;
-		if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) {
-			std::cerr << "Error: WinHttpQueryDataAvailable failed." << std::endl;
-			break;
-		}
-
-		// Allocate space for the buffer
-		pszOutBuffer = new char[dwSize + 1];
-		if (!pszOutBuffer) {
-			std::cerr << "Error: Out of memory." << std::endl;
-			dwSize = 0;
-			break;
-		}
-
-		// Read the data
-		ZeroMemory(pszOutBuffer, dwSize + 1);
-		if (!WinHttpReadData(hRequest, (LPVOID)pszOutBuffer, dwSize, &dwDownloaded)) {
-			std::cerr << "Error: WinHttpReadData failed." << std::endl;
-		}
-		else {
-			response.append(pszOutBuffer, dwDownloaded);
-			if (callback)
-				callback(pszOutBuffer);
-		}
-
-		// Free the memory
-		delete[] pszOutBuffer;
-
-	} while (dwSize > 0);
-
-	// Cleanup
-	WinHttpCloseHandle(hRequest);
-	WinHttpCloseHandle(hConnect);
-	WinHttpCloseHandle(hSession);
-
-	return response;
-}
-std::vector<uint8_t> HttpHelper::HttpGetBytes(std::string url) {
-	auto bytes = Get(url);
-	return std::vector<uint8_t>((uint8_t*)bytes.data(), (uint8_t*)bytes.data() + bytes.size());
-}
-std::string HttpHelper::Post(std::string url, std::string body, std::string headers, std::string cookies) {
-	HINTERNET hSession = nullptr, hConnect = nullptr, hRequest = nullptr;
-	std::string response;
-	url = UrlEncode(url);
-
-	// Parse URL components
-	URL_COMPONENTS urlComp;
-	ZeroMemory(&urlComp, sizeof(urlComp));
-	urlComp.dwStructSize = sizeof(urlComp);
-
-	wchar_t hostName[256];
-	wchar_t urlPath[256];
-	urlComp.lpszHostName = hostName;
-	urlComp.dwHostNameLength = _countof(hostName);
-	urlComp.lpszUrlPath = urlPath;
-	urlComp.dwUrlPathLength = _countof(urlPath);
-	std::wstring wUrl(url.begin(), url.end());
-	if (!WinHttpCrackUrl(wUrl.c_str(), static_cast<DWORD>(wUrl.length()), 0, &urlComp)) {
-		std::cerr << "Error: Unable to crack URL." << std::endl;
-		return "";
-	}
-
-	// Initialize WinHTTP session
-	hSession = WinHttpOpen(L"WinHTTP Example/1.0",
-		WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-		WINHTTP_NO_PROXY_NAME,
-		WINHTTP_NO_PROXY_BYPASS, 0);
-	if (!hSession) {
-		std::cerr << "Error: WinHttpOpen failed." << std::endl;
-		return "";
-	}
-
-	// Connect to server
-	hConnect = WinHttpConnect(hSession, urlComp.lpszHostName, urlComp.nPort, 0);
-	if (!hConnect) {
-		std::cerr << "Error: WinHttpConnect failed." << std::endl;
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Prepare the POST request
-	hRequest = WinHttpOpenRequest(hConnect, L"POST", urlComp.lpszUrlPath,
-		nullptr, WINHTTP_NO_REFERER,
-		WINHTTP_DEFAULT_ACCEPT_TYPES,
-		(urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0);
-	if (!hRequest) {
-		std::cerr << "Error: WinHttpOpenRequest failed." << std::endl;
-		WinHttpCloseHandle(hConnect);
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Set headers
-	std::wstring wHeaders(headers.begin(), headers.end());
-	if (!headers.empty()) {
-		WinHttpAddRequestHeaders(hRequest, wHeaders.c_str(), static_cast<DWORD>(-1L), WINHTTP_ADDREQ_FLAG_ADD);
-	}
-
-	// Set cookies
-	if (!cookies.empty()) {
-		std::wstring wCookies(cookies.begin(), cookies.end());
-		WinHttpAddRequestHeaders(hRequest, wCookies.c_str(), static_cast<DWORD>(-1L), WINHTTP_ADDREQ_FLAG_ADD);
-	}
-
-	// Send the request
-	BOOL bResult = WinHttpSendRequest(hRequest,
-		WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-		(LPVOID)body.c_str(), static_cast<DWORD>(body.length()),
-		static_cast<DWORD>(body.length()), 0);
-	if (!bResult) {
-		std::cerr << "Error: WinHttpSendRequest failed." << std::endl;
-		WinHttpCloseHandle(hRequest);
-		WinHttpCloseHandle(hConnect);
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Receive the response
-	bResult = WinHttpReceiveResponse(hRequest, nullptr);
-	if (!bResult) {
-		std::cerr << "Error: WinHttpReceiveResponse failed." << std::endl;
-		WinHttpCloseHandle(hRequest);
-		WinHttpCloseHandle(hConnect);
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Read the response data
-	DWORD dwSize = 0;
-	DWORD dwDownloaded = 0;
-	LPSTR pszOutBuffer;
-	do {
-		// Check for available data
-		dwSize = 0;
-		if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) {
-			std::cerr << "Error: WinHttpQueryDataAvailable failed." << std::endl;
-			break;
-		}
-
-		// Allocate space for the buffer
-		pszOutBuffer = new char[dwSize + 1];
-		if (!pszOutBuffer) {
-			std::cerr << "Error: Out of memory." << std::endl;
-			dwSize = 0;
-			break;
-		}
-
-		// Read the data
-		ZeroMemory(pszOutBuffer, dwSize + 1);
-		if (!WinHttpReadData(hRequest, (LPVOID)pszOutBuffer, dwSize, &dwDownloaded)) {
-			std::cerr << "Error: WinHttpReadData failed." << std::endl;
-		}
-		else {
-			response.append(pszOutBuffer, dwDownloaded);
-		}
-
-		// Free the memory
-		delete[] pszOutBuffer;
-
-	} while (dwSize > 0);
-
-	// Cleanup
-	WinHttpCloseHandle(hRequest);
-	WinHttpCloseHandle(hConnect);
-	WinHttpCloseHandle(hSession);
-
-	return response;
-}
-std::string HttpHelper::PostStream(std::string url, std::string body, std::string headers, std::string cookies, HTTP_STREAM_CALLBACK callback) {
-	HINTERNET hSession = nullptr, hConnect = nullptr, hRequest = nullptr;
-	std::string response;
-	url = UrlEncode(url);
-
-	// Parse URL components
-	URL_COMPONENTS urlComp;
-	ZeroMemory(&urlComp, sizeof(urlComp));
-	urlComp.dwStructSize = sizeof(urlComp);
-
-	wchar_t hostName[256];
-	wchar_t urlPath[256];
-	urlComp.lpszHostName = hostName;
-	urlComp.dwHostNameLength = _countof(hostName);
-	urlComp.lpszUrlPath = urlPath;
-	urlComp.dwUrlPathLength = _countof(urlPath);
-	std::wstring wUrl(url.begin(), url.end());
-	if (!WinHttpCrackUrl(wUrl.c_str(), static_cast<DWORD>(wUrl.length()), 0, &urlComp)) {
-		std::cerr << "Error: Unable to crack URL." << std::endl;
-		return "";
-	}
-
-	// Initialize WinHTTP session
-	hSession = WinHttpOpen(L"WinHTTP Example/1.0",
-		WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-		WINHTTP_NO_PROXY_NAME,
-		WINHTTP_NO_PROXY_BYPASS, 0);
-	if (!hSession) {
-		std::cerr << "Error: WinHttpOpen failed." << std::endl;
-		return "";
-	}
-
-	// Connect to server
-	hConnect = WinHttpConnect(hSession, urlComp.lpszHostName, urlComp.nPort, 0);
-	if (!hConnect) {
-		std::cerr << "Error: WinHttpConnect failed." << std::endl;
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Prepare the POST request
-	hRequest = WinHttpOpenRequest(hConnect, L"POST", urlComp.lpszUrlPath,
-		nullptr, WINHTTP_NO_REFERER,
-		WINHTTP_DEFAULT_ACCEPT_TYPES,
-		(urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0);
-	if (!hRequest) {
-		std::cerr << "Error: WinHttpOpenRequest failed." << std::endl;
-		WinHttpCloseHandle(hConnect);
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Set headers
-	std::wstring wHeaders(headers.begin(), headers.end());
-	if (!headers.empty()) {
-		WinHttpAddRequestHeaders(hRequest, wHeaders.c_str(), static_cast<DWORD>(-1L), WINHTTP_ADDREQ_FLAG_ADD);
-	}
-
-	// Set cookies
-	if (!cookies.empty()) {
-		std::wstring wCookies(cookies.begin(), cookies.end());
-		WinHttpAddRequestHeaders(hRequest, wCookies.c_str(), static_cast<DWORD>(-1L), WINHTTP_ADDREQ_FLAG_ADD);
-	}
-
-	// Send the request
-	BOOL bResult = WinHttpSendRequest(hRequest,
-		WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-		(LPVOID)body.c_str(), static_cast<DWORD>(body.length()),
-		static_cast<DWORD>(body.length()), 0);
-	if (!bResult) {
-		std::cerr << "Error: WinHttpSendRequest failed." << std::endl;
-		WinHttpCloseHandle(hRequest);
-		WinHttpCloseHandle(hConnect);
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Receive the response
-	bResult = WinHttpReceiveResponse(hRequest, nullptr);
-	if (!bResult) {
-		std::cerr << "Error: WinHttpReceiveResponse failed." << std::endl;
-		WinHttpCloseHandle(hRequest);
-		WinHttpCloseHandle(hConnect);
-		WinHttpCloseHandle(hSession);
-		return "";
-	}
-
-	// Read the response data
-	DWORD dwSize = 0;
-	DWORD dwDownloaded = 0;
-	LPSTR pszOutBuffer;
-	do {
-		// Check for available data
-		dwSize = 0;
-		if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) {
-			std::cerr << "Error: WinHttpQueryDataAvailable failed." << std::endl;
-			break;
-		}
-
-		// Allocate space for the buffer
-		pszOutBuffer = new char[dwSize + 1];
-		if (!pszOutBuffer) {
-			std::cerr << "Error: Out of memory." << std::endl;
-			dwSize = 0;
-			break;
-		}
-
-		// Read the data
-		ZeroMemory(pszOutBuffer, dwSize + 1);
-		if (!WinHttpReadData(hRequest, (LPVOID)pszOutBuffer, dwSize, &dwDownloaded)) {
-			std::cerr << "Error: WinHttpReadData failed." << std::endl;
-		}
-		else {
-			callback(pszOutBuffer);
-			response.append(pszOutBuffer, dwDownloaded);
-		}
-
-		// Free the memory
-		delete[] pszOutBuffer;
-
-	} while (dwSize > 0);
-
-	// Cleanup
-	WinHttpCloseHandle(hRequest);
-	WinHttpCloseHandle(hConnect);
-	WinHttpCloseHandle(hSession);
+	cli.Post(path, hdrs, body, contentType,
+		[&](const char* data, size_t len) -> bool {
+			std::string chunk(data, len);
+			response += chunk;
+			if (callback) callback(chunk);
+			return true;
+		});
 
 	return response;
 }

@@ -1,4 +1,4 @@
-#include "GridViewColumnsEditorDialog.h"
+﻿#include "GridViewColumnsEditorDialog.h"
 #include <sstream>
 
 namespace

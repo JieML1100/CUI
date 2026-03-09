@@ -1,4 +1,4 @@
-#include "GridPanelDefinitionsEditorDialog.h"
+﻿#include "GridPanelDefinitionsEditorDialog.h"
 #include <sstream>
 
 std::wstring GridPanelDefinitionsEditorDialog::Trim(const std::wstring& s)

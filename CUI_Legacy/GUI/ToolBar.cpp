@@ -1,4 +1,4 @@
-#include "ToolBar.h"
+﻿#include "ToolBar.h"
 #include "Form.h"
 
 UIClass ToolBar::Type() { return UIClass::UI_ToolBar; }

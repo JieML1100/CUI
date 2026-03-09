@@ -1,4 +1,4 @@
-#include "StackPanel.h"
+﻿#include "StackPanel.h"
 #include "../Form.h"
 #include <algorithm>
 

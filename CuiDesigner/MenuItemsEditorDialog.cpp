@@ -1,4 +1,4 @@
-#include "MenuItemsEditorDialog.h"
+﻿#include "MenuItemsEditorDialog.h"
 #include <algorithm>
 #include <sstream>
 

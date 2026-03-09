@@ -85,6 +85,7 @@ public:
 	void Open();
 	bool IsTableExist(std::string tableName);
 	void DeleteTable(std::string tableName);
+	//创建表(需要注意此函数创建表会默认有一个Id列---[Id] INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT)
 	void CreateTable(std::string tableName, std::vector<Tuple<std::string, SqliteType>> columus);
 	void Close();
 	void Select(std::string sql, SEL_CALLBAC callback);

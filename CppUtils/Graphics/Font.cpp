@@ -114,26 +114,26 @@ D2D1_SIZE_F Font::GetTextSize(wchar_t c) {
 int Font::HitTestTextPosition(std::wstring str, float x, float y) {
 	if (str.size() == 0) return -1;
 	IDWriteTextLayout* textLayout = NULL;
-	HRESULT hr = _DWriteFactory->CreateTextLayout(str.c_str(),str.size(),this->_fontObject,FLT_MAX,FLT_MAX,&textLayout);
+	HRESULT hr = _DWriteFactory->CreateTextLayout(str.c_str(), str.size(), this->_fontObject, FLT_MAX, FLT_MAX, &textLayout);
 	if FAILED(hr)
 		return -1;
 	BOOL isTrailingHit;
 	BOOL isInside;
 	DWRITE_HIT_TEST_METRICS caretMetrics;
-	textLayout->HitTestPoint(x, y,&isTrailingHit,&isInside,&caretMetrics);
+	textLayout->HitTestPoint(x, y, &isTrailingHit, &isInside, &caretMetrics);
 	textLayout->Release();
 	return isTrailingHit ? caretMetrics.textPosition + 1 : caretMetrics.textPosition;
 }
 int Font::HitTestTextPosition(std::wstring str, float width, float height, float x, float y) {
 	if (str.size() == 0) return -1;
 	IDWriteTextLayout* textLayout = NULL;
-	HRESULT hr = _DWriteFactory->CreateTextLayout(str.c_str(), str.size(),this->_fontObject,width, height,&textLayout);
+	HRESULT hr = _DWriteFactory->CreateTextLayout(str.c_str(), str.size(), this->_fontObject, width, height, &textLayout);
 	if FAILED(hr)
 		return -1;
 	BOOL isTrailingHit;
 	BOOL isInside;
 	DWRITE_HIT_TEST_METRICS caretMetrics;
-	textLayout->HitTestPoint(x, y,&isTrailingHit,&isInside,&caretMetrics);
+	textLayout->HitTestPoint(x, y, &isTrailingHit, &isInside, &caretMetrics);
 	textLayout->Release();
 	if (caretMetrics.width > 0.0f && x - caretMetrics.left >= caretMetrics.width * 0.5f)
 		caretMetrics.textPosition += 1;
@@ -145,7 +145,7 @@ int Font::HitTestTextPosition(IDWriteTextLayout* textLayout, float x, float y) {
 	BOOL isTrailingHit;
 	BOOL isInside;
 	DWRITE_HIT_TEST_METRICS caretMetrics;
-	textLayout->HitTestPoint(x, y,&isTrailingHit,&isInside,&caretMetrics);
+	textLayout->HitTestPoint(x, y, &isTrailingHit, &isInside, &caretMetrics);
 	return isTrailingHit ? caretMetrics.textPosition + 1 : caretMetrics.textPosition;
 }
 int Font::HitTestTextPosition(IDWriteTextLayout* textLayout, float width, float height, float x, float y) {
@@ -153,7 +153,7 @@ int Font::HitTestTextPosition(IDWriteTextLayout* textLayout, float width, float 
 		BOOL isTrailingHit;
 		BOOL isInside;
 		DWRITE_HIT_TEST_METRICS caretMetrics;
-		textLayout->HitTestPoint(x, y,&isTrailingHit,&isInside,&caretMetrics);
+		textLayout->HitTestPoint(x, y, &isTrailingHit, &isInside, &caretMetrics);
 		return caretMetrics.textPosition;
 	}
 	return -1;
@@ -161,13 +161,13 @@ int Font::HitTestTextPosition(IDWriteTextLayout* textLayout, float width, float 
 std::vector<DWRITE_HIT_TEST_METRICS> Font::HitTestTextRange(std::wstring str, UINT32 start, UINT32 len) {
 	std::vector<DWRITE_HIT_TEST_METRICS> hitTestMetrics;
 	IDWriteTextLayout* textLayout = NULL;
-	HRESULT hr = _DWriteFactory->CreateTextLayout(str.c_str(),str.size(),this->_fontObject,FLT_MAX,FLT_MAX,&textLayout);
+	HRESULT hr = _DWriteFactory->CreateTextLayout(str.c_str(), str.size(), this->_fontObject, FLT_MAX, FLT_MAX, &textLayout);
 	if SUCCEEDED(hr) {
 		UINT32 actualHitTestCount = 0;
-		hr = textLayout->HitTestTextRange(start, len,0.0f, 0.0f,NULL, 0,&actualHitTestCount);
+		hr = textLayout->HitTestTextRange(start, len, 0.0f, 0.0f, NULL, 0, &actualHitTestCount);
 		hitTestMetrics.resize(actualHitTestCount);
 		UINT32 textLen = len;
-		hr = textLayout->HitTestTextRange(start, len,0.0f, 0.0f,hitTestMetrics.data(),hitTestMetrics.size(),&actualHitTestCount);
+		hr = textLayout->HitTestTextRange(start, len, 0.0f, 0.0f, hitTestMetrics.data(), hitTestMetrics.size(), &actualHitTestCount);
 		textLayout->Release();
 	}
 	return hitTestMetrics;
@@ -176,10 +176,10 @@ std::vector<DWRITE_HIT_TEST_METRICS> Font::HitTestTextRange(IDWriteTextLayout* t
 	std::vector<DWRITE_HIT_TEST_METRICS> hitTestMetrics;
 	UINT32 actualHitTestCount = 0;
 	if (textLayout) {
-		HRESULT hr = textLayout->HitTestTextRange(start, len,0.0f, 0.0f,NULL, 0,&actualHitTestCount);
+		HRESULT hr = textLayout->HitTestTextRange(start, len, 0.0f, 0.0f, NULL, 0, &actualHitTestCount);
 		hitTestMetrics.resize(actualHitTestCount);
 		UINT32 textLen = len;
-		hr = textLayout->HitTestTextRange(start, len,0.0f, 0.0f,hitTestMetrics.data(),hitTestMetrics.size(),&actualHitTestCount);
+		hr = textLayout->HitTestTextRange(start, len, 0.0f, 0.0f, hitTestMetrics.data(), hitTestMetrics.size(), &actualHitTestCount);
 	}
 	return hitTestMetrics;
 }
@@ -215,7 +215,7 @@ std::vector<std::wstring> Font::GetSystemFonts() {
 						if SUCCEEDED(hr)
 							hr = pFamilyNames->GetStringLength(index, &length);
 						if SUCCEEDED(hr) {
-							std::wstring name(length,L'\0');
+							std::wstring name(length, L'\0');
 							hr = pFamilyNames->GetString(index, &name[0], length + 1);
 							result.push_back(name);
 						}

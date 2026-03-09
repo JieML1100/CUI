@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "RadioBox.h"
 #include "Form.h"
 UIClass RadioBox::Type() { return UIClass::UI_RadioBox; }

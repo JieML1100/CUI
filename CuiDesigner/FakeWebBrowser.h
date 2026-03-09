@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "../CUI_Legacy/GUI/Control.h"
 

@@ -1,4 +1,4 @@
-#include "TreeViewNodesEditorDialog.h"
+﻿#include "TreeViewNodesEditorDialog.h"
 #include <sstream>
 
 std::wstring TreeViewNodesEditorDialog::Trim(const std::wstring& s)

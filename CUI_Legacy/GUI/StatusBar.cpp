@@ -1,4 +1,4 @@
-#include "StatusBar.h"
+﻿#include "StatusBar.h"
 #include "Form.h"
 
 #include <algorithm>

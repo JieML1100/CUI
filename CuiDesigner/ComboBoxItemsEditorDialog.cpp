@@ -1,4 +1,4 @@
-#include "ComboBoxItemsEditorDialog.h"
+﻿#include "ComboBoxItemsEditorDialog.h"
 #include <sstream>
 
 namespace

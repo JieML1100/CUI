@@ -1,4 +1,4 @@
-#include "StatusBarPartsEditorDialog.h"
+﻿#include "StatusBarPartsEditorDialog.h"
 #include <algorithm>
 
 namespace

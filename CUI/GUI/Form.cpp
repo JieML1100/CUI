@@ -1,4 +1,4 @@
-#include "Form.h"
+﻿#include "Form.h"
 #include "NotifyIcon.h"
 #include "DCompLayeredHost.h"
 #include <algorithm>

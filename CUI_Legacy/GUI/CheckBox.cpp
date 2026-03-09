@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "CheckBox.h"
 #include "Form.h"
 UIClass CheckBox::Type() { return UIClass::UI_CheckBox; }

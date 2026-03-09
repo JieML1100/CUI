@@ -1,4 +1,4 @@
-#include "Button.h"
+﻿#include "Button.h"
 #include "Form.h"
 UIClass Button::Type() { return UIClass::UI_Button; }
 Button::Button(std::wstring text, int x, int y, int width, int height)

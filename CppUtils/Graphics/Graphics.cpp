@@ -1,4 +1,4 @@
-#include "Graphics.h"
+﻿#include "Graphics.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -19,7 +19,6 @@ using Microsoft::WRL::ComPtr;
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
-// 常量定义
 constexpr float INV_255_1 = 1.0f / 255.0f;
 constexpr float DEG_TO_RAD = M_PI / 180.0f;
 constexpr float OUTLINE_OFFSET = 1.0f;
@@ -52,8 +51,6 @@ namespace {
 
 	HRESULT CreateSharedDeviceIfNeeded() {
 		auto& s = Shared();
-		// 远程桌面断开/重连、显示设备切换等可能导致 D3D 设备被移除。
-		// 如果继续复用旧设备，会导致后续 CreateDeviceContext/Present/EndDraw 反复失败。
 		if (s.d3dDevice) {
 			HRESULT reason = s.d3dDevice->GetDeviceRemovedReason();
 			if (reason != S_OK && IsDeviceRemovedHr(reason)) {
@@ -91,7 +88,6 @@ namespace {
 			&obtained,
 			&ctx);
 
-		// Win7: D3D11_CREATE_DEVICE_VIDEO_SUPPORT 可能不被硬件驱动支持，去掉后重试
 		if (FAILED(hr) && (flags & D3D11_CREATE_DEVICE_VIDEO_SUPPORT)) {
 			hr = D3D11CreateDevice(
 				nullptr,
@@ -107,7 +103,6 @@ namespace {
 		}
 
 		if (FAILED(hr)) {
-			// fallback to WARP
 			hr = D3D11CreateDevice(
 				nullptr,
 				D3D_DRIVER_TYPE_WARP,
@@ -119,7 +114,6 @@ namespace {
 				&dev,
 				&obtained,
 				&ctx);
-			// Win7: WARP 同样可能不支持 VIDEO_SUPPORT，去掉后重试
 			if (FAILED(hr) && (flags & D3D11_CREATE_DEVICE_VIDEO_SUPPORT)) {
 				hr = D3D11CreateDevice(
 					nullptr,
@@ -137,9 +131,6 @@ namespace {
 		if (FAILED(hr)) {
 			return hr;
 		}
-
-		// 共享设备会被 UI 线程（D2D）与后台线程（例如视频解码/处理）并发使用。
-		// 启用 multithread protection，避免 D3D11 immediate context 的跨线程调用引发未定义行为。
 		ComPtr<ID3D10Multithread> multithread;
 		if (SUCCEEDED(dev.As(&multithread)) && multithread) {
 			multithread->SetMultithreadProtected(TRUE);
@@ -522,7 +513,6 @@ HRESULT D2DGraphics::SyncTargetToWicIfNeeded() {
 		return S_OK;
 	}
 
-	// 使用 CPU_READ bitmap 做 readback
 	D2D1_SIZE_U size = pTargetBitmap->GetPixelSize();
 	if (size.width == 0 || size.height == 0) {
 		wicDirty = false;
@@ -530,7 +520,6 @@ HRESULT D2DGraphics::SyncTargetToWicIfNeeded() {
 	}
 
 	D2D1_BITMAP_PROPERTIES1 cpuProps = D2D1::BitmapProperties1(
-		// CPU_READ 位图不能作为渲染目标，也不能被绘制；显式加 CANNOT_DRAW 更符合 D2D1.1 约束，兼容性更好
 		D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
 		pTargetBitmap->GetPixelFormat(),
 		96.0f,
@@ -542,7 +531,6 @@ HRESULT D2DGraphics::SyncTargetToWicIfNeeded() {
 		return hr;
 	}
 
-	// 从我们自己的 target bitmap 拷贝到 cpuBitmap（比 CopyFromRenderTarget 更确定/更稳定）
 	hr = cpuBitmap->CopyFromBitmap(nullptr, pTargetBitmap.Get(), nullptr);
 	if (FAILED(hr)) {
 		return hr;
@@ -571,18 +559,15 @@ void D2DGraphics::EndRender() {
 	}
 	HRESULT hr = pDeviceContext->EndDraw();
 
-	// 标记回写：offscreen/externalbitmap 需要保持 WIC 同步
 	if (surfaceKind == SurfaceKind::Offscreen || surfaceKind == SurfaceKind::ExternalBitmap) {
 		wicDirty = true;
 		SyncTargetToWicIfNeeded();
 	}
 
 	if (surfaceKind == SurfaceKind::DxgiSwapChain && pSwapChain) {
-		// 忽略 present 的返回值（调用方可自行处理）
 		pSwapChain->Present(1, 0);
 	}
 
-	// 如果目标丢失，尝试重建（对 swapchain 特别常见）
 	if (hr == D2DERR_RECREATE_TARGET) {
 		if (surfaceKind == SurfaceKind::DxgiSwapChain && pSwapChain) {
 			CreateTargetBitmapForSwapChain(pSwapChain.Get());
@@ -605,7 +590,6 @@ void D2DGraphics::ReSize(UINT width, UINT height) {
 	}
 
 	if (surfaceKind == SurfaceKind::DxgiSwapChain && pSwapChain) {
-		// 释放 target bitmap，然后 resize swapchain buffers，再重新绑定 target
 		pTargetBitmap.Reset();
 		pDeviceContext->SetTarget(nullptr);
 		pDeviceContext->Flush();
@@ -784,7 +768,6 @@ void D2DGraphics::FillGeometry(ID2D1Geometry* geo, ID2D1Brush* brush) {
 }
 
 namespace {
-	// 辅助函数：创建饼图几何形状
 	ComPtr<ID2D1PathGeometry> CreatePieGeometry(D2D1_POINT_2F center, float width, float height,
 		float startAngle, float sweepAngle) {
 		ComPtr<ID2D1PathGeometry> geo;
@@ -1589,7 +1572,6 @@ HRESULT HwndGraphics::InitDevice() {
 		pSwapChain = swapChain1;
 	}
 	else {
-		// Win7 不支持 HWND 目标的 Flip 模型，回退到 Blt 模型（DXGI_SWAP_EFFECT_DISCARD）
 		DXGI_SWAP_CHAIN_DESC legacyDesc{};
 		legacyDesc.BufferDesc.Width = width;
 		legacyDesc.BufferDesc.Height = height;

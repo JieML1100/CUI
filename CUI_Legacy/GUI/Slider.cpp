@@ -1,4 +1,4 @@
-#include "Slider.h"
+﻿#include "Slider.h"
 #include "Form.h"
 #include <cmath>
 

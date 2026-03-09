@@ -50,7 +50,7 @@ void Clipboard::Clear() {
 	CloseClipboard();
 }
 void Clipboard::SetFile(std::string files) {
-	UINT uDropEffect = RegisterClipboardFormatA("Preferred DropEffect");
+	UINT uDropEffect = RegisterClipboardFormat(TEXT("Preferred DropEffect"));
 
 	HGLOBAL hGblEffect = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
 	if (!hGblEffect) return;
@@ -130,7 +130,7 @@ void Clipboard::SetFiles(std::vector<std::string> files) {
 	memcpy(data + sizeof(df), fileList.c_str(), fileList.size());
 	GlobalUnlock(hGbl);
 
-	UINT cfEffect = RegisterClipboardFormatA("Preferred DropEffect");
+	UINT cfEffect = RegisterClipboardFormat(TEXT("Preferred DropEffect"));
 	HGLOBAL hEffect = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
 	if (hEffect) {
 		DWORD* effect = static_cast<DWORD*>(GlobalLock(hEffect));

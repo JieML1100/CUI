@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../Control.h"
 #include "LayoutTypes.h"
 #include <vector>

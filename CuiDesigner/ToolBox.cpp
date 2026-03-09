@@ -1,4 +1,4 @@
-#include "ToolBox.h"
+﻿#include "ToolBox.h"
 #include "../CUI_Legacy/GUI/Label.h"
 #include "../CUI_Legacy/GUI/Form.h"
 #include "../CUI_Legacy/nanosvg.h"

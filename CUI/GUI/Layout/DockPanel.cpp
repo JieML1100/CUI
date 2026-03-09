@@ -1,4 +1,4 @@
-#include "DockPanel.h"
+﻿#include "DockPanel.h"
 #include "../Form.h"
 #include <algorithm>
 

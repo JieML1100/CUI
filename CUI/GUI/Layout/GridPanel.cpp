@@ -1,4 +1,4 @@
-#include "GridPanel.h"
+﻿#include "GridPanel.h"
 #include "../Form.h"
 #include <algorithm>
 #include <cfloat>

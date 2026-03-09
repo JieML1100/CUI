@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "RichTextBox.h"
 #include "Form.h"
 #include <algorithm>

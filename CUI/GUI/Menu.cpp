@@ -1,4 +1,4 @@
-#include "Menu.h"
+﻿#include "Menu.h"
 #include "Form.h"
 #include <algorithm>
 
@@ -351,9 +351,9 @@ void Menu::Update()
 
 						if (!it->SubItems.empty())
 						{
-							std::wstring arrow = L"›";
+							std::wstring arrow = L"?";
 							if (i == openIdx && (level + 1) < panels.size() && panels[level + 1].OpenedToLeft)
-								arrow = L"‹";
+								arrow = L"?";
 							auto as = font->GetTextSize(arrow);
 							float ax = pn.X + pn.W - 12.0f - as.width;
 							d2d->DrawString(arrow, ax, ty, DropTextColor, font);

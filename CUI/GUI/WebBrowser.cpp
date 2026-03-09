@@ -1,4 +1,4 @@
-#include "WebBrowser.h"
+﻿#include "WebBrowser.h"
 #include "Form.h"
 
 #include <CppUtils/Utils/Convert.h>

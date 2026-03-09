@@ -1,4 +1,4 @@
-#include "Control.h"
+﻿#include "Control.h"
 #include "Form.h"
 #include "Panel.h"
 

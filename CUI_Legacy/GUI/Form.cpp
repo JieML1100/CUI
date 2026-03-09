@@ -1,4 +1,4 @@
-#include "Form.h"
+﻿#include "Form.h"
 #include "NotifyIcon.h"
 #include <algorithm>
 #include <functional>
@@ -1005,8 +1005,6 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 	OverlayRender = nullptr;
 	ResetImageCache();
 	ClearCaptionStates();
-	// 注意：不要在构造阶段仅缩放字体/标题栏，否则会导致“画面变大但窗口/命中区域不一致”。
-	// 初始 DPI 缩放统一放到 Show()/ShowDialog() 之前执行（见 EnsureInitialDpiApplied）。
 }
 
 Form::~Form()

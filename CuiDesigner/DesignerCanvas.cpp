@@ -1,4 +1,4 @@
-#include "DesignerCanvas.h"
+﻿#include "DesignerCanvas.h"
 #include <CppUtils/Utils/json.h>
 #include <CppUtils/Utils/Convert.h>
 #include "FakeWebBrowser.h"

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "Control.h"
 #include <wrl/client.h>
 #include <mfapi.h>
