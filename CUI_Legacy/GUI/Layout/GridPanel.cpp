@@ -4,26 +4,6 @@
 #include <cfloat>
 #include <cmath>
 
-namespace {
-	bool TryGetActualLayoutSize(Control* child, SIZE& outSize)
-	{
-		if (!child)
-		{
-			outSize = { 0, 0 };
-			return false;
-		}
-		SIZE baseSize = child->Size;
-		if (!child->ParentForm)
-		{
-			outSize = baseSize;
-			return false;
-		}
-		SIZE actualSize = child->ActualSize();
-		outSize = actualSize;
-		return actualSize.cx != baseSize.cx || actualSize.cy != baseSize.cy;
-	}
-}
-
 // GridLayoutEngine 实现
 
 void GridLayoutEngine::CalculateColumnWidths(Control* container, float availableWidth)
@@ -369,53 +349,61 @@ void GridLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 		// 应用对齐
 		HorizontalAlignment hAlign = child->HAlign;
 		VerticalAlignment vAlign = child->VAlign;
-		
-		SIZE childSize = child->Size;
-		SIZE actualSize = childSize;
-		bool useActualSize = TryGetActualLayoutSize(child, actualSize);
+		SIZE childSize = child->MeasureCore({ (LONG)cellWidth, (LONG)cellHeight });
 		float finalWidth = (float)childSize.cx;
 		float finalHeight = (float)childSize.cy;
-		if (useActualSize)
-		{
-			finalWidth = (float)actualSize.cx;
-			finalHeight = (float)actualSize.cy;
-		}
 		
 		// 水平对齐
 		if (hAlign == HorizontalAlignment::Stretch)
 		{
-			finalWidth = contentWidth;
+			contentX = cellX;
+			finalWidth = cellWidth;
 		}
 		else
 		{
-			if (finalWidth > contentWidth) finalWidth = contentWidth;
+			if (hAlign == HorizontalAlignment::Left)
+			{
+				if (finalWidth > contentWidth) finalWidth = contentWidth;
+			}
+			else
+			{
+				if (finalWidth > cellWidth) finalWidth = cellWidth;
+			}
 			
 			if (hAlign == HorizontalAlignment::Center)
 			{
-				contentX += (contentWidth - finalWidth) / 2.0f;
+				contentX = cellX + (cellWidth - finalWidth) / 2.0f;
 			}
 			else if (hAlign == HorizontalAlignment::Right)
 			{
-				contentX += contentWidth - finalWidth;
+				contentX = cellX + cellWidth - finalWidth;
 			}
 		}
 		
 		// 垂直对齐
 		if (vAlign == VerticalAlignment::Stretch)
 		{
-			finalHeight = contentHeight;
+			contentY = cellY;
+			finalHeight = cellHeight;
 		}
 		else
 		{
-			if (finalHeight > contentHeight) finalHeight = contentHeight;
+			if (vAlign == VerticalAlignment::Top)
+			{
+				if (finalHeight > contentHeight) finalHeight = contentHeight;
+			}
+			else
+			{
+				if (finalHeight > cellHeight) finalHeight = cellHeight;
+			}
 			
 			if (vAlign == VerticalAlignment::Center)
 			{
-				contentY += (contentHeight - finalHeight) / 2.0f;
+				contentY = cellY + (cellHeight - finalHeight) / 2.0f;
 			}
 			else if (vAlign == VerticalAlignment::Bottom)
 			{
-				contentY += contentHeight - finalHeight;
+				contentY = cellY + cellHeight - finalHeight;
 			}
 		}
 		

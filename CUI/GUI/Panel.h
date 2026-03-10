@@ -8,7 +8,7 @@
  * @brief Panel：通用容器控件（可承载子控件并驱动布局）。
  *
  * Panel 本身继承自 Control，并额外提供布局能力：
- * - 未设置 LayoutEngine 时，使用默认 Anchor/Margin/Align 逻辑（见 Panel.cpp）
+ * - 未设置 LayoutEngine 时，默认容器以 Location 负责绝对定位，Margin 负责对齐/锚定附加间距，Padding 只收缩内容区（见 Panel.cpp）
  * - 设置 LayoutEngine 后，按 Measure/Arrange 两阶段布局
  *
  * 所有权：SetLayoutEngine 会接管传入指针并负责 delete。
@@ -34,7 +34,7 @@ public:
 	/**
 	 * @brief 设置布局引擎。
 	 *
-	 * 传入 nullptr 表示恢复为默认布局（Anchor/Margin/Align）。
+	 * 传入 nullptr 表示恢复为默认布局（Location + Anchor/Margin/Align）。
 	 * @param engine 布局引擎指针（由 Panel 接管并在析构/替换时 delete）。
 	 */
 	void SetLayoutEngine(class LayoutEngine* engine);

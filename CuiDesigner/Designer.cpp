@@ -275,6 +275,10 @@ void Designer::OnSaveClick()
 			return;
 		path = Convert::string_to_wstring(sfd.SelectedPath);
 		if (path.empty()) return;
+		if(!path.ends_with(L".json") && !path.ends_with(L".JSON"))
+		{
+			path += L".json";
+		}
 	}
 
 	std::wstring err;

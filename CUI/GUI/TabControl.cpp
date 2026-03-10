@@ -184,7 +184,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		auto forwardToChild = [&](Control* c)
 			{
 				if (!c) return;
-				auto location = c->Location;
+				auto location = c->ActualLocation;
 				c->ProcessMessage(message, wParam, lParam, xof - location.x, cy - location.y);
 			};
 
@@ -219,7 +219,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 					{
 						auto c = page->operator[](i);
 						if (!c || !c->Visible || !c->Enable) continue;
-						auto loc = c->Location;
+						auto loc = c->ActualLocation;
 						auto sz = c->ActualSize();
 						if (xof >= loc.x && cy >= loc.y && xof <= (loc.x + sz.cx) && cy <= (loc.y + sz.cy))
 						{

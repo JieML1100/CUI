@@ -1327,22 +1327,17 @@ void Form::PerformLayout()
 			if (!control || !control->Visible) continue;
 			if (control->Type() == UIClass::UI_Menu) continue;
 			
-			control->EnsureLayoutBase();
-			SIZE size = control->_layoutBaseSize;
+			POINT location = control->Location;
 			Thickness margin = control->Margin;
 			uint8_t anchor = control->AnchorStyles;
 			HorizontalAlignment hAlign = control->HAlign;
 			VerticalAlignment vAlign = control->VAlign;
+			SIZE size = control->MeasureCore({ (LONG)contentWidth, (LONG)contentHeight });
 
 			float x = contentLeft + margin.Left;
 			float y = contentTop + margin.Top;
 			float w = (float)size.cx;
 			float h = (float)size.cy;
-
-			float availableW = contentWidth - margin.Left - margin.Right;
-			float availableH = contentHeight - margin.Top - margin.Bottom;
-			if (availableW < 0) availableW = 0;
-			if (availableH < 0) availableH = 0;
 			
 			// 应用 Anchor
 			if (anchor != AnchorStyles::None)
@@ -1350,8 +1345,8 @@ void Form::PerformLayout()
 				// 左右都锚定：宽度随窗口变化
 				if ((anchor & AnchorStyles::Left) && (anchor & AnchorStyles::Right))
 				{
-					x = margin.Left;
-					w = contentWidth - margin.Left - margin.Right;
+					x = (float)location.x;
+					w = contentWidth - (float)location.x - margin.Right;
 					if (w < 0) w = 0;
 				}
 				// 只锚定右边：跟随右边缘
@@ -1361,14 +1356,14 @@ void Form::PerformLayout()
 				}
 				else
 				{
-					x = margin.Left;
+					x = (float)location.x;
 				}
 				
 				// 上下都锚定：高度随窗口变化
 				if ((anchor & AnchorStyles::Top) && (anchor & AnchorStyles::Bottom))
 				{
-					y = margin.Top;
-					h = contentHeight - margin.Top - margin.Bottom;
+					y = (float)location.y;
+					h = contentHeight - (float)location.y - margin.Bottom;
 					if (h < 0) h = 0;
 				}
 				// 只锚定下边：跟随下边缘
@@ -1378,7 +1373,7 @@ void Form::PerformLayout()
 				}
 				else
 				{
-					y = margin.Top;
+					y = (float)location.y;
 				}
 			}
 			else
@@ -1386,29 +1381,41 @@ void Form::PerformLayout()
 				if (hAlign == HorizontalAlignment::Stretch)
 				{
 					x = margin.Left;
-					w = availableW;
+					w = (float)clientSize.cx - margin.Left - margin.Right;
 				}
 				else if (hAlign == HorizontalAlignment::Center)
 				{
-					x = margin.Left + (availableW - w) / 2.0f;
+					float availableWidth = (float)clientSize.cx - margin.Left - margin.Right;
+					if (availableWidth < 0) availableWidth = 0;
+					x = margin.Left + (availableWidth - w) / 2.0f;
 				}
 				else if (hAlign == HorizontalAlignment::Right)
 				{
-					x = margin.Left + (availableW - w);
+					x = (float)clientSize.cx - margin.Right - w;
+				}
+				else
+				{
+					x = (float)location.x;
 				}
 				
 				if (vAlign == VerticalAlignment::Stretch)
 				{
 					y = margin.Top;
-					h = availableH;
+					h = (float)clientSize.cy - margin.Top - margin.Bottom;
+				}
+				else if (vAlign == VerticalAlignment::Top)
+				{
+					y = (float)location.y;
 				}
 				else if (vAlign == VerticalAlignment::Center)
 				{
-					y = margin.Top + (availableH - h) / 2.0f;
+					float availableHeight = (float)clientSize.cy - margin.Top - margin.Bottom;
+					if (availableHeight < 0) availableHeight = 0;
+					y = margin.Top + (availableHeight - h) / 2.0f;
 				}
 				else if (vAlign == VerticalAlignment::Bottom)
 				{
-					y = margin.Top + (availableH - h);
+					y = (float)clientSize.cy - margin.Bottom - h;
 				}
 			}
 
@@ -2310,7 +2317,7 @@ D2D1_RECT_F Form::ChildRect()
 	{
 		for (auto c : this->Controls)
 		{
-			auto loc = c->Location;
+			auto loc = c->ActualLocation;
 			auto siz = c->ActualSize();
 			auto tmp = D2D1_POINT_2F{ (float)loc.x + siz.cx,(float)loc.y + siz.cy };
 			if (tmp.x < left)left = tmp.x;

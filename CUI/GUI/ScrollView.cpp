@@ -40,7 +40,7 @@ static bool FindDeepestWheelTarget(Control* root, int xof, int yof, Control*& ou
 	{
 		auto child = root->operator[](i);
 		if (!child || !child->Visible || !child->Enable) continue;
-		auto loc = child->Location;
+		auto loc = child->ActualLocation;
 		auto size = child->ActualSize();
 		const int drawX = loc.x + childOffset.x;
 		const int drawY = loc.y + childOffset.y;
@@ -71,6 +71,126 @@ POINT ScrollView::GetChildrenRenderOffset() const
 	return POINT{ -this->ScrollXOffset, -this->ScrollYOffset };
 }
 
+void ScrollView::PerformScrollContentLayout()
+{
+	if (this->_layoutEngine)
+	{
+		Panel::PerformLayout();
+		return;
+	}
+
+	SIZE containerSize = this->Size;
+	Thickness padding = this->Padding;
+	float contentLeft = padding.Left;
+	float contentTop = padding.Top;
+	float contentWidth = (float)containerSize.cx - padding.Left - padding.Right;
+	float contentHeight = (float)containerSize.cy - padding.Top - padding.Bottom;
+	if (contentWidth < 0) contentWidth = 0;
+	if (contentHeight < 0) contentHeight = 0;
+
+	for (int i = 0; i < this->Children.Count; i++)
+	{
+		auto child = this->Children[i];
+		if (!child || !child->Visible) continue;
+
+		POINT location = child->Location;
+		Thickness margin = child->Margin;
+		uint8_t anchor = child->AnchorStyles;
+		HorizontalAlignment hAlign = child->HAlign;
+		VerticalAlignment vAlign = child->VAlign;
+		SIZE size = child->MeasureCore({ INT_MAX, INT_MAX });
+
+		float x = contentLeft + margin.Left;
+		float y = contentTop + margin.Top;
+		float w = (float)size.cx;
+		float h = (float)size.cy;
+
+		if (anchor != AnchorStyles::None)
+		{
+			if ((anchor & AnchorStyles::Left) && (anchor & AnchorStyles::Right))
+			{
+				x = contentLeft + (float)location.x;
+				w = contentWidth - (float)location.x - margin.Right;
+				if (w < 0) w = 0;
+			}
+			else if (anchor & AnchorStyles::Right)
+			{
+				x = contentLeft + contentWidth - margin.Right - w;
+			}
+			else
+			{
+				x = contentLeft + (float)location.x;
+			}
+
+			if ((anchor & AnchorStyles::Top) && (anchor & AnchorStyles::Bottom))
+			{
+				y = contentTop + (float)location.y;
+				h = contentHeight - (float)location.y - margin.Bottom;
+				if (h < 0) h = 0;
+			}
+			else if (anchor & AnchorStyles::Bottom)
+			{
+				y = contentTop + contentHeight - margin.Bottom - h;
+			}
+			else
+			{
+				y = contentTop + (float)location.y;
+			}
+		}
+		else
+		{
+			if (hAlign == HorizontalAlignment::Stretch)
+			{
+				x = contentLeft + margin.Left;
+				w = contentWidth - margin.Left - margin.Right;
+			}
+			else if (hAlign == HorizontalAlignment::Center)
+			{
+				float availableWidth = contentWidth - margin.Left - margin.Right;
+				if (availableWidth < 0) availableWidth = 0;
+				x = contentLeft + margin.Left + (availableWidth - w) / 2.0f;
+			}
+			else if (hAlign == HorizontalAlignment::Right)
+			{
+				x = contentLeft + contentWidth - margin.Right - w;
+			}
+			else
+			{
+				x = contentLeft + (float)location.x;
+			}
+
+			if (vAlign == VerticalAlignment::Stretch)
+			{
+				y = contentTop + margin.Top;
+				h = contentHeight - margin.Top - margin.Bottom;
+			}
+			else if (vAlign == VerticalAlignment::Top)
+			{
+				y = contentTop + (float)location.y;
+			}
+			else if (vAlign == VerticalAlignment::Center)
+			{
+				float availableHeight = contentHeight - margin.Top - margin.Bottom;
+				if (availableHeight < 0) availableHeight = 0;
+				y = contentTop + margin.Top + (availableHeight - h) / 2.0f;
+			}
+			else if (vAlign == VerticalAlignment::Bottom)
+			{
+				y = contentTop + contentHeight - margin.Bottom - h;
+			}
+		}
+
+		if (w < 0) w = 0;
+		if (h < 0) h = 0;
+
+		POINT finalLoc = { (LONG)x, (LONG)y };
+		SIZE finalSize = { (LONG)w, (LONG)h };
+		child->ApplyLayout(finalLoc, finalSize);
+	}
+
+	this->_needsLayout = false;
+}
+
 SIZE ScrollView::MeasureContentSize()
 {
 	SIZE measured = this->_size;
@@ -83,7 +203,7 @@ SIZE ScrollView::MeasureContentSize()
 	{
 		auto child = this->Children[i];
 		if (!child || !child->Visible) continue;
-		auto loc = child->Location;
+		auto loc = child->ActualLocation;
 		auto sz = child->ActualSize();
 		maxRight = std::max(maxRight, (float)loc.x + (float)sz.cx);
 		maxBottom = std::max(maxBottom, (float)loc.y + (float)sz.cy);
@@ -204,7 +324,7 @@ bool ScrollView::ShouldHitTestChildrenAt(int xof, int yof) const
 bool ScrollView::HitChild(Control* child, int xof, int yof, int& childX, int& childY) const
 {
 	if (!child || !child->Visible || !child->Enable) return false;
-	auto loc = child->Location;
+	auto loc = child->ActualLocation;
 	auto size = child->ActualSize();
 	int drawX = loc.x - this->ScrollXOffset;
 	int drawY = loc.y - this->ScrollYOffset;
@@ -285,7 +405,7 @@ void ScrollView::Update()
 	if (this->IsVisual == false) return;
 	if (_needsLayout || (_layoutEngine && _layoutEngine->NeedsLayout()))
 	{
-		PerformLayout();
+		PerformScrollContentLayout();
 	}
 
 	auto d2d = this->ParentForm->Render;
@@ -325,7 +445,7 @@ bool ScrollView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 	if (!this->Enable || !this->Visible) return true;
 	if (_needsLayout || (_layoutEngine && _layoutEngine->NeedsLayout()))
 	{
-		PerformLayout();
+		PerformScrollContentLayout();
 	}
 
 	auto layout = this->CalcScrollLayout();

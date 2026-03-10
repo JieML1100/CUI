@@ -19,6 +19,8 @@ Control::Control()
 {
 	this->_layoutBaseSize = this->_size;
 	this->_layoutBaseInitialized = true;
+	this->_location = POINT{ 0, 0 };
+	this->_runtimeLocation = POINT{ 0, 0 };
 }
 Control::~Control()
 {
@@ -175,11 +177,11 @@ void Control::RemoveControl(Control* c)
 GET_CPP(Control, POINT, AbsLocation)
 {
 	Control* tmpc = this;
-	POINT tmpl = tmpc->Location;
+	POINT tmpl = tmpc->ActualLocation;
 	while (tmpc->Parent)
 	{
 		tmpc = tmpc->Parent;
-		auto loc = tmpc->Location;
+		auto loc = tmpc->ActualLocation;
 		auto childOffset = tmpc->GetChildrenRenderOffset();
 		tmpl.x += loc.x;
 		tmpl.y += loc.y;
@@ -187,6 +189,10 @@ GET_CPP(Control, POINT, AbsLocation)
 		tmpl.y += childOffset.y;
 	}
 	return tmpl;
+}
+GET_CPP(Control, POINT, ActualLocation)
+{
+	return _runtimeLocation;
 }
 GET_CPP(Control, D2D1_RECT_F, AbsRect)
 {
@@ -213,15 +219,17 @@ GET_CPP(Control, bool, IsVisual)
 }
 GET_CPP(Control, POINT, Location)
 {
-	return POINT{ static_cast<int>(_margin.Left),static_cast<int>(_margin.Top) };
+	return _location;
 }
 SET_CPP(Control, POINT, Location)
 {
-	POINT oldLocation = this->Location;
-	_margin.Left = static_cast<float>(value.x);
-	_margin.Top = static_cast<float>(value.y);
+	POINT oldConfiguredLocation = this->_location;
+	POINT oldLocation = this->_runtimeLocation;
+	_location = value;
+	_runtimeLocation = value;
 	this->RequestLayout();
-	if (oldLocation.x != static_cast<int>(_margin.Left) || oldLocation.y != static_cast<int>(_margin.Top))
+	if (oldConfiguredLocation.x != _location.x || oldConfiguredLocation.y != _location.y ||
+		oldLocation.x != _runtimeLocation.x || oldLocation.y != _runtimeLocation.y)
 	{
 		this->OnMoved(this);
 	}
@@ -241,19 +249,19 @@ SET_CPP(Control, SIZE, Size)
 }
 GET_CPP(Control, int, Left)
 {
-	return this->Location.x;
+	return this->_location.x;
 }
 SET_CPP(Control, int, Left)
 {
-	this->Location = POINT{ value, (LONG)this->_margin.Top };
+	this->Location = POINT{ value, this->_location.y };
 }
 GET_CPP(Control, int, Top)
 {
-	return this->Location.y;
+	return this->_location.y;
 }
 SET_CPP(Control, int, Top)
 {
-	this->Location = POINT{ (LONG)this->_margin.Left, value };
+	this->Location = POINT{ this->_location.x, value };
 }
 GET_CPP(Control, int, Width)
 {
@@ -407,7 +415,7 @@ void Control::RenderImage()
 }
 SIZE Control::ActualSize()
 {
-	return this->Size;
+	return this->_size;
 }
 
 bool Control::IsSelected()
@@ -510,13 +518,8 @@ SET_CPP(Control, Thickness, Margin)
 {
 	if (_margin != value)
 	{
-		POINT oldLocation = this->Location;
 		_margin = value;
 		this->RequestLayout();
-		if (oldLocation.x != static_cast<int>(_margin.Left) || oldLocation.y != static_cast<int>(_margin.Top))
-		{
-			this->OnMoved(this);
-		}
 		this->PostRender();
 	}
 }
@@ -648,19 +651,8 @@ SET_CPP(Control, SIZE, MaxSize)
 // 测量控件期望尺寸
 SIZE Control::MeasureCore(SIZE availableSize)
 {
-	SIZE desired = this->_size;
-	if (this->ParentForm)
-	{
-		SIZE actualSize = this->ActualSize();
-		if (actualSize.cx != desired.cx || actualSize.cy != desired.cy)
-		{
-			desired = actualSize;
-		}
-	}
-
-	// 应用 Padding
-	desired.cx += (LONG)(_padding.Left + _padding.Right);
-	desired.cy += (LONG)(_padding.Top + _padding.Bottom);
+	EnsureLayoutBase();
+	SIZE desired = this->_layoutBaseSize;
 
 	// 应用约束
 	if (desired.cx < _minSize.cx) desired.cx = _minSize.cx;
@@ -678,13 +670,12 @@ SIZE Control::MeasureCore(SIZE availableSize)
 // 应用布局结果
 void Control::ApplyLayout(POINT location, SIZE size)
 {
-	bool locationChanged = (static_cast<int>(_margin.Left) != location.x || static_cast<int>(_margin.Top) != location.y);
+	bool locationChanged = (_runtimeLocation.x != location.x || _runtimeLocation.y != location.y);
 	bool sizeChanged = (_size.cx != size.cx || _size.cy != size.cy);
 
 	if (locationChanged)
 	{
-		_margin.Left = static_cast<float>(location.x);
-		_margin.Top = static_cast<float>(location.y);
+		_runtimeLocation = location;
 		this->OnMoved(this);
 	}
 
@@ -702,13 +693,12 @@ void Control::ApplyLayout(POINT location, SIZE size)
 
 void Control::SetRuntimeLocation(POINT value)
 {
-	if (static_cast<int>(_margin.Left) == value.x && static_cast<int>(_margin.Top) == value.y)
+	if (_runtimeLocation.x == value.x && _runtimeLocation.y == value.y)
 	{
 		return;
 	}
 
-	_margin.Left = static_cast<float>(value.x);
-	_margin.Top = static_cast<float>(value.y);
+	_runtimeLocation = value;
 	this->OnMoved(this);
 	this->PostRender();
 }

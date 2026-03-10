@@ -150,9 +150,21 @@ namespace
 
 	static std::wstring ColorToText(const D2D1_COLOR_F& c)
 	{
+		auto toByte = [](float v) -> int {
+			return (int)std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f);
+		};
+
 		std::wostringstream oss;
-		oss.setf(std::ios::fixed);
-		oss << std::setprecision(3) << c.r << L"," << c.g << L"," << c.b << L"," << c.a;
+		oss << L"#"
+			<< std::uppercase << std::hex << std::setfill(L'0')
+			<< std::setw(2) << toByte(c.r)
+			<< std::setw(2) << toByte(c.g)
+			<< std::setw(2) << toByte(c.b);
+
+		int a = toByte(c.a);
+		if (a != 255)
+			oss << std::setw(2) << a;
+
 		return oss.str();
 	}
 
@@ -164,32 +176,67 @@ namespace
 		return false;
 	}
 
+	static bool TryParseHexByte(const std::wstring& s, size_t offset, unsigned char& out)
+	{
+		int hi = 0, lo = 0;
+		if (offset + 1 >= s.size()) return false;
+		if (!TryParseHexNibble(s[offset], hi)) return false;
+		if (!TryParseHexNibble(s[offset + 1], lo)) return false;
+		out = (unsigned char)((hi << 4) | lo);
+		return true;
+	}
+
 	static bool TryParseColor(const std::wstring& s, D2D1_COLOR_F& out)
 	{
 		auto t = TrimWs(s);
 		if (t.empty()) return false;
-		// #RRGGBB or #AARRGGBB
 		if (t[0] == L'#')
 		{
 			std::wstring hex = t.substr(1);
 			if (hex.size() != 6 && hex.size() != 8) return false;
-			auto byteAt = [&](size_t i, unsigned char& b) -> bool {
-				int hi = 0, lo = 0;
-				if (!TryParseHexNibble(hex[i], hi)) return false;
-				if (!TryParseHexNibble(hex[i + 1], lo)) return false;
-				b = (unsigned char)((hi << 4) | lo);
-				return true;
-				};
-			unsigned char a = 255, r = 0, g = 0, b = 0;
-			size_t off = 0;
+
+			unsigned char p0 = 0, p1 = 0, p2 = 0, p3 = 255;
+			if (!TryParseHexByte(hex, 0, p0)) return false;
+			if (!TryParseHexByte(hex, 2, p1)) return false;
+			if (!TryParseHexByte(hex, 4, p2)) return false;
+
+			unsigned char r = p0, g = p1, b = p2, a = 255;
 			if (hex.size() == 8)
 			{
-				if (!byteAt(0, a)) return false;
-				off = 2;
+				if (!TryParseHexByte(hex, 6, p3)) return false;
+
+				const bool argbAlphaIsExtreme = (p0 == 0x00 || p0 == 0xFF);
+				const bool rgbaAlphaIsExtreme = (p3 == 0x00 || p3 == 0xFF);
+				const bool preferArgb = (!argbAlphaIsExtreme && rgbaAlphaIsExtreme);
+
+				if (preferArgb)
+				{
+					a = p0;
+					r = p1;
+					g = p2;
+					b = p3;
+				}
+				else
+				{
+					r = p0;
+					g = p1;
+					b = p2;
+					a = p3;
+				}
 			}
-			if (!byteAt(off + 0, r)) return false;
-			if (!byteAt(off + 2, g)) return false;
-			if (!byteAt(off + 4, b)) return false;
+
+			out = D2D1::ColorF(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
+			return true;
+		}
+		// 0xAARRGGBB
+		if (t.size() == 10 && t[0] == L'0' && (t[1] == L'x' || t[1] == L'X'))
+		{
+			std::wstring hex = t.substr(2);
+			unsigned char a = 255, r = 0, g = 0, b = 0;
+			if (!TryParseHexByte(hex, 0, a)) return false;
+			if (!TryParseHexByte(hex, 2, r)) return false;
+			if (!TryParseHexByte(hex, 4, g)) return false;
+			if (!TryParseHexByte(hex, 6, b)) return false;
 			out = D2D1::ColorF(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
 			return true;
 		}
@@ -671,53 +718,54 @@ void PropertyGrid::CreateColorPropertyItem(std::wstring propertyName, const D2D1
 	int valueX = (width - 30) / 2 + 15;
 	int valueW = (width - 30) / 2;
 
-	// 容器：颜色预览 + 文本 + 选择按钮
+	// 容器：带背景色的按钮 + 文本
 	auto panel = new Panel(valueX, yOffset, valueW, 20);
 	panel->BackColor = D2D1::ColorF(0, 0);
 	panel->Boder = 0.0f;
 	panel->ParentForm = this->ParentForm;
 
-	const int previewW = 18;
-	const int btnW = 26;
+	const int btnW = 28;
 	const int gap = 6;
-	int textW = valueW - previewW - btnW - gap * 2;
+	int textW = valueW - btnW - gap;
 	if (textW < 40) textW = 40;
 
-	auto preview = new Panel(0, 1, previewW, 18);
-	preview->BackColor = value;
-	preview->Boder = 1.0f;
-	preview->BolderColor = Colors::DimGrey;
-	preview->ParentForm = this->ParentForm;
+	auto btn = new Button(L"...", 0, -1, btnW, 22);
+	btn->ParentForm = this->ParentForm;
+	btn->Boder = 1.0f;
+	btn->BolderColor = Colors::DimGrey;
+	auto refreshButtonColor = [btn](const D2D1_COLOR_F& c) {
+		btn->BackColor = c;
+		float luminance = c.r * 0.299f + c.g * 0.587f + c.b * 0.114f;
+		btn->ForeColor = (luminance < 0.5f || c.a < 0.5f) ? Colors::White : Colors::Black;
+		btn->PostRender();
+	};
+	refreshButtonColor(value);
 
-	auto tb = new TextBox(L"", previewW + gap, 0, textW, 20);
+	auto tb = new TextBox(L"", btnW + gap, 0, textW, 20);
 	tb->Text = ColorToText(value);
 	tb->ParentForm = this->ParentForm;
-	tb->OnTextChanged += [this, propertyName, preview](Control*, std::wstring, std::wstring newText) {
+	tb->OnTextChanged += [this, propertyName, refreshButtonColor](Control*, std::wstring, std::wstring newText) {
 		UpdatePropertyFromTextBox(propertyName, newText);
 		D2D1_COLOR_F c{};
 		if (TryParseColor(newText, c))
 		{
-			preview->BackColor = c;
-			preview->PostRender();
+			refreshButtonColor(c);
 		}
 	};
 
-	auto btn = new Button(L"...", previewW + gap + textW + gap, -1, btnW, 22);
-	btn->ParentForm = this->ParentForm;
-	btn->OnMouseClick += [this, propertyName, tb, preview](Control*, MouseEventArgs) {
+	btn->OnMouseClick += [this, propertyName, tb, refreshButtonColor](Control*, MouseEventArgs) {
 		if (!this->ParentForm) return;
 		D2D1_COLOR_F cur{};
 		if (!TryParseColor(tb->Text, cur)) cur = D2D1::ColorF(0, 0, 0, 1);
 		D2D1_COLOR_F picked{};
 		if (PickColorWithDialog(this->ParentForm->Handle, cur, picked))
 		{
-			preview->BackColor = picked;
+			refreshButtonColor(picked);
 			tb->Text = ColorToText(picked);
 			UpdatePropertyFromTextBox(propertyName, tb->Text);
 		}
 	};
 
-	panel->AddControl(preview);
 	panel->AddControl(tb);
 	panel->AddControl(btn);
 	container->AddControl(panel);
@@ -1792,8 +1840,8 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 	if (control->Type == UIClass::UI_ScrollView)
 	{
 		auto* sv = (ScrollView*)ctrl;
-		CreatePropertyItem(L"ScrollBackColor", ColorToText(sv->ScrollBackColor), yOffset);
-		CreatePropertyItem(L"ScrollForeColor", ColorToText(sv->ScrollForeColor), yOffset);
+		CreateColorPropertyItem(L"ScrollBackColor", sv->ScrollBackColor, yOffset);
+		CreateColorPropertyItem(L"ScrollForeColor", sv->ScrollForeColor, yOffset);
 		CreateBoolPropertyItem(L"AlwaysShowVScroll", sv->AlwaysShowVScroll, yOffset);
 		CreateBoolPropertyItem(L"AlwaysShowHScroll", sv->AlwaysShowHScroll, yOffset);
 		CreateBoolPropertyItem(L"AutoContentSize", sv->AutoContentSize, yOffset);
@@ -1804,9 +1852,9 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 	if (control->Type == UIClass::UI_TreeView)
 	{
 		auto* tv = (TreeView*)ctrl;
-		CreatePropertyItem(L"SelectedBackColor", ColorToText(tv->SelectedBackColor), yOffset);
-		CreatePropertyItem(L"UnderMouseItemBackColor", ColorToText(tv->UnderMouseItemBackColor), yOffset);
-		CreatePropertyItem(L"SelectedForeColor", ColorToText(tv->SelectedForeColor), yOffset);
+		CreateColorPropertyItem(L"SelectedBackColor", tv->SelectedBackColor, yOffset);
+		CreateColorPropertyItem(L"UnderMouseItemBackColor", tv->UnderMouseItemBackColor, yOffset);
+		CreateColorPropertyItem(L"SelectedForeColor", tv->SelectedForeColor, yOffset);
 	}
 	if (control->Type == UIClass::UI_ToolBar)
 	{

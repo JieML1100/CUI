@@ -384,7 +384,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		{
 			auto* it = (MenuItem*)this->operator[](i);
 			if (!it) continue;
-			auto loc = it->Location;
+			auto loc = it->ActualLocation;
 			auto sz = it->ActualSize();
 			if (xof >= loc.x && xof <= (loc.x + sz.cx))
 			{

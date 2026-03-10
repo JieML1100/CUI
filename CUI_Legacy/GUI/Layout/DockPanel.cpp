@@ -2,26 +2,6 @@
 #include "../Form.h"
 #include <algorithm>
 
-namespace {
-	bool TryGetActualLayoutSize(Control* child, SIZE& outSize)
-	{
-		if (!child)
-		{
-			outSize = { 0, 0 };
-			return false;
-		}
-		SIZE baseSize = child->Size;
-		if (!child->ParentForm)
-		{
-			outSize = baseSize;
-			return false;
-		}
-		SIZE actualSize = child->ActualSize();
-		outSize = actualSize;
-		return actualSize.cx != baseSize.cx || actualSize.cy != baseSize.cy;
-	}
-}
-
 // DockLayoutEngine 实现
 
 SIZE DockLayoutEngine::Measure(Control* container, SIZE availableSize)
@@ -95,9 +75,7 @@ void DockLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 		
 		Dock dock = child->DockPosition;
 		Thickness margin = child->Margin;
-		SIZE childSize = child->Size;
-		SIZE actualSize = childSize;
-		bool useActualSize = TryGetActualLayoutSize(child, actualSize);
+		SIZE childSize = child->MeasureCore({ (LONG)(remaining.right - remaining.left), (LONG)(remaining.bottom - remaining.top) });
 		
 		// 最后一个子控件如果启用 LastChildFill，则填充剩余空间
 		bool isLastAndFill = (i == lastIndex && _lastChildFill);
@@ -114,16 +92,11 @@ void DockLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 		{
 			float availableH = remaining.bottom - remaining.top - margin.Top - margin.Bottom;
 			if (availableH < 0) availableH = 0;
-			width = (float)(useActualSize ? actualSize.cx : childSize.cx);
-			height = useActualSize ? (float)actualSize.cy : availableH;
-			if (height > availableH) height = availableH;
+			width = (float)childSize.cx;
+			height = availableH;
 
 			x = remaining.left + margin.Left;
 			y = remaining.top + margin.Top;
-			if (useActualSize && height < availableH)
-			{
-				y += (availableH - height) / 2.0f;
-			}
 
 			// 更新剩余空间
 			remaining.left += width + margin.Left + margin.Right;
@@ -134,16 +107,11 @@ void DockLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 		{
 			float availableW = remaining.right - remaining.left - margin.Left - margin.Right;
 			if (availableW < 0) availableW = 0;
-			width = useActualSize ? (float)actualSize.cx : availableW;
-			if (width > availableW) width = availableW;
-			height = (float)(useActualSize ? actualSize.cy : childSize.cy);
+			width = availableW;
+			height = (float)childSize.cy;
 
 			x = remaining.left + margin.Left;
 			y = remaining.top + margin.Top;
-			if (useActualSize && width < availableW)
-			{
-				x += (availableW - width) / 2.0f;
-			}
 
 			// 更新剩余空间
 			remaining.top += height + margin.Top + margin.Bottom;
@@ -154,16 +122,11 @@ void DockLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 		{
 			float availableH = remaining.bottom - remaining.top - margin.Top - margin.Bottom;
 			if (availableH < 0) availableH = 0;
-			width = (float)(useActualSize ? actualSize.cx : childSize.cx);
-			height = useActualSize ? (float)actualSize.cy : availableH;
-			if (height > availableH) height = availableH;
+			width = (float)childSize.cx;
+			height = availableH;
 
 			x = remaining.right - width - margin.Right;
 			y = remaining.top + margin.Top;
-			if (useActualSize && height < availableH)
-			{
-				y += (availableH - height) / 2.0f;
-			}
 			
 			// 更新剩余空间
 			remaining.right -= width + margin.Left + margin.Right;
@@ -174,16 +137,11 @@ void DockLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 		{
 			float availableW = remaining.right - remaining.left - margin.Left - margin.Right;
 			if (availableW < 0) availableW = 0;
-			width = useActualSize ? (float)actualSize.cx : availableW;
-			if (width > availableW) width = availableW;
-			height = (float)(useActualSize ? actualSize.cy : childSize.cy);
+			width = availableW;
+			height = (float)childSize.cy;
 
 			x = remaining.left + margin.Left;
 			y = remaining.bottom - height - margin.Bottom;
-			if (useActualSize && width < availableW)
-			{
-				x += (availableW - width) / 2.0f;
-			}
 			
 			// 更新剩余空间
 			remaining.bottom -= height + margin.Top + margin.Bottom;
@@ -196,23 +154,10 @@ void DockLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 			float availableH = remaining.bottom - remaining.top - margin.Top - margin.Bottom;
 			if (availableW < 0) availableW = 0;
 			if (availableH < 0) availableH = 0;
-
-			if (useActualSize)
-			{
-				width = (float)actualSize.cx;
-				height = (float)actualSize.cy;
-				if (width > availableW) width = availableW;
-				if (height > availableH) height = availableH;
-				x = remaining.left + margin.Left + (availableW - width) / 2.0f;
-				y = remaining.top + margin.Top + (availableH - height) / 2.0f;
-			}
-			else
-			{
-				x = remaining.left + margin.Left;
-				y = remaining.top + margin.Top;
-				width = availableW;
-				height = availableH;
-			}
+			x = remaining.left + margin.Left;
+			y = remaining.top + margin.Top;
+			width = availableW;
+			height = availableH;
 		}
 			break;
 		}

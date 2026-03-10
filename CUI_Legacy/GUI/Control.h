@@ -167,7 +167,9 @@ protected:
 	bool _hasLastPostRenderClientRect = false;
 	
 	// 布局属性
+	POINT _location = { 0,0 };
 	Thickness _margin;
+	POINT _runtimeLocation = { 0,0 };
 	Thickness _padding;
 	HorizontalAlignment _horizontalAlignment = HorizontalAlignment::Left;
 	VerticalAlignment _verticalAlignment = VerticalAlignment::Top;
@@ -186,7 +188,9 @@ protected:
 	SIZE _minSize = {0, 0};
 	SIZE _maxSize = {INT_MAX, INT_MAX};
 
-	// 默认布局只以 Margin 表达位置；这里仅保留尺寸基准，避免重复布局时尺寸累计漂移。
+	// Location 保存用户配置位置；_runtimeLocation 保存布局后的实际位置。
+	// Margin 只保存布局系统输入，不再复用为绝对定位。
+	// 这里仅保留尺寸基准，避免重复布局时尺寸累计漂移。
 	SIZE _layoutBaseSize = { 120,20 };
 	bool _layoutBaseInitialized = false;
 
@@ -335,6 +339,8 @@ public:
 	void RemoveControl(Control* c);
 	READONLY_PROPERTY(POINT, AbsLocation);
 	GET(POINT, AbsLocation);
+	READONLY_PROPERTY(POINT, ActualLocation);
+	GET(POINT, ActualLocation);
 	READONLY_PROPERTY(D2D1_RECT_F, AbsRect);
 	GET(D2D1_RECT_F, AbsRect);
 	READONLY_PROPERTY(bool, IsVisual);

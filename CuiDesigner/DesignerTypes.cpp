@@ -23,7 +23,7 @@ std::vector<RECT> DesignerControl::GetHandleRects(int handleSize)
 	std::vector<RECT> rects;
 	if (!ControlInstance) return rects;
 	
-	auto loc = ControlInstance->Location;
+	auto loc = ControlInstance->ActualLocation;
 	auto size = ControlInstance->Size;
 	int half = handleSize / 2;
 	

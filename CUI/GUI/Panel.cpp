@@ -68,22 +68,17 @@ void Panel::PerformLayout()
 			auto child = this->Children[i];
 			if (!child || !child->Visible) continue;
 			
-			child->EnsureLayoutBase();
-			SIZE size = child->_layoutBaseSize;
+			POINT location = child->Location;
 			Thickness margin = child->Margin;
 			uint8_t anchor = child->AnchorStyles;
 			HorizontalAlignment hAlign = child->HAlign;
 			VerticalAlignment vAlign = child->VAlign;
+			SIZE size = child->MeasureCore({ (LONG)contentWidth, (LONG)contentHeight });
 
 			float x = contentLeft + margin.Left;
 			float y = contentTop + margin.Top;
 			float w = (float)size.cx;
 			float h = (float)size.cy;
-
-			float availableW = contentWidth - margin.Left - margin.Right;
-			float availableH = contentHeight - margin.Top - margin.Bottom;
-			if (availableW < 0) availableW = 0;
-			if (availableH < 0) availableH = 0;
 			
 			// 应用 Anchor
 			if (anchor != AnchorStyles::None)
@@ -91,8 +86,8 @@ void Panel::PerformLayout()
 				// 左右都锚定：宽度随容器变化
 				if ((anchor & AnchorStyles::Left) && (anchor & AnchorStyles::Right))
 				{
-					x = contentLeft + margin.Left;
-					w = contentWidth - margin.Left - margin.Right;
+					x = contentLeft + (float)location.x;
+					w = contentWidth - (float)location.x - margin.Right;
 					if (w < 0) w = 0;
 				}
 				// 只锚定右边：跟随右边缘
@@ -102,14 +97,14 @@ void Panel::PerformLayout()
 				}
 				else
 				{
-					x = contentLeft + margin.Left;
+					x = contentLeft + (float)location.x;
 				}
 				
 				// 上下都锚定：高度随容器变化
 				if ((anchor & AnchorStyles::Top) && (anchor & AnchorStyles::Bottom))
 				{
-					y = contentTop + margin.Top;
-					h = contentHeight - margin.Top - margin.Bottom;
+					y = contentTop + (float)location.y;
+					h = contentHeight - (float)location.y - margin.Bottom;
 					if (h < 0) h = 0;
 				}
 				// 只锚定下边：跟随下边缘
@@ -119,45 +114,50 @@ void Panel::PerformLayout()
 				}
 				else
 				{
-					y = contentTop + margin.Top;
+					y = contentTop + (float)location.y;
 				}
 			}
 			else
 			{
-				// 未设置 Anchor 时，使用对齐属性；Left/Top 基准直接来自 Margin.Left/Top。
+				// 默认容器中，Location 负责绝对定位；Center/Right/Stretch 改由对齐+Margin 管理。
 				if (hAlign == HorizontalAlignment::Stretch)
 				{
 					x = contentLeft + margin.Left;
-					w = availableW;
+					w = contentWidth - margin.Left - margin.Right;
 				}
 				else if (hAlign == HorizontalAlignment::Center)
 				{
-					x = contentLeft + margin.Left + (availableW - w) / 2.0f;
+					float availableWidth = contentWidth - margin.Left - margin.Right;
+					if (availableWidth < 0) availableWidth = 0;
+					x = contentLeft + margin.Left + (availableWidth - w) / 2.0f;
 				}
 				else if (hAlign == HorizontalAlignment::Right)
 				{
-					x = contentLeft + margin.Left + (availableW - w);
+					x = contentLeft + contentWidth - margin.Right - w;
+				}
+				else
+				{
+					x = contentLeft + (float)location.x;
 				}
 				
 				if (vAlign == VerticalAlignment::Stretch)
 				{
 					y = contentTop + margin.Top;
-					h = availableH;
+					h = contentHeight - margin.Top - margin.Bottom;
 				}
 				else if (vAlign == VerticalAlignment::Top)
 				{
-					if (child->Type() == UIClass::UI_Menu)
-					{
-						y = contentTop + margin.Top;
-					}
+					y = contentTop + (float)location.y;
 				}
 				else if (vAlign == VerticalAlignment::Center)
 				{
-					y = contentTop + margin.Top + (availableH - h) / 2.0f;
+					float availableHeight = contentHeight - margin.Top - margin.Bottom;
+					if (availableHeight < 0) availableHeight = 0;
+					y = contentTop + margin.Top + (availableHeight - h) / 2.0f;
 				}
 				else if (vAlign == VerticalAlignment::Bottom)
 				{
-					y = contentTop + margin.Top + (availableH - h);
+					y = contentTop + contentHeight - margin.Bottom - h;
 				}
 			}
 
@@ -234,7 +234,7 @@ bool Panel::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, 
 	for (int i = 0; i < this->Count; i++)
 	{
 		auto c = this->operator[](i);
-		auto location = c->Location;
+		auto location = c->ActualLocation;
 		auto size = c->ActualSize();
 		if (
 			xof >= location.x &&

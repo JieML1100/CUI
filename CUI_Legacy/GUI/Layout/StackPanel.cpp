@@ -2,26 +2,6 @@
 #include "../Form.h"
 #include <algorithm>
 
-namespace {
-	bool TryGetActualLayoutSize(Control* child, SIZE& outSize)
-	{
-		if (!child)
-		{
-			outSize = { 0, 0 };
-			return false;
-		}
-		SIZE baseSize = child->Size;
-		if (!child->ParentForm)
-		{
-			outSize = baseSize;
-			return false;
-		}
-		SIZE actualSize = child->ActualSize();
-		outSize = actualSize;
-		return actualSize.cx != baseSize.cx || actualSize.cy != baseSize.cy;
-	}
-}
-
 // StackLayoutEngine 实现
 
 SIZE StackLayoutEngine::Measure(Control* container, SIZE availableSize)
@@ -112,20 +92,20 @@ void StackLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 			auto child = container->operator[](i);
 			if (!child || !child->Visible) continue;
 			
-			SIZE childSize = child->Size;
-			SIZE actualSize = childSize;
-			bool useActualSize = TryGetActualLayoutSize(child, actualSize);
+			SIZE childSize = child->MeasureCore({ (LONG)containerWidth, INT_MAX });
 			Thickness margin = child->Margin;
 			HorizontalAlignment hAlign = child->HAlign;
 			
-			// 计算实际宽度（考虑对齐方式）
-			float childWidth = (float)(useActualSize ? actualSize.cx : childSize.cx);
+			float childWidth = (float)childSize.cx;
 			if (hAlign == HorizontalAlignment::Stretch)
 			{
-				childWidth = containerWidth - margin.Left - margin.Right;
+				childWidth = containerWidth;
+			}
+			if (childWidth > containerWidth)
+			{
+				childWidth = containerWidth;
 			}
 			
-			// 计算 X 位置（根据水平对齐）
 			float childX = margin.Left;
 			if (hAlign == HorizontalAlignment::Center)
 			{
@@ -133,12 +113,11 @@ void StackLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 			}
 			else if (hAlign == HorizontalAlignment::Right)
 			{
-				childX = containerWidth - childWidth - margin.Right;
+				childX = containerWidth - childWidth;
 			}
 			
-			// 设置位置和尺寸
 			POINT loc = { (LONG)(originX + childX), (LONG)(currentY + margin.Top) };
-			float childHeight = (float)(useActualSize ? actualSize.cy : childSize.cy);
+			float childHeight = (float)childSize.cy;
 			SIZE size = { (LONG)childWidth, (LONG)childHeight };
 			child->ApplyLayout(loc, size);
 			
@@ -154,20 +133,20 @@ void StackLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 			auto child = container->operator[](i);
 			if (!child || !child->Visible) continue;
 			
-			SIZE childSize = child->Size;
-			SIZE actualSize = childSize;
-			bool useActualSize = TryGetActualLayoutSize(child, actualSize);
+			SIZE childSize = child->MeasureCore({ INT_MAX, (LONG)containerHeight });
 			Thickness margin = child->Margin;
 			VerticalAlignment vAlign = child->VAlign;
 			
-			// 计算实际高度（考虑对齐方式）
-			float childHeight = (float)(useActualSize ? actualSize.cy : childSize.cy);
+			float childHeight = (float)childSize.cy;
 			if (vAlign == VerticalAlignment::Stretch)
 			{
-				childHeight = containerHeight - margin.Top - margin.Bottom;
+				childHeight = containerHeight;
+			}
+			if (childHeight > containerHeight)
+			{
+				childHeight = containerHeight;
 			}
 			
-			// 计算 Y 位置（根据垂直对齐）
 			float childY = margin.Top;
 			if (vAlign == VerticalAlignment::Center)
 			{
@@ -175,12 +154,11 @@ void StackLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 			}
 			else if (vAlign == VerticalAlignment::Bottom)
 			{
-				childY = containerHeight - childHeight - margin.Bottom;
+				childY = containerHeight - childHeight;
 			}
 			
-			// 设置位置和尺寸
 			POINT loc = { (LONG)(currentX + margin.Left), (LONG)(originY + childY) };
-			float childWidth = (float)(useActualSize ? actualSize.cx : childSize.cx);
+			float childWidth = (float)childSize.cx;
 			SIZE size = { (LONG)childWidth, (LONG)childHeight };
 			child->ApplyLayout(loc, size);
 			

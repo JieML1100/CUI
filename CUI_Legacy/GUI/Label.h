@@ -16,6 +16,7 @@ public:
 	virtual UIClass Type();
 	/** @brief 创建 Label。 */
 	Label(std::wstring text, int x, int y);
+	SIZE MeasureCore(SIZE availableSize) override;
 	SIZE ActualSize() override;
 	void Update() override;
 };

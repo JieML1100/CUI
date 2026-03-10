@@ -56,6 +56,24 @@ static RECT IntersectRectSafe(const RECT& a, const RECT& b)
 	return r;
 }
 
+static bool UsesAlignmentManagedPlacement(Control* control)
+{
+	return control && (control->HAlign != HorizontalAlignment::Left || control->VAlign != VerticalAlignment::Top);
+}
+
+static void ResetAlignmentForManualPlacement(Control* control)
+{
+	if (!control) return;
+	if (control->HAlign != HorizontalAlignment::Left)
+	{
+		control->HAlign = HorizontalAlignment::Left;
+	}
+	if (control->VAlign != VerticalAlignment::Top)
+	{
+		control->VAlign = VerticalAlignment::Top;
+	}
+}
+
 DesignerCanvas::DesignerCanvas(int x, int y, int width, int height)
 	: Panel(x, y, width, height)
 {
@@ -629,13 +647,14 @@ void DesignerCanvas::LiftSelectedToRootForDrag()
 	// 鼠标释放后再根据落点决定是否重新放回原容器或其他容器。
 	parent->RemoveControl(moving);
 	_clientSurface->AddControl(moving);
-	moving->Location = newLocal;
-	moving->Size = { w, h };
+	if (UsesAlignmentManagedPlacement(moving))
+	{
+		ResetAlignmentForManualPlacement(moving);
+	}
 	// 从 GridPanel 抬升到根：避免默认 Stretch 直接把控件“铺满”
 	if (fromGrid)
 	{
-		moving->HAlign = HorizontalAlignment::Left;
-		moving->VAlign = VerticalAlignment::Top;
+		ResetAlignmentForManualPlacement(moving);
 	}
 	// 从 RelativePanel 抬升到根：清掉用作定位的 Margin，回到 Location 语义
 	if (fromRelative)
@@ -647,6 +666,10 @@ void DesignerCanvas::LiftSelectedToRootForDrag()
 		m.Bottom = 0.0f;
 		moving->Margin = m;
 	}
+	RECT rootRect = r;
+	rootRect.right = rootRect.left + w;
+	rootRect.bottom = rootRect.top + h;
+	ApplyRectToControl(moving, rootRect);
 	_selectedControl->DesignerParent = nullptr;
 	_dragLiftedToRoot = true;
 
@@ -711,6 +734,11 @@ void DesignerCanvas::ApplyRectToControl(Control* c, const RECT& rectInCanvas)
 	if (newW < 0) newW = 0;
 	if (newH < 0) newH = 0;
 
+	if (parent->Type() != UIClass::UI_RelativePanel && !IsLayoutContainer(parent) && UsesAlignmentManagedPlacement(c))
+	{
+		ResetAlignmentForManualPlacement(c);
+	}
+
 	// RelativePanel：运行时主要用 Margin 表达定位
 	if (parent->Type() == UIClass::UI_RelativePanel)
 	{
@@ -719,6 +747,7 @@ void DesignerCanvas::ApplyRectToControl(Control* c, const RECT& rectInCanvas)
 		m.Top = (float)newLocal.y;
 		m.Right = 0.0f;
 		m.Bottom = 0.0f;
+		c->Location = { 0,0 };
 		c->Margin = m;
 		c->Size = { newW, newH };
 		if (auto* p = dynamic_cast<Panel*>(parent))
@@ -747,25 +776,24 @@ void DesignerCanvas::ApplyRectToControl(Control* c, const RECT& rectInCanvas)
 	if (rightDist < 0) rightDist = 0;
 	if (bottomDist < 0) bottomDist = 0;
 
+	c->Location = newLocal;
 	auto m = c->Margin;
 	uint8_t a = c->AnchorStyles;
-	m.Left = (float)leftDist;
-	m.Top = (float)topDist;
+	m.Left = 0.0f;
+	m.Top = 0.0f;
+	m.Right = 0.0f;
+	m.Bottom = 0.0f;
 
-	// 水平：
 	if (a & AnchorStyles::Right)
 	{
 		m.Right = (float)rightDist;
 	}
 
-	// 垂直：
 	if (a & AnchorStyles::Bottom)
 	{
 		m.Bottom = (float)bottomDist;
 	}
 
-	// 尺寸：在 Left+Right / Top+Bottom 同时锚定时，运行时会由 margin 推导出 size。
-	// 这里仍然写回 Size，主要用于保存/显示；实际布局以运行时计算为准。
 	c->Size = { newW, newH };
 	c->Margin = m;
 
@@ -1177,7 +1205,7 @@ bool DesignerCanvas::TryHandleTabHeaderClick(POINT ptCanvas)
 		page->Visible = (i == bestTc->SelectedIndex);
 		if (i == bestTc->SelectedIndex)
 		{
-			page->Location = POINT{ 0,(int)bestTc->TitleHeight };
+			page->SetRuntimeLocation(POINT{ 0,(int)bestTc->TitleHeight });
 			SIZE s = bestTc->Size;
 			s.cy = std::max(0L, s.cy - bestTc->TitleHeight);
 			page->Size = s;
@@ -1291,7 +1319,7 @@ std::shared_ptr<DesignerControl> DesignerCanvas::HitTestControl(POINT pt)
 			if (!child) continue;
 			if (!child->Visible) continue;
 
-			auto loc = child->Location;
+			auto loc = child->ActualLocation;
 			auto sz = child->ActualSize();
 			if (!pointInRect(ptLocal, loc, sz))
 				continue;
@@ -1542,13 +1570,11 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 	Control* container = NormalizeContainerForDrop(rawContainer);
 	if (!container) {
 		// 落在容器之外：归为根级（客户区），DesignerParent 仍为 nullptr
-		POINT newCanvasPos{ r.left, r.top };
-		POINT newLocal = CanvasToContainerPoint(newCanvasPos, _clientSurface);
 		if (moving->Parent) moving->Parent->RemoveControl(moving);
 		_clientSurface->AddControl(moving);
-		moving->Location = newLocal;
 		_selectedControl->DesignerParent = nullptr;
-		ClampControlToDesignSurface(moving);
+		RECT clamped = ClampRectToBounds(r, GetClientSurfaceRectInCanvas(), true);
+		ApplyRectToControl(moving, clamped);
 		this->PostRender();
 		return;
 	}
@@ -1612,7 +1638,7 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 		{
 			auto* c = sp->operator[](i);
 			if (!c || c == moving || !c->Visible) continue;
-			auto loc = c->Location;
+			auto loc = c->ActualLocation;
 			auto sz = c->ActualSize();
 			float mid = (orient == Orientation::Vertical)
 				? (loc.y + sz.cy * 0.5f)
@@ -1674,7 +1700,7 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 		{
 			auto* c = wp->operator[](i);
 			if (!c || c == moving || !c->Visible) continue;
-			auto loc = c->Location;
+			auto loc = c->ActualLocation;
 			auto sz = c->ActualSize();
 			float childPrimary = (orient == Orientation::Horizontal) ? (float)loc.y : (float)loc.x;
 			float childSecondaryMid = (orient == Orientation::Horizontal)
@@ -1717,7 +1743,9 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 	else
 	{
 		if (containerChanged)
-			moving->Location = newLocal;
+		{
+			ApplyRectToControl(moving, r);
+		}
 	}
 
 	if (auto* p = dynamic_cast<Panel*>(container))
@@ -2393,7 +2421,7 @@ void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
 					{
 						auto* c = wp->operator[](i);
 						if (!c || c == newControl || !c->Visible) continue;
-						auto locc = c->Location;
+						auto locc = c->ActualLocation;
 						auto sz = c->ActualSize();
 						float childPrimary = (orient == Orientation::Horizontal) ? (float)locc.y : (float)locc.x;
 						float childSecondaryMid = (orient == Orientation::Horizontal)
@@ -2428,6 +2456,8 @@ void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
 					auto m = newControl->Margin;
 					m.Left = (float)local.x;
 					m.Top = (float)local.y;
+					m.Right = 0.0f;
+					m.Bottom = 0.0f;
 					newControl->Margin = m;
 					newControl->Location = { 0,0 };
 				}

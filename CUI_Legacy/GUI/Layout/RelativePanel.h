@@ -14,6 +14,7 @@
  * @brief 相对定位约束。
  *
  * 该结构描述 child 与其它兄弟控件/面板边界之间的关系。
+ * RelativePanel 中的 Margin 表示相对偏移输入，而不是普通容器里的绝对 Location。
  * 注意：若约束存在循环依赖，布局引擎会尝试检测并避免无穷递归（实现中采用拓扑排序）。
  */
 struct RelativeConstraints {

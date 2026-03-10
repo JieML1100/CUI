@@ -3,26 +3,6 @@
 #include <algorithm>
 #include <set>
 
-namespace {
-	bool TryGetActualLayoutSize(Control* child, SIZE& outSize)
-	{
-		if (!child)
-		{
-			outSize = { 0, 0 };
-			return false;
-		}
-		SIZE baseSize = child->Size;
-		if (!child->ParentForm)
-		{
-			outSize = baseSize;
-			return false;
-		}
-		SIZE actualSize = child->ActualSize();
-		outSize = actualSize;
-		return actualSize.cx != baseSize.cx || actualSize.cy != baseSize.cy;
-	}
-}
-
 // RelativeLayoutEngine 实现
 
 bool RelativeLayoutEngine::HasCycle(Control* start, Control* current, std::map<Control*, int>& visited)
@@ -158,14 +138,8 @@ void RelativeLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 	{
 		if (!child) continue;
 		
-		SIZE childSize = child->Size;
-		SIZE actualSize = childSize;
-		bool useActualSize = TryGetActualLayoutSize(child, actualSize);
+		SIZE childSize = child->MeasureCore({ (LONG)containerWidth, (LONG)containerHeight });
 		Thickness margin = child->Margin;
-		if (useActualSize)
-		{
-			childSize = actualSize;
-		}
 		
 		float left = 0.0f, top = 0.0f, right = 0.0f, bottom = 0.0f;
 		bool leftSet = false, topSet = false, rightSet = false, bottomSet = false;
@@ -244,12 +218,16 @@ void RelativeLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 			// 居中
 			if (c.CenterHorizontal && !leftSet && !rightSet)
 			{
-				left = originX + (containerWidth - childSize.cx) / 2.0f;
+				float availableWidth = containerWidth - margin.Left - margin.Right;
+				if (availableWidth < 0) availableWidth = 0;
+				left = originX + margin.Left + (availableWidth - childSize.cx) / 2.0f;
 				leftSet = true;
 			}
 			if (c.CenterVertical && !topSet && !bottomSet)
 			{
-				top = originY + (containerHeight - childSize.cy) / 2.0f;
+				float availableHeight = containerHeight - margin.Top - margin.Bottom;
+				if (availableHeight < 0) availableHeight = 0;
+				top = originY + margin.Top + (availableHeight - childSize.cy) / 2.0f;
 				topSet = true;
 			}
 		}

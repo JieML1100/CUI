@@ -49,6 +49,7 @@ private:
 	float _vScrollThumbGrabOffset = 0.0f;
 	float _hScrollThumbGrabOffset = 0.0f;
 
+	void PerformScrollContentLayout();
 	ScrollLayout CalcScrollLayout();
 	SIZE MeasureContentSize();
 	void ClampScrollOffsets(const ScrollLayout& layout);
