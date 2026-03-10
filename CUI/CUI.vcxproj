@@ -228,6 +228,7 @@
     <ClInclude Include="GUI\RadioBox.h" />
     <ClInclude Include="GUI\RichTextBox.h" />
     <ClInclude Include="GUI\RoundTextBox.h" />
+    <ClInclude Include="GUI\ScrollView.h" />
     <ClInclude Include="GUI\Slider.h" />
     <ClInclude Include="GUI\Switch.h" />
     <ClInclude Include="GUI\TabControl.h" />
@@ -269,6 +270,7 @@
     <ClCompile Include="GUI\RadioBox.cpp" />
     <ClCompile Include="GUI\RichTextBox.cpp" />
     <ClCompile Include="GUI\RoundTextBox.cpp" />
+    <ClCompile Include="GUI\ScrollView.cpp" />
     <ClCompile Include="GUI\Slider.cpp" />
     <ClCompile Include="GUI\Switch.cpp" />
     <ClCompile Include="GUI\TabControl.cpp" />

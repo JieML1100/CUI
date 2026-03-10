@@ -17,6 +17,8 @@
 #include "../CUI_Legacy/GUI/ProgressBar.h"
 #include "../CUI_Legacy/GUI/Slider.h"
 #include "../CUI_Legacy/GUI/PictureBox.h"
+#include "../CUI_Legacy/GUI/DateTimePicker.h"
+#include "../CUI_Legacy/GUI/ScrollView.h"
 #include "../CUI_Legacy/GUI/TreeView.h"
 #include "../CUI_Legacy/GUI/Menu.h"
 #include "../CUI_Legacy/GUI/StatusBar.h"
@@ -48,6 +50,7 @@ static bool IsContainerType(UIClass t)
 	switch (t)
 	{
 	case UIClass::UI_Panel:
+	case UIClass::UI_ScrollView:
 	case UIClass::UI_StackPanel:
 	case UIClass::UI_GridPanel:
 	case UIClass::UI_DockPanel:
@@ -349,7 +352,9 @@ std::string CodeGenerator::GetControlTypeName(UIClass type)
 	case UIClass::UI_TextBox: return "TextBox";
 	case UIClass::UI_RichTextBox: return "RichTextBox";
 	case UIClass::UI_PasswordBox: return "PasswordBox";
+	case UIClass::UI_DateTimePicker: return "DateTimePicker";
 	case UIClass::UI_Panel: return "Panel";
+	case UIClass::UI_ScrollView: return "ScrollView";
 	case UIClass::UI_StackPanel: return "StackPanel";
 	case UIClass::UI_GridPanel: return "GridPanel";
 	case UIClass::UI_DockPanel: return "DockPanel";
@@ -594,12 +599,14 @@ std::string CodeGenerator::GenerateControlInstantiation(const std::shared_ptr<De
 	case UIClass::UI_TextBox:
 	case UIClass::UI_RichTextBox:
 	case UIClass::UI_PasswordBox:
+	case UIClass::UI_DateTimePicker:
 	case UIClass::UI_ComboBox:
 		code << "L\"" << EscapeWStringLiteral(ctrl->Text) << "\", "
 			<< ctrl->Location.x << ", " << ctrl->Location.y << ", "
 			<< ctrl->Size.cx << ", " << ctrl->Size.cy;
 		break;
 	case UIClass::UI_Panel:
+	case UIClass::UI_ScrollView:
 	case UIClass::UI_StackPanel:
 	case UIClass::UI_GridPanel:
 	case UIClass::UI_DockPanel:
@@ -648,7 +655,7 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	if (dc->Type != UIClass::UI_Label && dc->Type != UIClass::UI_LinkLabel && dc->Type != UIClass::UI_Button &&
 		dc->Type != UIClass::UI_CheckBox && dc->Type != UIClass::UI_RadioBox &&
 		dc->Type != UIClass::UI_TextBox && dc->Type != UIClass::UI_RichTextBox &&
-		dc->Type != UIClass::UI_PasswordBox && dc->Type != UIClass::UI_ComboBox)
+		dc->Type != UIClass::UI_PasswordBox && dc->Type != UIClass::UI_DateTimePicker && dc->Type != UIClass::UI_ComboBox)
 	{
 		if (!ctrl->Text.empty())
 			code << indentStr << name << "->Text = L\"" << EscapeWStringLiteral(ctrl->Text) << "\";\n";
@@ -736,6 +743,35 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 			code << indentStr << name << "->PercentageValue = " << FloatLiteral(pb->PercentageValue) << ";\n";
 	}
 
+	// DateTimePicker
+	if (dc->Type == UIClass::UI_DateTimePicker)
+	{
+		auto* dtp = (DateTimePicker*)ctrl;
+		code << indentStr << "{\n";
+		code << indentStr << "\tSYSTEMTIME __dtpValue{};\n";
+		code << indentStr << "\t__dtpValue.wYear = " << dtp->Value.wYear << ";\n";
+		code << indentStr << "\t__dtpValue.wMonth = " << dtp->Value.wMonth << ";\n";
+		code << indentStr << "\t__dtpValue.wDay = " << dtp->Value.wDay << ";\n";
+		code << indentStr << "\t__dtpValue.wHour = " << dtp->Value.wHour << ";\n";
+		code << indentStr << "\t__dtpValue.wMinute = " << dtp->Value.wMinute << ";\n";
+		code << indentStr << "\t__dtpValue.wSecond = " << dtp->Value.wSecond << ";\n";
+		code << indentStr << "\t__dtpValue.wMilliseconds = " << dtp->Value.wMilliseconds << ";\n";
+		code << indentStr << "\t" << name << "->Value = __dtpValue;\n";
+		code << indentStr << "}\n";
+		const char* mode = "DateTimePickerMode::DateTime";
+		switch (dtp->Mode)
+		{
+		case DateTimePickerMode::DateOnly: mode = "DateTimePickerMode::DateOnly"; break;
+		case DateTimePickerMode::TimeOnly: mode = "DateTimePickerMode::TimeOnly"; break;
+		case DateTimePickerMode::DateTime: default: mode = "DateTimePickerMode::DateTime"; break;
+		}
+		code << indentStr << name << "->Mode = " << mode << ";\n";
+		if (!dtp->AllowDateSelection) code << indentStr << name << "->AllowDateSelection = false;\n";
+		if (!dtp->AllowTimeSelection) code << indentStr << name << "->AllowTimeSelection = false;\n";
+		if (!dtp->AllowModeSwitch) code << indentStr << name << "->AllowModeSwitch = false;\n";
+		if (dtp->Expand) code << indentStr << name << "->SetExpanded(true);\n";
+	}
+
 	// Slider
 	if (dc->Type == UIClass::UI_Slider)
 	{
@@ -761,6 +797,23 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 			default: break;
 			}
 		}
+	}
+
+	// ScrollView
+	if (dc->Type == UIClass::UI_ScrollView)
+	{
+		auto* sv = (ScrollView*)ctrl;
+		code << indentStr << name << "->ScrollBackColor = " << ColorToString(sv->ScrollBackColor) << ";\n";
+		code << indentStr << name << "->ScrollForeColor = " << ColorToString(sv->ScrollForeColor) << ";\n";
+		if (sv->AlwaysShowVScroll) code << indentStr << name << "->AlwaysShowVScroll = true;\n";
+		if (sv->AlwaysShowHScroll) code << indentStr << name << "->AlwaysShowHScroll = true;\n";
+		if (!sv->AutoContentSize) code << indentStr << name << "->AutoContentSize = false;\n";
+		if (sv->ContentSize.cx != 0 || sv->ContentSize.cy != 0)
+			code << indentStr << name << "->ContentSize = {" << sv->ContentSize.cx << ", " << sv->ContentSize.cy << "};\n";
+		if (sv->ScrollXOffset != 0 || sv->ScrollYOffset != 0)
+			code << indentStr << name << "->SetScrollOffset(" << sv->ScrollXOffset << ", " << sv->ScrollYOffset << ");\n";
+		if (sv->MouseWheelStep != 48)
+			code << indentStr << name << "->MouseWheelStep = " << sv->MouseWheelStep << ";\n";
 	}
 
 	// TreeView colors

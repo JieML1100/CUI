@@ -60,6 +60,9 @@
     <ClInclude Include="GUI\RoundTextBox.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\ScrollView.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\Switch.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -180,6 +183,9 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\RoundTextBox.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\ScrollView.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Switch.cpp">

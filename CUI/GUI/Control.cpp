@@ -180,8 +180,11 @@ GET_CPP(Control, POINT, AbsLocation)
 	{
 		tmpc = tmpc->Parent;
 		auto loc = tmpc->Location;
+		auto childOffset = tmpc->GetChildrenRenderOffset();
 		tmpl.x += loc.x;
 		tmpl.y += loc.y;
+		tmpl.x += childOffset.x;
+		tmpl.y += childOffset.y;
 	}
 	return tmpl;
 }

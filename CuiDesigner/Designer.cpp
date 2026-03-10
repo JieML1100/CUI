@@ -141,7 +141,7 @@ void Designer::InitializeComponents()
 	// 属性面板（右侧）
 	int propertyGridWidth = 250;
 	int formWidth = contentSize.cx;
-	_propertyGrid = new PropertyGrid(formWidth - propertyGridWidth - 10, toolbarHeight + 10, 
+	_propertyGrid = new PropertyGrid(formWidth - propertyGridWidth - 15, toolbarHeight + 10, 
 		propertyGridWidth, formHeight - toolbarHeight - 40);
 	this->AddControl(_propertyGrid);
 	
@@ -171,7 +171,7 @@ void Designer::InitializeComponents()
 		}
 		if (_propertyGrid)
 		{
-			_propertyGrid->Location = { w - propertyGridWidth - 10, toolbarHeight + 10 };
+			_propertyGrid->Location = { w - propertyGridWidth - 15, toolbarHeight + 10 };
 			_propertyGrid->Size = { propertyGridWidth, usableH };
 			// 重新加载以适配宽度变化
 			_propertyGrid->LoadControl(_canvas ? _canvas->GetSelectedControl() : nullptr);

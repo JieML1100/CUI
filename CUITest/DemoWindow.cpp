@@ -437,7 +437,7 @@ void DemoWindow::BuildTab_Basic(TabPage* page)
 	combo->OnSelectionChanged += [this, combo](class Control* sender)
 		{
 			(void)sender;
-			Ui_UpdateStatus(StringHelper::Format(L"ComboBox: %s", combo->Text.c_str()));
+			Ui_UpdateStatus(StringHelper::Format(L"ComboBox: %ws", combo->Text.c_str()));
 		};
 
 	page->AddControl(new Label(L"DateTimePicker", 450, 110));
@@ -589,7 +589,7 @@ void DemoWindow::BuildTab_Data(TabPage* page)
 
 void DemoWindow::BuildTab_Layout(TabPage* page)
 {
-	page->AddControl(new Label(L"StackPanel / GridPanel / DockPanel / WrapPanel / RelativePanel", 10, 10));
+	page->AddControl(new Label(L"StackPanel / GridPanel / DockPanel / WrapPanel / RelativePanel / ScrollView", 10, 10));
 
 	auto stack = page->AddControl(new StackPanel(10, 40, 260, 220));
 	stack->SetOrientation(Orientation::Vertical);
@@ -670,6 +670,37 @@ void DemoWindow::BuildTab_Layout(TabPage* page)
 	cd.CenterHorizontal = true;
 	cd.CenterVertical = true;
 	rp->SetConstraints(b, cd);
+
+	page->AddControl(new Label(L"ScrollView（滚轮、拖动滚动条，内容超出时自动显示横纵滚动条）", 530, 260));
+	auto scroll = page->AddControl(new ScrollView(530, 280, 800, 250));
+	scroll->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
+	scroll->BolderColor = D2D1_COLOR_F{ 1,1,1,0.14f };
+	scroll->Padding = Thickness(12);
+
+	for (int row = 0; row < 4; ++row)
+	{
+		for (int col = 0; col < 4; ++col)
+		{
+			const int left = 16 + (col * 250);
+			const int top = 16 + (row * 92);
+			auto card = scroll->AddControl(new Panel(left, top, 220, 76));
+			card->BackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.05f };
+			card->BolderColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.10f };
+			card->AddControl(new Label(StringHelper::Format(L"Card %d", row * 4 + col + 1), 10, 10));
+			auto btn = card->AddControl(new Button(L"点击", 10, 36, 70, 26));
+			btn->Tag = row * 4 + col + 1;
+			btn->OnMouseClick += [this](class Control* sender, MouseEventArgs e)
+				{
+					(void)e;
+					Ui_UpdateStatus(StringHelper::Format(L"ScrollView Button: card=%d", (int)sender->Tag));
+				};
+			card->AddControl(new Label(StringHelper::Format(L"位置 %d,%d", col + 1, row + 1), 96, 40));
+		}
+	}
+
+	scroll->AddControl(new Label(L"这一行专门把内容宽度拉长，便于测试横向滚动。", 16, 400));
+	scroll->AddControl(new Button(L"Far Button", 860, 392, 120, 30));
+	scroll->AddControl(new Label(L"最右侧区域", 1010, 398));
 }
 
 void DemoWindow::BuildTab_System(TabPage* page)

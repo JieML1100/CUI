@@ -67,6 +67,37 @@ GridViewColumn::GridViewColumn(std::wstring name, float width, ColumnType type, 
 	CanEdit = canEdit;
 }
 UIClass GridView::Type() { return UIClass::UI_GridView; }
+bool GridView::HandlesNavigationKey(WPARAM key) const
+{
+	if (this->Editing)
+	{
+		switch (key)
+		{
+		case VK_LEFT:
+		case VK_RIGHT:
+		case VK_HOME:
+		case VK_END:
+		case VK_PRIOR:
+		case VK_NEXT:
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	switch (key)
+	{
+	case VK_LEFT:
+	case VK_RIGHT:
+	case VK_UP:
+	case VK_DOWN:
+	case VK_HOME:
+	case VK_END:
+		return true;
+	default:
+		return false;
+	}
+}
 GridView::GridView(int x, int y, int width, int height)
 {
 	this->Location = POINT{ x,y };

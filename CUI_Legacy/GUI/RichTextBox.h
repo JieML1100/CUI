@@ -56,6 +56,8 @@ private:
 public:
 	virtual UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
+	bool HandlesMouseWheel() const override { return true; }
+	bool HandlesNavigationKey(WPARAM key) const override;
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	/** @brief 当前文本测量尺寸缓存（供渲染/布局使用）。 */
 	D2D1_SIZE_F textSize = { 0,0 };

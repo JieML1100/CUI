@@ -38,6 +38,7 @@ public:
 	~WebBrowser() override;
 
 	UIClass Type() override { return UIClass::UI_WebBrowser; }
+	bool HandlesMouseWheel() const override { return true; }
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 

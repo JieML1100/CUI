@@ -5,6 +5,7 @@
  * @brief PropertyGrid：设计器属性面板（显示/编辑控件属性）。
  */
 #include "../CUI_Legacy/GUI/Panel.h"
+#include "../CUI_Legacy/GUI/ScrollView.h"
 #include "../CUI_Legacy/GUI/Label.h"
 #include "../CUI_Legacy/GUI/CheckBox.h"
 #include "../CUI_Legacy/GUI/TextBox.h"
@@ -44,6 +45,7 @@ class PropertyGrid : public Panel
 private:
 	std::vector<PropertyItem*> _items;
 	std::vector<Control*> _extraControls;
+	ScrollView* _scrollView = nullptr;
 	Panel* _contentHost = nullptr;
 	struct ScrollEntry
 	{

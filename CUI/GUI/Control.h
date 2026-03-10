@@ -70,6 +70,7 @@ enum class UIClass : int
 	UI_ProgressBar,
 	UI_TreeView,
 	UI_Panel,
+	UI_ScrollView,
 	UI_TabPage,
 	UI_TabControl,
 	UI_Switch,
@@ -441,6 +442,10 @@ public:
 	 */
 	virtual CursorKind QueryCursor(int xof, int yof) { (void)xof; (void)yof; return this->Cursor; }
 	virtual bool HitTestChildren() const { return true; }
+	virtual bool ShouldHitTestChildrenAt(int xof, int yof) const { (void)xof; (void)yof; return this->HitTestChildren(); }
+	virtual POINT GetChildrenRenderOffset() const { return POINT{ 0, 0 }; }
+	virtual bool HandlesMouseWheel() const { return false; }
+	virtual bool HandlesNavigationKey(WPARAM key) const { (void)key; return false; }
 	virtual void RenderImage();
 	virtual SIZE ActualSize();
 	void setTextPrivate(std::wstring);

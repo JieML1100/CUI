@@ -71,7 +71,8 @@ private:
     Switch* _gridEnableSwitch = nullptr;
     Switch* _gridVisibleSwitch = nullptr;
 
-    // Media
+    // Web/Media
+    WebBrowser* _web = nullptr;
     MediaPlayer* _media = nullptr;
 
     // System integration

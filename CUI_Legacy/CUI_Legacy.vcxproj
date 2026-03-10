@@ -24,6 +24,7 @@
     <ProjectGuid>{4ced323f-40d7-4933-83be-bfdd6f5dc8d4}</ProjectGuid>
     <RootNamespace>CUI_Legacy</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -204,6 +205,7 @@
     <ClInclude Include="GUI\RadioBox.h" />
     <ClInclude Include="GUI\RichTextBox.h" />
     <ClInclude Include="GUI\RoundTextBox.h" />
+    <ClInclude Include="GUI\ScrollView.h" />
     <ClInclude Include="GUI\Slider.h" />
     <ClInclude Include="GUI\Switch.h" />
     <ClInclude Include="GUI\TabControl.h" />
@@ -243,6 +245,7 @@
     <ClCompile Include="GUI\RadioBox.cpp" />
     <ClCompile Include="GUI\RichTextBox.cpp" />
     <ClCompile Include="GUI\RoundTextBox.cpp" />
+    <ClCompile Include="GUI\ScrollView.cpp" />
     <ClCompile Include="GUI\Slider.cpp" />
     <ClCompile Include="GUI\Switch.cpp" />
     <ClCompile Include="GUI\TabControl.cpp" />

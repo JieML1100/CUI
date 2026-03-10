@@ -3,6 +3,19 @@
 #include "Form.h"
 #pragma comment(lib, "Imm32.lib")
 UIClass PasswordBox::Type() { return UIClass::UI_PasswordBox; }
+bool PasswordBox::HandlesNavigationKey(WPARAM key) const
+{
+	switch (key)
+	{
+	case VK_HOME:
+	case VK_END:
+	case VK_PRIOR:
+	case VK_NEXT:
+		return true;
+	default:
+		return false;
+	}
+}
 PasswordBox::PasswordBox(std::wstring text, int x, int y, int width, int height)
 {
 	this->Text = text;

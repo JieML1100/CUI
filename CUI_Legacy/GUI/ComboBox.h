@@ -24,6 +24,7 @@ private:
 public:
 	virtual UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
+	bool HandlesMouseWheel() const override { return true; }
 	D2D1_COLOR_F UnderMouseBackColor = Colors::SkyBlue;
 	D2D1_COLOR_F UnderMouseForeColor = Colors::White;
 	D2D1_COLOR_F ScrollBackColor = Colors::LightGray;

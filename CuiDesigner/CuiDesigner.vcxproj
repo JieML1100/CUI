@@ -171,10 +171,8 @@
     <ClInclude Include="TreeViewNodesEditorDialog.h" />
   </ItemGroup>
   <ItemGroup>
-  </ItemGroup>
-  <ItemGroup>
     <ProjectReference Include="..\CUI_Legacy\CUI_Legacy.vcxproj">
-      <Project>{d8014e27-ffd7-4e76-807b-9baadc58c8ad}</Project>
+      <Project>{4ced323f-40d7-4933-83be-bfdd6f5dc8d4}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

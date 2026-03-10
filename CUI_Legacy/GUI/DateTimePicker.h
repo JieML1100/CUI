@@ -159,6 +159,7 @@ public:
 
 	SIZE ActualSize() override;
 	CursorKind QueryCursor(int xof, int yof) override;
+	bool HandlesMouseWheel() const override { return true; }
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 };

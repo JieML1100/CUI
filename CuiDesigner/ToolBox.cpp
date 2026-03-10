@@ -198,10 +198,16 @@ ToolBox::ToolBox(int x, int y, int width, int height)
 	this->_titleLabel->Font = new ::Font(L"Microsoft YaHei", 16.0f);
 	this->AddControl(_titleLabel);
 
-	_itemsHost = new Panel(0, _contentTop, width, std::max(0, height - _contentTop));
+	_scrollView = new ScrollView(0, _contentTop, width, std::max(0, height - _contentTop));
+	_scrollView->BackColor = D2D1::ColorF(0, 0, 0, 0);
+	_scrollView->Boder = 0.0f;
+	_scrollView->MouseWheelStep = 39;
+	this->AddControl(_scrollView);
+
+	_itemsHost = new Panel(0, 0, width, std::max(0, height - _contentTop));
 	_itemsHost->BackColor = D2D1::ColorF(0, 0, 0, 0);
 	_itemsHost->Boder = 0.0f;
-	this->AddControl(_itemsHost);
+	_scrollView->AddControl(_itemsHost);
 	
 	// 获取可用控件
 	auto controls = ControlRegistry::GetAvailableControls();
@@ -232,167 +238,52 @@ ToolBox::~ToolBox()
 
 void ToolBox::UpdateScrollLayout()
 {
+	if (_titleLabel)
+	{
+		_titleLabel->Size = { std::max(0, this->Width - 20), 25 };
+	}
+	if (_scrollView)
+	{
+		_scrollView->Location = { 0, _contentTop };
+		_scrollView->Size = { this->Width, std::max(0, this->Height - _contentTop) };
+	}
 	if (_itemsHost)
 	{
-		_itemsHost->Location = { 0, _contentTop };
-		_itemsHost->Size = { this->Width, std::max(0, this->Height - _contentTop) };
+		_itemsHost->Location = { 0, 0 };
 	}
 
 	int maxBottom = 0;
 	for (auto* item : _items)
 	{
 		if (!item) continue;
+		if (_itemsHost)
+		{
+			item->Width = std::max(60, _itemsHost->Width - 20);
+		}
 		maxBottom = std::max(maxBottom, item->BaseY + item->Height);
 	}
 	_contentHeight = maxBottom + _contentBottomPadding;
-	ClampScroll();
+	if (_itemsHost)
+	{
+		int hostWidth = _scrollView ? std::max(0, _scrollView->Width - 12) : this->Width;
+		int hostHeight = _scrollView ? std::max(_contentHeight, _scrollView->Height) : _contentHeight;
+		_itemsHost->Size = { hostWidth, hostHeight };
+	}
 
 	for (auto* item : _items)
 	{
 		if (!item) continue;
-		item->Top = item->BaseY - _scrollOffsetY;
+		item->Top = item->BaseY;
 	}
-}
-
-void ToolBox::ClampScroll()
-{
-	int viewport = _itemsHost ? _itemsHost->Height : (this->Height - _contentTop);
-	if (viewport < 0) viewport = 0;
-	int maxScroll = std::max(0, _contentHeight - viewport);
-	_scrollOffsetY = std::clamp(_scrollOffsetY, 0, maxScroll);
-}
-
-bool ToolBox::TryGetScrollBarLocalRect(D2D1_RECT_F& outTrack, D2D1_RECT_F& outThumb)
-{
-	const float trackWidth = 10.0f;
-	const float trackPad = 2.0f;
-	float viewport = (float)std::max(0, _itemsHost ? _itemsHost->Height : (this->Height - _contentTop));
-	if (_contentHeight <= 0 || viewport <= 0.0f) return false;
-	if ((float)_contentHeight <= viewport) return false;
-
-	outTrack = D2D1_RECT_F{
-		(float)this->Width - trackWidth - trackPad,
-		(float)_contentTop,
-		(float)this->Width - trackPad,
-		(float)this->Height - trackPad,
-	};
-
-	float trackHeight = std::max(0.0f, outTrack.bottom - outTrack.top);
-	if (trackHeight <= 0.0f) return false;
-
-	float ratio = viewport / (float)_contentHeight;
-	float thumbHeight = std::max(16.0f, trackHeight * ratio);
-	float maxScroll = (float)std::max(1, _contentHeight - (int)viewport);
-	float scroll01 = (float)_scrollOffsetY / maxScroll;
-	float thumbTop = outTrack.top + (trackHeight - thumbHeight) * scroll01;
-
-	outThumb = D2D1_RECT_F{ outTrack.left, thumbTop, outTrack.right, thumbTop + thumbHeight };
-	return true;
 }
 
 void ToolBox::Update()
 {
 	UpdateScrollLayout();
 	Panel::Update();
-
-	if (!this->ParentForm || !this->ParentForm->Render) return;
-	D2D1_RECT_F track{}, thumb{};
-	if (!TryGetScrollBarLocalRect(track, thumb)) return;
-
-	auto d2d = this->ParentForm->Render;
-	this->BeginRender();
-	{
-		d2d->FillRect(track.left, track.top, track.right - track.left, track.bottom - track.top, Colors::LightGray);
-		d2d->FillRect(thumb.left, thumb.top, thumb.right - thumb.left, thumb.bottom - thumb.top, Colors::DimGrey);
-	}
-	this->EndRender();
 }
 
 bool ToolBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {
-	// 先走 Panel 分发，让子控件（按钮）能正常点击
-	Panel::ProcessMessage(message, wParam, lParam, xof, yof);
-
-	switch (message)
-	{
-	case WM_MOUSEWHEEL:
-	{
-		int viewport = this->Height - _contentTop;
-		if (_contentHeight > viewport)
-		{
-			int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-			int step = 39; // 与 item 间距一致
-			_scrollOffsetY -= (delta / 120) * step;
-			ClampScroll();
-			UpdateScrollLayout();
-			this->PostRender();
-		}
-		return true;
-	}
-	case WM_LBUTTONDOWN:
-	{
-		D2D1_RECT_F track{}, thumb{};
-		if (TryGetScrollBarLocalRect(track, thumb))
-		{
-			if (xof >= (int)track.left && xof <= (int)track.right && yof >= (int)track.top && yof <= (int)track.bottom)
-			{
-				// 点击滚动条区域
-				if (yof >= (int)thumb.top && yof <= (int)thumb.bottom)
-				{
-					_draggingScrollThumb = true;
-					_dragStartMouseY = yof;
-					_dragStartScrollY = _scrollOffsetY;
-					if (this->ParentForm) this->ParentForm->Selected = this;
-					return true;
-				}
-				else
-				{
-					// 点击轨道：按页滚动
-					int viewport = this->Height - _contentTop;
-					if (yof < (int)thumb.top) _scrollOffsetY -= viewport;
-					else _scrollOffsetY += viewport;
-					ClampScroll();
-					UpdateScrollLayout();
-					this->PostRender();
-					return true;
-				}
-			}
-		}
-	}
-	break;
-	case WM_MOUSEMOVE:
-	{
-		if (_draggingScrollThumb)
-		{
-			D2D1_RECT_F track{}, thumb{};
-			if (TryGetScrollBarLocalRect(track, thumb))
-			{
-				float viewport = (float)std::max(0, this->Height - _contentTop);
-				float trackHeight = std::max(1.0f, track.bottom - track.top);
-				float thumbHeight = std::max(1.0f, thumb.bottom - thumb.top);
-				float maxThumbMove = std::max(1.0f, trackHeight - thumbHeight);
-				float maxScroll = (float)std::max(1, _contentHeight - (int)viewport);
-				float dy = (float)(yof - _dragStartMouseY);
-				float scrollDy = dy / maxThumbMove * maxScroll;
-				_scrollOffsetY = (int)((float)_dragStartScrollY + scrollDy);
-				ClampScroll();
-				UpdateScrollLayout();
-				this->PostRender();
-				return true;
-			}
-		}
-	}
-	break;
-	case WM_LBUTTONUP:
-	{
-		if (_draggingScrollThumb)
-		{
-			_draggingScrollThumb = false;
-			if (this->ParentForm && this->ParentForm->Selected == this) this->ParentForm->Selected = nullptr;
-			return true;
-		}
-	}
-	break;
-	}
-	return true;
+	return Panel::ProcessMessage(message, wParam, lParam, xof, yof);
 }

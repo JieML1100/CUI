@@ -7,113 +7,113 @@
 
 namespace {
 
-std::shared_ptr<BitmapSource> ToBitmapFromSvg(const char* data)
-{
-	if (!data) return {};
-	int len = (int)strlen(data) + 1;
-	char* svg_text = new char[len];
-	memcpy(svg_text, data, len);
-	NSVGimage* image = nsvgParse(svg_text, "px", 96.0f);
-	delete[] svg_text;
-	if (!image) return {};
-	float percen = 1.0f;
-	if (image->width > 4096 || image->height > 4096)
+	std::shared_ptr<BitmapSource> ToBitmapFromSvg(const char* data)
 	{
-		float maxv = image->width > image->height ? image->width : image->height;
-		percen = 4096.0f / maxv;
-	}
-	auto renderSource = BitmapSource::CreateEmpty(image->width * percen, image->height * percen);
-	auto subg = new D2DGraphics(renderSource.get());
-	NSVGshape* shape;
-	NSVGpath* path;
-	subg->BeginRender();
-	subg->Clear(D2D1::ColorF(0, 0, 0, 0));
-	for (shape = image->shapes; shape != NULL; shape = shape->next)
-	{
-		auto geo = Factory::CreateGeomtry();
-		if (geo)
+		if (!data) return {};
+		int len = (int)strlen(data) + 1;
+		char* svg_text = new char[len];
+		memcpy(svg_text, data, len);
+		NSVGimage* image = nsvgParse(svg_text, "px", 96.0f);
+		delete[] svg_text;
+		if (!image) return {};
+		float percen = 1.0f;
+		if (image->width > 4096 || image->height > 4096)
 		{
-			ID2D1GeometrySink* skin = NULL;
-			geo->Open(&skin);
-			if (skin)
+			float maxv = image->width > image->height ? image->width : image->height;
+			percen = 4096.0f / maxv;
+		}
+		auto renderSource = BitmapSource::CreateEmpty(image->width * percen, image->height * percen);
+		auto subg = new D2DGraphics(renderSource.get());
+		NSVGshape* shape;
+		NSVGpath* path;
+		subg->BeginRender();
+		subg->Clear(D2D1::ColorF(0, 0, 0, 0));
+		for (shape = image->shapes; shape != NULL; shape = shape->next)
+		{
+			auto geo = Factory::CreateGeomtry();
+			if (geo)
 			{
-				for (path = shape->paths; path != NULL; path = path->next)
+				ID2D1GeometrySink* skin = NULL;
+				geo->Open(&skin);
+				if (skin)
 				{
-					for (int i = 0; i < path->npts - 1; i += 3)
+					for (path = shape->paths; path != NULL; path = path->next)
 					{
-						float* p = &path->pts[i * 2];
-						if (i == 0)
-							skin->BeginFigure({ p[0] * percen, p[1] * percen }, D2D1_FIGURE_BEGIN_FILLED);
-						skin->AddBezier({ {p[2] * percen, p[3] * percen},{p[4] * percen, p[5] * percen},{p[6] * percen, p[7] * percen} });
+						for (int i = 0; i < path->npts - 1; i += 3)
+						{
+							float* p = &path->pts[i * 2];
+							if (i == 0)
+								skin->BeginFigure({ p[0] * percen, p[1] * percen }, D2D1_FIGURE_BEGIN_FILLED);
+							skin->AddBezier({ {p[2] * percen, p[3] * percen},{p[4] * percen, p[5] * percen},{p[6] * percen, p[7] * percen} });
+						}
+						skin->EndFigure(path->closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
 					}
-					skin->EndFigure(path->closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
 				}
+				skin->Close();
 			}
-			skin->Close();
-		}
 
-		auto getSvgBrush = [](NSVGpaint paint, float opacity, D2DGraphics* g) -> ID2D1Brush*
-			{
-				const auto ic2fc = [](int colorInt, float opacity) -> D2D1_COLOR_F
-					{
-						return D2D1_COLOR_F{ (float)GetRValue(colorInt) / 255.0f ,(float)GetGValue(colorInt) / 255.0f ,(float)GetBValue(colorInt) / 255.0f ,opacity };
-					};
-				switch (paint.type)
+			auto getSvgBrush = [](NSVGpaint paint, float opacity, D2DGraphics* g) -> ID2D1Brush*
 				{
-				case NSVG_PAINT_NONE:
+					const auto ic2fc = [](int colorInt, float opacity) -> D2D1_COLOR_F
+						{
+							return D2D1_COLOR_F{ (float)GetRValue(colorInt) / 255.0f ,(float)GetGValue(colorInt) / 255.0f ,(float)GetBValue(colorInt) / 255.0f ,opacity };
+						};
+					switch (paint.type)
+					{
+					case NSVG_PAINT_NONE:
+						return NULL;
+					case NSVG_PAINT_COLOR:
+						return g->CreateSolidColorBrush(ic2fc(paint.color, opacity));
+					case NSVG_PAINT_LINEAR_GRADIENT:
+					{
+						std::vector<D2D1_GRADIENT_STOP> cols;
+						for (int i = 0; i < paint.gradient->nstops; i++)
+						{
+							auto stop = paint.gradient->stops[i];
+							cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
+						}
+						return g->CreateLinearGradientBrush(cols.data(), cols.size());
+					}
+					case NSVG_PAINT_RADIAL_GRADIENT:
+					{
+						std::vector<D2D1_GRADIENT_STOP> cols;
+						for (int i = 0; i < paint.gradient->nstops; i++)
+						{
+							auto stop = paint.gradient->stops[i];
+							cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
+						}
+						return g->CreateRadialGradientBrush(cols.data(), cols.size(), { paint.gradient->fx,paint.gradient->fy });
+					}
+					}
 					return NULL;
-				case NSVG_PAINT_COLOR:
-					return g->CreateSolidColorBrush(ic2fc(paint.color, opacity));
-				case NSVG_PAINT_LINEAR_GRADIENT:
-				{
-					std::vector<D2D1_GRADIENT_STOP> cols;
-					for (int i = 0; i < paint.gradient->nstops; i++)
-					{
-						auto stop = paint.gradient->stops[i];
-						cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
-					}
-					return g->CreateLinearGradientBrush(cols.data(), cols.size());
-				}
-				case NSVG_PAINT_RADIAL_GRADIENT:
-				{
-					std::vector<D2D1_GRADIENT_STOP> cols;
-					for (int i = 0; i < paint.gradient->nstops; i++)
-					{
-						auto stop = paint.gradient->stops[i];
-						cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
-					}
-					return g->CreateRadialGradientBrush(cols.data(), cols.size(), { paint.gradient->fx,paint.gradient->fy });
-				}
-				}
-				return NULL;
-			};
+				};
 
-		ID2D1Brush* brush = getSvgBrush(shape->fill, shape->opacity, subg);
-		if (brush)
-		{
-			subg->FillGeometry(geo, brush);
-			brush->Release();
+			ID2D1Brush* brush = getSvgBrush(shape->fill, shape->opacity, subg);
+			if (brush)
+			{
+				subg->FillGeometry(geo, brush);
+				brush->Release();
+			}
+			brush = getSvgBrush(shape->stroke, shape->opacity, subg);
+			if (brush)
+			{
+				subg->DrawGeometry(geo, brush, shape->strokeWidth);
+				brush->Release();
+			}
+			geo->Release();
 		}
-		brush = getSvgBrush(shape->stroke, shape->opacity, subg);
-		if (brush)
-		{
-			subg->DrawGeometry(geo, brush, shape->strokeWidth);
-			brush->Release();
-		}
-		geo->Release();
+		nsvgDelete(image);
+		subg->EndRender();
+		delete subg;
+
+		return renderSource;
 	}
-	nsvgDelete(image);
-	subg->EndRender();
-	delete subg;
 
-	return renderSource;
-}
-
-std::wstring FileNameFromPath(const std::wstring& path)
-{
-	size_t pos = path.find_last_of(L"\\/");
-	return (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
-}
+	std::wstring FileNameFromPath(const std::wstring& path)
+	{
+		size_t pos = path.find_last_of(L"\\/");
+		return (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
+	}
 
 }
 
@@ -305,7 +305,7 @@ void DemoWindow::System_OnNotifyToggle(class Control* sender, MouseEventArgs e)
 		_notify->HideNotifyIcon();
 		Ui_UpdateStatus(L"NotifyIcon: Hide");
 	}
-	}
+}
 
 void DemoWindow::System_OnBalloonTip(class Control* sender, MouseEventArgs e)
 {
@@ -435,7 +435,7 @@ void DemoWindow::BuildTab_Basic(TabPage* page)
 	combo->OnSelectionChanged += [this, combo](class Control* sender)
 		{
 			(void)sender;
-			Ui_UpdateStatus(StringHelper::Format(L"ComboBox: %s", combo->Text.c_str()));
+			Ui_UpdateStatus(StringHelper::Format(L"ComboBox: %ws", combo->Text.c_str()));
 		};
 
 	page->AddControl(new Label(L"DateTimePicker", 450, 110));
@@ -532,7 +532,7 @@ void DemoWindow::BuildTab_Data(TabPage* page)
 {
 	page->AddControl(new Label(L"TreeView / GridView / Switch", 10, 10));
 
-	TreeView* tree = page->AddControl(new TreeView(10, 40, 360, 420));
+	TreeView* tree = page->AddControl(new TreeView(10, 40, 360, 400));
 	tree->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Bottom;
 	tree->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
 	tree->Margin = Thickness(10, 40, 0, 10);
@@ -587,7 +587,7 @@ void DemoWindow::BuildTab_Data(TabPage* page)
 
 void DemoWindow::BuildTab_Layout(TabPage* page)
 {
-	page->AddControl(new Label(L"StackPanel / GridPanel / DockPanel / WrapPanel / RelativePanel", 10, 10));
+	page->AddControl(new Label(L"StackPanel / GridPanel / DockPanel / WrapPanel / RelativePanel / ScrollView", 10, 10));
 
 	auto stack = page->AddControl(new StackPanel(10, 40, 260, 220));
 	stack->SetOrientation(Orientation::Vertical);
@@ -668,6 +668,37 @@ void DemoWindow::BuildTab_Layout(TabPage* page)
 	cd.CenterHorizontal = true;
 	cd.CenterVertical = true;
 	rp->SetConstraints(b, cd);
+
+	page->AddControl(new Label(L"ScrollView（滚轮、拖动滚动条，内容超出时自动显示横纵滚动条）", 530, 260));
+	auto scroll = page->AddControl(new ScrollView(530, 280, 800, 250));
+	scroll->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
+	scroll->BolderColor = D2D1_COLOR_F{ 1,1,1,0.14f };
+	scroll->Padding = Thickness(12);
+
+	for (int row = 0; row < 4; ++row)
+	{
+		for (int col = 0; col < 4; ++col)
+		{
+			const int left = 16 + (col * 250);
+			const int top = 16 + (row * 92);
+			auto card = scroll->AddControl(new Panel(left, top, 220, 76));
+			card->BackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.05f };
+			card->BolderColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.10f };
+			card->AddControl(new Label(StringHelper::Format(L"Card %d", row * 4 + col + 1), 10, 10));
+			auto btn = card->AddControl(new Button(L"点击", 10, 36, 70, 26));
+			btn->Tag = row * 4 + col + 1;
+			btn->OnMouseClick += [this](class Control* sender, MouseEventArgs e)
+				{
+					(void)e;
+					Ui_UpdateStatus(StringHelper::Format(L"ScrollView Button: card=%d", (int)sender->Tag));
+				};
+			card->AddControl(new Label(StringHelper::Format(L"位置 %d,%d", col + 1, row + 1), 96, 40));
+		}
+	}
+
+	scroll->AddControl(new Label(L"这一行专门把内容宽度拉长，便于测试横向滚动。", 16, 400));
+	scroll->AddControl(new Button(L"Far Button", 860, 392, 120, 30));
+	scroll->AddControl(new Label(L"最右侧区域", 1010, 398));
 }
 
 void DemoWindow::BuildTab_System(TabPage* page)
@@ -683,7 +714,6 @@ void DemoWindow::BuildTab_System(TabPage* page)
 
 	page->AddControl(new Label(L"提示：右键托盘图标可弹出菜单。", 10, 125));
 }
-
 
 void DemoWindow::BuildTab_Media(TabPage* page)
 {

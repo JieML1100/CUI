@@ -9,6 +9,7 @@
 #include "Label.h"
 #include "LinkLabel.h"
 #include "Panel.h"
+#include "ScrollView.h"
 #include "PasswordBox.h"
 #include "PictureBox.h"
 #include "ProgressBar.h"

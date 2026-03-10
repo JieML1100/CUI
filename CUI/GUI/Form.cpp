@@ -97,7 +97,10 @@ static Control* HitTestDeepestChild(Control* root, POINT contentMouse)
 {
 	if (!root) return NULL;
 	if (!root->Visible || !root->Enable) return NULL;
-	if (!root->HitTestChildren())
+	auto rootAbs = root->AbsLocation;
+	int localX = contentMouse.x - rootAbs.x;
+	int localY = contentMouse.y - rootAbs.y;
+	if (!root->ShouldHitTestChildrenAt(localX, localY))
 		return root;
 
 	for (int i = root->Count - 1; i >= 0; i--)
@@ -490,6 +493,40 @@ static void DismissComboBoxForegroundOnOutsideMouseDown(Form* f, POINT contentMo
 		dtp->SetExpanded(false);
 		return;
 	}
+}
+
+static bool IsScrollViewFallbackKey(WPARAM key)
+{
+	switch (key)
+	{
+	case VK_HOME:
+	case VK_END:
+	case VK_PRIOR:
+	case VK_NEXT:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static Control* FindAncestorScrollViewForFallback(Control* start, WPARAM key)
+{
+	if (!start) return NULL;
+	for (Control* parent = start->Parent; parent; parent = parent->Parent)
+	{
+		if (parent->Type() == UIClass::UI_ScrollView && parent->HandlesNavigationKey(key))
+			return parent;
+	}
+	return NULL;
+}
+
+static Control* GetScrollViewFallbackTarget(Control* selected, WPARAM key)
+{
+	if (!selected) return NULL;
+	if (!selected->IsVisual) return NULL;
+	if (!IsScrollViewFallbackKey(key)) return NULL;
+	if (selected->HandlesNavigationKey(key)) return NULL;
+	return FindAncestorScrollViewForFallback(selected, key);
 }
 
 CursorKind Form::QueryCursorAt(POINT mouseClient, POINT contentMouse)
@@ -2142,14 +2179,20 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	{
 		if (this->Selected)
 		{
-			if (this->Selected->ProcessMessage(message, wParam, lParam, xof, yof))
+			Control* selected = this->Selected;
+			Control* fallback = GetScrollViewFallbackTarget(selected, wParam);
+			if (selected->ProcessMessage(message, wParam, lParam, xof, yof))
 			{
-				if (this->Selected->IsVisual)
+				if (selected->IsVisual)
 				{
-					HitControl = this->Selected;
+					HitControl = selected;
 					KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
 					this->OnKeyDown(this, event_obj);
 				}
+			}
+			if (fallback)
+			{
+				fallback->ProcessMessage(message, wParam, lParam, 0, 0);
 			}
 		}
 		else

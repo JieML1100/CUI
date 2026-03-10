@@ -3,6 +3,19 @@
 #include "Form.h"
 #pragma comment(lib, "Imm32.lib")
 UIClass TextBox::Type() { return UIClass::UI_TextBox; }
+bool TextBox::HandlesNavigationKey(WPARAM key) const
+{
+	switch (key)
+	{
+	case VK_HOME:
+	case VK_END:
+	case VK_PRIOR:
+	case VK_NEXT:
+		return true;
+	default:
+		return false;
+	}
+}
 TextBox::TextBox(std::wstring text, int x, int y, int width, int height)
 {
 	this->Text = text;

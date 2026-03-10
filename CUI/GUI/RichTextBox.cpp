@@ -5,6 +5,20 @@
 #pragma comment(lib, "Imm32.lib")
 UIClass RichTextBox::Type() { return UIClass::UI_RichTextBox; }
 
+bool RichTextBox::HandlesNavigationKey(WPARAM key) const
+{
+	switch (key)
+	{
+	case VK_HOME:
+	case VK_END:
+	case VK_PRIOR:
+	case VK_NEXT:
+		return true;
+	default:
+		return false;
+	}
+}
+
 CursorKind RichTextBox::QueryCursor(int xof, int yof)
 {
 	(void)yof;

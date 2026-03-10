@@ -12,7 +12,9 @@
 #include "../CUI_Legacy/GUI/ProgressBar.h"
 #include "../CUI_Legacy/GUI/Slider.h"
 #include "../CUI_Legacy/GUI/PictureBox.h"
+#include "../CUI_Legacy/GUI/DateTimePicker.h"
 #include "../CUI_Legacy/GUI/Switch.h"
+#include "../CUI_Legacy/GUI/ScrollView.h"
 #include "../CUI_Legacy/GUI/RichTextBox.h"
 #include "../CUI_Legacy/GUI/PasswordBox.h"
 #include "../CUI_Legacy/GUI/RoundTextBox.h"
@@ -1438,6 +1440,7 @@ bool DesignerCanvas::IsContainerControl(Control* c)
 	switch (c->Type())
 	{
 	case UIClass::UI_Panel:
+	case UIClass::UI_ScrollView:
 	case UIClass::UI_StackPanel:
 	case UIClass::UI_GridPanel:
 	case UIClass::UI_DockPanel:
@@ -2186,9 +2189,17 @@ void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
 		newControl = new PasswordBox(L"", centerX, centerY, 200, 25);
 		typeName = L"PasswordBox";
 		break;
+	case UIClass::UI_DateTimePicker:
+		newControl = new DateTimePicker(L"", centerX, centerY, 200, 28);
+		typeName = L"DateTimePicker";
+		break;
 	case UIClass::UI_Panel:
 		newControl = new Panel(centerX, centerY, 200, 200);
 		typeName = L"Panel";
+		break;
+	case UIClass::UI_ScrollView:
+		newControl = new ScrollView(centerX, centerY, 240, 200);
+		typeName = L"ScrollView";
 		break;
 	case UIClass::UI_StackPanel:
 		newControl = new StackPanel(centerX, centerY, 200, 200);
@@ -2515,7 +2526,9 @@ static bool IsExportableDesignType(UIClass t)
 	case UIClass::UI_TextBox:
 	case UIClass::UI_RichTextBox:
 	case UIClass::UI_PasswordBox:
+	case UIClass::UI_DateTimePicker:
 	case UIClass::UI_Panel:
+	case UIClass::UI_ScrollView:
 	case UIClass::UI_StackPanel:
 	case UIClass::UI_GridPanel:
 	case UIClass::UI_DockPanel:
@@ -2553,6 +2566,7 @@ static std::wstring ExportTypeName(UIClass t)
 	case UIClass::UI_TextBox: return L"TextBox";
 	case UIClass::UI_RichTextBox: return L"RichTextBox";
 	case UIClass::UI_PasswordBox: return L"PasswordBox";
+	case UIClass::UI_DateTimePicker: return L"DateTimePicker";
 	case UIClass::UI_ComboBox: return L"ComboBox";
 	case UIClass::UI_GridView: return L"GridView";
 	case UIClass::UI_CheckBox: return L"CheckBox";
@@ -2560,6 +2574,7 @@ static std::wstring ExportTypeName(UIClass t)
 	case UIClass::UI_ProgressBar: return L"ProgressBar";
 	case UIClass::UI_TreeView: return L"TreeView";
 	case UIClass::UI_Panel: return L"Panel";
+	case UIClass::UI_ScrollView: return L"ScrollView";
 	case UIClass::UI_TabPage: return L"TabPage";
 	case UIClass::UI_TabControl: return L"TabControl";
 	case UIClass::UI_Switch: return L"Switch";
@@ -2709,7 +2724,9 @@ namespace
 		case UIClass::UI_TextBox: return "TextBox";
 		case UIClass::UI_RichTextBox: return "RichTextBox";
 		case UIClass::UI_PasswordBox: return "PasswordBox";
+			case UIClass::UI_DateTimePicker: return "DateTimePicker";
 		case UIClass::UI_Panel: return "Panel";
+			case UIClass::UI_ScrollView: return "ScrollView";
 		case UIClass::UI_StackPanel: return "StackPanel";
 		case UIClass::UI_GridPanel: return "GridPanel";
 		case UIClass::UI_DockPanel: return "DockPanel";
@@ -2743,7 +2760,9 @@ namespace
 		if (s == "TextBox") { out = UIClass::UI_TextBox; return true; }
 		if (s == "RichTextBox") { out = UIClass::UI_RichTextBox; return true; }
 		if (s == "PasswordBox") { out = UIClass::UI_PasswordBox; return true; }
+		if (s == "DateTimePicker") { out = UIClass::UI_DateTimePicker; return true; }
 		if (s == "Panel") { out = UIClass::UI_Panel; return true; }
+		if (s == "ScrollView") { out = UIClass::UI_ScrollView; return true; }
 		if (s == "StackPanel") { out = UIClass::UI_StackPanel; return true; }
 		if (s == "GridPanel") { out = UIClass::UI_GridPanel; return true; }
 		if (s == "DockPanel") { out = UIClass::UI_DockPanel; return true; }
@@ -3288,6 +3307,25 @@ bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* 
 			{
 				extra["percentageValue"] = ((ProgressBar*)c)->PercentageValue;
 			}
+			else if (dc->Type == UIClass::UI_DateTimePicker)
+			{
+				auto* dtp = (DateTimePicker*)c;
+				const SYSTEMTIME st = dtp->Value;
+				extra["value"] = Json{
+					{"year", st.wYear},
+					{"month", st.wMonth},
+					{"day", st.wDay},
+					{"hour", st.wHour},
+					{"minute", st.wMinute},
+					{"second", st.wSecond},
+					{"milliseconds", st.wMilliseconds}
+				};
+				extra["mode"] = (int)dtp->Mode;
+				extra["allowDateSelection"] = dtp->AllowDateSelection;
+				extra["allowTimeSelection"] = dtp->AllowTimeSelection;
+				extra["allowModeSwitch"] = dtp->AllowModeSwitch;
+				extra["expand"] = dtp->Expand;
+			}
 			else if (dc->Type == UIClass::UI_Slider)
 			{
 				auto* s = (Slider*)c;
@@ -3347,6 +3385,19 @@ bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* 
 				extra["padding"] = tb->Padding;
 				extra["gap"] = tb->Gap;
 				extra["itemHeight"] = tb->ItemHeight;
+			}
+			else if (dc->Type == UIClass::UI_ScrollView)
+			{
+				auto* sv = (ScrollView*)c;
+				extra["scrollBackColor"] = ColorToJson(sv->ScrollBackColor);
+				extra["scrollForeColor"] = ColorToJson(sv->ScrollForeColor);
+				extra["alwaysShowVScroll"] = sv->AlwaysShowVScroll;
+				extra["alwaysShowHScroll"] = sv->AlwaysShowHScroll;
+				extra["autoContentSize"] = sv->AutoContentSize;
+				extra["contentSize"] = Json{{"w", sv->ContentSize.cx}, {"h", sv->ContentSize.cy}};
+				extra["scrollXOffset"] = sv->ScrollXOffset;
+				extra["scrollYOffset"] = sv->ScrollYOffset;
+				extra["mouseWheelStep"] = sv->MouseWheelStep;
 			}
 			else if (dc->Type == UIClass::UI_GridPanel)
 			{
@@ -3647,7 +3698,9 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 			case UIClass::UI_TextBox: return new TextBox(L"", 0, 0, 200, 25);
 			case UIClass::UI_RichTextBox: return new RichTextBox(L"", 0, 0, 300, 160);
 			case UIClass::UI_PasswordBox: return new PasswordBox(L"", 0, 0, 200, 25);
+				case UIClass::UI_DateTimePicker: return new DateTimePicker(L"", 0, 0, 200, 28);
 			case UIClass::UI_Panel: return new Panel(0, 0, 200, 200);
+				case UIClass::UI_ScrollView: return new ScrollView(0, 0, 240, 200);
 			case UIClass::UI_StackPanel: return new StackPanel(0, 0, 200, 200);
 			case UIClass::UI_GridPanel: return new GridPanel(0, 0, 200, 200);
 			case UIClass::UI_DockPanel: return new DockPanel(0, 0, 200, 200);
@@ -3859,6 +3912,23 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 					tb->Gap = it.extra.value("gap", tb->Gap);
 					tb->ItemHeight = it.extra.value("itemHeight", tb->ItemHeight);
 				}
+				else if (it.type == UIClass::UI_ScrollView)
+				{
+					auto* sv = (ScrollView*)c;
+					sv->ScrollBackColor = ColorFromJson(it.extra.value("scrollBackColor", Json()), sv->ScrollBackColor);
+					sv->ScrollForeColor = ColorFromJson(it.extra.value("scrollForeColor", Json()), sv->ScrollForeColor);
+					sv->AlwaysShowVScroll = it.extra.value("alwaysShowVScroll", sv->AlwaysShowVScroll);
+					sv->AlwaysShowHScroll = it.extra.value("alwaysShowHScroll", sv->AlwaysShowHScroll);
+					sv->AutoContentSize = it.extra.value("autoContentSize", sv->AutoContentSize);
+					if (it.extra.contains("contentSize") && it.extra["contentSize"].is_object())
+					{
+						auto& cs = it.extra["contentSize"];
+						sv->ContentSize = { cs.value("w", sv->ContentSize.cx), cs.value("h", sv->ContentSize.cy) };
+					}
+					sv->ScrollXOffset = it.extra.value("scrollXOffset", sv->ScrollXOffset);
+					sv->ScrollYOffset = it.extra.value("scrollYOffset", sv->ScrollYOffset);
+					sv->MouseWheelStep = it.extra.value("mouseWheelStep", sv->MouseWheelStep);
+				}
 				else if (it.type == UIClass::UI_ComboBox)
 				{
 					auto* cb = (ComboBox*)c;
@@ -3907,6 +3977,28 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 				else if (it.type == UIClass::UI_ProgressBar)
 				{
 					((ProgressBar*)c)->PercentageValue = it.extra.value("percentageValue", ((ProgressBar*)c)->PercentageValue);
+				}
+				else if (it.type == UIClass::UI_DateTimePicker)
+				{
+					auto* dtp = (DateTimePicker*)c;
+					if (it.extra.contains("value") && it.extra["value"].is_object())
+					{
+						SYSTEMTIME st = dtp->Value;
+						auto& v = it.extra["value"];
+						st.wYear = (WORD)v.value("year", (int)st.wYear);
+						st.wMonth = (WORD)v.value("month", (int)st.wMonth);
+						st.wDay = (WORD)v.value("day", (int)st.wDay);
+						st.wHour = (WORD)v.value("hour", (int)st.wHour);
+						st.wMinute = (WORD)v.value("minute", (int)st.wMinute);
+						st.wSecond = (WORD)v.value("second", (int)st.wSecond);
+						st.wMilliseconds = (WORD)v.value("milliseconds", (int)st.wMilliseconds);
+						dtp->Value = st;
+					}
+					dtp->Mode = (DateTimePickerMode)it.extra.value("mode", (int)dtp->Mode);
+					dtp->AllowDateSelection = it.extra.value("allowDateSelection", dtp->AllowDateSelection);
+					dtp->AllowTimeSelection = it.extra.value("allowTimeSelection", dtp->AllowTimeSelection);
+					dtp->AllowModeSwitch = it.extra.value("allowModeSwitch", dtp->AllowModeSwitch);
+					dtp->SetExpanded(it.extra.value("expand", dtp->Expand));
 				}
 				else if (it.type == UIClass::UI_Slider)
 				{

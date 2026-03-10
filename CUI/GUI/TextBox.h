@@ -16,6 +16,8 @@ class TextBox : public Control
 public:
 	virtual UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override { (void)xof; (void)yof; return this->Enable ? CursorKind::IBeam : CursorKind::Arrow; }
+	bool HandlesMouseWheel() const override { return true; }
+	bool HandlesNavigationKey(WPARAM key) const override;
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	/** @brief 当前文本测量尺寸缓存（像素）。 */
 	D2D1_SIZE_F textSize = { 0,0 };

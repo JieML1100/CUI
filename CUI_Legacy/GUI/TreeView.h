@@ -46,6 +46,7 @@ private:
 public:
 	virtual UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
+	bool HandlesMouseWheel() const override { return true; }
 	/** @brief 根节点（所有权由 TreeView 管理，见实现）。 */
 	TreeNode* Root = NULL;
 	/** @brief 当前选中节点。 */

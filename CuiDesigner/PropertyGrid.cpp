@@ -14,6 +14,8 @@
 #include "../CUI_Legacy/GUI/Slider.h"
 #include "../CUI_Legacy/GUI/ProgressBar.h"
 #include "../CUI_Legacy/GUI/PictureBox.h"
+#include "../CUI_Legacy/GUI/DateTimePicker.h"
+#include "../CUI_Legacy/GUI/ScrollView.h"
 #include "../CUI_Legacy/GUI/TreeView.h"
 #include "../CUI_Legacy/GUI/TabControl.h"
 #include "../CUI_Legacy/GUI/ToolBar.h"
@@ -430,6 +432,9 @@ namespace
 		case UIClass::UI_ComboBox:
 			out.push_back(L"OnSelectionChanged");
 			break;
+		case UIClass::UI_DateTimePicker:
+			out.push_back(L"OnSelectionChanged");
+			break;
 		case UIClass::UI_GridView:
 			out.push_back(L"ScrollChanged");
 			out.push_back(L"SelectionChanged");
@@ -512,12 +517,17 @@ PropertyGrid::PropertyGrid(int x, int y, int width, int height)
 	_titleLabel->Font = new ::Font(L"Microsoft YaHei", 16.0f);
 	this->AddControl(_titleLabel);
 
+	_scrollView = new ScrollView(0, _contentTop, width, std::max(0, height - _contentTop));
+	_scrollView->BackColor = this->BackColor;
+	_scrollView->Boder = 0.0f;
+	_scrollView->MouseWheelStep = 25;
+	this->AddControl(_scrollView);
 
-	_contentHost = new Panel(0, _contentTop, width, std::max(0, height - _contentTop));
-	_contentHost->BackColor = this->BackColor;
+	_contentHost = new Panel(0, 0, width, std::max(0, height - _contentTop));
+	_contentHost->BackColor = D2D1::ColorF(0, 0, 0, 0);
 	_contentHost->Boder = 0.0f;
 	UpdateContentHostLayout();
-	this->AddControl(_contentHost);
+	_scrollView->AddControl(_contentHost);
 }
 
 PropertyGrid::~PropertyGrid()
@@ -526,17 +536,7 @@ PropertyGrid::~PropertyGrid()
 
 void PropertyGrid::RegisterScrollable(Control* c)
 {
-	if (!c) return;
-	if (c == _titleLabel) return;
-	if (c == _contentHost) return;
-	if (_contentHost && c->Parent == _contentHost)
-	{
-		_scrollEntries.push_back(ScrollEntry{ c, c->Top });
-		return;
-	}
-	// 只对内容区控件做滚动（Top>=contentTop）
-	if (c->Top < _contentTop) return;
-	_scrollEntries.push_back(ScrollEntry{ c, c->Top });
+	(void)c;
 }
 
 Panel* PropertyGrid::GetContentContainer()
@@ -557,78 +557,56 @@ int PropertyGrid::GetContentWidthLocal()
 
 int PropertyGrid::GetViewportHeightLocal()
 {
-	if (_contentHost) return _contentHost->Height;
+	if (_scrollView) return _scrollView->Height;
 	return this->Height - _contentTop;
 }
 
 void PropertyGrid::UpdateContentHostLayout()
 {
+	if (_titleLabel)
+	{
+		_titleLabel->Size = { std::max(0, this->Width - 20), 25 };
+	}
+	if (_scrollView)
+	{
+		_scrollView->Left = 0;
+		_scrollView->Top = _contentTop;
+		_scrollView->Width = this->Width;
+		_scrollView->Height = std::max(0, this->Height - _contentTop);
+	}
 	if (!_contentHost) return;
-	const int trackWidth = 10;
-	const int trackPad = 2;
-	const int gap = 4;
-	int reservedRight = trackWidth + trackPad + gap;
-	int w = std::max(0, this->Width - reservedRight);
-	int h = std::max(0, this->Height - _contentTop);
+	int w = _scrollView ? std::max(0, _scrollView->Width - 12) : this->Width;
+	int h = _scrollView ? std::max(0, _scrollView->Height) : std::max(0, this->Height - _contentTop);
 	_contentHost->Left = 0;
-	_contentHost->Top = _contentTop;
+	_contentHost->Top = 0;
 	_contentHost->Width = w;
-	_contentHost->Height = h;
+	_contentHost->Height = std::max(h, _contentHeight);
 }
 
 void PropertyGrid::ClampScroll()
 {
-	int viewport = GetViewportHeightLocal();
-	if (viewport < 0) viewport = 0;
-	int maxScroll = std::max(0, _contentHeight - viewport);
-	_scrollOffsetY = std::clamp(_scrollOffsetY, 0, maxScroll);
 }
 
 void PropertyGrid::UpdateScrollLayout()
 {
 	UpdateContentHostLayout();
-	int contentTop = GetContentTopLocal();
-	int maxBottom = contentTop;
-	for (const auto& e : _scrollEntries)
+	if (!_contentHost) return;
+	int maxBottom = 0;
+	for (int i = 0; i < _contentHost->Count; ++i)
 	{
-		if (!e.ControlPtr) continue;
-		maxBottom = std::max(maxBottom, e.BaseY + e.ControlPtr->Height);
+		auto* child = _contentHost->operator[](i);
+		if (!child || !child->Visible) continue;
+		auto sz = child->ActualSize();
+		maxBottom = (std::max)(maxBottom, static_cast<int>(child->Top) + static_cast<int>(sz.cy));
 	}
-	_contentHeight = (maxBottom - contentTop) + _contentBottomPadding;
-	ClampScroll();
-
-	for (auto& e : _scrollEntries)
-	{
-		if (!e.ControlPtr) continue;
-		e.ControlPtr->Top = e.BaseY - _scrollOffsetY;
-	}
+	_contentHeight = maxBottom + _contentBottomPadding;
+	_contentHost->Height = (std::max)(GetViewportHeightLocal(), _contentHeight);
 }
 
 bool PropertyGrid::TryGetScrollBarLocalRect(D2D1_RECT_F& outTrack, D2D1_RECT_F& outThumb)
 {
-	const float trackWidth = 10.0f;
-	const float trackPad = 2.0f;
-	float viewport = (float)std::max(0, GetViewportHeightLocal());
-	if (_contentHeight <= 0 || viewport <= 0.0f) return false;
-	if ((float)_contentHeight <= viewport) return false;
-
-	outTrack = D2D1_RECT_F{
-		(float)this->Width - trackWidth - trackPad,
-		(float)_contentTop,
-		(float)this->Width - trackPad,
-		(float)this->Height - trackPad,
-	};
-
-	float trackHeight = std::max(0.0f, outTrack.bottom - outTrack.top);
-	if (trackHeight <= 0.0f) return false;
-
-	float ratio = viewport / (float)_contentHeight;
-	float thumbHeight = std::max(16.0f, trackHeight * ratio);
-	float maxScroll = (float)std::max(1, _contentHeight - (int)viewport);
-	float scroll01 = (float)_scrollOffsetY / maxScroll;
-	float thumbTop = outTrack.top + (trackHeight - thumbHeight) * scroll01;
-
-	outThumb = D2D1_RECT_F{ outTrack.left, thumbTop, outTrack.right, thumbTop + thumbHeight };
+	(void)outTrack;
+	(void)outThumb;
 	return true;
 }
 
@@ -637,104 +615,11 @@ void PropertyGrid::Update()
 	UpdateContentHostLayout();
 	UpdateScrollLayout();
 	Panel::Update();
-
-	if (!this->ParentForm || !this->ParentForm->Render) return;
-	D2D1_RECT_F track{}, thumb{};
-	if (!TryGetScrollBarLocalRect(track, thumb)) return;
-
-	auto d2d = this->ParentForm->Render;
-	this->BeginRender();
-	{
-		d2d->FillRect(track.left, track.top, track.right - track.left, track.bottom - track.top, Colors::LightGray);
-		d2d->FillRect(thumb.left, thumb.top, thumb.right - thumb.left, thumb.bottom - thumb.top, Colors::DimGrey);
-	}
-	this->EndRender();
 }
 
 bool PropertyGrid::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {
-	Panel::ProcessMessage(message, wParam, lParam, xof, yof);
-
-	switch (message)
-	{
-	case WM_MOUSEWHEEL:
-	{
-		int viewport = GetViewportHeightLocal();
-		if (_contentHeight > viewport)
-		{
-			int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-			int step = 25;
-			_scrollOffsetY -= (delta / 120) * step;
-			ClampScroll();
-			UpdateScrollLayout();
-			this->PostRender();
-		}
-		return true;
-	}
-	case WM_LBUTTONDOWN:
-	{
-		D2D1_RECT_F track{}, thumb{};
-		if (TryGetScrollBarLocalRect(track, thumb))
-		{
-			if (xof >= (int)track.left && xof <= (int)track.right && yof >= (int)track.top && yof <= (int)track.bottom)
-			{
-				if (yof >= (int)thumb.top && yof <= (int)thumb.bottom)
-				{
-					_draggingScrollThumb = true;
-					_dragStartMouseY = yof;
-					_dragStartScrollY = _scrollOffsetY;
-					if (this->ParentForm) this->ParentForm->Selected = this;
-					return true;
-				}
-				else
-				{
-					int viewport = this->Height - _contentTop;
-					if (yof < (int)thumb.top) _scrollOffsetY -= viewport;
-					else _scrollOffsetY += viewport;
-					ClampScroll();
-					UpdateScrollLayout();
-					this->PostRender();
-					return true;
-				}
-			}
-		}
-	}
-	break;
-	case WM_MOUSEMOVE:
-	{
-		if (_draggingScrollThumb)
-		{
-			D2D1_RECT_F track{}, thumb{};
-			if (TryGetScrollBarLocalRect(track, thumb))
-			{
-				float viewport = (float)std::max(0, this->Height - _contentTop);
-				float trackHeight = std::max(1.0f, track.bottom - track.top);
-				float thumbHeight = std::max(1.0f, thumb.bottom - thumb.top);
-				float maxThumbMove = std::max(1.0f, trackHeight - thumbHeight);
-				float maxScroll = (float)std::max(1, _contentHeight - (int)viewport);
-				float dy = (float)(yof - _dragStartMouseY);
-				float scrollDy = dy / maxThumbMove * maxScroll;
-				_scrollOffsetY = (int)((float)_dragStartScrollY + scrollDy);
-				ClampScroll();
-				UpdateScrollLayout();
-				this->PostRender();
-				return true;
-			}
-		}
-	}
-	break;
-	case WM_LBUTTONUP:
-	{
-		if (_draggingScrollThumb)
-		{
-			_draggingScrollThumb = false;
-			if (this->ParentForm && this->ParentForm->Selected == this) this->ParentForm->Selected = nullptr;
-			return true;
-		}
-	}
-	break;
-	}
-	return true;
+	return Panel::ProcessMessage(message, wParam, lParam, xof, yof);
 }
 
 void PropertyGrid::CreatePropertyItem(std::wstring propertyName, std::wstring value, int& yOffset)
@@ -1327,6 +1212,17 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 					cb->Text = cb->Items[cb->SelectedIndex];
 			}
 		}
+		else if (propertyName == L"Mode")
+		{
+			if (ctrl->Type() == UIClass::UI_DateTimePicker)
+			{
+				auto* dtp = (DateTimePicker*)ctrl;
+				auto v = TrimWs(value);
+				if (v == L"DateOnly") dtp->Mode = DateTimePickerMode::DateOnly;
+				else if (v == L"TimeOnly") dtp->Mode = DateTimePickerMode::TimeOnly;
+				else dtp->Mode = DateTimePickerMode::DateTime;
+			}
+		}
 		else if (propertyName == L"TitleHeight")
 		{
 			if (ctrl->Type() == UIClass::UI_TabControl)
@@ -1414,6 +1310,22 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 				if (TryParseColor(value, c)) ((TreeView*)ctrl)->SelectedForeColor = c;
 			}
 		}
+		else if (propertyName == L"ScrollBackColor")
+		{
+			if (ctrl->Type() == UIClass::UI_ScrollView)
+			{
+				D2D1_COLOR_F c;
+				if (TryParseColor(value, c)) ((ScrollView*)ctrl)->ScrollBackColor = c;
+			}
+		}
+		else if (propertyName == L"ScrollForeColor")
+		{
+			if (ctrl->Type() == UIClass::UI_ScrollView)
+			{
+				D2D1_COLOR_F c;
+				if (TryParseColor(value, c)) ((ScrollView*)ctrl)->ScrollForeColor = c;
+			}
+		}
 		else if (propertyName == L"Spacing")
 		{
 			if (ctrl->Type() == UIClass::UI_StackPanel)
@@ -1467,6 +1379,31 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 		{
 			if (ctrl->Type() == UIClass::UI_Slider)
 				((Slider*)ctrl)->Step = std::stof(value);
+		}
+		else if (propertyName == L"MouseWheelStep")
+		{
+			if (ctrl->Type() == UIClass::UI_ScrollView)
+				((ScrollView*)ctrl)->MouseWheelStep = std::stoi(value);
+		}
+		else if (propertyName == L"ContentWidth")
+		{
+			if (ctrl->Type() == UIClass::UI_ScrollView)
+			{
+				auto* sv = (ScrollView*)ctrl;
+				auto cs = sv->ContentSize;
+				cs.cx = std::stoi(value);
+				sv->ContentSize = cs;
+			}
+		}
+		else if (propertyName == L"ContentHeight")
+		{
+			if (ctrl->Type() == UIClass::UI_ScrollView)
+			{
+				auto* sv = (ScrollView*)ctrl;
+				auto cs = sv->ContentSize;
+				cs.cy = std::stoi(value);
+				sv->ContentSize = cs;
+			}
 		}
 	}
 	catch (...)
@@ -1624,6 +1561,41 @@ void PropertyGrid::UpdatePropertyFromBool(std::wstring propertyName, bool value)
 	{
 		if (ctrl->Type() == UIClass::UI_MediaPlayer)
 			((MediaPlayer*)ctrl)->Loop = value;
+	}
+	else if (propertyName == L"AllowDateSelection")
+	{
+		if (ctrl->Type() == UIClass::UI_DateTimePicker)
+			((DateTimePicker*)ctrl)->AllowDateSelection = value;
+	}
+	else if (propertyName == L"AllowTimeSelection")
+	{
+		if (ctrl->Type() == UIClass::UI_DateTimePicker)
+			((DateTimePicker*)ctrl)->AllowTimeSelection = value;
+	}
+	else if (propertyName == L"AllowModeSwitch")
+	{
+		if (ctrl->Type() == UIClass::UI_DateTimePicker)
+			((DateTimePicker*)ctrl)->AllowModeSwitch = value;
+	}
+	else if (propertyName == L"Expand")
+	{
+		if (ctrl->Type() == UIClass::UI_DateTimePicker)
+			((DateTimePicker*)ctrl)->SetExpanded(value);
+	}
+	else if (propertyName == L"AlwaysShowVScroll")
+	{
+		if (ctrl->Type() == UIClass::UI_ScrollView)
+			((ScrollView*)ctrl)->AlwaysShowVScroll = value;
+	}
+	else if (propertyName == L"AlwaysShowHScroll")
+	{
+		if (ctrl->Type() == UIClass::UI_ScrollView)
+			((ScrollView*)ctrl)->AlwaysShowHScroll = value;
+	}
+	else if (propertyName == L"AutoContentSize")
+	{
+		if (ctrl->Type() == UIClass::UI_ScrollView)
+			((ScrollView*)ctrl)->AutoContentSize = value;
 	}
 	else if (propertyName == L"Visited")
 	{
@@ -1797,9 +1769,37 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 		auto* pb = (ProgressBar*)ctrl;
 		CreateFloatSliderPropertyItem(L"PercentageValue", pb->PercentageValue, 0.0f, 1.0f, 0.01f, yOffset);
 	}
+	if (control->Type == UIClass::UI_DateTimePicker)
+	{
+		auto* dtp = (DateTimePicker*)ctrl;
+		std::wstring mode = L"DateTime";
+		switch (dtp->Mode)
+		{
+		case DateTimePickerMode::DateOnly: mode = L"DateOnly"; break;
+		case DateTimePickerMode::TimeOnly: mode = L"TimeOnly"; break;
+		case DateTimePickerMode::DateTime: default: mode = L"DateTime"; break;
+		}
+		CreateEnumPropertyItem(L"Mode", mode, { L"DateOnly", L"TimeOnly", L"DateTime" }, yOffset);
+		CreateBoolPropertyItem(L"AllowDateSelection", dtp->AllowDateSelection, yOffset);
+		CreateBoolPropertyItem(L"AllowTimeSelection", dtp->AllowTimeSelection, yOffset);
+		CreateBoolPropertyItem(L"AllowModeSwitch", dtp->AllowModeSwitch, yOffset);
+		CreateBoolPropertyItem(L"Expand", dtp->Expand, yOffset);
+	}
 	if (control->Type == UIClass::UI_PictureBox)
 	{
 		CreateEnumPropertyItem(L"SizeMode", ImageSizeModeToText(ctrl->SizeMode), { L"Normal", L"CenterImage", L"Stretch", L"Zoom" }, yOffset);
+	}
+	if (control->Type == UIClass::UI_ScrollView)
+	{
+		auto* sv = (ScrollView*)ctrl;
+		CreatePropertyItem(L"ScrollBackColor", ColorToText(sv->ScrollBackColor), yOffset);
+		CreatePropertyItem(L"ScrollForeColor", ColorToText(sv->ScrollForeColor), yOffset);
+		CreateBoolPropertyItem(L"AlwaysShowVScroll", sv->AlwaysShowVScroll, yOffset);
+		CreateBoolPropertyItem(L"AlwaysShowHScroll", sv->AlwaysShowHScroll, yOffset);
+		CreateBoolPropertyItem(L"AutoContentSize", sv->AutoContentSize, yOffset);
+		CreatePropertyItem(L"ContentWidth", std::to_wstring(sv->ContentSize.cx), yOffset);
+		CreatePropertyItem(L"ContentHeight", std::to_wstring(sv->ContentSize.cy), yOffset);
+		CreatePropertyItem(L"MouseWheelStep", std::to_wstring(sv->MouseWheelStep), yOffset);
 	}
 	if (control->Type == UIClass::UI_TreeView)
 	{

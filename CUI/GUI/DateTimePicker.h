@@ -140,6 +140,7 @@ public:
 
 	DateTimePicker(std::wstring text = L"", int x = 0, int y = 0, int width = 200, int height = 28);
 	virtual UIClass Type() override;
+	bool HandlesMouseWheel() const override { return true; }
 
 	PROPERTY(SYSTEMTIME, Value);
 	GET(SYSTEMTIME, Value);

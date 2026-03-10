@@ -85,6 +85,8 @@ class GridView : public Control
 public:
 	UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
+	bool HandlesMouseWheel() const override { return true; }
+	bool HandlesNavigationKey(WPARAM key) const override;
 	GridView(int x = 0, int y = 0, int width = 120, int height = 20);
 	~GridView() override;
 	/** @brief 表头字体（为空则使用默认字体/继承字体）。 */
