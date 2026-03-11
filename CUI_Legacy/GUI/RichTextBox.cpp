@@ -740,6 +740,9 @@ void RichTextBox::Update()
 	auto size = this->ActualSize();
 	bool isSelected = this->ParentForm->Selected == this;
 	this->_caretRectCacheValid = false;
+	bool shouldDrawCaret = false;
+	D2D1_POINT_2F caretStart{};
+	D2D1_POINT_2F caretEnd{};
 
 	this->BeginRender();
 	{
@@ -771,10 +774,9 @@ void RichTextBox::Update()
 						this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ah + 2.0f };
 						this->_caretRectCacheValid = true;
 					}
-					d2d->DrawLine(
-						{ cx, cy },
-						{ cx, cy + ch },
-						Colors::Black);
+					shouldDrawCaret = true;
+					caretStart = { cx, cy };
+					caretEnd = { cx, cy + ch };
 				}
 
 				float viewTop = this->OffsetY;
@@ -860,10 +862,11 @@ void RichTextBox::Update()
 						this->_caretRectCacheValid = true;
 					}
 					if (!selRange.empty())
-						d2d->DrawLine(
-							{ selRange[0].left + TextMargin, (selRange[0].top + TextMargin) - this->OffsetY },
-							{ selRange[0].left + TextMargin, (selRange[0].top + selRange[0].height + TextMargin) - this->OffsetY },
-							Colors::Black);
+					{
+						shouldDrawCaret = true;
+						caretStart = { selRange[0].left + TextMargin, (selRange[0].top + TextMargin) - this->OffsetY };
+						caretEnd = { selRange[0].left + TextMargin, (selRange[0].top + selRange[0].height + TextMargin) - this->OffsetY };
+					}
 				}
 				if (!selRange.empty())
 				{
@@ -893,11 +896,15 @@ void RichTextBox::Update()
 				auto abs = this->AbsLocation;
 				this->_caretRectCache = { abs.x + lx - 2.0f, abs.y + ly - 2.0f, abs.x + lx + 2.0f, abs.y + ly + ah + 2.0f };
 				this->_caretRectCacheValid = true;
-				d2d->DrawLine(
-					{ lx, ly },
-					{ lx, ly + 16.0f },
-					Colors::Black);
+				shouldDrawCaret = true;
+				caretStart = { lx, ly };
+				caretEnd = { lx, ly + 16.0f };
 			}
+		}
+		UpdateCaretBlinkState(isSelected, this->SelectionStart, this->SelectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
+		if (shouldDrawCaret && IsCaretBlinkVisible())
+		{
+			d2d->DrawLine(caretStart, caretEnd, Colors::Black);
 		}
 		this->DrawScroll();
 		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
@@ -911,11 +918,7 @@ void RichTextBox::Update()
 
 bool RichTextBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 {
-	if (!this->IsSelected()) return false;
-	if (this->SelectionStart != this->SelectionEnd) return false;
-	if (!this->_caretRectCacheValid) return false;
-	outRect = this->_caretRectCache;
-	return true;
+	return GetCaretBlinkInvalidRect(outRect);
 }
 bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {

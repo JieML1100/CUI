@@ -87,6 +87,8 @@ public:
 	CursorKind QueryCursor(int xof, int yof) override;
 	bool HandlesMouseWheel() const override { return true; }
 	bool HandlesNavigationKey(WPARAM key) const override;
+	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
+	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override { return GetCaretBlinkInvalidRect(outRect); }
 	GridView(int x = 0, int y = 0, int width = 120, int height = 20);
 	~GridView() override;
 	/** @brief 表头字体（为空则使用默认字体/继承字体）。 */

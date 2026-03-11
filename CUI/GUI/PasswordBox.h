@@ -17,6 +17,7 @@ public:
 	CursorKind QueryCursor(int xof, int yof) override { (void)xof; (void)yof; return this->Enable ? CursorKind::IBeam : CursorKind::Arrow; }
 	bool HandlesMouseWheel() const override { return true; }
 	bool HandlesNavigationKey(WPARAM key) const override;
+	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	/** @brief 鼠标悬停时背景色（实现可能会用到）。 */
 	D2D1_COLOR_F UnderMouseColor = Colors::White;

@@ -323,6 +323,9 @@ void TextBox::Update()
 	auto size = this->ActualSize();
 	bool isSelected = this->ParentForm->Selected == this;
 	this->_caretRectCacheValid = false;
+	bool shouldDrawCaret = false;
+	D2D1_POINT_2F caretStart{};
+	D2D1_POINT_2F caretEnd{};
 	this->BeginRender();
 	{
 		d2d->FillRect(0, 0, size.cx, size.cy, isSelected ? this->FocusedColor : this->BackColor);
@@ -361,28 +364,31 @@ void TextBox::Update()
 						auto abs = this->AbsLocation;
 						this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ch + 2.0f };
 						this->_caretRectCacheValid = true;
-						d2d->DrawLine(
-							{ selRange[0].left + TextMargin - OffsetX, selRange[0].top + OffsetY },
-							{ selRange[0].left + TextMargin - OffsetX, selRange[0].top + selRange[0].height + OffsetY },
-							Colors::Black);
+						shouldDrawCaret = true;
+						caretStart = { selRange[0].left + TextMargin - OffsetX, selRange[0].top + OffsetY };
+						caretEnd = { selRange[0].left + TextMargin - OffsetX, selRange[0].top + selRange[0].height + OffsetY };
 					}
 				}
 				auto lot = Factory::CreateStringLayout(this->Text, FLT_MAX, render_height, font->FontObject);
-				d2d->DrawStringLayoutEffect(lot,
-					TextMargin - OffsetX, OffsetY,
-					this->ForeColor,
-					DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
-					this->SelectedForeColor,
-					font);
-				lot->Release();
+				if (lot) {
+					d2d->DrawStringLayoutEffect(lot,
+						TextMargin - OffsetX, OffsetY,
+						this->ForeColor,
+						DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
+						this->SelectedForeColor,
+						font);
+					lot->Release();
+				}
 			}
 			else
 			{
 				auto lot = Factory::CreateStringLayout(this->Text, FLT_MAX, render_height, font->FontObject);
-				d2d->DrawStringLayout(lot,
-					TextMargin - OffsetX, OffsetY,
-					this->ForeColor);
-				lot->Release();
+				if (lot) {
+					d2d->DrawStringLayout(lot,
+						TextMargin - OffsetX, OffsetY,
+						this->ForeColor);
+					lot->Release();
+				}
 			}
 		}
 		else
@@ -395,11 +401,15 @@ void TextBox::Update()
 				auto abs = this->AbsLocation;
 				this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ch + 2.0f };
 				this->_caretRectCacheValid = true;
-				d2d->DrawLine(
-					{ (float)TextMargin - OffsetX, OffsetY },
-					{ (float)TextMargin - OffsetX, OffsetY + 16.0f },
-					Colors::Black);
+				shouldDrawCaret = true;
+				caretStart = { (float)TextMargin - OffsetX, OffsetY };
+				caretEnd = { (float)TextMargin - OffsetX, OffsetY + 16.0f };
 			}
+		}
+		UpdateCaretBlinkState(isSelected, this->SelectionStart, this->SelectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
+		if (shouldDrawCaret && IsCaretBlinkVisible())
+		{
+			d2d->DrawLine(caretStart, caretEnd, Colors::Black);
 		}
 		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
 		if (!this->Enable)
@@ -416,11 +426,7 @@ void TextBox::Update()
 
 bool TextBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 {
-	if (!this->IsSelected()) return false;
-	if (this->SelectionStart != this->SelectionEnd) return false;
-	if (!this->_caretRectCacheValid) return false;
-	outRect = this->_caretRectCache;
-	return true;
+	return GetCaretBlinkInvalidRect(outRect);
 }
 bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {

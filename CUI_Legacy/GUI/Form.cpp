@@ -512,9 +512,7 @@ static void DismissComboBoxForegroundOnOutsideMouseDown(Form* f, POINT contentMo
 	{
 		auto* cb = (ComboBox*)f->ForegroundControl;
 		if (!cb->Expand) return;
-		cb->Expand = false;
-		if (f->ForegroundControl == cb)
-			f->ForegroundControl = NULL;
+		cb->SetExpanded(false);
 		cb->PostRender();
 		f->Invalidate(true);
 		return;
@@ -787,13 +785,78 @@ void Form::InvalidateControl(Control* c, int inflatePx, bool immediate)
 	Invalidate(physRc, immediate);
 }
 
+void Form::RefreshAnimationTimer()
+{
+	if (!this->Handle) return;
+
+	bool hasActiveAnimation = false;
+	UINT desiredIntervalMs = 0;
+
+	std::function<void(Control*)> consider;
+	consider = [&](Control* c)
+		{
+			if (!c || !c->Visible || !c->IsVisual) return;
+			if (c->IsAnimationRunning())
+			{
+				hasActiveAnimation = true;
+				UINT interval = c->GetAnimationIntervalMs();
+				if (interval == 0) interval = 16;
+				desiredIntervalMs = desiredIntervalMs == 0 ? interval : (std::min)(desiredIntervalMs, interval);
+			}
+			for (int i = 0; i < c->Count; i++)
+				consider(c->operator[](i));
+		};
+
+	for (auto c : this->Controls) consider(c);
+	if (this->ForegroundControl) consider(this->ForegroundControl);
+	if (this->MainMenu) consider((Control*)this->MainMenu);
+	if (this->MainStatusBar) consider((Control*)this->MainStatusBar);
+
+	if (!hasActiveAnimation)
+	{
+		if (_animIntervalMs != 0)
+		{
+			::KillTimer(this->Handle, _animTimerId);
+			_animIntervalMs = 0;
+		}
+		return;
+	}
+
+	if (_animIntervalMs != desiredIntervalMs)
+	{
+		if (_animIntervalMs != 0)
+			::KillTimer(this->Handle, _animTimerId);
+		_animIntervalMs = desiredIntervalMs;
+		::SetTimer(this->Handle, _animTimerId, _animIntervalMs, NULL);
+	}
+}
+
 void Form::InvalidateAnimatedControls(bool immediate)
 {
 	std::function<void(Control*)> consider;
 	consider = [&](Control* c)
 		{
 			if (!c) return;
-			if (!c->IsVisual) return;
+			if (!c->Visible || !c->IsVisual) return;
+			if (c->IsAnimationRunning())
+			{
+				D2D1_RECT_F rect{};
+				if (c->GetAnimatedInvalidRect(rect))
+				{
+					RECT rc = ToRECT(rect, 2);
+					const float sc = GetDpiScale();
+					RECT physRc;
+					physRc.left = (LONG)std::floor(rc.left * sc);
+					physRc.top = (LONG)std::floor(rc.top * sc) + ClientTop();
+					physRc.right = (LONG)std::ceil(rc.right * sc);
+					physRc.bottom = (LONG)std::ceil(rc.bottom * sc) + ClientTop();
+					Invalidate(physRc, false);
+				}
+				else
+				{
+					InvalidateControl(c, 2, false);
+				}
+			}
 			for (int i = 0; i < c->Count; i++)
 				consider(c->operator[](i));
 		};
@@ -801,6 +864,8 @@ void Form::InvalidateAnimatedControls(bool immediate)
 	// 单一置顶控件 / 主菜单（有可能不在 Controls 容器里，保险起见单独考虑）
 	if (this->ForegroundControl) consider(this->ForegroundControl);
 	if (this->MainMenu) consider((Control*)this->MainMenu);
+	if (this->MainStatusBar) consider((Control*)this->MainStatusBar);
+	RefreshAnimationTimer();
 	if (immediate)
 		::UpdateWindow(this->Handle);
 }
@@ -1840,6 +1905,7 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 
 	this->ControlChanged = false;
 	this->_hasRenderedOnce = true;
+	RefreshAnimationTimer();
 	return true;
 }
 bool Form::ForceUpdate()

@@ -154,7 +154,7 @@ GridView::ScrollLayout GridView::CalcScrollLayout()
 		if (l.RowHeight > 0.0f && contentH > 0.0f)
 			visibleRows = (int)std::ceil(contentH / l.RowHeight) + 1;
 		if (visibleRows < 0) visibleRows = 0;
-		
+
 		// 计算新行区域高度（如果有的话）
 		float newRowAreaHeight = (this->AllowUserToAddRows && this->Columns.Count > 0) ? l.RowHeight : 0.0f;
 		float totalRowsH = (l.RowHeight > 0.0f) ? (l.RowHeight * (float)this->Rows.Count) : 0.0f;
@@ -188,7 +188,7 @@ GridView::ScrollLayout GridView::CalcScrollLayout()
 	float contentH = l.RenderHeight - l.HeadHeight;
 	if (contentH < 0.0f) contentH = 0.0f;
 	l.ContentHeight = contentH;
-	
+
 	// 计算新行区域高度
 	float newRowAreaHeight = (this->AllowUserToAddRows && this->Columns.Count > 0) ? l.RowHeight : 0.0f;
 	l.TotalRowsHeight = (l.RowHeight > 0.0f) ? (l.RowHeight * (float)this->Rows.Count) : 0.0f;
@@ -627,6 +627,7 @@ void GridView::Update()
 	bool isSelected = this->ParentForm->Selected == this;
 	auto d2d = this->ParentForm->Render;
 	auto size = this->ActualSize();
+	bool caretBlinkStateUpdated = false;
 	this->BeginRender();
 	{
 		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
@@ -779,6 +780,8 @@ void GridView::Update()
 										int sele = EditSelectionEnd >= EditSelectionStart ? EditSelectionEnd : EditSelectionStart;
 										int selLen = sele - sels;
 										auto selRange = font->HitTestTextRange(this->EditingText, (UINT32)sels, (UINT32)selLen);
+										bool caretRectValid = false;
+										D2D1_RECT_F caretRect{};
 
 										if (selLen != 0)
 										{
@@ -793,29 +796,50 @@ void GridView::Update()
 										}
 										else
 										{
+											if (!selRange.empty())
+											{
+												const float caretX = selRange[0].left + drawX + this->EditTextMargin - this->EditOffsetX;
+												const float caretTop = (selRange[0].top + yf) + offsetY;
+												const float caretBottom = (selRange[0].top + yf + selRange[0].height) + offsetY;
+												auto abs = this->AbsLocation;
+												caretRect = { abs.x + caretX - 2.0f, abs.y + caretTop - 2.0f, abs.x + caretX + 2.0f, abs.y + caretBottom + 2.0f };
+												caretRectValid = true;
+											}
+										}
+
+										UpdateCaretBlinkState(isSelected, this->EditSelectionStart, this->EditSelectionEnd, caretRectValid, caretRectValid ? &caretRect : nullptr);
+										caretBlinkStateUpdated = true;
+										if (caretRectValid && IsCaretBlinkVisible())
+										{
 											d2d->DrawLine(
-												{ selRange[0].left + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + yf) - offsetY },
-												{ selRange[0].left + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + yf + selRange[0].height) + offsetY },
+												{ caretRect.left - this->AbsLocation.x + 2.0f, caretRect.top - this->AbsLocation.y + 2.0f },
+												{ caretRect.left - this->AbsLocation.x + 2.0f, caretRect.bottom - this->AbsLocation.y - 2.0f },
 												Colors::Black);
 										}
 
+										if (!caretBlinkStateUpdated)
+										{
+											UpdateCaretBlinkState(false, 0, 1, false, nullptr);
+										}
 										auto lot = Factory::CreateStringLayout(this->EditingText, FLT_MAX, renderHeight, font->FontObject);
-										if (selLen != 0)
-										{
-											d2d->DrawStringLayoutEffect(lot,
-												drawX + this->EditTextMargin - this->EditOffsetX, (yf) + offsetY,
-												this->EditForeColor,
-												DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
-												this->EditSelectedForeColor,
-												font);
+										if (lot) {
+											if (selLen != 0)
+											{
+												d2d->DrawStringLayoutEffect(lot,
+													drawX + this->EditTextMargin - this->EditOffsetX, (yf)+offsetY,
+													this->EditForeColor,
+													DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
+													this->EditSelectedForeColor,
+													font);
+											}
+											else
+											{
+												d2d->DrawStringLayout(lot,
+													drawX + this->EditTextMargin - this->EditOffsetX, (yf)+offsetY,
+													this->EditForeColor);
+											}
+											lot->Release();
 										}
-										else
-										{
-											d2d->DrawStringLayout(lot,
-												drawX + this->EditTextMargin - this->EditOffsetX, (yf) + offsetY,
-												this->EditForeColor);
-										}
-										lot->Release();
 									}
 								}
 								else
@@ -899,6 +923,11 @@ void GridView::Update()
 						case ColumnType::ComboBox:
 						{
 							EnsureComboBoxCellDefaultSelection(c, r);
+							const bool suppressCellText =
+								this->_cellComboBox &&
+								(this->_cellComboBox->Expand || this->_cellComboBox->IsAnimationRunning()) &&
+								this->_cellComboBoxColumnIndex == c &&
+								this->_cellComboBoxRowIndex == r;
 							D2D1_COLOR_F back = D2D1_COLOR_F{ 0,0,0,0 };
 							D2D1_COLOR_F border = this->ForeColor;
 							D2D1_COLOR_F fore = this->ForeColor;
@@ -923,7 +952,7 @@ void GridView::Update()
 								d2d->FillRect(drawX, yf, c_width, _r_height, back);
 							d2d->DrawRect(drawX, yf, c_width, _r_height, border,
 								r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
-							if (row.Cells.Count > c)
+							if (!suppressCellText && row.Cells.Count > c)
 							{
 								d2d->DrawString(row.Cells[c].Text,
 									drawX + 4.0f,
@@ -1047,20 +1076,20 @@ void GridView::Update()
 				}
 				yf += row_height;
 			}
-			
+
 			// 渲染新行区域（如果启用）
 			if (this->AllowUserToAddRows && this->Columns.Count > 0)
 			{
 				float newRowY = yf;
 				if (newRowY < head_height) newRowY = head_height;
-				
+
 				// 确保新行在可视区域内
 				if (newRowY < _render_height)
 				{
 					float newRowHeight = row_height;
 					if (newRowY + newRowHeight > _render_height)
 						newRowHeight = _render_height - newRowY;
-					
+
 					if (newRowHeight > 0.0f)
 					{
 						float xf = -this->ScrollXOffset;
@@ -1083,7 +1112,7 @@ void GridView::Update()
 							{
 								// 绘制新行背景
 								d2d->FillRect(drawX, newRowY, c_width, newRowHeight, this->NewRowBackColor);
-								
+
 								// 绘制新行单元格内容（空单元格样式）
 								if (c == 0)
 								{
@@ -1091,13 +1120,13 @@ void GridView::Update()
 									float asteriskSize = font_height * 0.5f;
 									float asteriskX = drawX + text_top;
 									float asteriskY = newRowY + text_top;
-									
+
 									// 绘制星号
 									d2d->DrawString(L"*",
 										asteriskX,
 										asteriskY,
 										this->NewRowIndicatorColor, font);
-									
+
 									// 绘制提示文字
 									std::wstring hintText = L"点击添加新行";
 									auto hintSize = font->GetTextSize(hintText);
@@ -1106,7 +1135,7 @@ void GridView::Update()
 										asteriskY,
 										this->NewRowForeColor, font);
 								}
-								
+
 								// 绘制单元格边框
 								d2d->DrawRect(drawX, newRowY, c_width, newRowHeight, this->NewRowForeColor, 1.0f);
 							}
@@ -1116,7 +1145,7 @@ void GridView::Update()
 					}
 				}
 			}
-			
+
 			d2d->PushDrawRect(
 				0.0f,
 				0.0f,
@@ -1223,7 +1252,7 @@ void GridView::AddNewRow()
 		CellValue cell;
 		newRow.Cells.Add(cell);
 	}
-	
+
 	// 添加到Rows列表
 	int newRowIndex = this->Rows.Count;
 	this->Rows.Add(newRow);
@@ -1333,10 +1362,7 @@ void GridView::CloseComboBoxEditor()
 {
 	if (!this->_cellComboBox) return;
 
-	if (this->ParentForm && this->ParentForm->ForegroundControl == this->_cellComboBox)
-		this->ParentForm->ForegroundControl = NULL;
-
-	this->_cellComboBox->Expand = false;
+	this->_cellComboBox->SetExpanded(false);
 	this->_cellComboBoxColumnIndex = -1;
 	this->_cellComboBoxRowIndex = -1;
 }
@@ -1419,28 +1445,27 @@ void GridView::ToggleComboBoxEditor(int col, int row)
 
 	this->_cellComboBox->OnSelectionChanged.Clear();
 	this->_cellComboBox->OnSelectionChanged += [this, col, row](Control* sender)
-	{
-		(void)sender;
-		if (col < 0 || row < 0) return;
-		if (col >= this->Columns.Count || row >= this->Rows.Count) return;
-		if (this->Columns[col].Type != ColumnType::ComboBox) return;
-		auto& column2 = this->Columns[col];
-		if (!this->_cellComboBox) return;
-		if (column2.ComboBoxItems.Count <= 0) return;
-		int idx = this->_cellComboBox->SelectedIndex;
-		if (idx < 0) idx = 0;
-		if (idx >= column2.ComboBoxItems.Count) idx = column2.ComboBoxItems.Count - 1;
-		auto& cell2 = this->Rows[row].Cells[col];
-		cell2.Tag = (__int64)idx;
-		cell2.Text = column2.ComboBoxItems[idx];
-		this->OnGridViewComboBoxSelectionChanged(this, col, row, idx, cell2.Text);
-		this->PostRender();
-	};
+		{
+			(void)sender;
+			if (col < 0 || row < 0) return;
+			if (col >= this->Columns.Count || row >= this->Rows.Count) return;
+			if (this->Columns[col].Type != ColumnType::ComboBox) return;
+			auto& column2 = this->Columns[col];
+			if (!this->_cellComboBox) return;
+			if (column2.ComboBoxItems.Count <= 0) return;
+			int idx = this->_cellComboBox->SelectedIndex;
+			if (idx < 0) idx = 0;
+			if (idx >= column2.ComboBoxItems.Count) idx = column2.ComboBoxItems.Count - 1;
+			auto& cell2 = this->Rows[row].Cells[col];
+			cell2.Tag = (__int64)idx;
+			cell2.Text = column2.ComboBoxItems[idx];
+			this->OnGridViewComboBoxSelectionChanged(this, col, row, idx, cell2.Text);
+			this->PostRender();
+		};
 
 	this->_cellComboBoxColumnIndex = col;
 	this->_cellComboBoxRowIndex = row;
-	this->_cellComboBox->Expand = true;
-	this->ParentForm->ForegroundControl = this->_cellComboBox;
+	this->_cellComboBox->SetExpanded(true);
 	this->ParentForm->Invalidate(true);
 	this->PostRender();
 }

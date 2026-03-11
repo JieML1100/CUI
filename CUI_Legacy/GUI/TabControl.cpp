@@ -2,6 +2,8 @@
 #include "TabControl.h"
 #include "Panel.h"
 #include "Form.h"
+#include <algorithm>
+#include <cmath>
 #pragma comment(lib, "Imm32.lib")
 
 UIClass TabPage::Type() { return UIClass::UI_TabPage; }
@@ -21,6 +23,12 @@ TabControl::TabControl(int x, int y, int width, int height)
 	this->Size = SIZE{ width,height };
 }
 
+static float EaseOutCubic01(float t)
+{
+	t = (std::clamp)(t, 0.0f, 1.0f);
+	return 1.0f - std::pow(1.0f - t, 3.0f);
+}
+
 static void SyncNativeChildWindowsRecursive(Control* root)
 {
 	(void)root;
@@ -37,6 +45,143 @@ static void SyncNativeChildWindowsForAllPages(TabControl* tc)
 	}
 }
 
+void TabControl::ClampSelectedIndex()
+{
+	if (this->Count <= 0)
+	{
+		this->SelectedIndex = 0;
+		return;
+	}
+	if (this->SelectedIndex < 0) this->SelectedIndex = 0;
+	if (this->SelectedIndex >= this->Count) this->SelectedIndex = this->Count - 1;
+}
+
+void TabControl::LayoutPage(TabPage* page, int offsetX)
+{
+	if (!page) return;
+	page->SetRuntimeLocation(POINT{ offsetX, this->TitleHeight });
+	SIZE s = this->Size;
+	s.cy = std::max(0L, s.cy - this->TitleHeight);
+	page->Size = s;
+}
+
+void TabControl::SyncPageVisibility()
+{
+	for (int i = 0; i < this->Count; i++)
+	{
+		auto* page = this->operator[](i);
+		if (!page) continue;
+		if (_animating)
+			page->Visible = (i == _animFromIndex || i == _animToIndex);
+		else
+			page->Visible = (i == _displayIndex);
+	}
+}
+
+void TabControl::FinishTransition()
+{
+	if (this->Count <= 0)
+	{
+		_animating = false;
+		_animFromIndex = -1;
+		_animToIndex = -1;
+		_displayIndex = -1;
+		return;
+	}
+	ClampSelectedIndex();
+	_animating = false;
+	_animProgress = 1.0f;
+	_displayIndex = this->SelectedIndex;
+	_animFromIndex = _displayIndex;
+	_animToIndex = _displayIndex;
+	SyncPageVisibility();
+	if (_displayIndex >= 0 && _displayIndex < this->Count)
+		LayoutPage((TabPage*)this->operator[](_displayIndex), 0);
+	SyncNativeChildWindowsForAllPages(this);
+	_lastSelectIndex = _displayIndex;
+}
+
+void TabControl::StartTransitionTo(int newIndex)
+{
+	if (this->Count <= 0)
+	{
+		this->SelectedIndex = 0;
+		FinishTransition();
+		return;
+	}
+	if (_animating)
+		FinishTransition();
+	if (_displayIndex < 0 || _displayIndex >= this->Count)
+		_displayIndex = (std::clamp)(this->SelectedIndex, 0, this->Count - 1);
+	newIndex = (std::clamp)(newIndex, 0, this->Count - 1);
+	this->SelectedIndex = newIndex;
+	if (this->AnimationMode == TabControlAnimationMode::DirectReplace || _displayIndex == newIndex)
+	{
+		FinishTransition();
+		return;
+	}
+	_animFromIndex = _displayIndex;
+	_animToIndex = newIndex;
+	_animStartTick = ::GetTickCount64();
+	_animProgress = 0.0f;
+	_animating = true;
+	SyncPageVisibility();
+	LayoutPage((TabPage*)this->operator[](_animFromIndex), 0);
+	LayoutPage((TabPage*)this->operator[](_animToIndex), 0);
+	SyncNativeChildWindowsForAllPages(this);
+	_lastSelectIndex = -1;
+}
+
+void TabControl::EnsureSelectionState()
+{
+	if (this->Count <= 0)
+	{
+		_displayIndex = -1;
+		_animating = false;
+		return;
+	}
+	ClampSelectedIndex();
+	if (_displayIndex < 0 || _displayIndex >= this->Count)
+		_displayIndex = this->SelectedIndex;
+	if (_animating)
+	{
+		CurrentTransitionProgress();
+		return;
+	}
+	if (this->SelectedIndex != _displayIndex)
+		StartTransitionTo(this->SelectedIndex);
+	else
+		SyncPageVisibility();
+}
+
+float TabControl::CurrentTransitionProgress()
+{
+	if (!_animating) return _animProgress;
+	const ULONGLONG now = ::GetTickCount64();
+	const ULONGLONG elapsed = now >= _animStartTick ? (now - _animStartTick) : 0;
+	float t = _animDurationMs > 0 ? (float)elapsed / (float)_animDurationMs : 1.0f;
+	if (t >= 1.0f)
+	{
+		FinishTransition();
+		return 1.0f;
+	}
+	_animProgress = EaseOutCubic01(t);
+	return _animProgress;
+}
+
+bool TabControl::IsAnimationRunning()
+{
+	EnsureSelectionState();
+	return _animating;
+}
+
+bool TabControl::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
+{
+	if (!IsAnimationRunning()) return false;
+	outRect = this->AbsRect;
+	return true;
+}
+
 TabPage* TabControl::AddPage(std::wstring name)
 {
 	TabPage* result = this->AddControl(new TabPage(name));
@@ -51,6 +196,10 @@ TabPage* TabControl::AddPage(std::wstring name)
 	{
 		this->operator[](i)->Visible = (this->SelectedIndex == i);
 	}
+	_displayIndex = (std::clamp)(this->SelectedIndex, 0, this->Count - 1);
+	_animFromIndex = _displayIndex;
+	_animToIndex = _displayIndex;
+	_animating = false;
 	// 新增页后也同步一次原生子窗口（避免被隐藏页“遗留显示”）
 	SyncNativeChildWindowsForAllPages(this);
 	return result;
@@ -66,11 +215,10 @@ GET_CPP(TabControl, List<Control*>&, Pages)
 void TabControl::Update()
 {
 	if (this->IsVisual == false)return;
-	bool isUnderMouse = this->ParentForm->UnderMouse == this;
-	bool isSelected = this->ParentForm->Selected == this;
 	auto d2d = this->ParentForm->Render;
 	auto font = this->Font;
 	auto size = this->ActualSize();
+	EnsureSelectionState();
 	this->BeginRender();
 	{
 		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
@@ -81,12 +229,10 @@ void TabControl::Update()
 		
 		if (this->Count > 0)
 		{
-			if (this->SelectedIndex < 0)this->SelectedIndex = 0;
-			if (this->SelectedIndex >= this->Count)this->SelectedIndex = this->Count - 1;
+			ClampSelectedIndex();
 
 			for (int i = 0; i < this->Count; i++)
 			{
-				this->operator[](i)->Visible = this->SelectedIndex == i;
 				auto textsize = font->GetTextSize(this->operator[](i)->Text);
 				float lf = (TitleWidth - textsize.width) / 2.0f;
 				if (lf < 0)lf = 0;
@@ -101,19 +247,35 @@ void TabControl::Update()
 				d2d->DrawRect((TitleWidth * i), 0, TitleWidth, TitleHeight, this->BolderColor, this->Boder);
 				d2d->PopDrawRect();
 			}
-			TabPage* page = (TabPage*)this->operator[](this->SelectedIndex);
-			page->SetRuntimeLocation(POINT{ 0,(int)this->TitleHeight });
+			const float contentHeight = (float)std::max(0L, size.cy - this->TitleHeight);
+			if (contentHeight > 0.0f)
 			{
-				SIZE s = this->Size;
-				s.cy = std::max(0L, s.cy - this->TitleHeight);
-				page->Size = s;
-			}
-			page->Update();
-
-			if (this->_lastSelectIndex != this->SelectedIndex)
-			{
-				SyncNativeChildWindowsForAllPages(this);
-				this->_lastSelectIndex = this->SelectedIndex;
+				d2d->PushDrawRect(0.0f, (float)this->TitleHeight, (float)size.cx, contentHeight);
+				if (_animating && this->AnimationMode == TabControlAnimationMode::SlideHorizontal &&
+					_animFromIndex >= 0 && _animFromIndex < this->Count && _animToIndex >= 0 && _animToIndex < this->Count)
+				{
+					const float progress = CurrentTransitionProgress();
+					const int direction = (_animToIndex >= _animFromIndex) ? 1 : -1;
+					const int contentWidth = size.cx;
+					auto* fromPage = (TabPage*)this->operator[](_animFromIndex);
+					auto* toPage = (TabPage*)this->operator[](_animToIndex);
+					LayoutPage(fromPage, (int)std::lround(-(float)direction * progress * contentWidth));
+					LayoutPage(toPage, (int)std::lround((float)direction * (1.0f - progress) * contentWidth));
+					fromPage->Update();
+					toPage->Update();
+				}
+				else if (_displayIndex >= 0 && _displayIndex < this->Count)
+				{
+					auto* page = (TabPage*)this->operator[](_displayIndex);
+					LayoutPage(page, 0);
+					page->Update();
+					if (this->_lastSelectIndex != _displayIndex)
+					{
+						SyncNativeChildWindowsForAllPages(this);
+						this->_lastSelectIndex = _displayIndex;
+					}
+				}
+				d2d->PopDrawRect();
 			}
 		}
 		d2d->DrawRect(0, this->TitleHeight, size.cx, size.cy - this->TitleHeight, this->BolderColor, this->Boder);
@@ -139,9 +301,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 
 	if (this->Count > 0)
 	{
-		if (this->SelectedIndex < 0)this->SelectedIndex = 0;
-		if (this->SelectedIndex >= this->Count)this->SelectedIndex = this->Count - 1;
-		TabPage* page = (TabPage*)this->operator[](this->SelectedIndex);
+		EnsureSelectionState();
 
 		// 先处理标题栏点击（切换页）：
 		if (message == WM_LBUTTONDOWN && yof < this->TitleHeight)
@@ -152,16 +312,9 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 				if (this->SelectedIndex != newSelected)
 				{
 					this->SelectedIndex = newSelected;
+					StartTransitionTo(newSelected);
 					this->OnSelectedChanged(this);
 				}
-				for (int i = 0; i < this->Count; i++)
-				{
-					this->operator[](i)->Visible = (i == this->SelectedIndex);
-				}
-
-				// 同步隐藏页的 WebBrowser 之类的原生子窗口
-				SyncNativeChildWindowsForAllPages(this);
-				this->_lastSelectIndex = this->SelectedIndex;
 
 				this->_capturedChild = NULL;
 				if (GetCapture() == this->ParentForm->Handle)
@@ -172,6 +325,9 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 
 		// Content 区域坐标
 		const int cy = yof - this->TitleHeight;
+		TabPage* page = (_displayIndex >= 0 && _displayIndex < this->Count)
+			? (TabPage*)this->operator[](_displayIndex)
+			: (TabPage*)this->operator[](this->SelectedIndex);
 
 		auto forwardToChild = [&](Control* c)
 			{
@@ -182,7 +338,16 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 
 		// 鼠标按住期间：持续转发到按下时命中的子控件（解决拖动/松开丢失）
 		bool mousePressed = (wParam & MK_LBUTTON) || (wParam & MK_RBUTTON) || (wParam & MK_MBUTTON);
-		if ((message == WM_MOUSEMOVE || message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP) && this->_capturedChild)
+		if (_animating)
+		{
+			if (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP)
+			{
+				this->_capturedChild = NULL;
+				if (GetCapture() == this->ParentForm->Handle)
+					ReleaseCapture();
+			}
+		}
+		else if ((message == WM_MOUSEMOVE || message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP) && this->_capturedChild)
 		{
 			forwardToChild(this->_capturedChild);
 			if (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP)

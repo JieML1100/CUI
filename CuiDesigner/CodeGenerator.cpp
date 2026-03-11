@@ -760,6 +760,8 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 			}
 			code << indentStr << name << "->SelectedIndex = " << cb->SelectedIndex << ";\n";
 		}
+		if (cb->ExpandCount != 4)
+			code << indentStr << name << "->ExpandCount = " << cb->ExpandCount << ";\n";
 	}
 
 	// ProgressBar
@@ -918,6 +920,8 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	if (dc->Type == UIClass::UI_TabControl)
 	{
 		auto* tc = (TabControl*)ctrl;
+		if (tc->AnimationMode != TabControlAnimationMode::DirectReplace)
+			code << indentStr << name << "->AnimationMode = static_cast<TabControlAnimationMode>(" << (int)tc->AnimationMode << ");\n";
 		code << indentStr << name << "->SelectedIndex = " << tc->SelectedIndex << ";\n";
 	}
 

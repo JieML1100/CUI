@@ -19,6 +19,12 @@ public:
 	TabPage(std::wstring text);
 };
 
+enum class TabControlAnimationMode
+{
+	DirectReplace = 0,
+	SlideHorizontal = 1,
+};
+
 /**
  * @brief TabControl：带标题栏的分页容器。
  *
@@ -32,6 +38,7 @@ public:
 	virtual UIClass Type();
 	D2D1_COLOR_F TitleBackColor = Colors::LightYellow3;
 	D2D1_COLOR_F SelectedTitleBackColor = Colors::LightYellow1;
+	TabControlAnimationMode AnimationMode = TabControlAnimationMode::DirectReplace;
 	/** @brief 当前选中页索引（0-based）。 */
 	int SelectedIndex = 0;
 	/** @brief 标题栏高度（像素）。 */
@@ -39,6 +46,9 @@ public:
 	/** @brief 单个标题宽度（像素）。 */
 	int TitleWidth = 120;
 	float Boder = 1.5f;
+	bool IsAnimationRunning() override;
+	UINT GetAnimationIntervalMs() override { return 16; }
+	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	READONLY_PROPERTY(int, PageCount);
 	GET(int, PageCount);
 	READONLY_PROPERTY(List<Control*>&, Pages);
@@ -62,4 +72,18 @@ private:
 
 	// 记录上一次选择页，用于在 Update 中检测程序切换页并同步原生子窗口控件（如 WebBrowser）
 	int _lastSelectIndex = -1;
+	int _displayIndex = -1;
+	int _animFromIndex = -1;
+	int _animToIndex = -1;
+	ULONGLONG _animStartTick = 0;
+	UINT _animDurationMs = 180;
+	float _animProgress = 1.0f;
+	bool _animating = false;
+	void ClampSelectedIndex();
+	void LayoutPage(TabPage* page, int offsetX);
+	void SyncPageVisibility();
+	void FinishTransition();
+	void StartTransitionTo(int newIndex);
+	void EnsureSelectionState();
+	float CurrentTransitionProgress();
 };

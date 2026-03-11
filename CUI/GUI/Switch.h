@@ -13,6 +13,15 @@
 class Switch : public Control
 {
 	float last_width = 0.0f;
+	float _thumbProgress = 0.0f;
+	float _animStartProgress = 0.0f;
+	float _animTargetProgress = 0.0f;
+	ULONGLONG _animStartTick = 0;
+	UINT _animDurationMs = 140;
+	bool _animating = false;
+	void SyncAnimationState();
+	void StartToggleAnimation(bool checked);
+	float CurrentThumbProgress();
 public:
 	virtual UIClass Type();
 	/** @brief 鼠标悬停时的高亮色。 */
@@ -21,6 +30,9 @@ public:
 	float Boder = 1.5f;
 	/** @brief 创建开关。 */
 	Switch(int x = 0, int y = 0, int width = 60, int height = 22);
+	bool IsAnimationRunning() override;
+	UINT GetAnimationIntervalMs() override { return 16; }
+	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 };

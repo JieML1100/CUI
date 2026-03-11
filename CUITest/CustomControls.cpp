@@ -56,21 +56,25 @@ void CustomTextBox1::Update()
 						Colors::Black);
 				}
 				auto lot = Factory::CreateStringLayout(this->Text, FLT_MAX, render_height, font->FontObject);
-				d2d->DrawStringLayoutEffect(lot,
-					TextMargin - OffsetX, OffsetY,
-					brush,
-					DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
-					this->SelectedForeColor,
-					font);
-				lot->Release();
+				if (lot) {
+					d2d->DrawStringLayoutEffect(lot,
+						TextMargin - OffsetX, OffsetY,
+						brush,
+						DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
+						this->SelectedForeColor,
+						font);
+					lot->Release();
+				}
 			}
 			else
 			{
 				auto lot = Factory::CreateStringLayout(this->Text, FLT_MAX, render_height, font->FontObject);
-				d2d->DrawStringLayout(lot,
-					TextMargin - OffsetX, OffsetY,
-					brush);
-				lot->Release();
+				if (lot) {
+					d2d->DrawStringLayout(lot,
+						TextMargin - OffsetX, OffsetY,
+						brush);
+					lot->Release();
+				}
 			}
 		}
 		else

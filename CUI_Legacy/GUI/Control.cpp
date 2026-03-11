@@ -1,6 +1,7 @@
 ﻿#include "Control.h"
 #include "Form.h"
 #include "Panel.h"
+#include <cmath>
 
 #pragma warning(disable: 4267)
 #pragma warning(disable: 4244)
@@ -107,6 +108,74 @@ void Control::PostRender()
 
 	_lastPostRenderClientRect = r;
 	_hasLastPostRenderClientRect = true;
+}
+
+void Control::UpdateCaretBlinkState(bool focused, int selectionStart, int selectionEnd, bool caretRectValid, const D2D1_RECT_F* caretRect)
+{
+	bool needReset = false;
+	if (focused != _caretBlinkFocused)
+		needReset = focused;
+	if (selectionStart != _caretBlinkSelectionStart || selectionEnd != _caretBlinkSelectionEnd)
+		needReset = true;
+	if (caretRectValid != _caretBlinkRectValid)
+		needReset = true;
+	if (caretRectValid && caretRect)
+	{
+		if (!_caretBlinkRectValid ||
+			std::fabs(_caretBlinkRect.left - caretRect->left) > 0.1f ||
+			std::fabs(_caretBlinkRect.top - caretRect->top) > 0.1f ||
+			std::fabs(_caretBlinkRect.right - caretRect->right) > 0.1f ||
+			std::fabs(_caretBlinkRect.bottom - caretRect->bottom) > 0.1f)
+		{
+			needReset = true;
+		}
+		_caretBlinkRect = *caretRect;
+	}
+	else
+	{
+		_caretBlinkRect = { 0,0,0,0 };
+	}
+
+	_caretBlinkFocused = focused;
+	_caretBlinkSelectionStart = selectionStart;
+	_caretBlinkSelectionEnd = selectionEnd;
+	_caretBlinkRectValid = caretRectValid;
+
+	if (needReset || _caretBlinkResetTick == 0)
+		_caretBlinkResetTick = ::GetTickCount64();
+}
+
+bool Control::IsCaretBlinkVisible() const
+{
+	if (!_caretBlinkFocused) return false;
+	if (!_caretBlinkRectValid) return false;
+	if (_caretBlinkSelectionStart != _caretBlinkSelectionEnd) return false;
+
+	const UINT blinkTime = ::GetCaretBlinkTime();
+	if (blinkTime == INFINITE || blinkTime == 0)
+		return true;
+
+	const ULONGLONG elapsed = ::GetTickCount64() - _caretBlinkResetTick;
+	return ((elapsed / blinkTime) % 2ULL) == 0;
+}
+
+bool Control::IsCaretBlinkAnimating() const
+{
+	if (!_caretBlinkFocused) return false;
+	if (!_caretBlinkRectValid) return false;
+	if (_caretBlinkSelectionStart != _caretBlinkSelectionEnd) return false;
+
+	const UINT blinkTime = ::GetCaretBlinkTime();
+	return blinkTime != 0 && blinkTime != INFINITE;
+}
+
+bool Control::GetCaretBlinkInvalidRect(D2D1_RECT_F& outRect) const
+{
+	if (!_caretBlinkFocused) return false;
+	if (!_caretBlinkRectValid) return false;
+	if (_caretBlinkSelectionStart != _caretBlinkSelectionEnd) return false;
+	outRect = _caretBlinkRect;
+	return true;
 }
 
 GET_CPP(Control, class Font*, Font)

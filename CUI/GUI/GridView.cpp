@@ -627,6 +627,7 @@ void GridView::Update()
 	bool isSelected = this->ParentForm->Selected == this;
 	auto d2d = this->ParentForm->Render;
 	auto size = this->ActualSize();
+	bool caretBlinkStateUpdated = false;
 	this->BeginRender();
 	{
 		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
@@ -779,6 +780,8 @@ void GridView::Update()
 										int sele = EditSelectionEnd >= EditSelectionStart ? EditSelectionEnd : EditSelectionStart;
 										int selLen = sele - sels;
 										auto selRange = font->HitTestTextRange(this->EditingText, (UINT32)sels, (UINT32)selLen);
+										bool caretRectValid = false;
+										D2D1_RECT_F caretRect{};
 
 										if (selLen != 0)
 										{
@@ -793,29 +796,50 @@ void GridView::Update()
 										}
 										else
 										{
+											if (!selRange.empty())
+											{
+												const float caretX = selRange[0].left + drawX + this->EditTextMargin - this->EditOffsetX;
+												const float caretTop = (selRange[0].top + yf) + offsetY;
+												const float caretBottom = (selRange[0].top + yf + selRange[0].height) + offsetY;
+												auto abs = this->AbsLocation;
+												caretRect = { abs.x + caretX - 2.0f, abs.y + caretTop - 2.0f, abs.x + caretX + 2.0f, abs.y + caretBottom + 2.0f };
+												caretRectValid = true;
+											}
+										}
+
+										UpdateCaretBlinkState(isSelected, this->EditSelectionStart, this->EditSelectionEnd, caretRectValid, caretRectValid ? &caretRect : nullptr);
+										caretBlinkStateUpdated = true;
+										if (caretRectValid && IsCaretBlinkVisible())
+										{
 											d2d->DrawLine(
-												{ selRange[0].left + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + yf) - offsetY },
-												{ selRange[0].left + drawX + this->EditTextMargin - this->EditOffsetX,(selRange[0].top + yf + selRange[0].height) + offsetY },
+												{ caretRect.left - this->AbsLocation.x + 2.0f, caretRect.top - this->AbsLocation.y + 2.0f },
+												{ caretRect.left - this->AbsLocation.x + 2.0f, caretRect.bottom - this->AbsLocation.y - 2.0f },
 												Colors::Black);
 										}
 
 										auto lot = Factory::CreateStringLayout(this->EditingText, FLT_MAX, renderHeight, font->FontObject);
-										if (selLen != 0)
-										{
-											d2d->DrawStringLayoutEffect(lot,
-												drawX + this->EditTextMargin - this->EditOffsetX, (yf) + offsetY,
-												this->EditForeColor,
-												DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
-												this->EditSelectedForeColor,
-												font);
+										if (lot) {
+											if (selLen != 0)
+											{
+												if (!caretBlinkStateUpdated)
+												{
+													UpdateCaretBlinkState(false, 0, 1, false, nullptr);
+												}
+												d2d->DrawStringLayoutEffect(lot,
+													drawX + this->EditTextMargin - this->EditOffsetX, (yf)+offsetY,
+													this->EditForeColor,
+													DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
+													this->EditSelectedForeColor,
+													font);
+											}
+											else
+											{
+												d2d->DrawStringLayout(lot,
+													drawX + this->EditTextMargin - this->EditOffsetX, (yf)+offsetY,
+													this->EditForeColor);
+											}
+											lot->Release();
 										}
-										else
-										{
-											d2d->DrawStringLayout(lot,
-												drawX + this->EditTextMargin - this->EditOffsetX, (yf) + offsetY,
-												this->EditForeColor);
-										}
-										lot->Release();
 									}
 								}
 								else
@@ -899,6 +923,11 @@ void GridView::Update()
 						case ColumnType::ComboBox:
 						{
 							EnsureComboBoxCellDefaultSelection(c, r);
+							const bool suppressCellText =
+								this->_cellComboBox &&
+								(this->_cellComboBox->Expand || this->_cellComboBox->IsAnimationRunning()) &&
+								this->_cellComboBoxColumnIndex == c &&
+								this->_cellComboBoxRowIndex == r;
 							D2D1_COLOR_F back = D2D1_COLOR_F{ 0,0,0,0 };
 							D2D1_COLOR_F border = this->ForeColor;
 							D2D1_COLOR_F fore = this->ForeColor;
@@ -923,7 +952,7 @@ void GridView::Update()
 								d2d->FillRect(drawX, yf, c_width, _r_height, back);
 							d2d->DrawRect(drawX, yf, c_width, _r_height, border,
 								r == this->UnderMouseRowIndex ? 1.0f : 0.5f);
-							if (row.Cells.Count > c)
+							if (!suppressCellText && row.Cells.Count > c)
 							{
 								d2d->DrawString(row.Cells[c].Text,
 									drawX + 4.0f,
@@ -1336,7 +1365,7 @@ void GridView::CloseComboBoxEditor()
 	if (this->ParentForm && this->ParentForm->ForegroundControl == this->_cellComboBox)
 		this->ParentForm->ForegroundControl = NULL;
 
-	this->_cellComboBox->Expand = false;
+	this->_cellComboBox->SetExpanded(false);
 	this->_cellComboBoxColumnIndex = -1;
 	this->_cellComboBoxRowIndex = -1;
 }
@@ -1439,7 +1468,7 @@ void GridView::ToggleComboBoxEditor(int col, int row)
 
 	this->_cellComboBoxColumnIndex = col;
 	this->_cellComboBoxRowIndex = row;
-	this->_cellComboBox->Expand = true;
+	this->_cellComboBox->SetExpanded(true);
 	this->ParentForm->ForegroundControl = this->_cellComboBox;
 	this->ParentForm->Invalidate(true);
 	this->PostRender();

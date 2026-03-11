@@ -371,7 +371,7 @@ void DemoWindow::BuildTabs()
 	_tabs->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.0f };
 	_tabs->Margin = Thickness(10, (float)(_topSlider->Bottom + 8), 10, 40);
 	_tabs->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
-
+	_tabs->AnimationMode = TabControlAnimationMode::SlideHorizontal;
 	auto pBasic = _tabs->AddPage(L"基础控件");
 	auto pContainers = _tabs->AddPage(L"容器与图像");
 	auto pData = _tabs->AddPage(L"数据控件");

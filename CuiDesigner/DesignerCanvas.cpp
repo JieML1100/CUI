@@ -1248,26 +1248,7 @@ bool DesignerCanvas::TryHandleTabHeaderClick(POINT ptCanvas)
 	if (idx < 0) idx = 0;
 	if (idx >= bestTc->Count) idx = bestTc->Count - 1;
 
-	int oldIdx = bestTc->SelectedIndex;
 	bestTc->SelectedIndex = idx;
-	for (int i = 0; i < bestTc->Count; i++)
-	{
-		auto* page = bestTc->operator[](i);
-		if (!page) continue;
-		page->Visible = (i == bestTc->SelectedIndex);
-		if (i == bestTc->SelectedIndex)
-		{
-			page->SetRuntimeLocation(POINT{ 0,(int)bestTc->TitleHeight });
-			SIZE s = bestTc->Size;
-			s.cy = std::max(0L, s.cy - bestTc->TitleHeight);
-			page->Size = s;
-			if (auto* p = dynamic_cast<Panel*>(page))
-			{
-				p->InvalidateLayout();
-				p->PerformLayout();
-			}
-		}
-	}
 	bestTc->PostRender();
 
 	// 切页后：清除之前页上选中的控件，避免选框残留；并把 TabControl 设为当前选中。
@@ -3087,6 +3068,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 				for (int i = 0; i < cb->Items.Count; i++)
 					items.push_back(ToUtf8(cb->Items[i]));
 				extra["items"] = items;
+				extra["expandCount"] = cb->ExpandCount;
 				extra["selectedIndex"] = cb->SelectedIndex;
 			}
 			else if (dc->Type == UIClass::UI_ProgressBar)
@@ -3152,6 +3134,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 				extra["selectedIndex"] = tc->SelectedIndex;
 				extra["titleHeight"] = tc->TitleHeight;
 				extra["titleWidth"] = tc->TitleWidth;
+				extra["animationMode"] = (int)tc->AnimationMode;
 				Json pages = Json::array();
 				for (int i = 0; i < tc->Count; i++)
 				{
@@ -3572,6 +3555,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 					tc->SelectedIndex = it.extra.value("selectedIndex", tc->SelectedIndex);
 					tc->TitleHeight = it.extra.value("titleHeight", tc->TitleHeight);
 					tc->TitleWidth = it.extra.value("titleWidth", tc->TitleWidth);
+					tc->AnimationMode = (TabControlAnimationMode)it.extra.value("animationMode", (int)tc->AnimationMode);
 					if (it.extra.contains("pages") && it.extra["pages"].is_array())
 					{
 						for (auto& pj : it.extra["pages"])
@@ -3640,6 +3624,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 						for (auto& sj : it.extra["items"])
 							if (sj.is_string()) cb->Items.Add(FromUtf8(sj.get<std::string>()));
 					}
+					cb->ExpandCount = std::max(1, it.extra.value("expandCount", cb->ExpandCount));
 					cb->SelectedIndex = it.extra.value("selectedIndex", cb->SelectedIndex);
 					if (cb->Items.Count > 0 && cb->SelectedIndex >= 0 && cb->SelectedIndex < cb->Items.Count)
 						cb->Text = cb->Items[cb->SelectedIndex];

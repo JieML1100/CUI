@@ -21,9 +21,19 @@ public:
 	const BitmapSource* ImageCacheSource = nullptr;
 	std::wstring Text = L"";
 	List<TreeNode*> Children;
-	bool Expand = false; 
+	bool Expand = false;
+	float ExpandProgress = 0.0f;
+	float AnimStartProgress = 0.0f;
+	float AnimTargetProgress = 0.0f;
+	ULONGLONG AnimStartTick = 0;
+	UINT AnimDurationMs = 140;
+	bool Animating = false;
 	TreeNode(std::wstring text, std::shared_ptr<BitmapSource> image = nullptr);
 	ID2D1Bitmap* GetImageBitmap(D2DGraphics* render);
+	float CurrentExpandProgress();
+	void SetExpanded(bool expanded);
+	bool IsAnimationRunning();
+	float AnimatedVisibleCount();
 	~TreeNode();
 	/** @brief 展开状态下可渲染的总节点数量（含子树）。 */
 	int UnfoldedCount();
@@ -41,12 +51,16 @@ class TreeView : public Control
 private:
 	bool isDraggingScroll = false;
 	float _scrollThumbGrabOffsetY = 0.0f;
+	float _contentRenderItems = 0.0f;
 	void UpdateScrollDrag(float posY);
 	void DrawScroll();
 public:
 	virtual UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
 	bool HandlesMouseWheel() const override { return true; }
+	bool IsAnimationRunning() override;
+	UINT GetAnimationIntervalMs() override { return 16; }
+	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	/** @brief 根节点（所有权由 TreeView 管理，见实现）。 */
 	TreeNode* Root = NULL;
 	/** @brief 当前选中节点。 */

@@ -106,6 +106,7 @@ private:
 	UINT_PTR _animTimerId = 0xC001;
 	UINT _animIntervalMs = 0;
 	bool _hasRenderedOnce = false;
+	void RefreshAnimationTimer();
 	void InvalidateControl(class Control* c, int inflatePx = 2, bool immediate = false);
 	void InvalidateAnimatedControls(bool immediate = false);
 	static bool RectIntersects(const RECT& a, const RECT& b);

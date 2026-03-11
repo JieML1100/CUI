@@ -19,12 +19,29 @@ private:
 	int _underMouseIndex = -1;
 	bool isDraggingScroll = false;
 	float _scrollThumbGrabOffsetY = 0.0f;
+	float _dropProgress = 0.0f;
+	float _animStartProgress = 0.0f;
+	float _animTargetProgress = 0.0f;
+	ULONGLONG _animStartTick = 0;
+	UINT _animDurationMs = 140;
+	bool _animating = false;
 	void UpdateScrollDrag(float posY);
+	int VisibleItemCount();
+	float FullDropdownHeight();
+	float CurrentDropProgress();
+	float CurrentDropdownHeight();
+	bool IsDropDownVisible();
+	bool IsDropDownInteractive();
+	void EnsureSelectionInRange();
+	void EnsureScrollInRange();
 	List<std::wstring> values;
 public:
 	virtual UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
 	bool HandlesMouseWheel() const override { return true; }
+	bool IsAnimationRunning() override;
+	UINT GetAnimationIntervalMs() override { return 16; }
+	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	D2D1_COLOR_F UnderMouseBackColor = Colors::SkyBlue;
 	D2D1_COLOR_F UnderMouseForeColor = Colors::White;
 	D2D1_COLOR_F ScrollBackColor = Colors::LightGray;
@@ -32,7 +49,7 @@ public:
 	D2D1_COLOR_F ButtonBackColor = Colors::SkyBlue;
 	/** @brief 选择变化事件。 */
 	SelectionChangedEvent OnSelectionChanged;
-	/** @brief 展开状态下最多显示的条目数量（不含滚动）。 */
+	/** @brief 下拉状态下最多显示的条目数量。实际可见项数会被 Items.Count 截断。 */
 	int ExpandCount = 4;
 	/** @brief 展开状态下的滚动偏移（按条目计）。 */
 	int ExpandScroll = 0;
@@ -46,6 +63,7 @@ public:
 	float Boder = 1.5f;
 	/** @brief 创建 ComboBox。 */
 	ComboBox(std::wstring text, int x, int y, int width = 120, int height = 24);
+	void SetExpanded(bool expanded);
 	SIZE ActualSize() override;
 	void DrawScroll();
 	void Update() override;

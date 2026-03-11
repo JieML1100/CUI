@@ -165,6 +165,12 @@ protected:
 	bool _ownsFont = false;
 	D2D1_RECT_F _lastPostRenderClientRect{ 0,0,0,0 };
 	bool _hasLastPostRenderClientRect = false;
+	D2D1_RECT_F _caretBlinkRect{ 0,0,0,0 };
+	bool _caretBlinkRectValid = false;
+	int _caretBlinkSelectionStart = 0;
+	int _caretBlinkSelectionEnd = 0;
+	bool _caretBlinkFocused = false;
+	ULONGLONG _caretBlinkResetTick = 0;
 	
 	// 布局属性
 	POINT _location = { 0,0 };
@@ -206,6 +212,11 @@ protected:
 		_layoutBaseSize = value;
 		_layoutBaseInitialized = true;
 	}
+
+	void UpdateCaretBlinkState(bool focused, int selectionStart, int selectionEnd, bool caretRectValid, const D2D1_RECT_F* caretRect = nullptr);
+	bool IsCaretBlinkVisible() const;
+	bool IsCaretBlinkAnimating() const;
+	bool GetCaretBlinkInvalidRect(D2D1_RECT_F& outRect) const;
 
 	// 通知父容器（Panel 或 Form）需要重新布局
 	void RequestLayout();
@@ -290,6 +301,10 @@ public:
 	void EndRender();
 	/** @brief 渲染完成后的后处理（例如动画/失效区域上报）。 */
 	virtual void PostRender();
+	/** @brief 当前控件是否处于活动动画中。 */
+	virtual bool IsAnimationRunning() { return false; }
+	/** @brief 动画帧间隔（毫秒）。 */
+	virtual UINT GetAnimationIntervalMs() { return 16; }
 	/**
 	 * @brief 获取动画导致的额外无效区域。
 	 * @param outRect 输出需要重绘的区域。

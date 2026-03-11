@@ -371,6 +371,16 @@ namespace
 		}
 	}
 
+	static std::wstring TabAnimationModeToText(TabControlAnimationMode mode)
+	{
+		switch (mode)
+		{
+		case TabControlAnimationMode::SlideHorizontal: return L"SlideHorizontal";
+		case TabControlAnimationMode::DirectReplace:
+		default: return L"DirectReplace";
+		}
+	}
+
 	static bool TryParseImageSizeMode(const std::wstring& s, ::ImageSizeMode& out)
 	{
 		auto t = TrimWs(s);
@@ -1272,6 +1282,7 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 			{
 				auto* tc = (TabControl*)ctrl;
 				tc->SelectedIndex = std::stoi(value);
+				tc->PostRender();
 			}
 			else if (ctrl->Type() == UIClass::UI_ComboBox)
 			{
@@ -1279,6 +1290,26 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 				cb->SelectedIndex = std::stoi(value);
 				if (cb->Items.Count > 0 && cb->SelectedIndex >= 0 && cb->SelectedIndex < cb->Items.Count)
 					cb->Text = cb->Items[cb->SelectedIndex];
+			}
+		}
+		else if (propertyName == L"ExpandCount")
+		{
+			if (ctrl->Type() == UIClass::UI_ComboBox)
+			{
+				auto* cb = (ComboBox*)ctrl;
+				cb->ExpandCount = std::max(1, std::stoi(value));
+				cb->PostRender();
+			}
+		}
+		else if (propertyName == L"AnimationMode")
+		{
+			if (ctrl->Type() == UIClass::UI_TabControl)
+			{
+				auto* tc = (TabControl*)ctrl;
+				auto v = TrimWs(value);
+				if (v == L"SlideHorizontal") tc->AnimationMode = TabControlAnimationMode::SlideHorizontal;
+				else tc->AnimationMode = TabControlAnimationMode::DirectReplace;
+				tc->PostRender();
 			}
 		}
 		else if (propertyName == L"Mode")
@@ -1897,6 +1928,7 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 		CreatePropertyItem(L"SelectedIndex", std::to_wstring(tc->SelectedIndex), yOffset);
 		CreatePropertyItem(L"TitleHeight", std::to_wstring(tc->TitleHeight), yOffset);
 		CreatePropertyItem(L"TitleWidth", std::to_wstring(tc->TitleWidth), yOffset);
+		CreateEnumPropertyItem(L"AnimationMode", TabAnimationModeToText(tc->AnimationMode), { L"DirectReplace", L"SlideHorizontal" }, yOffset);
 	}
 	if (control->Type == UIClass::UI_DockPanel)
 	{
@@ -1975,6 +2007,7 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 	if (control->Type == UIClass::UI_ComboBox)
 	{
 		auto* cb = (ComboBox*)ctrl;
+		CreatePropertyItem(L"ExpandCount", std::to_wstring(cb->ExpandCount), yOffset);
 		CreatePropertyItem(L"SelectedIndex", std::to_wstring(cb->SelectedIndex), yOffset);
 	}
 	if (control->Type == UIClass::UI_Slider)
