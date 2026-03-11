@@ -155,6 +155,11 @@ void DemoWindow::Ui_UpdateProgress(float value01)
 		_progress->PercentageValue = value01;
 		_progress->PostRender();
 	}
+	if (_progressRing)
+	{
+		_progressRing->PercentageValue = value01;
+		_progressRing->PostRender();
+	}
 	if (_taskbar)
 	{
 		_taskbar->SetValue((ULONGLONG)(value01 * 1000.0f), 1000);
@@ -484,7 +489,7 @@ void DemoWindow::BuildTab_Basic(TabPage* page)
 
 void DemoWindow::BuildTab_Containers(TabPage* page)
 {
-	page->AddControl(new Label(L"Panel / PictureBox / ProgressBar / Switch（拖拽文件到图片框）", 10, 10));
+	page->AddControl(new Label(L"Panel / PictureBox / ProgressBar / LoadingRing / ProgressRing / Switch（拖拽文件到图片框）", 10, 10));
 
 	auto openBtn = page->AddControl(new Button(L"打开图片", 10, 40, 120, 28));
 	openBtn->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->Picture_OnOpenImage(sender, e); };
@@ -501,6 +506,13 @@ void DemoWindow::BuildTab_Containers(TabPage* page)
 	panel->AddControl(new Label(L"ProgressBar", 10, 235));
 	_progress = panel->AddControl(new ProgressBar(110, 230, 390, 24));
 	_progress->PercentageValue = 0.25f;
+
+	page->AddControl(new Label(L"LoadingRing", panel->Right + 20, panel->Top + 100));
+	_loadingRing = page->AddControl(new LoadingRing(panel->Right + 44, panel->Top + 130, 56, 56));
+
+	page->AddControl(new Label(L"ProgressRing", panel->Right + 118, panel->Top + 100));
+	_progressRing = page->AddControl(new ProgressRing(panel->Right + 136, panel->Top + 124, 92, 92));
+	_progressRing->PercentageValue = 0.25f;
 
 	auto swEnable = page->AddControl(new Switch(panel->Right + 20, panel->Top + 10));
 	page->AddControl(new Label(L"Enable Panel", swEnable->Right + 8, swEnable->Top));
@@ -525,7 +537,7 @@ void DemoWindow::BuildTab_Containers(TabPage* page)
 			this->Invalidate();
 		};
 
-	page->AddControl(new Label(L"提示：顶部 Slider 同时驱动 ProgressBar 与 Taskbar 进度。", 10, 420));
+	page->AddControl(new Label(L"提示：顶部 Slider 同时驱动 ProgressBar、ProgressRing 与 Taskbar 进度。", 10, 420));
 }
 
 void DemoWindow::BuildTab_Data(TabPage* page)

@@ -60,6 +60,8 @@ namespace
 		case UIClass::UI_GridView: return "GridView";
 		case UIClass::UI_TreeView: return "TreeView";
 		case UIClass::UI_ProgressBar: return "ProgressBar";
+		case UIClass::UI_LoadingRing: return "LoadingRing";
+		case UIClass::UI_ProgressRing: return "ProgressRing";
 		case UIClass::UI_Slider: return "Slider";
 		case UIClass::UI_PictureBox: return "PictureBox";
 		case UIClass::UI_Switch: return "Switch";
@@ -96,6 +98,8 @@ namespace
 		if (s == "GridView") { out = UIClass::UI_GridView; return true; }
 		if (s == "TreeView") { out = UIClass::UI_TreeView; return true; }
 		if (s == "ProgressBar") { out = UIClass::UI_ProgressBar; return true; }
+		if (s == "LoadingRing") { out = UIClass::UI_LoadingRing; return true; }
+		if (s == "ProgressRing") { out = UIClass::UI_ProgressRing; return true; }
 		if (s == "Slider") { out = UIClass::UI_Slider; return true; }
 		if (s == "PictureBox") { out = UIClass::UI_PictureBox; return true; }
 		if (s == "Switch") { out = UIClass::UI_Switch; return true; }

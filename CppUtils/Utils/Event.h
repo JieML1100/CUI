@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "defines.h"
 #include "List.h"
+#include <memory>
 #include <functional>
 #include <string>
 
@@ -214,40 +215,58 @@ public:
 	using function_type = typename std::remove_pointer<Func>::type;
 	using std_function_type = std::function<function_type>;
 
-	std::vector<std_function_type> _events = std::vector<std_function_type>();
+private:
+	std::unique_ptr<std::vector<std_function_type>> _events;
 
+public:
 	Event() = default;
 	~Event() = default;
 
+	Event(const Event&) = delete;
+	Event& operator=(const Event&) = delete;
+	Event(Event&&) = default;
+	Event& operator=(Event&&) = default;
+
 	template <typename... Args>
 	void Invoke(Args&&... args) {
-		for (auto& event : _events) {
+		if (!_events) return;
+		for (auto& event : *_events) {
 			event(std::forward<Args>(args)...);
 		}
 	}
 
 	template<typename F>
 	void operator+=(F&& fn) {
+		if (!_events) {
+			_events = std::make_unique<std::vector<std_function_type>>();
+		}
+
 		std_function_type func(std::forward<F>(fn));
+
 		if constexpr (std::is_pointer_v<std::decay_t<F>>) {
-			for (const auto& existing_fn : _events) {
-				if (existing_fn.target<function_type*>() == func.target<function_type*>()) {
+			for (const auto& existing_fn : *_events) {
+				if (existing_fn.template target<function_type*>() ==
+					func.template target<function_type*>()) {
 					return;
 				}
 			}
 		}
-		_events.push_back(std::move(func));
+		_events->push_back(std::move(func));
 	}
 
 	template<typename F>
 	void operator-=(F&& fn) {
+		if (!_events || _events->empty()) return;
+
 		std_function_type func(std::forward<F>(fn));
+
 		if constexpr (std::is_pointer_v<std::decay_t<F>>) {
-			auto it = std::remove_if(_events.begin(), _events.end(),
+			auto it = std::remove_if(_events->begin(), _events->end(),
 				[&](const std_function_type& existing_fn) {
-					return existing_fn.target<function_type*>() == func.target<function_type*>();
+					return existing_fn.template target<function_type*>() ==
+						func.template target<function_type*>();
 				});
-			_events.erase(it, _events.end());
+			_events->erase(it, _events->end());
 		}
 	}
 
@@ -256,12 +275,16 @@ public:
 		Invoke(std::forward<Args>(args)...);
 	}
 
-	int Count() const {
-		return static_cast<int>(_events.size());
+	size_t Count() const {
+		return _events ? _events->size() : 0;
+	}
+
+	bool Empty() const {
+		return !_events || _events->empty();
 	}
 
 	void Clear() {
-		_events.clear();
+		_events.reset();
 	}
 };
 class EventArgs {

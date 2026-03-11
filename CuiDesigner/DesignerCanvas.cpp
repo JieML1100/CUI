@@ -16,7 +16,9 @@
 #include "../CUI_Legacy/GUI/CheckBox.h"
 #include "../CUI_Legacy/GUI/RadioBox.h"
 #include "../CUI_Legacy/GUI/ComboBox.h"
+#include "../CUI_Legacy/GUI/LoadingRing.h"
 #include "../CUI_Legacy/GUI/ProgressBar.h"
+#include "../CUI_Legacy/GUI/ProgressRing.h"
 #include "../CUI_Legacy/GUI/Slider.h"
 #include "../CUI_Legacy/GUI/PictureBox.h"
 #include "../CUI_Legacy/GUI/DateTimePicker.h"
@@ -2091,6 +2093,14 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 		newControl = new ProgressBar(centerX, centerY, 200, 20);
 		typeName = L"ProgressBar";
 		break;
+	case UIClass::UI_LoadingRing:
+		newControl = new LoadingRing(centerX, centerY, 48, 48);
+		typeName = L"LoadingRing";
+		break;
+	case UIClass::UI_ProgressRing:
+		newControl = new ProgressRing(centerX, centerY, 72, 72);
+		typeName = L"ProgressRing";
+		break;
 	case UIClass::UI_Slider:
 		newControl = new Slider(centerX, centerY, 200, 30);
 		typeName = L"Slider";
@@ -2289,6 +2299,8 @@ static bool IsExportableDesignType(UIClass t)
 	case UIClass::UI_GridView:
 	case UIClass::UI_TreeView:
 	case UIClass::UI_ProgressBar:
+	case UIClass::UI_LoadingRing:
+	case UIClass::UI_ProgressRing:
 	case UIClass::UI_Slider:
 	case UIClass::UI_PictureBox:
 	case UIClass::UI_Switch:
@@ -2321,6 +2333,8 @@ static std::wstring ExportTypeName(UIClass t)
 	case UIClass::UI_CheckBox: return L"CheckBox";
 	case UIClass::UI_RadioBox: return L"RadioBox";
 	case UIClass::UI_ProgressBar: return L"ProgressBar";
+	case UIClass::UI_LoadingRing: return L"LoadingRing";
+	case UIClass::UI_ProgressRing: return L"ProgressRing";
 	case UIClass::UI_TreeView: return L"TreeView";
 	case UIClass::UI_Panel: return L"Panel";
 	case UIClass::UI_ScrollView: return L"ScrollView";
@@ -2514,6 +2528,8 @@ namespace
 		case UIClass::UI_GridView: return "GridView";
 		case UIClass::UI_TreeView: return "TreeView";
 		case UIClass::UI_ProgressBar: return "ProgressBar";
+		case UIClass::UI_LoadingRing: return "LoadingRing";
+		case UIClass::UI_ProgressRing: return "ProgressRing";
 		case UIClass::UI_Slider: return "Slider";
 		case UIClass::UI_PictureBox: return "PictureBox";
 		case UIClass::UI_Switch: return "Switch";
@@ -2550,6 +2566,8 @@ namespace
 		if (s == "GridView") { out = UIClass::UI_GridView; return true; }
 		if (s == "TreeView") { out = UIClass::UI_TreeView; return true; }
 		if (s == "ProgressBar") { out = UIClass::UI_ProgressBar; return true; }
+		if (s == "LoadingRing") { out = UIClass::UI_LoadingRing; return true; }
+		if (s == "ProgressRing") { out = UIClass::UI_ProgressRing; return true; }
 		if (s == "Slider") { out = UIClass::UI_Slider; return true; }
 		if (s == "PictureBox") { out = UIClass::UI_PictureBox; return true; }
 		if (s == "Switch") { out = UIClass::UI_Switch; return true; }
@@ -3075,6 +3093,16 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			{
 				extra["percentageValue"] = ((ProgressBar*)c)->PercentageValue;
 			}
+			else if (dc->Type == UIClass::UI_LoadingRing)
+			{
+				extra["active"] = ((LoadingRing*)c)->Active;
+			}
+			else if (dc->Type == UIClass::UI_ProgressRing)
+			{
+				auto* pr = (ProgressRing*)c;
+				extra["percentageValue"] = pr->PercentageValue;
+				extra["showPercentage"] = pr->ShowPercentage;
+			}
 			else if (dc->Type == UIClass::UI_DateTimePicker)
 			{
 				auto* dtp = (DateTimePicker*)c;
@@ -3397,6 +3425,8 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 			case UIClass::UI_GridView: return new GridView(0, 0, 360, 200);
 			case UIClass::UI_TreeView: return new TreeView(0, 0, 220, 220);
 			case UIClass::UI_ProgressBar: return new ProgressBar(0, 0, 200, 20);
+			case UIClass::UI_LoadingRing: return new LoadingRing(0, 0, 48, 48);
+			case UIClass::UI_ProgressRing: return new ProgressRing(0, 0, 72, 72);
 			case UIClass::UI_Slider: return new Slider(0, 0, 200, 30);
 			case UIClass::UI_PictureBox: return new PictureBox(0, 0, 150, 150);
 			case UIClass::UI_Switch: return new Switch(0, 0, 60, 30);
@@ -3664,6 +3694,16 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				else if (it.type == UIClass::UI_ProgressBar)
 				{
 					((ProgressBar*)c)->PercentageValue = it.extra.value("percentageValue", ((ProgressBar*)c)->PercentageValue);
+				}
+				else if (it.type == UIClass::UI_LoadingRing)
+				{
+					((LoadingRing*)c)->Active = it.extra.value("active", ((LoadingRing*)c)->Active);
+				}
+				else if (it.type == UIClass::UI_ProgressRing)
+				{
+					auto* pr = (ProgressRing*)c;
+					pr->PercentageValue = it.extra.value("percentageValue", pr->PercentageValue);
+					pr->ShowPercentage = it.extra.value("showPercentage", pr->ShowPercentage);
 				}
 				else if (it.type == UIClass::UI_DateTimePicker)
 				{

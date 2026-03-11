@@ -48,7 +48,13 @@
     <ClInclude Include="GUI\PictureBox.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\LoadingRing.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\ProgressBar.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\ProgressRing.h">
       <Filter>GUI</Filter>
     </ClInclude>
     <ClInclude Include="GUI\RadioBox.h">
@@ -167,7 +173,13 @@
     <ClCompile Include="GUI\PictureBox.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\LoadingRing.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\ProgressBar.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\ProgressRing.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\RadioBox.cpp">

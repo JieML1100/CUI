@@ -104,6 +104,14 @@ private:
 private:
 	void SyncBufferFromControlIfNeeded();
 	void SyncControlTextFromBuffer(const std::wstring& oldText);
+	std::wstring NormalizeLineBreaks(const std::wstring& text) const;
+	bool HasCrLfAt(int index) const;
+	bool IsCaretBetweenCrLf(int index) const;
+	int GetNextCaretIndex(int index) const;
+	int GetPreviousCaretIndex(int index) const;
+	void NormalizeSelectionRangeForErase(int& start, int& end) const;
+	bool GetBackspaceEraseRange(int caretIndex, int& eraseStart, int& eraseLength) const;
+	bool GetDeleteEraseRange(int caretIndex, int& eraseStart, int& eraseLength) const;
 	void TrimToMaxLength();
 	void RebuildBlocks();
 	void ReleaseBlocks();

@@ -65,6 +65,8 @@ private:
     // Containers tab
     PictureBox* _picture = nullptr;
     ProgressBar* _progress = nullptr;
+    LoadingRing* _loadingRing = nullptr;
+    ProgressRing* _progressRing = nullptr;
 
     // Data tab
     GridView* _grid = nullptr;

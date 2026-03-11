@@ -21,6 +21,10 @@ void CustomTextBox1::Update()
 	if (OffsetY < 0.0f)OffsetY = 0.0f;
 	auto size = this->ActualSize();
 	bool isSelected = this->ParentForm->Selected == this;
+	this->_caretRectCacheValid = false;
+	bool shouldDrawCaret = false;
+	D2D1_POINT_2F caretStart{};
+	D2D1_POINT_2F caretEnd{};
 	this->BeginRender();
 	{
 		d2d->FillRoundRect(0, 0, size.cx, size.cy, isSelected ? this->FocusedColor : this->BackColor, this->TextMargin);
@@ -50,10 +54,19 @@ void CustomTextBox1::Update()
 				}
 				else
 				{
-					d2d->DrawLine(
-						{ selRange[0].left + TextMargin - OffsetX, selRange[0].top - OffsetY },
-						{ selRange[0].left + TextMargin - OffsetX, selRange[0].top + selRange[0].height + OffsetY },
-						Colors::Black);
+					if (!selRange.empty())
+					{
+						const auto caret = selRange[0];
+						const float cx = caret.left + TextMargin - OffsetX;
+						const float cy = caret.top + OffsetY;
+						const float ch = caret.height > 0 ? caret.height : font->FontHeight;
+						auto abs = this->AbsLocation;
+						this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ch + 2.0f };
+						this->_caretRectCacheValid = true;
+						shouldDrawCaret = true;
+						caretStart = { selRange[0].left + TextMargin - OffsetX, selRange[0].top + OffsetY };
+						caretEnd = { selRange[0].left + TextMargin - OffsetX, selRange[0].top + selRange[0].height + OffsetY };
+					}
 				}
 				auto lot = Factory::CreateStringLayout(this->Text, FLT_MAX, render_height, font->FontObject);
 				if (lot) {
@@ -80,10 +93,22 @@ void CustomTextBox1::Update()
 		else
 		{
 			if (isSelected)
-				d2d->DrawLine(
-					{ TextMargin - OffsetX, OffsetY },
-					{ TextMargin - OffsetX, OffsetY + 16.0f },
-					Colors::Red);
+			{
+				const float cx = (float)TextMargin - OffsetX;
+				const float cy = OffsetY;
+				const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
+				auto abs = this->AbsLocation;
+				this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ch + 2.0f };
+				this->_caretRectCacheValid = true;
+				shouldDrawCaret = true;
+				caretStart = { (float)TextMargin - OffsetX, OffsetY };
+				caretEnd = { (float)TextMargin - OffsetX, OffsetY + 16.0f };
+			}
+		}
+		UpdateCaretBlinkState(isSelected, this->SelectionStart, this->SelectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
+		if (shouldDrawCaret && IsCaretBlinkVisible())
+		{
+			d2d->DrawLine(caretStart, caretEnd, Colors::Black);
 		}
 		d2d->DrawLine(
 			{ this->TextMargin, this->textSize.height + OffsetY },

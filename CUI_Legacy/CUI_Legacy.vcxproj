@@ -201,7 +201,9 @@
     <ClInclude Include="GUI\Panel.h" />
     <ClInclude Include="GUI\PasswordBox.h" />
     <ClInclude Include="GUI\PictureBox.h" />
+    <ClInclude Include="GUI\LoadingRing.h" />
     <ClInclude Include="GUI\ProgressBar.h" />
+    <ClInclude Include="GUI\ProgressRing.h" />
     <ClInclude Include="GUI\RadioBox.h" />
     <ClInclude Include="GUI\RichTextBox.h" />
     <ClInclude Include="GUI\RoundTextBox.h" />
@@ -241,7 +243,9 @@
     <ClCompile Include="GUI\Panel.cpp" />
     <ClCompile Include="GUI\PasswordBox.cpp" />
     <ClCompile Include="GUI\PictureBox.cpp" />
+    <ClCompile Include="GUI\LoadingRing.cpp" />
     <ClCompile Include="GUI\ProgressBar.cpp" />
+    <ClCompile Include="GUI\ProgressRing.cpp" />
     <ClCompile Include="GUI\RadioBox.cpp" />
     <ClCompile Include="GUI\RichTextBox.cpp" />
     <ClCompile Include="GUI\RoundTextBox.cpp" />

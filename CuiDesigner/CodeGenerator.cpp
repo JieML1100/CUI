@@ -15,7 +15,9 @@
 #include "../CUI_Legacy/GUI/TabControl.h"
 #include "../CUI_Legacy/GUI/ToolBar.h"
 #include "../CUI_Legacy/GUI/Button.h"
+#include "../CUI_Legacy/GUI/LoadingRing.h"
 #include "../CUI_Legacy/GUI/ProgressBar.h"
+#include "../CUI_Legacy/GUI/ProgressRing.h"
 #include "../CUI_Legacy/GUI/Slider.h"
 #include "../CUI_Legacy/GUI/PictureBox.h"
 #include "../CUI_Legacy/GUI/DateTimePicker.h"
@@ -394,6 +396,8 @@ std::string CodeGenerator::GetControlTypeName(UIClass type)
 	case UIClass::UI_GridView: return "GridView";
 	case UIClass::UI_TreeView: return "TreeView";
 	case UIClass::UI_ProgressBar: return "ProgressBar";
+	case UIClass::UI_LoadingRing: return "LoadingRing";
+	case UIClass::UI_ProgressRing: return "ProgressRing";
 	case UIClass::UI_Slider: return "Slider";
 	case UIClass::UI_PictureBox: return "PictureBox";
 	case UIClass::UI_Switch: return "Switch";
@@ -641,6 +645,8 @@ std::string CodeGenerator::GenerateControlInstantiation(const std::shared_ptr<De
 	case UIClass::UI_WrapPanel:
 	case UIClass::UI_RelativePanel:
 	case UIClass::UI_ProgressBar:
+	case UIClass::UI_LoadingRing:
+	case UIClass::UI_ProgressRing:
 	case UIClass::UI_Slider:
 	case UIClass::UI_PictureBox:
 	case UIClass::UI_Switch:
@@ -771,6 +777,22 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 		// 默认值 0.5f
 		if (std::fabs(pb->PercentageValue - 0.5f) > 1e-6f)
 			code << indentStr << name << "->PercentageValue = " << FloatLiteral(pb->PercentageValue) << ";\n";
+	}
+
+	if (dc->Type == UIClass::UI_LoadingRing)
+	{
+		auto* lr = (LoadingRing*)ctrl;
+		if (!lr->Active)
+			code << indentStr << name << "->Active = false;\n";
+	}
+
+	if (dc->Type == UIClass::UI_ProgressRing)
+	{
+		auto* pr = (ProgressRing*)ctrl;
+		if (std::fabs(pr->PercentageValue - 0.5f) > 1e-6f)
+			code << indentStr << name << "->PercentageValue = " << FloatLiteral(pr->PercentageValue) << ";\n";
+		if (!pr->ShowPercentage)
+			code << indentStr << name << "->ShowPercentage = false;\n";
 	}
 
 	// DateTimePicker

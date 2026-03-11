@@ -12,8 +12,10 @@
 #include "DesignerCore/Commands/UpdatePropertyCommand.h"
 #include "../CUI_Legacy/GUI/LinkLabel.h"
 #include "../CUI_Legacy/GUI/ComboBox.h"
+#include "../CUI_Legacy/GUI/LoadingRing.h"
 #include "../CUI_Legacy/GUI/Slider.h"
 #include "../CUI_Legacy/GUI/ProgressBar.h"
+#include "../CUI_Legacy/GUI/ProgressRing.h"
 #include "../CUI_Legacy/GUI/PictureBox.h"
 #include "../CUI_Legacy/GUI/DateTimePicker.h"
 #include "../CUI_Legacy/GUI/ScrollView.h"
@@ -84,7 +86,6 @@ namespace
 
 	static std::vector<std::wstring> GetFontSizeOptions()
 	{
-		// 常用字号（允许 ComboBox 手动输入）
 		static const int sizes[] = { 8,9,10,11,12,14,16,18,20,22,24,26,28,32,36,48,72 };
 		std::vector<std::wstring> out;
 		out.reserve(_countof(sizes));
@@ -1531,6 +1532,12 @@ void PropertyGrid::UpdatePropertyFromFloat(std::wstring propertyName, float valu
 				float v = std::clamp(value, 0.0f, 1.0f);
 				pb->PercentageValue = v;
 			}
+			else if (ctrl->Type() == UIClass::UI_ProgressRing)
+			{
+				auto* pr = (ProgressRing*)ctrl;
+				float v = std::clamp(value, 0.0f, 1.0f);
+				pr->PercentageValue = v;
+			}
 		}
 		else if (propertyName == L"Volume")
 		{
@@ -1591,32 +1598,49 @@ void PropertyGrid::UpdatePropertyFromBool(std::wstring propertyName, bool value)
 	{
 		if (value)
 			currentControl->EventHandlers[propertyName] = L"1";
-		else
-			currentControl->EventHandlers.erase(propertyName);
-		return;
-	}
-	if (propertyName == L"Enabled")
-	{
-		ctrl->Enable = value;
-	}
-	else if (propertyName == L"Visible")
-	{
-		ctrl->Visible = value;
-	}
-	else if (propertyName == L"SnapToStep")
-	{
-		if (ctrl->Type() == UIClass::UI_Slider)
-			((Slider*)ctrl)->SnapToStep = value;
-	}
-	else if (propertyName == L"LastChildFill")
-	{
-		if (ctrl->Type() == UIClass::UI_DockPanel)
-			((DockPanel*)ctrl)->SetLastChildFill(value);
-	}
-	else if (propertyName == L"TopMost")
-	{
-		if (ctrl->Type() == UIClass::UI_StatusBar)
-			((StatusBar*)ctrl)->TopMost = value;
+			if (propertyName == L"Active")
+			{
+				if (ctrl->Type() == UIClass::UI_LoadingRing)
+				{
+					((LoadingRing*)ctrl)->Active = value;
+				}
+			}
+			else if (propertyName == L"ShowPercentage")
+			{
+				if (ctrl->Type() == UIClass::UI_ProgressRing)
+				{
+					((ProgressRing*)ctrl)->ShowPercentage = value;
+				}
+			}
+			else
+			{
+				if (propertyName == L"Checked")
+				{
+					ctrl->Checked = value;
+				}
+				else if (propertyName == L"Enable")
+				{
+					ctrl->Enable = value;
+				}
+				else if (propertyName == L"Visible")
+				{
+					ctrl->Visible = value;
+				}
+				else if (propertyName == L"Expand")
+				{
+					if (ctrl->Type() == UIClass::UI_DateTimePicker)
+					{
+						((DateTimePicker*)ctrl)->SetExpanded(value);
+					}
+				}
+				else if (propertyName == L"ShowInTaskBar" || propertyName == L"TopMost" || propertyName == L"AllowResize" ||
+					propertyName == L"VisibleHead" || propertyName == L"MinBox" || propertyName == L"MaxBox" ||
+					propertyName == L"CloseBox" || propertyName == L"CenterTitle")
+				{
+					_binding.ApplyFormBoolProperty(propertyName, value);
+					return;
+				}
+			}
 	}
 	else if (propertyName == L"AutoPlay")
 	{
@@ -1958,6 +1982,17 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 	{
 		auto* pb = (ProgressBar*)ctrl;
 		CreateFloatSliderPropertyItem(L"PercentageValue", pb->PercentageValue, 0.0f, 1.0f, 0.01f, yOffset);
+	}
+	if (control->Type == UIClass::UI_LoadingRing)
+	{
+		auto* lr = (LoadingRing*)ctrl;
+		CreateBoolPropertyItem(L"Active", lr->Active, yOffset);
+	}
+	if (control->Type == UIClass::UI_ProgressRing)
+	{
+		auto* pr = (ProgressRing*)ctrl;
+		CreateFloatSliderPropertyItem(L"PercentageValue", pr->PercentageValue, 0.0f, 1.0f, 0.01f, yOffset);
+		CreateBoolPropertyItem(L"ShowPercentage", pr->ShowPercentage, yOffset);
 	}
 	if (control->Type == UIClass::UI_DateTimePicker)
 	{

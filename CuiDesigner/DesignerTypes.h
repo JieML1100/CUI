@@ -89,6 +89,8 @@ public:
 			{ UIClass::UI_GridView, L"GridView", L"表格", {360, 200}, false },
 			{ UIClass::UI_TreeView, L"TreeView", L"树", {220, 220}, false },
 			{ UIClass::UI_ProgressBar, L"ProgressBar", L"进度条", {200, 20}, false },
+			{ UIClass::UI_LoadingRing, L"LoadingRing", L"环形加载器", {48, 48}, false },
+			{ UIClass::UI_ProgressRing, L"ProgressRing", L"环形进度环", {72, 72}, false },
 			{ UIClass::UI_Slider, L"Slider", L"滑块", {200, 30}, false },
 			{ UIClass::UI_PictureBox, L"PictureBox", L"图片框", {150, 150}, false },
 			{ UIClass::UI_Switch, L"Switch", L"开关", {60, 30}, false },

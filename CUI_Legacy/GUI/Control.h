@@ -68,6 +68,8 @@ enum class UIClass : int
 	UI_CheckBox,
 	UI_RadioBox,
 	UI_ProgressBar,
+	UI_LoadingRing,
+	UI_ProgressRing,
 	UI_TreeView,
 	UI_Panel,
 	UI_ScrollView,
@@ -255,7 +257,9 @@ public:
 	MovedEvent OnMoved = MovedEvent();
 	/** @brief 尺寸变化事件。 */
 	SizeChangedEvent OnSizeChanged = SizeChangedEvent();
+	/** @brief 选中状态变化事件（如列表项被选中）。 */
 	SelectedChangedEvent OnSelectedChanged = SelectedChangedEvent();
+	/** @brief 滚动位置变化事件（如 ScrollView 滚动）。 */
 	ScrollChangedEvent OnScrollChanged = ScrollChangedEvent();
 	/** @brief 文本变化事件。 */
 	TextChangedEvent OnTextChanged = TextChangedEvent();
