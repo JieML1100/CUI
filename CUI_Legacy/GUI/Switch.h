@@ -22,6 +22,15 @@ class Switch : public Control
 	void SyncAnimationState();
 	void StartToggleAnimation(bool checked);
 	float CurrentThumbProgress();
+protected:
+	bool DefaultTrackUnderMouse() const override { return true; }
+	bool DefaultRaiseClickOnLeftButtonUp() const override { return true; }
+	bool DefaultClearSelectionOnMouseUp() const override { return true; }
+	bool DefaultSelectOnLeftButtonDoubleClick() const override { return true; }
+	bool DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const override;
+	bool DefaultPostRenderOnMouseDoubleClick(UINT message, bool wasSelected) const override;
+	void BeforeDefaultMouseUp(UINT message, MouseEventArgs& e, bool wasSelected) override;
+	void BeforeDefaultMouseDoubleClick(UINT message, MouseEventArgs& e, bool wasSelected) override;
 public:
 	virtual UIClass Type();
 	/** @brief 鼠标悬停时的高亮色。 */
@@ -34,5 +43,4 @@ public:
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 };

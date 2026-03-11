@@ -27,6 +27,9 @@
     <ClInclude Include="GUI\ComboBox.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\ContextMenu.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\DateTimePicker.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -82,6 +85,9 @@
       <Filter>GUI</Filter>
     </ClInclude>
     <ClInclude Include="GUI\Taskbar.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\ToolTip.h">
       <Filter>GUI</Filter>
     </ClInclude>
     <ClInclude Include="GUI\NotifyIcon.h">
@@ -158,6 +164,9 @@
     <ClCompile Include="GUI\ComboBox.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
+    <ClCompile Include="GUI\ContextMenu.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
     <ClCompile Include="GUI\DateTimePicker.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
@@ -210,6 +219,9 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Taskbar.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\ToolTip.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\NotifyIcon.cpp">

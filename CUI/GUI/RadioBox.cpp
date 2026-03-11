@@ -52,104 +52,34 @@ void RadioBox::Update()
 	this->EndRender();
 	last_width = size.cx;
 }
-bool RadioBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+
+bool RadioBox::DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const
 {
-	if (!this->Enable || !this->Visible) return true;
-	switch (message)
+	(void)message;
+	return wasSelected;
+}
+
+bool RadioBox::DefaultPostRenderOnMouseDoubleClick(UINT message, bool wasSelected) const
+{
+	(void)message;
+	return wasSelected;
+}
+
+void RadioBox::BeforeDefaultMouseUp(UINT message, MouseEventArgs& e, bool wasSelected)
+{
+	(void)e;
+	if (message == WM_LBUTTONUP && wasSelected && this->Checked == false)
 	{
-	case WM_DROPFILES:
+		this->Checked = true;
+		this->OnChecked(this);
+	}
+}
+
+void RadioBox::BeforeDefaultMouseDoubleClick(UINT message, MouseEventArgs& e, bool wasSelected)
+{
+	(void)e;
+	if (message == WM_LBUTTONDBLCLK && wasSelected)
 	{
-		HDROP hDropInfo = HDROP(wParam);
-		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
-		TCHAR strFileName[MAX_PATH];
-		List<std::wstring> files;
-		for (int i = 0; i < uFileNum; i++)
-		{
-			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.Add(strFileName);
-		}
-		DragFinish(hDropInfo);
-		if (files.Count > 0)
-		{
-			this->OnDropFile(this, files);
-		}
+		this->Checked = !this->Checked;
 	}
-	break;
-	case WM_MOUSEWHEEL:
-	{
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
-		this->OnMouseWheel(this, event_obj);
-	}
-	break;
-	case WM_MOUSEMOVE:
-	{
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
-		this->OnMouseMove(this, event_obj);
-	}
-	break;
-	case WM_LBUTTONDOWN:
-	case WM_RBUTTONDOWN:
-	case WM_MBUTTONDOWN:
-	{
-		if (WM_LBUTTONDOWN == message)
-		{
-			auto lastSelected = this->ParentForm->Selected;
-			this->ParentForm->Selected = this;
-			if (lastSelected && lastSelected != this)
-			{
-				lastSelected->PostRender();
-			}
-		}
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDown(this, event_obj);
-		this->PostRender();
-	}
-	break;
-	case WM_LBUTTONUP:
-	case WM_RBUTTONUP:
-	case WM_MBUTTONUP:
-	{
-		if (WM_LBUTTONUP == message && this->ParentForm->Selected == this)
-		{
-			if (this->Checked == false)
-			{
-				this->Checked = true;
-				this->OnChecked(this);
-			}
-			MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-			this->OnMouseClick(this, event_obj);
-		}
-		this->ParentForm->Selected = NULL;
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseUp(this, event_obj);
-		this->PostRender();
-	}
-	break;
-	case WM_LBUTTONDBLCLK:
-	{
-		auto lastSelected = this->ParentForm->Selected;
-		this->ParentForm->Selected = this;
-		if (lastSelected && lastSelected == this)
-		{
-			this->Checked = !this->Checked;
-			MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-			this->OnMouseDoubleClick(this, event_obj);
-			this->PostRender();
-		}
-	}
-	break;
-	case WM_KEYDOWN:
-	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyDown(this, event_obj);
-	}
-	break;
-	case WM_KEYUP:
-	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyUp(this, event_obj);
-	}
-	break;
-	}
-	return true;
 }

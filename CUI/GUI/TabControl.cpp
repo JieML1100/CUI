@@ -373,6 +373,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		{
 			// 按下时：命中哪个子控件就捕获它
 			if (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN ||
+				message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP ||
 				message == WM_LBUTTONDBLCLK || message == WM_RBUTTONDBLCLK || message == WM_MBUTTONDBLCLK ||
 				message == WM_MOUSEMOVE || message == WM_MOUSEWHEEL)
 			{
@@ -403,6 +404,12 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 								SetCapture(this->ParentForm->Handle);
 						}
 						forwardToChild(hit);
+					}
+					else if (page)
+					{
+						// 空白区域没有命中子控件时，仍应把消息交给当前页本身，
+						// 这样 TabPage/Panel 级别的 OnMouseDown/OnMouseMove 等事件才能工作。
+						page->ProcessMessage(message, wParam, lParam, xof, cy);
 					}
 				}
 			}

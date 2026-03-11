@@ -190,6 +190,7 @@
     <ClInclude Include="GUI\Button.h" />
     <ClInclude Include="GUI\CheckBox.h" />
     <ClInclude Include="GUI\ComboBox.h" />
+    <ClInclude Include="GUI\ContextMenu.h" />
     <ClInclude Include="GUI\DateTimePicker.h" />
     <ClInclude Include="GUI\Control.h" />
     <ClInclude Include="GUI\Form.h" />
@@ -213,6 +214,7 @@
     <ClInclude Include="GUI\TabControl.h" />
     <ClInclude Include="GUI\Taskbar.h" />
     <ClInclude Include="GUI\ToolBar.h" />
+    <ClInclude Include="GUI\ToolTip.h" />
     <ClInclude Include="GUI\StatusBar.h" />
     <ClInclude Include="GUI\TextBox.h" />
     <ClInclude Include="GUI\TreeView.h" />
@@ -232,6 +234,7 @@
     <ClCompile Include="GUI\Button.cpp" />
     <ClCompile Include="GUI\CheckBox.cpp" />
     <ClCompile Include="GUI\ComboBox.cpp" />
+    <ClCompile Include="GUI\ContextMenu.cpp" />
     <ClCompile Include="GUI\DateTimePicker.cpp" />
     <ClCompile Include="GUI\Control.cpp" />
     <ClCompile Include="GUI\Form.cpp" />
@@ -255,6 +258,7 @@
     <ClCompile Include="GUI\TabControl.cpp" />
     <ClCompile Include="GUI\Taskbar.cpp" />
     <ClCompile Include="GUI\ToolBar.cpp" />
+    <ClCompile Include="GUI\ToolTip.cpp" />
     <ClCompile Include="GUI\StatusBar.cpp" />
     <ClCompile Include="GUI\TextBox.cpp" />
     <ClCompile Include="GUI\TreeView.cpp" />

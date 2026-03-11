@@ -38,6 +38,9 @@ private:
 public:
 	virtual UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
+	bool AutoCloseOnOutsideClick() const override { return true; }
+	bool AutoCloseOnFormFocusLoss() const override { return true; }
+	void ClosePopup() override { SetExpanded(false); }
 	bool HandlesMouseWheel() const override { return true; }
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }

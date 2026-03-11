@@ -55,22 +55,9 @@ CursorKind LinkLabel::QueryCursor(int xof, int yof)
 	return CursorKind::Hand;
 }
 
-bool LinkLabel::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+void LinkLabel::BeforeDefaultClick(UINT message, MouseEventArgs& e)
 {
-	if (!this->Enable || !this->Visible) return true;
-	bool handled = Label::ProcessMessage(message, wParam, lParam, xof, yof);
-
+	(void)e;
 	if (message == WM_LBUTTONUP)
-	{
-		if (this->ParentForm && this->ParentForm->Selected == this)
-		{
-			this->Visited = true;
-			MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-			this->OnMouseClick(this, event_obj);
-			this->ParentForm->Selected = NULL;
-			this->PostRender();
-		}
-	}
-
-	return handled;
+		this->Visited = true;
 }

@@ -11,6 +11,12 @@
  */
 class Button : public Control
 {
+protected:
+	bool DefaultTrackUnderMouse() const override { return true; }
+	bool DefaultRaiseClickOnLeftButtonUp() const override { return true; }
+	bool DefaultClearSelectionOnMouseUp() const override { return true; }
+	bool DefaultSelectOnLeftButtonDoubleClick() const override { return true; }
+	bool DefaultPostRenderOnMouseDoubleClick(UINT message, bool wasSelected) const override { (void)message; (void)wasSelected; return true; }
 public:
 	virtual UIClass Type();
 	/** @brief 鼠标悬停时背景色。 */
@@ -23,5 +29,4 @@ public:
 	/** @brief 创建按钮。 */
 	Button(std::wstring text, int x, int y, int width = 120, int height = 24);
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 };

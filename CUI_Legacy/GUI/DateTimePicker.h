@@ -140,6 +140,9 @@ public:
 
 	DateTimePicker(std::wstring text = L"", int x = 0, int y = 0, int width = 200, int height = 28);
 	virtual UIClass Type() override;
+	bool AutoCloseOnOutsideClick() const override { return true; }
+	bool AutoCloseOnFormFocusLoss() const override { return true; }
+	void ClosePopup() override { SetExpanded(false); }
 
 	PROPERTY(SYSTEMTIME, Value);
 	GET(SYSTEMTIME, Value);

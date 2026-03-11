@@ -124,9 +124,7 @@ static bool PointInControlRect(Control* c, POINT contentMouse)
 	if (!c) return false;
 	if (!c->Visible || !c->Enable) return false;
 	auto loc = c->AbsLocation;
-	auto sz = c->ActualSize();
-	return (contentMouse.x >= loc.x && contentMouse.y >= loc.y &&
-		contentMouse.x <= loc.x + sz.cx && contentMouse.y <= loc.y + sz.cy);
+	return c->ContainsPoint(contentMouse.x - loc.x, contentMouse.y - loc.y);
 }
 
 static void SyncFormWindowStyles(HWND hWnd, bool showInTaskBar, bool minBox, bool maxBox, bool closeBox, bool allowResize)
@@ -468,29 +466,15 @@ static Control* HitTestRootControlAt(Form* f, POINT contentMouse)
 	return NULL;
 }
 
-static void DismissComboBoxForegroundOnOutsideMouseDown(Form* f, POINT contentMouse, UINT message)
+static void DismissForegroundOnOutsideMouseDown(Form* f, POINT contentMouse, UINT message)
 {
 	if (!f) return;
 	if (message != WM_LBUTTONDOWN && message != WM_RBUTTONDOWN && message != WM_MBUTTONDOWN) return;
 	if (!f->ForegroundControl || !f->ForegroundControl->Visible || !f->ForegroundControl->Enable) return;
 	if (PointInControlRect(f->ForegroundControl, contentMouse)) return;
-
-	if (f->ForegroundControl->Type() == UIClass::UI_ComboBox)
-	{
-		auto* cb = (ComboBox*)f->ForegroundControl;
-		if (!cb->Expand) return;
-		cb->SetExpanded(false);
-		cb->PostRender();
-		f->Invalidate(true);
-		return;
-	}
-	if (f->ForegroundControl->Type() == UIClass::UI_DateTimePicker)
-	{
-		auto* dtp = (DateTimePicker*)f->ForegroundControl;
-		if (!dtp->Expand) return;
-		dtp->SetExpanded(false);
-		return;
-	}
+	if (!f->ForegroundControl->AutoCloseOnOutsideClick()) return;
+	f->ForegroundControl->ClosePopup();
+	f->Invalidate(true);
 }
 
 static bool IsScrollViewFallbackKey(WPARAM key)
@@ -2136,7 +2120,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	case WM_RBUTTONUP:
 	case WM_LBUTTONDBLCLK:
 	{
-		DismissComboBoxForegroundOnOutsideMouseDown(this, contentMouse, message);
+		DismissForegroundOnOutsideMouseDown(this, contentMouse, message);
 
 		if (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN)
 		{
@@ -2282,6 +2266,11 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	break;
 	case WM_KILLFOCUS:
 	{
+		if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl->AutoCloseOnFormFocusLoss())
+		{
+			this->ForegroundControl->ClosePopup();
+			this->Invalidate(true);
+		}
 		this->OnLostFocus(this);
 	}
 	break;

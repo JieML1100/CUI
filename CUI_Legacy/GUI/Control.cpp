@@ -494,13 +494,6 @@ bool Control::IsSelected()
 bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {
 	if (!this->Enable || !this->Visible) return true;
-	if (WM_LBUTTONDOWN == message)
-	{
-		if (this->ParentForm)
-		{
-			this->ParentForm->SetSelectedControl(this, true);
-		}
-	}
 	switch (message)
 	{
 	case WM_DROPFILES:
@@ -530,6 +523,9 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 	case WM_MOUSEMOVE:
 	{
 		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
+		if (this->ParentForm && this->DefaultTrackUnderMouse())
+			this->ParentForm->UnderMouse = this;
+		this->BeforeDefaultMouseMove(event_obj);
 		this->OnMouseMove(this, event_obj);
 	}
 	break;
@@ -537,29 +533,51 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 	case WM_RBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 	{
-		if (WM_LBUTTONDOWN == message)
+		if (WM_LBUTTONDOWN == message && this->ParentForm && this->DefaultSelectOnLeftButtonDown())
 		{
-			if (this->ParentForm)
-				this->ParentForm->SetSelectedControl(this, false);
+			this->ParentForm->SetSelectedControl(this, false);
 		}
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
+		this->BeforeDefaultMouseDown(message, event_obj);
 		this->OnMouseDown(this, event_obj);
-		this->PostRender();
+		if (this->DefaultPostRenderOnMouseDown(message))
+			this->PostRender();
 	}
 	break;
 	case WM_LBUTTONUP:
 	case WM_RBUTTONUP:
 	case WM_MBUTTONUP:
 	{
+		bool wasSelected = this->ParentForm && this->ParentForm->Selected == this;
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
+		this->BeforeDefaultMouseUp(message, event_obj, wasSelected);
+		if (WM_LBUTTONUP == message && wasSelected && this->DefaultRaiseClickOnLeftButtonUp())
+		{
+			this->BeforeDefaultClick(message, event_obj);
+			this->OnMouseClick(this, event_obj);
+		}
+		if (wasSelected && this->DefaultClearSelectionOnMouseUp() && this->ParentForm && this->ParentForm->Selected == this)
+		{
+			this->ParentForm->SetSelectedControl(NULL, false);
+		}
 		this->OnMouseUp(this, event_obj);
-		this->PostRender();
+		if (this->DefaultPostRenderOnMouseUp(message))
+			this->PostRender();
 	}
 	break;
 	case WM_LBUTTONDBLCLK:
 	{
+		bool wasSelected = this->ParentForm && this->ParentForm->Selected == this;
+		if (this->ParentForm && this->DefaultSelectOnLeftButtonDoubleClick())
+		{
+			this->ParentForm->SetSelectedControl(this, false);
+		}
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDoubleClick(this, event_obj);
+		this->BeforeDefaultMouseDoubleClick(message, event_obj, wasSelected);
+		if (this->DefaultRaiseMouseDoubleClick(message, wasSelected))
+			this->OnMouseDoubleClick(this, event_obj);
+		if (this->DefaultPostRenderOnMouseDoubleClick(message, wasSelected))
+			this->PostRender();
 	}
 	break;
 	case WM_KEYDOWN:

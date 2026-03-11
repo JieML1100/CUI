@@ -89,6 +89,8 @@ enum class UIClass : int
 	UI_WrapPanel,
 	UI_RelativePanel,
 	UI_DateTimePicker,
+	UI_ToolTip,
+	UI_ContextMenu,
 	UI_CUSTOM
 };
 
@@ -219,6 +221,20 @@ protected:
 	bool IsCaretBlinkVisible() const;
 	bool IsCaretBlinkAnimating() const;
 	bool GetCaretBlinkInvalidRect(D2D1_RECT_F& outRect) const;
+	virtual bool DefaultTrackUnderMouse() const { return false; }
+	virtual bool DefaultSelectOnLeftButtonDown() const { return true; }
+	virtual bool DefaultSelectOnLeftButtonDoubleClick() const { return false; }
+	virtual bool DefaultRaiseClickOnLeftButtonUp() const { return false; }
+	virtual bool DefaultClearSelectionOnMouseUp() const { return false; }
+	virtual bool DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const { (void)message; (void)wasSelected; return true; }
+	virtual bool DefaultPostRenderOnMouseDown(UINT message) const { (void)message; return true; }
+	virtual bool DefaultPostRenderOnMouseUp(UINT message) const { (void)message; return true; }
+	virtual bool DefaultPostRenderOnMouseDoubleClick(UINT message, bool wasSelected) const { (void)message; (void)wasSelected; return false; }
+	virtual void BeforeDefaultMouseMove(MouseEventArgs& e) { (void)e; }
+	virtual void BeforeDefaultMouseDown(UINT message, MouseEventArgs& e) { (void)message; (void)e; }
+	virtual void BeforeDefaultMouseUp(UINT message, MouseEventArgs& e, bool wasSelected) { (void)message; (void)e; (void)wasSelected; }
+	virtual void BeforeDefaultClick(UINT message, MouseEventArgs& e) { (void)message; (void)e; }
+	virtual void BeforeDefaultMouseDoubleClick(UINT message, MouseEventArgs& e, bool wasSelected) { (void)message; (void)e; (void)wasSelected; }
 
 	// 通知父容器（Panel 或 Form）需要重新布局
 	void RequestLayout();
@@ -466,11 +482,19 @@ public:
 	 * @param yof 相对于控件客户区的 Y。
 	 */
 	virtual CursorKind QueryCursor(int xof, int yof) { (void)xof; (void)yof; return this->Cursor; }
+	virtual bool ContainsPoint(int xof, int yof)
+	{
+		auto size = this->ActualSize();
+		return xof >= 0 && yof >= 0 && xof <= size.cx && yof <= size.cy;
+	}
 	virtual bool HitTestChildren() const { return true; }
 	virtual bool ShouldHitTestChildrenAt(int xof, int yof) const { (void)xof; (void)yof; return this->HitTestChildren(); }
 	virtual POINT GetChildrenRenderOffset() const { return POINT{ 0, 0 }; }
 	virtual bool HandlesMouseWheel() const { return false; }
 	virtual bool HandlesNavigationKey(WPARAM key) const { (void)key; return false; }
+	virtual bool AutoCloseOnOutsideClick() const { return false; }
+	virtual bool AutoCloseOnFormFocusLoss() const { return false; }
+	virtual void ClosePopup() {}
 	virtual void RenderImage();
 	virtual SIZE ActualSize();
 	void setTextPrivate(std::wstring);

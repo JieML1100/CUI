@@ -8,6 +8,11 @@
  */
 class LinkLabel : public Label
 {
+protected:
+	bool DefaultTrackUnderMouse() const override { return true; }
+	bool DefaultRaiseClickOnLeftButtonUp() const override { return true; }
+	bool DefaultClearSelectionOnMouseUp() const override { return true; }
+	void BeforeDefaultClick(UINT message, MouseEventArgs& e) override;
 public:
 	virtual UIClass Type();
 	/** @brief 鼠标悬停时文本颜色。 */
@@ -22,5 +27,4 @@ public:
 	LinkLabel(std::wstring text, int x, int y);
 	void Update() override;
 	CursorKind QueryCursor(int xof, int yof) override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 };

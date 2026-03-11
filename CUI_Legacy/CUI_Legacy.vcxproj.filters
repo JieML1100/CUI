@@ -27,6 +27,9 @@
     <ClInclude Include="GUI\ComboBox.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\ContextMenu.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\DateTimePicker.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -114,6 +117,9 @@
     <ClInclude Include="GUI\ToolBar.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\ToolTip.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\StatusBar.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -150,6 +156,9 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\ComboBox.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\ContextMenu.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\DateTimePicker.cpp">
@@ -225,6 +234,9 @@
       <Filter>GUI\Layout</Filter>
     </ClCompile>
     <ClCompile Include="GUI\ToolBar.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\ToolTip.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\StatusBar.cpp">

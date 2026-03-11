@@ -32,6 +32,7 @@ private:
 
     void System_OnNotifyToggle(class Control* sender, MouseEventArgs e);
     void System_OnBalloonTip(class Control* sender, MouseEventArgs e);
+    void System_OnContextMenuCommand(class Control* sender, int id);
 
     void BuildMenuToolStatus();
     void BuildTabs();
@@ -56,6 +57,7 @@ private:
 
     // Basic tab
     Button* _basicButton = nullptr;
+    ToolTip* _basicToolTip = nullptr;
     CheckBox* _basicEnableCheck = nullptr;
     LinkLabel* _basicLink = nullptr;
     RadioBox* _rb1 = nullptr;
@@ -80,5 +82,6 @@ private:
     // System integration
     Taskbar* _taskbar = nullptr;
     NotifyIcon* _notify = nullptr;
+    ContextMenu* _systemContextMenu = nullptr;
     bool _notifyVisible = false;
 };

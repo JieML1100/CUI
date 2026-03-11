@@ -321,6 +321,26 @@ void DemoWindow::System_OnBalloonTip(class Control* sender, MouseEventArgs e)
 	Ui_UpdateStatus(L"NotifyIcon: BalloonTip");
 }
 
+void DemoWindow::System_OnContextMenuCommand(class Control* sender, int id)
+{
+	(void)sender;
+	switch (id)
+	{
+	case 1001:
+		Ui_UpdateStatus(L"ContextMenu: 新建项目");
+		break;
+	case 1002:
+		Ui_UpdateStatus(L"ContextMenu: 刷新视图");
+		break;
+	case 1003:
+		Ui_UpdateStatus(L"ContextMenu: 更多 -> 复制信息");
+		break;
+	case 1004:
+		Ui_UpdateStatus(L"ContextMenu: 更多 -> 关于此页");
+		break;
+	}
+}
+
 void DemoWindow::BuildMenuToolStatus()
 {
 	_menu = this->AddControl(new Menu(0, 0, this->Size.cx, 28));
@@ -715,7 +735,7 @@ void DemoWindow::BuildTab_Layout(TabPage* page)
 
 void DemoWindow::BuildTab_System(TabPage* page)
 {
-	page->AddControl(new Label(L"NotifyIcon / Taskbar", 10, 10));
+	page->AddControl(new Label(L"NotifyIcon / Taskbar / ContextMenu", 10, 10));
 	page->AddControl(new Label(L"Taskbar：顶部 Slider 会同步设置任务栏进度条（ITaskbarList3）", 10, 40));
 
 	auto btnToggle = page->AddControl(new Button(L"显示/隐藏托盘图标", 10, 80, 180, 30));
@@ -724,7 +744,17 @@ void DemoWindow::BuildTab_System(TabPage* page)
 	auto btnBalloon = page->AddControl(new Button(L"气泡提示", 200, 80, 120, 30));
 	btnBalloon->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->System_OnBalloonTip(sender, e); };
 
-	page->AddControl(new Label(L"提示：右键托盘图标可弹出菜单。", 10, 125));
+	page->AddControl(new Label(L"提示：右键托盘图标可弹出菜单；在此页空白区域单击右键可弹出自定义 ContextMenu。", 10, 125));
+	page->AddControl(new Label(L"ContextMenu 不绑定具体控件，由业务代码主动调用 ShowAt。", 10, 150));
+
+	page->OnMouseUp += [this, page](class Control* sender, MouseEventArgs e)
+		{
+			(void)sender;
+			if (e.Buttons != MouseButtons::Right) return;
+			if (!_systemContextMenu) return;
+			_systemContextMenu->ShowAt(page, e.X, e.Y);
+			Ui_UpdateStatus(L"ContextMenu: 已弹出，点击其他区域会自动关闭");
+		};
 }
 
 void DemoWindow::BuildTab_Media(TabPage* page)
@@ -920,6 +950,24 @@ DemoWindow::DemoWindow() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
 
 	BuildMenuToolStatus();
 	BuildTabs();
+
+	_basicToolTip = this->AddControl(new ToolTip());
+	if (_basicToolTip && _basicButton)
+	{
+		_basicToolTip->Bind(_basicButton, L"这是绑定到 Button 的悬停提示示例");
+	}
+
+	_systemContextMenu = this->AddControl(new ContextMenu());
+	if (_systemContextMenu)
+	{
+		_systemContextMenu->AddItem(L"新建项目", 1001);
+		_systemContextMenu->AddItem(L"刷新视图", 1002);
+		_systemContextMenu->AddSeparator();
+		auto more = _systemContextMenu->AddItem(L"更多", 0);
+		more->AddSubItem(L"复制信息", 1003);
+		more->AddSubItem(L"关于此页", 1004);
+		_systemContextMenu->OnMenuCommand += [this](class Control* sender, int id) { this->System_OnContextMenuCommand(sender, id); };
+	}
 
 	this->BackColor = Colors::grey31;
 	this->SizeMode = ImageSizeMode::StretchIamge;
