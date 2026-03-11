@@ -1,5 +1,9 @@
 ﻿#include "DesignerCanvas.h"
 #include "CodeGenInput.h"
+#include "DesignerCore/DesignerCommandCoordinator.h"
+#include "DesignerCore/HitTestService.h"
+#include "DesignerCore/LayoutBridge.h"
+#include "DesignerCore/SelectionService.h"
 #include "DesignerModel/DesignDocument.h"
 #include "DesignerModel/DesignDocumentSerializer.h"
 #include <CppUtils/Utils/json.h>
@@ -80,6 +84,9 @@ static void ResetAlignmentForManualPlacement(Control* control)
 DesignerCanvas::DesignerCanvas(int x, int y, int width, int height)
 	: Panel(x, y, width, height)
 {
+	_commandCoordinator = std::make_unique<DesignerCommandCoordinator>(this);
+	_selectionService = std::make_unique<SelectionService>();
+
 	// 初始化窗体字体为框架默认字体
 	if (auto* def = GetDefaultFontObject())
 	{
@@ -491,72 +498,62 @@ void DesignerCanvas::Update()
 
 void DesignerCanvas::ClearSelection()
 {
-	for (auto& dc : _selectedControls)
+	if (_selectionService)
 	{
-		if (dc) dc->IsSelected = false;
+		_selectionService->Clear(_selectedControls, _selectedControl);
 	}
-	_selectedControls.clear();
-	_selectedControl = nullptr;
 }
 
 bool DesignerCanvas::IsSelected(const std::shared_ptr<DesignerControl>& dc) const
 {
-	if (!dc) return false;
-	for (auto& s : _selectedControls)
+	if (!_selectionService)
 	{
-		if (s == dc) return true;
+		return false;
 	}
-	return false;
+	return _selectionService->IsSelected(_selectedControls, dc);
 }
 
 void DesignerCanvas::SetPrimarySelection(const std::shared_ptr<DesignerControl>& dc, bool fireEvent)
 {
-	_selectedControl = dc;
+	if (_selectionService)
+	{
+		_selectionService->SetPrimary(_selectedControl, dc);
+	}
 	if (fireEvent)
 		OnControlSelected(_selectedControl);
 }
 
 void DesignerCanvas::AddToSelection(const std::shared_ptr<DesignerControl>& dc, bool setPrimary, bool fireEvent)
 {
-	if (!dc || !dc->ControlInstance) return;
-	if (!IsSelected(dc))
+	if (!_selectionService)
 	{
-		// 最小约束：多选只允许同一运行时父容器，避免跨容器移动/布局难题
-		if (!_selectedControls.empty() && _selectedControl && _selectedControl->ControlInstance)
-		{
-			auto* p0 = _selectedControl->ControlInstance->Parent;
-			auto* p1 = dc->ControlInstance->Parent;
-			if (p0 != p1)
-				return;
-		}
-		_selectedControls.push_back(dc);
-		dc->IsSelected = true;
+		return;
+	}
+	bool changed = _selectionService->Add(_selectedControls, _selectedControl, dc, setPrimary);
+	if (!changed)
+	{
+		return;
 	}
 	if (setPrimary)
+	{
 		SetPrimarySelection(dc, fireEvent);
+	}
 	else if (fireEvent)
+	{
 		OnControlSelected(_selectedControl);
+	}
 }
 
 void DesignerCanvas::ToggleSelection(const std::shared_ptr<DesignerControl>& dc, bool fireEvent)
 {
-	if (!dc || !dc->ControlInstance) return;
-	if (!IsSelected(dc))
+	if (!_selectionService)
 	{
-		AddToSelection(dc, true, fireEvent);
 		return;
 	}
-
-	// remove
-	_selectedControls.erase(
-		std::remove_if(_selectedControls.begin(), _selectedControls.end(),
-			[&](const std::shared_ptr<DesignerControl>& x) { return x == dc; }),
-		_selectedControls.end());
-	dc->IsSelected = false;
-
-	if (_selectedControl == dc)
+	bool changed = _selectionService->Toggle(_selectedControls, _selectedControl, dc);
+	if (!changed)
 	{
-		_selectedControl = _selectedControls.empty() ? nullptr : _selectedControls.back();
+		return;
 	}
 	if (fireEvent)
 		OnControlSelected(_selectedControl);
@@ -708,6 +705,30 @@ void DesignerCanvas::ApplyMoveDeltaToSelection(int dx, int dy)
 	}
 }
 
+std::vector<std::wstring> DesignerCanvas::CaptureSelectionNames() const
+{
+	if (!_selectionService)
+	{
+		return {};
+	}
+	return _selectionService->CaptureNames(_selectedControls);
+}
+
+bool DesignerCanvas::ExecuteCommand(std::unique_ptr<IDesignerCommand> command)
+{
+	return _commandCoordinator ? _commandCoordinator->Execute(std::move(command)) : false;
+}
+
+bool DesignerCanvas::UndoCommand()
+{
+	return _commandCoordinator ? _commandCoordinator->Undo() : false;
+}
+
+bool DesignerCanvas::RedoCommand()
+{
+	return _commandCoordinator ? _commandCoordinator->Redo() : false;
+}
+
 Thickness DesignerCanvas::GetPaddingOfContainer(Control* container)
 {
 	if (!container) return Thickness();
@@ -805,6 +826,34 @@ void DesignerCanvas::ApplyRectToControl(Control* c, const RECT& rectInCanvas)
 		p->InvalidateLayout();
 		p->PerformLayout();
 	}
+}
+
+void DesignerCanvas::RestorePrimarySelectionByName(const std::wstring& name, bool fireEvent)
+{
+	RestoreSelectionByNames(name.empty() ? std::vector<std::wstring>() : std::vector<std::wstring>{ name }, name, fireEvent);
+}
+
+void DesignerCanvas::RestoreSelectionByNames(const std::vector<std::wstring>& selectionNames, const std::wstring& primaryName, bool fireEvent)
+{
+	if (_selectionService)
+	{
+		_selectionService->RestoreByNames(_designerControls, _selectedControls, _selectedControl, selectionNames, primaryName);
+	}
+	if (selectionNames.empty() && primaryName.empty())
+	{
+		if (fireEvent)
+		{
+			OnControlSelected(nullptr);
+		}
+		this->PostRender();
+		return;
+	}
+
+	if (fireEvent)
+	{
+		OnControlSelected(_selectedControl);
+	}
+	this->PostRender();
 }
 
 void DesignerCanvas::NotifySelectionChangedThrottled()
@@ -1307,69 +1356,7 @@ void DesignerCanvas::DrawSelectionHandles(std::shared_ptr<DesignerControl> dc)
 
 std::shared_ptr<DesignerControl> DesignerCanvas::HitTestControl(POINT pt)
 {
-	auto pointInRect = [](POINT p, POINT loc, SIZE sz) -> bool {
-		return p.x >= loc.x && p.y >= loc.y && p.x <= (loc.x + sz.cx) && p.y <= (loc.y + sz.cy);
-	};
-
-	// 在“控件树”中找最深层命中（而不是仅在 DesignerControl 列表里找矩形）。
-	// 这样当控件已被放入容器时，点击会优先命中子控件。
-	std::function<Control*(Control*, POINT)> hitDeepest = [&](Control* parent, POINT ptLocal) -> Control* {
-		if (!parent) return nullptr;
-		// 从后往前：后添加的绘制在上面
-		for (int i = parent->Count - 1; i >= 0; i--)
-		{
-			auto* child = parent->operator[](i);
-			if (!child) continue;
-			if (!child->Visible) continue;
-
-			auto loc = child->ActualLocation;
-			auto sz = child->ActualSize();
-			if (!pointInRect(ptLocal, loc, sz))
-				continue;
-
-			POINT childLocal{ ptLocal.x - loc.x, ptLocal.y - loc.y };
-			if (child->HitTestChildren() && child->Count > 0)
-			{
-				auto* deeper = hitDeepest(child, childLocal);
-				if (deeper) return deeper;
-			}
-			return child;
-		}
-		return nullptr;
-	};
-
-	Control* hit = hitDeepest(this, pt);
-	if (!hit) return nullptr;
-
-	// 将命中的 Control 映射到最近的 DesignerControl（有些内部控件如 TabPage/自动生成 Button
-	// 可能没有对应的 DesignerControl 包装，此时向上回溯到最近的可设计控件）。
-	auto findDesigner = [&](Control* c) -> std::shared_ptr<DesignerControl> {
-		while (c && c != this)
-		{
-			for (auto it = _designerControls.rbegin(); it != _designerControls.rend(); ++it)
-			{
-				auto& dc = *it;
-				if (dc && dc->ControlInstance == c)
-					return dc;
-			}
-			c = c->Parent;
-		}
-		return nullptr;
-	};
-
-	// Alt 点击：优先选择父容器（解决“子控件铺满后容器难选中”）
-	if (GetAsyncKeyState(VK_MENU) & 0x8000)
-	{
-		Control* p = hit->Parent;
-		while (p && p != this)
-		{
-			auto dc = findDesigner(p);
-			if (dc) return dc;
-			p = p->Parent;
-		}
-	}
-
-	return findDesigner(hit);
+	return HitTestService::HitTestControl(this, _designerControls, pt, (GetAsyncKeyState(VK_MENU) & 0x8000) != 0);
 }
 
 RECT DesignerCanvas::GetControlRectInCanvas(Control* c)
@@ -1421,14 +1408,7 @@ DesignerControl::ResizeHandle DesignerCanvas::HitTestHandleFromRect(const RECT& 
 
 bool DesignerCanvas::IsDescendantOf(Control* ancestor, Control* node)
 {
-	if (!ancestor || !node) return false;
-	auto* p = node->Parent;
-	while (p)
-	{
-		if (p == ancestor) return true;
-		p = p->Parent;
-	}
-	return false;
+	return HitTestService::IsDescendantOf(ancestor, node);
 }
 
 void DesignerCanvas::RemoveDesignerControlsInSubtree(Control* root)
@@ -1467,41 +1447,12 @@ void DesignerCanvas::RemoveDesignerControlsInSubtree(Control* root)
 
 bool DesignerCanvas::IsContainerControl(Control* c)
 {
-	if (!c) return false;
-	switch (c->Type())
-	{
-	case UIClass::UI_Panel:
-	case UIClass::UI_ScrollView:
-	case UIClass::UI_StackPanel:
-	case UIClass::UI_GridPanel:
-	case UIClass::UI_DockPanel:
-	case UIClass::UI_WrapPanel:
-	case UIClass::UI_RelativePanel:
-	case UIClass::UI_TabControl:
-	case UIClass::UI_ToolBar:
-	case UIClass::UI_TabPage:
-		return true;
-	default:
-		return false;
-	}
+	return HitTestService::IsContainerControl(c);
 }
 
 Control* DesignerCanvas::NormalizeContainerForDrop(Control* container)
 {
-	if (!container) return nullptr;
-	if (container->Type() == UIClass::UI_TabControl)
-	{
-		auto* tc = (TabControl*)container;
-		if (tc->Count <= 0)
-		{
-			tc->AddPage(L"Page 1");
-		}
-		if (tc->Count <= 0) return tc;
-		if (tc->SelectedIndex < 0) tc->SelectedIndex = 0;
-		if (tc->SelectedIndex >= tc->Count) tc->SelectedIndex = tc->Count - 1;
-		return tc->operator[](tc->SelectedIndex);
-	}
-	return container;
+	return LayoutBridge::NormalizeContainerForDrop(container);
 }
 
 POINT DesignerCanvas::CanvasToContainerPoint(POINT ptCanvas, Control* container)
@@ -1516,32 +1467,9 @@ POINT DesignerCanvas::CanvasToContainerPoint(POINT ptCanvas, Control* container)
 
 Control* DesignerCanvas::FindBestContainerAtPoint(POINT ptCanvas, Control* ignore)
 {
-	Control* best = nullptr;
-	int bestArea = INT_MAX;
-
-	for (auto& dc : _designerControls)
-	{
-		if (!dc || !dc->ControlInstance) continue;
-		auto* c = dc->ControlInstance;
-		// 关键：必须尊重“祖先可见性”。例如 TabControl 未选中页里的容器，控件自身 Visible 可能仍为 true，
-		// 但其 TabPage 为隐藏状态，此时应当不参与命中，否则会把当前页控件错误塞进隐藏页容器。
-		if (!c->IsVisual || !c->Visible || !c->Enable) continue;
-		if (!IsContainerControl(c)) continue;
-		if (ignore && (c == ignore || IsDescendantOf(ignore, c))) continue;
-
-		auto r = GetControlRectInCanvas(c);
-		if (ptCanvas.x >= r.left && ptCanvas.x <= r.right && ptCanvas.y >= r.top && ptCanvas.y <= r.bottom)
-		{
-			int area = (r.right - r.left) * (r.bottom - r.top);
-			if (area < bestArea)
-			{
-				best = c;
-				bestArea = area;
-			}
-		}
-	}
-
-	return best;
+	return HitTestService::FindBestContainerAtPoint(_designerControls, ptCanvas, ignore, [this](Control* control) {
+		return GetControlRectInCanvas(control);
+	});
 }
 
 void DesignerCanvas::DeleteControlRecursive(Control* c)
@@ -1583,7 +1511,7 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 	}
 
 	// TabControl 的 content 已归一化为 TabPage；ToolBar 需要额外限制
-	if (container->Type() == UIClass::UI_ToolBar && movingType != UIClass::UI_Button)
+	if (!LayoutBridge::CanAcceptChild(container, movingType))
 		return;
 
 	bool containerChanged = (_selectedControl->DesignerParent != container);
@@ -1604,158 +1532,15 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 			moving->Parent->RemoveControl(moving);
 
 		// 加入新容器
-		if (container->Type() == UIClass::UI_ToolBar)
-		{
-			auto* tb = (ToolBar*)container;
-			tb->AddToolButton((Button*)moving);
-		}
-		else
-		{
-			container->AddControl(moving);
-		}
+		LayoutBridge::AttachChild(container, moving);
 
 		_selectedControl->DesignerParent = container;
 	}
 
-	// 布局容器：无论是否换容器，只要落点变化就要更新布局表达
-	if (container->Type() == UIClass::UI_GridPanel)
-	{
-		auto* gp = (GridPanel*)container;
-		int row = 0, col = 0;
-		if (gp->TryGetCellAtPoint(dropLocalCenter, row, col))
-		{
-			moving->GridRow = row;
-			moving->GridColumn = col;
-		}
-		// Grid 默认让子控件填充单元格
-		moving->HAlign = HorizontalAlignment::Stretch;
-		moving->VAlign = VerticalAlignment::Stretch;
-		moving->Location = { 0,0 };
-	}
-	else if (container->Type() == UIClass::UI_StackPanel)
-	{
-		auto* sp = (StackPanel*)container;
-		int insertIndex = sp->Count - 1;
-		Orientation orient = sp->GetOrientation();
-		for (int i = 0; i < sp->Count; i++)
-		{
-			auto* c = sp->operator[](i);
-			if (!c || c == moving || !c->Visible) continue;
-			auto loc = c->ActualLocation;
-			auto sz = c->ActualSize();
-			float mid = (orient == Orientation::Vertical)
-				? (loc.y + sz.cy * 0.5f)
-				: (loc.x + sz.cx * 0.5f);
-			float dropAxis = (orient == Orientation::Vertical) ? (float)dropLocalCenter.y : (float)dropLocalCenter.x;
-			if (dropAxis < mid)
-			{
-				insertIndex = i;
-				break;
-			}
-		}
-		int curIndex = sp->Children.IndexOf(moving);
-		if (curIndex >= 0)
-		{
-			while (curIndex > insertIndex)
-			{
-				sp->Children.Swap(curIndex, curIndex - 1);
-				curIndex--;
-			}
-			while (curIndex < insertIndex)
-			{
-				sp->Children.Swap(curIndex, curIndex + 1);
-				curIndex++;
-			}
-		}
-		moving->Location = { 0,0 };
-	}
-	else if (container->Type() == UIClass::UI_DockPanel)
-	{
-		auto cs = container->Size;
-		float w = (float)cs.cx;
-		float h = (float)cs.cy;
-		float x = (float)dropLocalCenter.x;
-		float y = (float)dropLocalCenter.y;
-		float left = x;
-		float right = w - x;
-		float top = y;
-		float bottom = h - y;
-
-		float minDim = (w < h) ? w : h;
-		float snap = (std::min)(40.0f, (std::max)(12.0f, minDim * 0.25f));
-		Dock dock = Dock::Fill;
-		float minDist = left;
-		dock = Dock::Left;
-		if (top < minDist) { minDist = top; dock = Dock::Top; }
-		if (right < minDist) { minDist = right; dock = Dock::Right; }
-		if (bottom < minDist) { minDist = bottom; dock = Dock::Bottom; }
-		if (minDist > snap) dock = Dock::Fill;
-		moving->DockPosition = dock;
-		moving->Location = { 0,0 };
-	}
-	else if (container->Type() == UIClass::UI_WrapPanel)
-	{
-		auto* wp = (WrapPanel*)container;
-		int insertIndex = wp->Count - 1;
-		Orientation orient = wp->GetOrientation();
-		const float lineTol = 10.0f;
-		for (int i = 0; i < wp->Count; i++)
-		{
-			auto* c = wp->operator[](i);
-			if (!c || c == moving || !c->Visible) continue;
-			auto loc = c->ActualLocation;
-			auto sz = c->ActualSize();
-			float childPrimary = (orient == Orientation::Horizontal) ? (float)loc.y : (float)loc.x;
-			float childSecondaryMid = (orient == Orientation::Horizontal)
-				? (loc.x + sz.cx * 0.5f)
-				: (loc.y + sz.cy * 0.5f);
-			float dropPrimary = (orient == Orientation::Horizontal) ? (float)dropLocalCenter.y : (float)dropLocalCenter.x;
-			float dropSecondary = (orient == Orientation::Horizontal) ? (float)dropLocalCenter.x : (float)dropLocalCenter.y;
-			if (childPrimary > dropPrimary + lineTol || (std::fabs(childPrimary - dropPrimary) <= lineTol && dropSecondary < childSecondaryMid))
-			{
-				insertIndex = i;
-				break;
-			}
-		}
-		int curIndex = wp->Children.IndexOf(moving);
-		if (curIndex >= 0)
-		{
-			while (curIndex > insertIndex)
-			{
-				wp->Children.Swap(curIndex, curIndex - 1);
-				curIndex--;
-			}
-			while (curIndex < insertIndex)
-			{
-				wp->Children.Swap(curIndex, curIndex + 1);
-				curIndex++;
-			}
-		}
-		moving->Location = { 0,0 };
-	}
-	else if (container->Type() == UIClass::UI_RelativePanel)
-	{
-		auto m = moving->Margin;
-		m.Left = (float)newLocal.x;
-		m.Top = (float)newLocal.y;
-		m.Right = 0.0f;
-		m.Bottom = 0.0f;
-		moving->Margin = m;
-		moving->Location = { 0,0 };
-	}
-	else
-	{
-		if (containerChanged)
-		{
-			ApplyRectToControl(moving, r);
-		}
-	}
-
-	if (auto* p = dynamic_cast<Panel*>(container))
-	{
-		p->InvalidateLayout();
-		p->PerformLayout();
-	}
+	LayoutBridge::ApplyExistingChildLayout(container, moving, newLocal, dropLocalCenter, containerChanged, r, [this, &moving](const RECT& rectInCanvas) {
+		ApplyRectToControl(moving, rectInCanvas);
+	});
+	LayoutBridge::RefreshContainerLayout(container);
 	this->PostRender();
 }
 
@@ -1791,6 +1576,24 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 	{
 	case WM_KEYDOWN:
 	{
+		if ((GetKeyState(VK_CONTROL) & 0x8000) != 0)
+		{
+			if (wParam == 'Z')
+			{
+				if (UndoCommand())
+				{
+					return true;
+				}
+			}
+			else if (wParam == 'Y')
+			{
+				if (RedoCommand())
+				{
+					return true;
+				}
+			}
+		}
+
 		// 设计器模式下，把键盘操作收敛到画布
 		if (wParam == VK_ESCAPE)
 		{
@@ -1859,11 +1662,18 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		(void)shift;
 		if (dx != 0 || dy != 0)
 		{
+			if (_commandCoordinator) _commandCoordinator->BeginInteractionSnapshot(L"MoveSelection");
 			BeginDragFromCurrentSelection(_dragStartPoint);
 			ApplyMoveDeltaToSelection(dx, dy);
 			// 根级控件约束
 			for (auto& sdc : _selectedControls)
 				if (sdc && sdc->ControlInstance) ClampControlToDesignSurface(sdc->ControlInstance);
+			if (_commandCoordinator) _commandCoordinator->CommitInteractionSnapshot();
+			_isDragging = false;
+			_dragHasMoved = false;
+			_dragLiftedToRoot = false;
+			_dragStartItems.clear();
+			ClearAlignmentGuides();
 			this->PostRender();
 			return true;
 		}
@@ -1874,7 +1684,7 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		// 确保键盘消息会转发到画布（Form 优先发给 Selected）
 		if (this->ParentForm)
 		{
-			this->ParentForm->Selected = this;
+			this->ParentForm->SetSelectedControl(this, true);
 		}
 
 		// 如果有待添加的控件，点击时添加（必须在设计面板内）
@@ -1930,7 +1740,7 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 				auto* oldSelected = this->ParentForm ? this->ParentForm->Selected : nullptr;
 				menu->ProcessMessage(message, wParam, lParam, local.x, local.y);
 				// 恢复：让键盘快捷键仍由画布处理
-				if (this->ParentForm) this->ParentForm->Selected = this;
+				if (this->ParentForm) this->ParentForm->SetSelectedControl(this, true);
 				(void)oldSelected;
 				return true;
 			}
@@ -2018,6 +1828,10 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		{
 			int rawDx = mousePos.x - _dragStartPoint.x;
 			int rawDy = mousePos.y - _dragStartPoint.y;
+			if (rawDx != 0 || rawDy != 0)
+			{
+				if (_commandCoordinator) _commandCoordinator->BeginInteractionSnapshot(L"MoveSelection");
+			}
 			if (!_dragHasMoved && (std::abs(rawDx) >= _dragStartThreshold || std::abs(rawDy) >= _dragStartThreshold))
 			{
 				_dragHasMoved = true;
@@ -2043,6 +1857,10 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		{
 			int dx = mousePos.x - _dragStartPoint.x;
 			int dy = mousePos.y - _dragStartPoint.y;
+			if (dx != 0 || dy != 0)
+			{
+				if (_commandCoordinator) _commandCoordinator->BeginInteractionSnapshot(L"ResizeSelection");
+			}
 			
 			RECT newRect = _resizeStartRect;
 			
@@ -2168,12 +1986,21 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		{
 			TryReparentSelectedAfterDrag();
 		}
+		if (_isDragging)
+		{
+			if (_commandCoordinator) _commandCoordinator->CommitInteractionSnapshot();
+		}
+		else if (_isResizing)
+		{
+			if (_commandCoordinator) _commandCoordinator->CommitInteractionSnapshot();
+		}
 		_isDragging = false;
 		_dragHasMoved = false;
 		_dragLiftedToRoot = false;
 		_dragStartItems.clear();
 		_isResizing = false;
 		_resizeHandle = DesignerControl::ResizeHandle::None;
+		if (_commandCoordinator) _commandCoordinator->ClearInteractionSnapshot();
 		ClearAlignmentGuides();
 		this->Cursor = CursorKind::Arrow;
 		return true;
@@ -2184,6 +2011,13 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 }
 
 void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
+{
+	if (_commandCoordinator) _commandCoordinator->ExecuteDocumentSnapshotCommand(L"AddControl", [this, type, canvasPos]() {
+		AddControlToCanvasCore(type, canvasPos);
+	});
+}
+
+void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 {
 	Control* newControl = nullptr;
 	std::wstring typeName;
@@ -2352,8 +2186,7 @@ void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
 
 		if (container)
 		{
-			// ToolBar 只接受 Button
-			if (container->Type() == UIClass::UI_ToolBar && type != UIClass::UI_Button)
+			if (!LayoutBridge::CanAcceptChild(container, type))
 			{
 				container = nullptr;
 			}
@@ -2364,117 +2197,9 @@ void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
 			designerParent = container;
 			POINT local = CanvasToContainerPoint({ centerX, centerY }, container);
 			POINT dropLocal = CanvasToContainerPoint(canvasPos, container);
-			if (container->Type() == UIClass::UI_ToolBar)
-			{
-				((ToolBar*)container)->AddToolButton((Button*)newControl);
-			}
-			else
-			{
-				container->AddControl(newControl);
-				// 布局容器：按规则设置布局属性/顺序
-				if (container->Type() == UIClass::UI_GridPanel)
-				{
-					auto* gp = (GridPanel*)container;
-					int row = 0, col = 0;
-					if (gp->TryGetCellAtPoint(dropLocal, row, col))
-					{
-						newControl->GridRow = row;
-						newControl->GridColumn = col;
-					}
-					// Grid 默认让子控件填充单元格
-					newControl->HAlign = HorizontalAlignment::Stretch;
-					newControl->VAlign = VerticalAlignment::Stretch;
-					newControl->Location = { 0,0 };
-				}
-				else if (container->Type() == UIClass::UI_StackPanel)
-				{
-					newControl->Location = { 0,0 };
-				}
-				else if (container->Type() == UIClass::UI_DockPanel)
-				{
-					auto cs = container->Size;
-					float w = (float)cs.cx;
-					float h = (float)cs.cy;
-					float x = (float)dropLocal.x;
-					float y = (float)dropLocal.y;
-					float left = x;
-					float right = w - x;
-					float top = y;
-					float bottom = h - y;
-
-					float minDim = (w < h) ? w : h;
-					float snap = (std::min)(40.0f, (std::max)(12.0f, minDim * 0.25f));
-					Dock dock = Dock::Fill;
-					float minDist = left;
-					dock = Dock::Left;
-					if (top < minDist) { minDist = top; dock = Dock::Top; }
-					if (right < minDist) { minDist = right; dock = Dock::Right; }
-					if (bottom < minDist) { minDist = bottom; dock = Dock::Bottom; }
-					if (minDist > snap) dock = Dock::Fill;
-					newControl->DockPosition = dock;
-					newControl->Location = { 0,0 };
-				}
-				else if (container->Type() == UIClass::UI_WrapPanel)
-				{
-					auto* wp = (WrapPanel*)container;
-					int insertIndex = wp->Count - 1;
-					Orientation orient = wp->GetOrientation();
-					const float lineTol = 10.0f;
-					for (int i = 0; i < wp->Count; i++)
-					{
-						auto* c = wp->operator[](i);
-						if (!c || c == newControl || !c->Visible) continue;
-						auto locc = c->ActualLocation;
-						auto sz = c->ActualSize();
-						float childPrimary = (orient == Orientation::Horizontal) ? (float)locc.y : (float)locc.x;
-						float childSecondaryMid = (orient == Orientation::Horizontal)
-							? (locc.x + sz.cx * 0.5f)
-							: (locc.y + sz.cy * 0.5f);
-						float dropPrimary = (orient == Orientation::Horizontal) ? (float)dropLocal.y : (float)dropLocal.x;
-						float dropSecondary = (orient == Orientation::Horizontal) ? (float)dropLocal.x : (float)dropLocal.y;
-						if (childPrimary > dropPrimary + lineTol || (std::fabs(childPrimary - dropPrimary) <= lineTol && dropSecondary < childSecondaryMid))
-						{
-							insertIndex = i;
-							break;
-						}
-					}
-					int curIndex = wp->Children.IndexOf(newControl);
-					if (curIndex >= 0)
-					{
-						while (curIndex > insertIndex)
-						{
-							wp->Children.Swap(curIndex, curIndex - 1);
-							curIndex--;
-						}
-						while (curIndex < insertIndex)
-						{
-							wp->Children.Swap(curIndex, curIndex + 1);
-							curIndex++;
-						}
-					}
-					newControl->Location = { 0,0 };
-				}
-				else if (container->Type() == UIClass::UI_RelativePanel)
-				{
-					auto m = newControl->Margin;
-					m.Left = (float)local.x;
-					m.Top = (float)local.y;
-					m.Right = 0.0f;
-					m.Bottom = 0.0f;
-					newControl->Margin = m;
-					newControl->Location = { 0,0 };
-				}
-				else
-				{
-					newControl->Location = local;
-				}
-
-				if (auto* p = dynamic_cast<Panel*>(container))
-				{
-					p->InvalidateLayout();
-					p->PerformLayout();
-				}
-			}
+			LayoutBridge::AttachChild(container, newControl);
+			LayoutBridge::ApplyNewChildLayout(container, newControl, local, dropLocal);
+			LayoutBridge::RefreshContainerLayout(container);
 		}
 		else
 		{
@@ -2496,10 +2221,19 @@ void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
 		// 自动选中新添加的控件
 		ClearSelection();
 		AddToSelection(dc, true, true);
+		this->PostRender();
 	}
 }
 
 void DesignerCanvas::DeleteSelectedControl()
+{
+	if (_selectedControls.empty()) return;
+	if (_commandCoordinator) _commandCoordinator->ExecuteDocumentSnapshotCommand(L"DeleteSelection", [this]() {
+		DeleteSelectedControlCore();
+	});
+}
+
+void DesignerCanvas::DeleteSelectedControlCore()
 {
 	if (_selectedControls.empty()) return;
 
@@ -2526,6 +2260,7 @@ void DesignerCanvas::DeleteSelectedControl()
 			inst->Parent->RemoveControl(inst);
 		DeleteControlRecursive(inst);
 	}
+	this->PostRender();
 }
 
 void DesignerCanvas::ClearCanvas()

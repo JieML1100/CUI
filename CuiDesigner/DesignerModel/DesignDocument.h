@@ -32,6 +32,8 @@ struct DesignFormModel
 	bool CenterTitle = true;
 	bool AllowResize = true;
 	std::map<std::wstring, std::wstring> EventHandlers;
+
+	bool operator==(const DesignFormModel& other) const;
 };
 
 struct DesignNode
@@ -45,6 +47,8 @@ struct DesignNode
 	Json Props = Json::object();
 	Json Extra = Json::object();
 	Json Events = Json::object();
+
+	bool operator==(const DesignNode& other) const;
 };
 
 struct DesignDocument
@@ -58,5 +62,6 @@ struct DesignDocument
 	int AllocateNodeId();
 	void RecalculateNextStableId();
 	void Clear();
+	bool operator==(const DesignDocument& other) const;
 };
 }

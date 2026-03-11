@@ -202,6 +202,10 @@ void Designer::OnToolBoxControlSelected(UIClass type)
 
 void Designer::OnCanvasControlSelected(std::shared_ptr<DesignerControl> control)
 {
+	if (_propertyGrid)
+	{
+		_propertyGrid->CommitPendingEdits();
+	}
 	_propertyGrid->LoadControl(control);
 	
 	if (control)

@@ -16,6 +16,12 @@
     <Filter Include="DesignerModel">
       <UniqueIdentifier>{7B1EF7CA-87F6-4D0A-A2BB-5F7F92C57E99}</UniqueIdentifier>
     </Filter>
+    <Filter Include="DesignerCore">
+      <UniqueIdentifier>{0453BCE4-1DB3-4748-97F7-563B2EA87628}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="DesignerCore\Commands">
+      <UniqueIdentifier>{5E0640F9-D27E-42C5-BB0B-EFE9D0831D74}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -71,6 +77,33 @@
     </ClCompile>
     <ClCompile Include="DesignerModel\DesignDocumentCodeGenInputBuilder.cpp">
       <Filter>DesignerModel</Filter>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\PropertyGridBinder.cpp">
+      <Filter>DesignerCore</Filter>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\CommandManager.cpp">
+      <Filter>DesignerCore</Filter>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\DesignerCommandCoordinator.cpp">
+      <Filter>DesignerCore</Filter>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\HitTestService.cpp">
+      <Filter>DesignerCore</Filter>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\LayoutBridge.cpp">
+      <Filter>DesignerCore</Filter>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\SelectionService.cpp">
+      <Filter>DesignerCore</Filter>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\Commands\UpdatePropertyCommand.cpp">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\Commands\DocumentSnapshotCommand.cpp">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\Commands\AddDeleteCommand.cpp">
+      <Filter>DesignerCore\Commands</Filter>
     </ClCompile>
     <ClCompile Include="DesignerModel\DesignDocumentSerializer.cpp">
       <Filter>DesignerModel</Filter>
@@ -130,6 +163,33 @@
     </ClInclude>
     <ClInclude Include="DesignerModel\DesignDocumentCodeGenInputBuilder.h">
       <Filter>DesignerModel</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\PropertyGridBinder.h">
+      <Filter>DesignerCore</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\CommandManager.h">
+      <Filter>DesignerCore</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\DesignerCommandCoordinator.h">
+      <Filter>DesignerCore</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\HitTestService.h">
+      <Filter>DesignerCore</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\LayoutBridge.h">
+      <Filter>DesignerCore</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\SelectionService.h">
+      <Filter>DesignerCore</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\Commands\UpdatePropertyCommand.h">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\Commands\DocumentSnapshotCommand.h">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\Commands\AddDeleteCommand.h">
+      <Filter>DesignerCore\Commands</Filter>
     </ClInclude>
     <ClInclude Include="DesignerModel\DesignDocumentSerializer.h">
       <Filter>DesignerModel</Filter>

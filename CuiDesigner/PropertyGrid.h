@@ -11,7 +11,10 @@
 #include "../CUI_Legacy/GUI/TextBox.h"
 #include "../CUI_Legacy/GUI/Button.h"
 #include "DesignerTypes.h"
+#include "DesignerCore/PropertyGridBinder.h"
+#include "DesignerModel/DesignDocument.h"
 #include <memory>
+#include <functional>
 
 class DesignerCanvas;
 
@@ -61,8 +64,7 @@ private:
 	int _dragStartMouseY = 0;
 	int _dragStartScrollY = 0;
 
-	std::shared_ptr<DesignerControl> _currentControl;
-	DesignerCanvas* _canvas = nullptr;
+	PropertyGridBinder _binding;
 	Label* _titleLabel;
 
 	Panel* GetContentContainer();
@@ -86,6 +88,7 @@ private:
 		const std::vector<std::wstring>& options, int& yOffset);
 	void CreateFloatSliderPropertyItem(std::wstring propertyName, float value,
 		float minValue, float maxValue, float step, int& yOffset);
+	void ExecutePropertyCommand(const std::wstring& propertyName, const std::function<void()>& applyChange);
 	void UpdatePropertyFromTextBox(std::wstring propertyName, std::wstring value);
 	void UpdatePropertyFromBool(std::wstring propertyName, bool value);
 	void UpdatePropertyFromFloat(std::wstring propertyName, float value);
@@ -97,7 +100,8 @@ public:
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 	
-	void SetDesignerCanvas(DesignerCanvas* canvas) { _canvas = canvas; }
+	void SetDesignerCanvas(DesignerCanvas* canvas) { _binding.SetCanvas(canvas); }
+	void CommitPendingEdits();
 	void LoadControl(std::shared_ptr<DesignerControl> control);
 	void Clear();
 };

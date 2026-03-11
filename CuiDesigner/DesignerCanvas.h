@@ -6,12 +6,16 @@
  */
 #include "../CUI_Legacy/GUI/Panel.h"
 #include "DesignerTypes.h"
+#include <functional>
 #include <vector>
 #include <memory>
 #include <unordered_map>
 #include <map>
 
 struct CodeGenInput;
+class IDesignerCommand;
+class DesignerCommandCoordinator;
+class SelectionService;
 
 namespace DesignerModel
 {
@@ -20,6 +24,8 @@ namespace DesignerModel
 
 class DesignerCanvas : public Panel
 {
+friend class DesignerCommandCoordinator;
+
 private:
 	Panel* _designSurface = nullptr;
 	Panel* _clientSurface = nullptr;
@@ -61,6 +67,7 @@ private:
 	std::vector<std::shared_ptr<DesignerControl>> _designerControls;
 	std::vector<std::shared_ptr<DesignerControl>> _selectedControls;
 	std::shared_ptr<DesignerControl> _selectedControl; // primary selection
+	std::unique_ptr<SelectionService> _selectionService;
 
 	// 框选状态（rubber band）
 	bool _isBoxSelecting = false;
@@ -96,6 +103,7 @@ private:
 	// 待添加的控件类型
 	UIClass _controlToAdd = UIClass::UI_Base;
 	std::unordered_map<int, int> _controlTypeCounters;
+	std::unique_ptr<DesignerCommandCoordinator> _commandCoordinator;
 
 	std::wstring GenerateDefaultControlName(UIClass type, const std::wstring& typeName);
 	void UpdateDefaultNameCounterFromName(UIClass type, const std::wstring& name);
@@ -122,6 +130,7 @@ private:
 	bool IsLayoutContainer(Control* c) const;
 	void LiftSelectedToRootForDrag();
 	void ApplyMoveDeltaToSelection(int dx, int dy);
+	std::vector<std::wstring> CaptureSelectionNames() const;
 	void NotifySelectionChangedThrottled();
 	void ClearAlignmentGuides();
 	void AddVGuide(int xCanvas);
@@ -201,11 +210,18 @@ public:
 	
 	// 控件管理
 	void AddControlToCanvas(UIClass type, POINT canvasPos);
+	void AddControlToCanvasCore(UIClass type, POINT canvasPos);
 	void DeleteSelectedControl();
+	void DeleteSelectedControlCore();
 	void ClearCanvas();
 	void RemoveDesignerControlsInSubtree(Control* root);
 	// 设计期 Name：用于保存/加载 parent 引用，必须非空且在当前文档内唯一
 	std::wstring MakeUniqueControlName(const std::shared_ptr<DesignerControl>& target, const std::wstring& desired) const;
+	bool ExecuteCommand(std::unique_ptr<IDesignerCommand> command);
+	bool UndoCommand();
+	bool RedoCommand();
+	void RestorePrimarySelectionByName(const std::wstring& name, bool fireEvent = true);
+	void RestoreSelectionByNames(const std::vector<std::wstring>& selectionNames, const std::wstring& primaryName, bool fireEvent = true);
 	std::shared_ptr<DesignerControl> GetSelectedControl() { return _selectedControl; }
 	const std::vector<std::shared_ptr<DesignerControl>>& GetSelectedControls() const { return _selectedControls; }
 	const std::vector<std::shared_ptr<DesignerControl>>& GetAllControls() const { return _designerControls; }

@@ -9,6 +9,7 @@
 #include "MenuItemsEditorDialog.h"
 #include "StatusBarPartsEditorDialog.h"
 #include "DesignerCanvas.h"
+#include "DesignerCore/Commands/UpdatePropertyCommand.h"
 #include "../CUI_Legacy/GUI/LinkLabel.h"
 #include "../CUI_Legacy/GUI/ComboBox.h"
 #include "../CUI_Legacy/GUI/Slider.h"
@@ -666,6 +667,21 @@ void PropertyGrid::Update()
 
 bool PropertyGrid::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {
+	if (message == WM_KEYDOWN)
+	{
+		auto* canvas = _binding.GetCanvas();
+		if (canvas && (GetKeyState(VK_CONTROL) & 0x8000) != 0)
+		{
+			if (wParam == 'Z')
+			{
+				if (canvas->UndoCommand()) return true;
+			}
+			else if (wParam == 'Y')
+			{
+				if (canvas->RedoCommand()) return true;
+			}
+		}
+	}
 	return Panel::ProcessMessage(message, wParam, lParam, xof, yof);
 }
 
@@ -687,10 +703,11 @@ void PropertyGrid::CreatePropertyItem(std::wstring propertyName, std::wstring va
 	auto valueTextBox = new TextBox(L"", (width - 30) / 2 + 15, yOffset, (width - 30) / 2, 20);
 	valueTextBox->Text = value;
 
-	// 文本改变事件
-	valueTextBox->OnTextChanged += [this, propertyName](Control* sender, std::wstring oldText, std::wstring newText) {
-		UpdatePropertyFromTextBox(propertyName, newText);
-		};
+	valueTextBox->OnLostFocus += [this, propertyName](Control* sender) {
+		auto* textBox = dynamic_cast<TextBox*>(sender);
+		if (!textBox) return;
+		UpdatePropertyFromTextBox(propertyName, textBox->Text);
+	};
 
 	container->AddControl(valueTextBox);
 	// 确保ParentForm已设置（关键！）
@@ -744,10 +761,10 @@ void PropertyGrid::CreateColorPropertyItem(std::wstring propertyName, const D2D1
 	auto tb = new TextBox(L"", btnW + gap, 0, textW, 20);
 	tb->Text = ColorToText(value);
 	tb->ParentForm = this->ParentForm;
-	tb->OnTextChanged += [this, propertyName, refreshButtonColor](Control*, std::wstring, std::wstring newText) {
-		UpdatePropertyFromTextBox(propertyName, newText);
+	tb->OnLostFocus += [this, propertyName, tb, refreshButtonColor](Control*) {
+		UpdatePropertyFromTextBox(propertyName, tb->Text);
 		D2D1_COLOR_F c{};
-		if (TryParseColor(newText, c))
+		if (TryParseColor(tb->Text, c))
 		{
 			refreshButtonColor(c);
 		}
@@ -829,10 +846,10 @@ void PropertyGrid::CreateThicknessPropertyItem(std::wstring propertyName, const 
 		UpdatePropertyFromTextBox(propertyName, ThicknessToText(t));
 	};
 
-	tbL->OnTextChanged += apply;
-	tbT->OnTextChanged += apply;
-	tbR->OnTextChanged += apply;
-	tbB->OnTextChanged += apply;
+	tbL->OnLostFocus += [apply](Control* sender) { apply(sender, L"", L""); };
+	tbT->OnLostFocus += [apply](Control* sender) { apply(sender, L"", L""); };
+	tbR->OnLostFocus += [apply](Control* sender) { apply(sender, L"", L""); };
+	tbB->OnLostFocus += [apply](Control* sender) { apply(sender, L"", L""); };
 
 	panel->AddControl(tbL);
 	panel->AddControl(tbT);
@@ -1032,100 +1049,104 @@ void PropertyGrid::CreateFloatSliderPropertyItem(std::wstring propertyName, floa
 
 void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wstring value)
 {
+	ExecutePropertyCommand(propertyName, [this, propertyName, value]() {
 	// 未选中控件时：编辑“被设计窗体”属性
-	if (!_currentControl)
+	if (_binding.IsFormBinding())
 	{
-		if (!_canvas) return;
+		auto* canvas = _binding.GetCanvas();
+		if (!canvas) return;
 		try
 		{
 			if (propertyName == L"Name")
 			{
-				_canvas->SetDesignedFormName(value);
+				_binding.ApplyFormTextProperty(propertyName, value);
 			}
 			else if (propertyName == L"Text")
 			{
-				_canvas->SetDesignedFormText(value);
+				_binding.ApplyFormTextProperty(propertyName, value);
 			}
 			else if (propertyName == L"FontName")
 			{
 				auto v = TrimWs(value);
 				if (v == kFontDefaultOption) v.clear();
-				_canvas->SetDesignedFormFontName(v);
+				canvas->SetDesignedFormFontName(v);
 			}
 			else if (propertyName == L"FontSize")
 			{
 				float fs = 0.0f;
 				if (TryParseFloatWs(TrimWs(value), fs))
-					_canvas->SetDesignedFormFontSize(fs);
+					canvas->SetDesignedFormFontSize(fs);
 			}
 			else if (propertyName == L"BackColor")
 			{
 				D2D1_COLOR_F c;
-				if (TryParseColor(value, c)) _canvas->SetDesignedFormBackColor(c);
+				if (TryParseColor(value, c)) canvas->SetDesignedFormBackColor(c);
 			}
 			else if (propertyName == L"ForeColor")
 			{
 				D2D1_COLOR_F c;
-				if (TryParseColor(value, c)) _canvas->SetDesignedFormForeColor(c);
+				if (TryParseColor(value, c)) canvas->SetDesignedFormForeColor(c);
 			}
 			else if (propertyName == L"HeadHeight")
 			{
-				_canvas->SetDesignedFormHeadHeight(std::stoi(value));
+				_binding.ApplyFormTextProperty(propertyName, value);
 			}
 			else if (propertyName == L"X")
 			{
-				auto p = _canvas->GetDesignedFormLocation();
+				auto p = canvas->GetDesignedFormLocation();
 				p.x = std::stoi(value);
-				_canvas->SetDesignedFormLocation(p);
+				canvas->SetDesignedFormLocation(p);
 			}
 			else if (propertyName == L"Y")
 			{
-				auto p = _canvas->GetDesignedFormLocation();
+				auto p = canvas->GetDesignedFormLocation();
 				p.y = std::stoi(value);
-				_canvas->SetDesignedFormLocation(p);
+				canvas->SetDesignedFormLocation(p);
 			}
 			else if (propertyName == L"Width")
 			{
-				auto s = _canvas->GetDesignedFormSize();
+				auto s = canvas->GetDesignedFormSize();
 				s.cx = std::stoi(value);
-				_canvas->SetDesignedFormSize(s);
+				canvas->SetDesignedFormSize(s);
 			}
 			else if (propertyName == L"Height")
 			{
-				auto s = _canvas->GetDesignedFormSize();
+				auto s = canvas->GetDesignedFormSize();
 				s.cy = std::stoi(value);
-				_canvas->SetDesignedFormSize(s);
+				canvas->SetDesignedFormSize(s);
 			}
 		}
 		catch (...) {}
 		return;
 	}
-	if (!_currentControl->ControlInstance) return;
+	auto currentControl = _binding.GetBoundControl();
+	if (!currentControl || !currentControl->ControlInstance) return;
 
 	// 事件属性：仅更新设计期映射，不改运行时控件状态
 	if (IsEventPropertyName(propertyName))
 	{
 		auto v = TrimWs(value);
 		if (v.empty())
-			_currentControl->EventHandlers.erase(propertyName);
+			currentControl->EventHandlers.erase(propertyName);
 		else
-			_currentControl->EventHandlers[propertyName] = std::move(v);
+			currentControl->EventHandlers[propertyName] = std::move(v);
 		return;
 	}
 
-	auto ctrl = _currentControl->ControlInstance;
+	auto ctrl = currentControl->ControlInstance;
+	auto* canvas = _binding.GetCanvas();
 
 	try
 	{
 		if (propertyName == L"Name")
 		{
-			if (_canvas)
+			if (canvas)
 			{
-				_currentControl->Name = _canvas->MakeUniqueControlName(_currentControl, value);
-				_canvas->SyncDefaultNameCounter(_currentControl->Type, _currentControl->Name);
+				currentControl->Name = _binding.MakeUniqueControlName(currentControl, value);
+				_binding.SyncDefaultNameCounter(currentControl->Type, currentControl->Name);
 			}
 			else
-				_currentControl->Name = value;
+				currentControl->Name = value;
 		}
 		else if (propertyName == L"Text")
 		{
@@ -1136,8 +1157,8 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 			auto v = TrimWs(value);
 			if (v == kFontDefaultOption || v.empty())
 			{
-				if (_canvas && _canvas->GetDesignedFormSharedFont())
-					ctrl->SetFontEx(_canvas->GetDesignedFormSharedFont(), false);
+				if (_binding.GetDesignedFormSharedFont())
+					ctrl->SetFontEx(_binding.GetDesignedFormSharedFont(), false);
 				else
 					ctrl->SetFontEx(nullptr, false);
 			}
@@ -1306,10 +1327,10 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 		}
 		else if (propertyName == L"MediaFile")
 		{
-			if (_currentControl->Type == UIClass::UI_MediaPlayer)
+			if (currentControl->Type == UIClass::UI_MediaPlayer)
 			{
 				// 设计期字段：仅保存路径，不在设计器里自动加载/播放
-				_currentControl->DesignStrings[L"mediaFile"] = TrimWs(value);
+				currentControl->DesignStrings[L"mediaFile"] = TrimWs(value);
 			}
 		}
 		else if (propertyName == L"RenderMode")
@@ -1458,24 +1479,16 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 	{
 	}
 
-	if (auto* p = dynamic_cast<Panel*>(ctrl->Parent))
-	{
-		p->InvalidateLayout();
-		p->PerformLayout();
-	}
-	if (auto* p = dynamic_cast<Panel*>(ctrl))
-	{
-		p->InvalidateLayout();
-		p->PerformLayout();
-	}
-	if (_canvas) _canvas->ClampControlToDesignSurface(ctrl);
-	ctrl->PostRender();
+	_binding.NotifyControlChanged(ctrl);
+	});
 }
 
 void PropertyGrid::UpdatePropertyFromFloat(std::wstring propertyName, float value)
 {
-	if (!_currentControl || !_currentControl->ControlInstance) return;
-	auto ctrl = _currentControl->ControlInstance;
+	ExecutePropertyCommand(propertyName, [this, propertyName, value]() {
+	auto currentControl = _binding.GetBoundControl();
+	if (!currentControl || !currentControl->ControlInstance) return;
+	auto ctrl = currentControl->ControlInstance;
 
 	try
 	{
@@ -1499,82 +1512,56 @@ void PropertyGrid::UpdatePropertyFromFloat(std::wstring propertyName, float valu
 	}
 	catch (...) {}
 
-	if (auto* p = dynamic_cast<Panel*>(ctrl->Parent))
-	{
-		p->InvalidateLayout();
-		p->PerformLayout();
-	}
-	if (auto* p = dynamic_cast<Panel*>(ctrl))
-	{
-		p->InvalidateLayout();
-		p->PerformLayout();
-	}
-	if (_canvas) _canvas->ClampControlToDesignSurface(ctrl);
-	ctrl->PostRender();
+	_binding.NotifyControlChanged(ctrl);
+	});
 }
 
 void PropertyGrid::UpdateAnchorFromChecks(bool left, bool top, bool right, bool bottom)
 {
-	if (!_currentControl || !_currentControl->ControlInstance) return;
-	auto* ctrl = _currentControl->ControlInstance;
+	ExecutePropertyCommand(L"Anchor", [this, left, top, right, bottom]() {
+	auto currentControl = _binding.GetBoundControl();
+	if (!currentControl || !currentControl->ControlInstance) return;
+	auto* ctrl = currentControl->ControlInstance;
 
 	uint8_t a = AnchorStyles::None;
 	if (left) a |= AnchorStyles::Left;
 	if (top) a |= AnchorStyles::Top;
 	if (right) a |= AnchorStyles::Right;
 	if (bottom) a |= AnchorStyles::Bottom;
-	if (_canvas)
-	{
-		_canvas->ApplyAnchorStylesKeepingBounds(ctrl, a);
-	}
-	else
-	{
-		ctrl->AnchorStyles = a;
-	}
+	_binding.ApplyAnchorStylesKeepingBounds(ctrl, a);
 
-	if (auto* p = dynamic_cast<Panel*>(ctrl->Parent))
-	{
-		p->InvalidateLayout();
-		p->PerformLayout();
-	}
-	if (_canvas) _canvas->ClampControlToDesignSurface(ctrl);
-	ctrl->PostRender();
+	_binding.NotifyControlChanged(ctrl);
+	});
 }
 
 void PropertyGrid::UpdatePropertyFromBool(std::wstring propertyName, bool value)
 {
+	ExecutePropertyCommand(propertyName, [this, propertyName, value]() {
 	// 未选中控件时：编辑“被设计窗体”属性
-	if (!_currentControl)
+	if (_binding.IsFormBinding())
 	{
-		if (!_canvas) return;
+		auto* canvas = _binding.GetCanvas();
+		if (!canvas) return;
 		// 事件：写入窗体事件映射（用于保存/导出）
 		if (IsEventPropertyName(propertyName))
 		{
-			_canvas->SetDesignedFormEventEnabled(propertyName, value);
+			canvas->SetDesignedFormEventEnabled(propertyName, value);
 			return;
 		}
-		if (propertyName == L"VisibleHead") _canvas->SetDesignedFormVisibleHead(value);
-		else if (propertyName == L"MinBox") _canvas->SetDesignedFormMinBox(value);
-		else if (propertyName == L"MaxBox") _canvas->SetDesignedFormMaxBox(value);
-		else if (propertyName == L"CloseBox") _canvas->SetDesignedFormCloseBox(value);
-		else if (propertyName == L"CenterTitle") _canvas->SetDesignedFormCenterTitle(value);
-		else if (propertyName == L"AllowResize") _canvas->SetDesignedFormAllowResize(value);
-		else if (propertyName == L"ShowInTaskBar") _canvas->SetDesignedFormShowInTaskBar(value);
-		else if (propertyName == L"TopMost") _canvas->SetDesignedFormTopMost(value);
-		else if (propertyName == L"Enable") _canvas->SetDesignedFormEnable(value);
-		else if (propertyName == L"Visible") _canvas->SetDesignedFormVisible(value);
+		_binding.ApplyFormBoolProperty(propertyName, value);
 		return;
 	}
-	if (!_currentControl->ControlInstance) return;
-	auto ctrl = _currentControl->ControlInstance;
+	auto currentControl = _binding.GetBoundControl();
+	if (!currentControl || !currentControl->ControlInstance) return;
+	auto ctrl = currentControl->ControlInstance;
 
 	// 事件：仅更新设计期映射
 	if (IsEventPropertyName(propertyName))
 	{
 		if (value)
-			_currentControl->EventHandlers[propertyName] = L"1";
+			currentControl->EventHandlers[propertyName] = L"1";
 		else
-			_currentControl->EventHandlers.erase(propertyName);
+			currentControl->EventHandlers.erase(propertyName);
 		return;
 	}
 	if (propertyName == L"Enabled")
@@ -1652,65 +1639,188 @@ void PropertyGrid::UpdatePropertyFromBool(std::wstring propertyName, bool value)
 	}
 
 
-	if (auto* p = dynamic_cast<Panel*>(ctrl->Parent))
+	_binding.NotifyControlChanged(ctrl);
+	});
+}
+
+void PropertyGrid::ExecutePropertyCommand(const std::wstring& propertyName, const std::function<void()>& applyChange)
+{
+	if (!applyChange)
 	{
-		p->InvalidateLayout();
-		p->PerformLayout();
+		return;
 	}
-	if (auto* p = dynamic_cast<Panel*>(ctrl))
+
+	auto* canvas = _binding.GetCanvas();
+	if (!canvas)
 	{
-		p->InvalidateLayout();
-		p->PerformLayout();
+		applyChange();
+		return;
 	}
-	if (_canvas) _canvas->ClampControlToDesignSurface(ctrl);
-	ctrl->PostRender();
+
+	DesignerModel::DesignDocument beforeDocument;
+	std::wstring error;
+	if (!canvas->BuildDesignDocument(beforeDocument, &error))
+	{
+		applyChange();
+		return;
+	}
+
+	std::wstring beforeSelectionName;
+	if (auto boundControl = _binding.GetBoundControl())
+	{
+		beforeSelectionName = boundControl->Name;
+	}
+	std::vector<std::wstring> beforeSelectionNames;
+	if (!beforeSelectionName.empty())
+	{
+		beforeSelectionNames.push_back(beforeSelectionName);
+	}
+
+	applyChange();
+
+	DesignerModel::DesignDocument afterDocument;
+	if (!canvas->BuildDesignDocument(afterDocument, &error))
+	{
+		return;
+	}
+
+	std::wstring afterSelectionName;
+	if (auto boundControl = _binding.GetBoundControl())
+	{
+		afterSelectionName = boundControl->Name;
+	}
+	std::vector<std::wstring> afterSelectionNames;
+	if (!afterSelectionName.empty())
+	{
+		afterSelectionNames.push_back(afterSelectionName);
+	}
+
+	auto command = std::make_unique<UpdatePropertyCommand>(
+		canvas,
+		std::move(beforeDocument),
+		std::move(afterDocument),
+		std::move(beforeSelectionNames),
+		std::move(afterSelectionNames),
+		std::move(beforeSelectionName),
+		std::move(afterSelectionName),
+		L"UpdateProperty:" + propertyName,
+		true);
+	canvas->ExecuteCommand(std::move(command));
+}
+
+void PropertyGrid::CommitPendingEdits()
+{
+	if (!this->ParentForm || !this->ParentForm->Selected)
+	{
+		return;
+	}
+
+	auto isDescendantOf = [](Control* root, Control* node) -> bool {
+		if (!root || !node) return false;
+		if (root == node) return true;
+		std::vector<Control*> stack;
+		stack.reserve(64);
+		stack.push_back(root);
+		while (!stack.empty())
+		{
+			Control* current = stack.back();
+			stack.pop_back();
+			if (!current) continue;
+			for (int i = 0; i < current->Children.Count; i++)
+			{
+				auto* child = current->Children[i];
+				if (!child) continue;
+				if (child == node) return true;
+				stack.push_back(child);
+			}
+		}
+		return false;
+	};
+
+	auto* selected = this->ParentForm->Selected;
+	bool belongsToPropertyGrid = false;
+	for (auto item : _items)
+	{
+		if (!item) continue;
+		if ((item->NameLabel && selected == item->NameLabel) ||
+			(item->ValueControl && (selected == item->ValueControl || isDescendantOf(item->ValueControl, selected))) ||
+			(item->ValueTextBox && selected == item->ValueTextBox) ||
+			(item->ValueCheckBox && selected == item->ValueCheckBox))
+		{
+			belongsToPropertyGrid = true;
+			break;
+		}
+	}
+
+	if (!belongsToPropertyGrid)
+	{
+		for (auto* control : _extraControls)
+		{
+			if (control && (selected == control || isDescendantOf(control, selected)))
+			{
+				belongsToPropertyGrid = true;
+				break;
+			}
+		}
+	}
+
+	if (!belongsToPropertyGrid)
+	{
+		return;
+	}
+
+	selected->OnLostFocus(selected);
+	selected->PostRender();
+	this->ParentForm->Selected = nullptr;
 }
 
 void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 {
 	Clear();
-	_currentControl = control;
+	_binding.BindControl(control);
 	_scrollOffsetY = 0;
 
 	if (!control || !control->ControlInstance)
 	{
 		// 未选中控件时：展示被设计窗体属性
-		if (_canvas)
+		auto* canvas = _binding.GetCanvas();
+		if (canvas)
 		{
+			auto form = _binding.CaptureFormSnapshot();
 			_titleLabel->Text = L"属性 - 窗体";
 			int yOffset = GetContentTopLocal();
-			CreatePropertyItem(L"Name", _canvas->GetDesignedFormName(), yOffset);
-			CreatePropertyItem(L"Text", _canvas->GetDesignedFormText(), yOffset);
+			CreatePropertyItem(L"Name", form.Name, yOffset);
+			CreatePropertyItem(L"Text", form.Text, yOffset);
 			{
-				std::wstring fn = _canvas->GetDesignedFormFontName();
+				std::wstring fn = form.FontName;
 				std::wstring dispName = fn.empty() ? kFontDefaultOption : fn;
 				CreateEnumPropertyItem(L"FontName", dispName, GetFontNameOptions(), yOffset);
-				CreateEnumPropertyItem(L"FontSize", FloatToText(_canvas->GetDesignedFormFontSize()), GetFontSizeOptions(), yOffset);
+				CreateEnumPropertyItem(L"FontSize", FloatToText(form.FontSize), GetFontSizeOptions(), yOffset);
 			}
-			CreateColorPropertyItem(L"BackColor", _canvas->GetDesignedFormBackColor(), yOffset);
-			CreateColorPropertyItem(L"ForeColor", _canvas->GetDesignedFormForeColor(), yOffset);
-			CreateBoolPropertyItem(L"ShowInTaskBar", _canvas->GetDesignedFormShowInTaskBar(), yOffset);
-			CreateBoolPropertyItem(L"TopMost", _canvas->GetDesignedFormTopMost(), yOffset);
-			CreateBoolPropertyItem(L"Enable", _canvas->GetDesignedFormEnable(), yOffset);
-			CreateBoolPropertyItem(L"Visible", _canvas->GetDesignedFormVisible(), yOffset);
-			CreateBoolPropertyItem(L"VisibleHead", _canvas->GetDesignedFormVisibleHead(), yOffset);
-			CreatePropertyItem(L"HeadHeight", std::to_wstring(_canvas->GetDesignedFormHeadHeight()), yOffset);
-			CreateBoolPropertyItem(L"MinBox", _canvas->GetDesignedFormMinBox(), yOffset);
-			CreateBoolPropertyItem(L"MaxBox", _canvas->GetDesignedFormMaxBox(), yOffset);
-			CreateBoolPropertyItem(L"CloseBox", _canvas->GetDesignedFormCloseBox(), yOffset);
-			CreateBoolPropertyItem(L"CenterTitle", _canvas->GetDesignedFormCenterTitle(), yOffset);
-			CreateBoolPropertyItem(L"AllowResize", _canvas->GetDesignedFormAllowResize(), yOffset);
-			auto p = _canvas->GetDesignedFormLocation();
+			CreateColorPropertyItem(L"BackColor", form.BackColor, yOffset);
+			CreateColorPropertyItem(L"ForeColor", form.ForeColor, yOffset);
+			CreateBoolPropertyItem(L"ShowInTaskBar", form.ShowInTaskBar, yOffset);
+			CreateBoolPropertyItem(L"TopMost", form.TopMost, yOffset);
+			CreateBoolPropertyItem(L"Enable", form.Enable, yOffset);
+			CreateBoolPropertyItem(L"Visible", form.Visible, yOffset);
+			CreateBoolPropertyItem(L"VisibleHead", form.VisibleHead, yOffset);
+			CreatePropertyItem(L"HeadHeight", std::to_wstring(form.HeadHeight), yOffset);
+			CreateBoolPropertyItem(L"MinBox", form.MinBox, yOffset);
+			CreateBoolPropertyItem(L"MaxBox", form.MaxBox, yOffset);
+			CreateBoolPropertyItem(L"CloseBox", form.CloseBox, yOffset);
+			CreateBoolPropertyItem(L"CenterTitle", form.CenterTitle, yOffset);
+			CreateBoolPropertyItem(L"AllowResize", form.AllowResize, yOffset);
+			auto p = form.Location;
 			CreatePropertyItem(L"X", std::to_wstring(p.x), yOffset);
 			CreatePropertyItem(L"Y", std::to_wstring(p.y), yOffset);
-			auto s = _canvas->GetDesignedFormSize();
+			auto s = form.Size;
 			CreatePropertyItem(L"Width", std::to_wstring(s.cx), yOffset);
 			CreatePropertyItem(L"Height", std::to_wstring(s.cy), yOffset);
 
 			// 窗体事件（设计期映射，仅用于导出代码）
 			for (const auto& ev : GetFormEventProperties())
 			{
-				bool enabled = _canvas->GetDesignedFormEventEnabled(ev);
+				bool enabled = _binding.IsFormEventEnabled(ev);
 				CreateEventBoolPropertyItem(ev, enabled, yOffset);
 			}
 			Control::SetChildrenParentForm(this, this->ParentForm);
@@ -1734,7 +1844,7 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 		CreateBoolPropertyItem(L"Visited", link->Visited, yOffset);
 	}
 	{
-		auto* shared = _canvas ? _canvas->GetDesignedFormSharedFont() : nullptr;
+		auto* shared = _binding.GetDesignedFormSharedFont();
 		::Font* f = ctrl->Font;
 		bool isDefaultLike = false;
 		if (shared)
@@ -1914,8 +2024,9 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 		int width = GetContentWidthLocal();
 		auto editBtn = new Button(L"编辑下拉项...", 10, yOffset + 8, width - 20, 28);
 		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			if (!_currentControl || !_currentControl->ControlInstance || !this->ParentForm) return;
-			auto cb = dynamic_cast<ComboBox*>(_currentControl->ControlInstance);
+			auto currentControl = _binding.GetBoundControl();
+			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
+			auto cb = dynamic_cast<ComboBox*>(currentControl->ControlInstance);
 			if (!cb) return;
 			ComboBoxItemsEditorDialog dlg(cb);
 			dlg.ShowDialog(this->ParentForm->Handle);
@@ -1932,8 +2043,9 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 		int width = GetContentWidthLocal();
 		auto editBtn = new Button(L"编辑列...", 10, yOffset + 8, width - 20, 28);
 		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			if (!_currentControl || !_currentControl->ControlInstance || !this->ParentForm) return;
-			auto gv = dynamic_cast<GridView*>(_currentControl->ControlInstance);
+			auto currentControl = _binding.GetBoundControl();
+			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
+			auto gv = dynamic_cast<GridView*>(currentControl->ControlInstance);
 			if (!gv) return;
 			GridViewColumnsEditorDialog dlg(gv);
 			dlg.ShowDialog(this->ParentForm->Handle);
@@ -1950,13 +2062,14 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 		int width = GetContentWidthLocal();
 		auto editBtn = new Button(L"编辑页...", 10, yOffset + 8, width - 20, 28);
 		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			if (!_currentControl || !_currentControl->ControlInstance || !this->ParentForm) return;
-			auto tc = dynamic_cast<TabControl*>(_currentControl->ControlInstance);
+			auto currentControl = _binding.GetBoundControl();
+			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
+			auto tc = dynamic_cast<TabControl*>(currentControl->ControlInstance);
 			if (!tc) return;
 			TabControlPagesEditorDialog dlg(tc);
 			// 如果删除页，需要同步移除该页下的 DesignerControl 以避免悬挂
 			dlg.OnBeforeDeletePage = [this](Control* page) {
-				if (_canvas && page) _canvas->RemoveDesignerControlsInSubtree(page);
+				if (page) _binding.RemoveDesignerControlsInSubtree(page);
 				};
 			dlg.ShowDialog(this->ParentForm->Handle);
 			tc->PostRender();
@@ -1972,13 +2085,14 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 		int width = GetContentWidthLocal();
 		auto editBtn = new Button(L"编辑按钮...", 10, yOffset + 8, width - 20, 28);
 		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			if (!_currentControl || !_currentControl->ControlInstance || !this->ParentForm) return;
-			auto tb = dynamic_cast<ToolBar*>(_currentControl->ControlInstance);
+			auto currentControl = _binding.GetBoundControl();
+			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
+			auto tb = dynamic_cast<ToolBar*>(currentControl->ControlInstance);
 			if (!tb) return;
 			ToolBarButtonsEditorDialog dlg(tb);
 			// 如果删除按钮控件，需要同步移除 DesignerControl
 			dlg.OnBeforeDeleteButton = [this](Control* btn) {
-				if (_canvas && btn) _canvas->RemoveDesignerControlsInSubtree(btn);
+				if (btn) _binding.RemoveDesignerControlsInSubtree(btn);
 				};
 			dlg.ShowDialog(this->ParentForm->Handle);
 			tb->PostRender();
@@ -1994,8 +2108,9 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 		int width = GetContentWidthLocal();
 		auto editBtn = new Button(L"编辑节点...", 10, yOffset + 8, width - 20, 28);
 		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			if (!_currentControl || !_currentControl->ControlInstance || !this->ParentForm) return;
-			auto tv = dynamic_cast<TreeView*>(_currentControl->ControlInstance);
+			auto currentControl = _binding.GetBoundControl();
+			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
+			auto tv = dynamic_cast<TreeView*>(currentControl->ControlInstance);
 			if (!tv) return;
 			TreeViewNodesEditorDialog dlg(tv);
 			dlg.ShowDialog(this->ParentForm->Handle);
@@ -2012,8 +2127,9 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 		int width = GetContentWidthLocal();
 		auto editBtn = new Button(L"编辑行/列...", 10, yOffset + 8, width - 20, 28);
 		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			if (!_currentControl || !_currentControl->ControlInstance || !this->ParentForm) return;
-			auto gp = dynamic_cast<GridPanel*>(_currentControl->ControlInstance);
+			auto currentControl = _binding.GetBoundControl();
+			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
+			auto gp = dynamic_cast<GridPanel*>(currentControl->ControlInstance);
 			if (!gp) return;
 			GridPanelDefinitionsEditorDialog dlg(gp);
 			dlg.ShowDialog(this->ParentForm->Handle);
@@ -2030,8 +2146,9 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 		int width = GetContentWidthLocal();
 		auto editBtn = new Button(L"编辑菜单项...", 10, yOffset + 8, width - 20, 28);
 		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			if (!_currentControl || !_currentControl->ControlInstance || !this->ParentForm) return;
-			auto m = dynamic_cast<Menu*>(_currentControl->ControlInstance);
+			auto currentControl = _binding.GetBoundControl();
+			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
+			auto m = dynamic_cast<Menu*>(currentControl->ControlInstance);
 			if (!m) return;
 			MenuItemsEditorDialog dlg(m);
 			dlg.ShowDialog(this->ParentForm->Handle);
@@ -2048,8 +2165,9 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 		int width = GetContentWidthLocal();
 		auto editBtn = new Button(L"编辑分段...", 10, yOffset + 8, width - 20, 28);
 		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			if (!_currentControl || !_currentControl->ControlInstance || !this->ParentForm) return;
-			auto sb = dynamic_cast<StatusBar*>(_currentControl->ControlInstance);
+			auto currentControl = _binding.GetBoundControl();
+			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
+			auto sb = dynamic_cast<StatusBar*>(currentControl->ControlInstance);
 			if (!sb) return;
 			StatusBarPartsEditorDialog dlg(sb);
 			dlg.ShowDialog(this->ParentForm->Handle);

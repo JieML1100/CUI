@@ -138,19 +138,48 @@
   <ItemGroup>
     <ClCompile Include="CodeGenerator.cpp" />
     <ClCompile Include="ComboBoxItemsEditorDialog.cpp" />
+    <ClCompile Include="DesignerCore\CommandManager.cpp" />
+    <ClCompile Include="DesignerCore\DesignerCommandCoordinator.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\HitTestService.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\LayoutBridge.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\SelectionService.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\Commands\AddDeleteCommand.cpp" />
+    <ClCompile Include="DesignerCore\Commands\DocumentSnapshotCommand.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\Commands\UpdatePropertyCommand.cpp" />
+    <ClCompile Include="DesignerCore\PropertyGridBinder.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
     <ClCompile Include="DesignerModel\DesignDocumentCodeGenInputBuilder.cpp" />
-    <ClCompile Include="DesignerModel\DesignDocument.cpp" />
+    <ClCompile Include="DesignerModel\DesignDocument.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
     <ClCompile Include="DesignerModel\DesignDocumentSerializer.cpp" />
     <ClCompile Include="FakeWebBrowser.cpp" />
     <ClCompile Include="MenuItemsEditorDialog.cpp" />
     <ClCompile Include="StatusBarPartsEditorDialog.cpp" />
-    <ClCompile Include="main.cpp" />
-    <ClCompile Include="Designer.cpp" />
+    <ClCompile Include="main.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="Designer.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
     <ClCompile Include="DesignerCanvas.cpp" />
     <ClCompile Include="DesignerTypes.cpp" />
     <ClCompile Include="GridPanelDefinitionsEditorDialog.cpp" />
     <ClCompile Include="GridViewColumnsEditorDialog.cpp" />
-    <ClCompile Include="PropertyGrid.cpp" />
+    <ClCompile Include="PropertyGrid.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
     <ClCompile Include="TabControlPagesEditorDialog.cpp" />
     <ClCompile Include="ToolBarButtonsEditorDialog.cpp" />
     <ClCompile Include="ToolBox.cpp" />
@@ -160,6 +189,15 @@
     <ClInclude Include="CodeGenerator.h" />
     <ClInclude Include="CodeGenInput.h" />
     <ClInclude Include="ComboBoxItemsEditorDialog.h" />
+    <ClInclude Include="DesignerCore\CommandManager.h" />
+    <ClInclude Include="DesignerCore\DesignerCommandCoordinator.h" />
+    <ClInclude Include="DesignerCore\HitTestService.h" />
+    <ClInclude Include="DesignerCore\LayoutBridge.h" />
+    <ClInclude Include="DesignerCore\SelectionService.h" />
+    <ClInclude Include="DesignerCore\Commands\AddDeleteCommand.h" />
+    <ClInclude Include="DesignerCore\Commands\DocumentSnapshotCommand.h" />
+    <ClInclude Include="DesignerCore\Commands\UpdatePropertyCommand.h" />
+    <ClInclude Include="DesignerCore\PropertyGridBinder.h" />
     <ClInclude Include="DesignerModel\DesignDocumentCodeGenInputBuilder.h" />
     <ClInclude Include="DesignerModel\DesignDocument.h" />
     <ClInclude Include="DesignerModel\DesignDocumentSerializer.h" />
