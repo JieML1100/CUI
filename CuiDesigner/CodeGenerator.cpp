@@ -1,4 +1,5 @@
 ﻿#include "CodeGenerator.h"
+#include "CodeGenInput.h"
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -212,6 +213,33 @@ namespace
 		std::string suffix = EnsureOnPrefix(LocalSanitizeCppIdentifier(raw));
 		return controlVar + "_" + suffix;
 	}
+}
+
+CodeGenerator::CodeGenerator(std::wstring className, const CodeGenInput& input)
+	: CodeGenerator(
+		std::move(className),
+		input.Controls,
+		input.FormText,
+		input.FormSize,
+		input.FormLocation,
+		input.FormName,
+		input.FormBackColor,
+		input.FormForeColor,
+		input.FormShowInTaskBar,
+		input.FormTopMost,
+		input.FormEnable,
+		input.FormVisible,
+		input.FormEventHandlers,
+		input.FormVisibleHead,
+		input.FormHeadHeight,
+		input.FormMinBox,
+		input.FormMaxBox,
+		input.FormCloseBox,
+		input.FormCenterTitle,
+		input.FormAllowResize,
+		input.FormFontName,
+		input.FormFontSize)
+{
 }
 
 CodeGenerator::CodeGenerator(std::wstring className, const std::vector<std::shared_ptr<DesignerControl>>& controls,

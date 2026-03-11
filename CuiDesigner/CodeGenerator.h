@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <map>
 
+struct CodeGenInput;
+
 class CodeGenerator
 {
 private:
@@ -63,6 +65,7 @@ private:
 	std::string GenerateContainerProperties(const std::shared_ptr<DesignerControl>& dc, int indent);
 	
 public:
+	CodeGenerator(std::wstring className, const CodeGenInput& input);
 	CodeGenerator(std::wstring className, const std::vector<std::shared_ptr<DesignerControl>>& controls,
 		std::wstring formText = L"", SIZE formSize = SIZE{ 800, 600 }, POINT formLocation = POINT{ 100, 100 }, std::wstring formName = L"MainForm",
 		D2D1_COLOR_F formBackColor = Colors::WhiteSmoke, D2D1_COLOR_F formForeColor = Colors::Black,

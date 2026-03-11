@@ -11,6 +11,13 @@
 #include <unordered_map>
 #include <map>
 
+struct CodeGenInput;
+
+namespace DesignerModel
+{
+	struct DesignDocument;
+}
+
 class DesignerCanvas : public Panel
 {
 private:
@@ -184,6 +191,8 @@ public:
 	void ApplyAnchorStylesKeepingBounds(Control* c, uint8_t newAnchorStyles);
 
 	// 设计文件（用于保存/加载设计进度）
+	bool BuildDesignDocument(DesignerModel::DesignDocument& document, std::wstring* outError = nullptr) const;
+	bool ApplyDesignDocument(const DesignerModel::DesignDocument& document, std::wstring* outError = nullptr);
 	bool SaveDesignFile(const std::wstring& filePath, std::wstring* outError = nullptr) const;
 	bool LoadDesignFile(const std::wstring& filePath, std::wstring* outError = nullptr);
 	
@@ -200,6 +209,7 @@ public:
 	std::shared_ptr<DesignerControl> GetSelectedControl() { return _selectedControl; }
 	const std::vector<std::shared_ptr<DesignerControl>>& GetSelectedControls() const { return _selectedControls; }
 	const std::vector<std::shared_ptr<DesignerControl>>& GetAllControls() const { return _designerControls; }
+	CodeGenInput BuildCodeGenInput() const;
 	std::vector<std::shared_ptr<DesignerControl>> GetAllControlsForExport() const;
 	
 	// 准备添加控件（鼠标模式）

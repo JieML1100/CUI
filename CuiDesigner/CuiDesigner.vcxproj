@@ -138,6 +138,9 @@
   <ItemGroup>
     <ClCompile Include="CodeGenerator.cpp" />
     <ClCompile Include="ComboBoxItemsEditorDialog.cpp" />
+    <ClCompile Include="DesignerModel\DesignDocumentCodeGenInputBuilder.cpp" />
+    <ClCompile Include="DesignerModel\DesignDocument.cpp" />
+    <ClCompile Include="DesignerModel\DesignDocumentSerializer.cpp" />
     <ClCompile Include="FakeWebBrowser.cpp" />
     <ClCompile Include="MenuItemsEditorDialog.cpp" />
     <ClCompile Include="StatusBarPartsEditorDialog.cpp" />
@@ -155,7 +158,11 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CodeGenerator.h" />
+    <ClInclude Include="CodeGenInput.h" />
     <ClInclude Include="ComboBoxItemsEditorDialog.h" />
+    <ClInclude Include="DesignerModel\DesignDocumentCodeGenInputBuilder.h" />
+    <ClInclude Include="DesignerModel\DesignDocument.h" />
+    <ClInclude Include="DesignerModel\DesignDocumentSerializer.h" />
     <ClInclude Include="FakeWebBrowser.h" />
     <ClInclude Include="MenuItemsEditorDialog.h" />
     <ClInclude Include="StatusBarPartsEditorDialog.h" />

@@ -1,4 +1,7 @@
 ﻿#include "Designer.h"
+#include "CodeGenInput.h"
+#include "DesignerModel/DesignDocument.h"
+#include "DesignerModel/DesignDocumentCodeGenInputBuilder.h"
 #include <Windows.h>
 #include <commdlg.h>
 #include <commctrl.h>
@@ -365,28 +368,32 @@ void Designer::OnExportClick()
 		if (lastSlash != std::wstring::npos)
 			fileName = fileName.substr(lastSlash + 1);
 		
+		CodeGenInput codeGenInput;
+		if (_canvas)
+		{
+			DesignerModel::DesignDocument document;
+			std::wstring exportError;
+			if (!_canvas->BuildDesignDocument(document, &exportError))
+			{
+				_lblInfo->Text = L"导出失败";
+				ShowModalMessage(this, L"错误", exportError.empty() ? L"无法构建设计文档。" : exportError);
+				return;
+			}
+			if (!DesignerModel::DesignDocumentCodeGenInputBuilder::Build(document, codeGenInput, &exportError))
+			{
+				_lblInfo->Text = L"导出失败";
+				ShowModalMessage(this, L"错误", exportError.empty() ? L"无法从设计文档构建导出输入。" : exportError);
+				return;
+			}
+		}
+		else
+		{
+			codeGenInput.Controls = controls;
+			codeGenInput.FormFontSize = GetDefaultFontObject()->FontSize;
+		}
+
 		// 生成代码（包含窗体标题/尺寸）
-		CodeGenerator generator(fileName, controls,
-			_canvas ? _canvas->GetDesignedFormText() : L"",
-			_canvas ? _canvas->GetDesignedFormSize() : SIZE{ 800, 600 },
-			_canvas ? _canvas->GetDesignedFormLocation() : POINT{ 100, 100 },
-			_canvas ? _canvas->GetDesignedFormName() : L"MainForm",
-			_canvas ? _canvas->GetDesignedFormBackColor() : Colors::WhiteSmoke,
-			_canvas ? _canvas->GetDesignedFormForeColor() : Colors::Black,
-			_canvas ? _canvas->GetDesignedFormShowInTaskBar() : true,
-			_canvas ? _canvas->GetDesignedFormTopMost() : false,
-			_canvas ? _canvas->GetDesignedFormEnable() : true,
-			_canvas ? _canvas->GetDesignedFormVisible() : true,
-			_canvas ? _canvas->GetDesignedFormEventHandlers() : std::map<std::wstring, std::wstring>{},
-			_canvas ? _canvas->GetDesignedFormVisibleHead() : true,
-			_canvas ? _canvas->GetDesignedFormHeadHeight() : 24,
-			_canvas ? _canvas->GetDesignedFormMinBox() : true,
-			_canvas ? _canvas->GetDesignedFormMaxBox() : true,
-			_canvas ? _canvas->GetDesignedFormCloseBox() : true,
-			_canvas ? _canvas->GetDesignedFormCenterTitle() : true,
-			_canvas ? _canvas->GetDesignedFormAllowResize() : true,
-			_canvas ? _canvas->GetDesignedFormFontName() : L"",
-			_canvas ? _canvas->GetDesignedFormFontSize() : GetDefaultFontObject()->FontSize);
+		CodeGenerator generator(fileName, codeGenInput);
 		
 		if (generator.GenerateFiles(headerPath, cppPath))
 		{

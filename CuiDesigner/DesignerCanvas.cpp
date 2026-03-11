@@ -1,4 +1,7 @@
 ﻿#include "DesignerCanvas.h"
+#include "CodeGenInput.h"
+#include "DesignerModel/DesignDocument.h"
+#include "DesignerModel/DesignDocumentSerializer.h"
 #include <CppUtils/Utils/json.h>
 #include <CppUtils/Utils/Convert.h>
 #include "FakeWebBrowser.h"
@@ -2723,6 +2726,33 @@ std::vector<std::shared_ptr<DesignerControl>> DesignerCanvas::GetAllControlsForE
 	return out;
 }
 
+CodeGenInput DesignerCanvas::BuildCodeGenInput() const
+{
+	CodeGenInput input;
+	input.Controls = GetAllControlsForExport();
+	input.FormText = _designedFormText;
+	input.FormName = _designedFormName;
+	input.FormSize = _designedFormSize;
+	input.FormLocation = _designedFormLocation;
+	input.FormBackColor = _designedFormBackColor;
+	input.FormForeColor = _designedFormForeColor;
+	input.FormShowInTaskBar = _designedFormShowInTaskBar;
+	input.FormTopMost = _designedFormTopMost;
+	input.FormEnable = _designedFormEnable;
+	input.FormVisible = _designedFormVisible;
+	input.FormEventHandlers = _designedFormEventHandlers;
+	input.FormVisibleHead = _designedFormVisibleHead;
+	input.FormHeadHeight = _designedFormHeadHeight;
+	input.FormMinBox = _designedFormMinBox;
+	input.FormMaxBox = _designedFormMaxBox;
+	input.FormCloseBox = _designedFormCloseBox;
+	input.FormCenterTitle = _designedFormCenterTitle;
+	input.FormAllowResize = _designedFormAllowResize;
+	input.FormFontName = _designedFormFontName;
+	input.FormFontSize = _designedFormFontSize;
+	return input;
+}
+
 namespace
 {
 	static std::wstring TrimWs(const std::wstring& s)
@@ -3166,48 +3196,39 @@ void DesignerCanvas::UpdateDefaultNameCounterFromName(UIClass type, const std::w
 
 bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* outError) const
 {
+	DesignerModel::DesignDocument document;
+	if (!BuildDesignDocument(document, outError))
+	{
+		return false;
+	}
+	return DesignerModel::DesignDocumentSerializer::SaveToFile(document, filePath, outError);
+}
+
+bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document, std::wstring* outError) const
+{
 	try
 	{
-		if (filePath.empty())
-		{
-			if (outError) *outError = L"文件路径为空。";
-			return false;
-		}
-
-		Json root;
-		root["schema"] = "cui.designer";
-		root["version"] = 1;
-		Json formObj = Json{
-			{"name", ToUtf8(_designedFormName)},
-			{"text", ToUtf8(_designedFormText)},
-			{"font", Json{{"name", ToUtf8(_designedFormFontName)}, {"size", _designedFormFontSize}}},
-			{"size", Json{{"w", _designedFormSize.cx}, {"h", _designedFormSize.cy}}},
-			{"location", Json{{"x", _designedFormLocation.x}, {"y", _designedFormLocation.y}}},
-			{"backColor", Json{{"r", _designedFormBackColor.r}, {"g", _designedFormBackColor.g}, {"b", _designedFormBackColor.b}, {"a", _designedFormBackColor.a}}},
-			{"foreColor", Json{{"r", _designedFormForeColor.r}, {"g", _designedFormForeColor.g}, {"b", _designedFormForeColor.b}, {"a", _designedFormForeColor.a}}},
-			{"showInTaskBar", _designedFormShowInTaskBar},
-			{"topMost", _designedFormTopMost},
-			{"enable", _designedFormEnable},
-			{"visible", _designedFormVisible},
-			{"visibleHead", _designedFormVisibleHead},
-			{"headHeight", _designedFormHeadHeight},
-			{"minBox", _designedFormMinBox},
-			{"maxBox", _designedFormMaxBox},
-			{"closeBox", _designedFormCloseBox},
-			{"centerTitle", _designedFormCenterTitle},
-			{"allowResize", _designedFormAllowResize}
-		};
-		{
-			Json ev = Json::object();
-			for (const auto& kv : _designedFormEventHandlers)
-			{
-				if (kv.first.empty()) continue;
-				if (kv.second.empty()) continue;
-				ev[ToUtf8(kv.first)] = true;
-			}
-			if (!ev.empty()) formObj["events"] = ev;
-		}
-		root["form"] = formObj;
+		document.Clear();
+		document.Form.Name = _designedFormName;
+		document.Form.Text = _designedFormText;
+		document.Form.FontName = _designedFormFontName;
+		document.Form.FontSize = _designedFormFontSize;
+		document.Form.Size = _designedFormSize;
+		document.Form.Location = _designedFormLocation;
+		document.Form.BackColor = _designedFormBackColor;
+		document.Form.ForeColor = _designedFormForeColor;
+		document.Form.ShowInTaskBar = _designedFormShowInTaskBar;
+		document.Form.TopMost = _designedFormTopMost;
+		document.Form.Enable = _designedFormEnable;
+		document.Form.Visible = _designedFormVisible;
+		document.Form.VisibleHead = _designedFormVisibleHead;
+		document.Form.HeadHeight = _designedFormHeadHeight;
+		document.Form.MinBox = _designedFormMinBox;
+		document.Form.MaxBox = _designedFormMaxBox;
+		document.Form.CloseBox = _designedFormCloseBox;
+		document.Form.CenterTitle = _designedFormCenterTitle;
+		document.Form.AllowResize = _designedFormAllowResize;
+		document.Form.EventHandlers = _designedFormEventHandlers;
 
 		// 防御：Name 必须唯一，否则 parent 引用会歧义，文件将无法可靠加载
 		{
@@ -3256,37 +3277,37 @@ bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* 
 			}
 		}
 
-		Json arr = Json::array();
 		for (auto& dc : _designerControls)
 		{
 			if (!dc || !dc->ControlInstance) continue;
 			if (dc->Type == UIClass::UI_TabPage) continue;
 			auto* c = dc->ControlInstance;
 
-			Json item;
-			item["name"] = ToUtf8(dc->Name);
-			item["type"] = UIClassToString(dc->Type);
+			DesignerModel::DesignNode node;
+			node.Id = document.AllocateNodeId();
+			node.Name = dc->Name;
+			node.Type = dc->Type;
 
 			// parent reference
 			if (!dc->DesignerParent)
 			{
-				item["parent"] = nullptr;
+				node.ParentRef.clear();
 			}
 			else
 			{
 				auto itName = nameOf.find(dc->DesignerParent);
 				if (itName != nameOf.end())
-					item["parent"] = ToUtf8(itName->second);
+					node.ParentRef = itName->second;
 				else
 				{
 					auto itPage = tabPageIdOf.find(dc->DesignerParent);
-					if (itPage != tabPageIdOf.end()) item["parent"] = itPage->second;
-					else item["parent"] = nullptr;
+					if (itPage != tabPageIdOf.end()) node.ParentRef = FromUtf8(itPage->second);
+					else node.ParentRef.clear();
 				}
 			}
 
 			Control* runtimeParent = dc->DesignerParent ? dc->DesignerParent : (_clientSurface ? (Control*)_clientSurface : (Control*)_designSurface);
-			item["order"] = GetChildIndex(runtimeParent, c);
+			node.Order = GetChildIndex(runtimeParent, c);
 
 			Json props;
 			props["text"] = ToUtf8(c->Text);
@@ -3321,7 +3342,7 @@ bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* 
 			props["gridRowSpan"] = c->GridRowSpan;
 			props["gridColumnSpan"] = c->GridColumnSpan;
 			props["sizeMode"] = (int)c->SizeMode;
-			item["props"] = props;
+			node.Props = std::move(props);
 
 			Json extra;
 			if (dc->Type == UIClass::UI_ComboBox)
@@ -3511,7 +3532,7 @@ bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* 
 				extra["renderMode"] = (int)mp->RenderMode;
 			}
 
-			if (!extra.empty()) item["extra"] = extra;
+			node.Extra = std::move(extra);
 
 			// events: { "OnMouseClick": true, ... }（兼容旧格式：string handlerName）
 			if (!dc->EventHandlers.empty())
@@ -3523,20 +3544,11 @@ bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* 
 					// 现在只保存“是否启用”，handler 名在导出时按规则生成
 					ev[ToUtf8(kv.first)] = true;
 				}
-				if (!ev.empty()) item["events"] = ev;
+				node.Events = std::move(ev);
 			}
-			arr.push_back(item);
+			document.Nodes.push_back(std::move(node));
 		}
 
-		root["controls"] = arr;
-		std::string out = root.dump(2);
-		std::ofstream f(filePath, std::ios::binary);
-		if (!f.is_open())
-		{
-			if (outError) *outError = L"无法打开文件写入。";
-			return false;
-		}
-		f.write(out.data(), (std::streamsize)out.size());
 		return true;
 	}
 	catch (const std::exception& ex)
@@ -3553,168 +3565,93 @@ bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* 
 
 bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* outError)
 {
+	DesignerModel::DesignDocument document;
+	if (!DesignerModel::DesignDocumentSerializer::LoadFromFile(filePath, document, outError))
+	{
+		return false;
+	}
+	return ApplyDesignDocument(document, outError);
+}
+
+bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& document, std::wstring* outError)
+{
 	try
 	{
-		if (filePath.empty())
-		{
-			if (outError) *outError = L"文件路径为空。";
-			return false;
-		}
-
-		std::ifstream f(filePath, std::ios::binary);
-		if (!f.is_open())
-		{
-			if (outError) *outError = L"无法打开文件读取。";
-			return false;
-		}
-		std::stringstream ss;
-		ss << f.rdbuf();
-		Json root = Json::parse(ss.str(), nullptr, true, true);
-
-		if (root.value("schema", std::string()) != "cui.designer")
-		{
-			if (outError) *outError = L"不是有效的 CUI Designer 文件（schema 不匹配）。";
-			return false;
-		}
-		int ver = root.value("version", 0);
-		if (ver != 1)
-		{
-			if (outError) *outError = L"不支持的设计文件版本。";
-			return false;
-		}
-		if (!root.contains("controls") || !root["controls"].is_array())
-		{
-			if (outError) *outError = L"设计文件缺少 controls 数组。";
-			return false;
-		}
-
 		ClearCanvas();
 		_controlTypeCounters.clear();
 		_designedFormEventHandlers.clear();
 
-		if (root.contains("form") && root["form"].is_object())
+		_designedFormName = document.Form.Name.empty() ? L"MainForm" : document.Form.Name;
+		_designedFormText = document.Form.Text;
+		_designedFormFontName = document.Form.FontName;
+		_designedFormFontSize = document.Form.FontSize;
+		if (_designedFormFontSize < 1.0f) _designedFormFontSize = 1.0f;
+		if (_designedFormFontSize > 200.0f) _designedFormFontSize = 200.0f;
+		if (_designedFormFontName.empty())
 		{
-			auto& form = root["form"];
-			_designedFormName = FromUtf8(form.value("name", std::string()));
-			if (_designedFormName.empty()) _designedFormName = L"MainForm";
-			_designedFormText = FromUtf8(form.value("text", std::string()));
-			// Font（name 允许为空，表示框架默认字体名）
-			if (form.contains("font") && form["font"].is_object())
-			{
-				auto& fj = form["font"];
-				_designedFormFontName = FromUtf8(fj.value("name", std::string()));
-				_designedFormFontSize = (float)fj.value("size", (double)_designedFormFontSize);
-				if (_designedFormFontSize < 1.0f) _designedFormFontSize = 1.0f;
-				if (_designedFormFontSize > 200.0f) _designedFormFontSize = 200.0f;
-			}
-			else
-			{
-				_designedFormFontName.clear();
-				if (auto* def = GetDefaultFontObject()) _designedFormFontSize = def->FontSize;
-			}
-			_designedFormShowInTaskBar = form.value("showInTaskBar", _designedFormShowInTaskBar);
-			_designedFormTopMost = form.value("topMost", _designedFormTopMost);
-			_designedFormEnable = form.value("enable", _designedFormEnable);
-			_designedFormVisible = form.value("visible", _designedFormVisible);
-			_designedFormVisibleHead = form.value("visibleHead", _designedFormVisibleHead);
-			_designedFormHeadHeight = form.value("headHeight", _designedFormHeadHeight);
-			if (_designedFormHeadHeight < 0) _designedFormHeadHeight = 0;
-			_designedFormMinBox = form.value("minBox", _designedFormMinBox);
-			_designedFormMaxBox = form.value("maxBox", _designedFormMaxBox);
-			_designedFormCloseBox = form.value("closeBox", _designedFormCloseBox);
-			_designedFormCenterTitle = form.value("centerTitle", _designedFormCenterTitle);
-			_designedFormAllowResize = form.value("allowResize", _designedFormAllowResize);
-			if (form.contains("backColor") && form["backColor"].is_object())
-			{
-				auto& c = form["backColor"];
-				_designedFormBackColor = D2D1::ColorF(
-					(float)c.value("r", (double)_designedFormBackColor.r),
-					(float)c.value("g", (double)_designedFormBackColor.g),
-					(float)c.value("b", (double)_designedFormBackColor.b),
-					(float)c.value("a", (double)_designedFormBackColor.a));
-			}
-			if (form.contains("foreColor") && form["foreColor"].is_object())
-			{
-				auto& c = form["foreColor"];
-				_designedFormForeColor = D2D1::ColorF(
-					(float)c.value("r", (double)_designedFormForeColor.r),
-					(float)c.value("g", (double)_designedFormForeColor.g),
-					(float)c.value("b", (double)_designedFormForeColor.b),
-					(float)c.value("a", (double)_designedFormForeColor.a));
-			}
-			if (_clientSurface) _clientSurface->BackColor = _designedFormBackColor;
-			if (form.contains("events") && form["events"].is_object())
-			{
-				for (auto it = form["events"].begin(); it != form["events"].end(); ++it)
-				{
-					std::wstring name = FromUtf8(it.key());
-					if (name.empty()) continue;
-					if (it.value().is_boolean())
-					{
-						if (it.value().get<bool>()) _designedFormEventHandlers[name] = L"1";
-					}
-					else if (it.value().is_string())
-					{
-						auto v = FromUtf8(it.value().get<std::string>());
-						if (!v.empty()) _designedFormEventHandlers[name] = v;
-						else _designedFormEventHandlers[name] = L"1";
-					}
-				}
-			}
-			if (form.contains("size") && form["size"].is_object())
-			{
-				SIZE s;
-				s.cx = form["size"].value("w", 800);
-				s.cy = form["size"].value("h", 600);
-				SetDesignedFormSize(s);
-			}
-			if (form.contains("location") && form["location"].is_object())
-			{
-				_designedFormLocation.x = form["location"].value("x", 100);
-				_designedFormLocation.y = form["location"].value("y", 100);
-			}
-			UpdateClientSurfaceLayout();
-			RebuildDesignedFormSharedFont();
+			if (auto* def = GetDefaultFontObject()) _designedFormFontSize = def->FontSize;
 		}
+		_designedFormShowInTaskBar = document.Form.ShowInTaskBar;
+		_designedFormTopMost = document.Form.TopMost;
+		_designedFormEnable = document.Form.Enable;
+		_designedFormVisible = document.Form.Visible;
+		_designedFormVisibleHead = document.Form.VisibleHead;
+		_designedFormHeadHeight = document.Form.HeadHeight;
+		if (_designedFormHeadHeight < 0) _designedFormHeadHeight = 0;
+		_designedFormMinBox = document.Form.MinBox;
+		_designedFormMaxBox = document.Form.MaxBox;
+		_designedFormCloseBox = document.Form.CloseBox;
+		_designedFormCenterTitle = document.Form.CenterTitle;
+		_designedFormAllowResize = document.Form.AllowResize;
+		_designedFormBackColor = document.Form.BackColor;
+		_designedFormForeColor = document.Form.ForeColor;
+		_designedFormEventHandlers = document.Form.EventHandlers;
+		if (_clientSurface) _clientSurface->BackColor = _designedFormBackColor;
+		SetDesignedFormSize(document.Form.Size);
+		_designedFormLocation = document.Form.Location;
+		UpdateClientSurfaceLayout();
+		RebuildDesignedFormSharedFont();
 
 		struct Pending
 		{
 			std::wstring name;
+			int id = 0;
 			UIClass type = UIClass::UI_Base;
-			Json parent;
+			std::wstring parent;
 			int order = -1;
 			Json props;
 			Json extra;
 			Json events;
 		};
 		std::vector<Pending> items;
-		items.reserve(root["controls"].size());
+		items.reserve(document.Nodes.size());
 
 		std::unordered_set<std::wstring> nameSet;
-		for (auto& j : root["controls"])
+		std::unordered_map<int, std::wstring> nameById;
+		nameById.reserve(document.Nodes.size());
+		for (const auto& node : document.Nodes)
 		{
-			if (!j.is_object()) continue;
 			Pending p;
-			p.name = FromUtf8(j.value("name", std::string()));
-			std::string typeStr = j.value("type", std::string());
-			UIClass t;
-			if (p.name.empty() || !TryParseUIClass(typeStr, t))
+			p.name = node.Name;
+			p.id = node.Id;
+			if (p.name.empty())
 			{
 				if (outError) *outError = L"控件条目缺少 name/type 或 type 不支持。";
 				return false;
 			}
-			p.type = t;
+			p.type = node.Type;
 			if (nameSet.find(p.name) != nameSet.end())
 			{
 				if (outError) *outError = L"控件 Name 重复: " + p.name;
 				return false;
 			}
 			nameSet.insert(p.name);
-			p.parent = j.contains("parent") ? j["parent"] : Json();
-			p.order = j.value("order", -1);
-			p.props = j.contains("props") ? j["props"] : Json::object();
-			p.extra = j.contains("extra") ? j["extra"] : Json::object();
-			p.events = j.contains("events") ? j["events"] : Json::object();
+			p.parent = node.ParentRef;
+			p.order = node.Order;
+			p.props = node.Props.is_object() ? node.Props : Json::object();
+			p.extra = node.Extra.is_object() ? node.Extra : Json::object();
+			p.events = node.Events.is_object() ? node.Events : Json::object();
+			nameById[p.id] = p.name;
 			items.push_back(std::move(p));
 		}
 
@@ -4110,12 +4047,12 @@ bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* 
 		roots.reserve(items.size());
 		for (auto& it : items)
 		{
-			if (!it.parent.is_string())
+			if (it.parent.empty())
 			{
 				roots.push_back(&it);
 				continue;
 			}
-			childrenByParent[FromUtf8(it.parent.get<std::string>())].push_back(&it);
+			childrenByParent[it.parent].push_back(&it);
 		}
 
 		auto sortByOrder = [](std::vector<Pending*>& v) {

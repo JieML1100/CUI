@@ -13,6 +13,9 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="DesignerModel">
+      <UniqueIdentifier>{7B1EF7CA-87F6-4D0A-A2BB-5F7F92C57E99}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -63,8 +66,20 @@
     <ClCompile Include="FakeWebBrowser.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="DesignerModel\DesignDocument.cpp">
+      <Filter>DesignerModel</Filter>
+    </ClCompile>
+    <ClCompile Include="DesignerModel\DesignDocumentCodeGenInputBuilder.cpp">
+      <Filter>DesignerModel</Filter>
+    </ClCompile>
+    <ClCompile Include="DesignerModel\DesignDocumentSerializer.cpp">
+      <Filter>DesignerModel</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="CodeGenInput.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="CodeGenerator.h">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -109,6 +124,15 @@
     </ClInclude>
     <ClInclude Include="FakeWebBrowser.h">
       <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerModel\DesignDocument.h">
+      <Filter>DesignerModel</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerModel\DesignDocumentCodeGenInputBuilder.h">
+      <Filter>DesignerModel</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerModel\DesignDocumentSerializer.h">
+      <Filter>DesignerModel</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
