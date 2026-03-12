@@ -503,11 +503,25 @@ static void DismissForegroundOnOutsideMouseDown(Form* f, POINT contentMouse, UIN
 {
 	if (!f) return;
 	if (message != WM_LBUTTONDOWN && message != WM_RBUTTONDOWN && message != WM_MBUTTONDOWN) return;
-	if (!f->ForegroundControl || !f->ForegroundControl->Visible || !f->ForegroundControl->Enable) return;
-	if (PointInControlRect(f->ForegroundControl, contentMouse)) return;
-	if (!f->ForegroundControl->AutoCloseOnOutsideClick()) return;
-	f->ForegroundControl->ClosePopup();
-	f->Invalidate(true);
+	bool dismissed = false;
+	if (f->ForegroundControl && f->ForegroundControl->Visible && f->ForegroundControl->Enable)
+	{
+		if (!PointInControlRect(f->ForegroundControl, contentMouse) && f->ForegroundControl->AutoCloseOnOutsideClick())
+		{
+			f->ForegroundControl->ClosePopup();
+			dismissed = true;
+		}
+	}
+	if (f->MainMenu && f->MainMenu->Visible && f->MainMenu->Enable)
+	{
+		if (!PointInControlRect(f->MainMenu, contentMouse) && f->MainMenu->AutoCloseOnOutsideClick())
+		{
+			f->MainMenu->ClosePopup();
+			dismissed = true;
+		}
+	}
+	if (dismissed)
+		f->Invalidate(true);
 }
 
 CursorKind Form::QueryCursorAt(POINT mouseClient, POINT contentMouse)
@@ -2191,6 +2205,11 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl->AutoCloseOnFormFocusLoss())
 		{
 			this->ForegroundControl->ClosePopup();
+			this->Invalidate(true);
+		}
+		if (this->MainMenu && this->MainMenu->Visible && this->MainMenu->AutoCloseOnFormFocusLoss())
+		{
+			this->MainMenu->ClosePopup();
 			this->Invalidate(true);
 		}
 		this->OnLostFocus(this);

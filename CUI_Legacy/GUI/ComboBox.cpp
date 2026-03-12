@@ -44,8 +44,11 @@ float ComboBox::CurrentDropProgress()
 	float t = _animDurationMs > 0 ? (float)elapsed / (float)_animDurationMs : 1.0f;
 	if (t >= 1.0f)
 	{
+		const bool wasCollapsing = (_animTargetProgress <= 0.001f && _dropProgress > 0.001f);
 		_dropProgress = _animTargetProgress;
 		_animating = false;
+		if (wasCollapsing)
+			_collapseCleanupPending = true;
 		if (_dropProgress <= 0.0f && this->ParentForm && this->ParentForm->ForegroundControl == this)
 			this->ParentForm->ForegroundControl = NULL;
 		return _dropProgress;
@@ -114,12 +117,12 @@ ComboBox::ComboBox(std::wstring text, int x, int y, int width, int height)
 bool ComboBox::IsAnimationRunning()
 {
 	CurrentDropProgress();
-	return _animating;
+	return _animating || _collapseCleanupPending;
 }
 
 bool ComboBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 {
-	if (!IsDropDownVisible()) return false;
+	if (!IsDropDownVisible() && !_collapseCleanupPending) return false;
 	auto abs = this->AbsRect;
 	outRect = abs;
 	outRect.bottom += FullDropdownHeight();
@@ -140,6 +143,7 @@ void ComboBox::SetExpanded(bool expanded)
 	this->Expand = wantExpand;
 	_animStartProgress = _dropProgress;
 	_animTargetProgress = wantExpand ? 1.0f : 0.0f;
+	_collapseCleanupPending = false;
 	if (std::fabs(_animTargetProgress - _animStartProgress) < 0.001f)
 	{
 		_dropProgress = _animTargetProgress;
@@ -306,6 +310,8 @@ void ComboBox::Update()
 		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	this->EndRender();
+	if (!_animating && _dropProgress <= 0.001f)
+		_collapseCleanupPending = false;
 }
 bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {

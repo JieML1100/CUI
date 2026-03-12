@@ -25,6 +25,7 @@ class MenuItem : public Control
 {
 public:
 	virtual UIClass Type() override;
+	bool DefaultSelectOnLeftButtonDown() const override { return false; }
 	/** @brief 业务命令 Id（由调用方定义，0 通常表示无命令）。 */
 	int Id = 0;
 	/** @brief 是否为分隔符（Separator=true 时通常不可交互）。 */
@@ -81,6 +82,7 @@ private:
 
 public:
 	virtual UIClass Type() override;
+	bool DefaultSelectOnLeftButtonDown() const override { return false; }
 
 	/**
 	 * @brief 菜单命令事件。
@@ -110,6 +112,10 @@ public:
 	 */
 	MenuItem* AddItem(std::wstring text);
 
+	bool ContainsPoint(int xof, int yof) override;
+	bool AutoCloseOnOutsideClick() const override { return _expand; }
+	bool AutoCloseOnFormFocusLoss() const override { return _expand; }
+	void ClosePopup() override;
 	SIZE ActualSize() override;
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;

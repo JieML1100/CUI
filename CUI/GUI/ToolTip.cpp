@@ -51,7 +51,7 @@ POINT ToolTip::CalcPopupOrigin()
 
 void ToolTip::Update()
 {
-	if (!this->IsVisual || !_popupVisible || !this->ParentForm || !_target || !this->_target->IsVisual)
+	if (!this->IsVisual || !_popupVisible || !this->ParentForm || !_target || !_target->IsVisual)
 		return;
 
 	auto d2d = this->ParentForm->Render;
@@ -71,10 +71,9 @@ void ToolTip::Update()
 	this->EndRender();
 }
 
-void ToolTip::Bind(class Control* target, const std::wstring& text)
+void ToolTip::Bind(class Control* target)
 {
 	_target = target;
-	this->Text = text;
 	if (!_target)
 		return;
 
@@ -102,6 +101,12 @@ void ToolTip::Bind(class Control* target, const std::wstring& text)
 			(void)e;
 			this->Hide();
 		};
+}
+
+void ToolTip::Bind(class Control* target, const std::wstring& text)
+{
+	Bind(target);
+	this->Text = text;
 }
 
 void ToolTip::Show()

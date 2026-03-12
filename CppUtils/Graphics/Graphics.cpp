@@ -1262,10 +1262,22 @@ void D2DGraphics::DrawArc(D2D1_POINT_2F center, float size, float sa, float ea, 
 	if (!ctx) return;
 	auto brush = GetColorBrush(color);
 	if (!brush) return;
+	if (size <= 0.0f || width <= 0.0f) return;
+	float ts = sa;
+	float te = ea;
+	float sweepDegrees = te - ts;
+	if (sweepDegrees <= 0.0f) {
+		sweepDegrees = std::fmod(sweepDegrees, 360.0f) + 360.0f;
+	}
+	if (sweepDegrees <= 0.001f) return;
+	if (sweepDegrees >= 359.999f) {
+		ctx->DrawEllipse(D2D1::Ellipse(center, size, size), brush, width);
+		wicDirty = true;
+		return;
+	}
 	ComPtr<ID2D1PathGeometry> geo;
 	geo.Attach(Factory::CreateGeomtry());
 	if (!geo) return;
-	float ts = sa, te = ea;
 	if (te < ts) te += 360.0f;
 	D2D1_ARC_SIZE sweep = (te - ts < 180.0f) ? D2D1_ARC_SIZE_SMALL : D2D1_ARC_SIZE_LARGE;
 	ComPtr<ID2D1GeometrySink> sink;
@@ -1289,10 +1301,22 @@ void D2DGraphics::DrawArcCounter(D2D1_POINT_2F center, float size, float sa, flo
 	if (!ctx) return;
 	auto brush = GetColorBrush(color);
 	if (!brush) return;
+	if (size <= 0.0f || width <= 0.0f) return;
+	float ts = sa;
+	float te = ea;
+	float sweepDegrees = te - ts;
+	if (sweepDegrees <= 0.0f) {
+		sweepDegrees = std::fmod(sweepDegrees, 360.0f) + 360.0f;
+	}
+	if (sweepDegrees <= 0.001f) return;
+	if (sweepDegrees >= 359.999f) {
+		ctx->DrawEllipse(D2D1::Ellipse(center, size, size), brush, width);
+		wicDirty = true;
+		return;
+	}
 	ComPtr<ID2D1PathGeometry> geo;
 	geo.Attach(Factory::CreateGeomtry());
 	if (!geo) return;
-	float ts = sa, te = ea;
 	if (te < ts) te += 360.0f;
 	D2D1_ARC_SIZE sweep = (te - ts < 180.0f) ? D2D1_ARC_SIZE_SMALL : D2D1_ARC_SIZE_LARGE;
 	ComPtr<ID2D1GeometrySink> sink;

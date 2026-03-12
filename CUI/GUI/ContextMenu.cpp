@@ -353,6 +353,8 @@ void ContextMenu::ShowAt(int x, int y, bool ignoreNextMouseUp)
 	ClearHoverState();
 	if (this->ParentForm->ForegroundControl && this->ParentForm->ForegroundControl != this && this->ParentForm->ForegroundControl->AutoCloseOnOutsideClick())
 		this->ParentForm->ForegroundControl->ClosePopup();
+	if (this->ParentForm->MainMenu && this->ParentForm->MainMenu->AutoCloseOnOutsideClick())
+		this->ParentForm->MainMenu->ClosePopup();
 	this->ParentForm->ForegroundControl = this;
 	this->ParentForm->Invalidate(true);
 }

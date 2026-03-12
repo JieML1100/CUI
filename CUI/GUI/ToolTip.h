@@ -16,7 +16,7 @@ public:
 	int OffsetX = 10;
 	int OffsetY = 8;
 
-	D2D1_COLOR_F PopupBackColor = D2D1_COLOR_F{ 0.10f, 0.10f, 0.10f, 0.96f };
+	D2D1_COLOR_F PopupBackColor = D2D1_COLOR_F{ 0.10f, 0.10f, 0.10f, 0.5f };
 	D2D1_COLOR_F PopupBorderColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.18f };
 	D2D1_COLOR_F PopupTextColor = Colors::WhiteSmoke;
 
@@ -26,6 +26,7 @@ public:
 	SIZE ActualSize() override;
 	void Update() override;
 
+	void Bind(class Control* target);
 	void Bind(class Control* target, const std::wstring& text);
 	void Show();
 	void Hide();

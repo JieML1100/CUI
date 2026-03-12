@@ -108,6 +108,133 @@ MenuItem* Menu::AddItem(std::wstring text)
 	return item;
 }
 
+bool Menu::ContainsPoint(int xof, int yof)
+{
+	if (xof >= 0 && xof <= this->Width && yof >= 0 && yof < BarHeight)
+		return true;
+
+	if (!_expand || DropCount() <= 0)
+		return false;
+	if (_expandIndex < 0 || _expandIndex >= this->Count)
+		return false;
+
+	auto* top = (MenuItem*)this->operator[](_expandIndex);
+	if (!top)
+		return false;
+
+	auto calcPanelWidth = [&](const std::vector<MenuItem*>& items) -> float
+		{
+			float w = 120.0f;
+			auto font = this->Font;
+			for (auto* it : items)
+			{
+				if (!it || it->Separator) continue;
+				auto ts = font->GetTextSize(it->Text);
+				float tw = ts.width + 24.0f;
+				if (!it->Shortcut.empty())
+				{
+					auto ss = font->GetTextSize(it->Shortcut);
+					tw += ss.width + 20.0f;
+				}
+				if (!it->SubItems.empty())
+					tw += 18.0f;
+				if (tw > w) w = tw;
+			}
+			if (w < 80.0f) w = 80.0f;
+			return w;
+		};
+
+	auto clampPanelXY = [&](float& x, float& y, float w, float h)
+		{
+			if (!this->ParentForm) return;
+			float maxX = (float)this->ParentForm->ClientSize.cx;
+			float maxY = (float)this->ParentForm->ClientSize.cy;
+			if (x < 0.0f) x = 0.0f;
+			if (y < 0.0f) y = 0.0f;
+			if (x + w > maxX) x = std::max(0.0f, maxX - w);
+			if (y + h > maxY) y = std::max(0.0f, maxY - h);
+		};
+
+	std::vector<MenuPanel> panels;
+	panels.reserve(8);
+	MenuPanel root;
+	root.Owner = top;
+	root.Items = &top->SubItems;
+	root.X = DropLeftLocal();
+	root.Y = DropTopLocal();
+	root.W = DropWidthLocal();
+	root.H = DropPaddingY * 2.0f + (float)root.Items->size() * (float)DropItemHeight;
+	clampPanelXY(root.X, root.Y, root.W, root.H);
+	panels.push_back(root);
+
+	for (size_t level = 0; level < _openPath.size(); level++)
+	{
+		int openIdx = _openPath[level];
+		if (openIdx < 0) break;
+		const auto& prev = panels.back();
+		if (!prev.Items) break;
+		if (openIdx >= (int)prev.Items->size()) break;
+		auto* owner = (*prev.Items)[openIdx];
+		if (!owner || owner->Separator || owner->SubItems.empty()) break;
+
+		MenuPanel panel;
+		panel.Owner = owner;
+		panel.Items = &owner->SubItems;
+		panel.W = calcPanelWidth(*panel.Items);
+		panel.H = DropPaddingY * 2.0f + (float)panel.Items->size() * (float)DropItemHeight;
+		panel.X = prev.X + prev.W - 1.0f;
+		panel.Y = prev.Y + DropPaddingY + (float)openIdx * (float)DropItemHeight;
+
+		if (this->ParentForm)
+		{
+			float maxX = (float)this->ParentForm->ClientSize.cx;
+			if (panel.X + panel.W > maxX)
+			{
+				panel.X = prev.X - panel.W - 4.0f;
+				panel.OpenedToLeft = true;
+			}
+			if (panel.X < 0.0f) panel.X = 0.0f;
+		}
+		clampPanelXY(panel.X, panel.Y, panel.W, panel.H);
+		panels.push_back(panel);
+		if (panels.size() > 32) break;
+	}
+
+	for (const auto& panel : panels)
+	{
+		if (xof >= panel.X && xof <= panel.X + panel.W && yof >= panel.Y && yof <= panel.Y + panel.H)
+			return true;
+	}
+
+	return false;
+}
+
+void Menu::ClosePopup()
+{
+	if (!_expand)
+		return;
+
+	_expand = false;
+	_expandIndex = -1;
+	_hoverPath.clear();
+	_openPath.clear();
+	if (this->ParentForm && this->ParentForm->Selected)
+	{
+		for (Control* selected = this->ParentForm->Selected; selected; selected = selected->Parent)
+		{
+			if (selected == this)
+			{
+				this->ParentForm->SetSelectedControl(NULL, false);
+				break;
+			}
+		}
+	}
+	if (this->ParentForm)
+		this->ParentForm->Invalidate(true);
+	else
+		this->PostRender();
+}
+
 int Menu::DropCount()
 {
 	if (!_expand) return 0;
@@ -412,10 +539,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			{
 				if (_expand && _expandIndex == _hoverTopIndex)
 				{
-					_expand = false;
-					_expandIndex = -1;
-					_hoverPath.clear();
-					_openPath.clear();
+					ClosePopup();
 				}
 				else
 				{
@@ -638,11 +762,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 							// 叶子项：触发命令并收起
 							if (it->Id != 0)
 								this->OnMenuCommand(this, it->Id);
-							_expand = false;
-							_expandIndex = -1;
-							_hoverPath.clear();
-							_openPath.clear();
-							this->ParentForm->Invalidate(true);
+							ClosePopup();
 							return Control::ProcessMessage(message, wParam, lParam, xof, yof);
 						}
 					}
@@ -651,12 +771,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 				else
 				{
 					// 点击到下拉外区域：只收起
-					_expand = false;
-					_expandIndex = -1;
-					_hoverPath.clear();
-					_openPath.clear();
-					if (this->ParentForm) this->ParentForm->Invalidate(true);
-					else this->PostRender();
+					ClosePopup();
 					return Control::ProcessMessage(message, wParam, lParam, xof, yof);
 				}
 			}
@@ -665,13 +780,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	// 展开时点击菜单栏/下拉之外：收起（配合 ActualSize 覆盖内容区）
 	else if (_expand && message == WM_LBUTTONUP)
 	{
-		_expand = false;
-		_expandIndex = -1;
-		_hoverPath.clear();
-		_openPath.clear();
-		// 收起时：强制立即全量重绘，清除 Overlay 残影
-		if (this->ParentForm) this->ParentForm->Invalidate(true);
-		else this->PostRender();
+		ClosePopup();
 	}
 
 	return Control::ProcessMessage(message, wParam, lParam, xof, yof);

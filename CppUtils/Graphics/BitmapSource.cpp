@@ -1,5 +1,6 @@
 ﻿#include "BitmapSource.h"
 #include "Factory.h"
+#include <memory>
 #include <algorithm>
 
 using Microsoft::WRL::ComPtr;
@@ -59,18 +60,21 @@ std::shared_ptr<BitmapSource> BitmapSource::FromBitmapInternal(IWICBitmap* bitma
 		return {};
 	}
 
-	auto adjusted = EnsureBitmapFormat(bitmap);
+	ComPtr<IWICBitmap> sourceBitmap;
+	if (takeOwnership) {
+		sourceBitmap.Attach(bitmap);
+	}
+	else {
+		sourceBitmap = bitmap;
+	}
+
+	auto adjusted = EnsureBitmapFormat(sourceBitmap.Get());
 	if (!adjusted) {
 		return {};
 	}
 
 	auto result = std::shared_ptr<BitmapSource>(new BitmapSource());
-	if (takeOwnership) {
-		result->wicBitmap.Attach(adjusted.Detach());
-	}
-	else {
-		result->wicBitmap = adjusted;
-	}
+	result->wicBitmap = adjusted;
 	return result;
 }
 

@@ -25,6 +25,7 @@ private:
 	ULONGLONG _animStartTick = 0;
 	UINT _animDurationMs = 140;
 	bool _animating = false;
+	bool _collapseCleanupPending = false;
 	void UpdateScrollDrag(float posY);
 	int VisibleItemCount();
 	float FullDropdownHeight();
