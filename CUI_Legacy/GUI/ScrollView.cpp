@@ -73,119 +73,155 @@ POINT ScrollView::GetChildrenRenderOffset() const
 
 void ScrollView::PerformScrollContentLayout()
 {
-	if (this->_layoutEngine)
-	{
-		Panel::PerformLayout();
-		return;
-	}
-
-	SIZE containerSize = this->Size;
-	Thickness padding = this->Padding;
-	float contentLeft = padding.Left;
-	float contentTop = padding.Top;
-	float contentWidth = (float)containerSize.cx - padding.Left - padding.Right;
-	float contentHeight = (float)containerSize.cy - padding.Top - padding.Bottom;
-	if (contentWidth < 0) contentWidth = 0;
-	if (contentHeight < 0) contentHeight = 0;
-
-	for (int i = 0; i < this->Children.Count; i++)
-	{
-		auto child = this->Children[i];
-		if (!child || !child->Visible) continue;
-
-		POINT location = child->Location;
-		Thickness margin = child->Margin;
-		uint8_t anchor = child->AnchorStyles;
-		HorizontalAlignment hAlign = child->HAlign;
-		VerticalAlignment vAlign = child->VAlign;
-		SIZE size = child->MeasureCore({ INT_MAX, INT_MAX });
-
-		float x = contentLeft + margin.Left;
-		float y = contentTop + margin.Top;
-		float w = (float)size.cx;
-		float h = (float)size.cy;
-
-		if (anchor != AnchorStyles::None)
+	constexpr float scrollBarSize = 8.0f;
+	auto performLayoutPass = [&](bool reserveVScroll, bool reserveHScroll)
 		{
-			if ((anchor & AnchorStyles::Left) && (anchor & AnchorStyles::Right))
+			SIZE containerSize = this->Size;
+			Thickness padding = this->Padding;
+			float contentLeft = padding.Left;
+			float contentTop = padding.Top;
+			float contentWidth = (float)containerSize.cx - padding.Left - padding.Right - (reserveVScroll ? scrollBarSize : 0.0f);
+			float contentHeight = (float)containerSize.cy - padding.Top - padding.Bottom - (reserveHScroll ? scrollBarSize : 0.0f);
+			if (contentWidth < 0) contentWidth = 0;
+			if (contentHeight < 0) contentHeight = 0;
+
+			if (this->_layoutEngine)
 			{
-				x = contentLeft + (float)location.x;
-				w = contentWidth - (float)location.x - margin.Right;
+				SIZE availableSize = SIZE{ (LONG)contentWidth, (LONG)contentHeight };
+				this->_layoutEngine->Measure(this, availableSize);
+
+				D2D1_RECT_F finalRect = {
+					padding.Left,
+					padding.Top,
+					padding.Left + (float)availableSize.cx,
+					padding.Top + (float)availableSize.cy
+				};
+				this->_layoutEngine->Arrange(this, finalRect);
+				return;
+			}
+
+			for (int i = 0; i < this->Children.Count; i++)
+			{
+				auto child = this->Children[i];
+				if (!child || !child->Visible) continue;
+
+				POINT location = child->Location;
+				Thickness margin = child->Margin;
+				uint8_t anchor = child->AnchorStyles;
+				HorizontalAlignment hAlign = child->HAlign;
+				VerticalAlignment vAlign = child->VAlign;
+				SIZE size = child->MeasureCore({ INT_MAX, INT_MAX });
+
+				float x = contentLeft + margin.Left;
+				float y = contentTop + margin.Top;
+				float w = (float)size.cx;
+				float h = (float)size.cy;
+
+				if (anchor != AnchorStyles::None)
+				{
+					if ((anchor & AnchorStyles::Left) && (anchor & AnchorStyles::Right))
+					{
+						x = contentLeft + (float)location.x;
+						w = contentWidth - (float)location.x - margin.Right;
+						if (w < 0) w = 0;
+					}
+					else if (anchor & AnchorStyles::Right)
+					{
+						x = contentLeft + contentWidth - margin.Right - w;
+					}
+					else
+					{
+						x = contentLeft + (float)location.x;
+					}
+
+					if ((anchor & AnchorStyles::Top) && (anchor & AnchorStyles::Bottom))
+					{
+						y = contentTop + (float)location.y;
+						h = contentHeight - (float)location.y - margin.Bottom;
+						if (h < 0) h = 0;
+					}
+					else if (anchor & AnchorStyles::Bottom)
+					{
+						y = contentTop + contentHeight - margin.Bottom - h;
+					}
+					else
+					{
+						y = contentTop + (float)location.y;
+					}
+				}
+				else
+				{
+					if (hAlign == HorizontalAlignment::Stretch)
+					{
+						x = contentLeft + margin.Left;
+						w = contentWidth - margin.Left - margin.Right;
+					}
+					else if (hAlign == HorizontalAlignment::Center)
+					{
+						float availableWidth = contentWidth - margin.Left - margin.Right;
+						if (availableWidth < 0) availableWidth = 0;
+						x = contentLeft + margin.Left + (availableWidth - w) / 2.0f;
+					}
+					else if (hAlign == HorizontalAlignment::Right)
+					{
+						x = contentLeft + contentWidth - margin.Right - w;
+					}
+					else
+					{
+						x = contentLeft + (float)location.x;
+					}
+
+					if (vAlign == VerticalAlignment::Stretch)
+					{
+						y = contentTop + margin.Top;
+						h = contentHeight - margin.Top - margin.Bottom;
+					}
+					else if (vAlign == VerticalAlignment::Top)
+					{
+						y = contentTop + (float)location.y;
+					}
+					else if (vAlign == VerticalAlignment::Center)
+					{
+						float availableHeight = contentHeight - margin.Top - margin.Bottom;
+						if (availableHeight < 0) availableHeight = 0;
+						y = contentTop + margin.Top + (availableHeight - h) / 2.0f;
+					}
+					else if (vAlign == VerticalAlignment::Bottom)
+					{
+						y = contentTop + contentHeight - margin.Bottom - h;
+					}
+				}
+
 				if (w < 0) w = 0;
-			}
-			else if (anchor & AnchorStyles::Right)
-			{
-				x = contentLeft + contentWidth - margin.Right - w;
-			}
-			else
-			{
-				x = contentLeft + (float)location.x;
-			}
-
-			if ((anchor & AnchorStyles::Top) && (anchor & AnchorStyles::Bottom))
-			{
-				y = contentTop + (float)location.y;
-				h = contentHeight - (float)location.y - margin.Bottom;
 				if (h < 0) h = 0;
+
+				POINT finalLoc = { (LONG)x, (LONG)y };
+				SIZE finalSize = { (LONG)w, (LONG)h };
+				child->ApplyLayout(finalLoc, finalSize);
 			}
-			else if (anchor & AnchorStyles::Bottom)
-			{
-				y = contentTop + contentHeight - margin.Bottom - h;
-			}
-			else
-			{
-				y = contentTop + (float)location.y;
-			}
-		}
-		else
+		};
+
+	bool needV = this->AlwaysShowVScroll;
+	bool needH = this->AlwaysShowHScroll;
+	for (int iter = 0; iter < 3; ++iter)
+	{
+		performLayoutPass(needV, needH);
+
+		SIZE content = this->AutoContentSize ? MeasureContentSize() : this->ContentSize;
+		content.cx = std::max<LONG>(0, content.cx);
+		content.cy = std::max<LONG>(0, content.cy);
+
+		float viewportW = std::max(0.0f, (float)this->Width - (needV ? scrollBarSize : 0.0f));
+		float viewportH = std::max(0.0f, (float)this->Height - (needH ? scrollBarSize : 0.0f));
+		bool nextNeedH = this->AlwaysShowHScroll || ((float)content.cx > viewportW);
+		bool nextNeedV = this->AlwaysShowVScroll || ((float)content.cy > viewportH);
+		if (nextNeedH == needH && nextNeedV == needV)
 		{
-			if (hAlign == HorizontalAlignment::Stretch)
-			{
-				x = contentLeft + margin.Left;
-				w = contentWidth - margin.Left - margin.Right;
-			}
-			else if (hAlign == HorizontalAlignment::Center)
-			{
-				float availableWidth = contentWidth - margin.Left - margin.Right;
-				if (availableWidth < 0) availableWidth = 0;
-				x = contentLeft + margin.Left + (availableWidth - w) / 2.0f;
-			}
-			else if (hAlign == HorizontalAlignment::Right)
-			{
-				x = contentLeft + contentWidth - margin.Right - w;
-			}
-			else
-			{
-				x = contentLeft + (float)location.x;
-			}
-
-			if (vAlign == VerticalAlignment::Stretch)
-			{
-				y = contentTop + margin.Top;
-				h = contentHeight - margin.Top - margin.Bottom;
-			}
-			else if (vAlign == VerticalAlignment::Top)
-			{
-				y = contentTop + (float)location.y;
-			}
-			else if (vAlign == VerticalAlignment::Center)
-			{
-				float availableHeight = contentHeight - margin.Top - margin.Bottom;
-				if (availableHeight < 0) availableHeight = 0;
-				y = contentTop + margin.Top + (availableHeight - h) / 2.0f;
-			}
-			else if (vAlign == VerticalAlignment::Bottom)
-			{
-				y = contentTop + contentHeight - margin.Bottom - h;
-			}
+			break;
 		}
 
-		if (w < 0) w = 0;
-		if (h < 0) h = 0;
-
-		POINT finalLoc = { (LONG)x, (LONG)y };
-		SIZE finalSize = { (LONG)w, (LONG)h };
-		child->ApplyLayout(finalLoc, finalSize);
+		needH = nextNeedH;
+		needV = nextNeedV;
 	}
 
 	this->_needsLayout = false;
@@ -193,10 +229,7 @@ void ScrollView::PerformScrollContentLayout()
 
 SIZE ScrollView::MeasureContentSize()
 {
-	SIZE measured = this->_size;
-	measured.cx = std::max<LONG>(0, measured.cx);
-	measured.cy = std::max<LONG>(0, measured.cy);
-
+	SIZE measured{};
 	float maxRight = this->_padding.Left;
 	float maxBottom = this->_padding.Top;
 	for (int i = 0; i < this->Children.Count; i++)
@@ -209,8 +242,8 @@ SIZE ScrollView::MeasureContentSize()
 		maxBottom = std::max(maxBottom, (float)loc.y + (float)sz.cy);
 	}
 
-	measured.cx = (std::max)(measured.cx, (LONG)std::ceil(maxRight + this->_padding.Right));
-	measured.cy = (std::max)(measured.cy, (LONG)std::ceil(maxBottom + this->_padding.Bottom));
+	measured.cx = std::max<LONG>(0, (LONG)std::ceil(maxRight + this->_padding.Right));
+	measured.cy = std::max<LONG>(0, (LONG)std::ceil(maxBottom + this->_padding.Bottom));
 	return measured;
 }
 
@@ -220,8 +253,8 @@ ScrollView::ScrollLayout ScrollView::CalcScrollLayout()
 	layout.ScrollBarSize = 8.0f;
 
 	SIZE content = this->AutoContentSize ? MeasureContentSize() : this->ContentSize;
-	content.cx = std::max<LONG>(content.cx, this->Width);
-	content.cy = std::max<LONG>(content.cy, this->Height);
+	content.cx = std::max<LONG>(0, content.cx);
+	content.cy = std::max<LONG>(0, content.cy);
 
 	bool needV = this->AlwaysShowVScroll;
 	bool needH = this->AlwaysShowHScroll;

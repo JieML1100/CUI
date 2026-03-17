@@ -886,7 +886,14 @@ void RichTextBox::Update()
 
 	this->BeginRender();
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, isSelected ? this->FocusedColor : this->BackColor);
+		auto backColor = this->BackColor;
+		if (isUnderMouse || isSelected)
+		{
+			backColor.r = std::min(1.0f, backColor.r * 1.2f);
+			backColor.g = std::min(1.0f, backColor.g * 1.2f);
+			backColor.b = std::min(1.0f, backColor.b * 1.2f);
+		}
+		d2d->FillRect(0, 0, size.cx, size.cy, backColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -1044,7 +1051,7 @@ void RichTextBox::Update()
 		UpdateCaretBlinkState(isSelected, this->SelectionStart, this->SelectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
 		if (shouldDrawCaret && IsCaretBlinkVisible())
 		{
-			d2d->DrawLine(caretStart, caretEnd, Colors::Black);
+			d2d->DrawLine(caretStart, caretEnd, this->ForeColor);
 		}
 		this->DrawScroll();
 		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);

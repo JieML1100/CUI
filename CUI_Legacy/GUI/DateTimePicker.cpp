@@ -144,13 +144,22 @@ void DateTimePicker::Update()
 	bool isUnderMouse = this->ParentForm->UnderMouse == this;
 	bool isSelected = this->ParentForm->Selected == this;
 	bool inlineTime = IsInlineTimeMode();
+	auto blendColor = [](const D2D1_COLOR_F& a, const D2D1_COLOR_F& b, float t) -> D2D1_COLOR_F
+		{
+			float clamped = std::clamp(t, 0.0f, 1.0f);
+			return D2D1_COLOR_F{
+				a.r + (b.r - a.r) * clamped,
+				a.g + (b.g - a.g) * clamped,
+				a.b + (b.b - a.b) * clamped,
+				a.a + (b.a - a.a) * clamped };
+		};
 
 	this->BeginRender((float)size.cx, (float)size.cy);
 	{
 		const float round = std::min(this->Round, (float)this->Height * 0.5f);
 		D2D1_COLOR_F baseColor = this->BackColor;
 		if (isUnderMouse && !this->Expand)
-			baseColor = D2D1_COLOR_F{ 0.96f, 0.96f, 0.96f, 1.0f };
+			baseColor = blendColor(this->BackColor, this->HoverColor, 0.22f);
 
 		d2d->FillRoundRect(0, 0, (float)this->Width, (float)this->Height, baseColor, round);
 
@@ -163,7 +172,7 @@ void DateTimePicker::Update()
 				float borderWidth = showEditHighlight ? 1.5f : 1.0f;
 				d2d->FillRoundRect(fieldRect.left, fieldRect.top, fieldRect.right - fieldRect.left, fieldRect.bottom - fieldRect.top, this->PanelBackColor, 5.0f);
 
-				D2D1_COLOR_F spinBackColor = D2D1_COLOR_F{ 0.94f, 0.95f, 0.97f, 1.0f };
+				D2D1_COLOR_F spinBackColor = blendColor(this->PanelBackColor, this->DropBorderColor, 0.18f);
 				float spinLeft = std::min(upRect.left, downRect.left);
 				d2d->FillRect(spinLeft, fieldRect.top + 1.0f, fieldRect.right - spinLeft - 1.0f, fieldRect.bottom - fieldRect.top - 2.0f, spinBackColor);
 				if (hoverUp)
@@ -300,7 +309,7 @@ void DateTimePicker::Update()
 		D2D1_COLOR_F borderColor = isSelected ? FocusBorderColor : this->BolderColor;
 		d2d->DrawRoundRect(this->Boder * 0.5f, this->Boder * 0.5f,
 			(float)this->Width - this->Boder, (float)this->Height - this->Boder,
-			borderColor, this->Boder, round);
+			borderColor, this->Boder, round - this->Boder);
 
 		if (this->Expand && !inlineTime)
 		{
@@ -322,10 +331,10 @@ void DateTimePicker::Update()
 
 				auto drawToggle = [&](D2D1_RECT_F rect, bool enabled, const wchar_t* label, bool hovered)
 					{
-						D2D1_COLOR_F fill = enabled ? this->AccentColor : D2D1_COLOR_F{ 0.92f,0.92f,0.92f,1.0f };
+						D2D1_COLOR_F fill = enabled ? this->AccentColor : blendColor(this->DropBackColor, this->DropBorderColor, 0.42f);
 						if (hovered)
 							fill = enabled ? D2D1_COLOR_F{ this->AccentColor.r, this->AccentColor.g, this->AccentColor.b, 0.85f }
-							: D2D1_COLOR_F{ 0.86f,0.86f,0.86f,1.0f };
+							: blendColor(this->HoverColor, this->DropBorderColor, 0.30f);
 						auto absRect = toAbs(rect);
 						d2d->FillRoundRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top, fill, 6.0f);
 						D2D1_COLOR_F textColor = enabled ? Colors::White : this->ForeColor;
@@ -438,7 +447,7 @@ void DateTimePicker::Update()
 
 		if (!this->Enable)
 		{
-			d2d->FillRect(0.0f, 0.0f, (float)size.cx, (float)size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+			d2d->FillRect(0.0f, 0.0f, (float)size.cx, (float)size.cy, blendColor(this->DropBackColor, Colors::White, 0.35f));
 		}
 	}
 	this->EndRender();

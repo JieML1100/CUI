@@ -63,6 +63,15 @@ private:
 	bool _draggingScrollThumb = false;
 	int _dragStartMouseY = 0;
 	int _dragStartScrollY = 0;
+	struct PendingFloatSliderCommand
+	{
+		bool Active = false;
+		std::wstring PropertyName;
+		DesignerModel::DesignDocument BeforeDocument;
+		std::vector<std::wstring> BeforeSelectionNames;
+		std::wstring BeforeSelectionName;
+	};
+	PendingFloatSliderCommand _pendingFloatSliderCommand;
 
 	PropertyGridBinder _binding;
 	Label* _titleLabel;
@@ -88,6 +97,15 @@ private:
 		const std::vector<std::wstring>& options, int& yOffset);
 	void CreateFloatSliderPropertyItem(std::wstring propertyName, float value,
 		float minValue, float maxValue, float step, int& yOffset);
+	bool ShouldGroupFloatSliderProperty(const std::wstring& propertyName) const;
+	bool TryCapturePropertyCommandState(DesignerModel::DesignDocument& document,
+		std::vector<std::wstring>& selectionNames,
+		std::wstring& selectionName) const;
+	bool BeginGroupedFloatSliderEdit(const std::wstring& propertyName);
+	void CommitGroupedFloatSliderEdit();
+	void CancelGroupedFloatSliderEdit();
+	void ApplyFloatPropertyValue(Control* ctrl, const std::wstring& propertyName, float value);
+	void UpdateFloatPropertyPreview(const std::wstring& propertyName, float value);
 	void ExecutePropertyCommand(const std::wstring& propertyName, const std::function<void()>& applyChange);
 	void UpdatePropertyFromTextBox(std::wstring propertyName, std::wstring value);
 	void UpdatePropertyFromBool(std::wstring propertyName, bool value);

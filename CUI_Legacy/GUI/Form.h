@@ -50,11 +50,26 @@ typedef Event<void(class Form*, KeyEventArgs)> FormKeyDownEvent;
 typedef Event<void(class Form*)> FormMovedEvent;
 typedef Event<void(class Form*)> FormSizeChangedEvent;
 typedef Event<void(class Form*, std::wstring, std::wstring)> FormTextChangedEvent;
+typedef Event<void(class Form*, std::wstring, std::wstring)> FormThemeChangedEvent;
 typedef Event<void(class Form*)> FormGotFocusEvent;
 typedef Event<void(class Form*)> FormLostFocusEvent;
 typedef Event<void(class Form*, List<std::wstring>)> FormDropFileEvent;
 typedef Event<void(class Form*, std::wstring)> FormDropTextEvent;
 typedef Event<void(class Form*, MouseEventArgs)> FormMouseClickEvent;
+typedef Event<void(class Form*,bool&)> FormCloseEvent;
+
+struct FormThemeFrame
+{
+	D2D1_COLOR_F WindowBackColor = Colors::WhiteSmoke;
+	D2D1_COLOR_F WindowForeColor = Colors::Black;
+	D2D1_COLOR_F WindowBorderLightColor = Colors::White;
+	D2D1_COLOR_F WindowBorderDarkColor = Colors::Black;
+	D2D1_COLOR_F TitleBarBackColor = D2D1_COLOR_F{ 0.5f ,0.5f ,0.5f ,0.25f };
+	D2D1_COLOR_F CaptionHoverColor = D2D1_COLOR_F{ 1.f, 1.f, 1.f, 0.15f };
+	D2D1_COLOR_F CaptionPressedColor = D2D1_COLOR_F{ 1.f, 1.f, 1.f, 0.25f };
+	D2D1_COLOR_F CloseHoverColor = D2D1_COLOR_F{ 0.90f, 0.20f, 0.20f, 0.50f };
+	D2D1_COLOR_F ClosePressedColor = D2D1_COLOR_F{ 0.90f, 0.20f, 0.20f, 0.70f };
+};
 
 /**
  * @file Form.h
@@ -94,6 +109,9 @@ private:
 	D2D1_COLOR_F CaptionPressedColor = { 1.f, 1.f, 1.f, 0.25f };
 	D2D1_COLOR_F CloseHoverColor = { 0.90f, 0.20f, 0.20f, 0.50f };
 	D2D1_COLOR_F ClosePressedColor = { 0.90f, 0.20f, 0.20f, 0.70f };
+	D2D1_COLOR_F BorderLightColor = Colors::White;
+	D2D1_COLOR_F BorderDarkColor = Colors::Black;
+	std::wstring _themeName = L"default";
 
 	int ClientTop() { return VisibleHead ? HeadHeight : 0; }
 	RECT TitleBarRectClient() { auto s = this->Size; return RECT{ 0, 0, s.cx, this->ClientTop() }; }
@@ -165,13 +183,15 @@ public:
 	FormKeyDownEvent OnKeyDown = FormKeyDownEvent();
 	/** @brief 绘制事件（窗口级）。 */
 	FormPaintEvent OnPaint = FormPaintEvent();
-	CloseEvent OnClose = CloseEvent();
+	FormCloseEvent OnClosing = FormCloseEvent();
 	FormMovedEvent OnMoved = FormMovedEvent();
 	FormSizeChangedEvent OnSizeChanged = FormSizeChangedEvent();
 	/** @brief 标题文本变化事件。 */
 	FormTextChangedEvent OnTextChanged = FormTextChangedEvent();
 	/** @brief 字符输入事件（已解析为 wchar_t）。 */
 	FormCharInputEvent OnCharInput = FormCharInputEvent();
+	/** @brief 主题变更事件。 */
+	FormThemeChangedEvent OnThemeChanged = FormThemeChangedEvent();
 	FormGotFocusEvent OnGotFocus = FormGotFocusEvent();
 	FormLostFocusEvent OnLostFocus = FormLostFocusEvent();
 	/** @brief 文件拖放事件。 */
@@ -263,6 +283,9 @@ public:
 	 */
 	Form(std::wstring _text = L"NativeWindow", POINT _location = { 0,0 }, SIZE _size = { 600,400 });
 	~Form();
+	const std::wstring& GetThemeName() const { return _themeName; }
+	FormThemeFrame GetThemeFrame() const;
+	void ApplyThemeFrame(const FormThemeFrame& theme, const std::wstring& themeName = L"");
 	// 统一设置键盘焦点控件（Selected），并触发控件 Got/LostFocus。
 	void SetSelectedControl(class Control* value, bool postRender = true);
 	/** @brief 以非模态方式显示窗口。 */

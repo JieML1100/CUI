@@ -7,6 +7,153 @@
 
 namespace {
 
+	D2D1_COLOR_F Color(float r, float g, float b, float a = 1.0f)
+	{
+		return D2D1_COLOR_F{ r, g, b, a };
+	}
+
+	struct DemoThemePalette
+	{
+		FormThemeFrame Window;
+		D2D1_COLOR_F Surface = Color(0.15f, 0.17f, 0.21f, 1.0f);
+		D2D1_COLOR_F SurfaceAlt = Color(0.19f, 0.22f, 0.27f, 1.0f);
+		D2D1_COLOR_F SurfacePanel = Color(0.20f, 0.23f, 0.28f, 0.92f);
+		D2D1_COLOR_F SurfacePanelSoft = Color(0.23f, 0.26f, 0.31f, 0.96f);
+		D2D1_COLOR_F InputBack = Color(0.17f, 0.18f, 0.20f, 0.98f);
+		D2D1_COLOR_F InputHover = Color(0.24f, 0.25f, 0.28f, 1.0f);
+		D2D1_COLOR_F Border = Color(0.46f, 0.50f, 0.58f, 0.95f);
+		D2D1_COLOR_F BorderStrong = Color(0.76f, 0.80f, 0.87f, 0.65f);
+		D2D1_COLOR_F Text = Color(0.95f, 0.96f, 0.98f, 1.0f);
+		D2D1_COLOR_F TextMuted = Color(0.76f, 0.79f, 0.84f, 1.0f);
+		D2D1_COLOR_F Accent = Color(0.28f, 0.63f, 0.98f, 0.98f);
+		D2D1_COLOR_F AccentSoft = Color(0.34f, 0.66f, 0.98f, 0.30f);
+		D2D1_COLOR_F AccentText = Color(0.98f, 0.99f, 1.0f, 1.0f);
+		D2D1_COLOR_F Selection = Color(0.27f, 0.57f, 0.96f, 0.72f);
+		D2D1_COLOR_F InputSelection = Color(0.10f, 0.52f, 0.98f, 0.96f);
+		D2D1_COLOR_F ScrollTrack = Color(0.31f, 0.34f, 0.41f, 0.72f);
+		D2D1_COLOR_F ScrollThumb = Color(0.63f, 0.69f, 0.80f, 0.92f);
+	};
+
+	const std::wstring& DemoThemeKeyLight()
+	{
+		static const std::wstring value = L"light";
+		return value;
+	}
+
+	const std::wstring& DemoThemeKeyDark()
+	{
+		static const std::wstring value = L"dark";
+		return value;
+	}
+
+	const std::wstring& DemoThemeLabelLight()
+	{
+		static const std::wstring value = L"亮色";
+		return value;
+	}
+
+	const std::wstring& DemoThemeLabelDark()
+	{
+		static const std::wstring value = L"暗色";
+		return value;
+	}
+
+	const DemoThemePalette& GetDemoThemePalette(const std::wstring& themeName)
+	{
+		static const DemoThemePalette light = []()
+			{
+				DemoThemePalette theme;
+				theme.Window.WindowBackColor = Color(0.95f, 0.96f, 0.98f, 1.0f);
+				theme.Window.WindowForeColor = Color(0.10f, 0.12f, 0.15f, 1.0f);
+				theme.Window.WindowBorderLightColor = Color(1.0f, 1.0f, 1.0f, 1.0f);
+				theme.Window.WindowBorderDarkColor = Color(0.60f, 0.65f, 0.74f, 0.95f);
+				theme.Window.TitleBarBackColor = Color(0.98f, 0.99f, 1.0f, 0.92f);
+				theme.Window.CaptionHoverColor = Color(0.18f, 0.42f, 0.88f, 0.12f);
+				theme.Window.CaptionPressedColor = Color(0.18f, 0.42f, 0.88f, 0.20f);
+				theme.Window.CloseHoverColor = Color(0.88f, 0.26f, 0.26f, 0.24f);
+				theme.Window.ClosePressedColor = Color(0.88f, 0.26f, 0.26f, 0.38f);
+				theme.Surface = Color(0.95f, 0.96f, 0.98f, 1.0f);
+				theme.SurfaceAlt = Color(0.91f, 0.93f, 0.96f, 1.0f);
+				theme.SurfacePanel = Color(1.0f, 1.0f, 1.0f, 0.96f);
+				theme.SurfacePanelSoft = Color(0.97f, 0.98f, 1.0f, 0.98f);
+				theme.InputBack = Color(1.0f, 1.0f, 1.0f, 0.98f);
+				theme.InputHover = Color(0.95f, 0.95f, 0.96f, 1.0f);
+				theme.Border = Color(0.76f, 0.80f, 0.87f, 1.0f);
+				theme.BorderStrong = Color(0.52f, 0.58f, 0.68f, 0.95f);
+				theme.Text = Color(0.10f, 0.12f, 0.15f, 1.0f);
+				theme.TextMuted = Color(0.33f, 0.38f, 0.46f, 1.0f);
+				theme.Accent = Color(0.13f, 0.46f, 0.93f, 0.96f);
+				theme.AccentSoft = Color(0.13f, 0.46f, 0.93f, 0.16f);
+				theme.AccentText = Color(1.0f, 1.0f, 1.0f, 1.0f);
+				theme.Selection = Color(0.19f, 0.50f, 0.95f, 0.26f);
+				theme.InputSelection = Color(0.12f, 0.48f, 0.94f, 0.88f);
+				theme.ScrollTrack = Color(0.81f, 0.84f, 0.89f, 0.95f);
+				theme.ScrollThumb = Color(0.46f, 0.54f, 0.66f, 0.92f);
+				return theme;
+			}();
+
+		static const DemoThemePalette dark = []()
+			{
+				DemoThemePalette theme;
+				theme.Window.WindowBackColor = Color(0.15f, 0.17f, 0.21f, 1.0f);
+				theme.Window.WindowForeColor = Color(0.95f, 0.96f, 0.98f, 1.0f);
+				theme.Window.WindowBorderLightColor = Color(0.80f, 0.84f, 0.90f, 0.28f);
+				theme.Window.WindowBorderDarkColor = Color(0.05f, 0.06f, 0.09f, 0.95f);
+				theme.Window.TitleBarBackColor = Color(0.10f, 0.12f, 0.15f, 0.94f);
+				theme.Window.CaptionHoverColor = Color(1.0f, 1.0f, 1.0f, 0.14f);
+				theme.Window.CaptionPressedColor = Color(1.0f, 1.0f, 1.0f, 0.24f);
+				theme.Window.CloseHoverColor = Color(0.90f, 0.24f, 0.24f, 0.42f);
+				theme.Window.ClosePressedColor = Color(0.90f, 0.24f, 0.24f, 0.58f);
+				theme.InputBack = Color(0.16f, 0.17f, 0.19f, 0.98f);
+				theme.InputHover = Color(0.22f, 0.23f, 0.26f, 1.0f);
+				return theme;
+			}();
+
+		return themeName == DemoThemeKeyLight() ? light : dark;
+	}
+
+	void ApplyTextInputTheme(TextBox* textBox, const DemoThemePalette& theme)
+	{
+		if (!textBox) return;
+		textBox->BackColor = theme.InputBack;
+		textBox->ForeColor = theme.Text;
+		textBox->BolderColor = theme.Border;
+		textBox->UnderMouseColor = theme.InputHover;
+		textBox->FocusedColor = theme.Accent;
+		textBox->SelectedBackColor = theme.InputSelection;
+		textBox->SelectedForeColor = theme.AccentText;
+		textBox->ScrollBackColor = theme.ScrollTrack;
+		textBox->ScrollForeColor = theme.ScrollThumb;
+	}
+
+	void ApplyPasswordTheme(PasswordBox* textBox, const DemoThemePalette& theme)
+	{
+		if (!textBox) return;
+		textBox->BackColor = theme.InputBack;
+		textBox->ForeColor = theme.Text;
+		textBox->BolderColor = theme.Border;
+		textBox->UnderMouseColor = theme.InputHover;
+		textBox->FocusedColor = theme.Accent;
+		textBox->SelectedBackColor = theme.InputSelection;
+		textBox->SelectedForeColor = theme.AccentText;
+		textBox->ScrollBackColor = theme.ScrollTrack;
+		textBox->ScrollForeColor = theme.ScrollThumb;
+	}
+
+	void ApplyRichTextTheme(RichTextBox* textBox, const DemoThemePalette& theme)
+	{
+		if (!textBox) return;
+		textBox->BackColor = theme.InputBack;
+		textBox->ForeColor = theme.Text;
+		textBox->BolderColor = theme.Border;
+		textBox->UnderMouseColor = theme.InputHover;
+		textBox->FocusedColor = theme.Accent;
+		textBox->SelectedBackColor = theme.InputSelection;
+		textBox->SelectedForeColor = theme.AccentText;
+		textBox->ScrollBackColor = theme.ScrollTrack;
+		textBox->ScrollForeColor = theme.ScrollThumb;
+	}
+
 	std::shared_ptr<BitmapSource> ToBitmapFromSvg(const char* data)
 	{
 		if (!data) return {};
@@ -115,6 +262,278 @@ namespace {
 		return (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
 	}
 
+}
+
+void DemoWindow::Theme_OnSelectionChanged(class Control* sender)
+{
+	(void)sender;
+	if (!_themeSelector)
+	{
+		return;
+	}
+
+	Theme_Apply(_themeSelector->Text == DemoThemeLabelLight() ? DemoThemeKeyLight() : DemoThemeKeyDark());
+}
+
+void DemoWindow::Theme_Apply(const std::wstring& themeName)
+{
+	this->ApplyThemeFrame(GetDemoThemePalette(themeName).Window, themeName);
+}
+
+void DemoWindow::Theme_ApplyCurrent()
+{
+	const auto& theme = GetDemoThemePalette(this->GetThemeName());
+
+	auto applyControlTheme = [&](auto&& self, Control* control) -> void
+		{
+			if (!control)
+			{
+				return;
+			}
+
+			control->ForeColor = theme.Text;
+			control->BolderColor = theme.Border;
+
+			switch (control->Type())
+			{
+			case UIClass::UI_Label:
+				control->BackColor = Color(0, 0, 0, 0);
+				control->ForeColor = theme.TextMuted;
+				break;
+			case UIClass::UI_Button:
+			{
+				auto* button = (Button*)control;
+				button->BackColor = theme.SurfaceAlt;
+				button->ForeColor = theme.Text;
+				button->BolderColor = theme.Border;
+				button->UnderMouseColor = theme.AccentSoft;
+				button->CheckedColor = theme.Accent;
+				break;
+			}
+			case UIClass::UI_CheckBox:
+				((CheckBox*)control)->UnderMouseColor = theme.AccentSoft;
+				break;
+			case UIClass::UI_RadioBox:
+				((RadioBox*)control)->UnderMouseColor = theme.AccentSoft;
+				break;
+			case UIClass::UI_Switch:
+				((Switch*)control)->UnderMouseColor = theme.AccentSoft;
+				break;
+			case UIClass::UI_TextBox:
+				ApplyTextInputTheme((TextBox*)control, theme);
+				break;
+			case UIClass::UI_PasswordBox:
+				ApplyPasswordTheme((PasswordBox*)control, theme);
+				break;
+			case UIClass::UI_RichTextBox:
+				ApplyRichTextTheme((RichTextBox*)control, theme);
+				break;
+			case UIClass::UI_ComboBox:
+			{
+				auto* combo = (ComboBox*)control;
+				combo->BackColor = theme.InputBack;
+				combo->ForeColor = theme.Text;
+				combo->BolderColor = theme.Border;
+				combo->UnderMouseBackColor = theme.Accent;
+				combo->UnderMouseForeColor = theme.AccentText;
+				combo->ScrollBackColor = theme.ScrollTrack;
+				combo->ScrollForeColor = theme.ScrollThumb;
+				combo->ButtonBackColor = theme.Accent;
+				break;
+			}
+			case UIClass::UI_DateTimePicker:
+			{
+				auto* picker = (DateTimePicker*)control;
+				picker->BackColor = theme.InputBack;
+				picker->ForeColor = theme.Text;
+				picker->BolderColor = theme.Border;
+				picker->PanelBackColor = theme.InputBack;
+				picker->DropBackColor = theme.SurfacePanelSoft;
+				picker->DropBorderColor = theme.Border;
+				picker->HoverColor = theme.AccentSoft;
+				picker->AccentColor = theme.Accent;
+				picker->SecondaryTextColor = theme.TextMuted;
+				picker->FocusBorderColor = theme.Accent;
+				break;
+			}
+			case UIClass::UI_Menu:
+			{
+				auto* menu = (Menu*)control;
+				menu->BackColor = Color(0, 0, 0, 0);
+				menu->ForeColor = theme.Text;
+				menu->BarBackColor = theme.SurfacePanel;
+				menu->BarBorderColor = theme.Border;
+				menu->DropBackColor = theme.SurfacePanelSoft;
+				menu->DropBorderColor = theme.Border;
+				menu->DropHoverColor = theme.AccentSoft;
+				menu->DropTextColor = theme.Text;
+				menu->DropSeparatorColor = theme.Border;
+				break;
+			}
+			case UIClass::UI_MenuItem:
+				((MenuItem*)control)->HoverBackColor = theme.AccentSoft;
+				break;
+			case UIClass::UI_ContextMenu:
+			{
+				auto* popup = (ContextMenu*)control;
+				popup->PopupBackColor = theme.SurfacePanelSoft;
+				popup->PopupBorderColor = theme.Border;
+				popup->PopupHoverColor = theme.AccentSoft;
+				popup->PopupTextColor = theme.Text;
+				popup->PopupSeparatorColor = theme.Border;
+				break;
+			}
+			case UIClass::UI_ToolTip:
+			{
+				auto* tip = (ToolTip*)control;
+				tip->PopupBackColor = theme.SurfacePanelSoft;
+				tip->PopupBorderColor = theme.Border;
+				tip->PopupTextColor = theme.Text;
+				break;
+			}
+			case UIClass::UI_Panel:
+			case UIClass::UI_StatusBar:
+			case UIClass::UI_StackPanel:
+			case UIClass::UI_GridPanel:
+			case UIClass::UI_DockPanel:
+			case UIClass::UI_WrapPanel:
+			case UIClass::UI_RelativePanel:
+			case UIClass::UI_TabPage:
+				control->BackColor = theme.SurfacePanel;
+				control->ForeColor = theme.Text;
+				control->BolderColor = theme.Border;
+				break;
+			case UIClass::UI_ScrollView:
+			{
+				auto* scroll = (ScrollView*)control;
+				scroll->BackColor = theme.SurfacePanel;
+				scroll->BolderColor = theme.Border;
+				scroll->ScrollBackColor = theme.ScrollTrack;
+				scroll->ScrollForeColor = theme.ScrollThumb;
+				break;
+			}
+			case UIClass::UI_TreeView:
+			{
+				auto* tree = (TreeView*)control;
+				tree->BackColor = theme.SurfacePanelSoft;
+				tree->ForeColor = theme.Text;
+				tree->BolderColor = theme.Border;
+				tree->ScrollBackColor = theme.ScrollTrack;
+				tree->ScrollForeColor = theme.ScrollThumb;
+				tree->SelectedBackColor = theme.Selection;
+				tree->UnderMouseItemBackColor = theme.AccentSoft;
+				tree->SelectedForeColor = theme.AccentText;
+				break;
+			}
+			case UIClass::UI_GridView:
+			{
+				auto* grid = (GridView*)control;
+				grid->BackColor = Color(0, 0, 0, 0);
+				grid->ForeColor = theme.Text;
+				grid->BolderColor = theme.Border;
+				grid->HeadBackColor = theme.SurfaceAlt;
+				grid->HeadForeColor = theme.Text;
+				grid->ButtonBackColor = theme.SurfaceAlt;
+				grid->ButtonCheckedColor = theme.SurfacePanelSoft;
+				grid->ButtonHoverBackColor = theme.AccentSoft;
+				grid->ButtonPressedBackColor = theme.Accent;
+				grid->ButtonBorderDarkColor = theme.BorderStrong;
+				grid->ButtonBorderLightColor = theme.Border;
+				grid->SelectedItemBackColor = theme.Selection;
+				grid->SelectedItemForeColor = theme.AccentText;
+				grid->UnderMouseItemBackColor = theme.AccentSoft;
+				grid->UnderMouseItemForeColor = theme.Text;
+				grid->ScrollBackColor = theme.ScrollTrack;
+				grid->ScrollForeColor = theme.ScrollThumb;
+				grid->EditBackColor = theme.InputBack;
+				grid->EditForeColor = theme.Text;
+				grid->EditSelectedBackColor = theme.Selection;
+				grid->EditSelectedForeColor = theme.AccentText;
+				grid->NewRowBackColor = theme.SurfaceAlt;
+				grid->NewRowForeColor = theme.TextMuted;
+				grid->NewRowIndicatorColor = theme.Accent;
+				break;
+			}
+			case UIClass::UI_Slider:
+			{
+				auto* slider = (Slider*)control;
+				slider->TrackBackColor = theme.ScrollTrack;
+				slider->TrackForeColor = theme.Accent;
+				slider->ThumbColor = theme.SurfacePanelSoft;
+				slider->ThumbBorderColor = theme.BorderStrong;
+				break;
+			}
+			case UIClass::UI_TabControl:
+			{
+				auto* tabs = (TabControl*)control;
+				tabs->BackColor = Color(0, 0, 0, 0);
+				tabs->ForeColor = theme.Text;
+				tabs->BolderColor = theme.Border;
+				tabs->TitleBackColor = theme.SurfaceAlt;
+				tabs->SelectedTitleBackColor = theme.AccentSoft;
+				break;
+			}
+			case UIClass::UI_LinkLabel:
+			{
+				auto* link = (LinkLabel*)control;
+				link->ForeColor = theme.Accent;
+				link->HoverColor = theme.Accent;
+				link->VisitedColor = theme.TextMuted;
+				link->UnderlineColor = theme.Accent;
+				break;
+			}
+			case UIClass::UI_PictureBox:
+				control->BackColor = theme.SurfacePanelSoft;
+				control->BolderColor = theme.Border;
+				break;
+			case UIClass::UI_ProgressBar:
+				control->BackColor = theme.ScrollTrack;
+				control->ForeColor = theme.Accent;
+				control->BolderColor = theme.Border;
+				break;
+			case UIClass::UI_LoadingRing:
+			case UIClass::UI_ProgressRing:
+				control->ForeColor = theme.Accent;
+				control->BackColor = Color(0, 0, 0, 0);
+				break;
+			case UIClass::UI_MediaPlayer:
+				control->BackColor = theme.SurfacePanelSoft;
+				control->BolderColor = theme.Border;
+				break;
+			default:
+				break;
+			}
+
+			for (int i = 0; i < control->Count; ++i)
+			{
+				self(self, control->operator[](i));
+			}
+		};
+
+	for (int i = 0; i < this->Controls.Count; ++i)
+	{
+		applyControlTheme(applyControlTheme, this->Controls[i]);
+	}
+
+	if (_topStatus)
+	{
+		_topStatus->ForeColor = theme.TextMuted;
+	}
+	if (_themeLabel)
+	{
+		_themeLabel->ForeColor = theme.TextMuted;
+	}
+	if (_themeSelector)
+	{
+		_themeSelector->Text = this->GetThemeName() == DemoThemeKeyLight() ? DemoThemeLabelLight() : DemoThemeLabelDark();
+	}
+	if (_statusbar)
+	{
+		_statusbar->BackColor = theme.SurfacePanelSoft;
+		_statusbar->ForeColor = theme.TextMuted;
+	}
+
+	this->Invalidate(true);
 }
 
 DemoWindow::~DemoWindow()
@@ -391,6 +810,21 @@ void DemoWindow::BuildTabs()
 	_topStatus = this->AddControl(new Label(L"CUI 全组件演示（CUITest）", 350, top + 10));
 	_topStatus->ForeColor = Colors::LightGray;
 	_topStatus->OnMouseWheel += [this](class Control* sender, MouseEventArgs e) { this->Basic_OnMouseWheel(sender, e); };
+
+	_themeLabel = this->AddControl(new Label(L"主题", 0, top + 10));
+	_themeLabel->Width = 32;
+	_themeLabel->Margin = Thickness(0, (float)(top + 10), 154, 0);
+	_themeLabel->AnchorStyles = AnchorStyles::Top | AnchorStyles::Right;
+
+	_themeSelector = this->AddControl(new ComboBox(DemoThemeLabelDark(), 0, top + 6, 110, 28));
+	_themeSelector->Items.Add(DemoThemeLabelLight());
+	_themeSelector->Items.Add(DemoThemeLabelDark());
+	_themeSelector->Margin = Thickness(0, (float)(top + 6), 10, 0);
+	_themeSelector->AnchorStyles = AnchorStyles::Top | AnchorStyles::Right;
+	_themeSelector->OnSelectionChanged += [this](class Control* sender)
+		{
+			this->Theme_OnSelectionChanged(sender);
+		};
 
 	_tabs = this->AddControl(new TabControl(10, _topSlider->Bottom + 8, this->Size.cx - 20, this->Size.cy - (_topSlider->Bottom + 8) - 10));
 	_tabs->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.0f };
@@ -948,6 +1382,14 @@ DemoWindow::DemoWindow() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
 	_notify->ShowNotifyIcon();
 	_notifyVisible = true;
 
+	this->OnThemeChanged += [this](class Form* sender, std::wstring oldTheme, std::wstring newTheme)
+		{
+			(void)sender;
+			(void)oldTheme;
+			(void)newTheme;
+			this->Theme_ApplyCurrent();
+		};
+
 	BuildMenuToolStatus();
 	BuildTabs();
 
@@ -969,8 +1411,8 @@ DemoWindow::DemoWindow() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
 		_systemContextMenu->OnMenuCommand += [this](class Control* sender, int id) { this->System_OnContextMenuCommand(sender, id); };
 	}
 
-	this->BackColor = Colors::grey31;
 	this->SizeMode = ImageSizeMode::StretchIamge;
+	Theme_Apply(DemoThemeKeyDark());
 
 	this->OnSizeChanged += [&](class Form* sender)
 		{
@@ -983,11 +1425,6 @@ DemoWindow::DemoWindow() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
 			{
 				_toolbar->Width = logW;
 				_toolbar->Top = _menu ? _menu->Height : 0;
-			}
-			if (_statusbar)
-			{
-				_statusbar->Width = logW;
-				_statusbar->Top = (int)((this->Size.cy - this->HeadHeight) / dpiSc) - _statusbar->Height;
 			}
 		};
 }

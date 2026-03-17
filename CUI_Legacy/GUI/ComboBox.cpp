@@ -370,29 +370,6 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 				}
 			}
 		}
-		else
-		{
-			if (GET_WHEEL_DELTA_WPARAM(wParam) > 0)
-			{
-				if (this->SelectedIndex > 0)
-				{
-					this->SelectedIndex -= 1;
-					this->Text = this->values[this->SelectedIndex];
-					this->OnSelectionChanged(this);
-					this->PostRender();
-				}
-			}
-			else
-			{
-				if (this->SelectedIndex < this->values.Count - 1)
-				{
-					this->SelectedIndex += 1;
-					this->Text = this->values[this->SelectedIndex];
-					this->OnSelectionChanged(this);
-					this->PostRender();
-				}
-			}
-		}
 		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
 		this->OnMouseWheel(this, event_obj);
 	}

@@ -64,6 +64,21 @@ namespace
 		}
 	}
 
+	static bool EnumOptionMatchesValue(const std::wstring& option, const std::wstring& value)
+	{
+		auto left = TrimWs(option);
+		auto right = TrimWs(value);
+		if (left == right)
+			return true;
+
+		float leftNumber = 0.0f;
+		float rightNumber = 0.0f;
+		if (TryParseFloatWs(left, leftNumber) && TryParseFloatWs(right, rightNumber))
+			return std::fabs(leftNumber - rightNumber) < 1e-4f;
+
+		return false;
+	}
+
 	static std::vector<std::wstring> GetFontNameOptions()
 	{
 		std::vector<std::wstring> out;
@@ -999,12 +1014,12 @@ void PropertyGrid::CreateEnumPropertyItem(std::wstring propertyName, const std::
 	valueCombo->Items.Clear();
 	for (auto& o : options) valueCombo->Items.Add(o);
 
-	int idx = 0;
+	int idx = -1;
 	for (int i = 0; i < valueCombo->Items.Count; i++)
 	{
-		if (valueCombo->Items[i] == value) { idx = i; break; }
+		if (EnumOptionMatchesValue(valueCombo->Items[i], value)) { idx = i; break; }
 	}
-	valueCombo->SelectedIndex = idx;
+	valueCombo->SelectedIndex = idx >= 0 ? idx : 0;
 	if (valueCombo->Items.Count > 0 && idx >= 0 && idx < valueCombo->Items.Count)
 		valueCombo->Text = valueCombo->Items[idx];
 	else
@@ -1046,7 +1061,21 @@ void PropertyGrid::CreateFloatSliderPropertyItem(std::wstring propertyName, floa
 	slider->Value = value;
 
 	slider->OnValueChanged += [this, propertyName](Control*, float, float newValue) {
+		if (ShouldGroupFloatSliderProperty(propertyName))
+		{
+			if (_pendingFloatSliderCommand.Active || BeginGroupedFloatSliderEdit(propertyName))
+			{
+				UpdateFloatPropertyPreview(propertyName, newValue);
+				return;
+			}
+		}
 		UpdatePropertyFromFloat(propertyName, newValue);
+		};
+	slider->OnMouseUp += [this, propertyName](Control*, MouseEventArgs) {
+		if (_pendingFloatSliderCommand.Active && _pendingFloatSliderCommand.PropertyName == propertyName)
+		{
+			CommitGroupedFloatSliderEdit();
+		}
 		};
 
 	container->AddControl(slider);
@@ -1056,6 +1085,169 @@ void PropertyGrid::CreateFloatSliderPropertyItem(std::wstring propertyName, floa
 	_items.push_back(item);
 
 	yOffset += 32;
+}
+
+bool PropertyGrid::ShouldGroupFloatSliderProperty(const std::wstring& propertyName) const
+{
+	if (propertyName != L"PercentageValue")
+	{
+		return false;
+	}
+
+	auto currentControl = _binding.GetBoundControl();
+	if (!currentControl || !currentControl->ControlInstance)
+	{
+		return false;
+	}
+
+	return currentControl->Type == UIClass::UI_ProgressBar ||
+		currentControl->Type == UIClass::UI_ProgressRing;
+}
+
+bool PropertyGrid::TryCapturePropertyCommandState(DesignerModel::DesignDocument& document,
+	std::vector<std::wstring>& selectionNames,
+	std::wstring& selectionName) const
+{
+	auto* canvas = _binding.GetCanvas();
+	if (!canvas)
+	{
+		return false;
+	}
+
+	std::wstring error;
+	if (!canvas->BuildDesignDocument(document, &error))
+	{
+		return false;
+	}
+
+	selectionName.clear();
+	selectionNames.clear();
+	if (auto boundControl = _binding.GetBoundControl())
+	{
+		selectionName = boundControl->Name;
+		if (!selectionName.empty())
+		{
+			selectionNames.push_back(selectionName);
+		}
+	}
+
+	return true;
+}
+
+bool PropertyGrid::BeginGroupedFloatSliderEdit(const std::wstring& propertyName)
+{
+	if (_pendingFloatSliderCommand.Active)
+	{
+		return _pendingFloatSliderCommand.PropertyName == propertyName;
+	}
+
+	PendingFloatSliderCommand pending;
+	if (!TryCapturePropertyCommandState(
+		pending.BeforeDocument,
+		pending.BeforeSelectionNames,
+		pending.BeforeSelectionName))
+	{
+		return false;
+	}
+
+	pending.Active = true;
+	pending.PropertyName = propertyName;
+	_pendingFloatSliderCommand = std::move(pending);
+	return true;
+}
+
+void PropertyGrid::CommitGroupedFloatSliderEdit()
+{
+	if (!_pendingFloatSliderCommand.Active)
+	{
+		return;
+	}
+
+	auto* canvas = _binding.GetCanvas();
+	if (!canvas)
+	{
+		CancelGroupedFloatSliderEdit();
+		return;
+	}
+
+	DesignerModel::DesignDocument afterDocument;
+	std::vector<std::wstring> afterSelectionNames;
+	std::wstring afterSelectionName;
+	if (!TryCapturePropertyCommandState(afterDocument, afterSelectionNames, afterSelectionName))
+	{
+		CancelGroupedFloatSliderEdit();
+		return;
+	}
+
+	auto command = std::make_unique<UpdatePropertyCommand>(
+		canvas,
+		std::move(_pendingFloatSliderCommand.BeforeDocument),
+		std::move(afterDocument),
+		std::move(_pendingFloatSliderCommand.BeforeSelectionNames),
+		std::move(afterSelectionNames),
+		std::move(_pendingFloatSliderCommand.BeforeSelectionName),
+		std::move(afterSelectionName),
+		L"UpdateProperty:" + _pendingFloatSliderCommand.PropertyName,
+		true);
+	canvas->ExecuteCommand(std::move(command));
+	CancelGroupedFloatSliderEdit();
+}
+
+void PropertyGrid::CancelGroupedFloatSliderEdit()
+{
+	_pendingFloatSliderCommand = PendingFloatSliderCommand{};
+}
+
+void PropertyGrid::ApplyFloatPropertyValue(Control* ctrl, const std::wstring& propertyName, float value)
+{
+	if (!ctrl)
+	{
+		return;
+	}
+
+	if (propertyName == L"PercentageValue")
+	{
+		float v = std::clamp(value, 0.0f, 1.0f);
+		if (ctrl->Type() == UIClass::UI_ProgressBar)
+		{
+			auto* pb = (ProgressBar*)ctrl;
+			pb->PercentageValue = v;
+		}
+		else if (ctrl->Type() == UIClass::UI_ProgressRing)
+		{
+			auto* pr = (ProgressRing*)ctrl;
+			pr->PercentageValue = v;
+		}
+	}
+	else if (propertyName == L"Volume")
+	{
+		if (ctrl->Type() == UIClass::UI_MediaPlayer)
+		{
+			float v = std::clamp(value, 0.0f, 1.0f);
+			((MediaPlayer*)ctrl)->Volume = (double)v;
+		}
+	}
+}
+
+void PropertyGrid::UpdateFloatPropertyPreview(const std::wstring& propertyName, float value)
+{
+	auto currentControl = _binding.GetBoundControl();
+	if (!currentControl || !currentControl->ControlInstance)
+	{
+		return;
+	}
+
+	auto* ctrl = currentControl->ControlInstance;
+	try
+	{
+		ApplyFloatPropertyValue(ctrl, propertyName, value);
+	}
+	catch (...)
+	{
+		return;
+	}
+
+	_binding.NotifyControlChanged(ctrl);
 }
 
 void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wstring value)
@@ -1524,29 +1716,7 @@ void PropertyGrid::UpdatePropertyFromFloat(std::wstring propertyName, float valu
 
 	try
 	{
-		if (propertyName == L"PercentageValue")
-		{
-			if (ctrl->Type() == UIClass::UI_ProgressBar)
-			{
-				auto* pb = (ProgressBar*)ctrl;
-				float v = std::clamp(value, 0.0f, 1.0f);
-				pb->PercentageValue = v;
-			}
-			else if (ctrl->Type() == UIClass::UI_ProgressRing)
-			{
-				auto* pr = (ProgressRing*)ctrl;
-				float v = std::clamp(value, 0.0f, 1.0f);
-				pr->PercentageValue = v;
-			}
-		}
-		else if (propertyName == L"Volume")
-		{
-			if (ctrl->Type() == UIClass::UI_MediaPlayer)
-			{
-				float v = std::clamp(value, 0.0f, 1.0f);
-				((MediaPlayer*)ctrl)->Volume = (double)v;
-			}
-		}
+		ApplyFloatPropertyValue(ctrl, propertyName, value);
 	}
 	catch (...) {}
 
@@ -1765,6 +1935,8 @@ void PropertyGrid::ExecutePropertyCommand(const std::wstring& propertyName, cons
 
 void PropertyGrid::CommitPendingEdits()
 {
+	CommitGroupedFloatSliderEdit();
+
 	if (!this->ParentForm || !this->ParentForm->Selected)
 	{
 		return;
@@ -1831,6 +2003,7 @@ void PropertyGrid::CommitPendingEdits()
 
 void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 {
+	CommitGroupedFloatSliderEdit();
 	Clear();
 	_binding.BindControl(control);
 	_scrollOffsetY = 0;
@@ -2253,6 +2426,8 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 
 void PropertyGrid::Clear()
 {
+	CommitGroupedFloatSliderEdit();
+
 	auto removeFromParent = [this](Control* c) {
 		if (!c) return;
 		if (_contentHost && c->Parent == _contentHost)

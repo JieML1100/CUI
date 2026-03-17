@@ -27,7 +27,14 @@ void RoundTextBox::Update()
 
 	this->BeginRender();
 	{
-		d2d->FillRoundRect(0, 0, size.cx, size.cy, isSelected ? FocusedColor : BackColor, TextMargin);
+		auto backColor = this->BackColor;
+		if (isUnderMouse || isSelected)
+		{
+			backColor.r = std::min(1.0f, backColor.r * 1.2f);
+			backColor.g = std::min(1.0f, backColor.g * 1.2f);
+			backColor.b = std::min(1.0f, backColor.b * 1.2f);
+		}
+		d2d->FillRoundRect(0, 0, size.cx, size.cy, backColor, TextMargin);
 		RenderImage();
 		// 内部文本裁剪：本地坐标下从 TextMargin 开始
 		d2d->PushDrawRect(TextMargin, 0, (float)size.cx - TextMargin * 2.0f, (float)size.cy);
@@ -96,7 +103,7 @@ void RoundTextBox::Update()
 		UpdateCaretBlinkState(isSelected, this->SelectionStart, this->SelectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
 		if (shouldDrawCaret && IsCaretBlinkVisible())
 		{
-			d2d->DrawLine(caretStart, caretEnd, Colors::Black);
+			d2d->DrawLine(caretStart, caretEnd, this->ForeColor);
 		}
 		d2d->PopDrawRect();
 	}

@@ -15,6 +15,9 @@ public:
     ~DemoWindow();
 
 private:
+    void Theme_OnSelectionChanged(class Control* sender);
+    void Theme_Apply(const std::wstring& themeName);
+    void Theme_ApplyCurrent();
     void Menu_OnCommand(class Control* sender, int id);
     void Ui_UpdateStatus(const std::wstring& text);
     void Ui_UpdateProgress(float value01);
@@ -54,6 +57,8 @@ private:
 
     Slider* _topSlider = nullptr;
     Label* _topStatus = nullptr;
+    Label* _themeLabel = nullptr;
+    ComboBox* _themeSelector = nullptr;
     TabControl* _tabs = nullptr;
 
     // Basic tab

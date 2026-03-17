@@ -18,6 +18,31 @@
 #define DWMWA_WINDOW_CORNER_PREFERENCE 33
 #endif
 
+namespace
+{
+	float LayoutMainStatusBar(Form* form, const SIZE& clientSize)
+	{
+		auto* statusBar = form ? form->MainStatusBar : nullptr;
+		if (!statusBar || !statusBar->TopMost || !statusBar->Visible)
+		{
+			return 0.0f;
+		}
+
+		SIZE measured = statusBar->MeasureCore(clientSize);
+		LONG width = (std::max)(0L, clientSize.cx);
+		LONG height = (std::max)(0L, measured.cy);
+		LONG top = clientSize.cy - height;
+		if (top < 0)
+		{
+			top = 0;
+			height = (std::min)(height, clientSize.cy);
+		}
+
+		statusBar->ApplyLayout(POINT{ 0, top }, SIZE{ width, height });
+		return (float)height;
+	}
+}
+
 HCURSOR Form::GetSystemCursor(CursorKind kind)
 {
 	static std::unordered_map<CursorKind, HCURSOR> cache;
@@ -533,15 +558,24 @@ CursorKind Form::QueryCursorAt(POINT mouseClient, POINT contentMouse)
 		return CursorKind::Arrow;
 	}
 
+	auto hit = HitTestControlAt(contentMouse);
+
 	if (this->Selected && this->Selected->IsVisual && (GetAsyncKeyState(VK_LBUTTON) & 0x8000))
 	{
-		auto abs = this->Selected->AbsLocation;
-		int xof = contentMouse.x - abs.x;
-		int yof = contentMouse.y - abs.y;
-		return this->Selected->QueryCursor(xof, yof);
+		bool keepSelectedCursor = (::GetCapture() == this->Handle);
+		if (!keepSelectedCursor)
+		{
+			keepSelectedCursor = (hit == this->Selected) || PointInControlRect(this->Selected, contentMouse);
+		}
+		if (keepSelectedCursor)
+		{
+			auto abs = this->Selected->AbsLocation;
+			int xof = contentMouse.x - abs.x;
+			int yof = contentMouse.y - abs.y;
+			return this->Selected->QueryCursor(xof, yof);
+		}
 	}
 
-	auto hit = HitTestControlAt(contentMouse);
 	if (!hit) return CursorKind::Arrow;
 	auto abs = hit->AbsLocation;
 	int xof = contentMouse.x - abs.x;
@@ -995,6 +1029,49 @@ void Form::SetFontEx(class Font* value, bool takeOwnership)
 	this->ControlChanged = true;
 	this->Invalidate(false);
 }
+
+FormThemeFrame Form::GetThemeFrame() const
+{
+	FormThemeFrame theme;
+	theme.WindowBackColor = this->BackColor;
+	theme.WindowForeColor = this->ForeColor;
+	theme.WindowBorderLightColor = this->BorderLightColor;
+	theme.WindowBorderDarkColor = this->BorderDarkColor;
+	theme.TitleBarBackColor = this->HeadBackColor;
+	theme.CaptionHoverColor = this->CaptionHoverColor;
+	theme.CaptionPressedColor = this->CaptionPressedColor;
+	theme.CloseHoverColor = this->CloseHoverColor;
+	theme.ClosePressedColor = this->ClosePressedColor;
+	return theme;
+}
+
+void Form::ApplyThemeFrame(const FormThemeFrame& theme, const std::wstring& themeName)
+{
+	std::wstring oldTheme = this->_themeName;
+	if (!themeName.empty())
+	{
+		this->_themeName = themeName;
+	}
+
+	this->BackColor = theme.WindowBackColor;
+	this->ForeColor = theme.WindowForeColor;
+	this->BorderLightColor = theme.WindowBorderLightColor;
+	this->BorderDarkColor = theme.WindowBorderDarkColor;
+	this->HeadBackColor = theme.TitleBarBackColor;
+	this->CaptionHoverColor = theme.CaptionHoverColor;
+	this->CaptionPressedColor = theme.CaptionPressedColor;
+	this->CloseHoverColor = theme.CloseHoverColor;
+	this->ClosePressedColor = theme.ClosePressedColor;
+	this->ControlChanged = true;
+
+	if (oldTheme != this->_themeName)
+	{
+		this->OnThemeChanged(this, oldTheme, this->_themeName);
+	}
+
+	this->Invalidate(true);
+}
+
 GET_CPP(Form, bool, TopMost)
 {
 	return (GetWindowLong(this->Handle, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
@@ -1457,13 +1534,16 @@ void Form::PerformLayout()
 		float contentLeft = 0.0f;
 		float contentTop = 0.0f;
 		float contentWidth = (float)clientSize.cx;
-		float contentHeight = (float)clientSize.cy;
+		float statusBarHeight = LayoutMainStatusBar(this, clientSize);
+		float contentHeight = (float)clientSize.cy - statusBarHeight;
+		if (contentHeight < 0.0f) contentHeight = 0.0f;
 		
 		for (int i = 0; i < this->Controls.Count; i++)
 		{
 			auto control = this->Controls[i];
 			if (!control || !control->Visible) continue;
 			if (control->Type() == UIClass::UI_Menu) continue;
+			if (control == this->MainStatusBar) continue;
 			
 			POINT location = control->Location;
 			Thickness margin = control->Margin;
@@ -1575,12 +1655,15 @@ void Form::PerformLayout()
 			const float dpiScL = GetDpiScale();
 			clientSize.cx = (LONG)(clientSize.cx / dpiScL);
 			clientSize.cy = (LONG)(clientSize.cy / dpiScL);
-			_layoutEngine->Measure(nullptr, clientSize);
+			float statusBarHeight = LayoutMainStatusBar(this, clientSize);
+			SIZE contentSize = clientSize;
+			contentSize.cy = (LONG)(std::max)(0.0f, (float)clientSize.cy - statusBarHeight);
+			_layoutEngine->Measure(nullptr, contentSize);
 			
 			D2D1_RECT_F finalRect = { 
 				0, 0, 
-				(float)clientSize.cx, 
-				(float)clientSize.cy 
+				(float)contentSize.cx, 
+				(float)contentSize.cy 
 			};
 			_layoutEngine->Arrange(nullptr, finalRect);
 		}
@@ -1672,7 +1755,10 @@ void Form::ShowDialog(HWND parent)
 void Form::Close()
 {
 	if (!this->Handle) return;
-	PostMessageW(this->Handle, WM_CLOSE, 0, 0);
+	bool canceled = false;
+	this->OnClosing(this, canceled);
+	if (!canceled)
+		PostMessageW(this->Handle, WM_CLOSE, 0, 0);
 }
 bool Form::DoEvent()
 {
@@ -1745,8 +1831,8 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 	this->Render->ClearTransform();
 	this->Render->PushDrawRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top));
 	this->Render->FillRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top), this->BackColor);
-	this->Render->DrawRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top), Colors::White, 2.0f);
-	this->Render->DrawRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top), Colors::Black, 1.0f);
+	this->Render->DrawRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top), this->BorderLightColor, 2.0f);
+	this->Render->DrawRect((float)drawRc.left, (float)drawRc.top, (float)(drawRc.right - drawRc.left), (float)(drawRc.bottom - drawRc.top), this->BorderDarkColor, 1.0f);
 
 	if (this->Image)
 	{
@@ -2402,6 +2488,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	if (WM_LBUTTONDOWN == message && HitControl == NULL && this->Selected && HitControl != this->Selected)
 	{
 		this->SetSelectedControl(NULL, true);
+		UpdateCursor(mouse, contentMouse);
 	}
 	return true;
 }

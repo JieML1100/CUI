@@ -72,6 +72,7 @@ public:
 	CellValue(__int32 tag);
 	CellValue(unsigned __int32 tag);
 	CellValue(unsigned __int64 tag);
+	CellValue(PVOID tag);
 	ID2D1Bitmap* GetImageBitmap(D2DGraphics* render);
 };
 class GridViewRow

@@ -6,7 +6,7 @@
 #include <cwchar>
 #pragma comment(lib, "Imm32.lib")
 
-CellValue::CellValue() : Text(L""), Image(nullptr), Tag(NULL)
+CellValue::CellValue() : Text(L"null"), Image(nullptr), Tag(NULL)
 {
 }
 CellValue::CellValue(std::wstring s) : Text(s), Tag(NULL), Image(nullptr)
@@ -21,20 +21,26 @@ CellValue::CellValue(const wchar_t* s) : Text(s), Tag(NULL), Image(nullptr)
 CellValue::CellValue(std::shared_ptr<BitmapSource> img) : Text(L""), Tag(NULL), Image(std::move(img))
 {
 }
-CellValue::CellValue(__int64 tag) : Text(L""), Tag(tag), Image(nullptr)
+CellValue::CellValue(__int64 tag) : Text(std::to_wstring(tag)), Tag(tag), Image(nullptr)
 {
 }
-CellValue::CellValue(bool tag) : Text(L""), Tag(tag), Image(nullptr)
+CellValue::CellValue(bool tag) : Text(std::to_wstring(tag)), Tag(tag), Image(nullptr)
 {
 }
-CellValue::CellValue(__int32 tag) : Text(L""), Tag(tag), Image(nullptr)
+CellValue::CellValue(__int32 tag) : Text(std::to_wstring(tag)), Tag(tag), Image(nullptr)
 {
 }
-CellValue::CellValue(unsigned __int32 tag) : Text(L""), Tag(tag), Image(nullptr)
+CellValue::CellValue(unsigned __int32 tag) : Text(std::to_wstring(tag)), Tag(tag), Image(nullptr)
 {
 }
-CellValue::CellValue(unsigned __int64 tag) : Text(L""), Tag(tag), Image(nullptr)
+CellValue::CellValue(unsigned __int64 tag) : Text(std::to_wstring(tag)), Tag(tag), Image(nullptr)
 {
+}
+CellValue::CellValue(PVOID tag) : Image(nullptr)
+{
+	Tag = reinterpret_cast<__int64>(tag);
+	Text.resize(sizeof(PVOID) * 2);
+	swprintf_s(&Text[0], Text.size(), L"%p", tag);
 }
 
 ID2D1Bitmap* CellValue::GetImageBitmap(D2DGraphics* render)
@@ -923,8 +929,12 @@ void GridView::Update()
 						case ColumnType::ComboBox:
 						{
 							EnsureComboBoxCellDefaultSelection(c, r);
+							const bool comboOwnsForeground =
+								this->ParentForm &&
+								this->ParentForm->ForegroundControl == this->_cellComboBox;
 							const bool suppressCellText =
 								this->_cellComboBox &&
+								comboOwnsForeground &&
 								(this->_cellComboBox->Expand || this->_cellComboBox->IsAnimationRunning()) &&
 								this->_cellComboBoxColumnIndex == c &&
 								this->_cellComboBoxRowIndex == r;
@@ -1430,7 +1440,7 @@ void GridView::ToggleComboBoxEditor(int col, int row)
 	auto& cell = rowObj.Cells[col];
 
 	this->_cellComboBox->ParentForm = this->ParentForm;
-	this->_cellComboBox->Font = this->Font;
+	this->_cellComboBox->SetFontEx(this->Font, false);
 	this->_cellComboBox->SetRuntimeLocation(POINT{ x, y });
 	this->_cellComboBox->Size = SIZE{ (w > 0 ? w : 1), (h > 0 ? h : 1) };
 	this->_cellComboBox->Items = column.ComboBoxItems;

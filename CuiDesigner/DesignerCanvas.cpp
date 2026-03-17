@@ -1779,6 +1779,11 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			{
 				ClearSelection();
 				OnControlSelected(nullptr);
+				this->Cursor = CursorKind::Arrow;
+				if (this->ParentForm)
+				{
+					this->ParentForm->UpdateCursorFromCurrentMouse();
+				}
 			}
 			if (IsPointInDesignSurface(mousePos))
 			{
