@@ -1707,7 +1707,7 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 		else if (propertyName == L"SplitterDistance")
 		{
 			if (ctrl->Type() == UIClass::UI_SplitContainer)
-				((SplitContainer*)ctrl)->SplitterDistance = std::stoi(value);
+				((SplitContainer*)ctrl)->SetSplitterDistance(std::stoi(value));
 		}
 		else if (propertyName == L"SplitterWidth")
 		{

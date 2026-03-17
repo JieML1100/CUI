@@ -224,6 +224,8 @@ public:
 	class Control* ForegroundControl = NULL;
 	// 主菜单：单独管理（菜单栏/下拉菜单）
 	class Menu* MainMenu = NULL;
+	// 主工具栏：单独管理（跟随客户区宽度，位于主菜单下方）
+	class ToolBar* MainToolBar = NULL;
 	// 状态栏：单独管理（置底但置顶于普通控件；需要独立渲染与消息处理）
 	class StatusBar* MainStatusBar = NULL;
 	/** @brief 主渲染器（控件树渲染）。 */
@@ -324,6 +326,10 @@ public:
 		if (c->Type() == UIClass::UI_Menu)
 		{
 			this->MainMenu = (Menu*)c;
+		}
+		if (c->Type() == UIClass::UI_ToolBar)
+		{
+			this->MainToolBar = (ToolBar*)c;
 		}
 		// 状态栏单独管理（TopMost=true 时）
 		if (c->Type() == UIClass::UI_StatusBar)

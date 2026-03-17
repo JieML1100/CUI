@@ -818,7 +818,6 @@ void DemoWindow::BuildMenuToolStatus()
 	}
 
 	_toolbar = this->AddControl(new ToolBar(0, 0, this->Size.cx, 32));
-	_toolbar->Top = _menu->Bottom;
 	auto tb1 = _toolbar->AddToolButton(L"Basic", 80);
 	auto tb2 = _toolbar->AddToolButton(L"Data", 80);
 	auto tb3 = _toolbar->AddToolButton(L"System", 80);
@@ -834,7 +833,7 @@ void DemoWindow::BuildMenuToolStatus()
 
 void DemoWindow::BuildTabs()
 {
-	int top = _toolbar ? _toolbar->Bottom : 0;
+	int top = (_menu ? _menu->Height : 0) + (_toolbar ? _toolbar->Height : 0);
 
 	_topSlider = this->AddControl(new Slider(10, top + 6, 320, 30));
 	_topSlider->Min = 0;
@@ -1559,17 +1558,4 @@ DemoWindow::DemoWindow() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
 	this->SizeMode = ImageSizeMode::StretchIamge;
 	Theme_Apply(DemoThemeKeyDark());
 
-	this->OnSizeChanged += [&](class Form* sender)
-		{
-			(void)sender;
-			// Size.cx/cy and HeadHeight are in physical pixels; control Width/Top are in logical (96-DPI) units
-			const float dpiSc = this->GetDpiScale();
-			const int logW = (int)(this->Size.cx / dpiSc);
-			if (_menu) _menu->Width = logW;
-			if (_toolbar)
-			{
-				_toolbar->Width = logW;
-				_toolbar->Top = _menu ? _menu->Height : 0;
-			}
-		};
 }

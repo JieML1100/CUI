@@ -25,6 +25,8 @@ public:
 	CursorKind QueryCursor(int xof, int yof) override;
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	void SetSplitterDistance(int value);
+	void RefreshSplitterLayout();
 
 	Panel* FirstPanel() const { return _panel1; }
 	Panel* SecondPanel() const { return _panel2; }

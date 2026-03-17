@@ -1,5 +1,6 @@
 #include "PropertyGridBinder.h"
 #include "../DesignerCanvas.h"
+#include "../../CUI_Legacy/GUI/SplitContainer.h"
 
 void PropertyGridBinder::SetCanvas(DesignerCanvas* canvas)
 {
@@ -151,7 +152,11 @@ void PropertyGridBinder::NotifyControlChanged(Control* control) const
 		panel->InvalidateLayout();
 		panel->PerformLayout();
 	}
-	if (auto* panel = dynamic_cast<Panel*>(control))
+	if (auto* split = dynamic_cast<SplitContainer*>(control))
+	{
+		split->RefreshSplitterLayout();
+	}
+	else if (auto* panel = dynamic_cast<Panel*>(control))
 	{
 		panel->InvalidateLayout();
 		panel->PerformLayout();

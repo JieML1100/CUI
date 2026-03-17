@@ -136,6 +136,21 @@ static void ResetAlignmentForManualPlacement(Control* control)
 	}
 }
 
+static void RefreshDesignerPanelLayout(Control* control)
+{
+	if (!control) return;
+	if (auto* split = dynamic_cast<SplitContainer*>(control))
+	{
+		split->RefreshSplitterLayout();
+		return;
+	}
+	if (auto* panel = dynamic_cast<Panel*>(control))
+	{
+		panel->InvalidateLayout();
+		panel->PerformLayout();
+	}
+}
+
 DesignerCanvas::DesignerCanvas(int x, int y, int width, int height)
 	: Panel(x, y, width, height)
 {
@@ -730,8 +745,7 @@ void DesignerCanvas::LiftSelectedToRootForDrag()
 
 	if (auto* p = dynamic_cast<Panel*>(parent))
 	{
-		p->InvalidateLayout();
-		p->PerformLayout();
+		RefreshDesignerPanelLayout(p);
 	}
 }
 
@@ -831,8 +845,7 @@ void DesignerCanvas::ApplyRectToControl(Control* c, const RECT& rectInCanvas)
 		c->Size = { newW, newH };
 		if (auto* p = dynamic_cast<Panel*>(parent))
 		{
-			p->InvalidateLayout();
-			p->PerformLayout();
+			RefreshDesignerPanelLayout(p);
 		}
 		return;
 	}
@@ -878,8 +891,7 @@ void DesignerCanvas::ApplyRectToControl(Control* c, const RECT& rectInCanvas)
 
 	if (auto* p = dynamic_cast<Panel*>(parent))
 	{
-		p->InvalidateLayout();
-		p->PerformLayout();
+		RefreshDesignerPanelLayout(p);
 	}
 }
 
@@ -1231,8 +1243,7 @@ void DesignerCanvas::UpdateClientSurfaceLayout()
 	_clientSurface->Size = { _designSurface->Size.cx, h };
 	if (auto* p = dynamic_cast<Panel*>(_clientSurface))
 	{
-		p->InvalidateLayout();
-		p->PerformLayout();
+		RefreshDesignerPanelLayout(p);
 	}
 }
 
@@ -1323,8 +1334,7 @@ void DesignerCanvas::SetDesignedFormSize(SIZE s)
 		_designSurface->Size = s;
 		if (auto* p = dynamic_cast<Panel*>(_designSurface))
 		{
-			p->InvalidateLayout();
-			p->PerformLayout();
+			RefreshDesignerPanelLayout(p);
 		}
 	}
 	UpdateClientSurfaceLayout();
@@ -1395,6 +1405,33 @@ std::shared_ptr<DesignerControl> DesignerCanvas::HitTestControl(POINT pt)
 	return HitTestService::HitTestControl(this, _designerControls, pt, (GetAsyncKeyState(VK_MENU) & 0x8000) != 0);
 }
 
+std::shared_ptr<DesignerControl> DesignerCanvas::HitTestSplitContainerSplitter(POINT pt) const
+{
+	for (auto it = _designerControls.rbegin(); it != _designerControls.rend(); ++it)
+	{
+		auto& dc = *it;
+		if (!dc || dc->Type != UIClass::UI_SplitContainer || !dc->ControlInstance)
+		{
+			continue;
+		}
+
+		auto* split = (SplitContainer*)dc->ControlInstance;
+		if (!split->Visible || !split->Enable)
+		{
+			continue;
+		}
+
+		auto splitterRect = GetSplitContainerSplitterRectInCanvas(split);
+		if (pt.x >= splitterRect.left && pt.x <= splitterRect.right &&
+			pt.y >= splitterRect.top && pt.y <= splitterRect.bottom)
+		{
+			return dc;
+		}
+	}
+
+	return nullptr;
+}
+
 RECT DesignerCanvas::GetControlRectInCanvas(Control* c)
 {
 	RECT r{ 0,0,0,0 };
@@ -1409,6 +1446,65 @@ RECT DesignerCanvas::GetControlRectInCanvas(Control* c)
 	r.right = left + size.cx;
 	r.bottom = top + size.cy;
 	return r;
+}
+
+RECT DesignerCanvas::GetSplitContainerSplitterRectInCanvas(SplitContainer* split) const
+{
+	RECT rect{ 0, 0, 0, 0 };
+	if (!split)
+	{
+		return rect;
+	}
+
+	auto splitRect = const_cast<DesignerCanvas*>(this)->GetControlRectInCanvas(split);
+	auto size = split->ActualSize();
+	int splitterWidth = (std::max)(1, split->SplitterWidth);
+	int distance = ClampSplitContainerDistance(split, split->SplitterDistance);
+
+	if (split->SplitOrientation == Orientation::Horizontal)
+	{
+		rect.left = splitRect.left + distance;
+		rect.top = splitRect.top;
+		rect.right = splitRect.left + ((distance + splitterWidth) < size.cx ? (distance + splitterWidth) : size.cx);
+		rect.bottom = splitRect.bottom;
+	}
+	else
+	{
+		rect.left = splitRect.left;
+		rect.top = splitRect.top + distance;
+		rect.right = splitRect.right;
+		rect.bottom = splitRect.top + ((distance + splitterWidth) < size.cy ? (distance + splitterWidth) : size.cy);
+	}
+
+	return rect;
+}
+
+int DesignerCanvas::ClampSplitContainerDistance(SplitContainer* split, int value) const
+{
+	if (!split)
+	{
+		return value;
+	}
+
+	auto size = split->ActualSize();
+	int splitterWidth = (std::max)(1, split->SplitterWidth);
+	int total = split->SplitOrientation == Orientation::Horizontal ? size.cx : size.cy;
+	int maxDistance = (std::max)(split->Panel1MinSize, total - splitterWidth - split->Panel2MinSize);
+	if (maxDistance < split->Panel1MinSize)
+	{
+		maxDistance = split->Panel1MinSize;
+	}
+	return (std::clamp)(value, split->Panel1MinSize, maxDistance);
+}
+
+void DesignerCanvas::UpdateSplitContainerPreview(SplitContainer* split, int splitterDistance)
+{
+	if (!split)
+	{
+		return;
+	}
+
+	split->SetSplitterDistance(ClampSplitContainerDistance(split, splitterDistance));
 }
 
 std::vector<RECT> DesignerCanvas::GetHandleRectsFromRect(const RECT& r, int handleSize)
@@ -1608,6 +1704,16 @@ CursorKind DesignerCanvas::GetResizeCursor(DesignerControl::ResizeHandle handle)
 	}
 }
 
+CursorKind DesignerCanvas::GetSplitContainerSplitterCursor(SplitContainer* split) const
+{
+	if (!split)
+	{
+		return CursorKind::Arrow;
+	}
+
+	return split->SplitOrientation == Orientation::Horizontal ? CursorKind::SizeWE : CursorKind::SizeNS;
+}
+
 bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {
 	if (!this->Enable) return false;
@@ -1804,6 +1910,28 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 				return true;
 			}
 		}
+
+		auto splitterHit = HitTestSplitContainerSplitter(mousePos);
+		if (splitterHit && splitterHit->ControlInstance)
+		{
+			if (!IsSelected(splitterHit) || _selectedControls.size() != 1)
+			{
+				ClearSelection();
+				AddToSelection(splitterHit, true, true);
+			}
+			else
+			{
+				SetPrimarySelection(splitterHit, true);
+			}
+
+			auto* split = (SplitContainer*)splitterHit->ControlInstance;
+			_isSplitterDragging = true;
+			_splitterDragTarget = split;
+			_splitterDragStartPoint = mousePos;
+			_splitterDragStartDistance = split->SplitterDistance;
+			this->Cursor = GetSplitContainerSplitterCursor(split);
+			return true;
+		}
 		
 		bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 		ClearAlignmentGuides();
@@ -1868,6 +1996,22 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			_boxSelectRect = r;
 			this->Cursor = CursorKind::Arrow;
 			this->PostRender();
+			return true;
+		}
+
+		if (_isSplitterDragging && _splitterDragTarget)
+		{
+			int dx = mousePos.x - _splitterDragStartPoint.x;
+			int dy = mousePos.y - _splitterDragStartPoint.y;
+			int delta = _splitterDragTarget->SplitOrientation == Orientation::Horizontal ? dx : dy;
+			if (delta != 0)
+			{
+				if (_commandCoordinator) _commandCoordinator->BeginInteractionSnapshot(L"UpdateProperty:SplitterDistance");
+			}
+
+			UpdateSplitContainerPreview(_splitterDragTarget, _splitterDragStartDistance + delta);
+			NotifySelectionChangedThrottled();
+			this->Cursor = GetSplitContainerSplitterCursor(_splitterDragTarget);
 			return true;
 		}
 
@@ -1965,6 +2109,13 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 				return true;
 			}
 		}
+
+		auto splitterHover = HitTestSplitContainerSplitter(mousePos);
+		if (splitterHover && splitterHover->ControlInstance)
+		{
+			this->Cursor = GetSplitContainerSplitterCursor((SplitContainer*)splitterHover->ControlInstance);
+			return true;
+		}
 		
 		// 如果是添加控件模式
 		if (_controlToAdd != UIClass::UI_Base)
@@ -2029,6 +2180,11 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			return true;
 		}
 
+		if (_isSplitterDragging)
+		{
+			if (_commandCoordinator) _commandCoordinator->CommitInteractionSnapshot();
+		}
+
 		// 拖拽结束：单选时尝试放入容器
 		if (_isDragging && _selectedControls.size() == 1 && (_dragHasMoved || _dragLiftedToRoot))
 		{
@@ -2046,6 +2202,9 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		_dragHasMoved = false;
 		_dragLiftedToRoot = false;
 		_dragStartItems.clear();
+		_isSplitterDragging = false;
+		_splitterDragTarget = nullptr;
+		_splitterDragStartDistance = 0;
 		_isResizing = false;
 		_resizeHandle = DesignerControl::ResizeHandle::None;
 		if (_commandCoordinator) _commandCoordinator->ClearInteractionSnapshot();
@@ -3857,6 +4016,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 					split->Panel1MinSize = it.extra.value("panel1MinSize", split->Panel1MinSize);
 					split->Panel2MinSize = it.extra.value("panel2MinSize", split->Panel2MinSize);
 					split->IsSplitterFixed = it.extra.value("isSplitterFixed", split->IsSplitterFixed);
+					split->RefreshSplitterLayout();
 				}
 				else if (it.type == UIClass::UI_Slider)
 				{
@@ -4059,19 +4219,14 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 		{
 			if (auto* p = dynamic_cast<Panel*>(_designSurface))
 			{
-				p->InvalidateLayout();
-				p->PerformLayout();
+				RefreshDesignerPanelLayout(p);
 			}
 		}
 		UpdateClientSurfaceLayout();
 		for (auto& dc : _designerControls)
 		{
 			if (!dc || !dc->ControlInstance) continue;
-			if (auto* p = dynamic_cast<Panel*>(dc->ControlInstance))
-			{
-				p->InvalidateLayout();
-				p->PerformLayout();
-			}
+			RefreshDesignerPanelLayout(dc->ControlInstance);
 		}
 
 		ClearSelection();

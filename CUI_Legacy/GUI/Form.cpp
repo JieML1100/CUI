@@ -19,6 +19,38 @@
 
 namespace
 {
+	float LayoutMainTopBar(Form* form, const SIZE& clientSize)
+	{
+		auto* menu = form ? form->MainMenu : nullptr;
+		LONG width = (std::max)(0L, clientSize.cx);
+		LONG top = 0;
+
+		if (menu && menu->Visible)
+		{
+			LONG height = (std::max)(0, menu->BarHeight);
+			if (height > clientSize.cy)
+				height = (std::max)(0L, clientSize.cy);
+			menu->ApplyLayout(POINT{ 0, top }, SIZE{ width, height });
+			top += height;
+		}
+
+		auto* toolBar = form ? form->MainToolBar : nullptr;
+		if (toolBar && toolBar->Visible)
+		{
+			LONG availableHeight = clientSize.cy - top;
+			if (availableHeight < 0)
+				availableHeight = 0;
+			SIZE measured = toolBar->MeasureCore(SIZE{ width, availableHeight });
+			LONG height = (std::max)(0L, measured.cy);
+			if (height > availableHeight)
+				height = availableHeight;
+			toolBar->ApplyLayout(POINT{ 0, top }, SIZE{ width, height });
+			top += height;
+		}
+
+		return (float)top;
+	}
+
 	float LayoutMainStatusBar(Form* form, const SIZE& clientSize)
 	{
 		auto* statusBar = form ? form->MainStatusBar : nullptr;
@@ -1244,6 +1276,7 @@ void Form::CleanupResources()
 	this->Selected = nullptr;
 	this->UnderMouse = nullptr;
 	this->MainMenu = nullptr;
+	this->MainToolBar = nullptr;
 	this->MainStatusBar = nullptr;
 
 	this->_imageSource.reset();
@@ -1456,6 +1489,7 @@ void Form::PerformLayout()
 		const float dpiScL = GetDpiScale();
 		clientSize.cx = (LONG)(clientSize.cx / dpiScL);
 		clientSize.cy = (LONG)(clientSize.cy / dpiScL);
+		LayoutMainTopBar(this, clientSize);
 		float contentLeft = 0.0f;
 		float contentTop = 0.0f;
 		float contentWidth = (float)clientSize.cx;
@@ -1468,6 +1502,7 @@ void Form::PerformLayout()
 			auto control = this->Controls[i];
 			if (!control || !control->Visible) continue;
 			if (control->Type() == UIClass::UI_Menu) continue;
+			if (control == this->MainToolBar) continue;
 			if (control == this->MainStatusBar) continue;
 			
 			POINT location = control->Location;
@@ -1580,6 +1615,7 @@ void Form::PerformLayout()
 			const float dpiScL = GetDpiScale();
 			clientSize.cx = (LONG)(clientSize.cx / dpiScL);
 			clientSize.cy = (LONG)(clientSize.cy / dpiScL);
+			LayoutMainTopBar(this, clientSize);
 			float statusBarHeight = LayoutMainStatusBar(this, clientSize);
 			SIZE contentSize = clientSize;
 			contentSize.cy = (LONG)(std::max)(0.0f, (float)clientSize.cy - statusBarHeight);
@@ -2007,6 +2043,8 @@ bool Form::RemoveControl(Control* c)
 			this->ForegroundControl = NULL;
 		if (this->MainMenu == c) 
 			this->MainMenu = NULL;
+		if (this->MainToolBar == c)
+			this->MainToolBar = NULL;
 		if (this->MainStatusBar == c)
 			this->MainStatusBar = NULL;
 		if (this->UnderMouse == c)

@@ -73,6 +73,23 @@ void SplitContainer::SetSplitterDistanceInternal(int value)
 	this->PostRender();
 }
 
+void SplitContainer::SetSplitterDistance(int value)
+{
+	int clamped = ClampSplitterDistance(value);
+	if (clamped != this->SplitterDistance)
+	{
+		this->SplitterDistance = clamped;
+	}
+	RefreshSplitterLayout();
+}
+
+void SplitContainer::RefreshSplitterLayout()
+{
+	this->_needsLayout = true;
+	ArrangeSplitPanels();
+	this->PostRender();
+}
+
 void SplitContainer::ArrangeSplitPanels()
 {
 	EnsureChildPanels();

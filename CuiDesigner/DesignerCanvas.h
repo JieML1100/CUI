@@ -16,6 +16,7 @@ struct CodeGenInput;
 class IDesignerCommand;
 class DesignerCommandCoordinator;
 class SelectionService;
+class SplitContainer;
 
 namespace DesignerModel
 {
@@ -99,6 +100,12 @@ private:
 	bool _isResizing = false;
 	DesignerControl::ResizeHandle _resizeHandle = DesignerControl::ResizeHandle::None;
 	RECT _resizeStartRect = {0, 0, 0, 0};
+
+	// SplitContainer 分隔条拖拽状态
+	bool _isSplitterDragging = false;
+	POINT _splitterDragStartPoint = { 0, 0 };
+	int _splitterDragStartDistance = 0;
+	SplitContainer* _splitterDragTarget = nullptr;
 	
 	// 待添加的控件类型
 	UIClass _controlToAdd = UIClass::UI_Base;
@@ -119,7 +126,12 @@ private:
 	void UpdateClientSurfaceLayout();
 	
 	std::shared_ptr<DesignerControl> HitTestControl(POINT pt);
+	std::shared_ptr<DesignerControl> HitTestSplitContainerSplitter(POINT pt) const;
 	CursorKind GetResizeCursor(DesignerControl::ResizeHandle handle);
+	CursorKind GetSplitContainerSplitterCursor(SplitContainer* split) const;
+	RECT GetSplitContainerSplitterRectInCanvas(SplitContainer* split) const;
+	int ClampSplitContainerDistance(SplitContainer* split, int value) const;
+	void UpdateSplitContainerPreview(SplitContainer* split, int splitterDistance);
 	void ClearSelection();
 	bool IsSelected(const std::shared_ptr<DesignerControl>& dc) const;
 	void SetPrimarySelection(const std::shared_ptr<DesignerControl>& dc, bool fireEvent);

@@ -54,6 +54,11 @@ void ToolBar::LayoutItems()
 
 void ToolBar::Update()
 {
+	if (this->ParentForm && this->Parent == NULL)
+	{
+		this->ParentForm->MainToolBar = this;
+	}
+
 	if (this->IsVisual == false) return;
 	LayoutItems();
 
