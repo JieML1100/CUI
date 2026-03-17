@@ -14,7 +14,7 @@ This repository mainly contains:
 ## Features
 
 - **High-performance rendering**: Direct2D hardware acceleration + DirectComposition compositor
-- **Controls**: 25+ commonly used UI controls
+- **Controls**: 33+ commonly used UI controls
 - **Layouts**: multiple layout containers (Stack/Grid/Dock/Wrap/Relative, etc.)
 - **Events & input**: mouse/keyboard/focus/drag-drop events, with IME support
 - **SVG support**: built-in nanosvg (included)

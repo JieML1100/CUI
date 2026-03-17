@@ -36,6 +36,9 @@
     <ClInclude Include="GUI\GridView.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\GroupBox.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\Label.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -126,6 +129,9 @@
     <ClInclude Include="GUI\StatusBar.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\SplitContainer.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\Slider.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -171,6 +177,9 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\GridView.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\GroupBox.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Label.cpp">
@@ -249,6 +258,9 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\StatusBar.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\SplitContainer.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Slider.cpp">

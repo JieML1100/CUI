@@ -22,6 +22,7 @@
 #include "../CUI_Legacy/GUI/Slider.h"
 #include "../CUI_Legacy/GUI/PictureBox.h"
 #include "../CUI_Legacy/GUI/DateTimePicker.h"
+#include "../CUI_Legacy/GUI/GroupBox.h"
 #include "../CUI_Legacy/GUI/Switch.h"
 #include "../CUI_Legacy/GUI/ScrollView.h"
 #include "../CUI_Legacy/GUI/RichTextBox.h"
@@ -34,6 +35,7 @@
 #include "../CUI_Legacy/GUI/Menu.h"
 #include "../CUI_Legacy/GUI/StatusBar.h"
 #include "../CUI_Legacy/GUI/MediaPlayer.h"
+#include "../CUI_Legacy/GUI/SplitContainer.h"
 #include "../CUI_Legacy/GUI/Layout/StackPanel.h"
 #include "../CUI_Legacy/GUI/Layout/GridPanel.h"
 #include "../CUI_Legacy/GUI/Layout/DockPanel.h"
@@ -63,6 +65,57 @@ static RECT IntersectRectSafe(const RECT& a, const RECT& b)
 	if (r.right < r.left) r.right = r.left;
 	if (r.bottom < r.top) r.bottom = r.top;
 	return r;
+}
+
+static bool IsSplitContainerControl(Control* control)
+{
+	return control && control->Type() == UIClass::UI_SplitContainer;
+}
+
+static SplitContainer* AsSplitContainer(Control* control)
+{
+	return IsSplitContainerControl(control) ? (SplitContainer*)control : nullptr;
+}
+
+static std::string GetSplitRegionKey(SplitContainer* split, Control* runtimeParent)
+{
+	if (!split || !runtimeParent) return std::string();
+	if (runtimeParent == split->FirstPanel()) return "panel1";
+	if (runtimeParent == split->SecondPanel()) return "panel2";
+	return std::string();
+}
+
+static Control* ResolveSplitRuntimeHost(SplitContainer* split, POINT localToSplit)
+{
+	if (!split) return nullptr;
+	auto* first = split->FirstPanel();
+	auto* second = split->SecondPanel();
+	if (!first || !second) return split;
+
+	auto firstLoc = first->ActualLocation;
+	auto firstSize = first->ActualSize();
+	auto secondLoc = second->ActualLocation;
+	auto secondSize = second->ActualSize();
+
+	bool inFirst = localToSplit.x >= firstLoc.x &&
+		localToSplit.y >= firstLoc.y &&
+		localToSplit.x <= firstLoc.x + firstSize.cx &&
+		localToSplit.y <= firstLoc.y + firstSize.cy;
+	if (inFirst) return first;
+
+	bool inSecond = localToSplit.x >= secondLoc.x &&
+		localToSplit.y >= secondLoc.y &&
+		localToSplit.x <= secondLoc.x + secondSize.cx &&
+		localToSplit.y <= secondLoc.y + secondSize.cy;
+	if (inSecond) return second;
+
+	if (split->SplitOrientation == Orientation::Horizontal)
+	{
+		int splitterCenter = secondLoc.x > firstLoc.x ? (firstLoc.x + firstSize.cx + secondLoc.x) / 2 : firstLoc.x + firstSize.cx;
+		return localToSplit.x < splitterCenter ? first : second;
+	}
+	int splitterCenter = secondLoc.y > firstLoc.y ? (firstLoc.y + firstSize.cy + secondLoc.y) / 2 : firstLoc.y + firstSize.cy;
+	return localToSplit.y < splitterCenter ? first : second;
 }
 
 static bool UsesAlignmentManagedPlacement(Control* control)
@@ -1505,25 +1558,32 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 
 	// 计算保持视觉不动的目标位置
 	POINT canvasTopLeft{ r.left, r.top };
-	POINT newLocal = CanvasToContainerPoint(canvasTopLeft, container);
-	POINT dropLocalCenter = CanvasToContainerPoint(center, container);
+	POINT dropLocalToContainer = CanvasToContainerPoint(center, container);
+	Control* runtimeHost = container;
+	if (auto* split = AsSplitContainer(container))
+	{
+		runtimeHost = ResolveSplitRuntimeHost(split, dropLocalToContainer);
+	}
+	POINT newLocal = CanvasToContainerPoint(canvasTopLeft, runtimeHost);
+	POINT dropLocalCenter = CanvasToContainerPoint(center, runtimeHost);
+	bool runtimeHostChanged = moving->Parent != runtimeHost;
 
-	if (containerChanged)
+	if (containerChanged || runtimeHostChanged)
 	{
 		// 从旧父移除
 		if (moving->Parent)
 			moving->Parent->RemoveControl(moving);
 
 		// 加入新容器
-		LayoutBridge::AttachChild(container, moving);
+		LayoutBridge::AttachChild(runtimeHost, moving);
 
 		_selectedControl->DesignerParent = container;
 	}
 
-	LayoutBridge::ApplyExistingChildLayout(container, moving, newLocal, dropLocalCenter, containerChanged, r, [this, &moving](const RECT& rectInCanvas) {
+	LayoutBridge::ApplyExistingChildLayout(runtimeHost, moving, newLocal, dropLocalCenter, containerChanged || runtimeHostChanged, r, [this, &moving](const RECT& rectInCanvas) {
 		ApplyRectToControl(moving, rectInCanvas);
 	});
-	LayoutBridge::RefreshContainerLayout(container);
+	LayoutBridge::RefreshContainerLayout(runtimeHost);
 	this->PostRender();
 }
 
@@ -2050,6 +2110,10 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 		newControl = new Panel(centerX, centerY, 200, 200);
 		typeName = L"Panel";
 		break;
+	case UIClass::UI_GroupBox:
+		newControl = new GroupBox(L"GroupBox", centerX, centerY, 240, 180);
+		typeName = L"GroupBox";
+		break;
 	case UIClass::UI_ScrollView:
 		newControl = new ScrollView(centerX, centerY, 240, 200);
 		typeName = L"ScrollView";
@@ -2073,6 +2137,11 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 	case UIClass::UI_RelativePanel:
 		newControl = new RelativePanel(centerX, centerY, 200, 200);
 		typeName = L"RelativePanel";
+		break;
+	case UIClass::UI_SplitContainer:
+		newControl = new SplitContainer(centerX, centerY, 360, 220);
+		((SplitContainer*)newControl)->SplitterDistance = 176;
+		typeName = L"SplitContainer";
 		break;
 	case UIClass::UI_CheckBox:
 		newControl = new CheckBox(L"复选框", centerX, centerY);
@@ -2179,6 +2248,7 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 		Control* rawContainer = FindBestContainerAtPoint(canvasPos, nullptr);
 		Control* container = NormalizeContainerForDrop(rawContainer);
 		Control* designerParent = nullptr;
+		Control* runtimeHost = nullptr;
 
 		if (container)
 		{
@@ -2191,11 +2261,17 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 		if (container)
 		{
 			designerParent = container;
-			POINT local = CanvasToContainerPoint({ centerX, centerY }, container);
-			POINT dropLocal = CanvasToContainerPoint(canvasPos, container);
-			LayoutBridge::AttachChild(container, newControl);
-			LayoutBridge::ApplyNewChildLayout(container, newControl, local, dropLocal);
-			LayoutBridge::RefreshContainerLayout(container);
+			POINT dropLocalToContainer = CanvasToContainerPoint(canvasPos, container);
+			runtimeHost = container;
+			if (auto* split = AsSplitContainer(container))
+			{
+				runtimeHost = ResolveSplitRuntimeHost(split, dropLocalToContainer);
+			}
+			POINT local = CanvasToContainerPoint({ centerX, centerY }, runtimeHost);
+			POINT dropLocal = CanvasToContainerPoint(canvasPos, runtimeHost);
+			LayoutBridge::AttachChild(runtimeHost, newControl);
+			LayoutBridge::ApplyNewChildLayout(runtimeHost, newControl, local, dropLocal);
+			LayoutBridge::RefreshContainerLayout(runtimeHost);
 		}
 		else
 		{
@@ -2292,12 +2368,14 @@ static bool IsExportableDesignType(UIClass t)
 	case UIClass::UI_PasswordBox:
 	case UIClass::UI_DateTimePicker:
 	case UIClass::UI_Panel:
+	case UIClass::UI_GroupBox:
 	case UIClass::UI_ScrollView:
 	case UIClass::UI_StackPanel:
 	case UIClass::UI_GridPanel:
 	case UIClass::UI_DockPanel:
 	case UIClass::UI_WrapPanel:
 	case UIClass::UI_RelativePanel:
+	case UIClass::UI_SplitContainer:
 	case UIClass::UI_CheckBox:
 	case UIClass::UI_RadioBox:
 	case UIClass::UI_ComboBox:
@@ -3045,7 +3123,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 				}
 			}
 
-			Control* runtimeParent = dc->DesignerParent ? dc->DesignerParent : (_clientSurface ? (Control*)_clientSurface : (Control*)_designSurface);
+			Control* runtimeParent = c->Parent ? c->Parent : (dc->DesignerParent ? dc->DesignerParent : (_clientSurface ? (Control*)_clientSurface : (Control*)_designSurface));
 			node.Order = GetChildIndex(runtimeParent, c);
 
 			Json props;
@@ -3126,6 +3204,23 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 				extra["allowTimeSelection"] = dtp->AllowTimeSelection;
 				extra["allowModeSwitch"] = dtp->AllowModeSwitch;
 				extra["expand"] = dtp->Expand;
+			}
+			else if (dc->Type == UIClass::UI_GroupBox)
+			{
+				auto* gb = (GroupBox*)c;
+				extra["captionMarginLeft"] = gb->CaptionMarginLeft;
+				extra["captionPaddingX"] = gb->CaptionPaddingX;
+				extra["captionPaddingY"] = gb->CaptionPaddingY;
+			}
+			else if (dc->Type == UIClass::UI_SplitContainer)
+			{
+				auto* split = (SplitContainer*)c;
+				extra["splitOrientation"] = OrientationToString(split->SplitOrientation);
+				extra["splitterDistance"] = split->SplitterDistance;
+				extra["splitterWidth"] = split->SplitterWidth;
+				extra["panel1MinSize"] = split->Panel1MinSize;
+				extra["panel2MinSize"] = split->Panel2MinSize;
+				extra["isSplitterFixed"] = split->IsSplitterFixed;
 			}
 			else if (dc->Type == UIClass::UI_Slider)
 			{
@@ -3283,6 +3378,15 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 				extra["renderMode"] = (int)mp->RenderMode;
 			}
 
+			if (auto* splitParent = AsSplitContainer(dc->DesignerParent))
+			{
+				std::string splitRegion = GetSplitRegionKey(splitParent, runtimeParent);
+				if (!splitRegion.empty())
+				{
+					extra["splitRegion"] = splitRegion;
+				}
+			}
+
 			node.Extra = std::move(extra);
 
 			// events: { "OnMouseClick": true, ... }（兼容旧格式：string handlerName）
@@ -3416,14 +3520,16 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 			case UIClass::UI_TextBox: return new TextBox(L"", 0, 0, 200, 25);
 			case UIClass::UI_RichTextBox: return new RichTextBox(L"", 0, 0, 300, 160);
 			case UIClass::UI_PasswordBox: return new PasswordBox(L"", 0, 0, 200, 25);
-				case UIClass::UI_DateTimePicker: return new DateTimePicker(L"", 0, 0, 200, 28);
+			case UIClass::UI_DateTimePicker: return new DateTimePicker(L"", 0, 0, 200, 28);
 			case UIClass::UI_Panel: return new Panel(0, 0, 200, 200);
+			case UIClass::UI_GroupBox: return new GroupBox(L"GroupBox", 0, 0, 240, 180);
 				case UIClass::UI_ScrollView: return new ScrollView(0, 0, 240, 200);
 			case UIClass::UI_StackPanel: return new StackPanel(0, 0, 200, 200);
 			case UIClass::UI_GridPanel: return new GridPanel(0, 0, 200, 200);
 			case UIClass::UI_DockPanel: return new DockPanel(0, 0, 200, 200);
 			case UIClass::UI_WrapPanel: return new WrapPanel(0, 0, 200, 200);
 			case UIClass::UI_RelativePanel: return new RelativePanel(0, 0, 200, 200);
+			case UIClass::UI_SplitContainer: return new SplitContainer(0, 0, 360, 220);
 			case UIClass::UI_CheckBox: return new CheckBox(L"复选框", 0, 0);
 			case UIClass::UI_RadioBox: return new RadioBox(L"单选框", 0, 0);
 			case UIClass::UI_ComboBox: return new ComboBox(L"", 0, 0, 150, 25);
@@ -3732,6 +3838,26 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 					dtp->AllowModeSwitch = it.extra.value("allowModeSwitch", dtp->AllowModeSwitch);
 					dtp->SetExpanded(it.extra.value("expand", dtp->Expand));
 				}
+				else if (it.type == UIClass::UI_GroupBox)
+				{
+					auto* gb = (GroupBox*)c;
+					gb->CaptionMarginLeft = (float)it.extra.value("captionMarginLeft", (double)gb->CaptionMarginLeft);
+					gb->CaptionPaddingX = (float)it.extra.value("captionPaddingX", (double)gb->CaptionPaddingX);
+					gb->CaptionPaddingY = (float)it.extra.value("captionPaddingY", (double)gb->CaptionPaddingY);
+				}
+				else if (it.type == UIClass::UI_SplitContainer)
+				{
+					auto* split = (SplitContainer*)c;
+					Orientation orientation = split->SplitOrientation;
+					if (it.extra.contains("splitOrientation") && it.extra["splitOrientation"].is_string())
+						TryParseOrientation(it.extra["splitOrientation"].get<std::string>(), orientation);
+					split->SplitOrientation = orientation;
+					split->SplitterDistance = it.extra.value("splitterDistance", split->SplitterDistance);
+					split->SplitterWidth = it.extra.value("splitterWidth", split->SplitterWidth);
+					split->Panel1MinSize = it.extra.value("panel1MinSize", split->Panel1MinSize);
+					split->Panel2MinSize = it.extra.value("panel2MinSize", split->Panel2MinSize);
+					split->IsSplitterFixed = it.extra.value("isSplitterFixed", split->IsSplitterFixed);
+				}
 				else if (it.type == UIClass::UI_Slider)
 				{
 					auto* s = (Slider*)c;
@@ -3860,6 +3986,30 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 		{
 			auto it = childrenByParent.find(parentKey);
 			if (it == childrenByParent.end()) return;
+			if (auto* split = AsSplitContainer(runtimeParent))
+			{
+				std::vector<Pending*> firstChildren;
+				std::vector<Pending*> secondChildren;
+				for (auto* ch : it->second)
+				{
+					std::string region = ch->extra.value("splitRegion", std::string("panel1"));
+					if (region == "panel2") secondChildren.push_back(ch);
+					else firstChildren.push_back(ch);
+				}
+				sortByOrder(firstChildren);
+				sortByOrder(secondChildren);
+				for (auto* ch : firstChildren)
+				{
+					attachOne(ch, split->FirstPanel(), runtimeParent);
+					attachChildren(ch->name, dcOf[ch->name]->ControlInstance, dcOf[ch->name]->ControlInstance);
+				}
+				for (auto* ch : secondChildren)
+				{
+					attachOne(ch, split->SecondPanel(), runtimeParent);
+					attachChildren(ch->name, dcOf[ch->name]->ControlInstance, dcOf[ch->name]->ControlInstance);
+				}
+				return;
+			}
 			for (auto* ch : it->second)
 			{
 				attachOne(ch, runtimeParent, designerParent);

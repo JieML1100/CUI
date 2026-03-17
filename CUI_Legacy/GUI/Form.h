@@ -9,6 +9,7 @@
 #include "Label.h"
 #include "LinkLabel.h"
 #include "Panel.h"
+#include "GroupBox.h"
 #include "ScrollView.h"
 #include "PasswordBox.h"
 #include "PictureBox.h"
@@ -31,6 +32,7 @@
 #include "Taskbar.h"
 #include "NotifyIcon.h"
 #include "MediaPlayer.h"
+#include "SplitContainer.h"
 
 #if defined(_MSC_VER)
 #pragma comment(lib, "Dwmapi.lib")

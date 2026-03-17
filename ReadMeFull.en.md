@@ -66,7 +66,7 @@ render->EndRender();
 
 ### Rich Control Library
 
-CUI provides 25+ common UI controls covering various development needs:
+CUI provides 33+ common UI controls covering various development needs:
 
 **Basic Controls:**
 - `Button` - Button control

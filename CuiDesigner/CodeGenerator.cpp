@@ -26,6 +26,8 @@
 #include "../CUI_Legacy/GUI/Menu.h"
 #include "../CUI_Legacy/GUI/StatusBar.h"
 #include "../CUI_Legacy/GUI/MediaPlayer.h"
+#include "../CUI_Legacy/GUI/GroupBox.h"
+#include "../CUI_Legacy/GUI/SplitContainer.h"
 
 #include "../CUI_Legacy/GUI/Layout/GridPanel.h"
 #include "../CUI_Legacy/GUI/Layout/StackPanel.h"
@@ -53,6 +55,8 @@ static bool IsContainerType(UIClass t)
 	switch (t)
 	{
 	case UIClass::UI_Panel:
+	case UIClass::UI_GroupBox:
+	case UIClass::UI_SplitContainer:
 	case UIClass::UI_ScrollView:
 	case UIClass::UI_StackPanel:
 	case UIClass::UI_GridPanel:
@@ -66,6 +70,42 @@ static bool IsContainerType(UIClass t)
 	default:
 		return false;
 	}
+}
+
+static void SortSplitChildrenByRuntimeOrder(SplitContainer* split, std::vector<std::shared_ptr<DesignerControl>>& list)
+{
+	if (!split || list.size() <= 1) return;
+	std::unordered_map<Control*, int> idx;
+	int order = 0;
+	Panel* first = split->FirstPanel();
+	Panel* second = split->SecondPanel();
+	if (first)
+	{
+		for (int i = 0; i < first->Count; i++)
+			idx[first->operator[](i)] = order++;
+	}
+	if (second)
+	{
+		for (int i = 0; i < second->Count; i++)
+			idx[second->operator[](i)] = order++;
+	}
+	std::stable_sort(list.begin(), list.end(), [&](const auto& a, const auto& b)
+		{
+			int ia = INT_MAX;
+			int ib = INT_MAX;
+			auto ita = idx.find(a->ControlInstance);
+			if (ita != idx.end()) ia = ita->second;
+			auto itb = idx.find(b->ControlInstance);
+			if (itb != idx.end()) ib = itb->second;
+			return ia < ib;
+		});
+}
+
+static std::string GetSplitChildHostExpr(SplitContainer* split, Control* runtimeParent, const std::string& parentExpr)
+{
+	if (split && runtimeParent == split->SecondPanel())
+		return parentExpr + "->SecondPanel()";
+	return parentExpr + "->FirstPanel()";
 }
 
 static std::string AnchorStylesToExpr(uint8_t a)
@@ -384,6 +424,8 @@ std::string CodeGenerator::GetControlTypeName(UIClass type)
 	case UIClass::UI_PasswordBox: return "PasswordBox";
 	case UIClass::UI_DateTimePicker: return "DateTimePicker";
 	case UIClass::UI_Panel: return "Panel";
+	case UIClass::UI_GroupBox: return "GroupBox";
+	case UIClass::UI_SplitContainer: return "SplitContainer";
 	case UIClass::UI_ScrollView: return "ScrollView";
 	case UIClass::UI_StackPanel: return "StackPanel";
 	case UIClass::UI_GridPanel: return "GridPanel";
@@ -633,11 +675,13 @@ std::string CodeGenerator::GenerateControlInstantiation(const std::shared_ptr<De
 	case UIClass::UI_PasswordBox:
 	case UIClass::UI_DateTimePicker:
 	case UIClass::UI_ComboBox:
+	case UIClass::UI_GroupBox:
 		code << "L\"" << EscapeWStringLiteral(ctrl->Text) << "\", "
 			<< ctrl->Location.x << ", " << ctrl->Location.y << ", "
 			<< ctrl->Size.cx << ", " << ctrl->Size.cy;
 		break;
 	case UIClass::UI_Panel:
+	case UIClass::UI_SplitContainer:
 	case UIClass::UI_ScrollView:
 	case UIClass::UI_StackPanel:
 	case UIClass::UI_GridPanel:
@@ -689,7 +733,8 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	if (dc->Type != UIClass::UI_Label && dc->Type != UIClass::UI_LinkLabel && dc->Type != UIClass::UI_Button &&
 		dc->Type != UIClass::UI_CheckBox && dc->Type != UIClass::UI_RadioBox &&
 		dc->Type != UIClass::UI_TextBox && dc->Type != UIClass::UI_RichTextBox &&
-		dc->Type != UIClass::UI_PasswordBox && dc->Type != UIClass::UI_DateTimePicker && dc->Type != UIClass::UI_ComboBox)
+		dc->Type != UIClass::UI_PasswordBox && dc->Type != UIClass::UI_DateTimePicker &&
+		dc->Type != UIClass::UI_ComboBox && dc->Type != UIClass::UI_GroupBox)
 	{
 		if (!ctrl->Text.empty())
 			code << indentStr << name << "->Text = L\"" << EscapeWStringLiteral(ctrl->Text) << "\";\n";
@@ -1084,6 +1129,17 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 			code << indentStr << name << "->Load(L\"" << EscapeWStringLiteral(mf) << "\");\n";
 	}
 
+	if (dc->Type == UIClass::UI_GroupBox)
+	{
+		auto* gb = (GroupBox*)ctrl;
+		if (std::fabs(gb->CaptionMarginLeft - 12.0f) > 1e-6f)
+			code << indentStr << name << "->CaptionMarginLeft = " << FloatLiteral(gb->CaptionMarginLeft) << ";\n";
+		if (std::fabs(gb->CaptionPaddingX - 6.0f) > 1e-6f)
+			code << indentStr << name << "->CaptionPaddingX = " << FloatLiteral(gb->CaptionPaddingX) << ";\n";
+		if (std::fabs(gb->CaptionPaddingY - 2.0f) > 1e-6f)
+			code << indentStr << name << "->CaptionPaddingY = " << FloatLiteral(gb->CaptionPaddingY) << ";\n";
+	}
+
 	return code.str();
 }
 
@@ -1135,6 +1191,17 @@ std::string CodeGenerator::GenerateContainerProperties(const std::shared_ptr<Des
 	{
 		auto* dp = (DockPanel*)ctrl;
 		code << indentStr << name << "->SetLastChildFill(" << (dp->GetLastChildFill() ? "true" : "false") << ");\n";
+	}
+	else if (dc->Type == UIClass::UI_SplitContainer)
+	{
+		auto* sc = (SplitContainer*)ctrl;
+		code << indentStr << name << "->SplitOrientation = " << OrientationToString(sc->SplitOrientation) << ";\n";
+		code << indentStr << name << "->SplitterDistance = " << sc->SplitterDistance << ";\n";
+		code << indentStr << name << "->SplitterWidth = " << sc->SplitterWidth << ";\n";
+		code << indentStr << name << "->Panel1MinSize = " << sc->Panel1MinSize << ";\n";
+		code << indentStr << name << "->Panel2MinSize = " << sc->Panel2MinSize << ";\n";
+		if (sc->IsSplitterFixed)
+			code << indentStr << name << "->IsSplitterFixed = true;\n";
 	}
 
 	return code.str();
@@ -1367,6 +1434,11 @@ std::string CodeGenerator::GenerateCpp()
 	auto sortChildrenByRuntimeOrder = [&](Control* parent, std::vector<std::shared_ptr<DesignerControl>>& list)
 	{
 		if (!parent || list.size() <= 1) return;
+		if (parent->Type() == UIClass::UI_SplitContainer)
+		{
+			SortSplitChildrenByRuntimeOrder((SplitContainer*)parent, list);
+			return;
+		}
 		// 用 parent->Children 的顺序来稳定排序（用于 Stack/Warp 等需要顺序的容器）
 		std::unordered_map<Control*, int> idx;
 		idx.reserve((size_t)parent->Count);
@@ -1451,6 +1523,12 @@ std::string CodeGenerator::GenerateCpp()
 		if (parentType == UIClass::UI_ToolBar)
 		{
 			cpp << indentStr << parentExpr << "->AddToolButton((Button*)" << childVar << ");\n";
+		}
+		else if (parentType == UIClass::UI_SplitContainer)
+		{
+			auto* split = (SplitContainer*)dc->DesignerParent;
+			std::string hostExpr = GetSplitChildHostExpr(split, c->Parent, parentExpr);
+			cpp << indentStr << hostExpr << "->AddControl(" << childVar << ");\n";
 		}
 		else
 		{

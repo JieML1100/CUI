@@ -22,12 +22,14 @@ bool HitTestService::IsContainerControl(Control* control)
 	switch (control->Type())
 	{
 	case UIClass::UI_Panel:
+	case UIClass::UI_GroupBox:
 	case UIClass::UI_ScrollView:
 	case UIClass::UI_StackPanel:
 	case UIClass::UI_GridPanel:
 	case UIClass::UI_DockPanel:
 	case UIClass::UI_WrapPanel:
 	case UIClass::UI_RelativePanel:
+	case UIClass::UI_SplitContainer:
 	case UIClass::UI_TabControl:
 	case UIClass::UI_ToolBar:
 	case UIClass::UI_TabPage:

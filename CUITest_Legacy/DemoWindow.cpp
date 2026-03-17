@@ -392,12 +392,14 @@ void DemoWindow::Theme_ApplyCurrent()
 				break;
 			}
 			case UIClass::UI_Panel:
+			case UIClass::UI_GroupBox:
 			case UIClass::UI_StatusBar:
 			case UIClass::UI_StackPanel:
 			case UIClass::UI_GridPanel:
 			case UIClass::UI_DockPanel:
 			case UIClass::UI_WrapPanel:
 			case UIClass::UI_RelativePanel:
+			case UIClass::UI_SplitContainer:
 			case UIClass::UI_TabPage:
 				control->BackColor = theme.SurfacePanel;
 				control->ForeColor = theme.Text;
@@ -989,6 +991,37 @@ void DemoWindow::BuildTab_Containers(TabPage* page)
 			_picture->Visible = ((Switch*)sender)->Checked;
 			Ui_UpdateStatus(_picture->Visible ? L"PictureBox: Visible" : L"PictureBox: Hidden");
 			this->Invalidate();
+		};
+
+	auto split = page->AddControl(new SplitContainer(900, 78, 420, 260));
+	split->SplitterDistance = 150;
+	split->SplitterWidth = 8;
+	split->BackColor = D2D1_COLOR_F{ 1,1,1,0.03f };
+	split->BolderColor = D2D1_COLOR_F{ 1,1,1,0.14f };
+	split->FirstPanel()->BackColor = D2D1_COLOR_F{ 1,1,1,0.05f };
+	split->SecondPanel()->BackColor = D2D1_COLOR_F{ 1,1,1,0.05f };
+	split->FirstPanel()->AddControl(new Label(L"左侧面板", 12, 12));
+	auto navStack = split->FirstPanel()->AddControl(new StackPanel(12, 40, 120, 180));
+	navStack->SetOrientation(Orientation::Vertical);
+	navStack->SetSpacing(6);
+	navStack->AddControl(new Button(L"概览", 0, 0, 110, 26));
+	navStack->AddControl(new Button(L"资源", 0, 0, 110, 26));
+	navStack->AddControl(new Button(L"设置", 0, 0, 110, 26));
+	split->SecondPanel()->AddControl(new Label(L"右侧内容区", 12, 12));
+	auto splitMemo = split->SecondPanel()->AddControl(new RichTextBox(L"拖拽中间分隔条，调整左右区域宽度。\r\n\r\nSplitContainer 很适合导航 + 内容、属性面板 + 画布等场景。", 12, 40, 230, 170));
+	splitMemo->AllowMultiLine = true;
+
+	auto group = page->AddControl(new GroupBox(L"GroupBox", 900, 342, 420, 150));
+	group->BackColor = D2D1_COLOR_F{ 1,1,1,0.04f };
+	group->BolderColor = D2D1_COLOR_F{ 1,1,1,0.20f };
+	group->AddControl(new Label(L"把相关输入项包成一个逻辑区块。", 16, 20));
+	auto groupName = group->AddControl(new TextBox(L"名称", 16, 52, 180, 26));
+	auto groupEnabled = group->AddControl(new CheckBox(L"启用高级选项", 16, 88));
+	groupEnabled->Checked = true;
+	groupEnabled->OnChecked += [groupName](class Control* sender)
+		{
+			groupName->Enable = ((CheckBox*)sender)->Checked;
+			groupName->PostRender();
 		};
 
 	page->AddControl(new Label(L"提示：顶部 Slider 同时驱动 ProgressBar、ProgressRing 与 Taskbar 进度。", 10, 420));

@@ -18,12 +18,14 @@
 #include "../CUI_Legacy/GUI/ProgressRing.h"
 #include "../CUI_Legacy/GUI/PictureBox.h"
 #include "../CUI_Legacy/GUI/DateTimePicker.h"
+#include "../CUI_Legacy/GUI/GroupBox.h"
 #include "../CUI_Legacy/GUI/ScrollView.h"
 #include "../CUI_Legacy/GUI/TreeView.h"
 #include "../CUI_Legacy/GUI/TabControl.h"
 #include "../CUI_Legacy/GUI/ToolBar.h"
 #include "../CUI_Legacy/GUI/StatusBar.h"
 #include "../CUI_Legacy/GUI/MediaPlayer.h"
+#include "../CUI_Legacy/GUI/SplitContainer.h"
 #include "../CUI_Legacy/GUI/Layout/StackPanel.h"
 #include "../CUI_Legacy/GUI/Layout/WrapPanel.h"
 #include "../CUI_Legacy/GUI/Layout/DockPanel.h"
@@ -1541,6 +1543,15 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 				else if (ctrl->Type() == UIClass::UI_WrapPanel) ((WrapPanel*)ctrl)->SetOrientation(o);
 			}
 		}
+		else if (propertyName == L"SplitOrientation")
+		{
+			if (ctrl->Type() == UIClass::UI_SplitContainer)
+			{
+				::Orientation o;
+				if (TryParseOrientation(value, o))
+					((SplitContainer*)ctrl)->SplitOrientation = o;
+			}
+		}
 		else if (propertyName == L"SizeMode")
 		{
 			if (ctrl->Type() == UIClass::UI_PictureBox)
@@ -1624,6 +1635,21 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 			if (ctrl->Type() == UIClass::UI_StackPanel)
 				((StackPanel*)ctrl)->SetSpacing(std::stof(value));
 		}
+		else if (propertyName == L"CaptionMarginLeft")
+		{
+			if (ctrl->Type() == UIClass::UI_GroupBox)
+				((GroupBox*)ctrl)->CaptionMarginLeft = std::stof(value);
+		}
+		else if (propertyName == L"CaptionPaddingX")
+		{
+			if (ctrl->Type() == UIClass::UI_GroupBox)
+				((GroupBox*)ctrl)->CaptionPaddingX = std::stof(value);
+		}
+		else if (propertyName == L"CaptionPaddingY")
+		{
+			if (ctrl->Type() == UIClass::UI_GroupBox)
+				((GroupBox*)ctrl)->CaptionPaddingY = std::stof(value);
+		}
 		else if (propertyName == L"ItemWidth")
 		{
 			if (ctrl->Type() == UIClass::UI_WrapPanel)
@@ -1677,6 +1703,26 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 		{
 			if (ctrl->Type() == UIClass::UI_ScrollView)
 				((ScrollView*)ctrl)->MouseWheelStep = std::stoi(value);
+		}
+		else if (propertyName == L"SplitterDistance")
+		{
+			if (ctrl->Type() == UIClass::UI_SplitContainer)
+				((SplitContainer*)ctrl)->SplitterDistance = std::stoi(value);
+		}
+		else if (propertyName == L"SplitterWidth")
+		{
+			if (ctrl->Type() == UIClass::UI_SplitContainer)
+				((SplitContainer*)ctrl)->SplitterWidth = std::stoi(value);
+		}
+		else if (propertyName == L"Panel1MinSize")
+		{
+			if (ctrl->Type() == UIClass::UI_SplitContainer)
+				((SplitContainer*)ctrl)->Panel1MinSize = std::stoi(value);
+		}
+		else if (propertyName == L"Panel2MinSize")
+		{
+			if (ctrl->Type() == UIClass::UI_SplitContainer)
+				((SplitContainer*)ctrl)->Panel2MinSize = std::stoi(value);
 		}
 		else if (propertyName == L"ContentWidth")
 		{
@@ -1861,6 +1907,24 @@ void PropertyGrid::UpdatePropertyFromBool(std::wstring propertyName, bool value)
 	{
 		if (ctrl->Type() == UIClass::UI_LinkLabel)
 			((LinkLabel*)ctrl)->Visited = value;
+	}
+	else if (propertyName == L"IsSplitterFixed")
+	{
+		if (ctrl->Type() == UIClass::UI_SplitContainer)
+			((SplitContainer*)ctrl)->IsSplitterFixed = value;
+	}
+	else if (propertyName == L"LastChildFill")
+	{
+		if (ctrl->Type() == UIClass::UI_DockPanel)
+			((DockPanel*)ctrl)->SetLastChildFill(value);
+	}
+	else if (propertyName == L"Enabled")
+	{
+		ctrl->Enable = value;
+	}
+	else if (propertyName == L"Visible")
+	{
+		ctrl->Visible = value;
 	}
 
 
@@ -2131,6 +2195,23 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 	{
 		auto* dp = (DockPanel*)ctrl;
 		CreateBoolPropertyItem(L"LastChildFill", dp->GetLastChildFill(), yOffset);
+	}
+	if (control->Type == UIClass::UI_GroupBox)
+	{
+		auto* gb = (GroupBox*)ctrl;
+		CreatePropertyItem(L"CaptionMarginLeft", FloatToText(gb->CaptionMarginLeft), yOffset);
+		CreatePropertyItem(L"CaptionPaddingX", FloatToText(gb->CaptionPaddingX), yOffset);
+		CreatePropertyItem(L"CaptionPaddingY", FloatToText(gb->CaptionPaddingY), yOffset);
+	}
+	if (control->Type == UIClass::UI_SplitContainer)
+	{
+		auto* split = (SplitContainer*)ctrl;
+		CreateEnumPropertyItem(L"SplitOrientation", OrientationToText(split->SplitOrientation), { L"Horizontal", L"Vertical" }, yOffset);
+		CreatePropertyItem(L"SplitterDistance", std::to_wstring(split->SplitterDistance), yOffset);
+		CreatePropertyItem(L"SplitterWidth", std::to_wstring(split->SplitterWidth), yOffset);
+		CreatePropertyItem(L"Panel1MinSize", std::to_wstring(split->Panel1MinSize), yOffset);
+		CreatePropertyItem(L"Panel2MinSize", std::to_wstring(split->Panel2MinSize), yOffset);
+		CreateBoolPropertyItem(L"IsSplitterFixed", split->IsSplitterFixed, yOffset);
 	}
 	if (control->Type == UIClass::UI_StatusBar)
 	{

@@ -48,12 +48,14 @@ namespace
 		case UIClass::UI_PasswordBox: return "PasswordBox";
 		case UIClass::UI_DateTimePicker: return "DateTimePicker";
 		case UIClass::UI_Panel: return "Panel";
+		case UIClass::UI_GroupBox: return "GroupBox";
 		case UIClass::UI_ScrollView: return "ScrollView";
 		case UIClass::UI_StackPanel: return "StackPanel";
 		case UIClass::UI_GridPanel: return "GridPanel";
 		case UIClass::UI_DockPanel: return "DockPanel";
 		case UIClass::UI_WrapPanel: return "WrapPanel";
 		case UIClass::UI_RelativePanel: return "RelativePanel";
+		case UIClass::UI_SplitContainer: return "SplitContainer";
 		case UIClass::UI_CheckBox: return "CheckBox";
 		case UIClass::UI_RadioBox: return "RadioBox";
 		case UIClass::UI_ComboBox: return "ComboBox";
@@ -86,12 +88,14 @@ namespace
 		if (s == "PasswordBox") { out = UIClass::UI_PasswordBox; return true; }
 		if (s == "DateTimePicker") { out = UIClass::UI_DateTimePicker; return true; }
 		if (s == "Panel") { out = UIClass::UI_Panel; return true; }
+		if (s == "GroupBox") { out = UIClass::UI_GroupBox; return true; }
 		if (s == "ScrollView") { out = UIClass::UI_ScrollView; return true; }
 		if (s == "StackPanel") { out = UIClass::UI_StackPanel; return true; }
 		if (s == "GridPanel") { out = UIClass::UI_GridPanel; return true; }
 		if (s == "DockPanel") { out = UIClass::UI_DockPanel; return true; }
 		if (s == "WrapPanel") { out = UIClass::UI_WrapPanel; return true; }
 		if (s == "RelativePanel") { out = UIClass::UI_RelativePanel; return true; }
+		if (s == "SplitContainer") { out = UIClass::UI_SplitContainer; return true; }
 		if (s == "CheckBox") { out = UIClass::UI_CheckBox; return true; }
 		if (s == "RadioBox") { out = UIClass::UI_RadioBox; return true; }
 		if (s == "ComboBox") { out = UIClass::UI_ComboBox; return true; }
