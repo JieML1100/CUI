@@ -2258,6 +2258,16 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	case WM_RBUTTONUP:
 	case WM_LBUTTONDBLCLK:
 	{
+		Control* selectedBeforeLeftDown = (message == WM_LBUTTONDOWN) ? this->Selected : NULL;
+		Control* pointerHover = NULL;
+		if (!(this->VisibleHead && mouse.y < top))
+		{
+			pointerHover = HitTestControlAt(contentMouse);
+		}
+		RaiseControlMouseEnterLeave(this, this->_hoverControl, pointerHover, contentMouse);
+		this->_hoverControl = pointerHover;
+		this->UnderMouse = pointerHover;
+
 		DismissForegroundOnOutsideMouseDown(this, contentMouse, message);
 
 		if (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN)
@@ -2364,6 +2374,11 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		else if (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP)
 		{
 			this->OnMouseUp(this, MouseEventArgs(FromParamToMouseButtons(message), 0, contentMouse.x, contentMouse.y, HIWORD(wParam)));
+		}
+
+		if (message == WM_LBUTTONDOWN && selectedBeforeLeftDown && this->Selected == selectedBeforeLeftDown && pointerHover != selectedBeforeLeftDown)
+		{
+			this->SetSelectedControl(NULL, true);
 		}
 
 		if (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP)

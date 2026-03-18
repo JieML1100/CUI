@@ -289,15 +289,6 @@ void TabControl::Update()
 bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {
 	if (!this->Enable || !this->Visible) return true;
-	if (WM_LBUTTONDOWN == message)
-	{
-		if (this->ParentForm->Selected && this->ParentForm->Selected != this)
-		{
-			auto se = this->ParentForm->Selected;
-			this->ParentForm->Selected = this;
-			se->PostRender();
-		}
-	}
 
 	if (this->Count > 0)
 	{
