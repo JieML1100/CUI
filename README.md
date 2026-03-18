@@ -22,6 +22,44 @@
 - **WebView2 集成**：可嵌入现代 Web 内容（基于 Microsoft WebView2）
 - **设计器工作流**：拖放编辑属性、实时预览、JSON 设计文件保存/加载、自动生成 C++ 代码
 
+## 界面截图
+
+### 设计器
+
+可视化设计器支持拖放布局、属性编辑和代码生成。
+
+![CUI Designer](imgs/Designer.png)
+
+### Demo 窗口与菜单
+
+示例程序包含主窗口菜单、独立上下文菜单，以及 TabControl 的多个演示页面。
+
+| 主窗口菜单 | 上下文菜单 |
+| --- | --- |
+| ![Window Menu](imgs/Menu.png) | ![Context Menu](imgs/ContexMenu.png) |
+
+### TabControl 页面截图
+
+以下截图对应 Demo 中选中 TabControl 不同页面时的显示效果：
+
+| Tab 1 | Tab 2 |
+| --- | --- |
+| ![Tab 1](imgs/Tab1.png) | ![Tab 2](imgs/Tab2.png) |
+
+| Tab 3 | Tab 4 |
+| --- | --- |
+| ![Tab 3](imgs/Tab3.png) | ![Tab 4](imgs/Tab4.png) |
+
+| Tab 5 | WebBrowser |
+| --- | --- |
+| ![Tab 5](imgs/Tab5.png) | ![WebBrowser](imgs/WebBrowser.png) |
+
+### 多媒体页面
+
+MediaPlayer 页面演示了框架内置媒体播放控件。
+
+![MediaPlayer](imgs/MediaPlayer.png)
+
 ## 注意事项
 
 - **仅支持 Windows**：依赖 Windows 图形栈（Direct2D/DirectWrite/DirectComposition）。

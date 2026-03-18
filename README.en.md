@@ -22,6 +22,44 @@ This repository mainly contains:
 - **WebView2 integration**: embed modern web content via Microsoft WebView2
 - **Designer workflow**: property editing, live preview, JSON design files, and C++ code generation
 
+## Screenshots
+
+### Designer
+
+The visual designer supports drag-and-drop layout editing, property inspection, and C++ code generation.
+
+![CUI Designer](imgs/Designer.png)
+
+### Demo Window and Menus
+
+The sample application includes a main window menu, a standalone context menu, and multiple TabControl demo pages.
+
+| Window Menu | Context Menu |
+| --- | --- |
+| ![Window Menu](imgs/Menu.png) | ![Context Menu](imgs/ContexMenu.png) |
+
+### TabControl Pages
+
+The following screenshots correspond to different pages selected in the TabControl of the demo window:
+
+| Tab 1 | Tab 2 |
+| --- | --- |
+| ![Tab 1](imgs/Tab1.png) | ![Tab 2](imgs/Tab2.png) |
+
+| Tab 3 | Tab 4 |
+| --- | --- |
+| ![Tab 3](imgs/Tab3.png) | ![Tab 4](imgs/Tab4.png) |
+
+| Tab 5 | WebBrowser |
+| --- | --- |
+| ![Tab 5](imgs/Tab5.png) | ![WebBrowser](imgs/WebBrowser.png) |
+
+### Media Page
+
+The MediaPlayer page demonstrates the built-in media playback control.
+
+![MediaPlayer](imgs/MediaPlayer.png)
+
 ## Notes
 
 - **Windows only**: relies on Direct2D/DirectWrite/DirectComposition.
