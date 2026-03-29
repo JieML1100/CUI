@@ -34,6 +34,7 @@
     <ClInclude Include="Utils\Guid.h" />
     <ClInclude Include="Utils\HttpHelper.h" />
     <ClInclude Include="Utils\httplib.h" />
+    <ClInclude Include="Utils\json.h" />
     <ClInclude Include="Utils\jsonlite.hpp" />
     <ClInclude Include="Utils\List.h" />
     <ClInclude Include="Utils\MD5.h" />

@@ -25,17 +25,17 @@ void TabControlPagesEditorDialog::AddRow(const std::wstring& title, TabPage* pag
 	GridViewRow r;
 	CellValue v(title);
 	v.Tag = (__int64)page;
-	r.Cells.Add(v);
-	r.Cells.Add(CellValue(L""));
-	r.Cells.Add(CellValue(L""));
-	r.Cells.Add(CellValue(L""));
-	_grid->Rows.Add(r);
+	r.Cells.push_back(v);
+	r.Cells.push_back(CellValue(L""));
+	r.Cells.push_back(CellValue(L""));
+	r.Cells.push_back(CellValue(L""));
+	_grid->Rows.push_back(r);
 }
 
 void TabControlPagesEditorDialog::RefreshGridFromTarget()
 {
 	if (!_grid) return;
-	_grid->Rows.Clear();
+	_grid->Rows.clear();
 	if (!_target) return;
 	for (int i = 0; i < _target->Count; i++)
 	{
@@ -58,7 +58,7 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 	tip->Font = new ::Font(L"Microsoft YaHei", 12.0f);
 
 	_grid = this->AddControl(new GridView(12, 38, 496, 318));
-	_grid->Columns.Clear();
+	_grid->Columns.clear();
 	{
 		GridViewColumn c0(L"Title", 290.0f, ColumnType::Text, true);
 		GridViewColumn c1(L"", 60.0f, ColumnType::Button, false);
@@ -67,10 +67,10 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 		c2.ButtonText = L"下移";
 		GridViewColumn c3(L"", 60.0f, ColumnType::Button, false);
 		c3.ButtonText = L"删除";
-		_grid->Columns.Add(c0);
-		_grid->Columns.Add(c1);
-		_grid->Columns.Add(c2);
-		_grid->Columns.Add(c3);
+		_grid->Columns.push_back(c0);
+		_grid->Columns.push_back(c1);
+		_grid->Columns.push_back(c2);
+		_grid->Columns.push_back(c3);
 	}
 	_grid->AllowUserToAddRows = true;
 	RefreshGridFromTarget();
@@ -78,9 +78,9 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 	_grid->OnUserAddedRow += [this](GridView*, int newRowIndex)
 	{
 		if (!_grid) return;
-		if (newRowIndex < 0 || newRowIndex >= _grid->Rows.Count) return;
+		if (newRowIndex < 0 || newRowIndex >= _grid->Rows.size()) return;
 		auto& row = _grid->Rows[newRowIndex];
-		if (row.Cells.Count < 4)
+		if (row.Cells.size() < 4)
 			row.Cells.resize(4);
 		row.Cells[COL_TITLE].Text = L"Page";
 		row.Cells[COL_TITLE].Tag = 0;
@@ -90,27 +90,27 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 	_grid->OnGridViewButtonClick += [this](GridView*, int c, int r)
 	{
 		if (!_grid) return;
-		if (r < 0 || r >= _grid->Rows.Count) return;
+		if (r < 0 || r >= _grid->Rows.size()) return;
 		if (c == COL_UP)
 		{
 			if (r <= 0) return;
-			_grid->Rows.Swap(r, r - 1);
+			std::swap(_grid->Rows[r], _grid->Rows[r - 1]);
 			_grid->SelectedRowIndex = r - 1;
 			_grid->SelectedColumnIndex = COL_TITLE;
 			_grid->PostRender();
 		}
 		else if (c == COL_DOWN)
 		{
-			if (r + 1 >= _grid->Rows.Count) return;
-			_grid->Rows.Swap(r, r + 1);
+			if (r + 1 >= _grid->Rows.size()) return;
+			std::swap(_grid->Rows[r], _grid->Rows[r + 1]);
 			_grid->SelectedRowIndex = r + 1;
 			_grid->SelectedColumnIndex = COL_TITLE;
 			_grid->PostRender();
 		}
 		else if (c == COL_DELETE)
 		{
-			_grid->Rows.RemoveAt(r);
-			if (_grid->Rows.Count <= 0)
+			_grid->Rows.erase(_grid->Rows.begin() + r);
+			if (_grid->Rows.size() <= 0)
 			{
 				_grid->SelectedRowIndex = -1;
 				_grid->SelectedColumnIndex = -1;
@@ -118,7 +118,7 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 			else
 			{
 				int sel = r;
-				if (sel >= _grid->Rows.Count) sel = _grid->Rows.Count - 1;
+				if (sel >= _grid->Rows.size()) sel = _grid->Rows.size() - 1;
 				_grid->SelectedRowIndex = sel;
 				_grid->SelectedColumnIndex = COL_TITLE;
 			}
@@ -138,10 +138,10 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 		std::unordered_set<TabPage*> used;
 
 		// 收集目标列表（跳过空标题）
-		for (int i = 0; i < _grid->Rows.Count; i++)
+		for (int i = 0; i < _grid->Rows.size(); i++)
 		{
 			auto& row = _grid->Rows[i];
-			if (row.Cells.Count <= COL_TITLE) continue;
+			if (row.Cells.size() <= COL_TITLE) continue;
 			auto title = Trim(row.Cells[COL_TITLE].Text);
 			if (title.empty()) continue;
 
@@ -186,7 +186,7 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 			}
 			if (cur >= 0 && cur != i)
 			{
-				_target->Children.Swap(cur, i);
+				std::swap(_target->Children[cur], _target->Children[i]);
 			}
 		}
 

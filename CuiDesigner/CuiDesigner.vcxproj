@@ -80,6 +80,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -97,6 +98,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -113,6 +115,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -131,6 +134,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -168,6 +172,7 @@
     <ClCompile Include="DesignerModel\DesignDocumentSerializer.cpp" />
     <ClCompile Include="FakeWebBrowser.cpp" />
     <ClCompile Include="MenuItemsEditorDialog.cpp" />
+    <ClCompile Include="nanosvg.cpp" />
     <ClCompile Include="StatusBarPartsEditorDialog.cpp" />
     <ClCompile Include="main.cpp">
       <MultiProcessorCompilation>false</MultiProcessorCompilation>
@@ -205,6 +210,7 @@
     <ClInclude Include="DesignerModel\DesignDocumentSerializer.h" />
     <ClInclude Include="FakeWebBrowser.h" />
     <ClInclude Include="MenuItemsEditorDialog.h" />
+    <ClInclude Include="nanosvg.h" />
     <ClInclude Include="StatusBarPartsEditorDialog.h" />
     <ClInclude Include="Designer.h" />
     <ClInclude Include="DesignerCanvas.h" />

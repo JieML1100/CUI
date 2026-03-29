@@ -24,9 +24,6 @@
     <ClInclude Include="Utils\CRandom.h">
       <Filter>Utils</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\DataPack.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
     <ClInclude Include="Utils\DateTime.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -141,6 +138,9 @@
     <ClInclude Include="Utils\jsonlite.hpp">
       <Filter>Utils</Filter>
     </ClInclude>
+    <ClInclude Include="Utils\json.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Utils\Clipboard.cpp">
@@ -152,9 +152,6 @@
     <ClCompile Include="Utils\CRandom.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\DataPack.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
     <ClCompile Include="Utils\DateTime.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -162,9 +159,6 @@
       <Filter>Utils</Filter>
     </ClCompile>
     <ClCompile Include="Utils\Environment.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\Event.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
     <ClCompile Include="Utils\File.cpp">

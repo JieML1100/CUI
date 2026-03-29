@@ -11,7 +11,6 @@
 #include "CodeGenerator.h"
 #include "../CUI_Legacy/GUI/Button.h"
 #include "../CUI_Legacy/GUI/Label.h"
-
 class Designer : public Form
 {
 private:

@@ -8,6 +8,7 @@
 #include <string>
 #include <map>
 #include <unordered_map>
+#include <Utils.h>
 
 // 设计器中控件的元数据
 struct ControlMetadata

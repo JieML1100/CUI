@@ -1,5 +1,5 @@
 ﻿#include "DemoWindow.h"
-#include "Utils.h"
+#include "TestUtils.h"
 #include "imgs.h"
 #include "nanosvg.h"
 

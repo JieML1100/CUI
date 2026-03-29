@@ -802,12 +802,12 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	if (dc->Type == UIClass::UI_ComboBox)
 	{
 		auto* cb = (ComboBox*)ctrl;
-		if (cb->Items.Count > 0)
+		if (cb->Items.size() > 0)
 		{
 			code << indentStr << name << "->Items.Clear();\n";
-			for (int i = 0; i < cb->Items.Count; i++)
+			for (int i = 0; i < cb->Items.size(); i++)
 			{
-				code << indentStr << name << "->Items.Add(L\"" << EscapeWStringLiteral(cb->Items[i]) << "\");\n";
+				code << indentStr << name << "->Items.push_back(L\"" << EscapeWStringLiteral(cb->Items[i]) << "\");\n";
 			}
 			code << indentStr << name << "->SelectedIndex = " << cb->SelectedIndex << ";\n";
 		}
@@ -932,14 +932,14 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 			code << indentStr << name << "->SelectedForeColor = " << ColorToString(tv->SelectedForeColor) << ";\n";
 
 		// TreeView nodes
-		if (tv->Root && tv->Root->Children.Count > 0)
+		if (tv->Root && tv->Root->Children.size() > 0)
 		{
 			code << indentStr << "// TreeView nodes\n";
 			code << indentStr << "for (auto n : " << name << "->Root->Children) delete n;\n";
 			code << indentStr << name << "->Root->Children.Clear();\n";
 
 			int nodeAutoId = 0;
-			auto emit = [&](auto&& self, List<TreeNode*>& nodes, const std::string& parentExpr) -> void
+			auto emit = [&](auto&& self, std::vector<TreeNode*>& nodes, const std::string& parentExpr) -> void
 			{
 				for (auto* n : nodes)
 				{
@@ -949,7 +949,7 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 					if (n->Expand)
 						code << indentStr << var << "->Expand = true;\n";
 					code << indentStr << parentExpr << "->Children.push_back(" << var << ");\n";
-					if (n->Children.Count > 0)
+					if (n->Children.size() > 0)
 						self(self, n->Children, var);
 				}
 			};
@@ -961,10 +961,10 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	if (dc->Type == UIClass::UI_GridView)
 	{
 		auto* gv = (GridView*)ctrl;
-		if (gv->Columns.Count > 0)
+		if (gv->Columns.size() > 0)
 		{
 			code << indentStr << name << "->Columns.Clear();\n";
-			for (int i = 0; i < gv->Columns.Count; i++)
+			for (int i = 0; i < gv->Columns.size(); i++)
 			{
 				auto& col = gv->Columns[i];
 				std::string typeStr = "ColumnType::Text";
@@ -977,7 +977,7 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 				case ColumnType::ComboBox: typeStr = "ColumnType::ComboBox"; break;
 				default: typeStr = "ColumnType::Text"; break;
 				}
-				code << indentStr << name << "->Columns.Add(GridViewColumn(L\"" << EscapeWStringLiteral(col.Name)
+				code << indentStr << name << "->Columns.push_back(GridViewColumn(L\"" << EscapeWStringLiteral(col.Name)
 					<< "\", " << FloatLiteral(col.Width) << ", " << typeStr << ", " << (col.CanEdit ? "true" : "false") << "));\n";
 			}
 		}

@@ -23,18 +23,18 @@ void ToolBarButtonsEditorDialog::AddRow(const std::wstring& text, const std::wst
 {
 	if (!_grid) return;
 	GridViewRow r;
-	r.Cells.Add(CellValue(text));
-	r.Cells.Add(CellValue(width));
-	r.Cells.Add(CellValue(L""));
-	r.Cells.Add(CellValue(L""));
-	r.Cells.Add(CellValue(L""));
-	_grid->Rows.Add(r);
+	r.Cells.push_back(CellValue(text));
+	r.Cells.push_back(CellValue(width));
+	r.Cells.push_back(CellValue(L""));
+	r.Cells.push_back(CellValue(L""));
+	r.Cells.push_back(CellValue(L""));
+	_grid->Rows.push_back(r);
 }
 
 void ToolBarButtonsEditorDialog::RefreshGridFromTarget()
 {
 	if (!_grid) return;
-	_grid->Rows.Clear();
+	_grid->Rows.clear();
 	if (!_target) return;
 	for (int i = 0; i < _target->Count; i++)
 	{
@@ -58,7 +58,7 @@ ToolBarButtonsEditorDialog::ToolBarButtonsEditorDialog(ToolBar* target)
 	tip->Font = new ::Font(L"Microsoft YaHei", 12.0f);
 
 	_grid = this->AddControl(new GridView(12, 38, 536, 340));
-	_grid->Columns.Clear();
+	_grid->Columns.clear();
 	{
 		GridViewColumn c0(L"Text", 260.0f, ColumnType::Text, true);
 		GridViewColumn c1(L"Width", 80.0f, ColumnType::Text, true);
@@ -68,11 +68,11 @@ ToolBarButtonsEditorDialog::ToolBarButtonsEditorDialog(ToolBar* target)
 		c3.ButtonText = L"下移";
 		GridViewColumn c4(L"", 60.0f, ColumnType::Button, false);
 		c4.ButtonText = L"删除";
-		_grid->Columns.Add(c0);
-		_grid->Columns.Add(c1);
-		_grid->Columns.Add(c2);
-		_grid->Columns.Add(c3);
-		_grid->Columns.Add(c4);
+		_grid->Columns.push_back(c0);
+		_grid->Columns.push_back(c1);
+		_grid->Columns.push_back(c2);
+		_grid->Columns.push_back(c3);
+		_grid->Columns.push_back(c4);
 	}
 	_grid->AllowUserToAddRows = true;
 	RefreshGridFromTarget();
@@ -80,9 +80,9 @@ ToolBarButtonsEditorDialog::ToolBarButtonsEditorDialog(ToolBar* target)
 	_grid->OnUserAddedRow += [this](GridView*, int newRowIndex)
 	{
 		if (!_grid) return;
-		if (newRowIndex < 0 || newRowIndex >= _grid->Rows.Count) return;
+		if (newRowIndex < 0 || newRowIndex >= _grid->Rows.size()) return;
 		auto& row = _grid->Rows[newRowIndex];
-		if (row.Cells.Count < 5)
+		if (row.Cells.size() < 5)
 			row.Cells.resize(5);
 		row.Cells[COL_TEXT].Text = L"Button";
 		row.Cells[COL_WIDTH].Text = L"90";
@@ -92,27 +92,27 @@ ToolBarButtonsEditorDialog::ToolBarButtonsEditorDialog(ToolBar* target)
 	_grid->OnGridViewButtonClick += [this](GridView*, int c, int r)
 	{
 		if (!_grid) return;
-		if (r < 0 || r >= _grid->Rows.Count) return;
+		if (r < 0 || r >= _grid->Rows.size()) return;
 		if (c == COL_UP)
 		{
 			if (r <= 0) return;
-			_grid->Rows.Swap(r, r - 1);
+			std::swap(_grid->Rows[r], _grid->Rows[r - 1]);
 			_grid->SelectedRowIndex = r - 1;
 			_grid->SelectedColumnIndex = COL_TEXT;
 			_grid->PostRender();
 		}
 		else if (c == COL_DOWN)
 		{
-			if (r + 1 >= _grid->Rows.Count) return;
-			_grid->Rows.Swap(r, r + 1);
+			if (r + 1 >= _grid->Rows.size()) return;
+			std::swap(_grid->Rows[r], _grid->Rows[r + 1]);
 			_grid->SelectedRowIndex = r + 1;
 			_grid->SelectedColumnIndex = COL_TEXT;
 			_grid->PostRender();
 		}
 		else if (c == COL_DELETE)
 		{
-			_grid->Rows.RemoveAt(r);
-			if (_grid->Rows.Count <= 0)
+			_grid->Rows.erase(_grid->Rows.begin() + r);
+			if (_grid->Rows.size() <= 0)
 			{
 				_grid->SelectedRowIndex = -1;
 				_grid->SelectedColumnIndex = -1;
@@ -120,7 +120,7 @@ ToolBarButtonsEditorDialog::ToolBarButtonsEditorDialog(ToolBar* target)
 			else
 			{
 				int sel = r;
-				if (sel >= _grid->Rows.Count) sel = _grid->Rows.Count - 1;
+				if (sel >= _grid->Rows.size()) sel = _grid->Rows.size() - 1;
 				_grid->SelectedRowIndex = sel;
 				_grid->SelectedColumnIndex = COL_TEXT;
 			}
@@ -144,13 +144,13 @@ ToolBarButtonsEditorDialog::ToolBarButtonsEditorDialog(ToolBar* target)
 			delete c;
 		}
 
-		for (int i = 0; i < _grid->Rows.Count; i++)
+		for (int i = 0; i < _grid->Rows.size(); i++)
 		{
 			auto& row = _grid->Rows[i];
-			std::wstring text = (row.Cells.Count > COL_TEXT) ? Trim(row.Cells[COL_TEXT].Text) : L"";
+			std::wstring text = (row.Cells.size() > COL_TEXT) ? Trim(row.Cells[COL_TEXT].Text) : L"";
 			if (text.empty()) continue;
 			int width = 90;
-			if (row.Cells.Count > COL_WIDTH)
+			if (row.Cells.size() > COL_WIDTH)
 			{
 				auto w = Trim(row.Cells[COL_WIDTH].Text);
 				if (!w.empty())

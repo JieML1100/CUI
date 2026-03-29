@@ -133,17 +133,18 @@ void LayoutBridge::ApplyNewChildLayout(Control* container, Control* child, POINT
 				break;
 			}
 		}
-		int curIndex = wrapPanel->Children.IndexOf(child);
+		auto found = std::find(wrapPanel->Children.begin(), wrapPanel->Children.end(), child);
+		int curIndex = (found != wrapPanel->Children.end()) ? std::distance(wrapPanel->Children.begin(), found) : -1;
 		if (curIndex >= 0)
 		{
 			while (curIndex > insertIndex)
 			{
-				wrapPanel->Children.Swap(curIndex, curIndex - 1);
+				std::swap(wrapPanel->Children[curIndex], wrapPanel->Children[curIndex - 1]);
 				curIndex--;
 			}
 			while (curIndex < insertIndex)
 			{
-				wrapPanel->Children.Swap(curIndex, curIndex + 1);
+				std::swap(wrapPanel->Children[curIndex], wrapPanel->Children[curIndex + 1]);
 				curIndex++;
 			}
 		}
@@ -214,17 +215,18 @@ void LayoutBridge::ApplyExistingChildLayout(
 				break;
 			}
 		}
-		int curIndex = stackPanel->Children.IndexOf(child);
+		auto found = std::find(stackPanel->Children.begin(), stackPanel->Children.end(), child);
+		int curIndex = (found != stackPanel->Children.end()) ? std::distance(stackPanel->Children.begin(), found) : -1;
 		if (curIndex >= 0)
 		{
 			while (curIndex > insertIndex)
 			{
-				stackPanel->Children.Swap(curIndex, curIndex - 1);
+				std::swap(stackPanel->Children[curIndex], stackPanel->Children[curIndex - 1]);
 				curIndex--;
 			}
 			while (curIndex < insertIndex)
 			{
-				stackPanel->Children.Swap(curIndex, curIndex + 1);
+				std::swap(stackPanel->Children[curIndex], stackPanel->Children[curIndex + 1]);
 				curIndex++;
 			}
 		}

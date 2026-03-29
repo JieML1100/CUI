@@ -73,13 +73,13 @@ std::wstring TreeViewNodesEditorDialog::StripIndentTabs(const std::wstring& s)
 	return s.substr(i);
 }
 
-void TreeViewNodesEditorDialog::SerializeNodes(std::wstringstream& ss, List<TreeNode*>& nodes, int depth)
+void TreeViewNodesEditorDialog::SerializeNodes(std::wstringstream& ss, std::vector<TreeNode*>& nodes, int depth)
 {
 	for (auto n : nodes)
 	{
 		for (int i = 0; i < depth; i++) ss << L"\t";
 		ss << (n ? n->Text : L"") << L"\r\n";
-		if (n && n->Children.Count > 0)
+		if (n && n->Children.size() > 0)
 			SerializeNodes(ss, n->Children, depth + 1);
 	}
 }
@@ -122,7 +122,7 @@ TreeViewNodesEditorDialog::TreeViewNodesEditorDialog(TreeView* target)
 
 		// 清空旧节点
 		for (auto n : _target->Root->Children) delete n;
-		_target->Root->Children.Clear();
+		_target->Root->Children.clear();
 		_target->SelectedNode = nullptr;
 		_target->HoveredNode = nullptr;
 

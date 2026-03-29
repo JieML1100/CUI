@@ -1,9 +1,9 @@
 ﻿#include "ToolBox.h"
 #include "../CUI_Legacy/GUI/Label.h"
 #include "../CUI_Legacy/GUI/Form.h"
-#include "../CUI_Legacy/nanosvg.h"
-#include <CppUtils/Graphics/BitmapSource.h>
-#include <CppUtils/Graphics/Factory.h>
+#include "nanosvg.h"
+#include <BitmapSource.h>
+#include <Factory.h>
 #include <vector>
 #include <cstring>
 #include <algorithm>

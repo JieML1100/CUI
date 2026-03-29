@@ -1,5 +1,5 @@
 #include "DesignDocumentSerializer.h"
-#include <CppUtils/Utils/Convert.h>
+#include <Convert.h>
 #include <fstream>
 #include <sstream>
 #include <unordered_set>

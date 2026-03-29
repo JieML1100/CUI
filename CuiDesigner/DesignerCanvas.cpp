@@ -6,8 +6,8 @@
 #include "DesignerCore/SelectionService.h"
 #include "DesignerModel/DesignDocument.h"
 #include "DesignerModel/DesignDocumentSerializer.h"
-#include <CppUtils/Utils/json.h>
-#include <CppUtils/Utils/Convert.h>
+#include <json.h>
+#include <Convert.h>
 #include "FakeWebBrowser.h"
 #include "../CUI_Legacy/GUI/Label.h"
 #include "../CUI_Legacy/GUI/LinkLabel.h"
@@ -245,7 +245,7 @@ void DesignerCanvas::RebuildDesignedFormSharedFont()
 			::Font* cur = c->Font;
 			if (isDefaultLikeFont(cur, oldShared))
 				rebindFontOf(c, newShared);
-			for (int i = 0; i < c->Children.Count; i++)
+			for (int i = 0; i < c->Children.size(); i++)
 			{
 				stack.push_back(c->Children[i]);
 			}
@@ -263,7 +263,7 @@ void DesignerCanvas::RebuildDesignedFormSharedFont()
 			stack.pop_back();
 			if (!c) continue;
 			if (c->Font == f) return true;
-			for (int i = 0; i < c->Children.Count; i++)
+			for (int i = 0; i < c->Children.size(); i++)
 				stack.push_back(c->Children[i]);
 		}
 		return false;
@@ -3025,7 +3025,7 @@ namespace
 		return -1;
 	}
 
-	static Json TreeNodesToJson(List<TreeNode*>& nodes)
+	static Json TreeNodesToJson(std::vector<TreeNode*>& nodes)
 	{
 		Json arr = Json::array();
 		for (auto* n : nodes)
@@ -3034,14 +3034,14 @@ namespace
 			Json one;
 			one["text"] = ToUtf8(n->Text);
 			one["expand"] = n->Expand;
-			if (n->Children.Count > 0)
+			if (n->Children.size() > 0)
 				one["children"] = TreeNodesToJson(n->Children);
 			arr.push_back(one);
 		}
 		return arr;
 	}
 
-	static void JsonToTreeNodes(const Json& j, List<TreeNode*>& outNodes)
+	static void JsonToTreeNodes(const Json& j, std::vector<TreeNode*>& outNodes)
 	{
 		if (!j.is_array()) return;
 		for (auto& it : j)
@@ -3325,7 +3325,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			{
 				auto* cb = (ComboBox*)c;
 				Json items = Json::array();
-				for (int i = 0; i < cb->Items.Count; i++)
+				for (int i = 0; i < cb->Items.size(); i++)
 					items.push_back(ToUtf8(cb->Items[i]));
 				extra["items"] = items;
 				extra["expandCount"] = cb->ExpandCount;
@@ -3394,7 +3394,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			{
 				auto* gv = (GridView*)c;
 				Json cols = Json::array();
-				for (int i = 0; i < gv->Columns.Count; i++)
+				for (int i = 0; i < gv->Columns.size(); i++)
 				{
 					auto& col = gv->Columns[i];
 					Json cj;
@@ -3918,21 +3918,21 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				else if (it.type == UIClass::UI_ComboBox)
 				{
 					auto* cb = (ComboBox*)c;
-					cb->Items.Clear();
+					cb->Items.clear();
 					if (it.extra.contains("items") && it.extra["items"].is_array())
 					{
 						for (auto& sj : it.extra["items"])
-							if (sj.is_string()) cb->Items.Add(FromUtf8(sj.get<std::string>()));
+							if (sj.is_string()) cb->Items.push_back(FromUtf8(sj.get<std::string>()));
 					}
 					cb->ExpandCount = std::max(1, it.extra.value("expandCount", cb->ExpandCount));
 					cb->SelectedIndex = it.extra.value("selectedIndex", cb->SelectedIndex);
-					if (cb->Items.Count > 0 && cb->SelectedIndex >= 0 && cb->SelectedIndex < cb->Items.Count)
+					if (cb->Items.size() > 0 && cb->SelectedIndex >= 0 && cb->SelectedIndex < cb->Items.size())
 						cb->Text = cb->Items[cb->SelectedIndex];
 				}
 				else if (it.type == UIClass::UI_GridView)
 				{
 					auto* gv = (GridView*)c;
-					gv->Columns.Clear();
+					gv->Columns.clear();
 					if (it.extra.contains("columns") && it.extra["columns"].is_array())
 					{
 						for (auto& cj : it.extra["columns"])
@@ -3943,7 +3943,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 							col.Width = cj.value("width", col.Width);
 							col.Type = (ColumnType)cj.value("type", (int)col.Type);
 							col.CanEdit = cj.value("canEdit", col.CanEdit);
-							gv->Columns.Add(col);
+							gv->Columns.push_back(col);
 						}
 					}
 				}
@@ -3953,7 +3953,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 					if (tv->Root)
 					{
 						for (auto n : tv->Root->Children) delete n;
-						tv->Root->Children.Clear();
+						tv->Root->Children.clear();
 						if (it.extra.contains("nodes"))
 							JsonToTreeNodes(it.extra["nodes"], tv->Root->Children);
 					}

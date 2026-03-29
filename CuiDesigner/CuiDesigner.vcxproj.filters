@@ -108,6 +108,9 @@
     <ClCompile Include="DesignerModel\DesignDocumentSerializer.cpp">
       <Filter>DesignerModel</Filter>
     </ClCompile>
+    <ClCompile Include="nanosvg.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CodeGenInput.h">
@@ -193,6 +196,9 @@
     </ClInclude>
     <ClInclude Include="DesignerModel\DesignDocumentSerializer.h">
       <Filter>DesignerModel</Filter>
+    </ClInclude>
+    <ClInclude Include="nanosvg.h">
+      <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

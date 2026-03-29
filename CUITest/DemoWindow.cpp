@@ -1,8 +1,6 @@
 ﻿#include "DemoWindow.h"
-
 #include "imgs.h"
 #include "nanosvg.h"
-#include "Utils.h"
 #include <memory>
 
 namespace {

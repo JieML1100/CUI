@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../DesignerTypes.h"
-#include <CppUtils/Utils/json.h>
+#include <json.h>
 #include <map>
 #include <string>
 #include <vector>

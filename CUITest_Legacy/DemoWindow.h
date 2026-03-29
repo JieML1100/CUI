@@ -8,6 +8,7 @@
 #include "../CUI_Legacy/GUI/Form.h"
 #include "../CUI_Legacy/GUI/Layout/Layout.h"
 #include "CustomControls.h"
+#include "TestUtils.h"
 class DemoWindow : public Form
 {
 public:

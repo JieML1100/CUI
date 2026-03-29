@@ -1013,16 +1013,16 @@ void PropertyGrid::CreateEnumPropertyItem(std::wstring propertyName, const std::
 
 	auto valueCombo = new ComboBox(L"", (width - 30) / 2 + 15, yOffset, (width - 30) / 2, 20);
 	valueCombo->ParentForm = this->ParentForm;
-	valueCombo->Items.Clear();
-	for (auto& o : options) valueCombo->Items.Add(o);
+	valueCombo->Items.clear();
+	for (auto& o : options) valueCombo->Items.push_back(o);
 
 	int idx = -1;
-	for (int i = 0; i < valueCombo->Items.Count; i++)
+	for (int i = 0; i < valueCombo->Items.size(); i++)
 	{
 		if (EnumOptionMatchesValue(valueCombo->Items[i], value)) { idx = i; break; }
 	}
 	valueCombo->SelectedIndex = idx >= 0 ? idx : 0;
-	if (valueCombo->Items.Count > 0 && idx >= 0 && idx < valueCombo->Items.Count)
+	if (valueCombo->Items.size() > 0 && idx >= 0 && idx < valueCombo->Items.size())
 		valueCombo->Text = valueCombo->Items[idx];
 	else
 		valueCombo->Text = value;
@@ -1483,7 +1483,7 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 			{
 				auto* cb = (ComboBox*)ctrl;
 				cb->SelectedIndex = std::stoi(value);
-				if (cb->Items.Count > 0 && cb->SelectedIndex >= 0 && cb->SelectedIndex < cb->Items.Count)
+				if (cb->Items.size() > 0 && cb->SelectedIndex >= 0 && cb->SelectedIndex < cb->Items.size())
 					cb->Text = cb->Items[cb->SelectedIndex];
 			}
 		}
@@ -2017,7 +2017,7 @@ void PropertyGrid::CommitPendingEdits()
 			Control* current = stack.back();
 			stack.pop_back();
 			if (!current) continue;
-			for (int i = 0; i < current->Children.Count; i++)
+			for (int i = 0; i < current->Children.size(); i++)
 			{
 				auto* child = current->Children[i];
 				if (!child) continue;
@@ -2528,7 +2528,7 @@ void PropertyGrid::Clear()
 			Control* cur = stack.back();
 			stack.pop_back();
 			if (!cur) continue;
-			for (int i = 0; i < cur->Children.Count; i++)
+			for (int i = 0; i < cur->Children.size(); i++)
 			{
 				auto* ch = cur->Children[i];
 				if (!ch) continue;
