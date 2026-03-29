@@ -224,9 +224,8 @@ CUI.sln
 ├── CuiDesigner/           # Visual designer
 ├── CUITest/               # Samples and test program
 ├── CUITest_Legacy/        # Legacy version samples
-└── CppUtils/              # Utility library dependencies
-    ├── Graphics/          # Graphics utility library
-    └── Utils/             # General utility library
+├── D2DGraphics/           # Low-level graphics wrapper
+└── Utils/                 # General utilities used by the designer and related projects
 ```
 
 ### Core Class Hierarchy
@@ -1740,15 +1739,12 @@ public:
 Microsoft.Web.WebView2
 ```
 
-### CppUtils Dependencies
+### Project Dependencies
 
-CUI depends on the `CppUtils/Graphics` library, with source code included in the `CppUtils/` directory:
-
-- Graphics rendering base classes
-- Font management
-- Color system
-- Bitmap processing
-- Utility functions
+- `CUI` / `CUI_Legacy` depend on the in-repo `D2DGraphics/`
+- `CUITest` / `CUITest_Legacy` now embed the small helper functionality they previously consumed from `Utils`, so they no longer depend on `Utils`
+- `CuiDesigner` currently depends on `CUI_Legacy` and `Utils`
+- `Utils` is now primarily a utility library for the designer and related projects, rather than a prerequisite for `CUI` / `CUI_Legacy` / `CUITest` / `CUITest_Legacy`
 
 ### Third-Party Components
 

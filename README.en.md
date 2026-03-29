@@ -8,8 +8,12 @@ CUI is a modern native Windows GUI framework based on **Direct2D** and **DirectC
 
 This repository mainly contains:
 - `CUI/`: runtime GUI framework and controls
+- `CUI_Legacy/`: legacy runtime targeting Windows 7
 - `CuiDesigner/`: visual UI designer
 - `CUITest/`: samples and test program
+- `CUITest_Legacy/`: legacy samples and test program
+- `D2DGraphics/`: low-level graphics wrapper
+- `Utils/`: general utilities still used by the designer and related projects
 
 ## Features
 
@@ -64,9 +68,11 @@ The MediaPlayer page demonstrates the built-in media playback control.
 
 - **Windows only**: relies on Direct2D/DirectWrite/DirectComposition.
 - **Windows version**: `CUI` supports Windows 8+; `CUI_Legacy` supports Windows 7 (without WebBrowser).
-- **Dependencies**:
-  - WebView2
-  - `CppUtils/Graphics` (open-sourced at https://github.com/JieML1100/CppUtils)
+- **Project dependencies**:
+  - `CUI` / `CUI_Legacy` depend on `D2DGraphics`
+  - `CUITest` / `CUITest_Legacy` now carry the small helper code they previously consumed from `Utils`, so they no longer depend on `Utils`
+  - `CuiDesigner` currently depends on `CUI_Legacy` and `Utils`
+- **Third-party dependencies**: WebView2; the graphics and utility source used by this repo is already included locally
 - **Designer output**: the designer saves JSON and generates C++ code; it’s recommended to version-control generated code and keep the JSON design files as the long-term UI source.
 
 ## Community

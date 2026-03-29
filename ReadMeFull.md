@@ -224,9 +224,8 @@ CUI.sln
 ├── CuiDesigner/           # 可视化设计器
 ├── CUITest/               # 示例与测试程序
 ├── CUITest_Legacy/        # 遗留版本示例
-└── CppUtils/              # 工具库依赖
-    ├── Graphics/          # 图形工具库
-    └── Utils/             # 通用工具库
+├── D2DGraphics/           # 底层图形封装
+└── Utils/                 # 设计器等项目使用的通用工具库
 ```
 
 ### 核心类层次
@@ -1740,15 +1739,12 @@ public:
 Microsoft.Web.WebView2
 ```
 
-### CppUtils 依赖
+### 项目依赖关系
 
-CUI 依赖 `CppUtils/Graphics` 库，源码已包含在 `CppUtils/` 目录下：
-
-- 图形渲染基础类
-- 字体管理
-- 颜色系统
-- 位图处理
-- 工具函数
+- `CUI` / `CUI_Legacy` 依赖仓库内的 `D2DGraphics/`
+- `CUITest` / `CUITest_Legacy` 已将原先依赖 `Utils` 的测试辅助能力内聚到各自项目中，不再依赖 `Utils`
+- `CuiDesigner` 当前依赖 `CUI_Legacy` 与 `Utils`
+- `Utils` 现主要作为设计器及相关工程的工具库存在，不再是 `CUI` / `CUI_Legacy` / `CUITest` / `CUITest_Legacy` 的前置依赖
 
 ### 第三方组件
 

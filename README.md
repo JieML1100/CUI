@@ -8,8 +8,12 @@
 
 本仓库主要包含：
 - `CUI/`：运行时 GUI 框架与控件库
+- `CUI_Legacy/`：兼容 Windows 7 的遗留运行时版本
 - `CuiDesigner/`：可视化 UI 设计器
 - `CUITest/`：示例与测试程序
+- `CUITest_Legacy/`：遗留版本示例与测试程序
+- `D2DGraphics/`：底层图形封装
+- `Utils/`：设计器等项目仍在使用的通用工具库
 
 ## 特点
 
@@ -63,8 +67,12 @@ MediaPlayer 页面演示了框架内置媒体播放控件。
 ## 注意事项
 
 - **仅支持 Windows**：依赖 Windows 图形栈（Direct2D/DirectWrite/DirectComposition）。
-- **Windows版本限制**：CUI仅支持Windows8+,CUI_Legacy支持Windows7(不含WebBrowser)
-- **第三方依赖**：WebView2,CppUtils/Graphics  CppUtils/Graphics开源在https://github.com/JieML1100/CppUtils
+- **Windows版本限制**：`CUI` 支持 Windows 8+；`CUI_Legacy` 支持 Windows 7（不含 WebBrowser）。
+- **项目依赖关系**：
+  - `CUI` / `CUI_Legacy` 依赖 `D2DGraphics`
+  - `CUITest` / `CUITest_Legacy` 已内置原先来自 `Utils` 的轻量测试辅助逻辑，不再依赖 `Utils`
+  - `CuiDesigner` 当前依赖 `CUI_Legacy` 和 `Utils`
+- **第三方依赖**：WebView2；仓库中的图形/工具源码已直接包含，无需额外引入 `CppUtils/Graphics`
 - **设计器输出**：设计器会保存 JSON 设计文件并生成 C++ 代码；建议将生成代码纳入版本控制、设计文件作为 UI 源文件长期维护。
 
 ## 交流社区
