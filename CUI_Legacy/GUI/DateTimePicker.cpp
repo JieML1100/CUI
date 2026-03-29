@@ -1,6 +1,7 @@
-﻿#include "DateTimePicker.h"
+﻿#define NOMINMAX
+#include "DateTimePicker.h"
 #include "Form.h"
-
+#include <format>
 UIClass DateTimePicker::Type() { return UIClass::UI_DateTimePicker; }
 
 DateTimePicker::DateTimePicker(std::wstring text, int x, int y, int width, int height)
@@ -373,7 +374,7 @@ void DateTimePicker::Update()
 					d2d->FillTriangle(triL, this->ForeColor);
 					d2d->FillTriangle(triR, this->ForeColor);
 
-					std::wstring monthText = StringHelper::Format(L"%04d年%02d月", _viewYear, _viewMonth);
+					std::wstring monthText = std::format(L"{:04d}年{:02d}月", _viewYear, _viewMonth);
 					auto monthSize = font->GetTextSize(monthText);
 					float monthCenterX = layout.contentLeft + layout.contentWidth * 0.5f;
 					float monthX = monthCenterX - monthSize.width * 0.5f;
@@ -721,35 +722,54 @@ void DateTimePicker::UpdateDisplayText()
 {
 	if (_showDate && _showTime)
 	{
-		this->Text = StringHelper::Format(L"%04d-%02d-%02d %02d:%02d",
+		this->Text = std::format(L"{:04d}-{:02d}-{:02d} {:02d}:{:02d}",
 			_value.wYear, _value.wMonth, _value.wDay, _value.wHour, _value.wMinute);
 	}
 	else if (_showDate)
 	{
-		this->Text = StringHelper::Format(L"%04d-%02d-%02d",
+		this->Text = std::format(L"{:04d}-{:02d}-{:02d}",
 			_value.wYear, _value.wMonth, _value.wDay);
 	}
 	else
 	{
-		this->Text = StringHelper::Format(L"%02d:%02d",
+		this->Text = std::format(L"{:02d}:{:02d}",
 			_value.wHour, _value.wMinute);
 	}
 }
 
 int DateTimePicker::DaysInMonth(int year, int month)
 {
+	auto isLeapYear = [](int year) {
+		if (year % 4 != 0)
+			return false;
+		else if (year % 100 != 0)
+			return true;
+		else if (year % 400 != 0)
+			return false;
+		else
+			return true;
+		};
 	static const int days[] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
 	int m = std::clamp(month, 1, 12);
 	int d = days[m - 1];
-	if (m == 2 && DateTime::IsLeapYear(year))
+	if (m == 2 && isLeapYear(year))
 		d = 29;
 	return d;
 }
 
 int DateTimePicker::FirstWeekday(int year, int month)
 {
-	DateTime dt(year, month, 1, 0, 0, 0, 0);
-	return (int)dt.DayOfWeek;
+	if (month < 3)
+	{
+		month += 12;
+		year -= 1;
+	}
+	int k = year % 100;
+	int j = year / 100;
+	int m = month;
+	int q = 1; // day of month
+	int h = (q + (13 * (m + 1)) / 5 + k + (k / 4) + (j / 4) - (2 * j)) % 7;
+	return ((h + 6) % 7); // Convert to Sunday=0, Monday=1, ..., Saturday=6
 }
 
 void DateTimePicker::AdjustMonth(int delta)
@@ -872,7 +892,7 @@ bool DateTimePicker::HandleTimeEditChar(wchar_t ch)
 
 std::wstring DateTimePicker::GetTimeEditText(EditField field, int value) const
 {
-	std::wstring text = StringHelper::Format(L"%02d", value);
+	std::wstring text = std::format(L"{:02d}", value);
 	if (_editField != field || _editBuffer.empty())
 		return text;
 	if (_editBuffer.size() == 1)

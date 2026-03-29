@@ -5,9 +5,6 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#ifndef _WINSOCKAPI_
-#define _WINSOCKAPI_
-#endif
 
 #ifndef PROPERTY
 #define PROPERTY(t,n) __declspec( property (put = Set##n, get = Get##n)) t n

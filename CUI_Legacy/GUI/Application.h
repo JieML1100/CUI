@@ -1,11 +1,7 @@
 ﻿#pragma once
-/*---如果Utils和Graphics源代码包含在此项目中则直接引用本地项目---*/
-//#define _LIB
-#include <CppUtils/Utils/Utils.h>
-
-/*---如果Utils和Graphics被编译成lib则引用外部头文件---*/
-// (using external CppUtils)
-
+#include <string>
+#include <unordered_map>
+#include <Windows.h>
 /**
  * @file Application.h
  * @brief CUI 应用级静态工具与全局状态。
@@ -24,7 +20,7 @@ public:
 	 * Key 为窗口句柄 HWND；Value 为对应的 Form 指针。
 	 * 注意：指针所有权不属于该容器（仅用于查找/分发）。
 	 */
-	static Dictionary<HWND, class Form*> Forms;
+	static std::unordered_map<HWND, class Form*> Forms;
 	/**
 	 * @brief 返回当前可执行文件完整路径。
 	 */
@@ -45,10 +41,6 @@ public:
 	 * @brief 返回漫游（Roaming）用户数据目录。
 	 */
 	static std::string UserAppDataPath();
-	/**
-	 * @brief 返回用于保存用户数据的注册表键。
-	 */
-	static RegistryKey UserAppDataRegistry();
 
 	// ---- DPI helpers ----
 	/**

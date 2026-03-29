@@ -19,6 +19,45 @@
 
 namespace
 {
+	RECT GetPrimaryWorkArea()
+	{
+		RECT workArea{ 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+		SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+		return workArea;
+	}
+
+	RECT GetWindowWorkArea(HWND hWnd, POINT fallbackPoint)
+	{
+		RECT workArea = GetPrimaryWorkArea();
+		HMONITOR monitor = nullptr;
+		if (hWnd)
+		{
+			monitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+		}
+		else
+		{
+			monitor = MonitorFromPoint(fallbackPoint, MONITOR_DEFAULTTONEAREST);
+		}
+		if (!monitor)
+			return workArea;
+
+		MONITORINFO monitorInfo{};
+		monitorInfo.cbSize = sizeof(monitorInfo);
+		if (GetMonitorInfoW(monitor, &monitorInfo))
+			return monitorInfo.rcWork;
+		return workArea;
+	}
+
+	POINT ClampWindowOriginToWorkArea(POINT origin, SIZE size, const RECT& workArea)
+	{
+		POINT clamped = origin;
+		const int maxX = (std::max)(workArea.left, workArea.right - size.cx);
+		const int maxY = (std::max)(workArea.top, workArea.bottom - size.cy);
+		clamped.x = (std::clamp)(clamped.x, workArea.left, (LONG)maxX);
+		clamped.y = (std::clamp)(clamped.y, workArea.top, (LONG)maxY);
+		return clamped;
+	}
+
 	float LayoutMainTopBar(Form* form, const SIZE& clientSize)
 	{
 		auto* menu = form ? form->MainMenu : nullptr;
@@ -84,6 +123,7 @@ HCURSOR Form::GetSystemCursor(CursorKind kind)
 	switch (kind)
 	{
 	case CursorKind::Arrow: id = IDC_ARROW; break;
+	case CursorKind::Cross: id = IDC_CROSS; break;
 	case CursorKind::Hand: id = IDC_HAND; break;
 	case CursorKind::IBeam: id = IDC_IBEAM; break;
 	case CursorKind::SizeWE: id = IDC_SIZEWE; break;
@@ -251,7 +291,7 @@ Control* Form::HitTestControlAt(POINT contentMouse)
 	}
 
 	// 4) 普通控件：按绘制顺序倒序命中（后绘制者优先）
-	for (int i = this->Controls.Count - 1; i >= 0; i--)
+	for (int i = (int)this->Controls.size() - 1; i >= 0; i--)
 	{
 		auto c = this->Controls[i];
 		if (!c || !c->Visible || !c->Enable) continue;
@@ -309,7 +349,7 @@ static bool DataObjectHasFormat(IDataObject* pDataObj, CLIPFORMAT cf)
 	return SUCCEEDED(pDataObj->QueryGetData(&fmt));
 }
 
-static std::optional<List<std::wstring>> TryExtractDroppedFiles(IDataObject* pDataObj)
+static std::optional<std::vector<std::wstring>> TryExtractDroppedFiles(IDataObject* pDataObj)
 {
 	if (!pDataObj) return std::nullopt;
 	FORMATETC fmt{};
@@ -320,7 +360,7 @@ static std::optional<List<std::wstring>> TryExtractDroppedFiles(IDataObject* pDa
 	STGMEDIUM stg{};
 	if (FAILED(pDataObj->GetData(&fmt, &stg))) return std::nullopt;
 
-	List<std::wstring> files;
+	std::vector<std::wstring> files;
 	HDROP hDrop = (HDROP)GlobalLock(stg.hGlobal);
 	if (hDrop)
 	{
@@ -330,12 +370,12 @@ static std::optional<List<std::wstring>> TryExtractDroppedFiles(IDataObject* pDa
 		{
 			buf[0] = 0;
 			DragQueryFileW(hDrop, i, buf, MAX_PATH);
-			files.Add(buf);
+			files.push_back(buf);
 		}
 		GlobalUnlock(stg.hGlobal);
 	}
 	ReleaseStgMedium(&stg);
-	if (files.Count <= 0) return std::nullopt;
+	if (files.size() <= 0) return std::nullopt;
 	return files;
 }
 
@@ -543,7 +583,7 @@ static Control* HitTestRootControlAt(Form* f, POINT contentMouse)
 	}
 
 	// 4) 普通控件按绘制顺序倒序命中
-	for (int i = f->Controls.Count - 1; i >= 0; i--)
+	for (int i = f->Controls.size() - 1; i >= 0; i--)
 	{
 		auto c = f->Controls[i];
 		if (!c || !c->Visible || !c->Enable) continue;
@@ -1164,6 +1204,7 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 	Application::EnsureDpiAwareness();
 
 	this->_text = text;
+	this->_autoCenterOnCreate = (_location.x == 0 && _location.y == 0);
 	static bool ClassInited = false;
 	this->Location = _location;
 	this->Size = _size;
@@ -1186,15 +1227,21 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 		}
 		ClassInited = true;
 	}
-	int desktopWidth = GetSystemMetrics(SM_CXSCREEN);
-	int desktopHeight = GetSystemMetrics(SM_CYSCREEN);
+	RECT workArea = GetWindowWorkArea(NULL, _location);
+	POINT initialOrigin = _location;
+	if (this->_autoCenterOnCreate)
+	{
+		initialOrigin.x = workArea.left + ((workArea.right - workArea.left) - this->Size.cx) / 2;
+		initialOrigin.y = workArea.top + ((workArea.bottom - workArea.top) - this->Size.cy) / 2;
+	}
+	initialOrigin = ClampWindowOriginToWorkArea(initialOrigin, this->Size, workArea);
 	this->Handle = CreateWindowExW(
 		0L,
 		L"CoreNativeWindow",
 		_text.c_str(),
 		WS_POPUP,
-		this->Location.x == 0 ? ((int)(desktopWidth - this->Size.cx) / 2) : this->Location.x,
-		this->Location.y == 0 ? ((int)(desktopHeight - this->Size.cy) / 2) : this->Location.y,
+		initialOrigin.x,
+		initialOrigin.y,
 		this->Size.cx,
 		this->Size.cy,
 		NULL,
@@ -1208,7 +1255,7 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 	EnsureDropTargetRegistered();
 
 
-	Application::Forms.Add(this->Handle, this);
+	Application::Forms[this->Handle] = this;
 
 	Render = new HwndGraphics(this->Handle);
 	OverlayRender = nullptr;
@@ -1271,7 +1318,7 @@ void Form::CleanupResources()
 	{
 		delete c;
 	}
-	this->Controls.Clear();
+	this->Controls.clear();
 
 	this->Selected = nullptr;
 	this->UnderMouse = nullptr;
@@ -1361,13 +1408,22 @@ void Form::EnsureInitialDpiApplied()
 	{
 		RECT wr{};
 		GetWindowRect(this->Handle, &wr);
-		const int oldW = wr.right - wr.left;
-		const int oldH = wr.bottom - wr.top;
 		const int newW = Application::ScaleInt(this->_Size_INTI.cx, 96, dpi);
 		const int newH = Application::ScaleInt(this->_Size_INTI.cy, 96, dpi);
-		const int x = wr.left + (oldW - newW) / 2;
-		const int y = wr.top + (oldH - newH) / 2;
-		SetWindowPos(this->Handle, NULL, x, y, newW, newH, SWP_NOZORDER | SWP_NOACTIVATE);
+		RECT workArea = GetWindowWorkArea(this->Handle, POINT{ wr.left, wr.top });
+		POINT origin{};
+		if (this->_autoCenterOnCreate)
+		{
+			origin.x = workArea.left + ((workArea.right - workArea.left) - newW) / 2;
+			origin.y = workArea.top + ((workArea.bottom - workArea.top) - newH) / 2;
+		}
+		else
+		{
+			origin.x = wr.left;
+			origin.y = wr.top;
+		}
+		origin = ClampWindowOriginToWorkArea(origin, SIZE{ newW, newH }, workArea);
+		SetWindowPos(this->Handle, NULL, origin.x, origin.y, newW, newH, SWP_NOZORDER | SWP_NOACTIVATE);
 		SyncRenderSizeToClient();
 		this->_hasRenderedOnce = false;
 		this->Invalidate(false);
@@ -1497,7 +1553,7 @@ void Form::PerformLayout()
 		float contentHeight = (float)clientSize.cy - statusBarHeight;
 		if (contentHeight < 0.0f) contentHeight = 0.0f;
 		
-		for (int i = 0; i < this->Controls.Count; i++)
+		for (int i = 0; i < this->Controls.size(); i++)
 		{
 			auto control = this->Controls[i];
 			if (!control || !control->Visible) continue;
@@ -1923,7 +1979,7 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 		this->Render->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, (float)top));
 		this->Render->PushDrawRect((float)contentDirty.left, (float)contentDirty.top, (float)(contentDirty.right - contentDirty.left), (float)(contentDirty.bottom - contentDirty.top));
 
-		for (int i = 0; i < this->Controls.Count; i++)
+		for (int i = 0; i < this->Controls.size(); i++)
 		{
 			auto c = this->Controls[i]; if (!c->Visible)continue;
 			// 主菜单/置顶控件在有 Overlay 时由 Overlay 层单独绘制，避免重复
@@ -2036,28 +2092,26 @@ bool Form::ForceUpdate()
 
 bool Form::RemoveControl(Control* c)
 {
-	if (this->Controls.Contains(c))
-	{
-		this->Controls.Remove(c);
-		if (this->ForegroundControl == c) 
-			this->ForegroundControl = NULL;
-		if (this->MainMenu == c) 
-			this->MainMenu = NULL;
-		if (this->MainToolBar == c)
-			this->MainToolBar = NULL;
-		if (this->MainStatusBar == c)
-			this->MainStatusBar = NULL;
-		if (this->UnderMouse == c)
-			this->UnderMouse = NULL;
-		if (this->Selected == c)
-			this->SetSelectedControl(NULL, true);
-		if (this->_hoverControl == c)
-			this->_hoverControl = NULL;
-		c->Parent = NULL;
-		c->ParentForm = NULL;
-		return true;
-	}
-	return false;
+	if (std::find(this->Controls.begin(), this->Controls.end(), c) == this->Controls.end())
+		return false;
+	std::remove(this->Controls.begin(), this->Controls.end(), c);
+	if (this->ForegroundControl == c)
+		this->ForegroundControl = NULL;
+	if (this->MainMenu == c)
+		this->MainMenu = NULL;
+	if (this->MainToolBar == c)
+		this->MainToolBar = NULL;
+	if (this->MainStatusBar == c)
+		this->MainStatusBar = NULL;
+	if (this->UnderMouse == c)
+		this->UnderMouse = NULL;
+	if (this->Selected == c)
+		this->SetSelectedControl(NULL, true);
+	if (this->_hoverControl == c)
+		this->_hoverControl = NULL;
+	c->Parent = NULL;
+	c->ParentForm = NULL;
+	return true;
 }
 bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {
@@ -2076,14 +2130,14 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		HDROP hDropInfo = HDROP(wParam);
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
 		TCHAR strFileName[MAX_PATH];
-		List<std::wstring> files;
+		std::vector<std::wstring> files;
 		for (int i = 0; i < (int)uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.Add(strFileName);
+			files.push_back(strFileName);
 		}
 		DragFinish(hDropInfo);
-		if (files.Count > 0)
+		if (files.size() > 0)
 		{
 			this->OnDropFile(this, files);
 			auto* target = HitTestControlAt(contentMouse);
@@ -2513,21 +2567,21 @@ void Form::RenderImage()
 }
 Control* Form::LastChild()
 {
-	if (this->Controls.Count)
+	if (this->Controls.size())
 	{
-		return this->Controls.Last();
+		return this->Controls.back();
 	}
 	return NULL;
 }
 D2D1_RECT_F Form::ChildRect()
 {
-	if (this->Controls.Count == 0)
+	if (this->Controls.size() == 0)
 		return D2D1_RECT_F{ 0,0,0,0 };
 	float left = FLT_MAX;
 	float top = FLT_MAX;
 	float right = FLT_MIN;
 	float bottom = FLT_MIN;
-	if (this->Controls.Count)
+	if (this->Controls.size())
 	{
 		for (auto c : this->Controls)
 		{
@@ -2600,7 +2654,7 @@ LRESULT CustomFrameHitTest(HWND _hWnd, WPARAM wParam, LPARAM lParam, int caption
 LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	Form* form = (Form*)(GetWindowLongPtrW(hWnd, GWLP_USERDATA) ^ 0xFFFFFFFFFFFFFFFF);
-	if ((ULONG64)form != 0xFFFFFFFFFFFFFFFF && Application::Forms.ContainsKey(form->Handle))
+	if ((ULONG64)form != 0xFFFFFFFFFFFFFFFF && Application::Forms.find(form->Handle) != Application::Forms.end())
 	{
 		if (message == WM_DPICHANGED)
 		{
@@ -2752,7 +2806,7 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 		case WM_NCDESTROY:
 		{
 			form->OnFormClosed(form);
-			Application::Forms.Remove(form->Handle);
+			Application::Forms.erase(form->Handle);
 			form->CleanupResources();
 		}
 		break;

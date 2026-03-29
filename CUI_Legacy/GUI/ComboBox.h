@@ -35,7 +35,7 @@ private:
 	bool IsDropDownInteractive();
 	void EnsureSelectionInRange();
 	void EnsureScrollInRange();
-	List<std::wstring> values;
+	std::vector<std::wstring> values;
 public:
 	virtual UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
@@ -61,9 +61,9 @@ public:
 	bool Expand = false;
 	/** @brief 当前选中索引（0-based）。 */
 	int SelectedIndex = 0;
-	PROPERTY(List<std::wstring>&, Items);
-	GET(List<std::wstring>&, Items);
-	SET(List<std::wstring>&, Items);
+	PROPERTY(std::vector<std::wstring>&, Items);
+	GET(std::vector<std::wstring>&, Items);
+	SET(std::vector<std::wstring>&, Items);
 	float Boder = 1.5f;
 	/** @brief 创建 ComboBox。 */
 	ComboBox(std::wstring text, int x, int y, int width = 120, int height = 24);

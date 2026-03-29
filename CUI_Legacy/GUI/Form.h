@@ -1,4 +1,6 @@
 ﻿#pragma once
+#include <vector>
+#include <string>
 #include "Control.h"
 #include "Application.h"
 #include "Button.h"
@@ -55,7 +57,7 @@ typedef Event<void(class Form*, std::wstring, std::wstring)> FormTextChangedEven
 typedef Event<void(class Form*, std::wstring, std::wstring)> FormThemeChangedEvent;
 typedef Event<void(class Form*)> FormGotFocusEvent;
 typedef Event<void(class Form*)> FormLostFocusEvent;
-typedef Event<void(class Form*, List<std::wstring>)> FormDropFileEvent;
+typedef Event<void(class Form*, std::vector<std::wstring>)> FormDropFileEvent;
 typedef Event<void(class Form*, std::wstring)> FormDropTextEvent;
 typedef Event<void(class Form*, MouseEventArgs)> FormMouseClickEvent;
 typedef Event<void(class Form*,bool&)> FormCloseEvent;
@@ -88,6 +90,7 @@ class Form
 private:
 	friend class FormDropTarget;
 	POINT _Location_INIT;
+	bool _autoCenterOnCreate = false;
 	SIZE _Size_INTI;
 	std::wstring _text;
 	Font* _font = NULL;
@@ -114,25 +117,23 @@ private:
 	D2D1_COLOR_F BorderLightColor = Colors::White;
 	D2D1_COLOR_F BorderDarkColor = Colors::Black;
 	std::wstring _themeName = L"default";
+	bool _showInTaskBar = true;
+	UINT_PTR _animTimerId = 0xC001;
+	UINT _animIntervalMs = 0;
+	bool _hasRenderedOnce = false;
+	CursorKind _currentCursor = CursorKind::Arrow;
 
-	int ClientTop() { return VisibleHead ? HeadHeight : 0; }
-	RECT TitleBarRectClient() { auto s = this->Size; return RECT{ 0, 0, s.cx, this->ClientTop() }; }
 	bool TryGetCaptionButtonRect(CaptionButtonKind kind, RECT& out);
 	bool HitTestCaptionButtons(POINT ptClient, CaptionButtonKind& outKind);
 	void UpdateCaptionHover(POINT ptClient);
 	void ExecuteCaptionButton(CaptionButtonKind kind);
 	void ClearCaptionStates();
-	bool _showInTaskBar = true;
-	UINT_PTR _animTimerId = 0xC001;
-	UINT _animIntervalMs = 0;
-	bool _hasRenderedOnce = false;
 	void RefreshAnimationTimer();
 	void InvalidateControl(class Control* c, int inflatePx = 2, bool immediate = false);
 	void InvalidateAnimatedControls(bool immediate = false);
 	static bool RectIntersects(const RECT& a, const RECT& b);
 	static RECT ToRECT(D2D1_RECT_F r, int inflatePx = 0);
 
-	CursorKind _currentCursor = CursorKind::Arrow;
 	void ApplyCursor(CursorKind kind);
 	void UpdateCursor(POINT mouseClient, POINT contentMouse);
 	CursorKind QueryCursorAt(POINT mouseClient, POINT contentMouse);
@@ -219,7 +220,7 @@ public:
 	class Control* Selected = NULL;
 	class Control* UnderMouse = NULL;
 	/** @brief 顶层控件集合（通常包含布局容器与各控件）。 */
-	List<class Control*> Controls = List<class Control*>();
+	std::vector<class Control*> Controls = std::vector<class Control*>();
 	// 置顶控件：最多只允许一个（用于 ComboBox 下拉、临时浮层等）
 	class Control* ForegroundControl = NULL;
 	// 主菜单：单独管理（菜单栏/下拉菜单）
@@ -301,6 +302,8 @@ public:
 	/** @brief 根据当前鼠标位置刷新窗口光标显示。 */
 	void UpdateCursorFromCurrentMouse();
 
+	int ClientTop() { return VisibleHead ? HeadHeight : 0; }
+	RECT TitleBarRectClient() { auto s = this->Size; return RECT{ 0, 0, s.cx, this->ClientTop() }; }
 
 
 	template<typename T>
@@ -311,11 +314,11 @@ public:
 			throw "该控件已属于其他容器!";
 			return NULL;
 		}
-		if (this->Controls.Contains(c))
+		if (std::find(this->Controls.begin(), this->Controls.end(), c) != this->Controls.end())
 		{
 			return c;
 		}
-		this->Controls.Add(c);
+		this->Controls.push_back(c);
 		c->Parent = NULL;
 		c->ParentForm = this;
 

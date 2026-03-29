@@ -15,7 +15,33 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="UtilsTest.cpp">
+    <ClInclude Include="BitmapSource.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Colors.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Factory.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Font.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Graphics.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Factory.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="Font.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="Graphics.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="BitmapSource.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>

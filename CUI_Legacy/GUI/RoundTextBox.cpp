@@ -1,4 +1,5 @@
 ﻿#pragma once
+#define NOMINMAX
 #include "RoundTextBox.h"
 #include "TextBox.h"
 #include "Form.h"

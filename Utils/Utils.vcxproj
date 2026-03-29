@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -22,7 +22,6 @@
     <ClInclude Include="Utils\Clipboard.h" />
     <ClInclude Include="Utils\Convert.h" />
     <ClInclude Include="Utils\CRandom.h" />
-    <ClInclude Include="Utils\DataPack.h" />
     <ClInclude Include="Utils\DateTime.h" />
     <ClInclude Include="Utils\defines.h" />
     <ClInclude Include="Utils\Dialog.h" />
@@ -35,11 +34,10 @@
     <ClInclude Include="Utils\Guid.h" />
     <ClInclude Include="Utils\HttpHelper.h" />
     <ClInclude Include="Utils\httplib.h" />
-    <ClInclude Include="Utils\json.h" />
+    <ClInclude Include="Utils\jsonlite.hpp" />
     <ClInclude Include="Utils\List.h" />
     <ClInclude Include="Utils\MD5.h" />
     <ClInclude Include="Utils\MemLoadLibrary2.h" />
-    <ClInclude Include="Utils\Process.h" />
     <ClInclude Include="Utils\ProcessOperator.h" />
     <ClInclude Include="Utils\Registry.h" />
     <ClInclude Include="Utils\SHA256.h" />
@@ -49,7 +47,6 @@
     <ClInclude Include="Utils\StopWatch.h" />
     <ClInclude Include="Utils\StringBuilder.h" />
     <ClInclude Include="Utils\StringHelper.h" />
-    <ClInclude Include="Utils\Thread.h" />
     <ClInclude Include="Utils\TimeSpan.h" />
     <ClInclude Include="Utils\Tuple.h" />
     <ClInclude Include="Utils\Utils.h" />
@@ -69,19 +66,16 @@
     <ClCompile Include="Utils\Clipboard.cpp" />
     <ClCompile Include="Utils\Convert.cpp" />
     <ClCompile Include="Utils\CRandom.cpp" />
-    <ClCompile Include="Utils\DataPack.cpp" />
     <ClCompile Include="Utils\DateTime.cpp" />
     <ClCompile Include="Utils\Dialog.cpp" />
     <ClCompile Include="Utils\Environment.cpp" />
-    <ClCompile Include="Utils\Event.cpp" />
     <ClCompile Include="Utils\File.cpp" />
     <ClCompile Include="Utils\FileInfo.cpp" />
     <ClCompile Include="Utils\FileStream.cpp" />
     <ClCompile Include="Utils\Guid.cpp" />
     <ClCompile Include="Utils\HttpHelper.cpp" />
-    <ClCompile Include="Utils\HttpHelperExp.cpp" />
+    <ClCompile Include="Utils\httplib.cpp" />
     <ClCompile Include="Utils\MD5.cpp" />
-    <ClCompile Include="Utils\Process.cpp" />
     <ClCompile Include="Utils\ProcessOperator.cpp" />
     <ClCompile Include="Utils\Registry.cpp" />
     <ClCompile Include="Utils\SHA256.cpp" />
@@ -108,8 +102,8 @@
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
-    <ProjectGuid>{4847c53d-bd9d-4985-a2e7-3a88927a4674}</ProjectGuid>
-    <RootNamespace>CppUtils</RootNamespace>
+    <ProjectGuid>{1ddaee3c-caa8-489f-bfbe-84d30c9b4774}</ProjectGuid>
+    <RootNamespace>Utils</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -131,6 +125,7 @@
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
+    <OutDir>$(ProjectDir)..\x64\$(Configuration)\</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
@@ -138,6 +133,7 @@
     <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
+    <OutDir>$(ProjectDir)..\x64\$(Configuration)\</OutDir>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -157,22 +153,6 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <TargetName>$(ProjectName)_x64_MTd</TargetName>
-    <OutDir>$(SolutionDir)build</OutDir>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <TargetName>$(ProjectName)_x64_MT</TargetName>
-    <OutDir>$(SolutionDir)build</OutDir>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
-    <TargetName>$(ProjectName)_x86_MT</TargetName>
-    <OutDir>$(SolutionDir)build</OutDir>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-    <TargetName>$(ProjectName)_x86_MTd</TargetName>
-    <OutDir>$(SolutionDir)build</OutDir>
-  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -182,11 +162,8 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>
       </PrecompiledHeaderFile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <LanguageStandard>stdcpp17</LanguageStandard>
-      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <Optimization>Disabled</Optimization>
-      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
     </ClCompile>
     <Link>
       <SubSystem>
@@ -205,16 +182,14 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>
       </PrecompiledHeaderFile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <LanguageStandard>stdcpp17</LanguageStandard>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <Optimization>MaxSpeed</Optimization>
-      <DebugInformationFormat>None</DebugInformationFormat>
     </ClCompile>
     <Link>
       <SubSystem>
       </SubSystem>
-      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -226,14 +201,12 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>
       </PrecompiledHeaderFile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <LanguageStandard>stdcpp17</LanguageStandard>
-      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <Optimization>Disabled</Optimization>
-      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
     </ClCompile>
     <Link>
-      <SubSystem>Console</SubSystem>
+      <SubSystem>
+      </SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -248,16 +221,14 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>
       </PrecompiledHeaderFile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <LanguageStandard>stdcpp17</LanguageStandard>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <Optimization>MaxSpeed</Optimization>
-      <DebugInformationFormat>None</DebugInformationFormat>
     </ClCompile>
     <Link>
       <SubSystem>
       </SubSystem>
-      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

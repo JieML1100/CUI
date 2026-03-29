@@ -39,7 +39,7 @@ public:
 	/** @brief 是否允许编辑。 */
 	bool CanEdit = true;
 	// ComboBox 列：下拉选项列表（当 Count>0 时默认选中第 0 项）
-	List<std::wstring> ComboBoxItems = List<std::wstring>();
+	std::vector<std::wstring> ComboBoxItems = std::vector<std::wstring>();
 	// Button 列：按钮文字
 	std::wstring ButtonText = L"";
 	std::function<int(const CellValue& lhs, const CellValue& rhs)> SortFunc = nullptr;
@@ -78,7 +78,7 @@ public:
 class GridViewRow
 {
 public:
-	List<CellValue> Cells = List<CellValue>();
+	std::vector<CellValue> Cells = std::vector<CellValue>();
 	CellValue& operator[](int idx);
 };
 class GridView : public Control
@@ -97,8 +97,8 @@ public:
 	bool InScroll = false;
 	bool InHScroll = false;
 	ScrollChangedEvent ScrollChanged;
-	List<GridViewColumn> Columns = List<GridViewColumn>();
-	List<GridViewRow> Rows = List<GridViewRow>();
+	std::vector<GridViewColumn> Columns = std::vector<GridViewColumn>();
+	std::vector<GridViewRow> Rows = std::vector<GridViewRow>();
 	GridViewRow& operator[](int idx);
 	float HeadHeight = 0.0f;
 	float RowHeight = 0.0f;

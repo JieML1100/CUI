@@ -1,4 +1,5 @@
 ﻿#pragma once
+#define NOMINMAX
 #include "RichTextBox.h"
 #include "Form.h"
 #include <algorithm>
@@ -320,11 +321,11 @@ void RichTextBox::RebuildBlocks()
 	const size_t n = this->buffer.size();
 	if (n == 0) return;
 
-	const size_t blockSize = std::max((size_t)256, this->BlockCharCount);
+	const size_t blockSize = (std::max)((size_t)256, this->BlockCharCount);
 	size_t i = 0;
 	while (i < n)
 	{
-		size_t len = std::min(blockSize, n - i);
+		size_t len = (std::min)(blockSize, n - i);
 		if (i + len < n)
 		{
 			wchar_t last = this->buffer[i + len - 1];
@@ -1077,14 +1078,14 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		HDROP hDropInfo = HDROP(wParam);
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
 		TCHAR strFileName[MAX_PATH];
-		List<std::wstring> files;
+		std::vector<std::wstring> files;
 		for (int i = 0; i < uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.Add(strFileName);
+			files.push_back(strFileName);
 		}
 		DragFinish(hDropInfo);
-		if (files.Count > 0)
+		if (files.size() > 0)
 		{
 			this->OnDropFile(this, files);
 		}

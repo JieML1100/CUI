@@ -91,6 +91,7 @@
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -109,6 +110,7 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -125,6 +127,7 @@
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -143,6 +146,7 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -154,11 +158,13 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="CustomControls.cpp" />
     <ClCompile Include="DemoWindow.cpp" />
+    <ClCompile Include="nanosvg.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CustomControls.h" />
     <ClInclude Include="DemoWindow.h" />
     <ClInclude Include="imgs.h" />
+    <ClInclude Include="nanosvg.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

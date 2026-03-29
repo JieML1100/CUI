@@ -1,7 +1,5 @@
 ﻿#include "Application.h"
-
-#include <windows.h>
-
+#include <shlobj_core.h>
 namespace
 {
 	static UINT GetSystemDpiFallback()
@@ -88,7 +86,7 @@ namespace
 	}
 }
 
-Dictionary<HWND, class Form*>  Application::Forms = Dictionary<HWND, class Form*>();
+std::unordered_map<HWND, class Form*>  Application::Forms = std::unordered_map<HWND, class Form*>();
 
 std::string Application::ExecutablePath()
 {
@@ -119,10 +117,6 @@ std::string Application::UserAppDataPath()
 	SHGetSpecialFolderPathA(NULL, path, CSIDL_APPDATA, FALSE);
 	return std::string(path);
 }
-RegistryKey Application::UserAppDataRegistry()
-{
-	return RegistryKey(HKEY_CURRENT_USER, StringHelper::Format("Software\\%s", ApplicationName().c_str()));
-} 
 
 void Application::EnsureDpiAwareness()
 {

@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include "ScrollView.h"
 #include "Form.h"
 
@@ -100,7 +101,7 @@ void ScrollView::PerformScrollContentLayout()
 				return;
 			}
 
-			for (int i = 0; i < this->Children.Count; i++)
+			for (int i = 0; i < this->Children.size(); i++)
 			{
 				auto child = this->Children[i];
 				if (!child || !child->Visible) continue;
@@ -232,7 +233,7 @@ SIZE ScrollView::MeasureContentSize()
 	SIZE measured{};
 	float maxRight = this->_padding.Left;
 	float maxBottom = this->_padding.Top;
-	for (int i = 0; i < this->Children.Count; i++)
+	for (int i = 0; i < this->Children.size(); i++)
 	{
 		auto child = this->Children[i];
 		if (!child || !child->Visible) continue;
@@ -689,14 +690,14 @@ bool ScrollView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		HDROP hDropInfo = HDROP(wParam);
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
 		TCHAR strFileName[MAX_PATH];
-		List<std::wstring> files;
+		std::vector<std::wstring> files;
 		for (int i = 0; i < (int)uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.Add(strFileName);
+			files.push_back(strFileName);
 		}
 		DragFinish(hDropInfo);
-		if (files.Count > 0)
+		if (files.size() > 0)
 		{
 			this->OnDropFile(this, files);
 		}

@@ -2,52 +2,16 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Utils">
-      <UniqueIdentifier>{80bebbec-21ab-461d-8355-44e431fde244}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="Utils\sqlite">
-      <UniqueIdentifier>{e6be0c01-ff26-4908-9309-d2cd0d887dc0}</UniqueIdentifier>
+      <UniqueIdentifier>{afb1e9cc-41b8-46d3-9217-765fb2dc1ac0}</UniqueIdentifier>
     </Filter>
     <Filter Include="Utils\zlib">
-      <UniqueIdentifier>{f4ec45f4-7f60-4fcb-9b60-74ff110af709}</UniqueIdentifier>
+      <UniqueIdentifier>{ecff695d-2774-426c-8b08-8db5e7083875}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Utils\sqlite">
+      <UniqueIdentifier>{2c43bc27-bc9b-48d5-bb28-93223d024278}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Utils\sqlite\sqlite3.h">
-      <Filter>Utils\sqlite</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\crc32.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\deflate.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\gzguts.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\inffast.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\inffixed.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\inflate.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\inftrees.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\trees.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\zconf.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\zlib.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\zutil.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
     <ClInclude Include="Utils\Utils.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -99,9 +63,6 @@
     <ClInclude Include="Utils\httplib.h">
       <Filter>Utils</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\json.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
     <ClInclude Include="Utils\List.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -109,9 +70,6 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="Utils\MemLoadLibrary2.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\Process.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="Utils\ProcessOperator.h">
@@ -138,53 +96,53 @@
     <ClInclude Include="Utils\StringHelper.h">
       <Filter>Utils</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\Thread.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
     <ClInclude Include="Utils\TimeSpan.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="Utils\Tuple.h">
       <Filter>Utils</Filter>
     </ClInclude>
+    <ClInclude Include="Utils\sqlite\sqlite3.h">
+      <Filter>Utils\sqlite</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils\zlib\crc32.h">
+      <Filter>Utils\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils\zlib\deflate.h">
+      <Filter>Utils\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils\zlib\gzguts.h">
+      <Filter>Utils\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils\zlib\inffast.h">
+      <Filter>Utils\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils\zlib\inffixed.h">
+      <Filter>Utils\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils\zlib\inflate.h">
+      <Filter>Utils\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils\zlib\inftrees.h">
+      <Filter>Utils\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils\zlib\trees.h">
+      <Filter>Utils\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils\zlib\zconf.h">
+      <Filter>Utils\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils\zlib\zlib.h">
+      <Filter>Utils\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils\zlib\zutil.h">
+      <Filter>Utils\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="Utils\jsonlite.hpp">
+      <Filter>Utils</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Utils\sqlite\sqlite3.c">
-      <Filter>Utils\sqlite</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\adler32.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\compress.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\crc32.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\deflate.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\infback.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\inffast.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\inflate.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\inftrees.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\trees.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\uncompr.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\zutil.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
     <ClCompile Include="Utils\Clipboard.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -224,13 +182,10 @@
     <ClCompile Include="Utils\HttpHelper.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\HttpHelperExp.cpp">
+    <ClCompile Include="Utils\httplib.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
     <ClCompile Include="Utils\MD5.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\Process.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
     <ClCompile Include="Utils\ProcessOperator.cpp">
@@ -262,6 +217,42 @@
     </ClCompile>
     <ClCompile Include="Utils\Utils.cpp">
       <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="Utils\sqlite\sqlite3.c">
+      <Filter>Utils\sqlite</Filter>
+    </ClCompile>
+    <ClCompile Include="Utils\zlib\adler32.c">
+      <Filter>Utils\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="Utils\zlib\compress.c">
+      <Filter>Utils\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="Utils\zlib\crc32.c">
+      <Filter>Utils\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="Utils\zlib\deflate.c">
+      <Filter>Utils\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="Utils\zlib\infback.c">
+      <Filter>Utils\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="Utils\zlib\inffast.c">
+      <Filter>Utils\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="Utils\zlib\inflate.c">
+      <Filter>Utils\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="Utils\zlib\inftrees.c">
+      <Filter>Utils\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="Utils\zlib\trees.c">
+      <Filter>Utils\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="Utils\zlib\uncompr.c">
+      <Filter>Utils\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="Utils\zlib\zutil.c">
+      <Filter>Utils\zlib</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

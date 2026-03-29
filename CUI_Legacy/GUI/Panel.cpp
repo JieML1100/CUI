@@ -63,7 +63,7 @@ void Panel::PerformLayout()
 		if (contentWidth < 0) contentWidth = 0;
 		if (contentHeight < 0) contentHeight = 0;
 		
-		for (int i = 0; i < this->Children.Count; i++)
+		for (int i = 0; i < this->Children.size(); i++)
 		{
 			auto child = this->Children[i];
 			if (!child || !child->Visible) continue;
@@ -253,14 +253,14 @@ bool Panel::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, 
 		HDROP hDropInfo = HDROP(wParam);
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
 		TCHAR strFileName[MAX_PATH];
-		List<std::wstring> files;
+		std::vector<std::wstring> files;
 		for (int i = 0; i < uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.Add(strFileName);
+			files.push_back(strFileName);
 		}
 		DragFinish(hDropInfo);
-		if (files.Count > 0)
+		if (!files.empty())
 		{
 			this->OnDropFile(this, files);
 		}

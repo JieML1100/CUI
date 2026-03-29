@@ -2,9 +2,6 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-#ifndef _WINSOCKAPI_
-#define _WINSOCKAPI_
-#endif
 
 #include <d2d1.h>
 #include <d2d1_1.h>

@@ -1,5 +1,4 @@
-﻿#define _WINSOCK_DEPRECATED_NO_WARNINGS
-#include <winsock2.h>
+﻿#include <winsock2.h>
 #include <ws2tcpip.h>
 #include "Socket.h"
 #include <cstring>
@@ -7,7 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <stdint.h>
-
+#define _WINSOCK_DEPRECATED_NO_WARNINGS 1
 #pragma warning(disable: 4267)
 #pragma warning(disable: 4244)
 #pragma warning(disable: 4018)
@@ -38,7 +37,10 @@ TCPSocket::~TCPSocket() {
 bool TCPSocket::Connect(const char* ip, int port) {
 	sockaddr_in address_;
 	address_.sin_family = AF_INET;
-	address_.sin_addr.s_addr = inet_addr(ip);
+	if (inet_pton(AF_INET, ip, &address_.sin_addr) != 1) {
+		std::cerr << "Invalid IP address: " << ip << std::endl;
+		return false;
+	}
 	address_.sin_port = htons(port);
 	int result = ::connect(Handle, (sockaddr*)&address_, sizeof(address_));
 	if (result == SOCKET_ERROR) {
@@ -92,7 +94,9 @@ std::string TCPSocket::GetRemoteIP() {
 	sockaddr_in addr;
 	int len = sizeof(addr);
 	if (getpeername(Handle, (sockaddr*)&addr, &len) != SOCKET_ERROR) {
-		return inet_ntoa(addr.sin_addr);
+		char ipStr[INET_ADDRSTRLEN];
+		inet_ntop(AF_INET, &addr.sin_addr, ipStr, INET_ADDRSTRLEN);
+		return std::string(ipStr);
 	}
 	return "";
 }
@@ -168,7 +172,10 @@ void UDPSocket::Unbind() {
 int UDPSocket::SendTo(const char* data, int length, const char* ip, int port) {
 	sockaddr_in address;
 	address.sin_family = AF_INET;
-	address.sin_addr.s_addr = inet_addr(ip);
+	if (inet_pton(AF_INET, ip, &address.sin_addr) != 1) {
+		std::cerr << "Invalid IP address: " << ip << std::endl;
+		return -1;
+	}
 	address.sin_port = htons(port);
 
 	int result = ::sendto(Handle, data, length, 0, (sockaddr*)&address, sizeof(address));
@@ -189,7 +196,9 @@ int UDPSocket::ReceiveFrom(char* buffer, int length, std::string& fromIP, int& f
 		return -1;
 	}
 
-	fromIP = inet_ntoa(fromAddr.sin_addr);
+	char ipStr[INET_ADDRSTRLEN];
+	inet_ntop(AF_INET, &fromAddr.sin_addr, ipStr, INET_ADDRSTRLEN);
+	fromIP = std::string(ipStr);
 	fromPort = ntohs(fromAddr.sin_port);
 	return result;
 }

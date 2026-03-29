@@ -127,3 +127,9 @@ dkms.conf
 /CUITest_Legacy/CUITest_Legacy/x64/Debug
 /CUI_Legacy/CUI_Legacy/x64/Debug
 /CuiDesigner/RefactorSketch.md
+/Utils/Release
+/Utils/Utils/x64/Debug
+/Utils/x64
+/D2DGraphics/D2DGraphics/x64/Debug
+/D2DGraphics/Release
+/D2DGraphics/x64

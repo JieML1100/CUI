@@ -9,90 +9,128 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="GUI\Control.h">
+    <ClCompile Include="GUI\Layout\DockPanel.cpp">
+      <Filter>GUI\Layout</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Layout\GridPanel.cpp">
+      <Filter>GUI\Layout</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Layout\RelativePanel.cpp">
+      <Filter>GUI\Layout</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Layout\StackPanel.cpp">
+      <Filter>GUI\Layout</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Layout\WrapPanel.cpp">
+      <Filter>GUI\Layout</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Application.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Form.h">
+    </ClCompile>
+    <ClCompile Include="GUI\Button.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Application.h">
+    </ClCompile>
+    <ClCompile Include="GUI\CheckBox.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Button.h">
+    </ClCompile>
+    <ClCompile Include="GUI\ComboBox.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\CheckBox.h">
+    </ClCompile>
+    <ClCompile Include="GUI\ContextMenu.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\ComboBox.h">
+    </ClCompile>
+    <ClCompile Include="GUI\Control.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\ContextMenu.h">
+    </ClCompile>
+    <ClCompile Include="GUI\DateTimePicker.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\DateTimePicker.h">
+    </ClCompile>
+    <ClCompile Include="GUI\Form.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\GridView.h">
+    </ClCompile>
+    <ClCompile Include="GUI\GridView.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\GroupBox.h">
+    </ClCompile>
+    <ClCompile Include="GUI\GroupBox.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Label.h">
+    </ClCompile>
+    <ClCompile Include="GUI\Label.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\LinkLabel.h">
+    </ClCompile>
+    <ClCompile Include="GUI\LinkLabel.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Panel.h">
+    </ClCompile>
+    <ClCompile Include="GUI\LoadingRing.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\PasswordBox.h">
+    </ClCompile>
+    <ClCompile Include="GUI\MediaPlayer.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\PictureBox.h">
+    </ClCompile>
+    <ClCompile Include="GUI\Menu.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\LoadingRing.h">
+    </ClCompile>
+    <ClCompile Include="GUI\NotifyIcon.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\ProgressBar.h">
+    </ClCompile>
+    <ClCompile Include="GUI\Panel.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\ProgressRing.h">
+    </ClCompile>
+    <ClCompile Include="GUI\PasswordBox.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\RadioBox.h">
+    </ClCompile>
+    <ClCompile Include="GUI\PictureBox.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\RichTextBox.h">
+    </ClCompile>
+    <ClCompile Include="GUI\ProgressBar.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\ScrollView.h">
+    </ClCompile>
+    <ClCompile Include="GUI\ProgressRing.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\RoundTextBox.h">
+    </ClCompile>
+    <ClCompile Include="GUI\RadioBox.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Switch.h">
+    </ClCompile>
+    <ClCompile Include="GUI\RichTextBox.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\TabControl.h">
+    </ClCompile>
+    <ClCompile Include="GUI\RoundTextBox.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\TextBox.h">
+    </ClCompile>
+    <ClCompile Include="GUI\ScrollView.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\TreeView.h">
+    </ClCompile>
+    <ClCompile Include="GUI\Slider.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Taskbar.h">
+    </ClCompile>
+    <ClCompile Include="GUI\SplitContainer.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\NotifyIcon.h">
+    </ClCompile>
+    <ClCompile Include="GUI\StatusBar.cpp">
       <Filter>GUI</Filter>
-    </ClInclude>
+    </ClCompile>
+    <ClCompile Include="GUI\Switch.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\TabControl.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Taskbar.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\TextBox.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\ToolBar.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\ToolTip.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\TreeView.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
     <ClInclude Include="GUI\Layout\DockPanel.h">
       <Filter>GUI\Layout</Filter>
     </ClInclude>
@@ -117,154 +155,113 @@
     <ClInclude Include="GUI\Layout\WrapPanel.h">
       <Filter>GUI\Layout</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\TreeView.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Application.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Button.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\CheckBox.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\ComboBox.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\ContextMenu.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Control.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\DateTimePicker.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Event.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Form.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\GridView.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\GroupBox.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Label.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\LinkLabel.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\LoadingRing.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\MediaPlayer.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Menu.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\NotifyIcon.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Panel.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\PasswordBox.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\PictureBox.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\ProgressBar.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\ProgressRing.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\RadioBox.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\RichTextBox.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\RoundTextBox.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\ScrollView.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Slider.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\SplitContainer.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\StatusBar.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Switch.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\TabControl.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\Taskbar.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="GUI\TextBox.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\ToolBar.h">
       <Filter>GUI</Filter>
     </ClInclude>
     <ClInclude Include="GUI\ToolTip.h">
       <Filter>GUI</Filter>
     </ClInclude>
-    <ClInclude Include="GUI\StatusBar.h">
-      <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\SplitContainer.h">
-      <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Slider.h">
-      <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\Menu.h">
-      <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="GUI\MediaPlayer.h">
-      <Filter>GUI</Filter>
-    </ClInclude>
-    <ClInclude Include="nanosvg.h">
-      <Filter>GUI</Filter>
-    </ClInclude>
-  </ItemGroup>
-  <ItemGroup>
-    <ClCompile Include="GUI\Control.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Form.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Application.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Button.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\TextBox.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\CheckBox.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\ComboBox.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\ContextMenu.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\DateTimePicker.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\GridView.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\GroupBox.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Label.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\LinkLabel.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Panel.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\PasswordBox.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\PictureBox.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\LoadingRing.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\ProgressBar.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\ProgressRing.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\RadioBox.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\RichTextBox.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\ScrollView.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\RoundTextBox.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Switch.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\TabControl.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\TreeView.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Taskbar.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\NotifyIcon.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Layout\WrapPanel.cpp">
-      <Filter>GUI\Layout</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Layout\StackPanel.cpp">
-      <Filter>GUI\Layout</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Layout\RelativePanel.cpp">
-      <Filter>GUI\Layout</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Layout\GridPanel.cpp">
-      <Filter>GUI\Layout</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Layout\DockPanel.cpp">
-      <Filter>GUI\Layout</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\ToolBar.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\ToolTip.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\StatusBar.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\SplitContainer.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Slider.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\Menu.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="GUI\MediaPlayer.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="nanosvg.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
   </ItemGroup>
 </Project>

@@ -1,7 +1,7 @@
 ﻿#include "DemoWindow.h"
-
+#include "Utils.h"
 #include "imgs.h"
-#include "../CUI_Legacy/nanosvg.h"
+#include "nanosvg.h"
 
 #include <memory>
 
@@ -512,7 +512,7 @@ void DemoWindow::Theme_ApplyCurrent()
 			}
 		};
 
-	for (int i = 0; i < this->Controls.Count; ++i)
+	for (int i = 0; i < this->Controls.size(); ++i)
 	{
 		applyControlTheme(applyControlTheme, this->Controls[i]);
 	}
@@ -673,7 +673,7 @@ void DemoWindow::Picture_OnOpenImage(class Control* sender, MouseEventArgs e)
 	this->Invalidate();
 }
 
-void DemoWindow::Picture_OnDropFile(class Control* sender, List<std::wstring> files)
+void DemoWindow::Picture_OnDropFile(class Control* sender, std::vector<std::wstring> files)
 {
 	(void)sender;
 	if (!_picture || files.empty()) return;
@@ -818,8 +818,8 @@ void DemoWindow::BuildTabs()
 	_themeLabel->AnchorStyles = AnchorStyles::Top | AnchorStyles::Right;
 
 	_themeSelector = this->AddControl(new ComboBox(DemoThemeLabelDark(), 0, top + 6, 110, 28));
-	_themeSelector->Items.Add(DemoThemeLabelLight());
-	_themeSelector->Items.Add(DemoThemeLabelDark());
+	_themeSelector->Items.push_back(DemoThemeLabelLight());
+	_themeSelector->Items.push_back(DemoThemeLabelDark());
 	_themeSelector->Margin = Thickness(0, (float)(top + 6), 10, 0);
 	_themeSelector->AnchorStyles = AnchorStyles::Top | AnchorStyles::Right;
 	_themeSelector->OnSelectionChanged += [this](class Control* sender)
@@ -891,7 +891,7 @@ void DemoWindow::BuildTab_Basic(TabPage* page)
 
 	auto combo = page->AddControl(new ComboBox(L"item0", 240, 110, 180, 28));
 	combo->ExpandCount = 8;
-	for (int i = 0; i < 30; i++) combo->Items.Add(StringHelper::Format(L"item%d", i));
+	for (int i = 0; i < 30; i++) combo->Items.push_back(StringHelper::Format(L"item%d", i));
 	combo->OnSelectionChanged += [this, combo](class Control* sender)
 		{
 			(void)sender;
@@ -1054,22 +1054,22 @@ void DemoWindow::BuildTab_Data(TabPage* page)
 	_grid->HeadFont = new Font(L"Arial", 16);
 	_grid->Font = new Font(L"Arial", 16);
 
-	_grid->Columns.Add(GridViewColumn(L"Image", 80, ColumnType::Image));
+	_grid->Columns.push_back(GridViewColumn(L"Image", 80, ColumnType::Image));
 	GridViewColumn comColumn = GridViewColumn(L"ComboBox", 120, ColumnType::ComboBox);
 	comColumn.ComboBoxItems = { L"Item 1", L"Item 2", L"Item 3" };
-	_grid->Columns.Add(comColumn);
-	_grid->Columns.Add(GridViewColumn(L"Check", 80, ColumnType::Check));
+	_grid->Columns.push_back(comColumn);
+	_grid->Columns.push_back(GridViewColumn(L"Check", 80, ColumnType::Check));
 	GridViewColumn textColumn = GridViewColumn(L"Text", 160, ColumnType::Text, true);
-	_grid->Columns.Add(textColumn);
+	_grid->Columns.push_back(textColumn);
 	GridViewColumn buttonColumn = GridViewColumn(L"Button", 80, ColumnType::Button);
 	buttonColumn.ButtonText = L"OK";
-	_grid->Columns.Add(buttonColumn);
+	_grid->Columns.push_back(buttonColumn);
 
 	for (int i = 0; i < 48; i++)
 	{
 		GridViewRow row;
 		row.Cells = { _bmps[i % 10], L"Item 1", i % 2 == 0, std::to_wstring(Random::Next()), L"" };
-		_grid->Rows.Add(row);
+		_grid->Rows.push_back(row);
 	}
 
 	_gridEnableSwitch = page->AddControl(new Switch(390, 40));

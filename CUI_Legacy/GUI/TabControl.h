@@ -51,8 +51,8 @@ public:
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	READONLY_PROPERTY(int, PageCount);
 	GET(int, PageCount);
-	READONLY_PROPERTY(List<Control*>&, Pages);
-	GET(List<Control*>&, Pages);
+	READONLY_PROPERTY(std::vector<Control*>&, Pages);
+	GET(std::vector<Control*>&, Pages);
 	/**
 	 * @brief 创建 TabControl。
 	 */

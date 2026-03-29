@@ -28,7 +28,7 @@ private:
     void Basic_OnIconButtonClick(class Control* sender, MouseEventArgs e);
 
     void Picture_OnOpenImage(class Control* sender, MouseEventArgs e);
-    void Picture_OnDropFile(class Control* sender, List<std::wstring> files);
+    void Picture_OnDropFile(class Control* sender, std::vector<std::wstring> files);
 
     void Data_OnToggleEnable(class Control* sender, MouseEventArgs e);
     void Data_OnToggleVisible(class Control* sender, MouseEventArgs e);
@@ -80,8 +80,6 @@ private:
     Switch* _gridEnableSwitch = nullptr;
     Switch* _gridVisibleSwitch = nullptr;
 
-    // Web/Media
-    WebBrowser* _web = nullptr;
     MediaPlayer* _media = nullptr;
 
     // System integration

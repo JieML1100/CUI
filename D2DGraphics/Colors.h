@@ -588,6 +588,7 @@ namespace Win32Colors {
 	const DWORD LightGoldenrod3 = RGB(205, 190, 112);
 	const DWORD SeaGreen = RGB(46, 139, 87);
 	const DWORD LightGoldenrod4 = RGB(139, 129, 76);
+}
 	const DWORD MediumSeaGreen = RGB(60, 179, 113);
 	const DWORD LightYellow1 = RGB(255, 255, 224);
 	const DWORD LightSeaGreen = RGB(32, 178, 170);
@@ -915,4 +916,3 @@ namespace Win32Colors {
 	const DWORD LightCyan3 = RGB(180, 205, 205);
 	const DWORD LightCyan4 = RGB(122, 139, 139);
 	const DWORD LightGreen = RGB(144, 238, 144);
-}
