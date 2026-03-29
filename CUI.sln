@@ -17,6 +17,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "D2DGraphics", "D2DGraphics\
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Utils", "Utils\Utils.vcxproj", "{1DDAEE3C-CAA8-489F-BFBE-84D30C9B4774}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "LibXML", "LibXML\LibXML.vcxproj", "{4EB8EE5E-BDD7-4744-9651-7D64DF66F413}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -81,6 +83,14 @@ Global
 		{1DDAEE3C-CAA8-489F-BFBE-84D30C9B4774}.Release|x64.Build.0 = Release|x64
 		{1DDAEE3C-CAA8-489F-BFBE-84D30C9B4774}.Release|x86.ActiveCfg = Release|Win32
 		{1DDAEE3C-CAA8-489F-BFBE-84D30C9B4774}.Release|x86.Build.0 = Release|Win32
+		{4EB8EE5E-BDD7-4744-9651-7D64DF66F413}.Debug|x64.ActiveCfg = Debug|x64
+		{4EB8EE5E-BDD7-4744-9651-7D64DF66F413}.Debug|x64.Build.0 = Debug|x64
+		{4EB8EE5E-BDD7-4744-9651-7D64DF66F413}.Debug|x86.ActiveCfg = Debug|Win32
+		{4EB8EE5E-BDD7-4744-9651-7D64DF66F413}.Debug|x86.Build.0 = Debug|Win32
+		{4EB8EE5E-BDD7-4744-9651-7D64DF66F413}.Release|x64.ActiveCfg = Release|x64
+		{4EB8EE5E-BDD7-4744-9651-7D64DF66F413}.Release|x64.Build.0 = Release|x64
+		{4EB8EE5E-BDD7-4744-9651-7D64DF66F413}.Release|x86.ActiveCfg = Release|Win32
+		{4EB8EE5E-BDD7-4744-9651-7D64DF66F413}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

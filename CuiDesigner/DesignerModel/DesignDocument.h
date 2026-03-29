@@ -1,15 +1,13 @@
 #pragma once
 
 #include "../DesignerTypes.h"
-#include <json.h>
+#include "DesignValue.h"
 #include <map>
 #include <string>
 #include <vector>
 
 namespace DesignerModel
 {
-using Json = JsonLib::json;
-
 struct DesignFormModel
 {
 	std::wstring Name = L"MainForm";
@@ -44,9 +42,9 @@ struct DesignNode
 	std::wstring Name;
 	UIClass Type = UIClass::UI_Base;
 	int Order = -1;
-	Json Props = Json::object();
-	Json Extra = Json::object();
-	Json Events = Json::object();
+	DesignValue Props = DesignValue::object();
+	DesignValue Extra = DesignValue::object();
+	DesignValue Events = DesignValue::object();
 
 	bool operator==(const DesignNode& other) const;
 };

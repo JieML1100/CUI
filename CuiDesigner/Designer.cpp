@@ -12,13 +12,13 @@ namespace
 	static std::string MakeDesignFilter()
 	{
 		std::string s;
-		s.append("JSON Files (*.json)");
+		s.append("XML Files (*.xml)");
 		s.push_back('\0');
-		s.append("*.json");
+		s.append("*.xml");
 		s.push_back('\0');
-		s.append("CUI Designer Files (*.cui.json)");
+		s.append("CUI Designer Files (*.cui.xml)");
 		s.push_back('\0');
-		s.append("*.cui.json");
+		s.append("*.cui.xml");
 		s.push_back('\0');
 		s.push_back('\0');
 		return s;
@@ -282,9 +282,9 @@ void Designer::OnSaveClick()
 			return;
 		path = Convert::string_to_wstring(sfd.SelectedPath);
 		if (path.empty()) return;
-		if(!path.ends_with(L".json") && !path.ends_with(L".JSON"))
+		if (!path.ends_with(L".xml") && !path.ends_with(L".XML"))
 		{
-			path += L".json";
+			path += L".xml";
 		}
 	}
 

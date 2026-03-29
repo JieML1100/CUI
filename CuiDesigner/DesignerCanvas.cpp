@@ -6,7 +6,6 @@
 #include "DesignerCore/SelectionService.h"
 #include "DesignerModel/DesignDocument.h"
 #include "DesignerModel/DesignDocumentSerializer.h"
-#include <json.h>
 #include <Convert.h>
 #include "FakeWebBrowser.h"
 #include "../CUI_Legacy/GUI/Label.h"
@@ -53,7 +52,7 @@
 #undef log
 #endif
 
-using Json = JsonLib::json;
+using DesignValue = DesignerModel::DesignValue;
 
 static RECT IntersectRectSafe(const RECT& a, const RECT& b)
 {
@@ -2823,26 +2822,26 @@ namespace
 		return false;
 	}
 
-	static Json MenuItemToJson(MenuItem* it)
+	static DesignValue MenuItemToValue(MenuItem* it)
 	{
-		if (!it) return Json();
-		Json j;
+		if (!it) return DesignValue();
+		DesignValue j = DesignValue::object();
 		j["text"] = ToUtf8(it->Text);
 		j["id"] = it->Id;
 		j["shortcut"] = ToUtf8(it->Shortcut);
 		j["separator"] = it->Separator;
 		j["enable"] = it->Enable;
-		Json subs = Json::array();
+		DesignValue subs = DesignValue::array();
 		for (auto* s : it->SubItems)
 		{
 			if (!s) continue;
-			subs.push_back(MenuItemToJson(s));
+			subs.push_back(MenuItemToValue(s));
 		}
 		j["subItems"] = subs;
 		return j;
 	}
 
-	static void JsonToMenuSubItems(const Json& arr, std::vector<MenuItem*>& out, MenuItem* owner)
+	static void ValueToMenuSubItems(const DesignValue& arr, std::vector<MenuItem*>& out, MenuItem* owner)
 	{
 		if (!owner) return;
 		if (!arr.is_array()) return;
@@ -2864,16 +2863,16 @@ namespace
 			s->Enable = j.value("enable", true);
 			if (j.contains("subItems"))
 			{
-				JsonToMenuSubItems(j["subItems"], out, s);
+				ValueToMenuSubItems(j["subItems"], out, s);
 			}
 		}
 	}
 
-	static Json ColorToJson(const D2D1_COLOR_F& c)
+	static DesignValue ColorToValue(const D2D1_COLOR_F& c)
 	{
-		return Json{ {"r", c.r}, {"g", c.g}, {"b", c.b}, {"a", c.a} };
+		return DesignValue{ {"r", c.r}, {"g", c.g}, {"b", c.b}, {"a", c.a} };
 	}
-	static D2D1_COLOR_F ColorFromJson(const Json& j, const D2D1_COLOR_F& def)
+	static D2D1_COLOR_F ColorFromValue(const DesignValue& j, const D2D1_COLOR_F& def)
 	{
 		D2D1_COLOR_F c = def;
 		if (j.is_object())
@@ -2886,11 +2885,11 @@ namespace
 		return c;
 	}
 
-	static Json ThicknessToJson(const Thickness& t)
+	static DesignValue ThicknessToValue(const Thickness& t)
 	{
-		return Json{ {"l", t.Left}, {"t", t.Top}, {"r", t.Right}, {"b", t.Bottom} };
+		return DesignValue{ {"l", t.Left}, {"t", t.Top}, {"r", t.Right}, {"b", t.Bottom} };
 	}
-	static Thickness ThicknessFromJson(const Json& j, const Thickness& def)
+	static Thickness ThicknessFromValue(const DesignValue& j, const Thickness& def)
 	{
 		Thickness t = def;
 		if (j.is_object())
@@ -2997,11 +2996,11 @@ namespace
 		if (s == "Star") { out = SizeUnit::Star; return true; }
 		return false;
 	}
-	static Json GridLengthToJson(const GridLength& gl)
+	static DesignValue GridLengthToValue(const GridLength& gl)
 	{
-		return Json{ {"value", gl.Value}, {"unit", SizeUnitToString(gl.Unit)} };
+		return DesignValue{ {"value", gl.Value}, {"unit", SizeUnitToString(gl.Unit)} };
 	}
-	static GridLength GridLengthFromJson(const Json& j, const GridLength& def)
+	static GridLength GridLengthFromValue(const DesignValue& j, const GridLength& def)
 	{
 		GridLength gl = def;
 		if (!j.is_object()) return gl;
@@ -3025,23 +3024,23 @@ namespace
 		return -1;
 	}
 
-	static Json TreeNodesToJson(std::vector<TreeNode*>& nodes)
+	static DesignValue TreeNodesToValue(std::vector<TreeNode*>& nodes)
 	{
-		Json arr = Json::array();
+		DesignValue arr = DesignValue::array();
 		for (auto* n : nodes)
 		{
 			if (!n) continue;
-			Json one;
+			DesignValue one = DesignValue::object();
 			one["text"] = ToUtf8(n->Text);
 			one["expand"] = n->Expand;
 			if (n->Children.size() > 0)
-				one["children"] = TreeNodesToJson(n->Children);
+				one["children"] = TreeNodesToValue(n->Children);
 			arr.push_back(one);
 		}
 		return arr;
 	}
 
-	static void JsonToTreeNodes(const Json& j, std::vector<TreeNode*>& outNodes)
+	static void ValueToTreeNodes(const DesignValue& j, std::vector<TreeNode*>& outNodes)
 	{
 		if (!j.is_array()) return;
 		for (auto& it : j)
@@ -3051,7 +3050,7 @@ namespace
 			auto* node = new TreeNode(text);
 			node->Expand = it.value("expand", false);
 			if (it.contains("children"))
-				JsonToTreeNodes(it["children"], node->Children);
+				ValueToTreeNodes(it["children"], node->Children);
 			outNodes.push_back(node);
 		}
 	}
@@ -3285,10 +3284,10 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			Control* runtimeParent = c->Parent ? c->Parent : (dc->DesignerParent ? dc->DesignerParent : (_clientSurface ? (Control*)_clientSurface : (Control*)_designSurface));
 			node.Order = GetChildIndex(runtimeParent, c);
 
-			Json props;
+			DesignValue props = DesignValue::object();
 			props["text"] = ToUtf8(c->Text);
-			props["location"] = Json{ {"x", c->Location.x}, {"y", c->Location.y} };
-			props["size"] = Json{ {"w", c->Size.cx}, {"h", c->Size.cy} };
+			props["location"] = DesignValue{ {"x", c->Location.x}, {"y", c->Location.y} };
+			props["size"] = DesignValue{ {"w", c->Size.cx}, {"h", c->Size.cy} };
 			// 字体：默认（跟随窗体/框架）不保存，显式字体才保存
 			{
 				::Font* f = c->Font;
@@ -3299,16 +3298,16 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 					inherited = (f == GetDefaultFontObject());
 				if (!inherited && f)
 				{
-					props["font"] = Json{ {"name", ToUtf8(f->FontName)}, {"size", f->FontSize} };
+					props["font"] = DesignValue{ {"name", ToUtf8(f->FontName)}, {"size", f->FontSize} };
 				}
 			}
 			props["enable"] = c->Enable;
 			props["visible"] = c->Visible;
-			props["backColor"] = ColorToJson(c->BackColor);
-			props["foreColor"] = ColorToJson(c->ForeColor);
-			props["bolderColor"] = ColorToJson(c->BolderColor);
-			props["margin"] = ThicknessToJson(c->Margin);
-			props["padding"] = ThicknessToJson(c->Padding);
+			props["backColor"] = ColorToValue(c->BackColor);
+			props["foreColor"] = ColorToValue(c->ForeColor);
+			props["bolderColor"] = ColorToValue(c->BolderColor);
+			props["margin"] = ThicknessToValue(c->Margin);
+			props["padding"] = ThicknessToValue(c->Padding);
 			props["anchor"] = (int)c->AnchorStyles;
 			props["hAlign"] = HAlignToString(c->HAlign);
 			props["vAlign"] = VAlignToString(c->VAlign);
@@ -3320,11 +3319,11 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			props["sizeMode"] = (int)c->SizeMode;
 			node.Props = std::move(props);
 
-			Json extra;
+			DesignValue extra = DesignValue::object();
 			if (dc->Type == UIClass::UI_ComboBox)
 			{
 				auto* cb = (ComboBox*)c;
-				Json items = Json::array();
+				DesignValue items = DesignValue::array();
 				for (int i = 0; i < cb->Items.size(); i++)
 					items.push_back(ToUtf8(cb->Items[i]));
 				extra["items"] = items;
@@ -3349,7 +3348,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			{
 				auto* dtp = (DateTimePicker*)c;
 				const SYSTEMTIME st = dtp->Value;
-				extra["value"] = Json{
+				extra["value"] = DesignValue{
 					{"year", st.wYear},
 					{"month", st.wMonth},
 					{"day", st.wDay},
@@ -3393,11 +3392,11 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			else if (dc->Type == UIClass::UI_GridView)
 			{
 				auto* gv = (GridView*)c;
-				Json cols = Json::array();
+				DesignValue cols = DesignValue::array();
 				for (int i = 0; i < gv->Columns.size(); i++)
 				{
 					auto& col = gv->Columns[i];
-					Json cj;
+					DesignValue cj = DesignValue::object();
 					cj["name"] = ToUtf8(col.Name);
 					cj["width"] = col.Width;
 					cj["type"] = (int)col.Type;
@@ -3410,10 +3409,10 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			{
 				auto* tv = (TreeView*)c;
 				if (tv->Root)
-					extra["nodes"] = TreeNodesToJson(tv->Root->Children);
-				extra["selectedBackColor"] = ColorToJson(tv->SelectedBackColor);
-				extra["underMouseItemBackColor"] = ColorToJson(tv->UnderMouseItemBackColor);
-				extra["selectedForeColor"] = ColorToJson(tv->SelectedForeColor);
+					extra["nodes"] = TreeNodesToValue(tv->Root->Children);
+				extra["selectedBackColor"] = ColorToValue(tv->SelectedBackColor);
+				extra["underMouseItemBackColor"] = ColorToValue(tv->UnderMouseItemBackColor);
+				extra["selectedForeColor"] = ColorToValue(tv->SelectedForeColor);
 			}
 			else if (dc->Type == UIClass::UI_TabControl)
 			{
@@ -3422,12 +3421,12 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 				extra["titleHeight"] = tc->TitleHeight;
 				extra["titleWidth"] = tc->TitleWidth;
 				extra["animationMode"] = (int)tc->AnimationMode;
-				Json pages = Json::array();
+				DesignValue pages = DesignValue::array();
 				for (int i = 0; i < tc->Count; i++)
 				{
 					auto* page = tc->operator[](i);
 					if (!page) continue;
-					Json pj;
+					DesignValue pj = DesignValue::object();
 					std::wstring wid = dc->Name + L"#page" + std::to_wstring(i);
 					pj["id"] = ToUtf8(wid);
 					pj["text"] = ToUtf8(page->Text);
@@ -3445,12 +3444,12 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			else if (dc->Type == UIClass::UI_ScrollView)
 			{
 				auto* sv = (ScrollView*)c;
-				extra["scrollBackColor"] = ColorToJson(sv->ScrollBackColor);
-				extra["scrollForeColor"] = ColorToJson(sv->ScrollForeColor);
+				extra["scrollBackColor"] = ColorToValue(sv->ScrollBackColor);
+				extra["scrollForeColor"] = ColorToValue(sv->ScrollForeColor);
 				extra["alwaysShowVScroll"] = sv->AlwaysShowVScroll;
 				extra["alwaysShowHScroll"] = sv->AlwaysShowHScroll;
 				extra["autoContentSize"] = sv->AutoContentSize;
-				extra["contentSize"] = Json{{"w", sv->ContentSize.cx}, {"h", sv->ContentSize.cy}};
+				extra["contentSize"] = DesignValue{{"w", sv->ContentSize.cx}, {"h", sv->ContentSize.cy}};
 				extra["scrollXOffset"] = sv->ScrollXOffset;
 				extra["scrollYOffset"] = sv->ScrollYOffset;
 				extra["mouseWheelStep"] = sv->MouseWheelStep;
@@ -3458,20 +3457,20 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			else if (dc->Type == UIClass::UI_GridPanel)
 			{
 				auto* gp = (GridPanel*)c;
-				Json rows = Json::array();
+				DesignValue rows = DesignValue::array();
 				for (auto& r : gp->GetRows())
 				{
-					rows.push_back(Json{
-						{"height", GridLengthToJson(r.Height)},
+					rows.push_back(DesignValue{
+						{"height", GridLengthToValue(r.Height)},
 						{"min", r.MinHeight},
 						{"max", r.MaxHeight}
 					});
 				}
-				Json cols = Json::array();
+				DesignValue cols = DesignValue::array();
 				for (auto& col : gp->GetColumns())
 				{
-					cols.push_back(Json{
-						{"width", GridLengthToJson(col.Width)},
+					cols.push_back(DesignValue{
+						{"width", GridLengthToValue(col.Width)},
 						{"min", col.MinWidth},
 						{"max", col.MaxWidth}
 					});
@@ -3501,10 +3500,10 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			{
 				auto* sb = (StatusBar*)c;
 				extra["topMost"] = sb->TopMost;
-				Json parts = Json::array();
+				DesignValue parts = DesignValue::array();
 				for (int i = 0; i < sb->PartCount(); i++)
 				{
-					Json pj;
+					DesignValue pj = DesignValue::object();
 					pj["text"] = ToUtf8(sb->GetPartText(i));
 					pj["width"] = sb->GetPartWidth(i);
 					parts.push_back(pj);
@@ -3514,12 +3513,12 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			else if (dc->Type == UIClass::UI_Menu)
 			{
 				auto* m = (Menu*)c;
-				Json tops = Json::array();
+				DesignValue tops = DesignValue::array();
 				for (int i = 0; i < m->Count; i++)
 				{
 					auto* it = dynamic_cast<MenuItem*>(m->operator[](i));
 					if (!it) continue;
-					tops.push_back(MenuItemToJson(it));
+					tops.push_back(MenuItemToValue(it));
 				}
 				extra["items"] = tops;
 			}
@@ -3551,7 +3550,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			// events: { "OnMouseClick": true, ... }（兼容旧格式：string handlerName）
 			if (!dc->EventHandlers.empty())
 			{
-				Json ev = Json::object();
+				DesignValue ev = DesignValue::object();
 				for (const auto& kv : dc->EventHandlers)
 				{
 					if (kv.first.empty()) continue;
@@ -3633,9 +3632,9 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 			UIClass type = UIClass::UI_Base;
 			std::wstring parent;
 			int order = -1;
-			Json props;
-			Json extra;
-			Json events;
+			DesignValue props;
+			DesignValue extra;
+			DesignValue events;
 		};
 		std::vector<Pending> items;
 		items.reserve(document.Nodes.size());
@@ -3662,9 +3661,9 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 			nameSet.insert(p.name);
 			p.parent = node.ParentRef;
 			p.order = node.Order;
-			p.props = node.Props.is_object() ? node.Props : Json::object();
-			p.extra = node.Extra.is_object() ? node.Extra : Json::object();
-			p.events = node.Events.is_object() ? node.Events : Json::object();
+			p.props = node.Props.is_object() ? node.Props : DesignValue::object();
+			p.extra = node.Extra.is_object() ? node.Extra : DesignValue::object();
+			p.events = node.Events.is_object() ? node.Events : DesignValue::object();
 			nameById[p.id] = p.name;
 			items.push_back(std::move(p));
 		}
@@ -3743,18 +3742,18 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 			if (it.events.is_object())
 			{
 				dc->EventHandlers.clear();
-				for (auto evIt = it.events.begin(); evIt != it.events.end(); ++evIt)
+				for (const auto& [eventName, eventValue] : it.events.ObjectItems())
 				{
-					std::wstring k = FromUtf8(evIt.key());
+					std::wstring k = FromUtf8(eventName);
 					if (k.empty()) continue;
-					if (evIt.value().is_boolean())
+					if (eventValue.is_boolean())
 					{
-						if (evIt.value().get<bool>())
+						if (eventValue.get<bool>())
 							dc->EventHandlers[k] = L"1";
 					}
-					else if (evIt.value().is_string())
+					else if (eventValue.is_string())
 					{
-						std::wstring v = FromUtf8(evIt.value().get<std::string>());
+						std::wstring v = FromUtf8(eventValue.get<std::string>());
 						if (!v.empty()) dc->EventHandlers[k] = v;
 					}
 				}
@@ -3777,11 +3776,11 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				}
 				c->Enable = it.props.value("enable", true);
 				c->Visible = it.props.value("visible", true);
-				c->BackColor = ColorFromJson(it.props.value("backColor", Json()), c->BackColor);
-				c->ForeColor = ColorFromJson(it.props.value("foreColor", Json()), c->ForeColor);
-				c->BolderColor = ColorFromJson(it.props.value("bolderColor", Json()), c->BolderColor);
-				c->Margin = ThicknessFromJson(it.props.value("margin", Json()), c->Margin);
-				c->Padding = ThicknessFromJson(it.props.value("padding", Json()), c->Padding);
+				c->BackColor = ColorFromValue(it.props.contains("backColor") ? it.props["backColor"] : DesignValue(), c->BackColor);
+				c->ForeColor = ColorFromValue(it.props.contains("foreColor") ? it.props["foreColor"] : DesignValue(), c->ForeColor);
+				c->BolderColor = ColorFromValue(it.props.contains("bolderColor") ? it.props["bolderColor"] : DesignValue(), c->BolderColor);
+				c->Margin = ThicknessFromValue(it.props.contains("margin") ? it.props["margin"] : DesignValue(), c->Margin);
+				c->Padding = ThicknessFromValue(it.props.contains("padding") ? it.props["padding"] : DesignValue(), c->Padding);
 				c->AnchorStyles = (uint8_t)it.props.value("anchor", (int)c->AnchorStyles);
 				HorizontalAlignment ha = c->HAlign;
 				VerticalAlignment va = c->VAlign;
@@ -3831,7 +3830,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 						for (auto& r : it.extra["rows"])
 						{
 							if (!r.is_object()) continue;
-							GridLength h = GridLengthFromJson(r.value("height", Json()), GridLength::Auto());
+							GridLength h = GridLengthFromValue(r.contains("height") ? r["height"] : DesignValue(), GridLength::Auto());
 							float minH = r.value("min", 0.0f);
 							float maxH = r.value("max", FLT_MAX);
 							gp->AddRow(h, minH, maxH);
@@ -3842,7 +3841,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 						for (auto& col : it.extra["columns"])
 						{
 							if (!col.is_object()) continue;
-							GridLength w = GridLengthFromJson(col.value("width", Json()), GridLength::Auto());
+							GridLength w = GridLengthFromValue(col.contains("width") ? col["width"] : DesignValue(), GridLength::Auto());
 							float minW = col.value("min", 0.0f);
 							float maxW = col.value("max", FLT_MAX);
 							gp->AddColumn(w, minW, maxW);
@@ -3901,8 +3900,8 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				else if (it.type == UIClass::UI_ScrollView)
 				{
 					auto* sv = (ScrollView*)c;
-					sv->ScrollBackColor = ColorFromJson(it.extra.value("scrollBackColor", Json()), sv->ScrollBackColor);
-					sv->ScrollForeColor = ColorFromJson(it.extra.value("scrollForeColor", Json()), sv->ScrollForeColor);
+					sv->ScrollBackColor = ColorFromValue(it.extra.contains("scrollBackColor") ? it.extra["scrollBackColor"] : DesignValue(), sv->ScrollBackColor);
+					sv->ScrollForeColor = ColorFromValue(it.extra.contains("scrollForeColor") ? it.extra["scrollForeColor"] : DesignValue(), sv->ScrollForeColor);
 					sv->AlwaysShowVScroll = it.extra.value("alwaysShowVScroll", sv->AlwaysShowVScroll);
 					sv->AlwaysShowHScroll = it.extra.value("alwaysShowHScroll", sv->AlwaysShowHScroll);
 					sv->AutoContentSize = it.extra.value("autoContentSize", sv->AutoContentSize);
@@ -3955,11 +3954,11 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 						for (auto n : tv->Root->Children) delete n;
 						tv->Root->Children.clear();
 						if (it.extra.contains("nodes"))
-							JsonToTreeNodes(it.extra["nodes"], tv->Root->Children);
+							ValueToTreeNodes(it.extra["nodes"], tv->Root->Children);
 					}
-					tv->SelectedBackColor = ColorFromJson(it.extra.value("selectedBackColor", Json()), tv->SelectedBackColor);
-					tv->UnderMouseItemBackColor = ColorFromJson(it.extra.value("underMouseItemBackColor", Json()), tv->UnderMouseItemBackColor);
-					tv->SelectedForeColor = ColorFromJson(it.extra.value("selectedForeColor", Json()), tv->SelectedForeColor);
+					tv->SelectedBackColor = ColorFromValue(it.extra.contains("selectedBackColor") ? it.extra["selectedBackColor"] : DesignValue(), tv->SelectedBackColor);
+					tv->UnderMouseItemBackColor = ColorFromValue(it.extra.contains("underMouseItemBackColor") ? it.extra["underMouseItemBackColor"] : DesignValue(), tv->UnderMouseItemBackColor);
+					tv->SelectedForeColor = ColorFromValue(it.extra.contains("selectedForeColor") ? it.extra["selectedForeColor"] : DesignValue(), tv->SelectedForeColor);
 				}
 				else if (it.type == UIClass::UI_ProgressBar)
 				{
@@ -4084,7 +4083,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 							if (ij.contains("subItems"))
 							{
 								std::vector<MenuItem*> tmp;
-								JsonToMenuSubItems(ij["subItems"], tmp, top);
+								ValueToMenuSubItems(ij["subItems"], tmp, top);
 							}
 						}
 					}

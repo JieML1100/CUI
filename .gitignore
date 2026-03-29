@@ -133,3 +133,6 @@ dkms.conf
 /D2DGraphics/D2DGraphics/x64/Debug
 /D2DGraphics/Release
 /D2DGraphics/x64
+/LibXML/x64
+/CUI_Legacy/CUI_Legacy/x64/Release
+/LibXML/LibXML/x64/Release/LibXML.tlog

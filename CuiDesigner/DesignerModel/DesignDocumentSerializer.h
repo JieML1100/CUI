@@ -11,7 +11,7 @@ public:
 	static bool LoadFromFile(const std::wstring& filePath, DesignDocument& document, std::wstring* outError = nullptr);
 
 private:
-	static Json ToJson(const DesignDocument& document);
-	static bool FromJson(const Json& root, DesignDocument& document, std::wstring* outError);
+	static std::string ToXml(const DesignDocument& document);
+	static bool FromXml(const std::string& xml, DesignDocument& document, std::wstring* outError);
 };
 }

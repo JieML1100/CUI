@@ -1,11 +1,17 @@
 #include "DesignDocumentSerializer.h"
+#include "../../LibXML/include/Xml.h"
+#include <algorithm>
+#include <cctype>
 #include <Convert.h>
+#include <type_traits>
 #include <fstream>
 #include <sstream>
 #include <unordered_set>
 
 namespace DesignerModel
 {
+using namespace System::Xml;
+
 namespace
 {
 	static std::string ToUtf8(const std::wstring& s)
@@ -18,12 +24,7 @@ namespace
 		return Convert::Utf8ToUnicode(s);
 	}
 
-	static Json ColorToJson(const D2D1_COLOR_F& c)
-	{
-		return Json{ {"r", c.r}, {"g", c.g}, {"b", c.b}, {"a", c.a} };
-	}
-
-	static D2D1_COLOR_F ColorFromJson(const Json& j, const D2D1_COLOR_F& def)
+	static D2D1_COLOR_F ColorFromValue(const DesignValue& j, const D2D1_COLOR_F& def)
 	{
 		D2D1_COLOR_F c = def;
 		if (j.is_object())
@@ -116,6 +117,321 @@ namespace
 		if (s == "TabPage") { out = UIClass::UI_TabPage; return true; }
 		return false;
 	}
+
+	static std::shared_ptr<XmlElement> FindChildElement(const std::shared_ptr<XmlElement>& parent, std::string_view name)
+	{
+		if (!parent) return nullptr;
+		for (const auto& child : parent->ChildNodes())
+		{
+			if (child && child->NodeType() == XmlNodeType::Element && child->Name() == name)
+			{
+				return std::static_pointer_cast<XmlElement>(child);
+			}
+		}
+		return nullptr;
+	}
+
+	static std::vector<std::shared_ptr<XmlElement>> FindChildElements(const std::shared_ptr<XmlElement>& parent, std::string_view name)
+	{
+		std::vector<std::shared_ptr<XmlElement>> elements;
+		if (!parent) return elements;
+		for (const auto& child : parent->ChildNodes())
+		{
+			if (child && child->NodeType() == XmlNodeType::Element && child->Name() == name)
+			{
+				elements.push_back(std::static_pointer_cast<XmlElement>(child));
+			}
+		}
+		return elements;
+	}
+
+	static std::string BoolToString(bool value)
+	{
+		return value ? "true" : "false";
+	}
+
+	static bool TryParseBool(std::string value, bool& out)
+	{
+		std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+			return (char)std::tolower(ch);
+		});
+		if (value == "true" || value == "1")
+		{
+			out = true;
+			return true;
+		}
+		if (value == "false" || value == "0")
+		{
+			out = false;
+			return true;
+		}
+		return false;
+	}
+
+	template<typename T>
+	static bool TryParseIntegral(const std::string& value, T& out)
+	{
+		try
+		{
+			if constexpr (std::is_unsigned_v<T>)
+			{
+				unsigned long long parsed = std::stoull(value);
+				out = (T)parsed;
+			}
+			else
+			{
+				long long parsed = std::stoll(value);
+				out = (T)parsed;
+			}
+			return true;
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+
+	static bool TryParseDouble(const std::string& value, double& out)
+	{
+		try
+		{
+			out = std::stod(value);
+			return true;
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+
+	static std::shared_ptr<XmlElement> AppendElement(XmlDocument& document, const std::shared_ptr<XmlElement>& parent, const std::string& name)
+	{
+		auto element = document.CreateElement(name);
+		parent->AppendChild(element);
+		return element;
+	}
+
+	static void SetColorAttributes(const std::shared_ptr<XmlElement>& element, const D2D1_COLOR_F& color)
+	{
+		if (!element) return;
+		element->SetAttribute("r", std::to_string(color.r));
+		element->SetAttribute("g", std::to_string(color.g));
+		element->SetAttribute("b", std::to_string(color.b));
+		element->SetAttribute("a", std::to_string(color.a));
+	}
+
+	static D2D1_COLOR_F ColorFromXmlElement(const std::shared_ptr<XmlElement>& element, const D2D1_COLOR_F& def)
+	{
+		D2D1_COLOR_F color = def;
+		if (!element) return color;
+
+		double value = 0.0;
+		if (TryParseDouble(element->GetAttribute("r"), value)) color.r = (float)value;
+		if (TryParseDouble(element->GetAttribute("g"), value)) color.g = (float)value;
+		if (TryParseDouble(element->GetAttribute("b"), value)) color.b = (float)value;
+		if (TryParseDouble(element->GetAttribute("a"), value)) color.a = (float)value;
+		return color;
+	}
+
+	static void WriteValue(XmlDocument& document, const std::shared_ptr<XmlElement>& element, const DesignValue& value)
+	{
+		if (!element) return;
+
+		if (value.is_object())
+		{
+			element->SetAttribute("type", "object");
+			for (const auto& [key, childValue] : value.ObjectItems())
+			{
+				auto member = AppendElement(document, element, "member");
+				member->SetAttribute("name", key);
+				WriteValue(document, member, childValue);
+			}
+			return;
+		}
+
+		if (value.is_array())
+		{
+			element->SetAttribute("type", "array");
+			for (const auto& itemValue : value.ArrayItems())
+			{
+				auto item = AppendElement(document, element, "item");
+				WriteValue(document, item, itemValue);
+			}
+			return;
+		}
+
+		if (value.is_null())
+		{
+			element->SetAttribute("type", "null");
+			return;
+		}
+
+		if (value.is_boolean())
+		{
+			element->SetAttribute("type", "boolean");
+			element->SetInnerText(BoolToString(value.get<bool>()));
+			return;
+		}
+
+		if (value.is_number_unsigned())
+		{
+			element->SetAttribute("type", "unsigned");
+			element->SetInnerText(std::to_string(value.get<unsigned long long>()));
+			return;
+		}
+
+		if (value.is_number_integer())
+		{
+			element->SetAttribute("type", "integer");
+			element->SetInnerText(std::to_string(value.get<long long>()));
+			return;
+		}
+
+		if (value.is_number_float())
+		{
+			element->SetAttribute("type", "float");
+			element->SetInnerText(std::to_string(value.get<double>()));
+			return;
+		}
+
+		element->SetAttribute("type", "string");
+		element->SetInnerText(value.ToString());
+	}
+
+	static bool ReadValue(const std::shared_ptr<XmlElement>& element, DesignValue& out, std::wstring* outError)
+	{
+		if (!element)
+		{
+			out = DesignValue();
+			return true;
+		}
+
+		std::string type = element->GetAttribute("type");
+		if (type.empty()) type = "object";
+
+		if (type == "object")
+		{
+			DesignValue object = DesignValue::object();
+			for (const auto& child : FindChildElements(element, "member"))
+			{
+				std::string name = child->GetAttribute("name");
+				if (name.empty())
+				{
+					if (outError) *outError = L"XML object member is missing the name attribute.";
+					return false;
+				}
+				DesignValue childValue;
+				if (!ReadValue(child, childValue, outError))
+				{
+					return false;
+				}
+				object[name] = std::move(childValue);
+			}
+			out = std::move(object);
+			return true;
+		}
+
+		if (type == "array")
+		{
+			DesignValue array = DesignValue::array();
+			for (const auto& child : FindChildElements(element, "item"))
+			{
+				DesignValue childValue;
+				if (!ReadValue(child, childValue, outError))
+				{
+					return false;
+				}
+				array.push_back(std::move(childValue));
+			}
+			out = std::move(array);
+			return true;
+		}
+
+		if (type == "null")
+		{
+			out = nullptr;
+			return true;
+		}
+
+		if (type == "boolean")
+		{
+			bool parsed = false;
+			if (!TryParseBool(element->InnerText(), parsed))
+			{
+				if (outError) *outError = L"Invalid XML boolean value: " + FromUtf8(element->InnerText());
+				return false;
+			}
+			out = parsed;
+			return true;
+		}
+
+		if (type == "integer")
+		{
+			long long parsed = 0;
+			if (!TryParseIntegral(element->InnerText(), parsed))
+			{
+				if (outError) *outError = L"Invalid XML integer value: " + FromUtf8(element->InnerText());
+				return false;
+			}
+			out = parsed;
+			return true;
+		}
+
+		if (type == "unsigned")
+		{
+			unsigned long long parsed = 0;
+			if (!TryParseIntegral(element->InnerText(), parsed))
+			{
+				if (outError) *outError = L"Invalid XML unsigned value: " + FromUtf8(element->InnerText());
+				return false;
+			}
+			out = parsed;
+			return true;
+		}
+
+		if (type == "float")
+		{
+			double parsed = 0.0;
+			if (!TryParseDouble(element->InnerText(), parsed))
+			{
+				if (outError) *outError = L"Invalid XML float value: " + FromUtf8(element->InnerText());
+				return false;
+			}
+			out = parsed;
+			return true;
+		}
+
+		if (type == "string")
+		{
+			out = element->InnerText();
+			return true;
+		}
+
+		if (outError) *outError = L"Unsupported XML value type: " + FromUtf8(type);
+		return false;
+	}
+
+	static bool TryReadBoolAttribute(const std::shared_ptr<XmlElement>& element, const char* name, bool& out)
+	{
+		if (!element || !element->HasAttribute(name)) return false;
+		return TryParseBool(element->GetAttribute(name), out);
+	}
+
+	template<typename T>
+	static bool TryReadIntegralAttribute(const std::shared_ptr<XmlElement>& element, const char* name, T& out)
+	{
+		if (!element || !element->HasAttribute(name)) return false;
+		return TryParseIntegral(element->GetAttribute(name), out);
+	}
+
+	static bool TryReadFloatAttribute(const std::shared_ptr<XmlElement>& element, const char* name, float& out)
+	{
+		if (!element || !element->HasAttribute(name)) return false;
+		double value = 0.0;
+		if (!TryParseDouble(element->GetAttribute(name), value)) return false;
+		out = (float)value;
+		return true;
+	}
 }
 
 bool DesignDocumentSerializer::SaveToFile(const DesignDocument& document, const std::wstring& filePath, std::wstring* outError)
@@ -128,7 +444,7 @@ bool DesignDocumentSerializer::SaveToFile(const DesignDocument& document, const 
 			return false;
 		}
 
-		std::string out = ToJson(document).dump(2);
+		std::string out = ToXml(document);
 		std::ofstream f(filePath, std::ios::binary);
 		if (!f.is_open())
 		{
@@ -169,8 +485,21 @@ bool DesignDocumentSerializer::LoadFromFile(const std::wstring& filePath, Design
 
 		std::stringstream ss;
 		ss << f.rdbuf();
-		Json root = Json::parse(ss.str(), nullptr, true, true);
-		return FromJson(root, document, outError);
+		std::string content = ss.str();
+		size_t first = content.find_first_not_of(" \t\r\n");
+		if (first == std::string::npos)
+		{
+			if (outError) *outError = L"Design file is empty.";
+			return false;
+		}
+
+		if (content[first] != '<')
+		{
+			if (outError) *outError = L"Unsupported design file format. Please use XML design files.";
+			return false;
+		}
+
+		return FromXml(content, document, outError);
 	}
 	catch (const std::exception& ex)
 	{
@@ -184,158 +513,176 @@ bool DesignDocumentSerializer::LoadFromFile(const std::wstring& filePath, Design
 	}
 }
 
-Json DesignDocumentSerializer::ToJson(const DesignDocument& document)
+std::string DesignDocumentSerializer::ToXml(const DesignDocument& document)
 {
-	Json root;
-	root["schema"] = document.Schema;
-	root["version"] = document.SchemaVersion;
+	XmlDocument xml;
+	xml.AppendChild(xml.CreateXmlDeclaration("1.0", "utf-8", ""));
 
-	Json formObj = Json{
-		{"name", ToUtf8(document.Form.Name)},
-		{"text", ToUtf8(document.Form.Text)},
-		{"font", Json{{"name", ToUtf8(document.Form.FontName)}, {"size", document.Form.FontSize}}},
-		{"size", Json{{"w", document.Form.Size.cx}, {"h", document.Form.Size.cy}}},
-		{"location", Json{{"x", document.Form.Location.x}, {"y", document.Form.Location.y}}},
-		{"backColor", ColorToJson(document.Form.BackColor)},
-		{"foreColor", ColorToJson(document.Form.ForeColor)},
-		{"showInTaskBar", document.Form.ShowInTaskBar},
-		{"topMost", document.Form.TopMost},
-		{"enable", document.Form.Enable},
-		{"visible", document.Form.Visible},
-		{"visibleHead", document.Form.VisibleHead},
-		{"headHeight", document.Form.HeadHeight},
-		{"minBox", document.Form.MinBox},
-		{"maxBox", document.Form.MaxBox},
-		{"closeBox", document.Form.CloseBox},
-		{"centerTitle", document.Form.CenterTitle},
-		{"allowResize", document.Form.AllowResize}
-	};
+	auto root = xml.CreateElement("designDocument");
+	root->SetAttribute("schema", document.Schema);
+	root->SetAttribute("version", std::to_string(document.SchemaVersion));
+	xml.AppendChild(root);
+
+	auto form = AppendElement(xml, root, "form");
+	form->SetAttribute("name", ToUtf8(document.Form.Name));
+	form->SetAttribute("text", ToUtf8(document.Form.Text));
+	form->SetAttribute("fontName", ToUtf8(document.Form.FontName));
+	form->SetAttribute("fontSize", std::to_string(document.Form.FontSize));
+	form->SetAttribute("showInTaskBar", BoolToString(document.Form.ShowInTaskBar));
+	form->SetAttribute("topMost", BoolToString(document.Form.TopMost));
+	form->SetAttribute("enable", BoolToString(document.Form.Enable));
+	form->SetAttribute("visible", BoolToString(document.Form.Visible));
+	form->SetAttribute("visibleHead", BoolToString(document.Form.VisibleHead));
+	form->SetAttribute("headHeight", std::to_string(document.Form.HeadHeight));
+	form->SetAttribute("minBox", BoolToString(document.Form.MinBox));
+	form->SetAttribute("maxBox", BoolToString(document.Form.MaxBox));
+	form->SetAttribute("closeBox", BoolToString(document.Form.CloseBox));
+	form->SetAttribute("centerTitle", BoolToString(document.Form.CenterTitle));
+	form->SetAttribute("allowResize", BoolToString(document.Form.AllowResize));
+
+	auto size = AppendElement(xml, form, "size");
+	size->SetAttribute("width", std::to_string(document.Form.Size.cx));
+	size->SetAttribute("height", std::to_string(document.Form.Size.cy));
+
+	auto location = AppendElement(xml, form, "location");
+	location->SetAttribute("x", std::to_string(document.Form.Location.x));
+	location->SetAttribute("y", std::to_string(document.Form.Location.y));
+
+	SetColorAttributes(AppendElement(xml, form, "backColor"), document.Form.BackColor);
+	SetColorAttributes(AppendElement(xml, form, "foreColor"), document.Form.ForeColor);
 
 	if (!document.Form.EventHandlers.empty())
 	{
-		Json events = Json::object();
+		auto events = AppendElement(xml, form, "events");
 		for (const auto& kv : document.Form.EventHandlers)
 		{
 			if (kv.first.empty() || kv.second.empty()) continue;
-			events[ToUtf8(kv.first)] = true;
-		}
-		if (!events.empty())
-		{
-			formObj["events"] = events;
+			auto event = AppendElement(xml, events, "event");
+			event->SetAttribute("name", ToUtf8(kv.first));
+			event->SetAttribute("handler", ToUtf8(kv.second));
 		}
 	}
-	root["form"] = formObj;
 
-	Json controls = Json::array();
+	auto controls = AppendElement(xml, root, "controls");
 	for (const auto& node : document.Nodes)
 	{
-		Json item;
-		item["name"] = ToUtf8(node.Name);
-		item["type"] = UIClassToString(node.Type);
-		if (node.ParentRef.empty()) item["parent"] = nullptr;
-		else item["parent"] = ToUtf8(node.ParentRef);
-		item["order"] = node.Order;
-		item["props"] = node.Props.is_object() ? node.Props : Json::object();
-		if (node.Extra.is_object() && !node.Extra.empty()) item["extra"] = node.Extra;
-		if (node.Events.is_object() && !node.Events.empty()) item["events"] = node.Events;
-		controls.push_back(item);
+		auto control = AppendElement(xml, controls, "control");
+		control->SetAttribute("name", ToUtf8(node.Name));
+		control->SetAttribute("type", UIClassToString(node.Type));
+		control->SetAttribute("order", std::to_string(node.Order));
+		if (!node.ParentRef.empty())
+		{
+			control->SetAttribute("parent", ToUtf8(node.ParentRef));
+		}
+
+		WriteValue(xml, AppendElement(xml, control, "props"), node.Props.is_object() ? node.Props : DesignValue::object());
+		if (!node.Extra.is_null())
+		{
+			WriteValue(xml, AppendElement(xml, control, "extra"), node.Extra);
+		}
+		if (!node.Events.is_null())
+		{
+			WriteValue(xml, AppendElement(xml, control, "events"), node.Events);
+		}
 	}
-	root["controls"] = controls;
-	return root;
+
+	XmlWriterSettings settings;
+	settings.Indent = true;
+	settings.Encoding = "utf-8";
+	return xml.ToString(settings);
 }
 
-bool DesignDocumentSerializer::FromJson(const Json& root, DesignDocument& document, std::wstring* outError)
+bool DesignDocumentSerializer::FromXml(const std::string& xmlText, DesignDocument& document, std::wstring* outError)
 {
-	if (root.value("schema", std::string()) != "cui.designer")
+	XmlDocument xml;
+	xml.LoadXml(xmlText);
+
+	auto root = xml.DocumentElement();
+	if (!root || root->Name() != "designDocument")
+	{
+		if (outError) *outError = L"Invalid CUI Designer XML file: missing root element.";
+		return false;
+	}
+
+	if (root->GetAttribute("schema") != "cui.designer")
 	{
 		if (outError) *outError = L"Invalid CUI Designer file: schema mismatch.";
 		return false;
 	}
 
-	int ver = root.value("version", 0);
-	if (ver != 1)
+	int version = 0;
+	if (!TryReadIntegralAttribute(root, "version", version) || version != 1)
 	{
 		if (outError) *outError = L"Unsupported design file version.";
 		return false;
 	}
 
-	if (!root.contains("controls") || !root["controls"].is_array())
+	auto controls = FindChildElement(root, "controls");
+	if (!controls)
 	{
-		if (outError) *outError = L"Design file is missing the controls array.";
+		if (outError) *outError = L"Design file is missing the controls element.";
 		return false;
 	}
 
 	document.Clear();
 	document.Schema = "cui.designer";
-	document.SchemaVersion = ver;
+	document.SchemaVersion = version;
 
-	if (root.contains("form") && root["form"].is_object())
+	if (auto form = FindChildElement(root, "form"))
 	{
-		auto& form = root["form"];
-		document.Form.Name = FromUtf8(form.value("name", std::string()));
+		document.Form.Name = FromUtf8(form->GetAttribute("name"));
 		if (document.Form.Name.empty()) document.Form.Name = L"MainForm";
-		document.Form.Text = FromUtf8(form.value("text", std::string()));
-		if (form.contains("font") && form["font"].is_object())
-		{
-			auto& fj = form["font"];
-			document.Form.FontName = FromUtf8(fj.value("name", std::string()));
-			document.Form.FontSize = (float)fj.value("size", (double)document.Form.FontSize);
-			if (document.Form.FontSize < 1.0f) document.Form.FontSize = 1.0f;
-			if (document.Form.FontSize > 200.0f) document.Form.FontSize = 200.0f;
-		}
-		document.Form.ShowInTaskBar = form.value("showInTaskBar", document.Form.ShowInTaskBar);
-		document.Form.TopMost = form.value("topMost", document.Form.TopMost);
-		document.Form.Enable = form.value("enable", document.Form.Enable);
-		document.Form.Visible = form.value("visible", document.Form.Visible);
-		document.Form.VisibleHead = form.value("visibleHead", document.Form.VisibleHead);
-		document.Form.HeadHeight = form.value("headHeight", document.Form.HeadHeight);
+		document.Form.Text = FromUtf8(form->GetAttribute("text"));
+		document.Form.FontName = FromUtf8(form->GetAttribute("fontName"));
+		TryReadFloatAttribute(form, "fontSize", document.Form.FontSize);
+		if (document.Form.FontSize < 1.0f) document.Form.FontSize = 1.0f;
+		if (document.Form.FontSize > 200.0f) document.Form.FontSize = 200.0f;
+		TryReadBoolAttribute(form, "showInTaskBar", document.Form.ShowInTaskBar);
+		TryReadBoolAttribute(form, "topMost", document.Form.TopMost);
+		TryReadBoolAttribute(form, "enable", document.Form.Enable);
+		TryReadBoolAttribute(form, "visible", document.Form.Visible);
+		TryReadBoolAttribute(form, "visibleHead", document.Form.VisibleHead);
+		TryReadIntegralAttribute(form, "headHeight", document.Form.HeadHeight);
 		if (document.Form.HeadHeight < 0) document.Form.HeadHeight = 0;
-		document.Form.MinBox = form.value("minBox", document.Form.MinBox);
-		document.Form.MaxBox = form.value("maxBox", document.Form.MaxBox);
-		document.Form.CloseBox = form.value("closeBox", document.Form.CloseBox);
-		document.Form.CenterTitle = form.value("centerTitle", document.Form.CenterTitle);
-		document.Form.AllowResize = form.value("allowResize", document.Form.AllowResize);
-		if (form.contains("size") && form["size"].is_object())
+		TryReadBoolAttribute(form, "minBox", document.Form.MinBox);
+		TryReadBoolAttribute(form, "maxBox", document.Form.MaxBox);
+		TryReadBoolAttribute(form, "closeBox", document.Form.CloseBox);
+		TryReadBoolAttribute(form, "centerTitle", document.Form.CenterTitle);
+		TryReadBoolAttribute(form, "allowResize", document.Form.AllowResize);
+
+		if (auto size = FindChildElement(form, "size"))
 		{
-			document.Form.Size.cx = form["size"].value("w", document.Form.Size.cx);
-			document.Form.Size.cy = form["size"].value("h", document.Form.Size.cy);
+			TryReadIntegralAttribute(size, "width", document.Form.Size.cx);
+			TryReadIntegralAttribute(size, "height", document.Form.Size.cy);
 		}
-		if (form.contains("location") && form["location"].is_object())
+		if (auto location = FindChildElement(form, "location"))
 		{
-			document.Form.Location.x = form["location"].value("x", document.Form.Location.x);
-			document.Form.Location.y = form["location"].value("y", document.Form.Location.y);
+			TryReadIntegralAttribute(location, "x", document.Form.Location.x);
+			TryReadIntegralAttribute(location, "y", document.Form.Location.y);
 		}
-		document.Form.BackColor = ColorFromJson(form.value("backColor", Json()), document.Form.BackColor);
-		document.Form.ForeColor = ColorFromJson(form.value("foreColor", Json()), document.Form.ForeColor);
-		if (form.contains("events") && form["events"].is_object())
+
+		document.Form.BackColor = ColorFromXmlElement(FindChildElement(form, "backColor"), document.Form.BackColor);
+		document.Form.ForeColor = ColorFromXmlElement(FindChildElement(form, "foreColor"), document.Form.ForeColor);
+
+		if (auto events = FindChildElement(form, "events"))
 		{
-			for (auto it = form["events"].begin(); it != form["events"].end(); ++it)
+			for (const auto& event : FindChildElements(events, "event"))
 			{
-				std::wstring name = FromUtf8(it.key());
+				std::wstring name = FromUtf8(event->GetAttribute("name"));
 				if (name.empty()) continue;
-				if (it.value().is_boolean())
-				{
-					if (it.value().get<bool>()) document.Form.EventHandlers[name] = L"1";
-				}
-				else if (it.value().is_string())
-				{
-					auto v = FromUtf8(it.value().get<std::string>());
-					if (!v.empty()) document.Form.EventHandlers[name] = v;
-					else document.Form.EventHandlers[name] = L"1";
-				}
+				std::wstring handler = FromUtf8(event->GetAttribute("handler"));
+				document.Form.EventHandlers[name] = handler.empty() ? L"1" : handler;
 			}
 		}
 	}
 
 	std::unordered_set<std::wstring> nameSet;
-	for (auto& j : root["controls"])
+	for (const auto& control : FindChildElements(controls, "control"))
 	{
-		if (!j.is_object()) continue;
-
 		DesignNode node;
-		node.Name = FromUtf8(j.value("name", std::string()));
-		std::string typeStr = j.value("type", std::string());
-		if (node.Name.empty() || !TryParseUIClass(typeStr, node.Type))
+		node.Name = FromUtf8(control->GetAttribute("name"));
+		std::string type = control->GetAttribute("type");
+		if (node.Name.empty() || !TryParseUIClass(type, node.Type))
 		{
 			if (outError) *outError = L"Control entry is missing name/type or uses an unsupported type.";
 			return false;
@@ -348,14 +695,42 @@ bool DesignDocumentSerializer::FromJson(const Json& root, DesignDocument& docume
 		nameSet.insert(node.Name);
 
 		node.Id = document.AllocateNodeId();
-		if (j.contains("parent") && j["parent"].is_string())
+		node.ParentRef = FromUtf8(control->GetAttribute("parent"));
+		if (!TryReadIntegralAttribute(control, "order", node.Order))
 		{
-			node.ParentRef = FromUtf8(j["parent"].get<std::string>());
+			node.Order = -1;
 		}
-		node.Order = j.value("order", -1);
-		node.Props = j.contains("props") && j["props"].is_object() ? j["props"] : Json::object();
-		node.Extra = j.contains("extra") && j["extra"].is_object() ? j["extra"] : Json::object();
-		node.Events = j.contains("events") && j["events"].is_object() ? j["events"] : Json::object();
+
+		auto props = FindChildElement(control, "props");
+		if (props)
+		{
+			if (!ReadValue(props, node.Props, outError)) return false;
+		}
+		else
+		{
+			node.Props = DesignValue::object();
+		}
+
+		auto extra = FindChildElement(control, "extra");
+		if (extra)
+		{
+			if (!ReadValue(extra, node.Extra, outError)) return false;
+		}
+		else
+		{
+			node.Extra = DesignValue::object();
+		}
+
+		auto events = FindChildElement(control, "events");
+		if (events)
+		{
+			if (!ReadValue(events, node.Events, outError)) return false;
+		}
+		else
+		{
+			node.Events = DesignValue::object();
+		}
+
 		document.Nodes.push_back(std::move(node));
 	}
 

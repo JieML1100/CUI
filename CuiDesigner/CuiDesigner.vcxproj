@@ -80,7 +80,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils;$(ProjectDir)..\LibXML\include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -98,7 +98,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils;$(ProjectDir)..\LibXML\include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -115,7 +115,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils;$(ProjectDir)..\LibXML\include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -134,7 +134,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils;$(ProjectDir)..\LibXML\include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -226,6 +226,9 @@
   <ItemGroup>
     <ProjectReference Include="..\CUI_Legacy\CUI_Legacy.vcxproj">
       <Project>{4ced323f-40d7-4933-83be-bfdd6f5dc8d4}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\LibXML\LibXML.vcxproj">
+      <Project>{4eb8ee5e-bdd7-4744-9651-7d64df66f413}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
