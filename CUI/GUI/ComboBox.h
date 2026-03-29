@@ -35,7 +35,7 @@ private:
 	bool IsDropDownInteractive();
 	void EnsureSelectionInRange();
 	void EnsureScrollInRange();
-	List<std::wstring> values;
+	std::vector<std::wstring> values;
 public:
 	virtual UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
@@ -53,7 +53,7 @@ public:
 	D2D1_COLOR_F ButtonBackColor = Colors::SkyBlue;
 	/** @brief 选择变化事件。 */
 	SelectionChangedEvent OnSelectionChanged;
-	/** @brief 下拉状态下最多显示的条目数量。实际可见项数会被 Items.Count 截断。 */
+	/** @brief 下拉状态下最多显示的条目数量。实际可见项数会被 Items.size() 截断。 */
 	int ExpandCount = 4;
 	/** @brief 展开状态下的滚动偏移（按条目计）。 */
 	int ExpandScroll = 0;
@@ -61,9 +61,9 @@ public:
 	bool Expand = false;
 	/** @brief 当前选中索引（0-based）。 */
 	int SelectedIndex = 0;
-	PROPERTY(List<std::wstring>&, Items);
-	GET(List<std::wstring>&, Items);
-	SET(List<std::wstring>&, Items);
+	PROPERTY(std::vector<std::wstring>&, Items);
+	GET(std::vector<std::wstring>&, Items);
+	SET(std::vector<std::wstring>&, Items);
 	float Boder = 1.5f;
 	/** @brief 创建 ComboBox。 */
 	ComboBox(std::wstring text, int x, int y, int width = 120, int height = 24);

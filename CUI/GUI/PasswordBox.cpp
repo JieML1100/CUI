@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "PasswordBox.h"
 #include "Form.h"
+#include <vector>
 #pragma comment(lib, "Imm32.lib")
 UIClass PasswordBox::Type() { return UIClass::UI_PasswordBox; }
 bool PasswordBox::HandlesNavigationKey(WPARAM key) const
@@ -34,32 +35,32 @@ void PasswordBox::InputText(std::wstring input)
 	}
 	else
 	{
-		List<wchar_t> tmp = List<wchar_t>();
-		tmp.AddRange((wchar_t*)this->Text.c_str(), this->Text.size());
+		std::vector<wchar_t> tmp;
+		tmp.insert(tmp.end(), this->Text.begin(), this->Text.end());
 		if (sele > sels)
 		{
 			int sublen = sele - sels;
 			for (int i = 0; i < sublen; i++)
 			{
-				tmp.RemoveAt(sels);
+				tmp.erase(tmp.begin() + sels);
 			}
 			for (int i = 0; i < input.size(); i++)
 			{
-				tmp.Insert(sels + i, input[i]);
+				tmp.insert(tmp.begin() + sels + i, input[i]);
 			}
 			SelectionEnd = SelectionStart = sels + (input.size());
-			tmp.Add(L'\0');
+			tmp.push_back(L'\0');
 			this->Text = std::wstring(tmp.data());
 		}
 		else if (sele == sels && sele >= 0)
 		{
 			for (int i = 0; i < input.size(); i++)
 			{
-				tmp.Insert(sels + i, input[i]);
+				tmp.insert(tmp.begin() + sels + i, input[i]);
 			}
 			SelectionEnd += input.size();
 			SelectionStart += input.size();
-			tmp.Add(L'\0');
+			tmp.push_back(L'\0');
 			this->Text = std::wstring(tmp.data());
 		}
 		else
@@ -68,9 +69,10 @@ void PasswordBox::InputText(std::wstring input)
 			SelectionEnd = SelectionStart = this->Text.size();
 		}
 	}
-	List<wchar_t> tmp = List<wchar_t>();
-	tmp.AddRange((wchar_t*)this->Text.c_str(), this->Text.size() + 1);
-	for (int i = 0; i < tmp.Count; i++)
+	std::vector<wchar_t> tmp;
+	tmp.insert(tmp.end(), this->Text.begin(), this->Text.end());
+	tmp.push_back(L'\0');
+	for (int i = 0; i < (int)tmp.size(); i++)
 	{
 		if (tmp[i] == L'\r' || tmp[i] == L'\n')
 		{
@@ -86,12 +88,12 @@ void PasswordBox::InputBack()
 	int selLen = sele - sels;
 	if (selLen > 0)
 	{
-		List<wchar_t> tmp = List<wchar_t>((wchar_t*)this->Text.c_str(), this->Text.size());
+		std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
 		for (int i = 0; i < selLen; i++)
 		{
-			tmp.RemoveAt(sels);
+			tmp.erase(tmp.begin() + sels);
 		}
-		tmp.Add(L'\0');
+		tmp.push_back(L'\0');
 		this->SelectionStart = this->SelectionEnd = sels;
 		this->Text = tmp.data();
 	}
@@ -99,9 +101,9 @@ void PasswordBox::InputBack()
 	{
 		if (sels > 0)
 		{
-			List<wchar_t> tmp = List<wchar_t>((wchar_t*)this->Text.c_str(), this->Text.size());
-			tmp.RemoveAt(sels - 1);
-			tmp.Add(L'\0');
+			std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
+			tmp.erase(tmp.begin() + sels - 1);
+			tmp.push_back(L'\0');
 			this->SelectionStart = this->SelectionEnd = sels - 1;
 			this->Text = tmp.data();
 		}
@@ -114,12 +116,12 @@ void PasswordBox::InputDelete()
 	int selLen = sele - sels;
 	if (selLen > 0)
 	{
-		List<wchar_t> tmp = List<wchar_t>((wchar_t*)this->Text.c_str(), this->Text.size());
+		std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
 		for (int i = 0; i < selLen; i++)
 		{
-			tmp.RemoveAt(sels);
+			tmp.erase(tmp.begin() + sels);
 		}
-		tmp.Add(L'\0');
+		tmp.push_back(L'\0');
 		this->SelectionStart = this->SelectionEnd = sels;
 		this->Text = tmp.data();
 	}
@@ -127,9 +129,9 @@ void PasswordBox::InputDelete()
 	{
 		if (sels < this->Text.size())
 		{
-			List<wchar_t> tmp = List<wchar_t>((wchar_t*)this->Text.c_str(), this->Text.size());
-			tmp.RemoveAt(sels);
-			tmp.Add(L'\0');
+			std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
+			tmp.erase(tmp.begin() + sels);
+			tmp.push_back(L'\0');
 			this->SelectionStart = this->SelectionEnd = sels;
 			this->Text = tmp.data();
 		}
@@ -187,9 +189,9 @@ void PasswordBox::Update()
 		auto backColor = this->BackColor;
 		if (isUnderMouse || isSelected)
 		{
-			backColor.r = std::min(1.0f, backColor.r * 1.2f);
-			backColor.g = std::min(1.0f, backColor.g * 1.2f);
-			backColor.b = std::min(1.0f, backColor.b * 1.2f);
+			backColor.r = (std::min)(1.0f, backColor.r * 1.2f);
+			backColor.g = (std::min)(1.0f, backColor.g * 1.2f);
+			backColor.b = (std::min)(1.0f, backColor.b * 1.2f);
 		}
 		d2d->FillRect(0, 0, size.cx, size.cy, backColor);
 		if (this->Image)
@@ -293,14 +295,14 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		HDROP hDropInfo = HDROP(wParam);
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xFFFFFFFF, NULL, 0);
 		TCHAR strFileName[MAX_PATH]{};
-		List<std::wstring> files;
+		std::vector<std::wstring> files;
 		for (int i = 0; i < uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.Add(strFileName);
+			files.push_back(strFileName);
 		}
 		DragFinish(hDropInfo);
-		if (files.Count > 0)
+		if (!files.empty())
 		{
 			this->OnDropFile(this, files);
 		}

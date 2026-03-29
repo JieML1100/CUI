@@ -34,6 +34,8 @@
 #include "WebBrowser.h"
 #include "MediaPlayer.h"
 #include "SplitContainer.h"
+#include <string>
+#include <vector>
 
 #if defined(_MSC_VER)
 #pragma comment(lib, "Dwmapi.lib")
@@ -59,7 +61,7 @@ typedef Event<void(class Form*, std::wstring, std::wstring)> FormTextChangedEven
 typedef Event<void(class Form*, std::wstring, std::wstring)> FormThemeChangedEvent;
 typedef Event<void(class Form*)> FormGotFocusEvent;
 typedef Event<void(class Form*)> FormLostFocusEvent;
-typedef Event<void(class Form*, List<std::wstring>)> FormDropFileEvent;
+typedef Event<void(class Form*, std::vector<std::wstring>)> FormDropFileEvent;
 typedef Event<void(class Form*, std::wstring)> FormDropTextEvent;
 typedef Event<void(class Form*, MouseEventArgs)> FormMouseClickEvent;
 typedef Event<void(class Form*, bool&)> FormCloseEvent;
@@ -223,7 +225,7 @@ public:
 	class Control* Selected = NULL;
 	class Control* UnderMouse = NULL;
 	/** @brief 顶层控件集合（通常包含布局容器与各控件）。 */
-	List<class Control*> Controls = List<class Control*>();
+	std::vector<class Control*> Controls = std::vector<class Control*>();
 	// 置顶控件：最多只允许一个（用于 ComboBox 下拉、临时浮层等）
 	class Control* ForegroundControl = NULL;
 	// 主菜单：单独管理（菜单栏/下拉菜单）
@@ -324,11 +326,11 @@ public:
 			throw "该控件已属于其他容器!";
 			return NULL;
 		}
-		if (this->Controls.Contains(c))
+		if (std::find(this->Controls.begin(), this->Controls.end(), c) != this->Controls.end())
 		{
 			return c;
 		}
-		this->Controls.Add(c);
+		this->Controls.push_back(c);
 		c->Parent = NULL;
 		c->ParentForm = this;
 

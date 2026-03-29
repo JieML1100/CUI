@@ -216,7 +216,7 @@ void Control::SetFontEx(class Font* value, bool takeOwnership)
 
 GET_CPP(Control, int, Count)
 {
-	return this->Children.Count;
+	return this->Children.size();
 }
 Control* Control::operator[](int index)
 {
@@ -224,13 +224,13 @@ Control* Control::operator[](int index)
 }
 Control* Control::get(int index)
 {
-	if (this->Children.Count <= index)
+	if (this->Children.size() <= index)
 		return NULL;
 	return this->Children[index];
 }
 void Control::RemoveControl(Control* c)
 {
-	this->Children.Remove(c);
+	this->Children.erase(std::remove(this->Children.begin(), this->Children.end(), c), this->Children.end());
 	c->Parent = NULL;
 	c->ParentForm = NULL;
 	if (!this->ParentForm) return;
@@ -503,14 +503,14 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 		HDROP hDropInfo = HDROP(wParam);
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
 		TCHAR strFileName[MAX_PATH];
-		List<std::wstring> files;
+		std::vector<std::wstring> files;
 		for (int i = 0; i < uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.Add(strFileName);
+			files.push_back(strFileName);
 		}
 		DragFinish(hDropInfo);
-		if (files.Count > 0)
+		if (!files.empty())
 		{
 			this->OnDropFile(this, files);
 		}

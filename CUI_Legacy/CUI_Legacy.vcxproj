@@ -187,7 +187,7 @@
       <EnableModules>false</EnableModules>
       <BuildStlModules>true</BuildStlModules>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -211,7 +211,7 @@
       <EnableModules>false</EnableModules>
       <BuildStlModules>true</BuildStlModules>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -234,7 +234,7 @@
       <EnableModules>false</EnableModules>
       <BuildStlModules>true</BuildStlModules>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -260,7 +260,7 @@
       <BuildStlModules>true</BuildStlModules>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FavorSizeOrSpeed>Size</FavorSizeOrSpeed>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>

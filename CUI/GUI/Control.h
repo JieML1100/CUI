@@ -3,12 +3,11 @@
 
 /*---如果Utils和Graphics源代码包含在此项目中则直接引用本地项目---*/
 //#define _LIB
-#include <CppUtils/Utils/Event.h>
-#include <CppUtils/Utils/Utils.h>
-#include <CppUtils/Graphics/Colors.h>
-#include <CppUtils/Graphics/Font.h>
-#include <CppUtils/Graphics/Factory.h>
-#include <CppUtils/Graphics/Graphics.h>
+#include "Event.h"
+#include "Colors.h"
+#include "Font.h"
+#include "Factory.h"
+#include "Graphics.h"
 
 /*---如果Utils和Graphics被编译成lib则引用外部头文件---*/
 // (using external CppUtils)
@@ -140,7 +139,7 @@ typedef Event<void(class Control*, std::wstring, std::wstring)> TextChangedEvent
 typedef Event<void(class Control*, wchar_t)> CharInputEvent;
 typedef Event<void(class Control*)> GotFocusEvent;
 typedef Event<void(class Control*)> LostFocusEvent;
-typedef Event<void(class Control*, List<std::wstring>)> DropFileEvent;
+typedef Event<void(class Control*, std::vector<std::wstring>)> DropFileEvent;
 typedef Event<void(class Control*, std::wstring)> DropTextEvent;
 typedef Event<void(class Control*)> SelectionChangedEvent;
 
@@ -301,7 +300,7 @@ public:
 	/** @brief 用户自定义数据槽（不由框架解释）。 */
 	UINT64 Tag;
 	/** @brief 子控件集合。 */
-	List<Control*> Children;
+	std::vector<Control*> Children;
 	/** @brief 图片绘制模式。 */
 	ImageSizeMode SizeMode = ImageSizeMode::Zoom;
 	/** @brief 创建基础控件。 */
@@ -349,12 +348,10 @@ public:
 			throw std::exception("该控件已属于其他容器!");
 			return NULL;
 		}
-		if (this->Children.Contains(c)) {
-			return c;
-		}
+		if (std::find(this->Children.begin(), this->Children.end(), c) != this->Children.end()) return c;
 		c->Parent = this;
 		c->ParentForm = this->ParentForm;
-		this->Children.Add(c);
+		this->Children.push_back(c);
 		
 		// 递归设置所有子控件的ParentForm
 		SetChildrenParentForm(c, this->ParentForm);
@@ -365,7 +362,7 @@ public:
 	static void SetChildrenParentForm(Control* c, Form* form) {
 		if (!c) return;
 		c->ParentForm = form;
-		for (int i = 0; i < c->Children.Count; i++) {
+		for (size_t i = 0; i < c->Children.size(); i++) {
 			SetChildrenParentForm(c->Children[i], form);
 		}
 	}

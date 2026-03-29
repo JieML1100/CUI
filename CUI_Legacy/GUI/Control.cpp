@@ -230,7 +230,7 @@ Control* Control::get(int index)
 }
 void Control::RemoveControl(Control* c)
 {
-	std::remove(this->Children.begin(), this->Children.end(), c);
+	this->Children.erase(std::remove(this->Children.begin(), this->Children.end(), c), this->Children.end());
 	c->Parent = NULL;
 	c->ParentForm = NULL;
 	if (!this->ParentForm) return;

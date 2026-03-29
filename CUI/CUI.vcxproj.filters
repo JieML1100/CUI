@@ -144,7 +144,7 @@
     <ClInclude Include="GUI\MediaPlayer.h">
       <Filter>GUI</Filter>
     </ClInclude>
-    <ClInclude Include="nanosvg.h">
+    <ClInclude Include="GUI\Event.h">
       <Filter>GUI</Filter>
     </ClInclude>
   </ItemGroup>
@@ -273,9 +273,6 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\MediaPlayer.cpp">
-      <Filter>GUI</Filter>
-    </ClCompile>
-    <ClCompile Include="nanosvg.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
   </ItemGroup>

@@ -29,7 +29,7 @@ static D2D1_TRIANGLE BuildExpandTriangle(float left, float top, float itemHeight
 	return tri;
 }
 
-static float measureNodes(List<TreeNode*>& children)
+static float measureNodes(std::vector<TreeNode*>& children)
 {
 	float count = 0.0f;
 	for (auto* child : children)
@@ -39,7 +39,7 @@ static float measureNodes(List<TreeNode*>& children)
 	return count;
 }
 
-static void renderNodes(TreeView* tree, D2DGraphics* d2d, float w, float h, float itemHeight, float scrollOffsetY, float& cursorY, int sunLevel, List<TreeNode*>& children)
+static void renderNodes(TreeView* tree, D2DGraphics* d2d, float w, float h, float itemHeight, float scrollOffsetY, float& cursorY, int sunLevel, std::vector<TreeNode*>& children)
 {
 	for (auto* c : children)
 	{
@@ -61,7 +61,7 @@ static void renderNodes(TreeView* tree, D2DGraphics* d2d, float w, float h, floa
 			{
 				d2d->FillRect(0, renderTop, w, itemHeight, tree->UnderMouseItemBackColor);
 			}
-			if (c->Children.Count > 0)
+			if (c->Children.size() > 0)
 			{
 				D2D1_TRIANGLE tri = BuildExpandTriangle(renderLeft, renderTop, itemHeight, c->CurrentExpandProgress());
 				d2d->FillTriangle(tri, foreColor);
@@ -86,7 +86,7 @@ static void renderNodes(TreeView* tree, D2DGraphics* d2d, float w, float h, floa
 
 		cursorY += itemHeight;
 
-		if (c->Children.Count > 0)
+		if (c->Children.size() > 0)
 		{
 			const float progress = c->CurrentExpandProgress();
 			if (progress > 0.001f)
@@ -116,7 +116,7 @@ static void renderNodes(TreeView* tree, D2DGraphics* d2d, float w, float h, floa
 	}
 }
 
-static TreeNode* findNode(float posX, float posY, float h, float itemHeight, float scrollOffsetY, float& cursorY, int sunLevel, List<TreeNode*>& children, bool& isHitEx)
+static TreeNode* findNode(float posX, float posY, float h, float itemHeight, float scrollOffsetY, float& cursorY, int sunLevel, std::vector<TreeNode*>& children, bool& isHitEx)
 {
 	for (auto* c : children)
 	{
@@ -128,7 +128,7 @@ static TreeNode* findNode(float posX, float posY, float h, float itemHeight, flo
 			if (posY >= currTop && posY <= currBottom)
 			{
 				float exLeft = (sunLevel * itemHeight) + 3.5f;
-				if (posX >= exLeft && posX <= (exLeft + (itemHeight * 0.6f)) && c->Children.Count > 0)
+				if (posX >= exLeft && posX <= (exLeft + (itemHeight * 0.6f)) && c->Children.size() > 0)
 					isHitEx = true;
 				else
 					isHitEx = false;
@@ -136,7 +136,7 @@ static TreeNode* findNode(float posX, float posY, float h, float itemHeight, flo
 			}
 		}
 		cursorY += itemHeight;
-		if (c->Children.Count > 0)
+		if (c->Children.size() > 0)
 		{
 			const float progress = c->CurrentExpandProgress();
 			if (progress > 0.001f)
@@ -165,12 +165,12 @@ TreeNode::TreeNode(std::wstring text, std::shared_ptr<BitmapSource> image)
 	this->Image = std::move(image);
 	this->Expand = false;
 	this->ExpandProgress = 0.0f;
-	this->Children = List<TreeNode*>();
+	this->Children = std::vector<TreeNode*>();
 }
 
 float TreeNode::CurrentExpandProgress()
 {
-	if (this->Children.Count <= 0)
+	if (this->Children.size() <= 0)
 	{
 		this->Animating = false;
 		this->ExpandProgress = 0.0f;
@@ -197,7 +197,7 @@ float TreeNode::CurrentExpandProgress()
 
 void TreeNode::SetExpanded(bool expanded)
 {
-	const bool wantExpand = expanded && this->Children.Count > 0;
+	const bool wantExpand = expanded && this->Children.size() > 0;
 	const float current = CurrentExpandProgress();
 	this->Expand = wantExpand;
 	this->AnimStartProgress = current;
@@ -228,7 +228,7 @@ bool TreeNode::IsAnimationRunning()
 float TreeNode::AnimatedVisibleCount()
 {
 	float count = 1.0f;
-	if (this->Children.Count > 0)
+	if (this->Children.size() > 0)
 	{
 		float childCount = 0.0f;
 		for (auto* child : this->Children)
@@ -262,7 +262,7 @@ TreeNode::~TreeNode()
 {
 	for (auto& c : this->Children)
 		delete c;
-	this->Children.Clear();
+	this->Children.clear();
 }
 int TreeNode::UnfoldedCount()
 {
@@ -284,7 +284,7 @@ CursorKind TreeView::QueryCursor(int xof, int yof)
 	const float fontHeight = this->Font ? this->Font->FontHeight : 0.0f;
 	if (fontHeight > 0.0f)
 	{
-		const int renderCount = std::max(1, (int)((float)this->Height / fontHeight));
+		const int renderCount = (std::max)(1, (int)((float)this->Height / fontHeight));
 		const bool hasVScroll = (_contentRenderItems > (float)renderCount + 0.001f);
 		if (hasVScroll && xof >= (this->Width - 8))
 			return CursorKind::SizeNS;
@@ -430,14 +430,14 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		HDROP hDropInfo = HDROP(wParam);
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xFFFFFFFF, NULL, 0);
 		TCHAR strFileName[MAX_PATH];
-		List<std::wstring> files;
+		std::vector<std::wstring> files;
 		for (int i = 0; i < uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.Add(strFileName);
+			files.push_back(strFileName);
 		}
 		DragFinish(hDropInfo);
-		if (files.Count > 0)
+		if (!files.empty())
 		{
 			this->OnDropFile(this, files);
 		}
@@ -446,7 +446,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 	case WM_MOUSEWHEEL:
 	{
 		const float fontHeight = this->Font ? this->Font->FontHeight : 0.0f;
-		const int renderItemCount = fontHeight > 0.0f ? std::max(1, (int)((float)this->Height / fontHeight)) : 1;
+		const int renderItemCount = fontHeight > 0.0f ? (std::max)(1, (int)((float)this->Height / fontHeight)) : 1;
 		int maxScroll = (int)std::ceil(_contentRenderItems - (float)renderItemCount);
 		if (maxScroll < 0) maxScroll = 0;
 		if (GET_WHEEL_DELTA_WPARAM(wParam) < 0)
@@ -531,7 +531,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 						float thumbH = (renderItemCount / (float)this->MaxRenderItems) * height;
 						if (thumbH < height * 0.1f) thumbH = height * 0.1f;
 						if (thumbH > height) thumbH = height;
-						const float moveSpace = std::max(0.0f, height - thumbH);
+						const float moveSpace = (std::max)(0.0f, height - thumbH);
 						float per = 0.0f;
 						if (maxScroll > 0) per = std::clamp((float)this->ScrollIndex / (float)maxScroll, 0.0f, 1.0f);
 						const float thumbTop = per * moveSpace;
@@ -604,7 +604,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		auto node = findNode((float)xof, (float)yof, (float)size.cy, font->FontHeight, (float)this->ScrollIndex * font->FontHeight, cursorY, 0, this->Root->Children, isHit);
 		if (node)
 		{
-			if (node->Children.Count > 0)
+			if (node->Children.size() > 0)
 				node->SetExpanded(!node->Expand);
 			if (!isHit)
 			{

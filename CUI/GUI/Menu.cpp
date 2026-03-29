@@ -151,8 +151,8 @@ bool Menu::ContainsPoint(int xof, int yof)
 			float maxY = (float)this->ParentForm->ClientSize.cy;
 			if (x < 0.0f) x = 0.0f;
 			if (y < 0.0f) y = 0.0f;
-			if (x + w > maxX) x = std::max(0.0f, maxX - w);
-			if (y + h > maxY) y = std::max(0.0f, maxY - h);
+			if (x + w > maxX) x = (std::max)(0.0f, maxX - w);
+			if (y + h > maxY) y = (std::max)(0.0f, maxY - h);
 		};
 
 	std::vector<MenuPanel> panels;
@@ -387,8 +387,8 @@ void Menu::Update()
 						float maxY = (float)this->ParentForm->ClientSize.cy;
 						if (x < 0.0f) x = 0.0f;
 						if (y < 0.0f) y = 0.0f;
-						if (x + w > maxX) x = std::max(0.0f, maxX - w);
-						if (y + h > maxY) y = std::max(0.0f, maxY - h);
+						if (x + w > maxX) x = (std::max)(0.0f, maxX - w);
+						if (y + h > maxY) y = (std::max)(0.0f, maxY - h);
 					};
 
 				// build panels based on open path
@@ -591,8 +591,8 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 					float maxY = (float)this->ParentForm->ClientSize.cy;
 					if (x < 0.0f) x = 0.0f;
 					if (y < 0.0f) y = 0.0f;
-					if (x + w > maxX) x = std::max(0.0f, maxX - w);
-					if (y + h > maxY) y = std::max(0.0f, maxY - h);
+					if (x + w > maxX) x = (std::max)(0.0f, maxX - w);
+					if (y + h > maxY) y = (std::max)(0.0f, maxY - h);
 				};
 
 			// build panels (local coords)
@@ -660,8 +660,8 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			{
 				const auto& a = panels[i];
 				const auto& b = panels[i + 1];
-				float bridgeL = std::min(a.X + a.W - 2.0f, b.X + 2.0f);
-				float bridgeR = std::max(a.X + a.W - 2.0f, b.X + 2.0f);
+				float bridgeL = (std::min)(a.X + a.W - 2.0f, b.X + 2.0f);
+				float bridgeR = (std::max)(a.X + a.W - 2.0f, b.X + 2.0f);
 				float bridgeT = b.Y;
 				float bridgeB = b.Y + b.H;
 				if ((float)xof >= bridgeL && (float)xof <= bridgeR && (float)yof >= bridgeT && (float)yof <= bridgeB)

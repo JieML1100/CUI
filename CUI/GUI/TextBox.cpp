@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "TextBox.h"
 #include "Form.h"
+#include <vector>
 #pragma comment(lib, "Imm32.lib")
 UIClass TextBox::Type() { return UIClass::UI_TextBox; }
 bool TextBox::HandlesNavigationKey(WPARAM key) const
@@ -52,32 +53,31 @@ void TextBox::InputText(std::wstring input)
 	}
 	else
 	{
-		List<wchar_t> tmp = List<wchar_t>();
-		tmp.AddRange((wchar_t*)this->Text.c_str(), this->Text.size());
+		std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
 		if (sele > sels)
 		{
 			int sublen = sele - sels;
 			for (int i = 0; i < sublen; i++)
 			{
-				tmp.RemoveAt(sels);
+				tmp.erase(tmp.begin() + sels);
 			}
 			for (int i = 0; i < input.size(); i++)
 			{
-				tmp.Insert(sels + i, input[i]);
+				tmp.insert(tmp.begin() + sels + i, input[i]);
 			}
 			SelectionEnd = SelectionStart = sels + (input.size());
-			tmp.Add(L'\0');
+			tmp.push_back(L'\0');
 			this->Text = std::wstring(tmp.data());
 		}
 		else if (sele == sels && sele >= 0)
 		{
 			for (int i = 0; i < input.size(); i++)
 			{
-				tmp.Insert(sels + i, input[i]);
+				tmp.insert(tmp.begin() + sels + i, input[i]);
 			}
 			SelectionEnd += input.size();
 			SelectionStart += input.size();
-			tmp.Add(L'\0');
+			tmp.push_back(L'\0');
 			this->Text = std::wstring(tmp.data());
 		}
 		else
@@ -86,9 +86,8 @@ void TextBox::InputText(std::wstring input)
 			SelectionEnd = SelectionStart = this->Text.size();
 		}
 	}
-	List<wchar_t> tmp = List<wchar_t>();
-	tmp.AddRange((wchar_t*)this->Text.c_str(), this->Text.size() + 1);
-	for (int i = 0; i < tmp.Count; i++)
+	std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size() + 1);
+	for (int i = 0; i < (int)tmp.size(); i++)
 	{
 		if (tmp[i] == L'\r' || tmp[i] == L'\n')
 		{
@@ -126,12 +125,12 @@ void TextBox::InputBack()
 			rec.selEndBefore = this->SelectionEnd;
 			shouldRecord = true;
 		}
-		List<wchar_t> tmp = List<wchar_t>((wchar_t*)this->Text.c_str(), this->Text.size());
+		std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
 		for (int i = 0; i < selLen; i++)
 		{
-			tmp.RemoveAt(sels);
+			tmp.erase(tmp.begin() + sels);
 		}
-		tmp.Add(L'\0');
+		tmp.push_back(L'\0');
 		this->SelectionStart = this->SelectionEnd = sels;
 		this->Text = tmp.data();
 	}
@@ -149,9 +148,9 @@ void TextBox::InputBack()
 				rec.selEndBefore = this->SelectionEnd;
 				shouldRecord = true;
 			}
-			List<wchar_t> tmp = List<wchar_t>((wchar_t*)this->Text.c_str(), this->Text.size());
-			tmp.RemoveAt(sels - 1);
-			tmp.Add(L'\0');
+			std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
+			tmp.erase(tmp.begin() + sels - 1);
+			tmp.push_back(L'\0');
 			this->SelectionStart = this->SelectionEnd = sels - 1;
 			this->Text = tmp.data();
 		}
@@ -186,12 +185,12 @@ void TextBox::InputDelete()
 			rec.selEndBefore = this->SelectionEnd;
 			shouldRecord = true;
 		}
-		List<wchar_t> tmp = List<wchar_t>((wchar_t*)this->Text.c_str(), this->Text.size());
+		std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
 		for (int i = 0; i < selLen; i++)
 		{
-			tmp.RemoveAt(sels);
+			tmp.erase(tmp.begin() + sels);
 		}
-		tmp.Add(L'\0');
+		tmp.push_back(L'\0');
 		this->SelectionStart = this->SelectionEnd = sels;
 		this->Text = tmp.data();
 	}
@@ -209,9 +208,9 @@ void TextBox::InputDelete()
 				rec.selEndBefore = this->SelectionEnd;
 				shouldRecord = true;
 			}
-			List<wchar_t> tmp = List<wchar_t>((wchar_t*)this->Text.c_str(), this->Text.size());
-			tmp.RemoveAt(sels);
-			tmp.Add(L'\0');
+			std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
+			tmp.erase(tmp.begin() + sels);
+			tmp.push_back(L'\0');
 			this->SelectionStart = this->SelectionEnd = sels;
 			this->Text = tmp.data();
 		}
@@ -237,7 +236,7 @@ void TextBox::ApplyUndoRecord(const UndoRecord& rec, bool isUndo)
 
 	if (!removeText.empty() && pos <= (int)newText.size())
 	{
-		size_t removeLen = std::min(removeText.size(), newText.size() - (size_t)pos);
+		size_t removeLen = (std::min)(removeText.size(), newText.size() - (size_t)pos);
 		newText.erase((size_t)pos, removeLen);
 	}
 	if (!insertText.empty())
@@ -331,9 +330,9 @@ void TextBox::Update()
 		auto backColor = this->BackColor;
 		if (isUnderMouse || isSelected)
 		{
-			backColor.r = std::min(1.0f, backColor.r * 1.2f);
-			backColor.g = std::min(1.0f, backColor.g * 1.2f);
-			backColor.b = std::min(1.0f, backColor.b * 1.2f);
+			backColor.r = (std::min)(1.0f, backColor.r * 1.2f);
+			backColor.g = (std::min)(1.0f, backColor.g * 1.2f);
+			backColor.b = (std::min)(1.0f, backColor.b * 1.2f);
 		}
 		d2d->FillRect(0, 0, size.cx, size.cy, backColor);
 		if (this->Image)
@@ -445,14 +444,14 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 		HDROP hDropInfo = HDROP(wParam);
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
 		TCHAR strFileName[MAX_PATH];
-		List<std::wstring> files;
+		std::vector<std::wstring> files;
 		for (int i = 0; i < uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.Add(strFileName);
+			files.push_back(strFileName);
 		}
 		DragFinish(hDropInfo);
-		if (files.Count > 0)
+		if (!files.empty())
 		{
 			this->OnDropFile(this, files);
 		}
@@ -707,8 +706,11 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 					if (pBuf)
 					{
 						GlobalUnlock(hClip);
-						auto wc = Convert::string_to_wstring(pBuf);
-						this->InputText(wc);
+						int len = MultiByteToWideChar(CP_ACP, 0, pBuf, static_cast<int>(strlen(pBuf)), NULL, 0);
+						std::wstring wstr(len, L'\0');
+						if (len > 0)
+							MultiByteToWideChar(CP_ACP, 0, pBuf, static_cast<int>(strlen(pBuf)), &wstr[0], len);
+						this->InputText(wstr);
 					}
 					UpdateScroll();
 					CloseClipboard();
@@ -767,17 +769,17 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 			if (ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, input, dwSize) > 0)
 			{
 
-				List<wchar_t> tmp;
+				std::vector<wchar_t> tmp;
 				for (int i = 0; i < dwSize - 2; i++)
 				{
 					if (input[i] > 0xFF)
 					{
-						tmp.Add(input[i]);
+						tmp.push_back(input[i]);
 					}
 					if (!input[i]) break;
 				}
 				delete[] input;
-				tmp.Add(L'\0');
+				tmp.push_back(L'\0');
 				this->InputText(tmp.data());
 				UpdateScroll();
 			}

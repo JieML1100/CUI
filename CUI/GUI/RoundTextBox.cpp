@@ -16,7 +16,7 @@ void RoundTextBox::Update()
 	auto font = this->Font;
 	float render_height = Height - (TextMargin * 2.0f);
 	textSize = font->GetTextSize(Text, FLT_MAX, render_height);
-	float OffsetY = std::max((Height - textSize.height) * 0.5f, 0.0f);
+	float OffsetY = (std::max)((Height - textSize.height) * 0.5f, 0.0f);
 
 	auto size = ActualSize();
 	bool isSelected = ParentForm->Selected == this;
@@ -30,9 +30,9 @@ void RoundTextBox::Update()
 		auto backColor = this->BackColor;
 		if (isUnderMouse || isSelected)
 		{
-			backColor.r = std::min(1.0f, backColor.r * 1.2f);
-			backColor.g = std::min(1.0f, backColor.g * 1.2f);
-			backColor.b = std::min(1.0f, backColor.b * 1.2f);
+			backColor.r = (std::min)(1.0f, backColor.r * 1.2f);
+			backColor.g = (std::min)(1.0f, backColor.g * 1.2f);
+			backColor.b = (std::min)(1.0f, backColor.b * 1.2f);
 		}
 		d2d->FillRoundRect(0, 0, size.cx, size.cy, backColor, TextMargin);
 		RenderImage();

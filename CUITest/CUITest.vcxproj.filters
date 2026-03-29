@@ -24,6 +24,9 @@
     <ClCompile Include="DemoWindow.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="nanosvg.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DemoWindow.h">
@@ -33,6 +36,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="imgs.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="nanosvg.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

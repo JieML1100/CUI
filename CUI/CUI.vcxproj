@@ -109,7 +109,7 @@
       <EnableModules>false</EnableModules>
       <BuildStlModules>true</BuildStlModules>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -135,7 +135,7 @@
       <EnableModules>false</EnableModules>
       <BuildStlModules>true</BuildStlModules>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -160,7 +160,7 @@
       <EnableModules>false</EnableModules>
       <BuildStlModules>true</BuildStlModules>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -188,7 +188,7 @@
       <BuildStlModules>true</BuildStlModules>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FavorSizeOrSpeed>Size</FavorSizeOrSpeed>
-      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -216,6 +216,7 @@
     <ClInclude Include="GUI\DateTimePicker.h" />
     <ClInclude Include="GUI\Control.h" />
     <ClInclude Include="GUI\DCompLayeredHost.h" />
+    <ClInclude Include="GUI\Event.h" />
     <ClInclude Include="GUI\Form.h" />
     <ClInclude Include="GUI\GridView.h" />
     <ClInclude Include="GUI\GroupBox.h" />
@@ -253,7 +254,6 @@
     <ClInclude Include="GUI\Layout\WrapPanel.h" />
     <ClInclude Include="GUI\Layout\RelativePanel.h" />
     <ClInclude Include="GUI\Layout\Layout.h" />
-    <ClInclude Include="nanosvg.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="GUI\Application.cpp" />
@@ -298,7 +298,6 @@
     <ClCompile Include="GUI\Layout\DockPanel.cpp" />
     <ClCompile Include="GUI\Layout\WrapPanel.cpp" />
     <ClCompile Include="GUI\Layout\RelativePanel.cpp" />
-    <ClCompile Include="nanosvg.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

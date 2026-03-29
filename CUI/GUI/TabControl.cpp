@@ -69,7 +69,7 @@ void TabControl::LayoutPage(TabPage* page, int offsetX)
 	if (!page) return;
 	page->SetRuntimeLocation(POINT{ offsetX, this->TitleHeight });
 	SIZE s = this->Size;
-	s.cy = std::max(0L, s.cy - this->TitleHeight);
+	s.cy = (std::max)(0L, s.cy - this->TitleHeight);
 	page->Size = s;
 }
 
@@ -197,7 +197,7 @@ TabPage* TabControl::AddPage(std::wstring name)
 	result->SetRuntimeLocation(POINT{ 0, this->TitleHeight });
 	{
 		SIZE s = this->Size;
-		s.cy = std::max(0L, s.cy - this->TitleHeight);
+		s.cy = (std::max)(0L, s.cy - this->TitleHeight);
 		result->Size = s;
 	}
 	for (int i = 0; i < this->Count; i++)
@@ -216,7 +216,7 @@ GET_CPP(TabControl, int, PageCount)
 {
 	return this->Count;
 }
-GET_CPP(TabControl, List<Control*>&, Pages)
+GET_CPP(TabControl, std::vector<Control*>&, Pages)
 {
 	return this->Children;
 }
@@ -255,7 +255,7 @@ void TabControl::Update()
 				d2d->DrawRect((TitleWidth * i), 0, TitleWidth, TitleHeight, this->BolderColor, this->Boder);
 				d2d->PopDrawRect();
 			}
-			const float contentHeight = (float)std::max(0L, size.cy - this->TitleHeight);
+			const float contentHeight = (float)(std::max)(0L, size.cy - this->TitleHeight);
 			if (contentHeight > 0.0f)
 			{
 				d2d->PushDrawRect(0.0f, (float)this->TitleHeight, (float)size.cx, contentHeight);
@@ -414,14 +414,14 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		HDROP hDropInfo = HDROP(wParam);
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
 		TCHAR strFileName[MAX_PATH];
-		List<std::wstring> files;
+		std::vector<std::wstring> files;
 		for (int i = 0; i < uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.Add(strFileName);
+			files.push_back(strFileName);
 		}
 		DragFinish(hDropInfo);
-		if (files.Count > 0)
+		if (!files.empty())
 		{
 			this->OnDropFile(this, files);
 		}

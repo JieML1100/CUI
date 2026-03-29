@@ -748,7 +748,7 @@ static bool TimeScaleInterleavedPcm(
 	const size_t inFrames = inBytes / bytesPerFrame;
 	if (inFrames == 0) return false;
 
-	const size_t outFrames = (size_t)std::max(1.0, std::floor((double)inFrames / (double)rate));
+	const size_t outFrames = (size_t)(std::max)(1.0, std::floor((double)inFrames / (double)rate));
 	const size_t outBytes = outFrames * bytesPerFrame;
 	out.resize(outBytes);
 
@@ -2204,7 +2204,7 @@ void MediaPlayer::UpdatePositionFromClock(bool forceEvent)
 	if (FAILED(_presentationClock->GetTime(&t))) return;
 
 	double newPos = (double)t / HNS_PER_SEC;
-	if (_duration > 0.0) newPos = std::max(0.0, std::min(newPos, _duration));
+	if (_duration > 0.0) newPos = (std::max)(0.0, (std::min)(newPos, _duration));
 
 	if (forceEvent || std::abs(newPos - _position) >= 0.10)
 	{
@@ -3049,7 +3049,7 @@ void MediaPlayer::Seek(double seconds)
 	if (_useSourceReader)
 	{
 		if (!_sourceReader) return;
-		seconds = std::max(0.0, std::min(seconds, _duration));
+		seconds = (std::max)(0.0, (std::min)(seconds, _duration));
 		if (_timeStretch) _timeStretch->Reset();
 		PROPVARIANT var;
 		PropVariantInit(&var);
@@ -3089,7 +3089,7 @@ void MediaPlayer::Seek(double seconds)
 	HRESULT hr = SetPositionImpl(seconds);
 	if (SUCCEEDED(hr))
 	{
-		_position = std::max(0.0, std::min(seconds, _duration));
+		_position = (std::max)(0.0, (std::min)(seconds, _duration));
 		OnPositionChanged(this, _position);
 		this->PostRender();
 	}
@@ -3178,7 +3178,7 @@ HRESULT MediaPlayer::SetVolumeImpl(double volume)
 	hr = pAudioVolume->GetChannelCount(&channels);
 	if (FAILED(hr)) return hr;
 
-	float fVolume = (float)std::max(0.0, std::min(1.0, volume));
+	float fVolume = (float)(std::max)(0.0, (std::min)(1.0, volume));
 	for (UINT32 i = 0; i < channels; i++)
 	{
 		hr = pAudioVolume->SetChannelVolume(i, fVolume);
@@ -3597,7 +3597,7 @@ GET_CPP(MediaPlayer, double, Volume)
 
 SET_CPP(MediaPlayer, double, Volume)
 {
-	_volume.store(std::max(0.0, std::min(1.0, value)));
+	_volume.store((std::max)(0.0, (std::min)(1.0, value)));
 	if (_mediaLoaded)
 	{
 		if (_useSourceReader)

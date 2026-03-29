@@ -20,7 +20,7 @@ public:
 	ID2D1RenderTarget* ImageCacheTarget = nullptr;
 	const BitmapSource* ImageCacheSource = nullptr;
 	std::wstring Text = L"";
-	List<TreeNode*> Children;
+	std::vector<TreeNode*> Children;
 	bool Expand = false;
 	float ExpandProgress = 0.0f;
 	float AnimStartProgress = 0.0f;
@@ -81,4 +81,3 @@ public:
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 };
-

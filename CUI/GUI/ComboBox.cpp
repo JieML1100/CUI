@@ -7,11 +7,11 @@
 #define COMBO_MIN_SCROLL_BLOCK 16
 UIClass ComboBox::Type() { return UIClass::UI_ComboBox; }
 
-GET_CPP(ComboBox, List<std::wstring>&, Items)
+GET_CPP(ComboBox, std::vector<std::wstring>&, Items)
 {
 	return this->values;
 }
-SET_CPP(ComboBox, List<std::wstring>&, Items)
+SET_CPP(ComboBox, std::vector<std::wstring>&, Items)
 {
 	this->values = value;
 	EnsureSelectionInRange();
@@ -75,31 +75,31 @@ bool ComboBox::IsDropDownInteractive()
 
 void ComboBox::EnsureSelectionInRange()
 {
-	if (this->values.Count <= 0)
+	if (this->values.empty())
 	{
 		this->SelectedIndex = 0;
 		this->Text = L"";
 		return;
 	}
 	if (this->SelectedIndex < 0) this->SelectedIndex = 0;
-	if (this->SelectedIndex >= this->values.Count) this->SelectedIndex = this->values.Count - 1;
+	if (this->SelectedIndex >= (int)this->values.size()) this->SelectedIndex = (int)this->values.size() - 1;
 	this->Text = this->values[this->SelectedIndex];
 }
 
 void ComboBox::EnsureScrollInRange()
 {
 	const int visibleCount = VisibleItemCount();
-	const int maxScroll = (std::max)(0, this->values.Count - visibleCount);
+	const int maxScroll = (std::max)(0, (int)this->values.size() - visibleCount);
 	if (this->ExpandScroll < 0) this->ExpandScroll = 0;
 	if (this->ExpandScroll > maxScroll) this->ExpandScroll = maxScroll;
-	if (_underMouseIndex >= this->values.Count) _underMouseIndex = -1;
+	if (_underMouseIndex >= (int)this->values.size()) _underMouseIndex = -1;
 }
 
 CursorKind ComboBox::QueryCursor(int xof, int yof)
 {
 	if (!this->Enable) return CursorKind::Arrow;
 
-	const bool hasVScroll = (IsDropDownVisible() && this->values.Count > VisibleItemCount());
+	const bool hasVScroll = (IsDropDownVisible() && (int)this->values.size() > VisibleItemCount());
 	const float dropHeight = CurrentDropdownHeight();
 	if (hasVScroll && xof >= (this->Width - 8) && yof >= this->Height && (float)yof <= ((float)this->Height + dropHeight))
 		return CursorKind::SizeNS;
@@ -176,12 +176,12 @@ void ComboBox::DrawScroll()
 	auto d2d = this->ParentForm->Render;
 	const int render_count = VisibleItemCount();
 	const float renderHeight = CurrentDropdownHeight();
-	if (this->values.Count > 0 && render_count > 0 && renderHeight > 0.0f)
+	if (!this->values.empty() && render_count > 0 && renderHeight > 0.0f)
 	{
-		if (render_count < this->values.Count)
+		if (render_count < (int)this->values.size())
 		{
-			int max_scroll = this->values.Count - render_count;
-			float scroll_block_height = ((float)render_count / (float)this->values.Count) * renderHeight;
+			int max_scroll = (int)this->values.size() - render_count;
+			float scroll_block_height = ((float)render_count / (float)this->values.size()) * renderHeight;
 			if (scroll_block_height < COMBO_MIN_SCROLL_BLOCK)scroll_block_height = COMBO_MIN_SCROLL_BLOCK;
 			if (scroll_block_height > renderHeight) scroll_block_height = renderHeight;
 			float scroll_block_move_space = renderHeight - scroll_block_height;
@@ -199,8 +199,8 @@ void ComboBox::UpdateScrollDrag(float posY) {
 	float _render_height = CurrentDropdownHeight();
 	float dxHeight = _render_height;
 	if (render_count <= 0 || _render_height <= 0.0f) return;
-	int maxScroll = this->values.Count - render_count;
-	float scrollBlockHeight = ((float)render_count / (float)this->values.Count) * (float)_render_height;
+	int maxScroll = (int)this->values.size() - render_count;
+	float scrollBlockHeight = ((float)render_count / (float)this->values.size()) * (float)_render_height;
 	if (scrollBlockHeight < COMBO_MIN_SCROLL_BLOCK)scrollBlockHeight = COMBO_MIN_SCROLL_BLOCK;
 	if (scrollBlockHeight > _render_height) scrollBlockHeight = _render_height;
 	float scrollHeight = dxHeight - scrollBlockHeight;
@@ -278,7 +278,7 @@ void ComboBox::Update()
 		if (dropHeight > 0.0f && visibleCount > 0)
 		{
 			d2d->PushDrawRect(0.0f, (float)this->Height, (float)this->Width, dropHeight);
-			for (int i = this->ExpandScroll; i < this->ExpandScroll + visibleCount && i < this->values.Count; i++)
+			for (int i = this->ExpandScroll; i < this->ExpandScroll + visibleCount && i < (int)this->values.size(); i++)
 			{
 				if (i == _underMouseIndex)
 				{
@@ -338,14 +338,14 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		HDROP hDropInfo = HDROP(wParam);
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xFFFFFFFF, NULL, 0);
 		TCHAR strFileName[MAX_PATH];
-		List<std::wstring> files;
+		std::vector<std::wstring> files;
 		for (int i = 0; i < uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.Add(strFileName);
+			files.push_back(strFileName);
 		}
 		DragFinish(hDropInfo);
-		if (files.Count > 0)
+		if (!files.empty())
 		{
 			this->OnDropFile(this, files);
 		}
@@ -365,7 +365,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 			}
 			else
 			{
-				if (this->ExpandScroll < this->values.Count - visibleCount)
+				if (this->ExpandScroll < (int)this->values.size() - visibleCount)
 				{
 					this->ExpandScroll += 1;
 					this->PostRender();
@@ -395,7 +395,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 					if (_yof < visibleCount)
 					{
 						int idx = _yof + this->ExpandScroll;
-						if (idx < this->values.Count)
+						if (idx < (int)this->values.size())
 						{
 							if (idx != this->_underMouseIndex)
 							{
@@ -426,14 +426,14 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 			if (this->Expand && xof >= (Width - 8) && xof <= Width && yof >= this->Height && (float)yof <= ((float)this->Height + dropdownHeight))
 			{
 				const int render_count = visibleCount;
-				if (render_count > 0 && this->values.Count > render_count)
+				if (render_count > 0 && (int)this->values.size() > render_count)
 				{
-					const int max_scroll = this->values.Count - render_count;
+					const int max_scroll = (int)this->values.size() - render_count;
 					const float renderH = dropdownHeight;
-					float thumbH = ((float)render_count / (float)this->values.Count) * renderH;
+					float thumbH = ((float)render_count / (float)this->values.size()) * renderH;
 					if (thumbH < COMBO_MIN_SCROLL_BLOCK) thumbH = COMBO_MIN_SCROLL_BLOCK;
 					if (thumbH > renderH) thumbH = renderH;
-					const float moveSpace = std::max(0.0f, renderH - thumbH);
+					const float moveSpace = (std::max)(0.0f, renderH - thumbH);
 					float per = 0.0f;
 					if (max_scroll > 0) per = std::clamp((float)this->ExpandScroll / (float)max_scroll, 0.0f, 1.0f);
 					const float thumbTop = per * moveSpace;
@@ -480,7 +480,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 						if (_yof < visibleCount)
 						{
 							int idx = _yof + this->ExpandScroll;
-							if (idx < this->values.Count)
+							if (idx < (int)this->values.size())
 							{
 								this->_underMouseIndex = idx;
 								this->SelectedIndex = this->_underMouseIndex;

@@ -1,8 +1,6 @@
 ﻿#include "WebBrowser.h"
 #include "Form.h"
 
-#include <CppUtils/Utils/Convert.h>
-
 #include <windowsx.h>
 #include <algorithm>
 #include <dcomp.h>
@@ -17,12 +15,20 @@ static int HexVal(wchar_t c);
 
 static std::wstring ToW(const std::string& s)
 {
-	return Convert::Utf8ToUnicode(s);
+	if (s.empty()) return L"";
+	int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+	std::wstring ws(len, L'\0');
+	if (len > 0) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), ws.data(), len);
+	return ws;
 }
 
 static std::string ToU8(const std::wstring& s)
 {
-	return Convert::UnicodeToUtf8(s);
+	if (s.empty()) return "";
+	int len = WideCharToMultiByte(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0, nullptr, nullptr);
+	std::string result(len, '\0');
+	if (len > 0) WideCharToMultiByte(CP_UTF8, 0, s.c_str(), (int)s.size(), result.data(), len, nullptr, nullptr);
+	return result;
 }
 
 WebBrowser::WebBrowser(int x, int y, int width, int height)
@@ -793,8 +799,8 @@ void WebBrowser::EnsureControllerBounds()
 
 	// All Win32/DComp coordinates must be in physical pixels
 	const float dpiSc = (this->ParentForm ? this->ParentForm->GetDpiScale() : 1.0f);
-	int w = std::max(1, (int)(this->Width  * dpiSc));
-	int h = std::max(1, (int)(this->Height * dpiSc));
+	int w = (std::max)(1, (int)(this->Width  * dpiSc));
+	int h = (std::max)(1, (int)(this->Height * dpiSc));
 
 	POINT abs = this->AbsLocation;
 	int top = (this->ParentForm && this->ParentForm->VisibleHead) ? this->ParentForm->HeadHeight : 0;

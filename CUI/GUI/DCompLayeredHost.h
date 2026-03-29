@@ -18,7 +18,7 @@
 
 /*---如果Utils和Graphics源代码包含在此项目中则直接引用本地项目---*/
 //#define _LIB
-#include <CppUtils/Graphics/Factory.h>
+#include "Factory.h"
 /*---如果Utils和Graphics被编译成lib则引用外部头文件---*/
 // (using external CppUtils)
 
