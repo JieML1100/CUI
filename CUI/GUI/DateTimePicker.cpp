@@ -1,7 +1,7 @@
-﻿#include "DateTimePicker.h"
+﻿#define NOMINMAX
+#include "DateTimePicker.h"
 #include "Form.h"
 #include <format>
-
 UIClass DateTimePicker::Type() { return UIClass::UI_DateTimePicker; }
 
 DateTimePicker::DateTimePicker(std::wstring text, int x, int y, int width, int height)
@@ -157,7 +157,7 @@ void DateTimePicker::Update()
 
 	this->BeginRender((float)size.cx, (float)size.cy);
 	{
-		const float round = (std::min)(this->Round, (float)this->Height * 0.5f);
+		const float round = std::min(this->Round, (float)this->Height * 0.5f);
 		D2D1_COLOR_F baseColor = this->BackColor;
 		if (isUnderMouse && !this->Expand)
 			baseColor = blendColor(this->BackColor, this->HoverColor, 0.22f);
@@ -174,7 +174,7 @@ void DateTimePicker::Update()
 				d2d->FillRoundRect(fieldRect.left, fieldRect.top, fieldRect.right - fieldRect.left, fieldRect.bottom - fieldRect.top, this->PanelBackColor, 5.0f);
 
 				D2D1_COLOR_F spinBackColor = blendColor(this->PanelBackColor, this->DropBorderColor, 0.18f);
-				float spinLeft = (std::min)(upRect.left, downRect.left);
+				float spinLeft = std::min(upRect.left, downRect.left);
 				d2d->FillRect(spinLeft, fieldRect.top + 1.0f, fieldRect.right - spinLeft - 1.0f, fieldRect.bottom - fieldRect.top - 2.0f, spinBackColor);
 				if (hoverUp)
 					d2d->FillRect(upRect.left, upRect.top, upRect.right - upRect.left, upRect.bottom - upRect.top, this->HoverColor);
@@ -186,10 +186,10 @@ void DateTimePicker::Update()
 				d2d->DrawRoundRect(fieldRect.left, fieldRect.top, fieldRect.right - fieldRect.left, fieldRect.bottom - fieldRect.top, borderColor, borderWidth, 5.0f);
 
 				float textRight = spinLeft - 3.0f;
-				float textAreaWidth = (std::max)(0.0f, textRight - fieldRect.left);
+				float textAreaWidth = std::max(0.0f, textRight - fieldRect.left);
 				auto textSize = font->GetTextSize(text);
-				float textX = fieldRect.left + (std::max)(0.0f, (textAreaWidth - textSize.width) * 0.5f);
-				float textY = fieldRect.top + (std::max)(0.0f, ((fieldRect.bottom - fieldRect.top) - textSize.height) * 0.5f);
+				float textX = fieldRect.left + std::max(0.0f, (textAreaWidth - textSize.width) * 0.5f);
+				float textY = fieldRect.top + std::max(0.0f, ((fieldRect.bottom - fieldRect.top) - textSize.height) * 0.5f);
 
 				if (showEditHighlight && !text.empty())
 				{
@@ -225,7 +225,7 @@ void DateTimePicker::Update()
 						float buttonHeight = buttonRect.bottom - buttonRect.top;
 						float cx = buttonRect.left + buttonWidth * 0.5f;
 						float cy = buttonRect.top + buttonHeight * 0.5f + (up ? -0.5f : 0.5f);
-						float half = std::clamp((std::min)(buttonWidth, buttonHeight) * 0.18f, 2.5f, 4.0f);
+						float half = std::clamp(std::min(buttonWidth, buttonHeight) * 0.18f, 2.5f, 4.0f);
 						D2D1_TRIANGLE tri{};
 						if (up)
 						{
@@ -268,7 +268,7 @@ void DateTimePicker::Update()
 			{
 				auto textSize = font->GetTextSize(this->Text);
 				float textX = 10.0f;
-				float textY = (std::max)(0.0f, ((float)this->Height - textSize.height) * 0.5f);
+				float textY = std::max(0.0f, ((float)this->Height - textSize.height) * 0.5f);
 				d2d->DrawString(this->Text, textX, textY, this->ForeColor, font);
 			}
 		}
@@ -276,7 +276,7 @@ void DateTimePicker::Update()
 		{
 			auto textSize = font->GetTextSize(this->Text);
 			float textX = 10.0f;
-			float textY = (std::max)(0.0f, ((float)this->Height - textSize.height) * 0.5f);
+			float textY = std::max(0.0f, ((float)this->Height - textSize.height) * 0.5f);
 			d2d->DrawString(this->Text, textX, textY, this->ForeColor, font);
 
 			// 下拉箭头
@@ -739,22 +739,37 @@ void DateTimePicker::UpdateDisplayText()
 
 int DateTimePicker::DaysInMonth(int year, int month)
 {
+	auto isLeapYear = [](int year) {
+		if (year % 4 != 0)
+			return false;
+		else if (year % 100 != 0)
+			return true;
+		else if (year % 400 != 0)
+			return false;
+		else
+			return true;
+		};
 	static const int days[] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
 	int m = std::clamp(month, 1, 12);
 	int d = days[m - 1];
-	const bool isLeapYear = ((year % 4 == 0) && (year % 100 != 0)) || (year % 400 == 0);
-	if (m == 2 && isLeapYear)
+	if (m == 2 && isLeapYear(year))
 		d = 29;
 	return d;
 }
 
 int DateTimePicker::FirstWeekday(int year, int month)
 {
-	static const int offsets[] = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
-	int y = year;
-	int m = std::clamp(month, 1, 12);
-	if (m < 3) y -= 1;
-	return (y + y / 4 - y / 100 + y / 400 + offsets[m - 1] + 1) % 7;
+	if (month < 3)
+	{
+		month += 12;
+		year -= 1;
+	}
+	int k = year % 100;
+	int j = year / 100;
+	int m = month;
+	int q = 1; // day of month
+	int h = (q + (13 * (m + 1)) / 5 + k + (k / 4) + (j / 4) - (2 * j)) % 7;
+	return ((h + 6) % 7); // Convert to Sunday=0, Monday=1, ..., Saturday=6
 }
 
 void DateTimePicker::AdjustMonth(int delta)
@@ -897,19 +912,19 @@ bool DateTimePicker::GetInlineTimeLayout(LayoutMetrics& out)
 	const float pad = 8.0f;
 	out = LayoutMetrics{};
 	out.contentLeft = pad;
-	out.contentWidth = (std::max)(0.0f, (float)this->Width - pad * 2.0f);
+	out.contentWidth = std::max(0.0f, (float)this->Width - pad * 2.0f);
 	out.showDate = false;
 	out.showTime = true;
 	out.showToggleRow = false;
 
-	float timeHeight = (std::min)(32.0f, (float)this->Height - 6.0f);
+	float timeHeight = std::min(32.0f, (float)this->Height - 6.0f);
 	if (timeHeight < 18.0f)
-		timeHeight = (std::max)(0.0f, (float)this->Height - 4.0f);
-	float y = (std::max)(0.0f, ((float)this->Height - timeHeight) * 0.5f);
+		timeHeight = std::max(0.0f, (float)this->Height - 4.0f);
+	float y = std::max(0.0f, ((float)this->Height - timeHeight) * 0.5f);
 
 	out.timeTop = y;
 	out.timeHeight = timeHeight;
-	float fieldW = (std::min)(64.0f, (std::max)(44.0f, out.contentWidth * 0.28f));
+	float fieldW = std::min(64.0f, std::max(44.0f, out.contentWidth * 0.28f));
 	float gap = 10.0f;
 	float centerX = out.contentLeft + out.contentWidth * 0.5f;
 	out.hourRect = { centerX - fieldW - gap, y, centerX - gap, y + out.timeHeight };
@@ -945,7 +960,7 @@ bool DateTimePicker::GetLayoutMetrics(LayoutMetrics& out)
 	const float pad = 8.0f;
 	const float baseTop = (float)this->Height;
 	out.contentLeft = pad;
-	out.contentWidth = (std::max)(0.0f, (float)this->Width - pad * 2.0f);
+	out.contentWidth = std::max(0.0f, (float)this->Width - pad * 2.0f);
 	out.contentTop = baseTop + pad;
 	float y = out.contentTop;
 
@@ -953,9 +968,9 @@ bool DateTimePicker::GetLayoutMetrics(LayoutMetrics& out)
 	if (out.showToggleRow)
 	{
 		const float toggleHeight = 24.0f;
-		float chipW = (std::min)(72.0f, (std::max)(48.0f, (out.contentWidth - 8.0f) * 0.5f));
+		float chipW = std::min(72.0f, std::max(48.0f, (out.contentWidth - 8.0f) * 0.5f));
 		float totalW = chipW * 2.0f + 8.0f;
-		float startX = out.contentLeft + (std::max)(0.0f, (out.contentWidth - totalW) * 0.5f);
+		float startX = out.contentLeft + std::max(0.0f, (out.contentWidth - totalW) * 0.5f);
 		out.toggleDateRect = { startX, y, startX + chipW, y + toggleHeight };
 		out.toggleTimeRect = { startX + chipW + 8.0f, y, startX + chipW * 2.0f + 8.0f, y + toggleHeight };
 		y += toggleHeight + 6.0f;
@@ -994,7 +1009,7 @@ bool DateTimePicker::GetLayoutMetrics(LayoutMetrics& out)
 	{
 		out.timeTop = y;
 		out.timeHeight = 32.0f;
-		float fieldW = (std::min)(64.0f, (std::max)(44.0f, out.contentWidth * 0.28f));
+		float fieldW = std::min(64.0f, std::max(44.0f, out.contentWidth * 0.28f));
 		float gap = 10.0f;
 		float centerX = out.contentLeft + out.contentWidth * 0.5f;
 		out.hourRect = { centerX - fieldW - gap, y, centerX - gap, y + out.timeHeight };

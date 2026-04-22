@@ -224,8 +224,8 @@
     <ClInclude Include="TreeViewNodesEditorDialog.h" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\CUI_Legacy\CUI_Legacy.vcxproj">
-      <Project>{4ced323f-40d7-4933-83be-bfdd6f5dc8d4}</Project>
+    <ProjectReference Include="..\CUI\CUI.vcxproj">
+      <Project>{48316892-3a38-48f2-8c34-4d676304f769}</Project>
     </ProjectReference>
     <ProjectReference Include="..\LibXML\LibXML.vcxproj">
       <Project>{4eb8ee5e-bdd7-4744-9651-7d64df66f413}</Project>

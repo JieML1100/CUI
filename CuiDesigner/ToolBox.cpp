@@ -1,6 +1,6 @@
 ﻿#include "ToolBox.h"
-#include "../CUI_Legacy/GUI/Label.h"
-#include "../CUI_Legacy/GUI/Form.h"
+#include "../CUI/GUI/Label.h"
+#include "../CUI/GUI/Form.h"
 #include "nanosvg.h"
 #include <BitmapSource.h>
 #include <Factory.h>

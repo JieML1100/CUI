@@ -1,6 +1,6 @@
 #include "HitTestService.h"
 
-#include "../../CUI_Legacy/GUI/Control.h"
+#include "../../CUI/GUI/Control.h"
 
 #include <climits>
 

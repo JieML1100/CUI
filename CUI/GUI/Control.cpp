@@ -230,7 +230,7 @@ Control* Control::get(int index)
 }
 void Control::RemoveControl(Control* c)
 {
-	this->Children.erase(std::remove(this->Children.begin(), this->Children.end(), c), this->Children.end());
+	std::remove(this->Children.begin(), this->Children.end(), c);
 	c->Parent = NULL;
 	c->ParentForm = NULL;
 	if (!this->ParentForm) return;
@@ -510,7 +510,7 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 			files.push_back(strFileName);
 		}
 		DragFinish(hDropInfo);
-		if (!files.empty())
+		if (files.size() > 0)
 		{
 			this->OnDropFile(this, files);
 		}

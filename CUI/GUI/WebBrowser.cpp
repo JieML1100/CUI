@@ -1,4 +1,6 @@
-﻿#include "WebBrowser.h"
+#ifdef CUI_ENABLE_WEBVIEW2
+
+#include "WebBrowser.h"
 #include "Form.h"
 
 #include <windowsx.h>
@@ -1108,3 +1110,32 @@ void WebBrowser::QuerySelectorAllOuterHtmlAsync(const std::wstring& cssSelector,
 
 	ExecuteScriptAsync(script, callback);
 }
+
+#else
+
+#include "WebBrowser.h"
+
+WebBrowser::WebBrowser(int x, int y, int width, int height)
+{
+	this->Location = { x, y };
+	this->Size = { width, height };
+	this->BackColor = Colors::White;
+}
+
+WebBrowser::~WebBrowser() = default;
+
+void WebBrowser::Update()
+{
+}
+
+bool WebBrowser::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+{
+	(void)message;
+	(void)wParam;
+	(void)lParam;
+	(void)xof;
+	(void)yof;
+	return true;
+}
+
+#endif

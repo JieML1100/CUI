@@ -2,7 +2,6 @@
 #include "TabControl.h"
 #include "Panel.h"
 #include "Form.h"
-#include "WebBrowser.h"
 #include <algorithm>
 #include <cmath>
 #pragma comment(lib, "Imm32.lib")
@@ -32,15 +31,8 @@ static float EaseOutCubic01(float t)
 
 static void SyncNativeChildWindowsRecursive(Control* root)
 {
-	if (!root) return;
-	// 目前库里只有 WebBrowser 会创建真实 HWND 子窗口；后续有更多原生控件也可在此扩展
-	if (root->Type() == UIClass::UI_WebBrowser)
-	{
-		// 强制跑一次 Update：它会根据 IsVisual/Visible 同步宿主 HWND 的 Show/Hide/Bounds
-		root->Update();
-	}
-	for (int i = 0; i < root->Count; i++)
-		SyncNativeChildWindowsRecursive(root->operator[](i));
+	(void)root;
+	// Legacy：已移除 WebBrowser，无原生 HWND 子控件需要同步
 }
 
 static void SyncNativeChildWindowsForAllPages(TabControl* tc)
@@ -69,7 +61,7 @@ void TabControl::LayoutPage(TabPage* page, int offsetX)
 	if (!page) return;
 	page->SetRuntimeLocation(POINT{ offsetX, this->TitleHeight });
 	SIZE s = this->Size;
-	s.cy = (std::max)(0L, s.cy - this->TitleHeight);
+	s.cy = std::max(0L, s.cy - this->TitleHeight);
 	page->Size = s;
 }
 
@@ -197,7 +189,7 @@ TabPage* TabControl::AddPage(std::wstring name)
 	result->SetRuntimeLocation(POINT{ 0, this->TitleHeight });
 	{
 		SIZE s = this->Size;
-		s.cy = (std::max)(0L, s.cy - this->TitleHeight);
+		s.cy = std::max(0L, s.cy - this->TitleHeight);
 		result->Size = s;
 	}
 	for (int i = 0; i < this->Count; i++)
@@ -234,7 +226,7 @@ void TabControl::Update()
 		{
 			this->RenderImage();
 		}
-
+		
 		if (this->Count > 0)
 		{
 			ClampSelectedIndex();
@@ -255,7 +247,7 @@ void TabControl::Update()
 				d2d->DrawRect((TitleWidth * i), 0, TitleWidth, TitleHeight, this->BolderColor, this->Boder);
 				d2d->PopDrawRect();
 			}
-			const float contentHeight = (float)(std::max)(0L, size.cy - this->TitleHeight);
+			const float contentHeight = (float)std::max(0L, size.cy - this->TitleHeight);
 			if (contentHeight > 0.0f)
 			{
 				d2d->PushDrawRect(0.0f, (float)this->TitleHeight, (float)size.cx, contentHeight);
@@ -398,8 +390,6 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 					}
 					else if (page)
 					{
-						// 空白区域没有命中子控件时，仍应把消息交给当前页本身，
-						// 这样 TabPage/Panel 级别的 OnMouseDown/OnMouseMove 等事件才能工作。
 						page->ProcessMessage(message, wParam, lParam, xof, cy);
 					}
 				}

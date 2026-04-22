@@ -1,4 +1,5 @@
 ﻿#pragma once
+#define NOMINMAX
 #include "GridView.h"
 #include "Form.h"
 #include <algorithm>
@@ -132,7 +133,7 @@ GridView::~GridView()
 float GridView::GetTotalColumnsWidth()
 {
 	float sum = 0.0f;
-	for (int i = 0; i < this->Columns.size(); i++)
+	for (int i = 0; i < (int)this->Columns.size(); i++)
 		sum += this->Columns[i].Width;
 	return sum;
 }
@@ -160,7 +161,7 @@ GridView::ScrollLayout GridView::CalcScrollLayout()
 		if (l.RowHeight > 0.0f && contentH > 0.0f)
 			visibleRows = (int)std::ceil(contentH / l.RowHeight) + 1;
 		if (visibleRows < 0) visibleRows = 0;
-		
+
 		// 计算新行区域高度（如果有的话）
 		float newRowAreaHeight = (this->AllowUserToAddRows && this->Columns.size() > 0) ? l.RowHeight : 0.0f;
 		float totalRowsH = (l.RowHeight > 0.0f) ? (l.RowHeight * (float)this->Rows.size()) : 0.0f;
@@ -177,10 +178,10 @@ GridView::ScrollLayout GridView::CalcScrollLayout()
 			l.RenderHeight = renderH;
 			l.ContentHeight = contentH;
 			l.TotalRowsHeight = totalRowsH;
-			l.MaxScrollY = (std::max)(0.0f, totalRowsH - contentH);
+			l.MaxScrollY = std::max(0.0f, totalRowsH - contentH);
 			l.VisibleRows = visibleRows;
-			l.MaxScrollRow = (std::max)(0, (int)this->Rows.size() - visibleRows);
-			l.MaxScrollX = (std::max)(0.0f, l.TotalColumnsWidth - renderW);
+			l.MaxScrollRow = std::max(0, (int)this->Rows.size() - visibleRows);
+			l.MaxScrollX = std::max(0.0f, l.TotalColumnsWidth - renderW);
 			return l;
 		}
 		needV = newNeedV;
@@ -194,16 +195,16 @@ GridView::ScrollLayout GridView::CalcScrollLayout()
 	float contentH = l.RenderHeight - l.HeadHeight;
 	if (contentH < 0.0f) contentH = 0.0f;
 	l.ContentHeight = contentH;
-	
+
 	// 计算新行区域高度
 	float newRowAreaHeight = (this->AllowUserToAddRows && this->Columns.size() > 0) ? l.RowHeight : 0.0f;
 	l.TotalRowsHeight = (l.RowHeight > 0.0f) ? (l.RowHeight * (float)this->Rows.size()) : 0.0f;
 	l.TotalRowsHeight += newRowAreaHeight;  // 加上新行区域高度
-	l.MaxScrollY = (std::max)(0.0f, l.TotalRowsHeight - contentH);
+	l.MaxScrollY = std::max(0.0f, l.TotalRowsHeight - contentH);
 	l.VisibleRows = (l.RowHeight > 0.0f && contentH > 0.0f) ? ((int)std::ceil(contentH / l.RowHeight) + 1) : 0;
 	if (l.VisibleRows < 0) l.VisibleRows = 0;
-	l.MaxScrollRow = (std::max)(0, (int)this->Rows.size() - l.VisibleRows);
-	l.MaxScrollX = (std::max)(0.0f, l.TotalColumnsWidth - l.RenderWidth);
+	l.MaxScrollRow = std::max(0, (int)this->Rows.size() - l.VisibleRows);
+	l.MaxScrollX = std::max(0.0f, l.TotalColumnsWidth - l.RenderWidth);
 	return l;
 }
 
@@ -456,7 +457,7 @@ D2D1_RECT_F GridView::GetGridViewScrollBlockRect(GridView* ct)
 	}
 	float head_font_height = head_font->FontHeight;
 	float head_height = ct->HeadHeight == 0.0f ? head_font_height : ct->HeadHeight;
-	const float contentH = (std::max)(0.0f, _render_height - head_height);
+	const float contentH = std::max(0.0f, _render_height - head_height);
 	const float totalH = (row_height > 0.0f) ? (row_height * (float)ct->Rows.size()) : 0.0f;
 	if (totalH > contentH && contentH > 0.0f)
 	{
@@ -465,8 +466,8 @@ D2D1_RECT_F GridView::GetGridViewScrollBlockRect(GridView* ct)
 		if (thumbH < minThumbH) thumbH = minThumbH;
 		if (thumbH > _render_height) thumbH = _render_height;
 
-		const float maxScrollY = (std::max)(0.0f, totalH - contentH);
-		const float moveSpace = (std::max)(0.0f, _render_height - thumbH);
+		const float maxScrollY = std::max(0.0f, totalH - contentH);
+		const float moveSpace = std::max(0.0f, _render_height - thumbH);
 		float per = 0.0f;
 		if (maxScrollY > 0.0f)
 			per = std::clamp(ct->ScrollYOffset / maxScrollY, 0.0f, 1.0f);
@@ -494,7 +495,7 @@ void GridView::DrawScroll()
 		float _render_height = l.RenderHeight;
 		const float row_height = this->GetRowHeightPx();
 		const float head_height = this->GetHeadHeightPx();
-		const float contentH = (std::max)(0.0f, _render_height - head_height);
+		const float contentH = std::max(0.0f, _render_height - head_height);
 		const float totalH = (row_height > 0.0f) ? (row_height * (float)this->Rows.size()) : 0.0f;
 		if (totalH > contentH && contentH > 0.0f)
 		{
@@ -503,8 +504,8 @@ void GridView::DrawScroll()
 			if (thumbH < minThumbH) thumbH = minThumbH;
 			if (thumbH > _render_height) thumbH = _render_height;
 
-			const float maxScrollY = (std::max)(0.0f, totalH - contentH);
-			const float moveSpace = (std::max)(0.0f, _render_height - thumbH);
+			const float maxScrollY = std::max(0.0f, totalH - contentH);
+			const float moveSpace = std::max(0.0f, _render_height - thumbH);
 			float per = 0.0f;
 			if (maxScrollY > 0.0f)
 				per = std::clamp(this->ScrollYOffset / maxScrollY, 0.0f, 1.0f);
@@ -533,7 +534,7 @@ void GridView::DrawHScroll(const ScrollLayout& l)
 	if (barW <= 0.0f || barH <= 0.0f) return;
 	if (l.TotalColumnsWidth <= barW) return;
 
-	const float maxScrollX = (std::max)(0.0f, l.TotalColumnsWidth - barW);
+	const float maxScrollX = std::max(0.0f, l.TotalColumnsWidth - barW);
 	float per = 0.0f;
 	if (maxScrollX > 0.0f)
 		per = std::clamp(this->ScrollXOffset / maxScrollX, 0.0f, 1.0f);
@@ -572,9 +573,9 @@ void GridView::SetScrollByPos(float yof)
 	const float renderingHeight = l.RenderHeight;
 	const float rowHeight = this->GetRowHeightPx();
 	const float headHeight = this->GetHeadHeightPx();
-	const float contentHeight = (std::max)(0.0f, renderingHeight - headHeight);
+	const float contentHeight = std::max(0.0f, renderingHeight - headHeight);
 	const float totalHeight = (rowHeight > 0.0f) ? (rowHeight * (float)rowCount) : 0.0f;
-	const float maxScrollY = (std::max)(0.0f, totalHeight - contentHeight);
+	const float maxScrollY = std::max(0.0f, totalHeight - contentHeight);
 
 	if (maxScrollY > 0.0f && contentHeight > 0.0f)
 	{
@@ -583,7 +584,7 @@ void GridView::SetScrollByPos(float yof)
 		if (thumbH < minThumbH) thumbH = minThumbH;
 		if (thumbH > renderingHeight) thumbH = renderingHeight;
 
-		const float moveSpace = (std::max)(0.0f, renderingHeight - thumbH);
+		const float moveSpace = std::max(0.0f, renderingHeight - thumbH);
 		float grab = std::clamp(_vScrollThumbGrabOffsetY, 0.0f, thumbH);
 		if (grab <= 0.0f) grab = thumbH * 0.5f;
 		float target = yof - grab;
@@ -607,7 +608,7 @@ void GridView::SetHScrollByPos(float xof)
 	if (l.TotalColumnsWidth <= l.RenderWidth) { this->ScrollXOffset = 0.0f; return; }
 
 	const float barW = l.RenderWidth;
-	const float maxScrollX = (std::max)(0.0f, l.TotalColumnsWidth - barW);
+	const float maxScrollX = std::max(0.0f, l.TotalColumnsWidth - barW);
 	if (maxScrollX <= 0.0f) { this->ScrollXOffset = 0.0f; return; }
 
 	float thumbW = (barW * barW) / l.TotalColumnsWidth;
@@ -823,14 +824,14 @@ void GridView::Update()
 												Colors::Black);
 										}
 
+										if (!caretBlinkStateUpdated)
+										{
+											UpdateCaretBlinkState(false, 0, 1, false, nullptr);
+										}
 										auto lot = Factory::CreateStringLayout(this->EditingText, FLT_MAX, renderHeight, font->FontObject);
 										if (lot) {
 											if (selLen != 0)
 											{
-												if (!caretBlinkStateUpdated)
-												{
-													UpdateCaretBlinkState(false, 0, 1, false, nullptr);
-												}
 												d2d->DrawStringLayoutEffect(lot,
 													drawX + this->EditTextMargin - this->EditOffsetX, (yf)+offsetY,
 													this->EditForeColor,
@@ -1086,20 +1087,20 @@ void GridView::Update()
 				}
 				yf += row_height;
 			}
-			
+
 			// 渲染新行区域（如果启用）
 			if (this->AllowUserToAddRows && this->Columns.size() > 0)
 			{
 				float newRowY = yf;
 				if (newRowY < head_height) newRowY = head_height;
-				
+
 				// 确保新行在可视区域内
 				if (newRowY < _render_height)
 				{
 					float newRowHeight = row_height;
 					if (newRowY + newRowHeight > _render_height)
 						newRowHeight = _render_height - newRowY;
-					
+
 					if (newRowHeight > 0.0f)
 					{
 						float xf = -this->ScrollXOffset;
@@ -1122,7 +1123,7 @@ void GridView::Update()
 							{
 								// 绘制新行背景
 								d2d->FillRect(drawX, newRowY, c_width, newRowHeight, this->NewRowBackColor);
-								
+
 								// 绘制新行单元格内容（空单元格样式）
 								if (c == 0)
 								{
@@ -1130,13 +1131,13 @@ void GridView::Update()
 									float asteriskSize = font_height * 0.5f;
 									float asteriskX = drawX + text_top;
 									float asteriskY = newRowY + text_top;
-									
+
 									// 绘制星号
 									d2d->DrawString(L"*",
 										asteriskX,
 										asteriskY,
 										this->NewRowIndicatorColor, font);
-									
+
 									// 绘制提示文字
 									std::wstring hintText = L"点击添加新行";
 									auto hintSize = font->GetTextSize(hintText);
@@ -1145,7 +1146,7 @@ void GridView::Update()
 										asteriskY,
 										this->NewRowForeColor, font);
 								}
-								
+
 								// 绘制单元格边框
 								d2d->DrawRect(drawX, newRowY, c_width, newRowHeight, this->NewRowForeColor, 1.0f);
 							}
@@ -1155,7 +1156,7 @@ void GridView::Update()
 					}
 				}
 			}
-			
+
 			d2d->PushDrawRect(
 				0.0f,
 				0.0f,
@@ -1262,7 +1263,7 @@ void GridView::AddNewRow()
 		CellValue cell;
 		newRow.Cells.push_back(cell);
 	}
-	
+
 	// 添加到Rows列表
 	int newRowIndex = this->Rows.size();
 	this->Rows.push_back(newRow);
@@ -1452,34 +1453,33 @@ void GridView::ToggleComboBoxEditor(int col, int row)
 
 	int expandCount = 4;
 	if (this->_cellComboBox->Items.size() > 0)
-		expandCount = (std::min)(4, (int)this->_cellComboBox->Items.size());
+		expandCount = std::min(4, (int)this->_cellComboBox->Items.size());
 	if (expandCount < 1) expandCount = 1;
 	this->_cellComboBox->ExpandCount = expandCount;
 
 	this->_cellComboBox->OnSelectionChanged.Clear();
 	this->_cellComboBox->OnSelectionChanged += [this, col, row](Control* sender)
-	{
-		(void)sender;
-		if (col < 0 || row < 0) return;
-		if (col >= this->Columns.size() || row >= this->Rows.size()) return;
-		if (this->Columns[col].Type != ColumnType::ComboBox) return;
-		auto& column2 = this->Columns[col];
-		if (!this->_cellComboBox) return;
-		if (column2.ComboBoxItems.size() <= 0) return;
-		int idx = this->_cellComboBox->SelectedIndex;
-		if (idx < 0) idx = 0;
-		if (idx >= column2.ComboBoxItems.size()) idx = column2.ComboBoxItems.size() - 1;
-		auto& cell2 = this->Rows[row].Cells[col];
-		cell2.Tag = (__int64)idx;
-		cell2.Text = column2.ComboBoxItems[idx];
-		this->OnGridViewComboBoxSelectionChanged(this, col, row, idx, cell2.Text);
-		this->PostRender();
-	};
+		{
+			(void)sender;
+			if (col < 0 || row < 0) return;
+			if (col >= this->Columns.size() || row >= this->Rows.size()) return;
+			if (this->Columns[col].Type != ColumnType::ComboBox) return;
+			auto& column2 = this->Columns[col];
+			if (!this->_cellComboBox) return;
+			if (column2.ComboBoxItems.size() <= 0) return;
+			int idx = this->_cellComboBox->SelectedIndex;
+			if (idx < 0) idx = 0;
+			if (idx >= column2.ComboBoxItems.size()) idx = column2.ComboBoxItems.size() - 1;
+			auto& cell2 = this->Rows[row].Cells[col];
+			cell2.Tag = (__int64)idx;
+			cell2.Text = column2.ComboBoxItems[idx];
+			this->OnGridViewComboBoxSelectionChanged(this, col, row, idx, cell2.Text);
+			this->PostRender();
+		};
 
 	this->_cellComboBoxColumnIndex = col;
 	this->_cellComboBoxRowIndex = row;
 	this->_cellComboBox->SetExpanded(true);
-	this->ParentForm->ForegroundControl = this->_cellComboBox;
 	this->ParentForm->Invalidate(true);
 	this->PostRender();
 }
@@ -1556,9 +1556,9 @@ void GridView::AdjustScrollPosition()
 	auto l = this->CalcScrollLayout();
 	const float rowH = this->GetRowHeightPx();
 	const float headH = this->GetHeadHeightPx();
-	const float contentH = (std::max)(0.0f, l.RenderHeight - headH);
+	const float contentH = std::max(0.0f, l.RenderHeight - headH);
 	const float totalH = (rowH > 0.0f) ? (rowH * (float)this->Rows.size()) : 0.0f;
-	const float maxScrollY = (std::max)(0.0f, totalH - contentH);
+	const float maxScrollY = std::max(0.0f, totalH - contentH);
 
 	if (this->SelectedRowIndex < 0 || this->SelectedRowIndex >= this->Rows.size()) return;
 	if (rowH <= 0.0f) return;
@@ -1609,7 +1609,7 @@ void GridView::HandleDropFiles(WPARAM wParam)
 	}
 	DragFinish(hDropInfo);
 
-	if (!files.empty())
+	if (files.size() > 0)
 	{
 		this->OnDropFile(this, files);
 	}
@@ -1643,7 +1643,7 @@ void GridView::HandleMouseWheel(WPARAM wParam, int xof, int yof)
 			needUpdate = true;
 			const float rowH = this->GetRowHeightPx();
 			const float step = (rowH > 0.0f) ? rowH : 16.0f;
-			this->ScrollYOffset = (std::min)(this->ScrollYOffset + step, l.MaxScrollY);
+			this->ScrollYOffset = std::min(this->ScrollYOffset + step, l.MaxScrollY);
 			this->ScrollRowPosition = (rowH > 0.0f) ? (int)std::floor(this->ScrollYOffset / rowH) : 0;
 			this->ScrollChanged(this);
 		}
@@ -1655,7 +1655,7 @@ void GridView::HandleMouseWheel(WPARAM wParam, int xof, int yof)
 			needUpdate = true;
 			const float rowH = this->GetRowHeightPx();
 			const float step = (rowH > 0.0f) ? rowH : 16.0f;
-			this->ScrollYOffset = (std::max)(0.0f, this->ScrollYOffset - step);
+			this->ScrollYOffset = std::max(0.0f, this->ScrollYOffset - step);
 			this->ScrollRowPosition = (rowH > 0.0f) ? (int)std::floor(this->ScrollYOffset / rowH) : 0;
 			this->ScrollChanged(this);
 		}
@@ -1773,12 +1773,12 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 		if (l.TotalColumnsWidth > l.RenderWidth && l.RenderWidth > 0.0f)
 		{
 			const float barW = l.RenderWidth;
-			const float maxScrollX = (std::max)(0.0f, l.TotalColumnsWidth - barW);
+			const float maxScrollX = std::max(0.0f, l.TotalColumnsWidth - barW);
 			float thumbW = (barW * barW) / l.TotalColumnsWidth;
 			const float minThumbW = barW * 0.1f;
 			if (thumbW < minThumbW) thumbW = minThumbW;
 			if (thumbW > barW) thumbW = barW;
-			const float moveSpace = (std::max)(0.0f, barW - thumbW);
+			const float moveSpace = std::max(0.0f, barW - thumbW);
 			float per = 0.0f;
 			if (maxScrollX > 0.0f) per = std::clamp(this->ScrollXOffset / maxScrollX, 0.0f, 1.0f);
 			const float thumbX = per * moveSpace;
@@ -1810,7 +1810,7 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 			const float minThumbH = renderingHeight * 0.1f;
 			if (thumbH < minThumbH) thumbH = minThumbH;
 			if (thumbH > renderingHeight) thumbH = renderingHeight;
-			const float moveSpace = (std::max)(0.0f, renderingHeight - thumbH);
+			const float moveSpace = std::max(0.0f, renderingHeight - thumbH);
 			float per = std::clamp(this->ScrollYOffset / l.MaxScrollY, 0.0f, 1.0f);
 			const float thumbTop = per * moveSpace;
 			const float localY = (float)yof;
@@ -2305,10 +2305,10 @@ bool GridView::TryGetCellRectLocal(int col, int row, D2D1_RECT_F& outRect)
 	float left = -this->ScrollXOffset;
 	for (int i = 0; i < col; i++) left += this->Columns[i].Width;
 	float width = this->Columns[col].Width;
-	const float clipLeft = (std::max)(0.0f, left);
-	const float clipRight = (std::min)(renderWidth, left + width);
-	const float clipTop = (std::max)(headHeight, top);
-	const float clipBottom = (std::min)(l.RenderHeight, bottom);
+	const float clipLeft = std::max(0.0f, left);
+	const float clipRight = std::min(renderWidth, left + width);
+	const float clipTop = std::max(headHeight, top);
+	const float clipBottom = std::min(l.RenderHeight, bottom);
 	if (clipRight <= clipLeft) return false;
 	if (clipBottom <= clipTop) return false;
 

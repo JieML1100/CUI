@@ -284,7 +284,7 @@ CursorKind TreeView::QueryCursor(int xof, int yof)
 	const float fontHeight = this->Font ? this->Font->FontHeight : 0.0f;
 	if (fontHeight > 0.0f)
 	{
-		const int renderCount = (std::max)(1, (int)((float)this->Height / fontHeight));
+		const int renderCount = std::max(1, (int)((float)this->Height / fontHeight));
 		const bool hasVScroll = (_contentRenderItems > (float)renderCount + 0.001f);
 		if (hasVScroll && xof >= (this->Width - 8))
 			return CursorKind::SizeNS;
@@ -437,7 +437,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 			files.push_back(strFileName);
 		}
 		DragFinish(hDropInfo);
-		if (!files.empty())
+		if (files.size() > 0)
 		{
 			this->OnDropFile(this, files);
 		}
@@ -446,7 +446,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 	case WM_MOUSEWHEEL:
 	{
 		const float fontHeight = this->Font ? this->Font->FontHeight : 0.0f;
-		const int renderItemCount = fontHeight > 0.0f ? (std::max)(1, (int)((float)this->Height / fontHeight)) : 1;
+		const int renderItemCount = fontHeight > 0.0f ? std::max(1, (int)((float)this->Height / fontHeight)) : 1;
 		int maxScroll = (int)std::ceil(_contentRenderItems - (float)renderItemCount);
 		if (maxScroll < 0) maxScroll = 0;
 		if (GET_WHEEL_DELTA_WPARAM(wParam) < 0)
@@ -531,7 +531,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 						float thumbH = (renderItemCount / (float)this->MaxRenderItems) * height;
 						if (thumbH < height * 0.1f) thumbH = height * 0.1f;
 						if (thumbH > height) thumbH = height;
-						const float moveSpace = (std::max)(0.0f, height - thumbH);
+						const float moveSpace = std::max(0.0f, height - thumbH);
 						float per = 0.0f;
 						if (maxScroll > 0) per = std::clamp((float)this->ScrollIndex / (float)maxScroll, 0.0f, 1.0f);
 						const float thumbTop = per * moveSpace;

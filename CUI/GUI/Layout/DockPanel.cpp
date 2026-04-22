@@ -97,6 +97,7 @@ void DockLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 
 			x = remaining.left + margin.Left;
 			y = remaining.top + margin.Top;
+
 			// 更新剩余空间
 			remaining.left += width + margin.Left + margin.Right;
 		}
@@ -111,6 +112,7 @@ void DockLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 
 			x = remaining.left + margin.Left;
 			y = remaining.top + margin.Top;
+
 			// 更新剩余空间
 			remaining.top += height + margin.Top + margin.Bottom;
 		}
@@ -125,6 +127,7 @@ void DockLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 
 			x = remaining.right - width - margin.Right;
 			y = remaining.top + margin.Top;
+			
 			// 更新剩余空间
 			remaining.right -= width + margin.Left + margin.Right;
 		}
@@ -139,6 +142,7 @@ void DockLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 
 			x = remaining.left + margin.Left;
 			y = remaining.bottom - height - margin.Bottom;
+			
 			// 更新剩余空间
 			remaining.bottom -= height + margin.Top + margin.Bottom;
 		}

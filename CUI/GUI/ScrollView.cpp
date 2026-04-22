@@ -1,4 +1,5 @@
-﻿#include "ScrollView.h"
+#define NOMINMAX
+#include "ScrollView.h"
 #include "Form.h"
 
 #include <algorithm>
@@ -211,8 +212,8 @@ void ScrollView::PerformScrollContentLayout()
 		content.cx = std::max<LONG>(0, content.cx);
 		content.cy = std::max<LONG>(0, content.cy);
 
-		float viewportW = (std::max)(0.0f, (float)this->Width - (needV ? scrollBarSize : 0.0f));
-		float viewportH = (std::max)(0.0f, (float)this->Height - (needH ? scrollBarSize : 0.0f));
+		float viewportW = std::max(0.0f, (float)this->Width - (needV ? scrollBarSize : 0.0f));
+		float viewportH = std::max(0.0f, (float)this->Height - (needH ? scrollBarSize : 0.0f));
 		bool nextNeedH = this->AlwaysShowHScroll || ((float)content.cx > viewportW);
 		bool nextNeedV = this->AlwaysShowVScroll || ((float)content.cy > viewportH);
 		if (nextNeedH == needH && nextNeedV == needV)
@@ -238,8 +239,8 @@ SIZE ScrollView::MeasureContentSize()
 		if (!child || !child->Visible) continue;
 		auto loc = child->ActualLocation;
 		auto sz = child->ActualSize();
-		maxRight = (std::max)(maxRight, (float)loc.x + (float)sz.cx);
-		maxBottom = (std::max)(maxBottom, (float)loc.y + (float)sz.cy);
+		maxRight = std::max(maxRight, (float)loc.x + (float)sz.cx);
+		maxBottom = std::max(maxBottom, (float)loc.y + (float)sz.cy);
 	}
 
 	measured.cx = std::max<LONG>(0, (LONG)std::ceil(maxRight + this->_padding.Right));
@@ -275,8 +276,8 @@ ScrollView::ScrollLayout ScrollView::CalcScrollLayout()
 			layout.ViewportHeight = viewportH;
 			layout.ContentWidth = (float)content.cx;
 			layout.ContentHeight = (float)content.cy;
-			layout.MaxScrollX = (std::max)(0.0f, layout.ContentWidth - viewportW);
-			layout.MaxScrollY = (std::max)(0.0f, layout.ContentHeight - viewportH);
+			layout.MaxScrollX = std::max(0.0f, layout.ContentWidth - viewportW);
+			layout.MaxScrollY = std::max(0.0f, layout.ContentHeight - viewportH);
 			return layout;
 		}
 		needH = nextNeedH;
@@ -285,12 +286,12 @@ ScrollView::ScrollLayout ScrollView::CalcScrollLayout()
 
 	layout.NeedH = needH;
 	layout.NeedV = needV;
-	layout.ViewportWidth = (std::max)(0.0f, (float)this->Width - (needV ? layout.ScrollBarSize : 0.0f));
-	layout.ViewportHeight = (std::max)(0.0f, (float)this->Height - (needH ? layout.ScrollBarSize : 0.0f));
+	layout.ViewportWidth = std::max(0.0f, (float)this->Width - (needV ? layout.ScrollBarSize : 0.0f));
+	layout.ViewportHeight = std::max(0.0f, (float)this->Height - (needH ? layout.ScrollBarSize : 0.0f));
 	layout.ContentWidth = (float)content.cx;
 	layout.ContentHeight = (float)content.cy;
-	layout.MaxScrollX = (std::max)(0.0f, layout.ContentWidth - layout.ViewportWidth);
-	layout.MaxScrollY = (std::max)(0.0f, layout.ContentHeight - layout.ViewportHeight);
+	layout.MaxScrollX = std::max(0.0f, layout.ContentWidth - layout.ViewportWidth);
+	layout.MaxScrollY = std::max(0.0f, layout.ContentHeight - layout.ViewportHeight);
 	return layout;
 }
 
@@ -374,9 +375,9 @@ void ScrollView::DrawScrollBars(const ScrollLayout& layout)
 	if (layout.NeedV && layout.ViewportHeight > 0.0f && layout.ContentHeight > layout.ViewportHeight)
 	{
 		float thumbH = (layout.ViewportHeight * layout.ViewportHeight) / layout.ContentHeight;
-		float minThumbH = (std::max)(16.0f, layout.ViewportHeight * 0.1f);
+		float minThumbH = std::max(16.0f, layout.ViewportHeight * 0.1f);
 		thumbH = std::clamp(thumbH, minThumbH, layout.ViewportHeight);
-		float moveSpace = (std::max)(0.0f, layout.ViewportHeight - thumbH);
+		float moveSpace = std::max(0.0f, layout.ViewportHeight - thumbH);
 		float per = (layout.MaxScrollY > 0.0f) ? std::clamp((float)this->ScrollYOffset / layout.MaxScrollY, 0.0f, 1.0f) : 0.0f;
 		float thumbTop = per * moveSpace;
 		d2d->FillRoundRect(layout.ViewportWidth, 0.0f, layout.ScrollBarSize, layout.ViewportHeight, this->ScrollBackColor, 4.0f);
@@ -386,9 +387,9 @@ void ScrollView::DrawScrollBars(const ScrollLayout& layout)
 	if (layout.NeedH && layout.ViewportWidth > 0.0f && layout.ContentWidth > layout.ViewportWidth)
 	{
 		float thumbW = (layout.ViewportWidth * layout.ViewportWidth) / layout.ContentWidth;
-		float minThumbW = (std::max)(16.0f, layout.ViewportWidth * 0.1f);
+		float minThumbW = std::max(16.0f, layout.ViewportWidth * 0.1f);
 		thumbW = std::clamp(thumbW, minThumbW, layout.ViewportWidth);
-		float moveSpace = (std::max)(0.0f, layout.ViewportWidth - thumbW);
+		float moveSpace = std::max(0.0f, layout.ViewportWidth - thumbW);
 		float per = (layout.MaxScrollX > 0.0f) ? std::clamp((float)this->ScrollXOffset / layout.MaxScrollX, 0.0f, 1.0f) : 0.0f;
 		float thumbLeft = per * moveSpace;
 		d2d->FillRoundRect(0.0f, layout.ViewportHeight, layout.ViewportWidth, layout.ScrollBarSize, this->ScrollBackColor, 4.0f);
@@ -406,9 +407,9 @@ void ScrollView::UpdateScrollByThumbY(float localY, const ScrollLayout& layout)
 	if (!layout.NeedV || layout.ContentHeight <= layout.ViewportHeight || layout.ViewportHeight <= 0.0f)
 		return;
 	float thumbH = (layout.ViewportHeight * layout.ViewportHeight) / layout.ContentHeight;
-	float minThumbH = (std::max)(16.0f, layout.ViewportHeight * 0.1f);
+	float minThumbH = std::max(16.0f, layout.ViewportHeight * 0.1f);
 	thumbH = std::clamp(thumbH, minThumbH, layout.ViewportHeight);
-	float moveSpace = (std::max)(0.0f, layout.ViewportHeight - thumbH);
+	float moveSpace = std::max(0.0f, layout.ViewportHeight - thumbH);
 	if (moveSpace <= 0.0f) return;
 	float grab = std::clamp(this->_vScrollThumbGrabOffset, 0.0f, thumbH);
 	if (grab <= 0.0f) grab = thumbH * 0.5f;
@@ -422,9 +423,9 @@ void ScrollView::UpdateScrollByThumbX(float localX, const ScrollLayout& layout)
 	if (!layout.NeedH || layout.ContentWidth <= layout.ViewportWidth || layout.ViewportWidth <= 0.0f)
 		return;
 	float thumbW = (layout.ViewportWidth * layout.ViewportWidth) / layout.ContentWidth;
-	float minThumbW = (std::max)(16.0f, layout.ViewportWidth * 0.1f);
+	float minThumbW = std::max(16.0f, layout.ViewportWidth * 0.1f);
 	thumbW = std::clamp(thumbW, minThumbW, layout.ViewportWidth);
-	float moveSpace = (std::max)(0.0f, layout.ViewportWidth - thumbW);
+	float moveSpace = std::max(0.0f, layout.ViewportWidth - thumbW);
 	if (moveSpace <= 0.0f) return;
 	float grab = std::clamp(this->_hScrollThumbGrabOffset, 0.0f, thumbW);
 	if (grab <= 0.0f) grab = thumbW * 0.5f;
@@ -535,9 +536,9 @@ bool ScrollView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		if (HitVScrollBar(xof, yof, layout) && layout.ContentHeight > layout.ViewportHeight)
 		{
 			float thumbH = (layout.ViewportHeight * layout.ViewportHeight) / layout.ContentHeight;
-			float minThumbH = (std::max)(16.0f, layout.ViewportHeight * 0.1f);
+			float minThumbH = std::max(16.0f, layout.ViewportHeight * 0.1f);
 			thumbH = std::clamp(thumbH, minThumbH, layout.ViewportHeight);
-			float moveSpace = (std::max)(0.0f, layout.ViewportHeight - thumbH);
+			float moveSpace = std::max(0.0f, layout.ViewportHeight - thumbH);
 			float per = (layout.MaxScrollY > 0.0f) ? std::clamp((float)this->ScrollYOffset / layout.MaxScrollY, 0.0f, 1.0f) : 0.0f;
 			float thumbTop = per * moveSpace;
 			float localY = (float)yof;
@@ -550,9 +551,9 @@ bool ScrollView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		if (HitHScrollBar(xof, yof, layout) && layout.ContentWidth > layout.ViewportWidth)
 		{
 			float thumbW = (layout.ViewportWidth * layout.ViewportWidth) / layout.ContentWidth;
-			float minThumbW = (std::max)(16.0f, layout.ViewportWidth * 0.1f);
+			float minThumbW = std::max(16.0f, layout.ViewportWidth * 0.1f);
 			thumbW = std::clamp(thumbW, minThumbW, layout.ViewportWidth);
-			float moveSpace = (std::max)(0.0f, layout.ViewportWidth - thumbW);
+			float moveSpace = std::max(0.0f, layout.ViewportWidth - thumbW);
 			float per = (layout.MaxScrollX > 0.0f) ? std::clamp((float)this->ScrollXOffset / layout.MaxScrollX, 0.0f, 1.0f) : 0.0f;
 			float thumbLeft = per * moveSpace;
 			float localX = (float)xof;
@@ -567,10 +568,10 @@ bool ScrollView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 	case WM_KEYDOWN:
 	{
 		const bool ctrlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-		const int lineStepY = (std::max)(16, this->MouseWheelStep);
-		const int lineStepX = (std::max)(16, this->MouseWheelStep);
-		const int pageStepY = (std::max)(16, (int)layout.ViewportHeight - lineStepY);
-		const int pageStepX = (std::max)(16, (int)layout.ViewportWidth - lineStepX);
+		const int lineStepY = std::max(16, this->MouseWheelStep);
+		const int lineStepX = std::max(16, this->MouseWheelStep);
+		const int pageStepY = std::max(16, (int)layout.ViewportHeight - lineStepY);
+		const int pageStepX = std::max(16, (int)layout.ViewportWidth - lineStepX);
 		bool handledScroll = false;
 
 		switch (wParam)
@@ -696,7 +697,7 @@ bool ScrollView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 			files.push_back(strFileName);
 		}
 		DragFinish(hDropInfo);
-		if (!files.empty())
+		if (files.size() > 0)
 		{
 			this->OnDropFile(this, files);
 		}

@@ -1,8 +1,21 @@
 ﻿#pragma once
+#define NOMINMAX
 #include "TextBox.h"
 #include "Form.h"
-#include <vector>
 #pragma comment(lib, "Imm32.lib")
+
+namespace
+{
+	std::wstring BuildTextFromBuffer(std::vector<wchar_t>& buffer)
+	{
+		if (buffer.empty() || buffer.back() != L'\0')
+		{
+			buffer.push_back(L'\0');
+		}
+		return std::wstring(buffer.data());
+	}
+}
+
 UIClass TextBox::Type() { return UIClass::UI_TextBox; }
 bool TextBox::HandlesNavigationKey(WPARAM key) const
 {
@@ -53,7 +66,7 @@ void TextBox::InputText(std::wstring input)
 	}
 	else
 	{
-		std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
+		std::vector<wchar_t> tmp = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
 		if (sele > sels)
 		{
 			int sublen = sele - sels;
@@ -66,8 +79,7 @@ void TextBox::InputText(std::wstring input)
 				tmp.insert(tmp.begin() + sels + i, input[i]);
 			}
 			SelectionEnd = SelectionStart = sels + (input.size());
-			tmp.push_back(L'\0');
-			this->Text = std::wstring(tmp.data());
+			this->Text = BuildTextFromBuffer(tmp);
 		}
 		else if (sele == sels && sele >= 0)
 		{
@@ -77,8 +89,7 @@ void TextBox::InputText(std::wstring input)
 			}
 			SelectionEnd += input.size();
 			SelectionStart += input.size();
-			tmp.push_back(L'\0');
-			this->Text = std::wstring(tmp.data());
+			this->Text = BuildTextFromBuffer(tmp);
 		}
 		else
 		{
@@ -86,15 +97,19 @@ void TextBox::InputText(std::wstring input)
 			SelectionEnd = SelectionStart = this->Text.size();
 		}
 	}
-	std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size() + 1);
-	for (int i = 0; i < (int)tmp.size(); i++)
+	if(this->Text.empty())
+	{
+		this->Text = L"";
+	}
+	std::vector<wchar_t> tmp = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
+	for (int i = 0; i < tmp.size(); i++)
 	{
 		if (tmp[i] == L'\r' || tmp[i] == L'\n')
 		{
 			tmp[i] = L' ';
 		}
 	}
-	this->Text = std::wstring(tmp.data());
+	this->Text = BuildTextFromBuffer(tmp);
 	if (shouldRecord)
 	{
 		rec.selStartAfter = this->SelectionStart;
@@ -125,14 +140,13 @@ void TextBox::InputBack()
 			rec.selEndBefore = this->SelectionEnd;
 			shouldRecord = true;
 		}
-		std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
+		std::vector<wchar_t> tmp = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
 		for (int i = 0; i < selLen; i++)
 		{
 			tmp.erase(tmp.begin() + sels);
 		}
-		tmp.push_back(L'\0');
 		this->SelectionStart = this->SelectionEnd = sels;
-		this->Text = tmp.data();
+		this->Text = BuildTextFromBuffer(tmp);
 	}
 	else
 	{
@@ -148,11 +162,10 @@ void TextBox::InputBack()
 				rec.selEndBefore = this->SelectionEnd;
 				shouldRecord = true;
 			}
-			std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
+			std::vector<wchar_t> tmp = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
 			tmp.erase(tmp.begin() + sels - 1);
-			tmp.push_back(L'\0');
 			this->SelectionStart = this->SelectionEnd = sels - 1;
-			this->Text = tmp.data();
+			this->Text = BuildTextFromBuffer(tmp);
 		}
 	}
 	if (shouldRecord)
@@ -185,14 +198,13 @@ void TextBox::InputDelete()
 			rec.selEndBefore = this->SelectionEnd;
 			shouldRecord = true;
 		}
-		std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
+		std::vector<wchar_t> tmp = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
 		for (int i = 0; i < selLen; i++)
 		{
 			tmp.erase(tmp.begin() + sels);
 		}
-		tmp.push_back(L'\0');
 		this->SelectionStart = this->SelectionEnd = sels;
-		this->Text = tmp.data();
+		this->Text = BuildTextFromBuffer(tmp);
 	}
 	else
 	{
@@ -208,11 +220,10 @@ void TextBox::InputDelete()
 				rec.selEndBefore = this->SelectionEnd;
 				shouldRecord = true;
 			}
-			std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
+			std::vector<wchar_t> tmp = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
 			tmp.erase(tmp.begin() + sels);
-			tmp.push_back(L'\0');
 			this->SelectionStart = this->SelectionEnd = sels;
-			this->Text = tmp.data();
+			this->Text = BuildTextFromBuffer(tmp);
 		}
 	}
 	if (shouldRecord)
@@ -236,7 +247,7 @@ void TextBox::ApplyUndoRecord(const UndoRecord& rec, bool isUndo)
 
 	if (!removeText.empty() && pos <= (int)newText.size())
 	{
-		size_t removeLen = (std::min)(removeText.size(), newText.size() - (size_t)pos);
+		size_t removeLen = std::min(removeText.size(), newText.size() - (size_t)pos);
 		newText.erase((size_t)pos, removeLen);
 	}
 	if (!insertText.empty())
@@ -330,9 +341,9 @@ void TextBox::Update()
 		auto backColor = this->BackColor;
 		if (isUnderMouse || isSelected)
 		{
-			backColor.r = (std::min)(1.0f, backColor.r * 1.2f);
-			backColor.g = (std::min)(1.0f, backColor.g * 1.2f);
-			backColor.b = (std::min)(1.0f, backColor.b * 1.2f);
+			backColor.r = std::min(1.0f, backColor.r * 1.2f);
+			backColor.g = std::min(1.0f, backColor.g * 1.2f);
+			backColor.b = std::min(1.0f, backColor.b * 1.2f);
 		}
 		d2d->FillRect(0, 0, size.cx, size.cy, backColor);
 		if (this->Image)
@@ -708,8 +719,8 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 						GlobalUnlock(hClip);
 						int len = MultiByteToWideChar(CP_ACP, 0, pBuf, static_cast<int>(strlen(pBuf)), NULL, 0);
 						std::wstring wstr(len, L'\0');
-						if (len > 0)
-							MultiByteToWideChar(CP_ACP, 0, pBuf, static_cast<int>(strlen(pBuf)), &wstr[0], len);
+						MultiByteToWideChar(CP_ACP, 0, pBuf, static_cast<int>(strlen(pBuf)), &wstr[0], len);
+
 						this->InputText(wstr);
 					}
 					UpdateScroll();

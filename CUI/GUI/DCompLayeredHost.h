@@ -1,72 +1,35 @@
-﻿#pragma once
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef _WINSOCKAPI_
-#define _WINSOCKAPI_
-#endif
-
+#pragma once
 #include <windows.h>
-#include <dcomp.h>
-#include <dxgi1_2.h>
-#include <wrl/client.h>
 
-#if defined(_MSC_VER)
-#pragma comment(lib, "dcomp.lib")
-#endif
-
-#include "Factory.h"
+struct IDCompositionDevice;
+struct IDCompositionVisual;
 
 /**
  * @file DCompLayeredHost.h
- * @brief DirectComposition 分层宿主：为窗口提供 base/web/overlay 三层视觉树。
+ * @brief Form 的 DirectComposition 宿主，用于承载 WebView2 Composition 模式。
  *
- * 该类用于在一个 HWND 上构建 DirectComposition 视觉树，并创建两套 SwapChain：
- * - BaseSwapChain：用于主渲染（通常是 D2D/应用 UI）
- * - OverlaySwapChain：用于叠加层（例如浮层/覆盖渲染）
- *
- * 同时提供一个 Web 容器 Visual（GetWebContainerVisual），用于挂载 WebView2 的 RootVisualTarget。
+ * 当定义了 CUI_ENABLE_WEBVIEW2 时，本类会创建 DComp 设备、交换链和 Visual 树；
+ * 未定义时所有操作均为空实现，确保在 Windows 7 等无 DComp 环境下可正常编译。
  */
 class DCompLayeredHost
 {
 public:
-	/** @param hwnd 目标窗口句柄（客户区将作为 DComp 输出）。 */
-	explicit DCompLayeredHost(HWND hwnd);
-	~DCompLayeredHost();
+    DCompLayeredHost();
+    ~DCompLayeredHost();
 
-	/**
-	 * @brief 初始化 DirectComposition 设备、视觉树与 swapchains。
-	 * @return HRESULT。
-	 */
-	HRESULT Initialize();
+    bool Initialize(HWND hwnd, UINT width, UINT height);
+    void Resize(UINT width, UINT height);
+    void Cleanup();
 
-	IDXGISwapChain1* GetBaseSwapChain() const { return _baseSwapChain.Get(); }
-	IDXGISwapChain1* GetOverlaySwapChain() const { return _overlaySwapChain.Get(); }
+    IDCompositionDevice* GetDCompDevice() const;
+    IDCompositionVisual* GetRootVisual() const;
+    IDCompositionVisual* GetWebContainerVisual() const;
+    void* GetSwapChain() const; // 实际类型为 IDXGISwapChain1*
 
-	/** @brief 获取 DirectComposition 设备（不转移所有权）。 */
-	IDCompositionDevice* GetDCompDevice() const { return _dcompDevice.Get(); }
-	/** @brief 获取 Web 容器 Visual（不转移所有权）。 */
-	IDCompositionVisual* GetWebContainerVisual() const { return _webVisual.Get(); }
-
-	/** @brief 提交 DComp 变更（Commit）。 */
-	HRESULT Commit();
+    void CommitComposition();
+    bool IsInitialized() const;
 
 private:
-	HRESULT CreateSwapChains(UINT width, UINT height);
-
-private:
-	HWND _hwnd = nullptr;
-
-	Microsoft::WRL::ComPtr<IDCompositionDevice> _dcompDevice;
-	Microsoft::WRL::ComPtr<IDCompositionTarget> _target;
-
-	Microsoft::WRL::ComPtr<IDCompositionVisual> _rootVisual;
-	Microsoft::WRL::ComPtr<IDCompositionVisual> _baseVisual;
-	Microsoft::WRL::ComPtr<IDCompositionVisual> _webVisual;
-	Microsoft::WRL::ComPtr<IDCompositionVisual> _overlayVisual;
-
-	Microsoft::WRL::ComPtr<IDXGISwapChain1> _baseSwapChain;
-	Microsoft::WRL::ComPtr<IDXGISwapChain1> _overlaySwapChain;
+    class Impl;
+    Impl* _impl;
 };
-

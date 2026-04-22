@@ -20,6 +20,45 @@
 
 namespace
 {
+	RECT GetPrimaryWorkArea()
+	{
+		RECT workArea{ 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+		SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+		return workArea;
+	}
+
+	RECT GetWindowWorkArea(HWND hWnd, POINT fallbackPoint)
+	{
+		RECT workArea = GetPrimaryWorkArea();
+		HMONITOR monitor = nullptr;
+		if (hWnd)
+		{
+			monitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+		}
+		else
+		{
+			monitor = MonitorFromPoint(fallbackPoint, MONITOR_DEFAULTTONEAREST);
+		}
+		if (!monitor)
+			return workArea;
+
+		MONITORINFO monitorInfo{};
+		monitorInfo.cbSize = sizeof(monitorInfo);
+		if (GetMonitorInfoW(monitor, &monitorInfo))
+			return monitorInfo.rcWork;
+		return workArea;
+	}
+
+	POINT ClampWindowOriginToWorkArea(POINT origin, SIZE size, const RECT& workArea)
+	{
+		POINT clamped = origin;
+		const int maxX = (std::max)(workArea.left, workArea.right - size.cx);
+		const int maxY = (std::max)(workArea.top, workArea.bottom - size.cy);
+		clamped.x = (std::clamp)(clamped.x, workArea.left, (LONG)maxX);
+		clamped.y = (std::clamp)(clamped.y, workArea.top, (LONG)maxY);
+		return clamped;
+	}
+
 	float LayoutMainTopBar(Form* form, const SIZE& clientSize)
 	{
 		auto* menu = form ? form->MainMenu : nullptr;
@@ -85,6 +124,7 @@ HCURSOR Form::GetSystemCursor(CursorKind kind)
 	switch (kind)
 	{
 	case CursorKind::Arrow: id = IDC_ARROW; break;
+	case CursorKind::Cross: id = IDC_CROSS; break;
 	case CursorKind::Hand: id = IDC_HAND; break;
 	case CursorKind::IBeam: id = IDC_IBEAM; break;
 	case CursorKind::SizeWE: id = IDC_SIZEWE; break;
@@ -252,7 +292,7 @@ Control* Form::HitTestControlAt(POINT contentMouse)
 	}
 
 	// 4) 普通控件：按绘制顺序倒序命中（后绘制者优先）
-	for (int i = this->Controls.size() - 1; i >= 0; i--)
+	for (int i = (int)this->Controls.size() - 1; i >= 0; i--)
 	{
 		auto c = this->Controls[i];
 		if (!c || !c->Visible || !c->Enable) continue;
@@ -263,6 +303,40 @@ Control* Form::HitTestControlAt(POINT contentMouse)
 		return HitTestDeepestChild(c, contentMouse);
 	}
 	return NULL;
+}
+
+static bool IsScrollViewFallbackKey(WPARAM key)
+{
+	switch (key)
+	{
+	case VK_HOME:
+	case VK_END:
+	case VK_PRIOR:
+	case VK_NEXT:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static Control* FindAncestorScrollViewForFallback(Control* start, WPARAM key)
+{
+	if (!start) return NULL;
+	for (Control* parent = start->Parent; parent; parent = parent->Parent)
+	{
+		if (parent->Type() == UIClass::UI_ScrollView && parent->HandlesNavigationKey(key))
+			return parent;
+	}
+	return NULL;
+}
+
+static Control* GetScrollViewFallbackTarget(Control* selected, WPARAM key)
+{
+	if (!selected) return NULL;
+	if (!selected->IsVisual) return NULL;
+	if (!IsScrollViewFallbackKey(key)) return NULL;
+	if (selected->HandlesNavigationKey(key)) return NULL;
+	return FindAncestorScrollViewForFallback(selected, key);
 }
 
 static bool DataObjectHasFormat(IDataObject* pDataObj, CLIPFORMAT cf)
@@ -510,7 +584,7 @@ static Control* HitTestRootControlAt(Form* f, POINT contentMouse)
 	}
 
 	// 4) 普通控件按绘制顺序倒序命中
-	for (int i = f->Controls.size() - 1; i >= 0; i--)
+	for (int i = (int)f->Controls.size() - 1; i >= 0; i--)
 	{
 		auto c = f->Controls[i];
 		if (!c || !c->Visible || !c->Enable) continue;
@@ -548,40 +622,6 @@ static void DismissForegroundOnOutsideMouseDown(Form* f, POINT contentMouse, UIN
 		f->Invalidate(true);
 }
 
-static bool IsScrollViewFallbackKey(WPARAM key)
-{
-	switch (key)
-	{
-	case VK_HOME:
-	case VK_END:
-	case VK_PRIOR:
-	case VK_NEXT:
-		return true;
-	default:
-		return false;
-	}
-}
-
-static Control* FindAncestorScrollViewForFallback(Control* start, WPARAM key)
-{
-	if (!start) return NULL;
-	for (Control* parent = start->Parent; parent; parent = parent->Parent)
-	{
-		if (parent->Type() == UIClass::UI_ScrollView && parent->HandlesNavigationKey(key))
-			return parent;
-	}
-	return NULL;
-}
-
-static Control* GetScrollViewFallbackTarget(Control* selected, WPARAM key)
-{
-	if (!selected) return NULL;
-	if (!selected->IsVisual) return NULL;
-	if (!IsScrollViewFallbackKey(key)) return NULL;
-	if (selected->HandlesNavigationKey(key)) return NULL;
-	return FindAncestorScrollViewForFallback(selected, key);
-}
-
 CursorKind Form::QueryCursorAt(POINT mouseClient, POINT contentMouse)
 {
 	const int top = ClientTop();
@@ -617,22 +657,6 @@ CursorKind Form::QueryCursorAt(POINT mouseClient, POINT contentMouse)
 
 void Form::UpdateCursor(POINT mouseClient, POINT contentMouse)
 {
-	auto hit = HitTestControlAt(contentMouse);
-	if (hit && hit->Type() == UIClass::UI_WebBrowser)
-	{
-		auto* wb = (WebBrowser*)hit;
-		UINT32 id = 0;
-		if (wb && wb->TryGetSystemCursorId(id) && id != 0)
-		{
-			HCURSOR h = LoadCursorW(NULL, MAKEINTRESOURCEW((ULONG_PTR)id));
-			if (h)
-			{
-				::SetCursor(h);
-				return;
-			}
-		}
-	}
-
 	ApplyCursor(QueryCursorAt(mouseClient, contentMouse));
 }
 
@@ -1181,6 +1205,7 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 	Application::EnsureDpiAwareness();
 
 	this->_text = text;
+	this->_autoCenterOnCreate = (_location.x == 0 && _location.y == 0);
 	static bool ClassInited = false;
 	this->Location = _location;
 	this->Size = _size;
@@ -1193,8 +1218,8 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 		wndclass.cbWndExtra = 0;
 		wndclass.lpfnWndProc = WINMSG_PROCESS;
 		wndclass.hInstance = GetModuleHandleA(NULL);
-		wndclass.hIcon = LoadIconW(NULL, MAKEINTRESOURCEW(32512));
-		wndclass.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512));
+		wndclass.hIcon = LoadIcon(GetModuleHandle(NULL), IDI_APPLICATION);
+		wndclass.hCursor = LoadCursorW(GetModuleHandle(NULL), IDC_ARROW);
 		wndclass.lpszMenuName = NULL;
 		wndclass.lpszClassName = L"CoreNativeWindow";
 		if (!RegisterClassW(&wndclass))
@@ -1203,15 +1228,21 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 		}
 		ClassInited = true;
 	}
-	int desktopWidth = GetSystemMetrics(SM_CXSCREEN);
-	int desktopHeight = GetSystemMetrics(SM_CYSCREEN);
+	RECT workArea = GetWindowWorkArea(NULL, _location);
+	POINT initialOrigin = _location;
+	if (this->_autoCenterOnCreate)
+	{
+		initialOrigin.x = workArea.left + ((workArea.right - workArea.left) - this->Size.cx) / 2;
+		initialOrigin.y = workArea.top + ((workArea.bottom - workArea.top) - this->Size.cy) / 2;
+	}
+	initialOrigin = ClampWindowOriginToWorkArea(initialOrigin, this->Size, workArea);
 	this->Handle = CreateWindowExW(
 		0L,
 		L"CoreNativeWindow",
 		_text.c_str(),
 		WS_POPUP,
-		this->Location.x == 0 ? ((int)(desktopWidth - this->Size.cx) / 2) : this->Location.x,
-		this->Location.y == 0 ? ((int)(desktopHeight - this->Size.cy) / 2) : this->Location.y,
+		initialOrigin.x,
+		initialOrigin.y,
 		this->Size.cx,
 		this->Size.cy,
 		NULL,
@@ -1227,24 +1258,11 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 
 	Application::Forms[this->Handle] = this;
 
-	_dcompHost = new DCompLayeredHost(this->Handle);
-	if (_dcompHost && SUCCEEDED(_dcompHost->Initialize()) &&
-		_dcompHost->GetBaseSwapChain() && _dcompHost->GetOverlaySwapChain())
-	{
-		Render = new CompositionSwapChainGraphics(_dcompHost->GetBaseSwapChain());
-		OverlayRender = new CompositionSwapChainGraphics(_dcompHost->GetOverlaySwapChain());
-	}
-	else
-	{
-		delete _dcompHost;
-		_dcompHost = nullptr;
-		Render = new HwndGraphics(this->Handle);
-		OverlayRender = nullptr;
-	}
+	Render = new HwndGraphics(this->Handle);
+	OverlayRender = nullptr;
 	ResetImageCache();
 	ClearCaptionStates();
-	// 注意：不要在构造阶段仅缩放字体/标题栏，否则会导致“画面变大但窗口/命中区域不一致”。
-	// 初始 DPI 缩放统一放到 Show()/ShowDialog() 之前执行（见 EnsureInitialDpiApplied）。
+	EnsureDCompInitialized();
 }
 
 Form::~Form()
@@ -1342,6 +1360,66 @@ void Form::CleanupResources()
 	}
 }
 
+void Form::EnsureDCompInitialized()
+{
+#ifdef CUI_ENABLE_WEBVIEW2
+	if (_dcompHost) return;
+	if (!this->Handle || !::IsWindow(this->Handle)) return;
+
+	RECT rc{};
+	::GetClientRect(this->Handle, &rc);
+	UINT w = (UINT)std::max<LONG>(1, rc.right - rc.left);
+	UINT h = (UINT)std::max<LONG>(1, rc.bottom - rc.top);
+
+	_dcompHost = new DCompLayeredHost();
+	if (_dcompHost->Initialize(this->Handle, w, h))
+	{
+		auto* swapChain = static_cast<IDXGISwapChain1*>(_dcompHost->GetSwapChain());
+		if (swapChain)
+		{
+			if (Render)
+			{
+				delete Render;
+				Render = nullptr;
+			}
+			Render = new CompositionSwapChainGraphics(swapChain);
+			Render->SetDpi((FLOAT)_dpi, (FLOAT)_dpi);
+			Render->ReSize(w, h);
+		}
+	}
+	else
+	{
+		delete _dcompHost;
+		_dcompHost = nullptr;
+	}
+#endif
+}
+
+IDCompositionDevice* Form::GetDCompDevice() const
+{
+#ifdef CUI_ENABLE_WEBVIEW2
+	return _dcompHost ? _dcompHost->GetDCompDevice() : nullptr;
+#else
+	return nullptr;
+#endif
+}
+
+IDCompositionVisual* Form::GetWebContainerVisual() const
+{
+#ifdef CUI_ENABLE_WEBVIEW2
+	return _dcompHost ? _dcompHost->GetWebContainerVisual() : nullptr;
+#else
+	return nullptr;
+#endif
+}
+
+void Form::CommitComposition()
+{
+#ifdef CUI_ENABLE_WEBVIEW2
+	if (_dcompHost) _dcompHost->CommitComposition();
+#endif
+}
+
 Font* Form::GetScaledDefaultFont()
 {
 	// D2D 通过 SetDpi 已在物理像素层面正确缩放，字体大小保持 96-DPI 设计值即可
@@ -1364,7 +1442,7 @@ void Form::ApplyDpiChange(UINT newDpi)
 
 	this->InvalidateLayout();
 	this->_hasRenderedOnce = false;
-	this->Invalidate(this->_dcompHost != nullptr);
+	this->Invalidate(false);
 }
 
 void Form::SyncRenderSizeToClient()
@@ -1378,7 +1456,7 @@ void Form::SyncRenderSizeToClient()
 	if (this->OverlayRender) this->OverlayRender->ReSize(width, height);
 	if (this->Render)        this->Render->SetDpi((FLOAT)_dpi, (FLOAT)_dpi);
 	if (this->OverlayRender) this->OverlayRender->SetDpi((FLOAT)_dpi, (FLOAT)_dpi);
-	this->CommitComposition();
+	if (_dcompHost) _dcompHost->Resize(width, height);
 }
 
 void Form::EnsureInitialDpiApplied()
@@ -1398,16 +1476,25 @@ void Form::EnsureInitialDpiApplied()
 	{
 		RECT wr{};
 		GetWindowRect(this->Handle, &wr);
-		const int oldW = wr.right - wr.left;
-		const int oldH = wr.bottom - wr.top;
 		const int newW = Application::ScaleInt(this->_Size_INTI.cx, 96, dpi);
 		const int newH = Application::ScaleInt(this->_Size_INTI.cy, 96, dpi);
-		const int x = wr.left + (oldW - newW) / 2;
-		const int y = wr.top + (oldH - newH) / 2;
-		SetWindowPos(this->Handle, NULL, x, y, newW, newH, SWP_NOZORDER | SWP_NOACTIVATE);
+		RECT workArea = GetWindowWorkArea(this->Handle, POINT{ wr.left, wr.top });
+		POINT origin{};
+		if (this->_autoCenterOnCreate)
+		{
+			origin.x = workArea.left + ((workArea.right - workArea.left) - newW) / 2;
+			origin.y = workArea.top + ((workArea.bottom - workArea.top) - newH) / 2;
+		}
+		else
+		{
+			origin.x = wr.left;
+			origin.y = wr.top;
+		}
+		origin = ClampWindowOriginToWorkArea(origin, SIZE{ newW, newH }, workArea);
+		SetWindowPos(this->Handle, NULL, origin.x, origin.y, newW, newH, SWP_NOZORDER | SWP_NOACTIVATE);
 		SyncRenderSizeToClient();
 		this->_hasRenderedOnce = false;
-		this->Invalidate(this->_dcompHost != nullptr);
+		this->Invalidate(false);
 	}
 
 	// 更新 HeadHeight（物理像素）并为渲染目标设置 DPI
@@ -1463,26 +1550,6 @@ void Form::ResetImageCache()
 	_imageCacheTarget = nullptr;
 }
 
-IDCompositionDevice* Form::GetDCompDevice() const
-{
-	return _dcompHost ? _dcompHost->GetDCompDevice() : nullptr;
-}
-
-IDCompositionVisual* Form::GetWebContainerVisual() const
-{
-	return _dcompHost ? _dcompHost->GetWebContainerVisual() : nullptr;
-}
-
-void Form::CommitComposition()
-{
-	if (_dcompHost) {
-		HRESULT hr = _dcompHost->Commit();
-		if (FAILED(hr)) {
-			RecoverRenderIfNeeded();
-		}
-	}
-}
-
 void Form::RecoverRenderIfNeeded()
 {
 	if (_recoveringDeviceLost)
@@ -1505,7 +1572,7 @@ void Form::RecoverRenderIfNeeded()
 		return;
 	}
 
-	// 先释放旧渲染对象/host
+	// 先释放旧渲染对象
 	if (this->OverlayRender)
 	{
 		delete this->OverlayRender;
@@ -1516,31 +1583,22 @@ void Form::RecoverRenderIfNeeded()
 		delete this->Render;
 		this->Render = nullptr;
 	}
-	if (this->_dcompHost)
-	{
-		delete this->_dcompHost;
-		this->_dcompHost = nullptr;
-	}
 
-	// 重新尝试启用 DComp 分层；失败则回退到普通 HWND swapchain
-	_dcompHost = new DCompLayeredHost(this->Handle);
-	if (_dcompHost && SUCCEEDED(_dcompHost->Initialize()) &&
-		_dcompHost->GetBaseSwapChain() && _dcompHost->GetOverlaySwapChain())
-	{
-		Render = new CompositionSwapChainGraphics(_dcompHost->GetBaseSwapChain());
-		OverlayRender = new CompositionSwapChainGraphics(_dcompHost->GetOverlaySwapChain());
-	}
-	else
+	if (_dcompHost)
 	{
 		delete _dcompHost;
 		_dcompHost = nullptr;
+	}
+	EnsureDCompInitialized();
+	if (!Render)
+	{
 		Render = new HwndGraphics(this->Handle);
 		OverlayRender = nullptr;
 	}
 
 	SyncRenderSizeToClient();
 	this->_hasRenderedOnce = false;
-	this->Invalidate(this->_dcompHost != nullptr);
+	this->Invalidate(false);
 	_recoveringDeviceLost = false;
 }
 
@@ -2046,9 +2104,8 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 
 	this->Render->PopDrawRect();
 	this->Render->EndRender();
+	CommitComposition();
 	RecoverRenderIfNeeded();
-
-	this->CommitComposition();
 
 	if (this->OverlayRender)
 	{
@@ -2098,8 +2155,6 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 		this->OverlayRender->PopDrawRect();
 		this->OverlayRender->EndRender();
 		RecoverRenderIfNeeded();
-
-		this->CommitComposition();
 	}
 
 	this->ControlChanged = false;
@@ -2115,28 +2170,26 @@ bool Form::ForceUpdate()
 
 bool Form::RemoveControl(Control* c)
 {
-	if (std::find(this->Controls.begin(), this->Controls.end(), c) != this->Controls.end())
-	{
-		this->Controls.erase(std::remove(this->Controls.begin(), this->Controls.end(), c), this->Controls.end());
-		if (this->ForegroundControl == c) 
-			this->ForegroundControl = NULL;
-		if (this->MainMenu == c) 
-			this->MainMenu = NULL;
-		if (this->MainToolBar == c)
-			this->MainToolBar = NULL;
-		if (this->MainStatusBar == c)
-			this->MainStatusBar = NULL;
-		if (this->UnderMouse == c)
-			this->UnderMouse = NULL;
-		if (this->Selected == c)
-			this->SetSelectedControl(NULL, true);
-		if (this->_hoverControl == c)
-			this->_hoverControl = NULL;
-		c->Parent = NULL;
-		c->ParentForm = NULL;
-		return true;
-	}
-	return false;
+	if (std::find(this->Controls.begin(), this->Controls.end(), c) == this->Controls.end())
+		return false;
+	std::remove(this->Controls.begin(), this->Controls.end(), c);
+	if (this->ForegroundControl == c)
+		this->ForegroundControl = NULL;
+	if (this->MainMenu == c)
+		this->MainMenu = NULL;
+	if (this->MainToolBar == c)
+		this->MainToolBar = NULL;
+	if (this->MainStatusBar == c)
+		this->MainStatusBar = NULL;
+	if (this->UnderMouse == c)
+		this->UnderMouse = NULL;
+	if (this->Selected == c)
+		this->SetSelectedControl(NULL, true);
+	if (this->_hoverControl == c)
+		this->_hoverControl = NULL;
+	c->Parent = NULL;
+	c->ParentForm = NULL;
+	return true;
 }
 bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
 {
@@ -2275,11 +2328,8 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			if (!(this->VisibleHead && mouse.y < top))
 			{
 				Control* hit = HitTestControlAt(contentMouse);
-				if (!(hit && hit->Type() == UIClass::UI_WebBrowser))
-				{
-					if (::GetFocus() != this->Handle)
-						::SetFocus(this->Handle);
-				}
+				if (::GetFocus() != this->Handle)
+					::SetFocus(this->Handle);
 			}
 		}
 
@@ -2389,20 +2439,24 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	{
 		if (this->Selected)
 		{
-			Control* selected = this->Selected;
-			Control* fallback = GetScrollViewFallbackTarget(selected, wParam);
-			if (selected->ProcessMessage(message, wParam, lParam, xof, yof))
+			if (this->Selected->ProcessMessage(message, wParam, lParam, xof, yof))
 			{
-				if (selected->IsVisual)
+				if (this->Selected->IsVisual)
 				{
-					HitControl = selected;
+					HitControl = this->Selected;
 					KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
 					this->OnKeyDown(this, event_obj);
 				}
 			}
-			if (fallback)
+			else
 			{
-				fallback->ProcessMessage(message, wParam, lParam, 0, 0);
+				auto fallbackTarget = GetScrollViewFallbackTarget(this->Selected, wParam);
+				if (fallbackTarget && fallbackTarget->ProcessMessage(message, wParam, lParam, xof, yof))
+				{
+					HitControl = fallbackTarget;
+					KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
+					this->OnKeyDown(this, event_obj);
+				}
 			}
 		}
 		else
@@ -2461,10 +2515,9 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		if (this->Render)        this->Render->SetDpi((FLOAT)this->_dpi, (FLOAT)this->_dpi);
 		if (this->OverlayRender) this->OverlayRender->SetDpi((FLOAT)this->_dpi, (FLOAT)this->_dpi);
 		this->InvalidateLayout();
-		this->CommitComposition();
 		this->_hasRenderedOnce = false;
 		this->OnSizeChanged(this);
-		this->Invalidate(this->_dcompHost != nullptr);
+		this->Invalidate(false);
 	}
 	break;
 	case WM_MOVE:
@@ -2594,7 +2647,7 @@ Control* Form::LastChild()
 {
 	if (this->Controls.size())
 	{
-		return this->Controls[this->Controls.size() - 1];
+		return this->Controls.back();
 	}
 	return NULL;
 }
@@ -2698,7 +2751,7 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 			// 尺寸/DPI 变化后，强制同步渲染目标尺寸并安排一次重绘，避免出现新区域未刷新。
 			form->SyncRenderSizeToClient();
 			form->_hasRenderedOnce = false;
-			form->Invalidate(form->_dcompHost != nullptr);
+			form->Invalidate(false);
 			// 若窗口尚未首次显示，控件树可能还未构造完成：此时只记录 DPI，真正缩放留到 Show 前。
 			if (!form->_initialDpiApplied)
 			{
@@ -2768,27 +2821,7 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 					return 0;
 				}
 
-				bool hasVisibleWebBrowser = false;
-				std::function<void(Control*)> checkWebBrowser;
-				checkWebBrowser = [&](Control* c) {
-					if (!c || !c->Visible) return;
-					if (c->Type() == UIClass::UI_WebBrowser) {
-						hasVisibleWebBrowser = true;
-						return;
-					}
-					for (int i = 0; i < c->Count && !hasVisibleWebBrowser; i++)
-						checkWebBrowser(c->operator[](i));
-				};
-				
-				for (auto c : form->Controls)
-					if (!hasVisibleWebBrowser)
-						checkWebBrowser(c);
-				if (!hasVisibleWebBrowser && form->MainMenu)
-					checkWebBrowser((Control*)form->MainMenu);
-				if (!hasVisibleWebBrowser && form->ForegroundControl)
-					checkWebBrowser(form->ForegroundControl);
-				
-				if (hasVisibleWebBrowser || form->ControlChanged || !form->_hasRenderedOnce)
+				if (form->ControlChanged || !form->_hasRenderedOnce)
 					form->UpdateDirtyRect(ps.rcPaint, true);
 			}
 			EndPaint(hWnd, &ps);

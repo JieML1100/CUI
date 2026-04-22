@@ -2,6 +2,7 @@
 #include "imgs.h"
 #include "nanosvg.h"
 #include <memory>
+#include "../CUI/GUI/WebBrowser.h"
 
 namespace {
 

@@ -9,6 +9,8 @@
 #include "../CUI/GUI/Layout/Layout.h"
 #include "CustomControls.h"
 #include "TestUtils.h"
+
+class WebBrowser;
 class DemoWindow : public Form
 {
 public:

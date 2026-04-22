@@ -1,4 +1,5 @@
 ﻿#pragma once
+#define NOMINMAX
 #include "RichTextBox.h"
 #include "Form.h"
 #include <algorithm>
@@ -101,8 +102,8 @@ int RichTextBox::GetNextCaretIndex(int index) const
 {
 	index = std::clamp(index, 0, (int)this->buffer.size());
 	if (index >= (int)this->buffer.size()) return (int)this->buffer.size();
-	if (HasCrLfAt(index)) return (std::min)(index + 2, (int)this->buffer.size());
-	if (IsCaretBetweenCrLf(index)) return (std::min)(index + 1, (int)this->buffer.size());
+	if (HasCrLfAt(index)) return std::min(index + 2, (int)this->buffer.size());
+	if (IsCaretBetweenCrLf(index)) return std::min(index + 1, (int)this->buffer.size());
 	return index + 1;
 }
 
@@ -192,8 +193,8 @@ void RichTextBox::TrimToMaxLength()
 
 	this->buffer = this->buffer.substr(removeCount);
 
-	this->SelectionStart = (std::max)(0, this->SelectionStart - (int)removeCount);
-	this->SelectionEnd = (std::max)(0, this->SelectionEnd - (int)removeCount);
+	this->SelectionStart = std::max(0, this->SelectionStart - (int)removeCount);
+	this->SelectionEnd = std::max(0, this->SelectionEnd - (int)removeCount);
 	if (this->SelectionStart > (int)this->buffer.size()) this->SelectionStart = (int)this->buffer.size();
 	if (this->SelectionEnd > (int)this->buffer.size()) this->SelectionEnd = (int)this->buffer.size();
 }
@@ -393,7 +394,7 @@ void RichTextBox::EnsureAllBlockMetrics(float renderWidth, float renderHeight)
 	bool needScrollBar = total > renderHeight;
 	if (needScrollBar)
 	{
-		total = compute((std::max)(0.0f, renderWidth - 8.0f));
+		total = compute(std::max(0.0f, renderWidth - 8.0f));
 		this->layoutWidthHasScrollBar = true;
 	}
 	else
@@ -541,7 +542,7 @@ void RichTextBox::SetScrollByPos(float yof)
 		return;
 	}
 
-	const float maxScroll = (std::max)(0.0f, textSize.height - renderHeight);
+	const float maxScroll = std::max(0.0f, textSize.height - renderHeight);
 
 	float scrollBlockHeight = (renderHeight / textSize.height) * renderHeight;
 	if (scrollBlockHeight < this->Height * 0.1f) scrollBlockHeight = this->Height * 0.1f;
@@ -746,7 +747,7 @@ void RichTextBox::ApplyUndoRecord(const UndoRecord& rec, bool isUndo)
 
 	if (!removeText.empty() && pos <= (int)this->buffer.size())
 	{
-		size_t removeLen = (std::min)(removeText.size(), this->buffer.size() - (size_t)pos);
+		size_t removeLen = std::min(removeText.size(), this->buffer.size() - (size_t)pos);
 		this->buffer.erase((size_t)pos, removeLen);
 	}
 	if (!insertText.empty())
@@ -806,7 +807,7 @@ void RichTextBox::UpdateScroll(bool arrival)
 			float caretBottomContent = caretTopContent + ch;
 			if (arrival && this->SelectionEnd >= (int)this->buffer.size())
 			{
-				const float maxScroll = (std::max)(0.0f, this->textSize.height - render_height);
+				const float maxScroll = std::max(0.0f, this->textSize.height - render_height);
 				this->OffsetY = maxScroll;
 			}
 			else if (caretBottomContent - this->OffsetY > render_height)
@@ -830,7 +831,7 @@ void RichTextBox::UpdateScroll(bool arrival)
 		auto lastSelect = selected[0];
 		if (arrival && this->SelectionEnd >= (int)this->buffer.size())
 		{
-			const float maxScroll = (std::max)(0.0f, this->textSize.height - render_height);
+			const float maxScroll = std::max(0.0f, this->textSize.height - render_height);
 			OffsetY = maxScroll;
 		}
 		else if ((lastSelect.top + lastSelect.height) - OffsetY > render_height)
@@ -889,9 +890,9 @@ void RichTextBox::Update()
 		auto backColor = this->BackColor;
 		if (isUnderMouse || isSelected)
 		{
-			backColor.r = (std::min)(1.0f, backColor.r * 1.2f);
-			backColor.g = (std::min)(1.0f, backColor.g * 1.2f);
-			backColor.b = (std::min)(1.0f, backColor.b * 1.2f);
+			backColor.r = std::min(1.0f, backColor.r * 1.2f);
+			backColor.g = std::min(1.0f, backColor.g * 1.2f);
+			backColor.b = std::min(1.0f, backColor.b * 1.2f);
 		}
 		d2d->FillRect(0, 0, size.cx, size.cy, backColor);
 		if (this->Image)
@@ -907,8 +908,8 @@ void RichTextBox::Update()
 				float renderHeight = this->Height - (TextMargin * 2.0f);
 				if (this->layoutWidthHasScrollBar) renderWidth -= 8.0f;
 
-				int sels = (std::min)(SelectionStart, SelectionEnd);
-				int sele = (std::max)(SelectionStart, SelectionEnd);
+				int sels = std::min(SelectionStart, SelectionEnd);
+				int sele = std::max(SelectionStart, SelectionEnd);
 				int selLen = sele - sels;
 
 				float cx, cy, ch;
@@ -953,8 +954,8 @@ void RichTextBox::Update()
 					{
 						int blockStart = (int)this->blocks[i].start;
 						int blockEnd = (int)(this->blocks[i].start + this->blocks[i].len);
-						int is = (std::max)(sels, blockStart);
-						int ie = (std::min)(sele, blockEnd);
+						int is = std::max(sels, blockStart);
+						int ie = std::min(sele, blockEnd);
 						if (ie > is)
 						{
 							int localStart = is - blockStart;
@@ -1084,7 +1085,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			files.push_back(strFileName);
 		}
 		DragFinish(hDropInfo);
-		if (!files.empty())
+		if (files.size() > 0)
 		{
 			this->OnDropFile(this, files);
 		}
@@ -1157,11 +1158,11 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 				const float renderHeight = this->Height - (TextMargin * 2.0f);
 				if (renderHeight > 0.0f && textSize.height > renderHeight)
 				{
-					const float maxScroll = (std::max)(0.0f, textSize.height - renderHeight);
+					const float maxScroll = std::max(0.0f, textSize.height - renderHeight);
 					float thumbH = (renderHeight / textSize.height) * renderHeight;
 					if (thumbH < this->Height * 0.1f) thumbH = this->Height * 0.1f;
 					if (thumbH > this->Height) thumbH = this->Height;
-					const float moveSpace = (std::max)(0.0f, (float)this->Height - thumbH);
+					const float moveSpace = std::max(0.0f, (float)this->Height - thumbH);
 					float per = 0.0f;
 					if (maxScroll > 0.0f) per = std::clamp(this->OffsetY / maxScroll, 0.0f, 1.0f);
 					const float thumbTop = per * moveSpace;

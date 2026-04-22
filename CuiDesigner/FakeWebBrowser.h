@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "../CUI_Legacy/GUI/Control.h"
+#include "../CUI/GUI/Control.h"
 
 /**
  * @brief FakeWebBrowser：仅用于设计器的占位控件。

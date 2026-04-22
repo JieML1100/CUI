@@ -4,12 +4,12 @@
  * @file PropertyGrid.h
  * @brief PropertyGrid：设计器属性面板（显示/编辑控件属性）。
  */
-#include "../CUI_Legacy/GUI/Panel.h"
-#include "../CUI_Legacy/GUI/ScrollView.h"
-#include "../CUI_Legacy/GUI/Label.h"
-#include "../CUI_Legacy/GUI/CheckBox.h"
-#include "../CUI_Legacy/GUI/TextBox.h"
-#include "../CUI_Legacy/GUI/Button.h"
+#include "../CUI/GUI/Panel.h"
+#include "../CUI/GUI/ScrollView.h"
+#include "../CUI/GUI/Label.h"
+#include "../CUI/GUI/CheckBox.h"
+#include "../CUI/GUI/TextBox.h"
+#include "../CUI/GUI/Button.h"
 #include "DesignerTypes.h"
 #include "DesignerCore/PropertyGridBinder.h"
 #include "DesignerModel/DesignDocument.h"

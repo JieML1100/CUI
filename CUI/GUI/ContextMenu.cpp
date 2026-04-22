@@ -198,6 +198,11 @@ bool ContextMenu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	if (!this->Enable || !this->Visible || !_popupVisible)
 		return true;
 
+	if (_ignoreNextMouseUp && (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN))
+	{
+		_ignoreNextMouseUp = false;
+	}
+
 	if (_ignoreNextMouseUp && (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP))
 	{
 		_ignoreNextMouseUp = false;
@@ -366,8 +371,9 @@ void ContextMenu::ShowAt(class Control* relativeTo, int x, int y, bool ignoreNex
 		ShowAt(x, y, ignoreNextMouseUp);
 		return;
 	}
-	auto abs = relativeTo->AbsLocation;
-	ShowAt(abs.x + x, abs.y + y, ignoreNextMouseUp);
+	auto relativeAbs = relativeTo->AbsLocation;
+	auto menuAbs = this->AbsLocation;
+	ShowAt(relativeAbs.x - menuAbs.x + x, relativeAbs.y - menuAbs.y + y, ignoreNextMouseUp);
 }
 
 void ContextMenu::Hide()

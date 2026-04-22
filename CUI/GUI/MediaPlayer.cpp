@@ -13,6 +13,7 @@
 #include <audioclient.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <avrt.h>
+#include <cstdio>
 
 #include <ppl.h>
 
@@ -30,6 +31,19 @@
 static constexpr double HNS_PER_SEC = 10000000.0;  // 100-nanosecond 单位与秒的转换
 static const GUID kMFAudioFormatMpegHeaac = { 0x00001610, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71 } };
 
+static void PrintLogWide(const wchar_t* text)
+{
+	if (!text) return;
+	OutputDebugStringW(text);
+	const int len = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
+	if (len <= 0) return;
+	std::string utf8((size_t)len, '\0');
+	if (WideCharToMultiByte(CP_UTF8, 0, text, -1, utf8.data(), len, nullptr, nullptr) <= 0)
+		return;
+	printf("%s", utf8.c_str());
+	fflush(stdout);
+}
+
 static float ClampRate(float rate)
 {
 	if (!(rate > 0.0f)) return 1.0f;
@@ -41,7 +55,7 @@ static void DebugOutputHr(const wchar_t* context, HRESULT hr)
 {
 	wchar_t buf[512] = {};
 	swprintf_s(buf, L"%s: 0x%08X\n", context ? context : L"", (unsigned)hr);
-	OutputDebugStringW(buf);
+	PrintLogWide(buf);
 }
 
 static LARGE_INTEGER QpcNow()
@@ -748,7 +762,7 @@ static bool TimeScaleInterleavedPcm(
 	const size_t inFrames = inBytes / bytesPerFrame;
 	if (inFrames == 0) return false;
 
-	const size_t outFrames = (size_t)(std::max)(1.0, std::floor((double)inFrames / (double)rate));
+	const size_t outFrames = (size_t)std::max(1.0, std::floor((double)inFrames / (double)rate));
 	const size_t outBytes = outFrames * bytesPerFrame;
 	out.resize(outBytes);
 
@@ -1419,7 +1433,7 @@ void MediaPlayer::UpdateVideoFormatFromSourceReader()
 			
 			wchar_t dbgMsg[256];
 			swprintf_s(dbgMsg, L"Video format: %dx%d, stride=%u, bpp=%u, bottomUp=%d\n", w, h, stride, bytesPerPixel, bottomUp ? 1 : 0);
-			OutputDebugStringW(dbgMsg);
+			PrintLogWide(dbgMsg);
 		}
 		else
 		{
@@ -1917,7 +1931,8 @@ void MediaPlayer::PlaybackThreadMain()
 		const LARGE_INTEGER tContig0 = QpcNow();
 		hr = sample->ConvertToContiguousBuffer(&buf);
 		const LARGE_INTEGER tContig1 = QpcNow();
-		_statSamplesToContigQpcTicks.fetch_add((UINT64)(tContig1.QuadPart - tContig0.QuadPart), std::memory_order_relaxed);
+		const UINT64 contigTicks = (UINT64)(tContig1.QuadPart - tContig0.QuadPart);
+		_statSamplesToContigQpcTicks.fetch_add(contigTicks, std::memory_order_relaxed);
 		if (FAILED(hr) || !buf) continue;
 		BYTE* p = nullptr;
 		DWORD maxLen = 0, curLen = 0;
@@ -1999,7 +2014,8 @@ void MediaPlayer::PlaybackThreadMain()
 							_videoFrameReady = true;
 						}
 						const LARGE_INTEGER tVid1 = QpcNow();
-						_statVideoConvertQpcTicks.fetch_add((UINT64)(tVid1.QuadPart - tVid0.QuadPart), std::memory_order_relaxed);
+						const UINT64 vConvTicks = (UINT64)(tVid1.QuadPart - tVid0.QuadPart);
+						_statVideoConvertQpcTicks.fetch_add(vConvTicks, std::memory_order_relaxed);
 						_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
 						this->PostRender();
 					}
@@ -2060,7 +2076,8 @@ void MediaPlayer::PlaybackThreadMain()
 						_videoFrameReady = true;
 					}
 					const LARGE_INTEGER tVid1 = QpcNow();
-					_statVideoConvertQpcTicks.fetch_add((UINT64)(tVid1.QuadPart - tVid0.QuadPart), std::memory_order_relaxed);
+					const UINT64 vConvTicks = (UINT64)(tVid1.QuadPart - tVid0.QuadPart);
+					_statVideoConvertQpcTicks.fetch_add(vConvTicks, std::memory_order_relaxed);
 					_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
 					this->PostRender();
 				}
@@ -2204,7 +2221,7 @@ void MediaPlayer::UpdatePositionFromClock(bool forceEvent)
 	if (FAILED(_presentationClock->GetTime(&t))) return;
 
 	double newPos = (double)t / HNS_PER_SEC;
-	if (_duration > 0.0) newPos = (std::max)(0.0, (std::min)(newPos, _duration));
+	if (_duration > 0.0) newPos = std::max(0.0, std::min(newPos, _duration));
 
 	if (forceEvent || std::abs(newPos - _position) >= 0.10)
 	{
@@ -2720,6 +2737,8 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 				Play();
 			return true;
 		}
+		else
+		{
 		_mediaLoaded = true;
 		_playState = PlayState::Stopped;
 		OnMediaOpened(this);
@@ -2729,6 +2748,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 		if (_autoPlay)
 			Play();
 		return true;
+		}
 	}
 
 	// 每次加载重建 session，避免旧拓扑状态残留
@@ -3049,7 +3069,7 @@ void MediaPlayer::Seek(double seconds)
 	if (_useSourceReader)
 	{
 		if (!_sourceReader) return;
-		seconds = (std::max)(0.0, (std::min)(seconds, _duration));
+		seconds = std::max(0.0, std::min(seconds, _duration));
 		if (_timeStretch) _timeStretch->Reset();
 		PROPVARIANT var;
 		PropVariantInit(&var);
@@ -3089,7 +3109,7 @@ void MediaPlayer::Seek(double seconds)
 	HRESULT hr = SetPositionImpl(seconds);
 	if (SUCCEEDED(hr))
 	{
-		_position = (std::max)(0.0, (std::min)(seconds, _duration));
+		_position = std::max(0.0, std::min(seconds, _duration));
 		OnPositionChanged(this, _position);
 		this->PostRender();
 	}
@@ -3178,7 +3198,7 @@ HRESULT MediaPlayer::SetVolumeImpl(double volume)
 	hr = pAudioVolume->GetChannelCount(&channels);
 	if (FAILED(hr)) return hr;
 
-	float fVolume = (float)(std::max)(0.0, (std::min)(1.0, volume));
+	float fVolume = (float)std::max(0.0, std::min(1.0, volume));
 	for (UINT32 i = 0; i < channels; i++)
 	{
 		hr = pAudioVolume->SetChannelVolume(i, fVolume);
@@ -3338,7 +3358,8 @@ void MediaPlayer::Update()
 					_videoBitmap->CopyFromMemory(nullptr, frame.data(), expectedStride);
 				}
 				const LARGE_INTEGER tUp1 = QpcNow();
-				_statVideoUploadQpcTicks.fetch_add((UINT64)(tUp1.QuadPart - tUp0.QuadPart), std::memory_order_relaxed);
+				const UINT64 uploadTicks = (UINT64)(tUp1.QuadPart - tUp0.QuadPart);
+				_statVideoUploadQpcTicks.fetch_add(uploadTicks, std::memory_order_relaxed);
 			}
 		}
 
@@ -3422,7 +3443,8 @@ void MediaPlayer::Update()
 			const LARGE_INTEGER tDraw0 = QpcNow();
 			d2d->DrawBitmap(_videoBitmap, destX, destY, destWidth, destHeight);
 			const LARGE_INTEGER tDraw1 = QpcNow();
-			_statDrawBitmapQpcTicks.fetch_add((UINT64)(tDraw1.QuadPart - tDraw0.QuadPart), std::memory_order_relaxed);
+			const UINT64 drawTicks = (UINT64)(tDraw1.QuadPart - tDraw0.QuadPart);
+			_statDrawBitmapQpcTicks.fetch_add(drawTicks, std::memory_order_relaxed);
 			this->EndRender();
 			ReportPerfStatsIfDue();
 			return;
@@ -3434,84 +3456,7 @@ void MediaPlayer::Update()
 
 void MediaPlayer::ReportPerfStatsIfDue()
 {
-	if (!_mediaLoaded) return;
-
-	const auto freq = QpcFreq();
-	if (freq.QuadPart <= 0) return;
-
-	const LONGLONG now = QpcNow().QuadPart;
-	LONGLONG last = _statLastReportQpc.load(std::memory_order_relaxed);
-	if (last != 0 && (now - last) < freq.QuadPart) return;
-	if (!_statLastReportQpc.compare_exchange_strong(last, now, std::memory_order_relaxed))
-		return;
-
-	const double intervalSec = (last == 0) ? 1.0 : (double)(now - last) / (double)freq.QuadPart;
-	if (intervalSec <= 0.0) return;
-
-	const UINT64 rsCalls = _statReadSampleCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 rsTicks = _statReadSampleQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 rsVC = _statReadSampleVideoCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 rsVT = _statReadSampleVideoQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 rsAC = _statReadSampleAudioCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 rsAT = _statReadSampleAudioQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 contigCalls = _statSamplesToContigCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 contigTicks = _statSamplesToContigQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 vFrames = _statDecodedVideoFrames.exchange(0, std::memory_order_relaxed);
-	const UINT64 vConvCalls = _statVideoConvertCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 vConvTicks = _statVideoConvertQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 vConvBytes = _statVideoConvertBytes.exchange(0, std::memory_order_relaxed);
-	const UINT64 aCalls = _statAudioWriteCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 aTicks = _statAudioWriteQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 aBytes = _statAudioWriteBytes.exchange(0, std::memory_order_relaxed);
-	const UINT64 uCalls = _statVideoUploadCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 uTicks = _statVideoUploadQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 uBytes = _statVideoUploadBytes.exchange(0, std::memory_order_relaxed);
-	const UINT64 dCalls = _statDrawBitmapCalls.exchange(0, std::memory_order_relaxed);
-	const UINT64 dTicks = _statDrawBitmapQpcTicks.exchange(0, std::memory_order_relaxed);
-	const UINT64 updCalls = _statRenderUpdates.exchange(0, std::memory_order_relaxed);
-
-	const double fps = (intervalSec > 0.0) ? (double)vFrames / intervalSec : 0.0;
-	const double readAvgMs = (rsCalls > 0) ? QpcTicksToMs(rsTicks) / (double)rsCalls : 0.0;
-	const double readVAvgMs = (rsVC > 0) ? QpcTicksToMs(rsVT) / (double)rsVC : 0.0;
-	const double readAAvgMs = (rsAC > 0) ? QpcTicksToMs(rsAT) / (double)rsAC : 0.0;
-	const double contigAvgMs = (contigCalls > 0) ? QpcTicksToMs(contigTicks) / (double)contigCalls : 0.0;
-	const double vConvAvgMs = (vConvCalls > 0) ? QpcTicksToMs(vConvTicks) / (double)vConvCalls : 0.0;
-	const double aAvgMs = (aCalls > 0) ? QpcTicksToMs(aTicks) / (double)aCalls : 0.0;
-	const double upAvgMs = (uCalls > 0) ? QpcTicksToMs(uTicks) / (double)uCalls : 0.0;
-	const double drawAvgMs = (dCalls > 0) ? QpcTicksToMs(dTicks) / (double)dCalls : 0.0;
-	const double vConvMBs = (intervalSec > 0.0) ? ((double)vConvBytes / (1024.0 * 1024.0)) / intervalSec : 0.0;
-	const double upMBs = (intervalSec > 0.0) ? ((double)uBytes / (1024.0 * 1024.0)) / intervalSec : 0.0;
-	const double aMBs = (intervalSec > 0.0) ? ((double)aBytes / (1024.0 * 1024.0)) / intervalSec : 0.0;
-
-	wchar_t buf[512] = {};
-	swprintf_s(
-		buf,
-		L"[MediaPlayer][%.2fs] mode=%s nv12=%s upd=%llu fps=%.1f | ReadSample %llux %.3fms (V:%llux %.3fms A:%llux %.3fms) | Contig %llux %.3fms | VConv %llux %.3fms %.1fMB/s | Upload %llux %.3fms %.1fMB/s | Draw %llux %.3fms | Audio %llux %.3fms %.1fMB/s\n",
-		intervalSec,
-		(_usingHardwareDecode ? L"HW" : L"SW"),
-		(_usingNv12VideoOutput ? L"Y" : L"N"),
-		(unsigned long long)updCalls,
-		fps,
-		(unsigned long long)rsCalls,
-		readAvgMs,
-		(unsigned long long)rsVC,
-		readVAvgMs,
-		(unsigned long long)rsAC,
-		readAAvgMs,
-		(unsigned long long)contigCalls,
-		contigAvgMs,
-		(unsigned long long)vConvCalls,
-		vConvAvgMs,
-		vConvMBs,
-		(unsigned long long)uCalls,
-		upAvgMs,
-		upMBs,
-		(unsigned long long)dCalls,
-		drawAvgMs,
-		(unsigned long long)aCalls,
-		aAvgMs,
-		aMBs);
-	OutputDebugStringW(buf);
+	return;
 }
 
 bool MediaPlayer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
@@ -3597,7 +3542,7 @@ GET_CPP(MediaPlayer, double, Volume)
 
 SET_CPP(MediaPlayer, double, Volume)
 {
-	_volume.store((std::max)(0.0, (std::min)(1.0, value)));
+	_volume.store(std::max(0.0, std::min(1.0, value)));
 	if (_mediaLoaded)
 	{
 		if (_useSourceReader)

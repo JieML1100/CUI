@@ -1,9 +1,11 @@
-﻿#pragma once
+#pragma once
 #include "Control.h"
 
 #include <functional>
 #include <unordered_map>
 #include <string>
+
+#ifdef CUI_ENABLE_WEBVIEW2
 
 // WebView2 (NuGet: Microsoft.Web.WebView2)
 #include <WebView2.h>
@@ -27,7 +29,7 @@ struct IDCompositionRectangleClip;
  * - 运行时使用 WebView2 CompositionController 并挂载到 Form 提供的 DirectComposition 容器层
  * - 设计器模式下不会创建真实 WebView2（避免生成 `<exe>.WebView2` 目录），仅绘制占位
  * - 鼠标输入需要显式转发给 WebView2（见 ForwardMouseMessageToWebView）
- * - Navigate/SetHtml 支持“延迟执行”：未就绪时会缓存到 _pendingUrl/_pendingHtml
+ * - Navigate/SetHtml 支持"延迟执行"：未就绪时会缓存到 _pendingUrl/_pendingHtml
  */
 
 class WebBrowser : public Control
@@ -255,3 +257,63 @@ private:
 	// RootVisualTarget attach state (解决隐藏页残留显示)
 	bool _rootAttached = false;
 };
+
+#else
+
+/**
+ * @brief WebBrowser 占位实现（未启用 WebView2/DComp 时）。
+ *
+ * 所有 API 均为空实现，保证在无 WebView2 环境下仍可编译和运行。
+ */
+class WebBrowser : public Control
+{
+public:
+	WebBrowser(int x, int y, int width, int height);
+	~WebBrowser() override;
+
+	UIClass Type() override { return UIClass::UI_WebBrowser; }
+	bool HandlesMouseWheel() const override { return true; }
+	void Update() override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+
+	bool TryGetSystemCursorId(UINT32& outId) const { (void)outId; return false; }
+	void Navigate(const std::wstring& url) { (void)url; }
+	void SetHtml(const std::wstring& html) { (void)html; }
+	void Reload() {}
+	void Stop() {}
+	void GoBack() {}
+	void GoForward() {}
+	bool CanGoBack() const { return false; }
+	bool CanGoForward() const { return false; }
+	std::wstring GetSource() const { return L""; }
+	std::wstring GetDocumentTitle() const { return L""; }
+	bool IsNavigating() const { return false; }
+	double GetZoomFactor() const { return 1.0; }
+	void SetZoomFactor(double factor) { (void)factor; }
+	void ExecuteScriptAsync(const std::wstring& script,
+		std::function<void(HRESULT hr, const std::wstring& jsonResult)> callback = {})
+	{
+		(void)script;
+		if (callback) callback(E_NOTIMPL, L"");
+	}
+	using JsInvokeHandler = std::function<std::wstring(const std::wstring& payload)>;
+	void RegisterJsInvokeHandler(const std::wstring& name, JsInvokeHandler handler) { (void)name; (void)handler; }
+	void UnregisterJsInvokeHandler(const std::wstring& name) { (void)name; }
+	void ClearJsInvokeHandlers() {}
+	void GetHtmlAsync(std::function<void(HRESULT hr, const std::wstring& html)> callback) { if (callback) callback(E_NOTIMPL, L""); }
+	void SetElementInnerHtmlAsync(const std::wstring& cssSelector, const std::wstring& html,
+		std::function<void(HRESULT hr)> callback = {})
+	{
+		(void)cssSelector; (void)html;
+		if (callback) callback(E_NOTIMPL);
+	}
+	void QuerySelectorAllOuterHtmlAsync(const std::wstring& cssSelector,
+		std::function<void(HRESULT hr, const std::wstring& jsonArray)> callback)
+	{
+		(void)cssSelector;
+		if (callback) callback(E_NOTIMPL, L"");
+	}
+	bool IsWebViewVisible() const { return false; }
+};
+
+#endif

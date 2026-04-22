@@ -1,4 +1,6 @@
 ﻿#pragma once
+#include <vector>
+#include <string>
 #include "Control.h"
 #include "Application.h"
 #include "Button.h"
@@ -31,11 +33,8 @@
 #include "ContextMenu.h"
 #include "Taskbar.h"
 #include "NotifyIcon.h"
-#include "WebBrowser.h"
 #include "MediaPlayer.h"
 #include "SplitContainer.h"
-#include <string>
-#include <vector>
 
 #if defined(_MSC_VER)
 #pragma comment(lib, "Dwmapi.lib")
@@ -43,7 +42,7 @@
 
 struct IDCompositionDevice;
 struct IDCompositionVisual;
-class DCompLayeredHost;
+
 typedef Event<void(class Form* sender, int Id, int info)> CommandEvent;
 typedef Event<void(class Form*)> FormClosingEvent;
 typedef Event<void(class Form*)> FormClosedEvent;
@@ -64,7 +63,7 @@ typedef Event<void(class Form*)> FormLostFocusEvent;
 typedef Event<void(class Form*, std::vector<std::wstring>)> FormDropFileEvent;
 typedef Event<void(class Form*, std::wstring)> FormDropTextEvent;
 typedef Event<void(class Form*, MouseEventArgs)> FormMouseClickEvent;
-typedef Event<void(class Form*, bool&)> FormCloseEvent;
+typedef Event<void(class Form*,bool&)> FormCloseEvent;
 
 struct FormThemeFrame
 {
@@ -94,6 +93,7 @@ class Form
 private:
 	friend class FormDropTarget;
 	POINT _Location_INIT;
+	bool _autoCenterOnCreate = false;
 	SIZE _Size_INTI;
 	std::wstring _text;
 	Font* _font = NULL;
@@ -120,25 +120,23 @@ private:
 	D2D1_COLOR_F BorderLightColor = Colors::White;
 	D2D1_COLOR_F BorderDarkColor = Colors::Black;
 	std::wstring _themeName = L"default";
+	bool _showInTaskBar = true;
+	UINT_PTR _animTimerId = 0xC001;
+	UINT _animIntervalMs = 0;
+	bool _hasRenderedOnce = false;
+	CursorKind _currentCursor = CursorKind::Arrow;
 
-	int ClientTop() { return VisibleHead ? HeadHeight : 0; }
-	RECT TitleBarRectClient() { auto s = this->Size; return RECT{ 0, 0, s.cx, this->ClientTop() }; }
 	bool TryGetCaptionButtonRect(CaptionButtonKind kind, RECT& out);
 	bool HitTestCaptionButtons(POINT ptClient, CaptionButtonKind& outKind);
 	void UpdateCaptionHover(POINT ptClient);
 	void ExecuteCaptionButton(CaptionButtonKind kind);
 	void ClearCaptionStates();
-	bool _showInTaskBar = true;
-	UINT_PTR _animTimerId = 0xC001;
-	UINT _animIntervalMs = 0;
-	bool _hasRenderedOnce = false;
 	void RefreshAnimationTimer();
 	void InvalidateControl(class Control* c, int inflatePx = 2, bool immediate = false);
 	void InvalidateAnimatedControls(bool immediate = false);
 	static bool RectIntersects(const RECT& a, const RECT& b);
 	static RECT ToRECT(D2D1_RECT_F r, int inflatePx = 0);
 
-	CursorKind _currentCursor = CursorKind::Arrow;
 	void ApplyCursor(CursorKind kind);
 	void UpdateCursor(POINT mouseClient, POINT contentMouse);
 	CursorKind QueryCursorAt(POINT mouseClient, POINT contentMouse);
@@ -149,6 +147,8 @@ private:
 	class LayoutEngine* _layoutEngine = nullptr;
 	bool _needsLayout = false;
 	bool _resourcesCleaned = false;
+	class DCompLayeredHost* _dcompHost = nullptr;
+	void EnsureDCompInitialized();
 	// ---- DPI ----
 	UINT _dpi = 96;
 	bool _initialDpiApplied = false;
@@ -238,7 +238,6 @@ public:
 	D2DGraphics* Render;
 	/** @brief 覆盖层渲染器（用于前景控件/临时浮层等）。 */
 	D2DGraphics* OverlayRender = nullptr;
-	class DCompLayeredHost* _dcompHost = nullptr;
 	bool _recoveringDeviceLost = false;
 	void RecoverRenderIfNeeded();
 	int HeadHeight = 24;
@@ -308,15 +307,9 @@ public:
 	/** @brief 根据当前鼠标位置刷新窗口光标显示。 */
 	void UpdateCursorFromCurrentMouse();
 
-	// WebView2 Composition 支持：给 WebBrowser 提供 DirectComposition 的容器层
-	/**
-	 * @brief 获取 DirectComposition 设备（用于 WebView2/Composition 场景）。
-	 */
-	IDCompositionDevice* GetDCompDevice() const;
-	/** @brief 获取用于承载 Web 组件的容器 Visual。 */
-	IDCompositionVisual* GetWebContainerVisual() const;
-	/** @brief 提交 Composition 更改。 */
-	void CommitComposition();
+	int ClientTop() { return VisibleHead ? HeadHeight : 0; }
+	RECT TitleBarRectClient() { auto s = this->Size; return RECT{ 0, 0, s.cx, this->ClientTop() }; }
+
 
 	template<typename T>
 	T AddControl(T c)
@@ -385,6 +378,10 @@ public:
 	void SetLayoutEngine(class LayoutEngine* engine);
 	void PerformLayout();
 	void InvalidateLayout() { _needsLayout = true; if (_layoutEngine) _layoutEngine->Invalidate(); }
+
+	IDCompositionDevice* GetDCompDevice() const;
+	IDCompositionVisual* GetWebContainerVisual() const;
+	void CommitComposition();
 
 	static bool DoEvent();
 	static bool WaiteEvent();

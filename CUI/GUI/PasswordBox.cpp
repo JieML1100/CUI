@@ -1,8 +1,21 @@
 ﻿#pragma once
+#define NOMINMAX
 #include "PasswordBox.h"
 #include "Form.h"
-#include <vector>
 #pragma comment(lib, "Imm32.lib")
+
+namespace
+{
+	std::wstring BuildTextFromBuffer(std::vector<wchar_t>& buffer)
+	{
+		if (buffer.empty() || buffer.back() != L'\0')
+		{
+			buffer.push_back(L'\0');
+		}
+		return std::wstring(buffer.data());
+	}
+}
+
 UIClass PasswordBox::Type() { return UIClass::UI_PasswordBox; }
 bool PasswordBox::HandlesNavigationKey(WPARAM key) const
 {
@@ -35,8 +48,8 @@ void PasswordBox::InputText(std::wstring input)
 	}
 	else
 	{
-		std::vector<wchar_t> tmp;
-		tmp.insert(tmp.end(), this->Text.begin(), this->Text.end());
+		std::vector<wchar_t> tmp = std::vector<wchar_t>();
+		tmp.insert(tmp.end(), this->_text.begin(), this->_text.end());
 		if (sele > sels)
 		{
 			int sublen = sele - sels;
@@ -49,8 +62,7 @@ void PasswordBox::InputText(std::wstring input)
 				tmp.insert(tmp.begin() + sels + i, input[i]);
 			}
 			SelectionEnd = SelectionStart = sels + (input.size());
-			tmp.push_back(L'\0');
-			this->Text = std::wstring(tmp.data());
+			this->Text = BuildTextFromBuffer(tmp);
 		}
 		else if (sele == sels && sele >= 0)
 		{
@@ -60,8 +72,7 @@ void PasswordBox::InputText(std::wstring input)
 			}
 			SelectionEnd += input.size();
 			SelectionStart += input.size();
-			tmp.push_back(L'\0');
-			this->Text = std::wstring(tmp.data());
+			this->Text = BuildTextFromBuffer(tmp);
 		}
 		else
 		{
@@ -69,17 +80,17 @@ void PasswordBox::InputText(std::wstring input)
 			SelectionEnd = SelectionStart = this->Text.size();
 		}
 	}
-	std::vector<wchar_t> tmp;
-	tmp.insert(tmp.end(), this->Text.begin(), this->Text.end());
+	std::vector<wchar_t> tmp = std::vector<wchar_t>();
+	tmp.insert(tmp.end(), this->_text.begin(), this->_text.end());
 	tmp.push_back(L'\0');
-	for (int i = 0; i < (int)tmp.size(); i++)
+	for (int i = 0; i < tmp.size(); i++)
 	{
 		if (tmp[i] == L'\r' || tmp[i] == L'\n')
 		{
 			tmp[i] = L' ';
 		}
 	}
-	this->Text = std::wstring(tmp.data());
+	this->Text = BuildTextFromBuffer(tmp);
 }
 void PasswordBox::InputBack()
 {
@@ -88,24 +99,22 @@ void PasswordBox::InputBack()
 	int selLen = sele - sels;
 	if (selLen > 0)
 	{
-		std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
+		std::vector<wchar_t> tmp = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
 		for (int i = 0; i < selLen; i++)
 		{
 			tmp.erase(tmp.begin() + sels);
 		}
-		tmp.push_back(L'\0');
 		this->SelectionStart = this->SelectionEnd = sels;
-		this->Text = tmp.data();
+		this->Text = BuildTextFromBuffer(tmp);
 	}
 	else
 	{
 		if (sels > 0)
 		{
-			std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
+			std::vector<wchar_t> tmp = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
 			tmp.erase(tmp.begin() + sels - 1);
-			tmp.push_back(L'\0');
 			this->SelectionStart = this->SelectionEnd = sels - 1;
-			this->Text = tmp.data();
+			this->Text = BuildTextFromBuffer(tmp);
 		}
 	}
 }
@@ -116,24 +125,22 @@ void PasswordBox::InputDelete()
 	int selLen = sele - sels;
 	if (selLen > 0)
 	{
-		std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
+		std::vector<wchar_t> tmp = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
 		for (int i = 0; i < selLen; i++)
 		{
 			tmp.erase(tmp.begin() + sels);
 		}
-		tmp.push_back(L'\0');
 		this->SelectionStart = this->SelectionEnd = sels;
-		this->Text = tmp.data();
+		this->Text = BuildTextFromBuffer(tmp);
 	}
 	else
 	{
 		if (sels < this->Text.size())
 		{
-			std::vector<wchar_t> tmp((wchar_t*)this->Text.c_str(), (wchar_t*)this->Text.c_str() + this->Text.size());
+			std::vector<wchar_t> tmp = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
 			tmp.erase(tmp.begin() + sels);
-			tmp.push_back(L'\0');
 			this->SelectionStart = this->SelectionEnd = sels;
-			this->Text = tmp.data();
+			this->Text = BuildTextFromBuffer(tmp);
 		}
 	}
 }
@@ -189,9 +196,9 @@ void PasswordBox::Update()
 		auto backColor = this->BackColor;
 		if (isUnderMouse || isSelected)
 		{
-			backColor.r = (std::min)(1.0f, backColor.r * 1.2f);
-			backColor.g = (std::min)(1.0f, backColor.g * 1.2f);
-			backColor.b = (std::min)(1.0f, backColor.b * 1.2f);
+			backColor.r = std::min(1.0f, backColor.r * 1.2f);
+			backColor.g = std::min(1.0f, backColor.g * 1.2f);
+			backColor.b = std::min(1.0f, backColor.b * 1.2f);
 		}
 		d2d->FillRect(0, 0, size.cx, size.cy, backColor);
 		if (this->Image)

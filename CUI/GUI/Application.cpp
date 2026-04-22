@@ -1,8 +1,5 @@
 ﻿#include "Application.h"
-
-#include <windows.h>
 #include <shlobj_core.h>
-
 namespace
 {
 	static UINT GetSystemDpiFallback()
@@ -120,6 +117,7 @@ std::string Application::UserAppDataPath()
 	SHGetSpecialFolderPathA(NULL, path, CSIDL_APPDATA, FALSE);
 	return std::string(path);
 }
+
 void Application::EnsureDpiAwareness()
 {
 	EnableDpiAwarenessOnce();

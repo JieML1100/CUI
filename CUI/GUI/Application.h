@@ -1,8 +1,7 @@
 ﻿#pragma once
+#include <Windows.h>
 #include <string>
 #include <unordered_map>
-#include <Windows.h>
-
 /**
  * @file Application.h
  * @brief CUI 应用级静态工具与全局状态。
@@ -42,9 +41,7 @@ public:
 	 * @brief 返回漫游（Roaming）用户数据目录。
 	 */
 	static std::string UserAppDataPath();
-	/**
-	 * @brief 返回用于保存用户数据的注册表键。
-	 */
+
 	// ---- DPI helpers ----
 	/**
 	 * @brief 尽可能启用 Per-Monitor V2 DPI Awareness（失败则自动降级）。

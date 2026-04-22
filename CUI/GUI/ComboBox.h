@@ -53,7 +53,7 @@ public:
 	D2D1_COLOR_F ButtonBackColor = Colors::SkyBlue;
 	/** @brief 选择变化事件。 */
 	SelectionChangedEvent OnSelectionChanged;
-	/** @brief 下拉状态下最多显示的条目数量。实际可见项数会被 Items.size() 截断。 */
+	/** @brief 下拉状态下最多显示的条目数量。实际可见项数会被 Items.Count 截断。 */
 	int ExpandCount = 4;
 	/** @brief 展开状态下的滚动偏移（按条目计）。 */
 	int ExpandScroll = 0;

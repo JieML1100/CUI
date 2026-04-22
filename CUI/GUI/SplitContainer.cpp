@@ -237,7 +237,7 @@ bool SplitContainer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			files.push_back(strFileName);
 		}
 		DragFinish(hDropInfo);
-		if (!files.empty())
+		if (files.size() > 0)
 		{
 			this->OnDropFile(this, files);
 		}

@@ -1,9 +1,10 @@
 ﻿#pragma once
+#define NOMINMAX
 #include "Event.h"
-#include "Colors.h"
-#include "Font.h"
-#include "Factory.h"
-#include "Graphics.h"
+#include <Colors.h>
+#include <Font.h>
+#include <Factory.h>
+#include <Graphics.h>
 
 
 #include <string>
@@ -94,6 +95,7 @@ enum class UIClass : int
 enum class CursorKind : uint8_t
 {
 	Arrow,
+	Cross,
 	Hand,
 	IBeam,
 	SizeWE,
@@ -158,7 +160,7 @@ protected:
 	std::shared_ptr<BitmapSource> _imageSource;
 	Microsoft::WRL::ComPtr<ID2D1Bitmap> _imageCache;
 	ID2D1RenderTarget* _imageCacheTarget = nullptr;
-	std::wstring _text;
+	std::wstring _text = std::wstring(L"");
 	Font* _font = NULL;
 	bool _ownsFont = false;
 	D2D1_RECT_F _lastPostRenderClientRect{ 0,0,0,0 };
@@ -341,7 +343,11 @@ public:
 			throw std::exception("该控件已属于其他容器!");
 			return NULL;
 		}
-		if (std::find(this->Children.begin(), this->Children.end(), c) != this->Children.end()) return c;
+		for(auto& child : this->Children) {
+			if (child == c) {
+				return c;
+			}
+		}
 		c->Parent = this;
 		c->ParentForm = this->ParentForm;
 		this->Children.push_back(c);
@@ -355,7 +361,7 @@ public:
 	static void SetChildrenParentForm(Control* c, Form* form) {
 		if (!c) return;
 		c->ParentForm = form;
-		for (size_t i = 0; i < c->Children.size(); i++) {
+		for (int i = 0; i < c->Children.size(); i++) {
 			SetChildrenParentForm(c->Children[i], form);
 		}
 	}
