@@ -127,8 +127,8 @@ button->OnMouseClick += [](Control* sender, MouseEventArgs e) {
 };
 
 // Text change event
-textBox->OnTextChanged += [](Control* sender, const std::wstring& oldText, 
-                              const std::wstring& newText) {
+textBox->OnTextChanged += [](Control* sender, std::wstring oldText,
+                              std::wstring newText) {
     // Handle text change
 };
 
@@ -168,7 +168,7 @@ pictureBox->SetImageEx(svgBitmap, false);
 
 ### WebView2 Integration
 
-Embed Web content and implement JS/C++ interop through WebView2:
+With `CUI_ENABLE_WEBVIEW2` defined, you can embed Web content and implement JS/C++ interop through WebView2:
 
 ```cpp
 // Create WebBrowser control
@@ -220,10 +220,8 @@ CUI.sln
 │   │   ├── Layout/        # Layout system
 │   │   └── ...
 │   └── nanosvg.cpp/h      # SVG rendering library
-├── CUI_Legacy/            # Legacy version (Windows 7)
 ├── CuiDesigner/           # Visual designer
 ├── CUITest/               # Samples and test program
-├── CUITest_Legacy/        # Legacy version samples
 ├── D2DGraphics/           # Low-level graphics wrapper
 └── Utils/                 # General utilities used by the designer and related projects
 ```
@@ -268,23 +266,24 @@ Control
 
 ### Environment Requirements
 
-- **Operating System**: Windows 8 / Windows 10 / Windows 11
+- **Operating System**: Windows 7 / Windows 8 / Windows 10 / Windows 11
 - **Development Tools**: Visual Studio 2022 or higher
 - **C++ Standard**: C++20
-- **Dependencies**: WebView2 NuGet package
+- **Dependencies**: WebView2 NuGet package (only required when `CUI_ENABLE_WEBVIEW2` is defined)
 
 ### Building the Project
 
 1. Open `CUI.sln` with Visual Studio
 2. Select Release|x64 configuration
-3. Build the solution
+3. Add or remove `CUI_ENABLE_WEBVIEW2` from the preprocessor definitions in `CUI.vcxproj` and `CUITest.vcxproj`:
+   - **Enable WebView2/DirectComposition**: Define `CUI_ENABLE_WEBVIEW2` (already defined by default in Debug/Release configurations)
+   - **Windows 7 compatibility**: Remove `CUI_ENABLE_WEBVIEW2` from preprocessor definitions to use Direct2D HWND rendering only
+4. Build the solution
 
 ### Creating Your First Application
 
 ```cpp
 #include "CUI/GUI/Form.h"
-
-using namespace CUI;
 
 class MainWindow : public Form
 {
@@ -292,7 +291,7 @@ public:
     MainWindow() : Form(L"My First CUI App", { 100, 100 }, { 800, 600 })
     {
         // Set window background color
-        BackColor = Colors::DarkGray;
+        BackColor = Colors::DimGrey;
         
         // Add label
         auto label = AddControl(new Label(L"Welcome to CUI!", 50, 50));
@@ -302,7 +301,7 @@ public:
         // Add button
         auto button = AddControl(new Button(L"Click Me", 50, 100, 120, 40));
         button->OnMouseClick += [](Control* sender, MouseEventArgs e) {
-            MessageBoxW(sender->GetForm()->Handle, 
+            MessageBoxW(sender->ParentForm->Handle,
                        L"You clicked the button!", L"CUI", MB_OK);
         };
         
@@ -317,15 +316,20 @@ public:
     }
 };
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, 
-                   LPSTR lpCmdLine, int nCmdShow)
+int main()
 {
-    Application::Initialize(hInstance);
-    
+    Application::EnsureDpiAwareness();
+
     auto window = new MainWindow();
     window->Show();
-    
-    return Application::Run();
+
+    while (1)
+    {
+        Form::DoEvent();
+        if (Application::Forms.size() == 0)
+            break;
+    }
+    return 0;
 }
 ```
 
@@ -354,7 +358,7 @@ auto label = AddControl(new Label(L"This is a label", 20, 20));
 
 // Set style
 label->Font = new Font(L"Microsoft YaHei", 16.0f);
-label->ForeColor = D2D1::ColorF(Colors::LightBlue);
+label->ForeColor = Colors::LightBlue;
 ```
 
 #### Button
@@ -387,9 +391,9 @@ Single-line text input:
 ```cpp
 auto textBox = AddControl(new TextBox(L"Default text", 20, 120, 200, 26));
 
-textBox->OnTextChanged += [](Control* s, 
-                             const std::wstring& oldText,
-                             const std::wstring& newText) {
+textBox->OnTextChanged += [](Control* s,
+                             std::wstring oldText,
+                             std::wstring newText) {
     // Text change handling
 };
 ```
@@ -426,7 +430,7 @@ combo->ExpandCount = 8;
 
 // Add options
 for (int i = 0; i < 20; i++) {
-    combo->Items.Add(StringHelper::Format(L"Option %d", i));
+    combo->Items.push_back(StringHelper::Format(L"Option %d", i));
 }
 
 combo->OnSelectionChanged += [](Control* sender) {
@@ -556,7 +560,7 @@ grid->Columns.Add(GridViewColumn(L"Action", 80, ColumnType::Button));
 for (int i = 0; i < 20; i++) {
     GridViewRow row;
     row.Cells = { L"Item " + std::to_wstring(i), L"Type A", L"" };
-    grid->Rows.Add(row);
+    grid->Rows.push_back(row);
 }
 ```
 
@@ -659,12 +663,12 @@ statusBar->SetPartText(0, L"Processing...");
 auto notify = new NotifyIcon();
 notify->InitNotifyIcon(hwnd, 1);
 notify->SetIcon(LoadIcon(NULL, IDI_APPLICATION));
-notify->SetToolTip(L"My App");
+notify->SetToolTip("My App");
 
 notify->ClearMenu();
-notify->AddMenuItem(L"Show Window", 1);
+notify->AddMenuItem(NotifyIconMenuItem("Show Window", 1));
 notify->AddMenuSeparator();
-notify->AddMenuItem(L"Exit", 3);
+notify->AddMenuItem(NotifyIconMenuItem("Exit", 3));
 
 notify->OnNotifyIconMenuClick += [](NotifyIcon* sender, int menuId) {
     switch (menuId) {
@@ -1017,75 +1021,38 @@ public:
 
 ### Custom Controls
 
-Create custom versions by inheriting existing controls:
+Subscribe to the `OnPaint` event to implement custom drawing:
 
 ```cpp
-// CustomControls.h
-#pragma once
-#include "CUI/GUI/Button.h"
-#include "CUI/GUI/TextBox.h"
+auto customPanel = AddControl(new Panel(20, 20, 200, 100));
+customPanel->BackColor = Colors::DimGrey;
 
-class CustomLabel1 : public Label
-{
-public:
-    CustomLabel1(const std::wstring& text, int x, int y) : Label(text, x, y) {}
-    
-    void OnPaint(Graphics* g) override
-    {
-        // Gradient drawing
-        auto gradient = g->CreateLinearGradientBrush(
-            D2D1::Point2F(0, 0),
-            D2D1::Point2F(Width, 0),
-            { {0, D2D1::ColorF(Colors::Cyan)}, {1, D2D1::ColorF(Colors::Blue)} }
-        );
-        
-        auto rect = D2D1::RectF(0, 0, (float)Width, (float)Height);
-        g->FillRectangle(rect, gradient);
-        
-        // Draw text
-        DrawText(g, Text.c_str(), rect, GetTextFormat(), ForeColor);
-    }
-};
+customPanel->OnPaint += [](Control* sender) {
+    auto panel = (Panel*)sender;
+    auto d2d = panel->ParentForm->Render;
+    auto size = panel->ActualSize();
 
-class CustomTextBox1 : public TextBox
-{
-public:
-    CustomTextBox1(const std::wstring& text, int x, int y, int w, int h) 
-        : TextBox(text, x, y, w, h) {}
-    
-    void OnPaint(Graphics* g) override
-    {
-        // Custom border drawing
-        auto rect = D2D1::RectF(0, 0, (float)Width, (float)Height);
-        g->DrawRoundedRectangle(rect, 8.0f, D2D1::ColorF(Colors::Gold));
-        
-        // Internal fill
-        g->FillRectangle(
-            D2D1::RoundedRect(D2D1::RectF(1, 1, Width - 1, Height - 1), 7, 7),
-            BackColor
-        );
-        
-        // Draw text
-        DrawText(g, Text.c_str(), 
-                 D2D1::RectF(5, 5, Width - 5, Height - 5),
-                 GetTextFormat(), ForeColor);
-    }
+    // Gradient-like background (using solid colors)
+    d2d->FillRect(0, 0, (float)size.cx, (float)size.cy,
+                  D2D1_COLOR_F{ 0.1f, 0.6f, 0.8f, 1.0f });
+    d2d->DrawRect(0, 0, (float)size.cx, (float)size.cy,
+                  D2D1_COLOR_F{ 1.0f, 0.8f, 0.0f, 1.0f }, 2.0f);
+
+    // Draw text
+    auto font = panel->GetFont();
+    d2d->DrawString(L"Custom Draw", 10.0f, 10.0f,
+                     Colors::White, font);
 };
 ```
 
 ### DirectComposition Integration
 
 ```cpp
-// Use DCompLayeredHost for layered rendering
-auto dcompHost = new DCompLayeredHost(hwnd);
-dcompHost->Initialize();
-
-// Create composition visual effects
-IDCompositionVisual* visual = nullptr;
-dcompDevice->CreateVisual(&visual);
-dcompSurface = // Get Direct3D surface
-visual->SetContent(dcompSurface);
-dcompTarget->AddVisual(visual);
+// DCompLayeredHost is managed internally by Form; manual creation is usually unnecessary.
+// To access underlying DComp resources directly:
+auto* dcompHost = form->GetDCompDevice();   // IDCompositionDevice*
+auto* container = form->GetWebContainerVisual(); // IDCompositionVisual*
+form->CommitComposition();
 ```
 
 ### Resource Management
@@ -1238,8 +1205,6 @@ private:
 #include "Label.h"
 #include "OpenFileDialog.h"
 
-using namespace CUI;
-
 class MediaPlayerWindow : public Form
 {
 private:
@@ -1299,8 +1264,8 @@ public:
             (void)s;
             (void)e;
             OpenFileDialog ofd;
-            ofd.Filter = MakeDialogFilterString("Media Files", 
-                                                "*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.mp3");
+            ofd.Filter = MakeDialogFilterStrring("Media Files",
+                                                "*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.mp3;*.wav;*.flac;*.m4a;*.wma;*.aac");
             ofd.Title = "Select Media File";
             if (ofd.ShowDialog(this->Handle) == DialogResult::OK && 
                 !ofd.SelectedPaths.empty()) {
@@ -1361,15 +1326,20 @@ public:
     }
 };
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, 
-                   LPSTR lpCmdLine, int nCmdShow)
+int main()
 {
-    Application::Initialize(hInstance);
-    
+    Application::EnsureDpiAwareness();
+
     auto window = new MediaPlayerWindow();
     window->Show();
-    
-    return Application::Run();
+
+    while (1)
+    {
+        Form::DoEvent();
+        if (Application::Forms.size() == 0)
+            break;
+    }
+    return 0;
 }
 ```
 
@@ -1378,8 +1348,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 ```cpp
 #include "Form.h"
 #include "WebBrowser.h"
-
-using namespace CUI;
 
 class WebIntegrationWindow : public Form
 {
@@ -1488,8 +1456,6 @@ public:
 #include "TextBox.h"
 #include "Panel.h"
 
-using namespace CUI;
-
 class DataManagerWindow : public Form
 {
 private:
@@ -1501,7 +1467,7 @@ private:
 public:
     DataManagerWindow() : Form(L"Data Management System", { 100, 100 }, { 1200, 800 })
     {
-        BackColor = Colors::grey31;
+        BackColor = D2D1_COLOR_F{ 0.31f, 0.31f, 0.31f, 1.0f };
 
         // Top search bar
         auto searchPanel = AddControl(new Panel(10, 10, 1180, 50));
@@ -1509,9 +1475,9 @@ public:
 
         searchPanel->AddControl(new Label(L"Search:", 15, 15));
         _searchBox = searchPanel->AddControl(new TextBox(L"", 60, 14, 300, 28));
-        _searchBox->OnTextChanged += [this](Control* s, 
-                                            const std::wstring& oldText,
-                                            const std::wstring& newText) {
+        _searchBox->OnTextChanged += [this](Control* s,
+                                            std::wstring oldText,
+                                            std::wstring newText) {
             (void)s;
             (void)oldText;
             FilterData(newText);
@@ -1603,25 +1569,25 @@ private:
 
     void RefreshGrid()
     {
-        _dataGrid->Rows.Clear();
+        _dataGrid->Rows.clear();
         for (const auto& row : _allData) {
-            _dataGrid->Rows.Add(row);
+            _dataGrid->Rows.push_back(row);
         }
     }
 
     void FilterData(const std::wstring& keyword)
     {
-        _dataGrid->Rows.Clear();
+        _dataGrid->Rows.clear();
         for (const auto& row : _allData) {
             bool match = false;
             for (const auto& cell : row.Cells) {
-                if (StringHelper::Contains(cell, keyword)) {
+                if (StringHelper::Contains(cell.Text, keyword)) {
                     match = true;
                     break;
                 }
             }
             if (match || keyword.empty()) {
-                _dataGrid->Rows.Add(row);
+                _dataGrid->Rows.push_back(row);
             }
         }
     }
@@ -1634,7 +1600,7 @@ private:
 
 ### Q1: Which Windows versions does CUI support?
 
-**A**: The main CUI version supports Windows 8 and above. If you need Windows 7 support, please use the `CUI_Legacy` project (WebBrowser not included).
+**A**: `CUI` supports Windows 7 and above. Use the preprocessor macro `CUI_ENABLE_WEBVIEW2` to enable DirectComposition + WebView2 (requires Windows 8+); without it, only Direct2D HWND rendering is used, maintaining Windows 7 compatibility (WebBrowser not included).
 
 ### Q2: How to handle high DPI displays?
 
@@ -1671,16 +1637,14 @@ _web->OnNavigationCompleted += [](Control* sender, NavigationCompletedArgs args)
 **A**: Inherit control and override `OnPaint` method:
 
 ```cpp
-class CustomControl : public Control
-{
-public:
-    void OnPaint(Graphics* g) override
-    {
-        // Custom drawing logic
-        auto rect = D2D1::RectF(0, 0, (float)Width, (float)Height);
-        g->FillRectangle(rect, BackColor);
-        // ... more drawing
-    }
+// Subscribe to OnPaint event for custom drawing
+auto customControl = AddControl(new Panel(0, 0, 200, 100));
+customControl->OnPaint += [](Control* sender) {
+    auto panel = (Panel*)sender;
+    auto d2d = panel->ParentForm->Render;
+    auto size = panel->ActualSize();
+    d2d->FillRect(0, 0, (float)size.cx, (float)size.cy, panel->BackColor);
+    d2d->DrawRect(0, 0, (float)size.cx, (float)size.cy, panel->BolderColor, 1.0f);
 };
 ```
 
@@ -1719,7 +1683,7 @@ public:
 
 | Component | Requirement |
 |-----------|-------------|
-| Operating System | Windows 8 / 10 / 11 |
+| Operating System | Windows 7 / 8 / 10 / 11 |
 | Processor | x64 architecture |
 | Memory | 4GB+ recommended |
 | Graphics | Direct2D support |
@@ -1741,10 +1705,10 @@ Microsoft.Web.WebView2
 
 ### Project Dependencies
 
-- `CUI` / `CUI_Legacy` depend on the in-repo `D2DGraphics/`
-- `CUITest` / `CUITest_Legacy` now embed the small helper functionality they previously consumed from `Utils`, so they no longer depend on `Utils`
-- `CuiDesigner` currently depends on `CUI_Legacy` and `Utils`
-- `Utils` is now primarily a utility library for the designer and related projects, rather than a prerequisite for `CUI` / `CUI_Legacy` / `CUITest` / `CUITest_Legacy`
+- `CUI` depends on the in-repo `D2DGraphics/`
+- `CUITest` now embeds the small helper functionality it previously consumed from `Utils`, so it no longer depends on `Utils`
+- `CuiDesigner` currently depends on `CUI` and `Utils`
+- `Utils` is now primarily a utility library for the designer and related projects, rather than a prerequisite for `CUI` / `CUITest`
 
 ### Third-Party Components
 

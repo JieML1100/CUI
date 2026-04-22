@@ -127,8 +127,8 @@ button->OnMouseClick += [](Control* sender, MouseEventArgs e) {
 };
 
 // 文本变更事件
-textBox->OnTextChanged += [](Control* sender, const std::wstring& oldText, 
-                              const std::wstring& newText) {
+textBox->OnTextChanged += [](Control* sender, std::wstring oldText,
+                              std::wstring newText) {
     // 处理文本变更
 };
 
@@ -168,7 +168,7 @@ pictureBox->SetImageEx(svgBitmap, false);
 
 ### WebView2 集成
 
-通过 WebView2 实现 Web 内容嵌入和 JS/C++ 互操作：
+通过 `CUI_ENABLE_WEBVIEW2` 宏启用 WebView2 支持后，可实现 Web 内容嵌入和 JS/C++ 互操作：
 
 ```cpp
 // 创建 WebBrowser 控件
@@ -220,10 +220,8 @@ CUI.sln
 │   │   ├── Layout/        # 布局系统
 │   │   └── ...
 │   └── nanosvg.cpp/h      # SVG 渲染库
-├── CUI_Legacy/            # 遗留版本（Windows 7）
 ├── CuiDesigner/           # 可视化设计器
 ├── CUITest/               # 示例与测试程序
-├── CUITest_Legacy/        # 遗留版本示例
 ├── D2DGraphics/           # 底层图形封装
 └── Utils/                 # 设计器等项目使用的通用工具库
 ```
@@ -268,23 +266,24 @@ Control
 
 ### 环境要求
 
-- **操作系统**: Windows 8 / Windows 10 / Windows 11
+- **操作系统**: Windows 7 / Windows 8 / Windows 10 / Windows 11
 - **开发工具**: Visual Studio 2022 或更高版本
 - **C++ 标准**: C++20
-- **依赖项**: WebView2 NuGet 包
+- **依赖项**: WebView2 NuGet 包（仅在启用 `CUI_ENABLE_WEBVIEW2` 时需要）
 
 ### 编译项目
 
 1. 使用 Visual Studio 打开 `CUI.sln`
 2. 选择 Release|x64 配置
-3. 编译解决方案
+3. 在 `CUI.vcxproj` 和 `CUITest.vcxproj` 的预处理器定义中添加或移除 `CUI_ENABLE_WEBVIEW2`：
+   - **启用 WebView2/DirectComposition**：定义 `CUI_ENABLE_WEBVIEW2`（默认已定义在 Debug/Release 配置中）
+   - **兼容 Windows 7**：从预处理器定义中移除 `CUI_ENABLE_WEBVIEW2`，仅使用 Direct2D HWND 渲染
+4. 编译解决方案
 
 ### 创建第一个应用
 
 ```cpp
 #include "CUI/GUI/Form.h"
-
-using namespace CUI;
 
 class MainWindow : public Form
 {
@@ -292,7 +291,7 @@ public:
     MainWindow() : Form(L"我的第一个 CUI 应用", { 100, 100 }, { 800, 600 })
     {
         // 设置窗口背景色
-        BackColor = Colors::DarkGray;
+        BackColor = Colors::DimGrey;
         
         // 添加标签
         auto label = AddControl(new Label(L"欢迎使用 CUI!", 50, 50));
@@ -302,7 +301,7 @@ public:
         // 添加按钮
         auto button = AddControl(new Button(L"点击我", 50, 100, 120, 40));
         button->OnMouseClick += [](Control* sender, MouseEventArgs e) {
-            MessageBoxW(sender->GetForm()->Handle, 
+            MessageBoxW(sender->ParentForm->Handle,
                        L"你点击了按钮!", L"CUI", MB_OK);
         };
         
@@ -317,15 +316,20 @@ public:
     }
 };
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, 
-                   LPSTR lpCmdLine, int nCmdShow)
+int main()
 {
-    Application::Initialize(hInstance);
-    
+    Application::EnsureDpiAwareness();
+
     auto window = new MainWindow();
     window->Show();
-    
-    return Application::Run();
+
+    while (1)
+    {
+        Form::DoEvent();
+        if (Application::Forms.size() == 0)
+            break;
+    }
+    return 0;
 }
 ```
 
@@ -354,7 +358,7 @@ auto label = AddControl(new Label(L"这是一个标签", 20, 20));
 
 // 设置样式
 label->Font = new Font(L"Microsoft YaHei", 16.0f);
-label->ForeColor = D2D1::ColorF(Colors::LightBlue);
+label->ForeColor = Colors::LightBlue;
 ```
 
 #### Button 按钮
@@ -387,9 +391,9 @@ iconButton->BackColor = D2D1::ColorF(0, 0, 0, 0);
 ```cpp
 auto textBox = AddControl(new TextBox(L"默认文本", 20, 120, 200, 26));
 
-textBox->OnTextChanged += [](Control* sender, 
-                             const std::wstring& oldText,
-                             const std::wstring& newText) {
+textBox->OnTextChanged += [](Control* sender,
+                             std::wstring oldText,
+                             std::wstring newText) {
     // 文本变更处理
 };
 ```
@@ -426,7 +430,7 @@ combo->ExpandCount = 8;
 
 // 添加选项
 for (int i = 0; i < 20; i++) {
-    combo->Items.Add(StringHelper::Format(L"选项 %d", i));
+    combo->Items.push_back(StringHelper::Format(L"选项 %d", i));
 }
 
 combo->OnSelectionChanged += [](Control* sender) {
@@ -556,7 +560,7 @@ grid->Columns.Add(GridViewColumn(L"操作", 80, ColumnType::Button));
 for (int i = 0; i < 20; i++) {
     GridViewRow row;
     row.Cells = { L"项目 " + std::to_wstring(i), L"类型 A", L"" };
-    grid->Rows.Add(row);
+    grid->Rows.push_back(row);
 }
 ```
 
@@ -659,12 +663,12 @@ statusBar->SetPartText(0, L"处理中...");
 auto notify = new NotifyIcon();
 notify->InitNotifyIcon(hwnd, 1);
 notify->SetIcon(LoadIcon(NULL, IDI_APPLICATION));
-notify->SetToolTip(L"我的应用");
+notify->SetToolTip("我的应用");
 
 notify->ClearMenu();
-notify->AddMenuItem(L"显示窗口", 1);
+notify->AddMenuItem(NotifyIconMenuItem("显示窗口", 1));
 notify->AddMenuSeparator();
-notify->AddMenuItem(L"退出", 3);
+notify->AddMenuItem(NotifyIconMenuItem("退出", 3));
 
 notify->OnNotifyIconMenuClick += [](NotifyIcon* sender, int menuId) {
     switch (menuId) {
@@ -972,9 +976,9 @@ form->OnMoved += [](Form* sender) {
 };
 
 // 窗口关闭
-form->OnClosing += [](Form* sender) {
+form->OnClosing += [](Form* sender, bool& canceled) {
     // 询问是否关闭
-    // 设置 sender->Cancel = true 可取消关闭
+    // 设置 canceled = true 可取消关闭
 };
 
 form->OnClosed += [](Form* sender) {
@@ -1025,67 +1029,36 @@ public:
 #include "CUI/GUI/Button.h"
 #include "CUI/GUI/TextBox.h"
 
-class CustomLabel1 : public Label
-{
-public:
-    CustomLabel1(const std::wstring& text, int x, int y) : Label(text, x, y) {}
-    
-    void OnPaint(Graphics* g) override
-    {
-        // 渐变绘制
-        auto gradient = g->CreateLinearGradientBrush(
-            D2D1::Point2F(0, 0),
-            D2D1::Point2F(Width, 0),
-            { {0, D2D1::ColorF(Colors::Cyan)}, {1, D2D1::ColorF(Colors::Blue)} }
-        );
-        
-        auto rect = D2D1::RectF(0, 0, (float)Width, (float)Height);
-        g->FillRectangle(rect, gradient);
-        
-        // 绘制文字
-        DrawText(g, Text.c_str(), rect, GetTextFormat(), ForeColor);
-    }
-};
+// 通过订阅 OnPaint 事件实现自定义绘制效果
+auto customPanel = AddControl(new Panel(20, 20, 200, 100));
+customPanel->BackColor = Colors::DimGrey;
 
-class CustomTextBox1 : public TextBox
-{
-public:
-    CustomTextBox1(const std::wstring& text, int x, int y, int w, int h) 
-        : TextBox(text, x, y, w, h) {}
-    
-    void OnPaint(Graphics* g) override
-    {
-        // 自定义边框绘制
-        auto rect = D2D1::RectF(0, 0, (float)Width, (float)Height);
-        g->DrawRoundedRectangle(rect, 8.0f, D2D1::ColorF(Colors::Gold));
-        
-        // 内部填充
-        g->FillRectangle(
-            D2D1::RoundedRect(D2D1::RectF(1, 1, Width - 1, Height - 1), 7, 7),
-            BackColor
-        );
-        
-        // 绘制文字
-        DrawText(g, Text.c_str(), 
-                 D2D1::RectF(5, 5, Width - 5, Height - 5),
-                 GetTextFormat(), ForeColor);
-    }
+customPanel->OnPaint += [](Control* sender) {
+    auto panel = (Panel*)sender;
+    auto d2d = panel->ParentForm->Render;
+    auto size = panel->ActualSize();
+
+    // 渐变背景效果（使用纯色模拟）
+    d2d->FillRect(0, 0, (float)size.cx, (float)size.cy,
+                  D2D1_COLOR_F{ 0.1f, 0.6f, 0.8f, 1.0f });
+    d2d->DrawRect(0, 0, (float)size.cx, (float)size.cy,
+                  D2D1_COLOR_F{ 1.0f, 0.8f, 0.0f, 1.0f }, 2.0f);
+
+    // 绘制文字
+    auto font = panel->GetFont();
+    d2d->DrawString(L"Custom Draw", 10.0f, 10.0f,
+                     Colors::White, font);
 };
 ```
 
 ### DirectComposition 集成
 
 ```cpp
-// 使用 DCompLayeredHost 进行层叠渲染
-auto dcompHost = new DCompLayeredHost(hwnd);
-dcompHost->Initialize();
-
-// 创建合成视觉效果
-IDCompositionVisual* visual = nullptr;
-dcompDevice->CreateVisual(&visual);
-dcompSurface = // 获取 Direct3D 表面
-visual->SetContent(dcompSurface);
-dcompTarget->AddVisual(visual);
+// DCompLayeredHost 由 Form 内部自动管理，通常无需手动创建。
+// 如需直接操作底层 DComp 资源：
+auto* dcompHost = form->GetDCompDevice();   // IDCompositionDevice*
+auto* container = form->GetWebContainerVisual(); // IDCompositionVisual*
+form->CommitComposition();
 ```
 
 ### 资源管理
@@ -1238,8 +1211,6 @@ private:
 #include "Label.h"
 #include "OpenFileDialog.h"
 
-using namespace CUI;
-
 class MediaPlayerWindow : public Form
 {
 private:
@@ -1299,8 +1270,8 @@ public:
             (void)s;
             (void)e;
             OpenFileDialog ofd;
-            ofd.Filter = MakeDialogFilterString("媒体文件", 
-                                                "*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.mp3");
+            ofd.Filter = MakeDialogFilterStrring("媒体文件",
+                                                "*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.mp3;*.wav;*.flac;*.m4a;*.wma;*.aac");
             ofd.Title = "选择媒体文件";
             if (ofd.ShowDialog(this->Handle) == DialogResult::OK && 
                 !ofd.SelectedPaths.empty()) {
@@ -1361,15 +1332,20 @@ public:
     }
 };
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, 
-                   LPSTR lpCmdLine, int nCmdShow)
+int main()
 {
-    Application::Initialize(hInstance);
-    
+    Application::EnsureDpiAwareness();
+
     auto window = new MediaPlayerWindow();
     window->Show();
-    
-    return Application::Run();
+
+    while (1)
+    {
+        Form::DoEvent();
+        if (Application::Forms.size() == 0)
+            break;
+    }
+    return 0;
 }
 ```
 
@@ -1379,15 +1355,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 #include "Form.h"
 #include "WebBrowser.h"
 
-using namespace CUI;
-
-class Web集成Window : public Form
+class WebBrowserWindow : public Form
 {
 private:
     WebBrowser* _web;
 
 public:
-    Web集成Window() : Form(L"Web 集成演示", { 100, 100 }, { 1000, 700 })
+    WebBrowserWindow() : Form(L"Web 集成演示", { 100, 100 }, { 1000, 700 })
     {
         _web = AddControl(new WebBrowser(10, 10, 980, 600));
         _web->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | 
@@ -1488,8 +1462,6 @@ public:
 #include "TextBox.h"
 #include "Panel.h"
 
-using namespace CUI;
-
 class DataManagerWindow : public Form
 {
 private:
@@ -1501,7 +1473,7 @@ private:
 public:
     DataManagerWindow() : Form(L"数据管理系统", { 100, 100 }, { 1200, 800 })
     {
-        BackColor = Colors::grey31;
+        BackColor = D2D1_COLOR_F{ 0.31f, 0.31f, 0.31f, 1.0f };
 
         // 顶部搜索栏
         auto searchPanel = AddControl(new Panel(10, 10, 1180, 50));
@@ -1509,9 +1481,9 @@ public:
 
         searchPanel->AddControl(new Label(L"搜索:", 15, 15));
         _searchBox = searchPanel->AddControl(new TextBox(L"", 60, 14, 300, 28));
-        _searchBox->OnTextChanged += [this](Control* s, 
-                                            const std::wstring& oldText,
-                                            const std::wstring& newText) {
+        _searchBox->OnTextChanged += [this](Control* s,
+                                            std::wstring oldText,
+                                            std::wstring newText) {
             (void)s;
             (void)oldText;
             FilterData(newText);
@@ -1603,25 +1575,25 @@ private:
 
     void RefreshGrid()
     {
-        _dataGrid->Rows.Clear();
+        _dataGrid->Rows.clear();
         for (const auto& row : _allData) {
-            _dataGrid->Rows.Add(row);
+            _dataGrid->Rows.push_back(row);
         }
     }
 
     void FilterData(const std::wstring& keyword)
     {
-        _dataGrid->Rows.Clear();
+        _dataGrid->Rows.clear();
         for (const auto& row : _allData) {
             bool match = false;
             for (const auto& cell : row.Cells) {
-                if (StringHelper::Contains(cell, keyword)) {
+                if (StringHelper::Contains(cell.Text, keyword)) {
                     match = true;
                     break;
                 }
             }
             if (match || keyword.empty()) {
-                _dataGrid->Rows.Add(row);
+                _dataGrid->Rows.push_back(row);
             }
         }
     }
@@ -1634,7 +1606,7 @@ private:
 
 ### Q1: CUI 支持哪些 Windows 版本？
 
-**A**: CUI 主版本支持 Windows 8 及以上版本。如果您需要支持 Windows 7，请使用 `CUI_Legacy` 项目（不包括 WebBrowser 功能）。
+**A**: `CUI` 支持 Windows 7 及以上版本。通过预处理器宏 `CUI_ENABLE_WEBVIEW2` 控制是否启用 DirectComposition + WebView2 功能（需要 Windows 8+）；不定义该宏时仅使用 Direct2D HWND 渲染，兼容 Windows 7（不含 WebBrowser）。
 
 ### Q2: 如何处理高 DPI 显示？
 
@@ -1671,16 +1643,14 @@ _web->OnNavigationCompleted += [](Control* sender, NavigationCompletedArgs args)
 **A**: 继承控件并重写 `OnPaint` 方法：
 
 ```cpp
-class CustomControl : public Control
-{
-public:
-    void OnPaint(Graphics* g) override
-    {
-        // 自定义绘制逻辑
-        auto rect = D2D1::RectF(0, 0, (float)Width, (float)Height);
-        g->FillRectangle(rect, BackColor);
-        // ... 更多绘制
-    }
+// 订阅 OnPaint 事件实现自定义绘制
+auto customControl = AddControl(new Panel(0, 0, 200, 100));
+customControl->OnPaint += [](Control* sender) {
+    auto panel = (Panel*)sender;
+    auto d2d = panel->ParentForm->Render;
+    auto size = panel->ActualSize();
+    d2d->FillRect(0, 0, (float)size.cx, (float)size.cy, panel->BackColor);
+    d2d->DrawRect(0, 0, (float)size.cx, (float)size.cy, panel->BolderColor, 1.0f);
 };
 ```
 
@@ -1719,7 +1689,7 @@ public:
 
 | 组件 | 要求 |
 |-----|------|
-| 操作系统 | Windows 8 / 10 / 11 |
+| 操作系统 | Windows 7 / 8 / 10 / 11 |
 | 处理器 | x64 架构 |
 | 内存 | 建议 4GB 以上 |
 | 显卡 | 支持 Direct2D |
@@ -1741,10 +1711,10 @@ Microsoft.Web.WebView2
 
 ### 项目依赖关系
 
-- `CUI` / `CUI_Legacy` 依赖仓库内的 `D2DGraphics/`
-- `CUITest` / `CUITest_Legacy` 已将原先依赖 `Utils` 的测试辅助能力内聚到各自项目中，不再依赖 `Utils`
-- `CuiDesigner` 当前依赖 `CUI_Legacy` 与 `Utils`
-- `Utils` 现主要作为设计器及相关工程的工具库存在，不再是 `CUI` / `CUI_Legacy` / `CUITest` / `CUITest_Legacy` 的前置依赖
+- `CUI` 依赖仓库内的 `D2DGraphics/`
+- `CUITest` 已将原先依赖 `Utils` 的测试辅助能力内聚到项目中，不再依赖 `Utils`
+- `CuiDesigner` 当前依赖 `CUI` 与 `Utils`
+- `Utils` 现主要作为设计器及相关工程的工具库存在，不再是 `CUI` / `CUITest` 的前置依赖
 
 ### 第三方组件
 
