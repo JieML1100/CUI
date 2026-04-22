@@ -2172,7 +2172,9 @@ bool Form::RemoveControl(Control* c)
 {
 	if (std::find(this->Controls.begin(), this->Controls.end(), c) == this->Controls.end())
 		return false;
-	std::remove(this->Controls.begin(), this->Controls.end(), c);
+	this->Controls.erase(
+		std::remove(this->Controls.begin(), this->Controls.end(), c),
+		this->Controls.end());
 	if (this->ForegroundControl == c)
 		this->ForegroundControl = NULL;
 	if (this->MainMenu == c)
