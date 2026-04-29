@@ -5,7 +5,7 @@ StringBuilder::~StringBuilder() {
 }
 
 GET_CPP(StringBuilder, uint32_t, Lenght) {
-	return this->buffer.str().size();
+	return static_cast<uint32_t>(this->buffer.str().size());
 }
 SET_CPP(StringBuilder, uint32_t, Lenght) {
 	if (value < this->buffer.str().size()) {

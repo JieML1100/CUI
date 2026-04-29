@@ -83,6 +83,45 @@ void SplitContainer::SetSplitterDistance(int value)
 	RefreshSplitterLayout();
 }
 
+void SplitContainer::SetOrientation(::Orientation orientation)
+{
+	if (this->SplitOrientation == orientation) return;
+	float percent = GetSplitterPercent();
+	this->SplitOrientation = orientation;
+	SetSplitterPercent(percent);
+}
+
+void SplitContainer::SetSplitterPercent(float percent)
+{
+	percent = std::clamp(percent, 0.0f, 1.0f);
+	auto size = this->ActualSize();
+	int total = SplitOrientation == Orientation::Horizontal ? size.cx : size.cy;
+	int splitter = std::max(1, this->SplitterWidth);
+	int available = std::max(0, total - splitter);
+	SetSplitterDistance((int)std::lround((float)available * percent));
+}
+
+float SplitContainer::GetSplitterPercent()
+{
+	auto size = this->ActualSize();
+	int total = SplitOrientation == Orientation::Horizontal ? size.cx : size.cy;
+	int splitter = std::max(1, this->SplitterWidth);
+	int available = std::max(1, total - splitter);
+	return std::clamp((float)this->SplitterDistance / (float)available, 0.0f, 1.0f);
+}
+
+void SplitContainer::CollapseFirstPanel()
+{
+	SetSplitterDistance(0);
+}
+
+void SplitContainer::CollapseSecondPanel()
+{
+	auto size = this->ActualSize();
+	int total = SplitOrientation == Orientation::Horizontal ? size.cx : size.cy;
+	SetSplitterDistance(total);
+}
+
 void SplitContainer::RefreshSplitterLayout()
 {
 	this->_needsLayout = true;
@@ -154,12 +193,14 @@ void SplitContainer::Update()
 
 	auto d2d = this->ParentForm->Render;
 	auto size = this->ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
 	auto splitterRect = GetSplitterRect();
 	D2D1_COLOR_F splitterColor = _draggingSplitter ? SplitterPressedColor : (_hoverSplitter ? SplitterHotColor : SplitterColor);
 
 	this->BeginRender();
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
+		d2d->FillRect(0, 0, actualWidth, actualHeight, this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -169,11 +210,11 @@ void SplitContainer::Update()
 		d2d->FillRect((float)splitterRect.left, (float)splitterRect.top,
 			(float)(splitterRect.right - splitterRect.left), (float)(splitterRect.bottom - splitterRect.top),
 			splitterColor);
-		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
+		d2d->DrawRect(0, 0, actualWidth, actualHeight, this->BolderColor, this->Boder);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	this->EndRender();
 }

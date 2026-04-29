@@ -6,6 +6,74 @@
 #pragma comment(lib, "Imm32.lib")
 UIClass RichTextBox::Type() { return UIClass::UI_RichTextBox; }
 
+namespace
+{
+	bool WriteClipboardText(HWND hwnd, const std::wstring& text)
+	{
+		if (text.empty() || !OpenClipboard(hwnd)) return false;
+		EmptyClipboard();
+		const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+		HANDLE hData = GlobalAlloc(GMEM_MOVEABLE, bytes);
+		if (!hData)
+		{
+			CloseClipboard();
+			return false;
+		}
+		wchar_t* data = static_cast<wchar_t*>(GlobalLock(hData));
+		if (!data)
+		{
+			GlobalFree(hData);
+			CloseClipboard();
+			return false;
+		}
+		memcpy(data, text.c_str(), bytes);
+		GlobalUnlock(hData);
+		if (!SetClipboardData(CF_UNICODETEXT, hData))
+		{
+			GlobalFree(hData);
+			CloseClipboard();
+			return false;
+		}
+		CloseClipboard();
+		return true;
+	}
+
+	bool ReadClipboardText(HWND hwnd, std::wstring& text)
+	{
+		text.clear();
+		if (!OpenClipboard(hwnd)) return false;
+		if (IsClipboardFormatAvailable(CF_UNICODETEXT))
+		{
+			HANDLE hClip = GetClipboardData(CF_UNICODETEXT);
+			const wchar_t* data = static_cast<const wchar_t*>(GlobalLock(hClip));
+			if (data)
+			{
+				text = data;
+				GlobalUnlock(hClip);
+			}
+		}
+		CloseClipboard();
+		return !text.empty();
+	}
+}
+
+bool RichTextBox::CanHandleMouseWheel(int delta, int xof, int yof)
+{
+	(void)xof;
+	(void)yof;
+	if (delta == 0) return false;
+	UpdateLayout();
+	const float renderHeight = this->Height - (TextMargin * 2.0f);
+	const float maxScroll = std::max(0.0f, textSize.height - renderHeight);
+	if (renderHeight <= 0.0f || maxScroll <= 0.0f)
+		return false;
+	if (this->OffsetY < 0.0f) this->OffsetY = 0.0f;
+	if (this->OffsetY > maxScroll) this->OffsetY = maxScroll;
+	return delta > 0
+		? this->OffsetY > 0.0f
+		: this->OffsetY < maxScroll;
+}
+
 bool RichTextBox::HandlesNavigationKey(WPARAM key) const
 {
 	switch (key)
@@ -469,7 +537,7 @@ void RichTextBox::DrawScroll()
 	auto size = this->ActualSize();
 	float _render_width = this->Width - (TextMargin * 2.0f);
 	float _render_height = this->Height - (TextMargin * 2.0f);
-	int max_scroll = textSize.height - _render_height;
+	float max_scroll = textSize.height - _render_height;
 	if (this->OffsetY > max_scroll)
 	{
 		this->OffsetY = max_scroll;
@@ -478,7 +546,7 @@ void RichTextBox::DrawScroll()
 	if (textSize.height > _render_height)
 	{
 		float scroll_block_height = (_render_height / textSize.height) * _render_height;
-		if (scroll_block_height < this->Height * 0.1)scroll_block_height = this->Height * 0.1;
+		if (scroll_block_height < this->Height * 0.1f)scroll_block_height = this->Height * 0.1f;
 		float scroll_block_move_space = this->Height - scroll_block_height;
 		float yt = scroll_block_height * 0.5f;
 		float yb = this->Height - (scroll_block_height * 0.5f);
@@ -486,7 +554,7 @@ void RichTextBox::DrawScroll()
 		float scroll_tmp_y = per * scroll_block_move_space;
 		float scroll_block_top = scroll_tmp_y;
 		// 局部坐标：滚动条 X = Width - 8，Y = 0
-		d2d->FillRoundRect(this->Width - 8.0f, 0, 8.0f, this->Height, this->ScrollBackColor, 4.0f);
+		d2d->FillRoundRect(this->Width - 8.0f, 0, 8.0f, static_cast<float>(this->Height), this->ScrollBackColor, 4.0f);
 		d2d->FillRoundRect(this->Width - 8.0f, scroll_block_top, 8.0f, scroll_block_height, this->ScrollForeColor, 4.0f);
 	}
 }
@@ -495,7 +563,7 @@ void RichTextBox::ScrollToEnd()
 {
 	this->UpdateLayout();
 	float _render_height = this->Height - (TextMargin * 2.0f);
-	int max_scroll = textSize.height - _render_height;
+	float max_scroll = textSize.height - _render_height;
 	this->OffsetY = max_scroll;
 	if (this->OffsetY < 0)this->OffsetY = 0;
 	this->SelectionEnd = this->SelectionStart = (int)this->buffer.size();
@@ -505,13 +573,13 @@ void RichTextBox::UpdateScrollDrag(float posY) {
 	if (!isDraggingScroll) return;
 
 	float _render_height = this->Height - (TextMargin * 2.0f);
-	int maxScroll = textSize.height - _render_height;
+	float maxScroll = textSize.height - _render_height;
 
 	float scrollBlockHeight = (_render_height / textSize.height) * _render_height;
-	if (scrollBlockHeight < this->Height * 0.1)scrollBlockHeight = this->Height * 0.1;
+	if (scrollBlockHeight < this->Height * 0.1f)scrollBlockHeight = this->Height * 0.1f;
 
 	float fontHeight = this->Font->FontHeight;
-	int renderItemCount = this->Height / fontHeight;
+	float renderItemCount = this->Height / fontHeight;
 
 	float scrollHeight = this->Height - scrollBlockHeight;
 	if (scrollHeight <= 0.0f) return;
@@ -519,7 +587,7 @@ void RichTextBox::UpdateScrollDrag(float posY) {
 	float targetTop = posY - grab;
 	float per = targetTop / scrollHeight;
 	per = std::clamp(per, 0.0f, 1.0f);
-	int newScroll = per * maxScroll;
+	float newScroll = per * maxScroll;
 	{
 		this->OffsetY = newScroll;
 		if (this->OffsetY < 0) this->OffsetY = 0;
@@ -546,7 +614,7 @@ void RichTextBox::SetScrollByPos(float yof)
 
 	float scrollBlockHeight = (renderHeight / textSize.height) * renderHeight;
 	if (scrollBlockHeight < this->Height * 0.1f) scrollBlockHeight = this->Height * 0.1f;
-	if (scrollBlockHeight > this->Height) scrollBlockHeight = this->Height;
+	if (scrollBlockHeight > static_cast<float>(this->Height)) scrollBlockHeight = static_cast<float>(this->Height);
 
 	const float topPosition = scrollBlockHeight * 0.5f;
 	const float bottomPosition = this->Height - topPosition;
@@ -871,6 +939,94 @@ std::wstring RichTextBox::GetSelectedString()
 	}
 	return L"";
 }
+
+int RichTextBox::SelectionLength() const
+{
+	return std::abs(this->SelectionEnd - this->SelectionStart);
+}
+
+bool RichTextBox::HasSelection() const
+{
+	return this->SelectionLength() > 0;
+}
+
+void RichTextBox::Select(int start, int length)
+{
+	SyncBufferFromControlIfNeeded();
+	const int textLength = static_cast<int>(this->buffer.size());
+	const int selStart = std::clamp(start, 0, textLength);
+	const int selEnd = std::clamp(selStart + std::max(0, length), 0, textLength);
+	this->SelectionStart = selStart;
+	this->SelectionEnd = selEnd;
+	this->selRangeDirty = true;
+	this->UpdateScroll();
+	this->PostRender();
+}
+
+void RichTextBox::SelectAll()
+{
+	SyncBufferFromControlIfNeeded();
+	this->Select(0, static_cast<int>(this->buffer.size()));
+}
+
+void RichTextBox::ClearSelection()
+{
+	SyncBufferFromControlIfNeeded();
+	const int caret = std::clamp(std::max(this->SelectionStart, this->SelectionEnd), 0, static_cast<int>(this->buffer.size()));
+	this->SelectionStart = caret;
+	this->SelectionEnd = caret;
+	this->selRangeDirty = true;
+	this->UpdateScroll();
+	this->PostRender();
+}
+
+void RichTextBox::Clear()
+{
+	SyncBufferFromControlIfNeeded();
+	if (this->buffer.empty()) return;
+	this->SelectAll();
+	this->InputBack();
+	this->selRangeDirty = true;
+	this->UpdateScroll();
+	this->PostRender();
+}
+
+void RichTextBox::InsertText(std::wstring text)
+{
+	this->InputText(text);
+	this->selRangeDirty = true;
+	this->UpdateScroll(this->SelectionEnd >= static_cast<int>(this->buffer.size()));
+	this->PostRender();
+}
+
+bool RichTextBox::Copy()
+{
+	const HWND hwnd = this->ParentForm ? this->ParentForm->Handle : NULL;
+	return WriteClipboardText(hwnd, this->GetSelectedString());
+}
+
+bool RichTextBox::Cut()
+{
+	if (!this->HasSelection() || !this->Copy()) return false;
+	this->InputBack();
+	this->selRangeDirty = true;
+	this->UpdateScroll();
+	this->PostRender();
+	return true;
+}
+
+bool RichTextBox::Paste()
+{
+	std::wstring text;
+	const HWND hwnd = this->ParentForm ? this->ParentForm->Handle : NULL;
+	if (!ReadClipboardText(hwnd, text)) return false;
+	this->InputText(text);
+	this->selRangeDirty = true;
+	this->UpdateScroll(this->SelectionEnd >= static_cast<int>(this->buffer.size()));
+	this->PostRender();
+	return true;
+}
+
 void RichTextBox::Update()
 {
 	if (this->IsVisual == false)return;
@@ -879,6 +1035,8 @@ void RichTextBox::Update()
 	auto d2d = this->ParentForm->Render;
 	auto font = this->Font;
 	auto size = this->ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
 	bool isSelected = this->ParentForm->Selected == this;
 	this->_caretRectCacheValid = false;
 	bool shouldDrawCaret = false;
@@ -894,7 +1052,7 @@ void RichTextBox::Update()
 			backColor.g = std::min(1.0f, backColor.g * 1.2f);
 			backColor.b = std::min(1.0f, backColor.b * 1.2f);
 		}
-		d2d->FillRect(0, 0, size.cx, size.cy, backColor);
+		d2d->FillRect(0, 0, actualWidth, actualHeight, backColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -919,7 +1077,7 @@ void RichTextBox::Update()
 					{
 						const float ah = (ch > 0.0f) ? ch : font->FontHeight;
 						auto abs = this->AbsLocation;
-						this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ah + 2.0f };
+						this->_caretRectCache = { static_cast<float>(abs.x) + cx - 2.0f, static_cast<float>(abs.y) + cy - 2.0f, static_cast<float>(abs.x) + cx + 2.0f, static_cast<float>(abs.y) + cy + ah + 2.0f };
 						this->_caretRectCacheValid = true;
 					}
 					shouldDrawCaret = true;
@@ -1006,7 +1164,7 @@ void RichTextBox::Update()
 						const float ly = (caret.top + TextMargin) - this->OffsetY;
 						const float ah = caret.height > 0 ? caret.height : font->FontHeight;
 						auto abs = this->AbsLocation;
-						this->_caretRectCache = { abs.x + lx - 2.0f, abs.y + ly - 2.0f, abs.x + lx + 2.0f, abs.y + ly + ah + 2.0f };
+						this->_caretRectCache = { static_cast<float>(abs.x) + lx - 2.0f, static_cast<float>(abs.y) + ly - 2.0f, static_cast<float>(abs.x) + lx + 2.0f, static_cast<float>(abs.y) + ly + ah + 2.0f };
 						this->_caretRectCacheValid = true;
 					}
 					if (!selRange.empty())
@@ -1019,9 +1177,9 @@ void RichTextBox::Update()
 				if (!selRange.empty())
 				{
 					selectedPos = { (int)selRange[0].left , (int)selRange[0].top };
-					selectedPos.y -= this->OffsetY;
-					selectedPos.y += this->TextMargin;
-					selectedPos.x += this->TextMargin;
+					selectedPos.y -= static_cast<LONG>(this->OffsetY);
+					selectedPos.y += static_cast<LONG>(this->TextMargin);
+					selectedPos.x += static_cast<LONG>(this->TextMargin);
 				}
 				d2d->DrawStringLayout(this->layOutCache,
 					TextMargin, TextMargin - this->OffsetY,
@@ -1042,7 +1200,7 @@ void RichTextBox::Update()
 				const float ly = 0.0f;
 				const float ah = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
 				auto abs = this->AbsLocation;
-				this->_caretRectCache = { abs.x + lx - 2.0f, abs.y + ly - 2.0f, abs.x + lx + 2.0f, abs.y + ly + ah + 2.0f };
+				this->_caretRectCache = { static_cast<float>(abs.x) + lx - 2.0f, static_cast<float>(abs.y) + ly - 2.0f, static_cast<float>(abs.x) + lx + 2.0f, static_cast<float>(abs.y) + ly + ah + 2.0f };
 				this->_caretRectCacheValid = true;
 				shouldDrawCaret = true;
 				caretStart = { lx, ly };
@@ -1055,11 +1213,11 @@ void RichTextBox::Update()
 			d2d->DrawLine(caretStart, caretEnd, this->ForeColor);
 		}
 		this->DrawScroll();
-		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
+		d2d->DrawRect(0, 0, actualWidth, actualHeight, this->BolderColor, this->Boder);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	this->EndRender();
 }
@@ -1079,7 +1237,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
 		TCHAR strFileName[MAX_PATH];
 		std::vector<std::wstring> files;
-		for (int i = 0; i < uFileNum; i++)
+		for (UINT i = 0; i < uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
 			files.push_back(strFileName);
@@ -1123,7 +1281,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	{
 		this->ParentForm->UnderMouse = this;
 		if (isDraggingScroll) {
-			UpdateScrollDrag(yof);
+			UpdateScrollDrag(static_cast<float>(yof));
 		}
 		if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) && this->ParentForm->Selected == this && !isDraggingScroll)
 		{
@@ -1161,7 +1319,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 					const float maxScroll = std::max(0.0f, textSize.height - renderHeight);
 					float thumbH = (renderHeight / textSize.height) * renderHeight;
 					if (thumbH < this->Height * 0.1f) thumbH = this->Height * 0.1f;
-					if (thumbH > this->Height) thumbH = this->Height;
+					if (thumbH > static_cast<float>(this->Height)) thumbH = static_cast<float>(this->Height);
 					const float moveSpace = std::max(0.0f, (float)this->Height - thumbH);
 					float per = 0.0f;
 					if (maxScroll > 0.0f) per = std::clamp(this->OffsetY / maxScroll, 0.0f, 1.0f);

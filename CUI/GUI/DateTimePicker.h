@@ -160,10 +160,14 @@ public:
 	GET(bool, AllowTimeSelection);
 	SET(bool, AllowTimeSelection);
 
+	void SetNow();
+	void SetToday();
+	void SetDate(int year, int month, int day);
+	void SetTime(int hour, int minute, int second = 0);
+	std::wstring GetDisplayText() const { return this->_text; }
 	SIZE ActualSize() override;
 	CursorKind QueryCursor(int xof, int yof) override;
 	bool HandlesMouseWheel() const override { return true; }
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 };
-

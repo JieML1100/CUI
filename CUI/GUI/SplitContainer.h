@@ -26,6 +26,11 @@ public:
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 	void SetSplitterDistance(int value);
+	void SetOrientation(::Orientation orientation);
+	void SetSplitterPercent(float percent);
+	float GetSplitterPercent();
+	void CollapseFirstPanel();
+	void CollapseSecondPanel();
 	void RefreshSplitterLayout();
 
 	Panel* FirstPanel() const { return _panel1; }

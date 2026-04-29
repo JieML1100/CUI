@@ -20,6 +20,9 @@ public:
 	SET(bool, Active);
 
 	LoadingRing(int x, int y, int width = 48, int height = 48);
+	void Start();
+	void Stop();
+	void Restart();
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;

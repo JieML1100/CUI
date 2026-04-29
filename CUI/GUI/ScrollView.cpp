@@ -25,6 +25,25 @@ bool ScrollView::HandlesNavigationKey(WPARAM key) const
 	}
 }
 
+bool ScrollView::CanHandleMouseWheel(int delta, int xof, int yof)
+{
+	if (delta == 0) return false;
+	if (_needsLayout || (_layoutEngine && _layoutEngine->NeedsLayout()))
+	{
+		PerformScrollContentLayout();
+	}
+
+	auto layout = this->CalcScrollLayout();
+	ClampScrollOffsets(layout);
+	if (xof < 0 || yof < 0 || xof >= this->Width || yof >= this->Height)
+		return false;
+	if (!layout.NeedV || layout.MaxScrollY <= 0.0f)
+		return false;
+	return delta > 0
+		? this->ScrollYOffset > 0
+		: this->ScrollYOffset < (int)std::ceil(layout.MaxScrollY);
+}
+
 static bool FindDeepestWheelTarget(Control* root, int xof, int yof, Control*& outTarget, int& outX, int& outY)
 {
 	if (!root || !root->Visible || !root->Enable) return false;
@@ -101,7 +120,7 @@ void ScrollView::PerformScrollContentLayout()
 				return;
 			}
 
-			for (int i = 0; i < this->Children.size(); i++)
+			for (size_t i = 0; i < this->Children.size(); i++)
 			{
 				auto child = this->Children[i];
 				if (!child || !child->Visible) continue;
@@ -233,7 +252,7 @@ SIZE ScrollView::MeasureContentSize()
 	SIZE measured{};
 	float maxRight = this->_padding.Left;
 	float maxBottom = this->_padding.Top;
-	for (int i = 0; i < this->Children.size(); i++)
+	for (size_t i = 0; i < this->Children.size(); i++)
 	{
 		auto child = this->Children[i];
 		if (!child || !child->Visible) continue;
@@ -323,6 +342,100 @@ void ScrollView::SetScrollOffset(int x, int y)
 	this->ScrollYOffset = newY;
 	this->OnScrollChanged(this);
 	this->PostRender();
+}
+
+ScrollView::ScrollLayout ScrollView::GetScrollLayout()
+{
+	if (_needsLayout || (_layoutEngine && _layoutEngine->NeedsLayout()))
+	{
+		PerformScrollContentLayout();
+	}
+	auto layout = this->CalcScrollLayout();
+	ClampScrollOffsets(layout);
+	return layout;
+}
+
+int ScrollView::MaxScrollX()
+{
+	auto layout = GetScrollLayout();
+	return (int)std::ceil(layout.MaxScrollX);
+}
+
+int ScrollView::MaxScrollY()
+{
+	auto layout = GetScrollLayout();
+	return (int)std::ceil(layout.MaxScrollY);
+}
+
+void ScrollView::ScrollToStart()
+{
+	SetScrollOffset(0, 0);
+}
+
+void ScrollView::ScrollToEnd()
+{
+	auto layout = GetScrollLayout();
+	SetScrollOffset((int)std::ceil(layout.MaxScrollX), (int)std::ceil(layout.MaxScrollY));
+}
+
+void ScrollView::ScrollToTop()
+{
+	SetScrollOffset(this->ScrollXOffset, 0);
+}
+
+void ScrollView::ScrollToBottom()
+{
+	auto layout = GetScrollLayout();
+	SetScrollOffset(this->ScrollXOffset, (int)std::ceil(layout.MaxScrollY));
+}
+
+void ScrollView::ScrollToLeft()
+{
+	SetScrollOffset(0, this->ScrollYOffset);
+}
+
+void ScrollView::ScrollToRight()
+{
+	auto layout = GetScrollLayout();
+	SetScrollOffset((int)std::ceil(layout.MaxScrollX), this->ScrollYOffset);
+}
+
+bool ScrollView::ScrollIntoView(Control* child, int margin)
+{
+	if (!child) return false;
+	bool found = false;
+	for (auto* c : this->Children)
+	{
+		if (c == child)
+		{
+			found = true;
+			break;
+		}
+	}
+	if (!found) return false;
+
+	auto layout = GetScrollLayout();
+	auto loc = child->ActualLocation;
+	auto size = child->ActualSize();
+	int targetX = this->ScrollXOffset;
+	int targetY = this->ScrollYOffset;
+	const int left = loc.x - margin;
+	const int top = loc.y - margin;
+	const int right = loc.x + size.cx + margin;
+	const int bottom = loc.y + size.cy + margin;
+
+	if (left < targetX)
+		targetX = left;
+	else if (right > targetX + (int)layout.ViewportWidth)
+		targetX = right - (int)layout.ViewportWidth;
+
+	if (top < targetY)
+		targetY = top;
+	else if (bottom > targetY + (int)layout.ViewportHeight)
+		targetY = bottom - (int)layout.ViewportHeight;
+
+	SetScrollOffset(targetX, targetY);
+	return true;
 }
 
 bool ScrollView::HitVScrollBar(int xof, int yof, const ScrollLayout& layout) const
@@ -444,12 +557,14 @@ void ScrollView::Update()
 
 	auto d2d = this->ParentForm->Render;
 	auto size = this->ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
 	auto layout = this->CalcScrollLayout();
 	ClampScrollOffsets(layout);
 
 	this->BeginRender();
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
+		d2d->FillRect(0, 0, actualWidth, actualHeight, this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -465,11 +580,11 @@ void ScrollView::Update()
 		d2d->PopDrawRect();
 
 		DrawScrollBars(layout);
-		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
+		d2d->DrawRect(0, 0, actualWidth, actualHeight, this->BolderColor, this->Boder);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	this->EndRender();
 }
@@ -510,24 +625,40 @@ bool ScrollView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 	{
 	case WM_MOUSEWHEEL:
 	{
+		const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
 		if (xof >= 0 && yof >= 0 && xof < (int)layout.ViewportWidth && yof < (int)layout.ViewportHeight)
 		{
 			Control* wheelTarget = NULL;
 			int localX = xof;
 			int localY = yof;
-			if (FindDeepestWheelTarget(this, xof, yof, wheelTarget, localX, localY) && wheelTarget && wheelTarget != this && wheelTarget->HandlesMouseWheel())
+			if (FindDeepestWheelTarget(this, xof, yof, wheelTarget, localX, localY) && wheelTarget && wheelTarget != this)
 			{
-				wheelTarget->ProcessMessage(message, wParam, lParam, localX, localY);
-				return true;
+				POINT viewAbs = this->AbsLocation;
+				POINT mouseInForm{ viewAbs.x + xof, viewAbs.y + yof };
+				for (Control* target = wheelTarget; target && target != this; target = target->Parent)
+				{
+					if (!target->HandlesMouseWheel()) continue;
+					POINT targetAbs = target->AbsLocation;
+					const int targetX = mouseInForm.x - targetAbs.x;
+					const int targetY = mouseInForm.y - targetAbs.y;
+					if (target->CanHandleMouseWheel(delta, targetX, targetY))
+					{
+						target->ProcessMessage(message, wParam, lParam, targetX, targetY);
+						return true;
+					}
+				}
 			}
 		}
 
-		int steps = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
-		if (steps != 0 && layout.MaxScrollY > 0.0f)
+		if (!this->CanHandleMouseWheel(delta, xof, yof))
+			return false;
+
+		int steps = delta / WHEEL_DELTA;
+		if (steps != 0)
 		{
 			SetScrollOffset(this->ScrollXOffset, this->ScrollYOffset - (steps * this->MouseWheelStep));
 		}
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
+		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, delta);
 		this->OnMouseWheel(this, event_obj);
 		return true;
 	}

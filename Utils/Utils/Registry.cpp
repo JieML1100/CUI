@@ -50,7 +50,8 @@ std::string RegistryKey::GetValue(const std::string& name) {
 	return result;
 }
 void RegistryKey::SetValue(const std::string& name, const std::string& value) {
-	if (RegSetValueExA(hKey, name.c_str(), 0, REG_SZ, (LPBYTE)value.c_str(), value.size() * sizeof(char)) != ERROR_SUCCESS) {
+	DWORD valueSize = static_cast<DWORD>(value.size() * sizeof(char));
+	if (RegSetValueExA(hKey, name.c_str(), 0, REG_SZ, (LPBYTE)value.c_str(), valueSize) != ERROR_SUCCESS) {
 		throw std::exception("Cannot set registry value");
 	}
 }
@@ -77,7 +78,6 @@ std::vector<std::string> RegistryKey::GetSubKeyNames() {
 	}
 	std::vector<std::string> result;
 	for (DWORD i = 0; i < subKeyCount; i++) {
-		DWORD valueNameSize, valueDataSize, valueType;
 		std::string subKeyName(256, '\0');
 		FILETIME lastWriteTime{};
 		DWORD cbName = 256;

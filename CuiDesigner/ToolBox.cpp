@@ -1,111 +1,9 @@
-﻿#include "ToolBox.h"
+#include "ToolBox.h"
 #include "../CUI/GUI/Label.h"
 #include "../CUI/GUI/Form.h"
-#include "nanosvg.h"
 #include <BitmapSource.h>
-#include <Factory.h>
-#include <vector>
-#include <cstring>
-#include <algorithm>
 
 const char* _ico = R"(<svg t="1766410686901" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="5087" data-darkreader-inline-fill="" width="200" height="200"><path d="M496 895.2L138.4 771.2c-6.4-2.4-10.4-8-10.4-15.2V287.2l368 112v496z m32 0l357.6-124c6.4-2.4 10.4-8 10.4-15.2V287.2l-368 112v496z m-400-640l384 112 384-112-379.2-125.6c-3.2-0.8-7.2-0.8-10.4 0L128 255.2z" p-id="5088" fill="#1afa29" data-darkreader-inline-fill="" style="--darkreader-inline-fill: var(--darkreader-background-1afa29, #11ce4a);"></path></svg>)";
-
-static std::shared_ptr<BitmapSource> ToBitmapFromSvg(const char* data)
-{
-	if (!data) return {};
-	int len = (int)strlen(data) + 1;
-	char* svg_text = new char[len];
-	memcpy(svg_text, data, len);
-	NSVGimage* image = nsvgParse(svg_text, "px", 96.0f);
-	delete[] svg_text;
-	if (!image) return {};
-	float percen = 1.0f;
-	if (image->width > 4096 || image->height > 4096)
-	{
-		float maxv = image->width > image->height ? image->width : image->height;
-		percen = 4096.0f / maxv;
-	}
-	auto renderSource = BitmapSource::CreateEmpty(image->width * percen, image->height * percen);
-	auto subg = new D2DGraphics(renderSource.get());
-	NSVGshape* shape;
-	NSVGpath* path;
-	subg->BeginRender();
-	subg->Clear(D2D1::ColorF(0, 0, 0, 0));
-	for (shape = image->shapes; shape != NULL; shape = shape->next)
-	{
-		auto geo = Factory::CreateGeomtry();
-		if (geo)
-		{
-			ID2D1GeometrySink* skin = NULL;
-			geo->Open(&skin);
-			if (skin)
-			{
-				for (path = shape->paths; path != NULL; path = path->next)
-				{
-					for (int i = 0; i < path->npts - 1; i += 3)
-					{
-						float* p = &path->pts[i * 2];
-						if (i == 0)
-							skin->BeginFigure({ p[0] * percen, p[1] * percen }, D2D1_FIGURE_BEGIN_FILLED);
-						skin->AddBezier({ {p[2] * percen, p[3] * percen},{p[4] * percen, p[5] * percen},{p[6] * percen, p[7] * percen} });
-					}
-					skin->EndFigure(path->closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
-				}
-			}
-			skin->Close();
-		}
-		auto _get_svg_brush = [](NSVGpaint paint, float opacity, D2DGraphics* g) ->ID2D1Brush* {
-			const auto ic2fc = [](int colorInt, float opacity)->D2D1_COLOR_F {
-				return D2D1_COLOR_F{ (float)GetRValue(colorInt) / 255.0f ,(float)GetGValue(colorInt) / 255.0f ,(float)GetBValue(colorInt) / 255.0f ,opacity };
-			};
-			switch (paint.type)
-			{
-			case NSVG_PAINT_NONE:
-				return NULL;
-			case NSVG_PAINT_COLOR:
-				return g->CreateSolidColorBrush(ic2fc(paint.color, opacity));
-			case NSVG_PAINT_LINEAR_GRADIENT:
-			{
-				std::vector<D2D1_GRADIENT_STOP> cols;
-				for (int i = 0; i < paint.gradient->nstops; i++)
-				{
-					auto stop = paint.gradient->stops[i];
-					cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
-				}
-				return g->CreateLinearGradientBrush(cols.data(), cols.size());
-			}
-			case NSVG_PAINT_RADIAL_GRADIENT:
-			{
-				std::vector<D2D1_GRADIENT_STOP> cols;
-				for (int i = 0; i < paint.gradient->nstops; i++)
-				{
-					auto stop = paint.gradient->stops[i];
-					cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
-				}
-				return g->CreateRadialGradientBrush(cols.data(), cols.size(), { paint.gradient->fx,paint.gradient->fy });
-			}
-			}
-			return NULL;
-		};
-		ID2D1Brush* brush = _get_svg_brush(shape->fill, shape->opacity, subg);
-		if (brush)
-		{
-			subg->FillGeometry(geo, brush);
-			brush->Release();
-		}
-		brush = _get_svg_brush(shape->stroke, shape->opacity, subg);
-		if (brush)
-		{
-			subg->DrawGeometry(geo, brush, shape->strokeWidth);
-			brush->Release();
-		}
-		geo->Release();
-	}
-	nsvgDelete(image);
-	subg->EndRender();
-	delete subg;
-	return renderSource;
-}
 
 static const char* GetToolBoxSvg(UIClass type)
 {
@@ -122,7 +20,7 @@ ToolBoxItem::~ToolBoxItem()
 void ToolBoxItem::EnsureIconSource()
 {
 	if (_iconSource || !SvgData) return;
-	_iconSource = ToBitmapFromSvg(SvgData);
+	_iconSource = D2DGraphics::ToBitmapFromSvg(SvgData);
 }
 
 ID2D1Bitmap* ToolBoxItem::GetIconBitmap(D2DGraphics* render)

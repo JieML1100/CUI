@@ -50,6 +50,12 @@ public:
 	void PerformLayout();
 	/** @brief 标记布局失效，下一帧重新布局。 */
 	void InvalidateLayout();
+	/** @brief 移除并可选释放所有子控件。 */
+	void ClearControls(bool deleteControls = true);
+	/** @brief 判断是否包含指定子控件。 */
+	bool ContainsControl(Control* child) const;
+	/** @brief 返回指定子控件索引，未找到返回 -1。 */
+	int IndexOf(Control* child) const;
 	
 	// 重写 AddControl 以支持布局触发
 	template<typename T>

@@ -62,6 +62,20 @@ public:
 	 * @return 新建页指针（所有权属于 TabControl）。
 	 */
 	TabPage* AddPage(std::wstring name);
+	/** @brief 插入一个 TabPage，并返回实际插入位置。 */
+	int InsertPage(int index, TabPage* page);
+	/** @brief 移除指定页；deletePage 为 true 时释放页面对象。 */
+	bool RemovePageAt(int index, bool deletePage = true);
+	/** @brief 移除指定页；deletePage 为 true 时释放页面对象。 */
+	bool RemovePage(TabPage* page, bool deletePage = true);
+	/** @brief 清空所有页面。 */
+	void ClearPages(bool deletePages = true);
+	/** @brief 查找指定标题页索引，未找到返回 -1。 */
+	int FindPage(const std::wstring& text) const;
+	/** @brief 获取当前选中页。 */
+	TabPage* SelectedPage() const;
+	/** @brief 程序化选中指定页。 */
+	void SelectPage(int index, bool fireEvent = true);
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 

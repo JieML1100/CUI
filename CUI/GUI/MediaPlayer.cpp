@@ -3277,7 +3277,7 @@ void MediaPlayer::Update()
 	}
 
 	// 背景
-	d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
+	d2d->FillRect(0, 0, (float)size.cx, (float)size.cy, this->BackColor);
 
 	// 有视频：尝试更新并绘制最新帧
 	if (_hasVideo && _mediaLoaded)

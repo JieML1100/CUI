@@ -10,7 +10,6 @@
 Control::Control()
 	:
 	Enable(true),
-	Visible(true),
 	Checked(false),
 	ParentForm(nullptr),
 	Parent(nullptr),
@@ -281,14 +280,31 @@ GET_CPP(Control, D2D1_RECT_F, AbsRect)
 }
 GET_CPP(Control, bool, IsVisual)
 {
-	if (this->Visible == false) return false;
+	if (!this->_visible) return false;
 	Control* tmpc = this;
 	while (tmpc->Parent)
 	{
 		tmpc = tmpc->Parent;
-		if (tmpc->Visible == false) return false;
+		if (!tmpc->Visible) return false;
 	}
 	return true;
+}
+GET_CPP(Control, bool, Visible)
+{
+	return this->_visible;
+}
+SET_CPP(Control, bool, Visible)
+{
+	if (this->_visible == value)
+		return;
+
+	this->_visible = value;
+	this->RequestLayout();
+
+	if (this->ParentForm)
+	{
+		this->ParentForm->Invalidate(false);
+	}
 }
 GET_CPP(Control, POINT, Location)
 {

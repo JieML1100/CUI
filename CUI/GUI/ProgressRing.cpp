@@ -8,6 +8,7 @@
 namespace
 {
 	constexpr float kPi = 3.14159265358979323846f;
+	constexpr float ProgressRingMinMaxValue = 0.0001f;
 
 	D2D1_POINT_2F RingPoint(D2D1_POINT_2F center, float radius, float angleDeg)
 	{
@@ -20,17 +21,50 @@ namespace
 
 UIClass ProgressRing::Type() { return UIClass::UI_ProgressRing; }
 
+GET_CPP(ProgressRing, float, MaxValue)
+{
+	return this->_maxValue;
+}
+
+SET_CPP(ProgressRing, float, MaxValue)
+{
+	const float oldValue = this->_currentValue;
+	this->_maxValue = (std::max)(value, ProgressRingMinMaxValue);
+	this->_currentValue = (std::clamp)(this->_currentValue, 0.0f, this->_maxValue);
+	if (this->_currentValue != oldValue)
+		this->OnValueChanged(this, EventArgs());
+	this->PostRender();
+}
+
+GET_CPP(ProgressRing, float, Value)
+{
+	return this->_currentValue;
+}
+
+SET_CPP(ProgressRing, float, Value)
+{
+	const float newValue = (std::clamp)(value, 0.0f, this->_maxValue);
+	if (this->_currentValue != newValue)
+	{
+		this->_currentValue = newValue;
+		this->OnValueChanged(this, EventArgs());
+	}
+	this->PostRender();
+}
+
 GET_CPP(ProgressRing, float, PercentageValue)
 {
-	return this->_percentageValue;
+	if (this->_maxValue <= 0.0f) return 0.0f;
+	return this->_currentValue / this->_maxValue;
 }
 
 SET_CPP(ProgressRing, float, PercentageValue)
 {
 	const float clamped = (std::clamp)(value, 0.0f, 1.0f);
-	if (std::fabs(this->_percentageValue - clamped) < 0.0001f)
-		return;
-	this->_percentageValue = clamped;
+	const float newValue = this->_maxValue * clamped;
+	if (std::fabs(this->_currentValue - newValue) < 0.0001f) return;
+	this->_currentValue = newValue;
+	this->OnValueChanged(this, EventArgs());
 	this->PostRender();
 }
 
@@ -57,19 +91,41 @@ ProgressRing::ProgressRing(int x, int y, int width, int height)
 	this->Font = new ::Font(L"Segoe UI", 16.0f);
 }
 
+void ProgressRing::SetRange(float maxValue, float value)
+{
+	const float oldValue = this->_currentValue;
+	this->_maxValue = (std::max)(maxValue, ProgressRingMinMaxValue);
+	this->_currentValue = (std::clamp)(value, 0.0f, this->_maxValue);
+	if (this->_currentValue != oldValue)
+		this->OnValueChanged(this, EventArgs());
+	this->PostRender();
+}
+
+void ProgressRing::Increment(float delta)
+{
+	this->Value = this->_currentValue + delta;
+}
+
+void ProgressRing::Reset()
+{
+	this->Value = 0.0f;
+}
+
 void ProgressRing::Update()
 {
 	if (this->IsVisual == false) return;
 
 	auto d2d = this->ParentForm->Render;
 	auto size = this->ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
 	this->BeginRender();
 	{
-		const float diameter = (float)(std::min)(size.cx, size.cy);
+		const float diameter = (std::min)(actualWidth, actualHeight);
 		const float thickness = (std::clamp)(diameter * 0.12f, 4.0f, 14.0f);
 		const float radius = (std::max)(4.0f, diameter * 0.5f - thickness * 0.65f - 1.0f);
-		const D2D1_POINT_2F center = D2D1::Point2F(size.cx * 0.5f, size.cy * 0.5f);
-		const float progress = (std::clamp)(this->_percentageValue, 0.0f, 1.0f);
+		const D2D1_POINT_2F center = D2D1::Point2F(actualWidth * 0.5f, actualHeight * 0.5f);
+		const float progress = (std::clamp)(this->PercentageValue, 0.0f, 1.0f);
 
 		d2d->DrawArc(center, radius, 0.0f, 359.9f, this->BackColor, thickness);
 		if (progress > 0.0001f)
@@ -101,7 +157,7 @@ void ProgressRing::Update()
 
 	if (!this->Enable)
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f, 1.0f, 1.0f, 0.5f });
+		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f, 1.0f, 1.0f, 0.5f });
 	}
 	this->EndRender();
 }

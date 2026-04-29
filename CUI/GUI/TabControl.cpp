@@ -31,8 +31,15 @@ static float EaseOutCubic01(float t)
 
 static void SyncNativeChildWindowsRecursive(Control* root)
 {
-	(void)root;
-	// Legacy：已移除 WebBrowser，无原生 HWND 子控件需要同步
+	if (!root) return;
+	if (root->Type() == UIClass::UI_WebBrowser)
+	{
+		root->SyncNativeSurface();
+	}
+	for (auto* child : root->Children)
+	{
+		SyncNativeChildWindowsRecursive(child);
+	}
 }
 
 static void SyncNativeChildWindowsForAllPages(TabControl* tc)
@@ -204,6 +211,126 @@ TabPage* TabControl::AddPage(std::wstring name)
 	SyncNativeChildWindowsForAllPages(this);
 	return result;
 }
+
+int TabControl::InsertPage(int index, TabPage* page)
+{
+	if (!page || page->Parent) return -1;
+	const int insertIndex = std::clamp(index, 0, this->Count);
+	page->Parent = this;
+	page->ParentForm = this->ParentForm;
+	Control::SetChildrenParentForm(page, this->ParentForm);
+	this->Children.insert(this->Children.begin() + insertIndex, page);
+	page->BackColor = this->BackColor;
+	LayoutPage(page, 0);
+	if (this->Count == 1)
+	{
+		this->SelectedIndex = 0;
+	}
+	else if (insertIndex <= this->SelectedIndex)
+	{
+		this->SelectedIndex++;
+	}
+	FinishTransition();
+	this->PostRender();
+	return insertIndex;
+}
+
+bool TabControl::RemovePageAt(int index, bool deletePage)
+{
+	if (index < 0 || index >= this->Count) return false;
+	TabPage* page = static_cast<TabPage*>(this->operator[](index));
+	const bool selectedChanged = index == this->SelectedIndex;
+	this->Children.erase(this->Children.begin() + index);
+	page->Parent = NULL;
+	page->ParentForm = NULL;
+	if (deletePage)
+		delete page;
+	if (this->Count <= 0)
+	{
+		this->SelectedIndex = 0;
+	}
+	else if (this->SelectedIndex >= this->Count)
+	{
+		this->SelectedIndex = this->Count - 1;
+	}
+	else if (index < this->SelectedIndex)
+	{
+		this->SelectedIndex--;
+	}
+	FinishTransition();
+	if (selectedChanged)
+		this->OnSelectedChanged(this);
+	this->PostRender();
+	return true;
+}
+
+bool TabControl::RemovePage(TabPage* page, bool deletePage)
+{
+	if (!page) return false;
+	for (int i = 0; i < this->Count; i++)
+	{
+		if (this->operator[](i) == page)
+			return RemovePageAt(i, deletePage);
+	}
+	return false;
+}
+
+void TabControl::ClearPages(bool deletePages)
+{
+	if (this->Children.empty()) return;
+	auto pages = this->Children;
+	this->Children.clear();
+	for (auto* page : pages)
+	{
+		if (!page) continue;
+		page->Parent = NULL;
+		page->ParentForm = NULL;
+		if (deletePages)
+			delete page;
+	}
+	this->SelectedIndex = 0;
+	FinishTransition();
+	this->OnSelectedChanged(this);
+	this->PostRender();
+}
+
+int TabControl::FindPage(const std::wstring& text) const
+{
+	for (int i = 0; i < static_cast<int>(this->Children.size()); i++)
+	{
+		if (this->Children[static_cast<size_t>(i)] && this->Children[static_cast<size_t>(i)]->Text == text)
+			return i;
+	}
+	return -1;
+}
+
+TabPage* TabControl::SelectedPage() const
+{
+	if (this->SelectedIndex < 0 || this->SelectedIndex >= static_cast<int>(this->Children.size()))
+		return nullptr;
+	return static_cast<TabPage*>(this->Children[static_cast<size_t>(this->SelectedIndex)]);
+}
+
+void TabControl::SelectPage(int index, bool fireEvent)
+{
+	if (this->Count <= 0)
+	{
+		this->SelectedIndex = 0;
+		return;
+	}
+	const int newIndex = std::clamp(index, 0, this->Count - 1);
+	if (this->SelectedIndex == newIndex)
+	{
+		EnsureSelectionState();
+		return;
+	}
+	this->SelectedIndex = newIndex;
+	StartTransitionTo(newIndex);
+	if (fireEvent)
+		this->OnSelectedChanged(this);
+	this->PostRender();
+}
+
 GET_CPP(TabControl, int, PageCount)
 {
 	return this->Count;
@@ -218,10 +345,15 @@ void TabControl::Update()
 	auto d2d = this->ParentForm->Render;
 	auto font = this->Font;
 	auto size = this->ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
+	const float titleWidth = static_cast<float>(this->TitleWidth);
+	const float titleHeight = static_cast<float>(this->TitleHeight);
+	const float contentHeight = static_cast<float>(std::max(0L, size.cy - this->TitleHeight));
 	EnsureSelectionState();
 	this->BeginRender();
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
+		d2d->FillRect(0, 0, actualWidth, actualHeight, this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -234,23 +366,23 @@ void TabControl::Update()
 			for (int i = 0; i < this->Count; i++)
 			{
 				auto textsize = font->GetTextSize(this->operator[](i)->Text);
-				float lf = (TitleWidth - textsize.width) / 2.0f;
+				float lf = (titleWidth - textsize.width) / 2.0f;
 				if (lf < 0)lf = 0;
-				float tf = (TitleHeight - textsize.height) / 2.0f;
+				float tf = (titleHeight - textsize.height) / 2.0f;
 				if (tf < 0)tf = 0;
-				d2d->PushDrawRect((TitleWidth * i), 0, TitleWidth, TitleHeight);
+				const float titleLeft = titleWidth * static_cast<float>(i);
+				d2d->PushDrawRect(titleLeft, 0, titleWidth, titleHeight);
 				if (i == this->SelectedIndex)
-					d2d->FillRect((TitleWidth * i), 0, TitleWidth, TitleHeight, this->SelectedTitleBackColor);
+					d2d->FillRect(titleLeft, 0, titleWidth, titleHeight, this->SelectedTitleBackColor);
 				else
-					d2d->FillRect((TitleWidth * i), 0, TitleWidth, TitleHeight, this->TitleBackColor);
-				d2d->DrawString(this->operator[](i)->Text, (TitleWidth * i) + lf, tf, this->ForeColor, font);
-				d2d->DrawRect((TitleWidth * i), 0, TitleWidth, TitleHeight, this->BolderColor, this->Boder);
+					d2d->FillRect(titleLeft, 0, titleWidth, titleHeight, this->TitleBackColor);
+				d2d->DrawString(this->operator[](i)->Text, titleLeft + lf, tf, this->ForeColor, font);
+				d2d->DrawRect(titleLeft, 0, titleWidth, titleHeight, this->BolderColor, this->Boder);
 				d2d->PopDrawRect();
 			}
-			const float contentHeight = (float)std::max(0L, size.cy - this->TitleHeight);
 			if (contentHeight > 0.0f)
 			{
-				d2d->PushDrawRect(0.0f, (float)this->TitleHeight, (float)size.cx, contentHeight);
+				d2d->PushDrawRect(0.0f, titleHeight, actualWidth, contentHeight);
 				if (_animating && this->AnimationMode == TabControlAnimationMode::SlideHorizontal &&
 					_animFromIndex >= 0 && _animFromIndex < this->Count && _animToIndex >= 0 && _animToIndex < this->Count)
 				{
@@ -278,11 +410,11 @@ void TabControl::Update()
 				d2d->PopDrawRect();
 			}
 		}
-		d2d->DrawRect(0, this->TitleHeight, size.cx, size.cy - this->TitleHeight, this->BolderColor, this->Boder);
+		d2d->DrawRect(0, titleHeight, actualWidth, contentHeight, this->BolderColor, this->Boder);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	this->EndRender();
 }
@@ -405,7 +537,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
 		TCHAR strFileName[MAX_PATH];
 		std::vector<std::wstring> files;
-		for (int i = 0; i < uFileNum; i++)
+		for (UINT i = 0; i < uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
 			files.push_back(strFileName);

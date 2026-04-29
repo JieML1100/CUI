@@ -159,6 +159,57 @@ static TreeNode* findNode(float posX, float posY, float h, float itemHeight, flo
 	return NULL;
 }
 
+static TreeNode* findNodeByText(const std::vector<TreeNode*>& children, const std::wstring& text)
+{
+	for (auto* child : children)
+	{
+		if (!child) continue;
+		if (child->Text == text) return child;
+		if (auto* found = findNodeByText(child->Children, text))
+			return found;
+	}
+	return nullptr;
+}
+
+static bool containsNode(TreeNode* root, TreeNode* target)
+{
+	if (!root || !target) return false;
+	if (root == target) return true;
+	for (auto* child : root->Children)
+	{
+		if (containsNode(child, target)) return true;
+	}
+	return false;
+}
+
+static bool removeNodeRecursive(std::vector<TreeNode*>& children, TreeNode* target, bool deleteNode)
+{
+	for (auto it = children.begin(); it != children.end(); ++it)
+	{
+		auto* child = *it;
+		if (child == target)
+		{
+			children.erase(it);
+			if (deleteNode)
+				delete child;
+			return true;
+		}
+		if (child && removeNodeRecursive(child->Children, target, deleteNode))
+			return true;
+	}
+	return false;
+}
+
+static void setExpandedRecursive(std::vector<TreeNode*>& children, bool expanded)
+{
+	for (auto* child : children)
+	{
+		if (!child) continue;
+		child->SetExpanded(expanded);
+		setExpandedRecursive(child->Children, expanded);
+	}
+}
+
 TreeNode::TreeNode(std::wstring text, std::shared_ptr<BitmapSource> image)
 {
 	this->Text = text;
@@ -166,6 +217,66 @@ TreeNode::TreeNode(std::wstring text, std::shared_ptr<BitmapSource> image)
 	this->Expand = false;
 	this->ExpandProgress = 0.0f;
 	this->Children = std::vector<TreeNode*>();
+}
+
+TreeNode* TreeNode::AddNode(const std::wstring& text, std::shared_ptr<BitmapSource> image)
+{
+	return AddNode(new TreeNode(text, std::move(image)));
+}
+
+TreeNode* TreeNode::AddNode(TreeNode* node)
+{
+	if (!node) return nullptr;
+	for (auto* child : this->Children)
+	{
+		if (child == node) return node;
+	}
+	this->Children.push_back(node);
+	return node;
+}
+
+bool TreeNode::RemoveNode(TreeNode* node, bool deleteNode)
+{
+	if (!node) return false;
+	for (auto it = this->Children.begin(); it != this->Children.end(); ++it)
+	{
+		if (*it == node)
+		{
+			this->Children.erase(it);
+			if (deleteNode)
+				delete node;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool TreeNode::RemoveNodeAt(int index, bool deleteNode)
+{
+	if (index < 0 || index >= static_cast<int>(this->Children.size())) return false;
+	auto* node = this->Children[static_cast<size_t>(index)];
+	this->Children.erase(this->Children.begin() + index);
+	if (deleteNode)
+		delete node;
+	return true;
+}
+
+void TreeNode::ClearNodes()
+{
+	for (auto* child : this->Children)
+		delete child;
+	this->Children.clear();
+	this->SetExpanded(false);
+}
+
+TreeNode* TreeNode::FindChild(const std::wstring& text) const
+{
+	for (auto* child : this->Children)
+	{
+		if (child && child->Text == text)
+			return child;
+	}
+	return nullptr;
 }
 
 float TreeNode::CurrentExpandProgress()
@@ -276,6 +387,21 @@ int TreeNode::UnfoldedCount()
 }
 UIClass TreeView::Type() { return UIClass::UI_TreeView; }
 
+bool TreeView::CanHandleMouseWheel(int delta, int xof, int yof)
+{
+	(void)xof;
+	(void)yof;
+	if (delta == 0) return false;
+	const float fontHeight = this->Font ? this->Font->FontHeight : 0.0f;
+	const int renderItemCount = fontHeight > 0.0f ? std::max(1, (int)((float)this->Height / fontHeight)) : 1;
+	int maxScroll = (int)std::ceil(_contentRenderItems - (float)renderItemCount);
+	if (maxScroll < 0) maxScroll = 0;
+	if (maxScroll <= 0) return false;
+	return delta > 0
+		? this->ScrollIndex > 0
+		: this->ScrollIndex < maxScroll;
+}
+
 CursorKind TreeView::QueryCursor(int xof, int yof)
 {
 	(void)yof;
@@ -302,6 +428,94 @@ TreeView::TreeView(int x, int y, int width, int height)
 TreeView::~TreeView()
 {
 	delete this->Root;
+}
+
+TreeNode* TreeView::AddNode(const std::wstring& text, std::shared_ptr<BitmapSource> image)
+{
+	return AddNode(this->Root, text, std::move(image));
+}
+
+TreeNode* TreeView::AddNode(TreeNode* parent, const std::wstring& text, std::shared_ptr<BitmapSource> image)
+{
+	if (!parent) parent = this->Root;
+	if (!parent) return nullptr;
+	auto* node = parent->AddNode(text, std::move(image));
+	this->_contentRenderItems = this->Root ? measureNodes(this->Root->Children) : 0.0f;
+	this->PostRender();
+	return node;
+}
+
+bool TreeView::RemoveNode(TreeNode* node, bool deleteNode)
+{
+	if (!node || !this->Root || node == this->Root) return false;
+	const bool removedSelected = containsNode(node, this->SelectedNode);
+	const bool removedHovered = containsNode(node, this->HoveredNode);
+	if (!removeNodeRecursive(this->Root->Children, node, deleteNode)) return false;
+	if (removedSelected)
+	{
+		this->SelectedNode = nullptr;
+		this->SelectionChanged(this);
+	}
+	if (removedHovered)
+		this->HoveredNode = nullptr;
+	this->_contentRenderItems = measureNodes(this->Root->Children);
+	if (this->ScrollIndex > this->MaxRenderItems) this->ScrollIndex = this->MaxRenderItems;
+	this->PostRender();
+	return true;
+}
+
+void TreeView::ClearNodes()
+{
+	if (!this->Root) return;
+	const bool hadSelection = this->SelectedNode != nullptr;
+	this->Root->ClearNodes();
+	this->SelectedNode = nullptr;
+	this->HoveredNode = nullptr;
+	this->ScrollIndex = 0;
+	this->_contentRenderItems = 0.0f;
+	this->MaxRenderItems = 0;
+	if (hadSelection)
+		this->SelectionChanged(this);
+	this->PostRender();
+}
+
+TreeNode* TreeView::FindNode(const std::wstring& text) const
+{
+	if (!this->Root) return nullptr;
+	return findNodeByText(this->Root->Children, text);
+}
+
+void TreeView::SelectNode(TreeNode* node, bool fireEvent)
+{
+	if (node && this->Root && !containsNode(this->Root, node))
+		return;
+	if (this->SelectedNode == node) return;
+	this->SelectedNode = node;
+	if (fireEvent)
+		this->SelectionChanged(this);
+	this->PostRender();
+}
+
+void TreeView::SetNodeExpanded(TreeNode* node, bool expanded)
+{
+	if (!node || (this->Root && !containsNode(this->Root, node))) return;
+	node->SetExpanded(expanded);
+	this->PostRender();
+}
+
+void TreeView::ExpandAll()
+{
+	if (!this->Root) return;
+	setExpandedRecursive(this->Root->Children, true);
+	this->PostRender();
+}
+
+void TreeView::CollapseAll()
+{
+	if (!this->Root) return;
+	setExpandedRecursive(this->Root->Children, false);
+	this->ScrollIndex = 0;
+	this->PostRender();
 }
 
 bool TreeView::IsAnimationRunning()
@@ -364,10 +578,10 @@ void TreeView::UpdateScrollDrag(float posY) {
 }
 void TreeView::DrawScroll() {
 	float width = this->Width - 8.0f;
-	float height = this->Height;
+	float height = static_cast<float>(this->Height);
 	float fontHeight = this->Font->FontHeight;
 	if (_contentRenderItems > 0.0f) {
-		int renderItemCount = height / fontHeight;
+		int renderItemCount = static_cast<int>(height / fontHeight);
 		if ((float)renderItemCount < _contentRenderItems) {
 			int maxScroll = (int)std::ceil(_contentRenderItems - (float)renderItemCount);
 			float scrollBlockHeight = (renderItemCount / _contentRenderItems) * height;
@@ -387,10 +601,12 @@ void TreeView::Update()
 	auto d2d = this->ParentForm->Render;
 	auto font = this->Font;
 	auto size = this->ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
 	bool isSelected = this->ParentForm->Selected == this;
 	this->BeginRender();
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
+		d2d->FillRect(0, 0, actualWidth, actualHeight, this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -404,19 +620,19 @@ void TreeView::Update()
 			if (maxScroll < 0)maxScroll = 0;
 			if (this->ScrollIndex > maxScroll) this->ScrollIndex = maxScroll;
 			float cursorY = 0.0f;
-			renderNodes(this, d2d, (float)size.cx, (float)size.cy, itemHeight, (float)this->ScrollIndex * itemHeight, cursorY, 0, this->Root->Children);
+			renderNodes(this, d2d, actualWidth, actualHeight, itemHeight, (float)this->ScrollIndex * itemHeight, cursorY, 0, this->Root->Children);
 			this->DrawScroll();
-			d2d->DrawRect(0, 0, size.cx, size.cy, this->ForeColor);
+			d2d->DrawRect(0, 0, actualWidth, actualHeight, this->ForeColor);
 
 		}
 		if (!this->Enable)
 		{
-			d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+			d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 		}
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	this->EndRender();
 }
@@ -431,7 +647,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xFFFFFFFF, NULL, 0);
 		TCHAR strFileName[MAX_PATH];
 		std::vector<std::wstring> files;
-		for (int i = 0; i < uFileNum; i++)
+		for (UINT i = 0; i < uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
 			files.push_back(strFileName);
@@ -475,7 +691,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 	{
 		this->ParentForm->UnderMouse = this;
 		if (isDraggingScroll) {
-			UpdateScrollDrag(yof);
+			UpdateScrollDrag(static_cast<float>(yof));
 		}
 		else
 		{

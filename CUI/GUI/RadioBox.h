@@ -24,12 +24,16 @@ protected:
 	void BeforeDefaultMouseDoubleClick(UINT message, MouseEventArgs& e, bool wasSelected) override;
 public:
 	virtual UIClass Type();
+	bool HandlesNavigationKey(WPARAM key) const override;
 	/** @brief 鼠标悬停时的高亮色。 */
 	D2D1_COLOR_F UnderMouseColor = Colors::DarkSlateGray;
 	/** @brief 边框宽度（像素）。 */
 	float Boder = 1.5f;
 	/** @brief 创建单选框。 */
 	RadioBox(std::wstring text, int x, int y);
+	/** @brief 设置勾选状态，可选择是否触发 OnChecked。 */
+	void SetChecked(bool checked, bool fireEvent = true);
 	SIZE ActualSize() override;
 	void Update() override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 };

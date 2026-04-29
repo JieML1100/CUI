@@ -49,6 +49,37 @@ void Panel::InvalidateLayout()
 	}
 }
 
+void Panel::ClearControls(bool deleteControls)
+{
+	auto children = this->Children;
+	this->Children.clear();
+	for (auto* child : children)
+	{
+		if (!child) continue;
+		child->Parent = NULL;
+		child->ParentForm = NULL;
+		if (deleteControls)
+			delete child;
+	}
+	InvalidateLayout();
+	this->PostRender();
+}
+
+bool Panel::ContainsControl(Control* child) const
+{
+	return IndexOf(child) >= 0;
+}
+
+int Panel::IndexOf(Control* child) const
+{
+	for (int i = 0; i < (int)this->Children.size(); i++)
+	{
+		if (this->Children[(size_t)i] == child)
+			return i;
+	}
+	return -1;
+}
+
 void Panel::PerformLayout()
 {
 	if (!_layoutEngine)
@@ -63,7 +94,7 @@ void Panel::PerformLayout()
 		if (contentWidth < 0) contentWidth = 0;
 		if (contentHeight < 0) contentHeight = 0;
 		
-		for (int i = 0; i < this->Children.size(); i++)
+		for (size_t i = 0; i < this->Children.size(); i++)
 		{
 			auto child = this->Children[i];
 			if (!child || !child->Visible) continue;
@@ -207,9 +238,11 @@ void Panel::Update()
 	bool isSelected = this->ParentForm->Selected == this;
 	auto d2d = this->ParentForm->Render;
 	auto size = this->ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
 	this->BeginRender();
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
+		d2d->FillRect(0, 0, actualWidth, actualHeight, this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -219,11 +252,11 @@ void Panel::Update()
 			auto c = this->operator[](i);
 			c->Update();
 		}
-		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
+		d2d->DrawRect(0, 0, actualWidth, actualHeight, this->BolderColor, this->Boder);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	this->EndRender();
 }
@@ -254,7 +287,7 @@ bool Panel::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, 
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
 		TCHAR strFileName[MAX_PATH];
 		std::vector<std::wstring> files;
-		for (int i = 0; i < uFileNum; i++)
+		for (UINT i = 0; i < uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
 			files.push_back(strFileName);

@@ -89,6 +89,45 @@ SET_CPP(DateTimePicker, bool, AllowTimeSelection)
 	PostRender();
 }
 
+void DateTimePicker::SetNow()
+{
+	SYSTEMTIME st{};
+	::GetLocalTime(&st);
+	SetValueInternal(st, true);
+}
+
+void DateTimePicker::SetToday()
+{
+	SYSTEMTIME st{};
+	::GetLocalTime(&st);
+	st.wHour = 0;
+	st.wMinute = 0;
+	st.wSecond = 0;
+	st.wMilliseconds = 0;
+	SetValueInternal(st, true);
+}
+
+void DateTimePicker::SetDate(int year, int month, int day)
+{
+	month = std::clamp(month, 1, 12);
+	day = std::clamp(day, 1, DaysInMonth(year, month));
+	SYSTEMTIME st = _value;
+	st.wYear = (WORD)std::clamp(year, 1, 9999);
+	st.wMonth = (WORD)month;
+	st.wDay = (WORD)day;
+	SetValueInternal(st, true);
+}
+
+void DateTimePicker::SetTime(int hour, int minute, int second)
+{
+	SYSTEMTIME st = _value;
+	st.wHour = (WORD)std::clamp(hour, 0, 23);
+	st.wMinute = (WORD)std::clamp(minute, 0, 59);
+	st.wSecond = (WORD)std::clamp(second, 0, 59);
+	st.wMilliseconds = 0;
+	SetValueInternal(st, true);
+}
+
 SIZE DateTimePicker::ActualSize()
 {
 	if (!Expand || IsInlineTimeMode())
@@ -1146,4 +1185,3 @@ void DateTimePicker::SetExpanded(bool value)
 	}
 	PostRender();
 }
-

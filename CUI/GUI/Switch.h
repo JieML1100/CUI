@@ -33,14 +33,20 @@ protected:
 	void BeforeDefaultMouseDoubleClick(UINT message, MouseEventArgs& e, bool wasSelected) override;
 public:
 	virtual UIClass Type();
+	bool HandlesNavigationKey(WPARAM key) const override;
 	/** @brief 鼠标悬停时的高亮色。 */
 	D2D1_COLOR_F UnderMouseColor = Colors::DarkSlateGray;
 	/** @brief 边框宽度（像素）。 */
 	float Boder = 1.5f;
 	/** @brief 创建开关。 */
 	Switch(int x = 0, int y = 0, int width = 60, int height = 22);
+	/** @brief 设置开关状态，可选择是否触发 OnChecked。 */
+	void SetChecked(bool checked, bool fireEvent = true);
+	/** @brief 切换开关状态。 */
+	void Toggle(bool fireEvent = true);
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	void Update() override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 };

@@ -14,6 +14,47 @@ namespace
 		float H = 0;
 		bool OpenedToLeft = false;               // 相对上一层面板是否向左展开
 	};
+
+	MenuItem* FindMenuItemByIdRecursive(const std::vector<MenuItem*>& items, int id)
+	{
+		for (auto* item : items)
+		{
+			if (!item) continue;
+			if (!item->Separator && item->Id == id) return item;
+			if (auto* found = FindMenuItemByIdRecursive(item->SubItems, id))
+				return found;
+		}
+		return nullptr;
+	}
+
+	MenuItem* FindMenuItemByTextRecursive(const std::vector<MenuItem*>& items, const std::wstring& text)
+	{
+		for (auto* item : items)
+		{
+			if (!item) continue;
+			if (!item->Separator && item->Text == text) return item;
+			if (auto* found = FindMenuItemByTextRecursive(item->SubItems, text))
+				return found;
+		}
+		return nullptr;
+	}
+
+	bool RemoveMenuItemRecursive(std::vector<MenuItem*>& items, MenuItem* target)
+	{
+		for (auto it = items.begin(); it != items.end(); ++it)
+		{
+			auto* item = *it;
+			if (item == target)
+			{
+				items.erase(it);
+				delete item;
+				return true;
+			}
+			if (item && RemoveMenuItemRecursive(item->SubItems, target))
+				return true;
+		}
+		return false;
+	}
 }
 
 UIClass MenuItem::Type() { return UIClass::UI_MenuItem; }
@@ -56,16 +97,45 @@ MenuItem* MenuItem::CreateSeparator()
 	return it;
 }
 
+MenuItem* MenuItem::FindSubItemById(int id) const
+{
+	return FindMenuItemByIdRecursive(this->SubItems, id);
+}
+
+MenuItem* MenuItem::FindSubItemByText(const std::wstring& text) const
+{
+	return FindMenuItemByTextRecursive(this->SubItems, text);
+}
+
+bool MenuItem::RemoveSubItem(MenuItem* item)
+{
+	return RemoveMenuItemRecursive(this->SubItems, item);
+}
+
+bool MenuItem::RemoveSubItemById(int id)
+{
+	return RemoveSubItem(FindSubItemById(id));
+}
+
+void MenuItem::ClearSubItems()
+{
+	for (auto* item : this->SubItems)
+		delete item;
+	this->SubItems.clear();
+}
+
 void MenuItem::Update()
 {
 	if (!this->IsVisual) return;
 	auto d2d = this->ParentForm->Render;
 	auto size = this->ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
 	this->BeginRender();
 	{
 		bool hover = (this->ParentForm->UnderMouse == this);
 		if (hover)
-			d2d->FillRect(0, 0, size.cx, size.cy, HoverBackColor);
+			d2d->FillRect(0, 0, actualWidth, actualHeight, HoverBackColor);
 
 		auto font = this->Font;
 		auto ts = font->GetTextSize(this->Text);
@@ -106,6 +176,84 @@ MenuItem* Menu::AddItem(std::wstring text)
 	auto* item = this->AddControl(new MenuItem(text, 0));
 	item->Height = this->BarHeight;
 	return item;
+}
+
+MenuItem* Menu::FindItemByText(const std::wstring& text) const
+{
+	for (auto* child : this->Children)
+	{
+		auto* item = dynamic_cast<MenuItem*>(child);
+		if (!item) continue;
+		if (item->Text == text) return item;
+		if (auto* found = FindMenuItemByTextRecursive(item->SubItems, text))
+			return found;
+	}
+	return nullptr;
+}
+
+MenuItem* Menu::FindItemById(int id) const
+{
+	for (auto* child : this->Children)
+	{
+		auto* item = dynamic_cast<MenuItem*>(child);
+		if (!item) continue;
+		if (item->Id == id) return item;
+		if (auto* found = FindMenuItemByIdRecursive(item->SubItems, id))
+			return found;
+	}
+	return nullptr;
+}
+
+bool Menu::RemoveItem(MenuItem* item)
+{
+	if (!item) return false;
+	for (int i = 0; i < this->Count; i++)
+	{
+		if (this->operator[](i) == item)
+			return RemoveItemAt(i);
+	}
+	for (auto* child : this->Children)
+	{
+		auto* top = dynamic_cast<MenuItem*>(child);
+		if (top && RemoveMenuItemRecursive(top->SubItems, item))
+		{
+			ClosePopup();
+			this->PostRender();
+			return true;
+		}
+	}
+	return false;
+}
+
+bool Menu::RemoveItemAt(int index)
+{
+	if (index < 0 || index >= this->Count) return false;
+	auto* child = this->operator[](index);
+	this->Children.erase(this->Children.begin() + index);
+	if (child)
+	{
+		child->Parent = NULL;
+		child->ParentForm = NULL;
+		delete child;
+	}
+	ClosePopup();
+	this->PostRender();
+	return true;
+}
+
+bool Menu::RemoveItemById(int id)
+{
+	return RemoveItem(FindItemById(id));
+}
+
+void Menu::ClearItems()
+{
+	auto children = this->Children;
+	this->Children.clear();
+	for (auto* child : children)
+		delete child;
+	ClosePopup();
+	this->PostRender();
 }
 
 bool Menu::ContainsPoint(int xof, int yof)

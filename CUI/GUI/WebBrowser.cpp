@@ -391,9 +391,6 @@ void WebBrowser::EnsureInitialized()
 							&_cursorChangedToken);
 					}
 
-					EnsureControllerBounds();
-					_controller->put_IsVisible(TRUE);
-
 					ComPtr<ICoreWebView2Settings> settings;
 					if (_webview && SUCCEEDED(_webview->get_Settings(&settings)) && settings)
 					{
@@ -403,6 +400,7 @@ void WebBrowser::EnsureInitialized()
 					}
 
 					_webviewReady = (SUCCEEDED(_lastGetWebViewHr) && _webview != nullptr);
+					EnsureControllerBounds();
 					EnsureInteropInstalled();
 
 					// WebView2 事件注册
@@ -850,6 +848,13 @@ void WebBrowser::EnsureControllerBounds()
 		// 位置/裁剪/挂载更新需要 Commit
 		if (this->ParentForm) this->ParentForm->CommitComposition();
 	}
+}
+
+void WebBrowser::SyncNativeSurface()
+{
+	if (!_initialized && !_controller && !_dcompVisual)
+		return;
+	EnsureControllerBounds();
 }
 
 void WebBrowser::Update()

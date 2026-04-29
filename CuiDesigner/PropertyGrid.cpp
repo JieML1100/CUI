@@ -456,6 +456,8 @@ namespace
 			L"ScrollChanged",
 			L"SelectionChanged",
 			L"OnGridViewCheckStateChanged",
+			L"OnUserAddingRow",
+			L"OnUserAddedRow",
 			L"OnValueChanged",
 			L"OnMenuCommand",
 		};
@@ -515,6 +517,8 @@ namespace
 			out.push_back(L"ScrollChanged");
 			out.push_back(L"SelectionChanged");
 			out.push_back(L"OnGridViewCheckStateChanged");
+			out.push_back(L"OnUserAddingRow");
+			out.push_back(L"OnUserAddedRow");
 			break;
 		case UIClass::UI_TreeView:
 			out.push_back(L"ScrollChanged");
@@ -700,11 +704,12 @@ bool PropertyGrid::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, in
 		auto* canvas = _binding.GetCanvas();
 		if (canvas && (GetKeyState(VK_CONTROL) & 0x8000) != 0)
 		{
-			if (wParam == 'Z')
+			const bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+			if (wParam == 'Z' && !shiftDown)
 			{
 				if (canvas->UndoCommand()) return true;
 			}
-			else if (wParam == 'Y')
+			else if (wParam == 'Y' || (wParam == 'Z' && shiftDown))
 			{
 				if (canvas->RedoCommand()) return true;
 			}
@@ -1813,50 +1818,14 @@ void PropertyGrid::UpdatePropertyFromBool(std::wstring propertyName, bool value)
 	if (IsEventPropertyName(propertyName))
 	{
 		if (value)
+		{
 			currentControl->EventHandlers[propertyName] = L"1";
-			if (propertyName == L"Active")
-			{
-				if (ctrl->Type() == UIClass::UI_LoadingRing)
-				{
-					((LoadingRing*)ctrl)->Active = value;
-				}
-			}
-			else if (propertyName == L"ShowPercentage")
-			{
-				if (ctrl->Type() == UIClass::UI_ProgressRing)
-				{
-					((ProgressRing*)ctrl)->ShowPercentage = value;
-				}
-			}
-			else
-			{
-				if (propertyName == L"Checked")
-				{
-					ctrl->Checked = value;
-				}
-				else if (propertyName == L"Enable")
-				{
-					ctrl->Enable = value;
-				}
-				else if (propertyName == L"Visible")
-				{
-					ctrl->Visible = value;
-				}
-				else if (propertyName == L"Expand")
-				{
-					if (ctrl->Type() == UIClass::UI_DateTimePicker)
-					{
-						((DateTimePicker*)ctrl)->SetExpanded(value);
-					}
-				}
-				else if (propertyName == L"ShowInTaskBar" || propertyName == L"TopMost" || propertyName == L"AllowResize" ||
-					propertyName == L"VisibleHead" || propertyName == L"MinBox" || propertyName == L"MaxBox" ||
-					propertyName == L"CloseBox" || propertyName == L"CenterTitle")
-				{
-					_binding.ApplyFormBoolProperty(propertyName, value);
-					return;
-				}
-			}
+		}
+		else
+		{
+			currentControl->EventHandlers.erase(propertyName);
+		}
+		return;
 	}
 	else if (propertyName == L"AutoPlay")
 	{
@@ -1982,6 +1951,11 @@ void PropertyGrid::ExecutePropertyCommand(const std::wstring& propertyName, cons
 	if (!afterSelectionName.empty())
 	{
 		afterSelectionNames.push_back(afterSelectionName);
+	}
+
+	if (beforeDocument == afterDocument && beforeSelectionName == afterSelectionName && beforeSelectionNames == afterSelectionNames)
+	{
+		return;
 	}
 
 	auto command = std::make_unique<UpdatePropertyCommand>(

@@ -61,11 +61,33 @@ private:
 	void InputDelete();
 	void UpdateScroll(bool arrival = false);
 	void ApplyUndoRecord(const UndoRecord& rec, bool isUndo);
-	void Undo();
-	void Redo();
 public:
 	/** @brief 返回当前选中的文本片段。 */
 	std::wstring GetSelectedString();
+	/** @brief 当前选区长度。 */
+	int SelectionLength() const;
+	/** @brief 是否存在非空选区。 */
+	bool HasSelection() const;
+	/** @brief 设置选区，length 为选中字符数。 */
+	void Select(int start, int length);
+	/** @brief 选中全部文本。 */
+	void SelectAll();
+	/** @brief 清除选区并将光标放在当前选区末尾。 */
+	void ClearSelection();
+	/** @brief 清空文本，保留撤销记录。 */
+	void Clear();
+	/** @brief 在当前光标或选区插入文本。 */
+	void InsertText(std::wstring text);
+	/** @brief 将选中文本复制到剪贴板。 */
+	bool Copy();
+	/** @brief 剪切选中文本到剪贴板。 */
+	bool Cut();
+	/** @brief 从剪贴板粘贴文本。 */
+	bool Paste();
+	/** @brief 撤销最近一次编辑。 */
+	void Undo();
+	/** @brief 重做最近一次撤销。 */
+	void Redo();
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 };

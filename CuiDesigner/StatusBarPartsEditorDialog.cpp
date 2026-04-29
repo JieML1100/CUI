@@ -1,4 +1,4 @@
-﻿#include "StatusBarPartsEditorDialog.h"
+#include "StatusBarPartsEditorDialog.h"
 #include <algorithm>
 
 namespace
@@ -36,13 +36,13 @@ void StatusBarPartsEditorDialog::AddRow(const std::wstring& text, const std::wst
 	r.Cells.push_back(CellValue(L""));
 	r.Cells.push_back(CellValue(L""));
 	r.Cells.push_back(CellValue(L""));
-	_grid->Rows.push_back(r);
+	_grid->AddRow(r);
 }
 
 void StatusBarPartsEditorDialog::RefreshGridFromTarget()
 {
 	if (!_grid) return;
-	_grid->Rows.clear();
+	_grid->ClearRows();
 	if (!_target) return;
 	if (_target->PartCount() <= 0)
 	{
@@ -72,7 +72,7 @@ StatusBarPartsEditorDialog::StatusBarPartsEditorDialog(StatusBar* target)
 	tip->Font = new ::Font(L"Microsoft YaHei", 12.0f);
 
 	_grid = this->AddControl(new GridView(12, 38, 536, 340));
-	_grid->Columns.clear();
+	_grid->ClearColumns();
 	{
 		GridViewColumn c0(L"Text", 250.0f, ColumnType::Text, true);
 		GridViewColumn c1(L"Width", 90.0f, ColumnType::Text, true);
@@ -82,11 +82,11 @@ StatusBarPartsEditorDialog::StatusBarPartsEditorDialog(StatusBar* target)
 		c3.ButtonText = L"下移";
 		GridViewColumn c4(L"", 60.0f, ColumnType::Button, false);
 		c4.ButtonText = L"删除";
-		_grid->Columns.push_back(c0);
-		_grid->Columns.push_back(c1);
-		_grid->Columns.push_back(c2);
-		_grid->Columns.push_back(c3);
-		_grid->Columns.push_back(c4);
+		_grid->AddColumn(c0);
+		_grid->AddColumn(c1);
+		_grid->AddColumn(c2);
+		_grid->AddColumn(c3);
+		_grid->AddColumn(c4);
 	}
 	_grid->AllowUserToAddRows = true;
 
@@ -95,39 +95,39 @@ StatusBarPartsEditorDialog::StatusBarPartsEditorDialog(StatusBar* target)
 	_grid->OnUserAddedRow += [this](GridView*, int newRowIndex)
 	{
 		if (!_grid) return;
-		if (newRowIndex < 0 || newRowIndex >= _grid->Rows.size()) return;
-		auto& row = _grid->Rows[newRowIndex];
+		if (newRowIndex < 0 || static_cast<size_t>(newRowIndex) >= _grid->RowCount()) return;
+		auto& row = _grid->RowAt(static_cast<int>(newRowIndex));
 		if (row.Cells.size() < 5)
 			row.Cells.resize(5);
-		row.Cells[COL_TEXT].Text = L"";
-		row.Cells[COL_WIDTH].Text = L"0";
+		row.Cells[COL_TEXT].SetText(L"");
+		row.Cells[COL_WIDTH].SetText(L"0");
 		_grid->ChangeEditionSelected(COL_TEXT, newRowIndex);
 	};
 
 	_grid->OnGridViewButtonClick += [this](GridView*, int c, int r)
 	{
 		if (!_grid) return;
-		if (r < 0 || r >= _grid->Rows.size()) return;
+		if (r < 0 || static_cast<size_t>(r) >= _grid->RowCount()) return;
 		if (c == COL_UP)
 		{
 			if (r <= 0) return;
-			std::swap(_grid->Rows[r], _grid->Rows[r - 1]);
+			_grid->SwapRows(r, r - 1);
 			_grid->SelectedRowIndex = r - 1;
 			_grid->SelectedColumnIndex = COL_TEXT;
 			_grid->PostRender();
 		}
 		else if (c == COL_DOWN)
 		{
-			if (r + 1 >= _grid->Rows.size()) return;
-			std::swap(_grid->Rows[r], _grid->Rows[r + 1]);
+			if (static_cast<size_t>(r + 1) >= _grid->RowCount()) return;
+			_grid->SwapRows(r, r + 1);
 			_grid->SelectedRowIndex = r + 1;
 			_grid->SelectedColumnIndex = COL_TEXT;
 			_grid->PostRender();
 		}
 		else if (c == COL_DELETE)
 		{
-			_grid->Rows.erase(_grid->Rows.begin() + r);
-			if (_grid->Rows.size() <= 0)
+			_grid->RemoveRowAt(r);
+			if (_grid->RowCount() <= 0)
 			{
 				_grid->SelectedRowIndex = -1;
 				_grid->SelectedColumnIndex = -1;
@@ -135,7 +135,7 @@ StatusBarPartsEditorDialog::StatusBarPartsEditorDialog(StatusBar* target)
 			else
 			{
 				int sel = r;
-				if (sel >= _grid->Rows.size()) sel = _grid->Rows.size() - 1;
+				if (static_cast<size_t>(sel) >= _grid->RowCount()) sel = static_cast<int>(_grid->RowCount()) - 1;
 				_grid->SelectedRowIndex = sel;
 				_grid->SelectedColumnIndex = COL_TEXT;
 			}
@@ -150,11 +150,11 @@ StatusBarPartsEditorDialog::StatusBarPartsEditorDialog(StatusBar* target)
 		if (!_target || !_grid) { this->Close(); return; }
 		_grid->ChangeEditionSelected(-1, -1);
 		_target->ClearParts();
-		for (int i = 0; i < _grid->Rows.size(); i++)
+		for (size_t i = 0; i < _grid->RowCount(); i++)
 		{
-			auto& row = _grid->Rows[i];
-			std::wstring text = (row.Cells.size() > COL_TEXT) ? Trim(row.Cells[COL_TEXT].Text) : L"";
-			int w = (row.Cells.size() > COL_WIDTH) ? ParseInt(row.Cells[COL_WIDTH].Text, 0) : 0;
+			auto& row = _grid->RowAt(static_cast<int>(i));
+			std::wstring text = (row.Cells.size() > COL_TEXT) ? Trim(row.Cells[COL_TEXT].GetText()) : L"";
+			int w = (row.Cells.size() > COL_WIDTH) ? ParseInt(row.Cells[COL_WIDTH].GetText(), 0) : 0;
 			_target->AddPart(text, w);
 		}
 		_target->LayoutItems();

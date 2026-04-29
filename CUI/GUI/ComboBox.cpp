@@ -7,15 +7,34 @@
 #define COMBO_MIN_SCROLL_BLOCK 16
 UIClass ComboBox::Type() { return UIClass::UI_ComboBox; }
 
+bool ComboBox::CanHandleMouseWheel(int delta, int xof, int yof)
+{
+	(void)xof;
+	(void)yof;
+	if (delta == 0 || !this->Expand) return false;
+	const int visibleCount = VisibleItemCount();
+	const int maxScroll = std::max(0, static_cast<int>(this->values.size()) - visibleCount);
+	if (maxScroll <= 0) return false;
+	EnsureScrollInRange();
+	return delta > 0
+		? this->ExpandScroll > 0
+		: this->ExpandScroll < maxScroll;
+}
+
 GET_CPP(ComboBox, std::vector<std::wstring>&, Items)
 {
 	return this->values;
 }
 SET_CPP(ComboBox, std::vector<std::wstring>&, Items)
 {
+	const int oldIndex = this->SelectedIndex;
+	const std::wstring oldText = this->Text;
 	this->values = value;
 	EnsureSelectionInRange();
 	EnsureScrollInRange();
+	if (this->SelectedIndex != oldIndex || this->Text != oldText)
+		this->OnSelectionChanged(this);
+	this->PostRender();
 }
 
 int ComboBox::VisibleItemCount()
@@ -75,15 +94,16 @@ bool ComboBox::IsDropDownInteractive()
 
 void ComboBox::EnsureSelectionInRange()
 {
-	if (this->values.size() <= 0)
+	if (this->values.empty())
 	{
 		this->SelectedIndex = 0;
 		this->Text = L"";
 		return;
 	}
 	if (this->SelectedIndex < 0) this->SelectedIndex = 0;
-	if (this->SelectedIndex >= this->values.size()) this->SelectedIndex = this->values.size() - 1;
-	this->Text = this->values[this->SelectedIndex];
+	const int lastIndex = static_cast<int>(this->values.size()) - 1;
+	if (this->SelectedIndex > lastIndex) this->SelectedIndex = lastIndex;
+	this->Text = this->values[static_cast<size_t>(this->SelectedIndex)];
 }
 
 void ComboBox::EnsureScrollInRange()
@@ -92,13 +112,13 @@ void ComboBox::EnsureScrollInRange()
 	const int maxScroll = std::max(0, (int)this->values.size() - visibleCount);
 	if (this->ExpandScroll < 0) this->ExpandScroll = 0;
 	if (this->ExpandScroll > maxScroll) this->ExpandScroll = maxScroll;
-	if (_underMouseIndex >= this->values.size()) _underMouseIndex = -1;
+	if (_underMouseIndex >= static_cast<int>(this->values.size())) _underMouseIndex = -1;
 }
 CursorKind ComboBox::QueryCursor(int xof, int yof)
 {
 	if (!this->Enable) return CursorKind::Arrow;
 
-	const bool hasVScroll = (IsDropDownVisible() && this->values.size() > VisibleItemCount());
+	const bool hasVScroll = (IsDropDownVisible() && static_cast<int>(this->values.size()) > VisibleItemCount());
 	const float dropHeight = CurrentDropdownHeight();
 	if (hasVScroll && xof >= (this->Width - 8) && yof >= this->Height && (float)yof <= ((float)this->Height + dropHeight))
 		return CursorKind::SizeNS;
@@ -112,6 +132,102 @@ ComboBox::ComboBox(std::wstring text, int x, int y, int width, int height)
 	this->Size = SIZE{ width,height };
 	this->BackColor = D2D1_COLOR_F{ 0.75f , 0.75f , 0.75f , 0.75f };
 	this->Cursor = CursorKind::Hand;
+}
+
+int ComboBox::ItemCount() const
+{
+	return static_cast<int>(this->values.size());
+}
+
+std::wstring ComboBox::GetSelectedItem() const
+{
+	if (this->SelectedIndex < 0 || this->SelectedIndex >= static_cast<int>(this->values.size()))
+		return L"";
+	return this->values[static_cast<size_t>(this->SelectedIndex)];
+}
+
+void ComboBox::SetSelectedIndex(int index)
+{
+	const int oldIndex = this->SelectedIndex;
+	const std::wstring oldText = this->Text;
+	this->SelectedIndex = index;
+	EnsureSelectionInRange();
+	EnsureScrollInRange();
+	if (this->SelectedIndex != oldIndex || this->Text != oldText)
+		this->OnSelectionChanged(this);
+	this->PostRender();
+}
+
+int ComboBox::FindItem(const std::wstring& text) const
+{
+	auto it = std::find(this->values.begin(), this->values.end(), text);
+	if (it == this->values.end()) return -1;
+	return static_cast<int>(std::distance(this->values.begin(), it));
+}
+
+int ComboBox::AddItem(const std::wstring& text)
+{
+	this->values.push_back(text);
+	EnsureSelectionInRange();
+	EnsureScrollInRange();
+	this->PostRender();
+	return static_cast<int>(this->values.size()) - 1;
+}
+
+int ComboBox::InsertItem(int index, const std::wstring& text)
+{
+	const int insertIndex = std::clamp(index, 0, static_cast<int>(this->values.size()));
+	this->values.insert(this->values.begin() + insertIndex, text);
+	if (this->values.size() == 1)
+	{
+		this->SelectedIndex = 0;
+		this->Text = text;
+		this->OnSelectionChanged(this);
+	}
+	else if (insertIndex <= this->SelectedIndex)
+	{
+		this->SelectedIndex++;
+	}
+	EnsureSelectionInRange();
+	EnsureScrollInRange();
+	this->PostRender();
+	return insertIndex;
+}
+
+bool ComboBox::RemoveItemAt(int index)
+{
+	if (index < 0 || index >= static_cast<int>(this->values.size())) return false;
+	const int oldIndex = this->SelectedIndex;
+	const std::wstring oldText = this->Text;
+	this->values.erase(this->values.begin() + index);
+	if (index < this->SelectedIndex)
+		this->SelectedIndex--;
+	else if (index == this->SelectedIndex && this->SelectedIndex >= static_cast<int>(this->values.size()))
+		this->SelectedIndex = static_cast<int>(this->values.size()) - 1;
+	EnsureSelectionInRange();
+	EnsureScrollInRange();
+	if (this->values.empty())
+		SetExpanded(false);
+	if (this->SelectedIndex != oldIndex || this->Text != oldText)
+		this->OnSelectionChanged(this);
+	this->PostRender();
+	return true;
+}
+
+void ComboBox::ClearItems()
+{
+	if (this->values.empty()) return;
+	const int oldIndex = this->SelectedIndex;
+	const std::wstring oldText = this->Text;
+	this->values.clear();
+	this->SelectedIndex = 0;
+	this->Text = L"";
+	this->ExpandScroll = 0;
+	this->_underMouseIndex = -1;
+	SetExpanded(false);
+	if (this->SelectedIndex != oldIndex || this->Text != oldText)
+		this->OnSelectionChanged(this);
+	this->PostRender();
 }
 
 bool ComboBox::IsAnimationRunning()
@@ -176,9 +292,10 @@ void ComboBox::DrawScroll()
 	const float renderHeight = CurrentDropdownHeight();
 	if (this->values.size() > 0 && render_count > 0 && renderHeight > 0.0f)
 	{
-		if (render_count < this->values.size())
+		const int itemCount = static_cast<int>(this->values.size());
+		if (render_count < itemCount)
 		{
-			int max_scroll = this->values.size() - render_count;
+			int max_scroll = itemCount - render_count;
 			float scroll_block_height = ((float)render_count / (float)this->values.size()) * renderHeight;
 			if (scroll_block_height < COMBO_MIN_SCROLL_BLOCK)scroll_block_height = COMBO_MIN_SCROLL_BLOCK;
 			if (scroll_block_height > renderHeight) scroll_block_height = renderHeight;
@@ -197,7 +314,7 @@ void ComboBox::UpdateScrollDrag(float posY) {
 	float _render_height = CurrentDropdownHeight();
 	float dxHeight = _render_height;
 	if (render_count <= 0 || _render_height <= 0.0f) return;
-	int maxScroll = this->values.size() - render_count;
+	int maxScroll = static_cast<int>(this->values.size()) - render_count;
 	float scrollBlockHeight = ((float)render_count / (float)this->values.size()) * (float)_render_height;
 	if (scrollBlockHeight < COMBO_MIN_SCROLL_BLOCK)scrollBlockHeight = COMBO_MIN_SCROLL_BLOCK;
 	if (scrollBlockHeight > _render_height) scrollBlockHeight = _render_height;
@@ -207,7 +324,7 @@ void ComboBox::UpdateScrollDrag(float posY) {
 	float targetTop = posY - grab;
 	float per = targetTop / scrollHeight;
 	per = std::clamp(per, 0.0f, 1.0f);
-	int newScroll = per * maxScroll;
+	int newScroll = static_cast<int>(per * maxScroll);
 	{
 		ExpandScroll = newScroll;
 		if (ExpandScroll < 0)
@@ -228,9 +345,13 @@ void ComboBox::Update()
 	EnsureSelectionInRange();
 	EnsureScrollInRange();
 	auto size = this->ActualSize();
-	this->BeginRender((float)size.cx, (float)size.cy);
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
+	const float controlWidth = static_cast<float>(this->Width);
+	const float controlHeight = static_cast<float>(this->Height);
+	this->BeginRender(actualWidth, actualHeight);
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
+		d2d->FillRect(0, 0, actualWidth, actualHeight, this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -246,12 +367,12 @@ void ComboBox::Update()
 		d2d->DrawString(this->Text, drawLeft, drawTop, this->ForeColor, font);
 		// 右侧展开符号：使用图形绘制，避免随 Font 改变，并在展开/收起时显示不同图案
 		{
-			const float h = (float)this->Height;
+			const float h = controlHeight;
 			float iconSize = h * 0.38f;
 			if (iconSize < 8.0f) iconSize = 8.0f;
 			if (iconSize > 14.0f) iconSize = 14.0f;
 			const float padRight = 8.0f;
-			const float cx = (float)this->Width - padRight - iconSize * 0.5f;
+			const float cx = controlWidth - padRight - iconSize * 0.5f;
 			const float cy = h * 0.5f;
 			const float half = iconSize * 0.5f;
 			const float triH = iconSize * 0.55f;
@@ -275,39 +396,40 @@ void ComboBox::Update()
 		const float dropHeight = CurrentDropdownHeight();
 		if (dropHeight > 0.0f && visibleCount > 0)
 		{
-			d2d->PushDrawRect(0.0f, (float)this->Height, (float)this->Width, dropHeight);
-			for (int i = this->ExpandScroll; i < this->ExpandScroll + visibleCount && i < this->values.size(); i++)
+			d2d->PushDrawRect(0.0f, controlHeight, controlWidth, dropHeight);
+			const int itemCount = static_cast<int>(this->values.size());
+			for (int i = this->ExpandScroll; i < this->ExpandScroll + visibleCount && i < itemCount; i++)
 			{
 				if (i == _underMouseIndex)
 				{
 					int viewIndex = i - this->ExpandScroll;
 					d2d->FillRect(0,
-						(viewIndex + 1) * this->Height,
-						this->Width, this->Height, this->UnderMouseBackColor);
+						static_cast<float>((viewIndex + 1) * this->Height),
+						controlWidth, controlHeight, this->UnderMouseBackColor);
 					d2d->DrawString(
-						this->values[i],
+						this->values[static_cast<size_t>(i)],
 						drawLeft,
-						drawTop + (((i - this->ExpandScroll) + 1) * this->Height),
+						drawTop + static_cast<float>(((i - this->ExpandScroll) + 1) * this->Height),
 						UnderMouseForeColor, font);
 				}
 				else
 				{
 					d2d->DrawString(
-						this->values[i],
+						this->values[static_cast<size_t>(i)],
 						drawLeft,
-						drawTop + (((i - this->ExpandScroll) + 1) * this->Height),
+						drawTop + static_cast<float>(((i - this->ExpandScroll) + 1) * this->Height),
 						this->ForeColor, font);
 				}
 			}
 			d2d->PopDrawRect();
 			this->DrawScroll();
-			d2d->DrawRect(0, 0, size.cx, this->Height, this->BolderColor, this->Boder);
+			d2d->DrawRect(0, 0, actualWidth, controlHeight, this->BolderColor, this->Boder);
 		}
-		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
+		d2d->DrawRect(0, 0, actualWidth, actualHeight, this->BolderColor, this->Boder);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	this->EndRender();
 	if (!_animating && _dropProgress <= 0.001f)
@@ -337,7 +459,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xFFFFFFFF, NULL, 0);
 		TCHAR strFileName[MAX_PATH];
 		std::vector<std::wstring> files;
-		for (int i = 0; i < uFileNum; i++)
+		for (UINT i = 0; i < uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
 			files.push_back(strFileName);
@@ -363,7 +485,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 			}
 			else
 			{
-				if (this->ExpandScroll < this->values.size() - visibleCount)
+				if (this->ExpandScroll < static_cast<int>(this->values.size()) - visibleCount)
 				{
 					this->ExpandScroll += 1;
 					this->PostRender();
@@ -382,7 +504,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 			bool need_update = false;
 			if (isDraggingScroll)
 			{
-				UpdateScrollDrag(yof - this->Height);
+				UpdateScrollDrag(static_cast<float>(yof - this->Height));
 				need_update = true;
 			}
 			else
@@ -393,7 +515,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 					if (_yof < visibleCount)
 					{
 						int idx = _yof + this->ExpandScroll;
-						if (idx < this->values.size())
+						if (idx < static_cast<int>(this->values.size()))
 						{
 							if (idx != this->_underMouseIndex)
 							{
@@ -424,9 +546,9 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 			if (this->Expand && xof >= (Width - 8) && xof <= Width && yof >= this->Height && (float)yof <= ((float)this->Height + dropdownHeight))
 			{
 				const int render_count = visibleCount;
-				if (render_count > 0 && this->values.size() > render_count)
+				if (render_count > 0 && static_cast<int>(this->values.size()) > render_count)
 				{
-					const int max_scroll = this->values.size() - render_count;
+					const int max_scroll = static_cast<int>(this->values.size()) - render_count;
 					const float renderH = dropdownHeight;
 					float thumbH = ((float)render_count / (float)this->values.size()) * renderH;
 					if (thumbH < COMBO_MIN_SCROLL_BLOCK) thumbH = COMBO_MIN_SCROLL_BLOCK;
@@ -478,11 +600,11 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 						if (_yof < visibleCount)
 						{
 							int idx = _yof + this->ExpandScroll;
-							if (idx < this->values.size())
+							if (idx < static_cast<int>(this->values.size()))
 							{
 								this->_underMouseIndex = idx;
 								this->SelectedIndex = this->_underMouseIndex;
-								this->Text = this->values[this->SelectedIndex];
+								this->Text = this->values[static_cast<size_t>(this->SelectedIndex)];
 								this->OnSelectionChanged(this);
 								this->PostRender();
 								SetExpanded(false);

@@ -12,11 +12,41 @@ Taskbar::Taskbar(HWND handle)
 }
 void Taskbar::SetValue(ULONGLONG value, ULONGLONG total)
 {
-    pTaskbarList->SetProgressValue(Handle, value, total);
+    if (pTaskbarList && Handle)
+        pTaskbarList->SetProgressValue(Handle, value, total);
+}
+
+void Taskbar::SetState(TBPFLAG state)
+{
+    if (pTaskbarList && Handle)
+        pTaskbarList->SetProgressState(Handle, state);
+}
+
+void Taskbar::Clear()
+{
+    SetState(TBPF_NOPROGRESS);
+}
+
+void Taskbar::SetIndeterminate()
+{
+    SetState(TBPF_INDETERMINATE);
+}
+
+void Taskbar::SetPaused()
+{
+    SetState(TBPF_PAUSED);
+}
+
+void Taskbar::SetError()
+{
+    SetState(TBPF_ERROR);
+}
+
+void Taskbar::SetNormal()
+{
+    SetState(TBPF_NORMAL);
 }
 Taskbar::~Taskbar()
 {
-    pTaskbarList->SetProgressState(Handle, TBPF_NOPROGRESS);
-    pTaskbarList->Release();
-    
+    Clear();
 }

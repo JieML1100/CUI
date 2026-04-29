@@ -1119,7 +1119,7 @@ CuiDesigner.exe
    - Row/column definition editor
 
 4. **Design File Management**
-   - JSON format for saving design files
+   - XML format for saving design files
    - Automatic C++ code generation
    - Support for design file version control
 
@@ -1145,7 +1145,7 @@ CuiDesigner.exe
    - Add child controls to container
 
 5. **Save and Generate Code**
-   - Save JSON design file
+   - Save XML design file
    - Generate C++ code
    - Integrate code into project
 

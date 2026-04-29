@@ -109,6 +109,14 @@ void ToolTip::Bind(class Control* target, const std::wstring& text)
 	this->Text = text;
 }
 
+void ToolTip::SetText(const std::wstring& text)
+{
+	if (this->Text == text) return;
+	this->Text = text;
+	if (_popupVisible && this->ParentForm)
+		this->ParentForm->Invalidate(false);
+}
+
 void ToolTip::Show()
 {
 	if (!_target || !_target->ParentForm || !_target->IsVisual)

@@ -1,4 +1,4 @@
-﻿#include "CodeGenerator.h"
+#include "CodeGenerator.h"
 #include "CodeGenInput.h"
 #include <set>
 #include <unordered_map>
@@ -200,6 +200,20 @@ namespace
 			if (controlType != UIClass::UI_GridView) return false;
 			outEventField = "OnGridViewCheckStateChanged";
 			outParamList = "GridView* sender, int c, int r, bool v";
+			return true;
+		}
+		if (n == L"OnUserAddingRow")
+		{
+			if (controlType != UIClass::UI_GridView) return false;
+			outEventField = "OnUserAddingRow";
+			outParamList = "GridView* sender, bool& cancel";
+			return true;
+		}
+		if (n == L"OnUserAddedRow")
+		{
+			if (controlType != UIClass::UI_GridView) return false;
+			outEventField = "OnUserAddedRow";
+			outParamList = "GridView* sender, int newRowIndex";
 			return true;
 		}
 		return false;
@@ -961,12 +975,12 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	if (dc->Type == UIClass::UI_GridView)
 	{
 		auto* gv = (GridView*)ctrl;
-		if (gv->Columns.size() > 0)
+		if (gv->ColumnCount() > 0)
 		{
-			code << indentStr << name << "->Columns.Clear();\n";
-			for (int i = 0; i < gv->Columns.size(); i++)
+			code << indentStr << name << "->ClearColumns();\n";
+			for (int i = 0; i < gv->ColumnCount(); i++)
 			{
-				auto& col = gv->Columns[i];
+				auto& col = gv->ColumnAt(static_cast<int>(i));
 				std::string typeStr = "ColumnType::Text";
 				switch (col.Type)
 				{
@@ -977,7 +991,7 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 				case ColumnType::ComboBox: typeStr = "ColumnType::ComboBox"; break;
 				default: typeStr = "ColumnType::Text"; break;
 				}
-				code << indentStr << name << "->Columns.push_back(GridViewColumn(L\"" << EscapeWStringLiteral(col.Name)
+				code << indentStr << name << "->AddColumn(GridViewColumn(L\"" << EscapeWStringLiteral(col.Name)
 					<< "\", " << FloatLiteral(col.Width) << ", " << typeStr << ", " << (col.CanEdit ? "true" : "false") << "));\n";
 			}
 		}

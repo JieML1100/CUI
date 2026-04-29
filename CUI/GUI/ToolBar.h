@@ -30,6 +30,12 @@ public:
 	Button* AddToolButton(std::wstring text, int width = 90);
 	/** @brief 添加已有按钮实例到工具栏（将其作为子控件）。 */
 	Button* AddToolButton(Button* button);
+	/** @brief 移除指定工具项。deleteButton 为 true 时释放按钮。 */
+	bool RemoveToolButton(Button* button, bool deleteButton = true);
+	/** @brief 移除指定索引工具项。deleteButton 为 true 时释放按钮。 */
+	bool RemoveToolButtonAt(int index, bool deleteButton = true);
+	/** @brief 清空工具项。deleteButtons 为 true 时释放按钮。 */
+	void ClearToolButtons(bool deleteButtons = true);
 	/** @brief 重新布局所有工具项。 */
 	void LayoutItems();
 	void Update() override;

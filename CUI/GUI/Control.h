@@ -193,6 +193,7 @@ protected:
 	// 尺寸约束
 	SIZE _minSize = {0, 0};
 	SIZE _maxSize = {INT_MAX, INT_MAX};
+	bool _visible = true;
 
 	// Location 保存用户配置位置；_runtimeLocation 保存布局后的实际位置。
 	// Margin 只保存布局系统输入，不再复用为绝对定位。
@@ -219,7 +220,7 @@ protected:
 	bool GetCaretBlinkInvalidRect(D2D1_RECT_F& outRect) const;
 	virtual bool DefaultTrackUnderMouse() const { return false; }
 	virtual bool DefaultSelectOnLeftButtonDown() const { return true; }
-	virtual bool DefaultSelectOnLeftButtonDoubleClick() const { return false; }
+	virtual bool DefaultSelectOnLeftButtonDoubleClick() const { return DefaultSelectOnLeftButtonDown(); }
 	virtual bool DefaultRaiseClickOnLeftButtonUp() const { return false; }
 	virtual bool DefaultClearSelectionOnMouseUp() const { return false; }
 	virtual bool DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const { (void)message; (void)wasSelected; return true; }
@@ -290,7 +291,9 @@ public:
 	/** @brief 文本是否发生变化（用于渲染或布局的脏标记）。 */
 	bool TextChanged = true;
 	bool Enable;
-	bool Visible;
+	PROPERTY(bool, Visible);
+	GET(bool, Visible);
+	SET(bool, Visible);
 	bool Checked;
 	/** @brief 用户自定义数据槽（不由框架解释）。 */
 	UINT64 Tag;
@@ -306,6 +309,8 @@ public:
 	virtual UIClass Type();
 	/** @brief 更新控件状态（逻辑更新）。 */
 	virtual void Update();
+	/** @brief 同步控件持有的原生渲染/窗口资源；普通控件无需处理。 */
+	virtual void SyncNativeSurface() {}
 	/**
 	 * @brief 在控件局部坐标系中开始渲染（设置平移变换 + 裁剪矩形）。
 	 * 结束时必须调用对应的 EndRender()。
@@ -361,7 +366,7 @@ public:
 	static void SetChildrenParentForm(Control* c, Form* form) {
 		if (!c) return;
 		c->ParentForm = form;
-		for (int i = 0; i < c->Children.size(); i++) {
+		for (size_t i = 0; i < c->Children.size(); i++) {
 			SetChildrenParentForm(c->Children[i], form);
 		}
 	}
@@ -480,6 +485,7 @@ public:
 	 * @param yof 相对于控件客户区的 Y。
 	 */
 	virtual CursorKind QueryCursor(int xof, int yof) { (void)xof; (void)yof; return this->Cursor; }
+	virtual bool TryGetSystemCursorId(UINT32& outId) const { (void)outId; return false; }
 	virtual bool ContainsPoint(int xof, int yof)
 	{
 		auto size = this->ActualSize();
@@ -489,6 +495,7 @@ public:
 	virtual bool ShouldHitTestChildrenAt(int xof, int yof) const { (void)xof; (void)yof; return this->HitTestChildren(); }
 	virtual POINT GetChildrenRenderOffset() const { return POINT{ 0, 0 }; }
 	virtual bool HandlesMouseWheel() const { return false; }
+	virtual bool CanHandleMouseWheel(int delta, int xof, int yof) { (void)delta; (void)xof; (void)yof; return false; }
 	virtual bool HandlesNavigationKey(WPARAM key) const { (void)key; return false; }
 	virtual bool AutoCloseOnOutsideClick() const { return false; }
 	virtual bool AutoCloseOnFormFocusLoss() const { return false; }

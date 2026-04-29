@@ -158,20 +158,21 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="CustomControls.cpp" />
     <ClCompile Include="DemoWindow.cpp" />
-    <ClCompile Include="nanosvg.cpp" />
     <ClCompile Include="TestUtils.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CustomControls.h" />
     <ClInclude Include="DemoWindow.h" />
     <ClInclude Include="imgs.h" />
-    <ClInclude Include="nanosvg.h" />
     <ClInclude Include="TestUtils.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\D2DGraphics\D2DGraphics.vcxproj">
+      <Project>{dbe82cef-212b-4fcd-8a2b-99f17c3b7f19}</Project>
+    </ProjectReference>
     <ProjectReference Include="..\CUI\CUI.vcxproj">
       <Project>{48316892-3a38-48f2-8c34-4d676304f769}</Project>
     </ProjectReference>

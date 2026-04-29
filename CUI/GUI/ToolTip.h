@@ -28,6 +28,9 @@ public:
 
 	void Bind(class Control* target);
 	void Bind(class Control* target, const std::wstring& text);
+	class Control* Target() const { return _target; }
+	bool IsOpen() const { return _popupVisible; }
+	void SetText(const std::wstring& text);
 	void Show();
 	void Hide();
 };

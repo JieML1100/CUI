@@ -111,13 +111,16 @@ void NotifyIcon::SetIcon(HICON hIcon)
 
 void NotifyIcon::ShowNotifyIcon()
 {
-    Shell_NotifyIconA(NIM_ADD, &NotifyIconData);
-    Instance = this;
+    visible = Shell_NotifyIconA(NIM_ADD, &NotifyIconData) == TRUE;
+    if (visible)
+        Instance = this;
 }
 
 void NotifyIcon::HideNotifyIcon()
 {
-    Shell_NotifyIconA(NIM_DELETE, &NotifyIconData);
+    if (visible)
+        Shell_NotifyIconA(NIM_DELETE, &NotifyIconData);
+    visible = false;
     if (Instance == this)
         Instance = NULL;
 }
@@ -190,6 +193,26 @@ void NotifyIcon::ClearMenu()
         DeleteMenu(popupMenu, 0, MF_BYPOSITION);
     }
     menuItems.clear();
+}
+
+bool NotifyIcon::RemoveMenuItem(int id)
+{
+    auto removeRecursive = [&](auto&& self, HMENU menu, std::vector<NotifyIconMenuItem>& items) -> bool
+        {
+            for (auto it = items.begin(); it != items.end(); ++it)
+            {
+                if (it->ID == id)
+                {
+                    DeleteMenu(menu, id, MF_BYCOMMAND);
+                    items.erase(it);
+                    return true;
+                }
+                if (it->HasSubMenu && self(self, it->SubMenu, it->SubItems))
+                    return true;
+            }
+            return false;
+        };
+    return removeRecursive(removeRecursive, popupMenu, menuItems);
 }
 
 void NotifyIcon::EnableMenuItem(int id, bool enable)

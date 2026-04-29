@@ -49,6 +49,7 @@ private:
     int iconID;
     HMENU popupMenu;
     std::vector<NotifyIconMenuItem> menuItems;
+    bool visible = false;
 
 public:
 	/** @brief 关联的宿主窗口句柄。 */
@@ -78,6 +79,9 @@ public:
     void ShowContextMenu(int x, int y);
 	/** @brief 清空菜单项。 */
     void ClearMenu();
+    bool IsVisible() const { return visible; }
+    int MenuItemCount() const { return static_cast<int>(menuItems.size()); }
+    bool RemoveMenuItem(int id);
 	/** @brief 启用/禁用指定菜单项。 */
     void EnableMenuItem(int id, bool enable);
 	/** @brief 设置指定菜单项显示文本。 */

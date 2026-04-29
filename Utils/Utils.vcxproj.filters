@@ -173,9 +173,6 @@
     <ClCompile Include="Utils\Guid.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\HttpHelper.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
     <ClCompile Include="Utils\httplib.cpp">
       <Filter>Utils</Filter>
     </ClCompile>

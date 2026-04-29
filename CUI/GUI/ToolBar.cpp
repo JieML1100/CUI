@@ -10,7 +10,7 @@ ToolBar::ToolBar(int x, int y, int width, int height)
 	this->BackColor = D2D1_COLOR_F{ 1,1,1,0.12f };
 	this->BolderColor = D2D1_COLOR_F{ 1,1,1,0.20f };
 	this->Boder = 1.0f;
-	ItemHeight = height * 0.75f;
+	ItemHeight = static_cast<int>(height * 0.75f);
 }
 
 Button* ToolBar::AddToolButton(std::wstring text, int width)
@@ -35,6 +35,50 @@ Button* ToolBar::AddToolButton(Button* button)
 	b->Height = ItemHeight;
 	LayoutItems();
 	return b;
+}
+
+bool ToolBar::RemoveToolButton(Button* button, bool deleteButton)
+{
+	if (!button) return false;
+	for (int i = 0; i < this->Count; i++)
+	{
+		if (this->operator[](i) == button)
+			return RemoveToolButtonAt(i, deleteButton);
+	}
+	return false;
+}
+
+bool ToolBar::RemoveToolButtonAt(int index, bool deleteButton)
+{
+	if (index < 0 || index >= this->Count) return false;
+	auto* button = dynamic_cast<Button*>(this->operator[](index));
+	auto* child = this->operator[](index);
+	this->Children.erase(this->Children.begin() + index);
+	if (child)
+	{
+		child->Parent = NULL;
+		child->ParentForm = NULL;
+		if (deleteButton)
+			delete child;
+	}
+	LayoutItems();
+	this->PostRender();
+	return button != nullptr || child != nullptr;
+}
+
+void ToolBar::ClearToolButtons(bool deleteButtons)
+{
+	auto children = this->Children;
+	this->Children.clear();
+	for (auto* child : children)
+	{
+		if (!child) continue;
+		child->Parent = NULL;
+		child->ParentForm = NULL;
+		if (deleteButtons)
+			delete child;
+	}
+	this->PostRender();
 }
 
 void ToolBar::LayoutItems()
@@ -64,9 +108,11 @@ void ToolBar::Update()
 
 	auto d2d = this->ParentForm->Render;
 	auto size = this->ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
 	this->BeginRender();
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
+		d2d->FillRect(0, 0, actualWidth, actualHeight, this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -77,11 +123,11 @@ void ToolBar::Update()
 			if (!c) continue;
 			c->Update();
 		}
-		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
+		d2d->DrawRect(0, 0, actualWidth, actualHeight, this->BolderColor, this->Boder);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	this->EndRender();
 }

@@ -88,4 +88,5 @@ public:
     static int Next();
 };
 
+//示例: MakeDialogFilterStrring("图片文件", "*.jpg;*.jpeg;*.png;*.bmp;*.svg;*.webp")
 std::string MakeDialogFilterStrring(std::string description, std::string filter);

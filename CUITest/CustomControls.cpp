@@ -21,6 +21,8 @@ void CustomTextBox1::Update()
 	float OffsetY = (this->Height - textSize.height) * 0.5f;
 	if (OffsetY < 0.0f)OffsetY = 0.0f;
 	auto size = this->ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
 	bool isSelected = this->ParentForm->Selected == this;
 	this->_caretRectCacheValid = false;
 	bool shouldDrawCaret = false;
@@ -35,13 +37,13 @@ void CustomTextBox1::Update()
 			backColor.g = std::min(1.0f, backColor.g * 1.2f);
 			backColor.b = std::min(1.0f, backColor.b * 1.2f);
 		}
-		d2d->FillRoundRect(0, 0, size.cx, size.cy, backColor, TextMargin);
+		d2d->FillRoundRect(0, 0, actualWidth, actualHeight, backColor, TextMargin);
 		if (this->Image)
 		{
 			this->RenderImage();
 		}
-		d2d->PushDrawRect(this->TextMargin, 0, size.cx - this->TextMargin * 2.0f, size.cy);
-		auto brush = d2d->CreateLinearGradientBrush(this->Stops.data(), this->Stops.size());
+		d2d->PushDrawRect(this->TextMargin, 0, actualWidth - this->TextMargin * 2.0f, actualHeight);
+		auto brush = d2d->CreateLinearGradientBrush(this->Stops.data(), static_cast<UINT32>(this->Stops.size()));
 		brush->SetStartPoint(D2D1::Point2F(0, 0));
 		brush->SetEndPoint(D2D1::Point2F((float)this->Width, (float)this->Height));
 		if (this->Text.size() > 0)
@@ -69,7 +71,7 @@ void CustomTextBox1::Update()
 						const float cy = caret.top + OffsetY;
 						const float ch = caret.height > 0 ? caret.height : font->FontHeight;
 						auto abs = this->AbsLocation;
-						this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ch + 2.0f };
+						this->_caretRectCache = { static_cast<float>(abs.x) + cx - 2.0f, static_cast<float>(abs.y) + cy - 2.0f, static_cast<float>(abs.x) + cx + 2.0f, static_cast<float>(abs.y) + cy + ch + 2.0f };
 						this->_caretRectCacheValid = true;
 						shouldDrawCaret = true;
 						caretStart = { selRange[0].left + TextMargin - OffsetX, selRange[0].top + OffsetY };
@@ -106,7 +108,7 @@ void CustomTextBox1::Update()
 				const float cy = OffsetY;
 				const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
 				auto abs = this->AbsLocation;
-				this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ch + 2.0f };
+				this->_caretRectCache = { static_cast<float>(abs.x) + cx - 2.0f, static_cast<float>(abs.y) + cy - 2.0f, static_cast<float>(abs.x) + cx + 2.0f, static_cast<float>(abs.y) + cy + ch + 2.0f };
 				this->_caretRectCacheValid = true;
 				shouldDrawCaret = true;
 				caretStart = { (float)TextMargin - OffsetX, OffsetY };
@@ -129,7 +131,7 @@ void CustomTextBox1::Update()
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRoundRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f }, this->TextMargin);
+		d2d->FillRoundRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f }, this->TextMargin);
 	}
 	this->EndRender();
 }
@@ -147,11 +149,11 @@ void CustomLabel1::Update()
 	auto size = this->ActualSize();
 	if (last_width > size.cx)
 	{
-		size.cx = last_width;
+		size.cx = static_cast<LONG>(last_width);
 	}
 	this->BeginRender(FLT_MAX, FLT_MAX);
 	{
-		auto brush = d2d->CreateLinearGradientBrush(this->Stops.data(), this->Stops.size());
+		auto brush = d2d->CreateLinearGradientBrush(this->Stops.data(), static_cast<UINT32>(this->Stops.size()));
 		brush->SetStartPoint(D2D1::Point2F(0, 0));
 		brush->SetEndPoint(D2D1::Point2F((float)this->Width, (float)this->Height));
 		if (this->Image)
@@ -162,5 +164,5 @@ void CustomLabel1::Update()
 		brush->Release();
 	}
 	this->EndRender();
-	last_width = size.cx;
+	last_width = static_cast<float>(size.cx);
 }

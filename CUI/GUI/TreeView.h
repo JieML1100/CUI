@@ -29,6 +29,18 @@ public:
 	UINT AnimDurationMs = 140;
 	bool Animating = false;
 	TreeNode(std::wstring text, std::shared_ptr<BitmapSource> image = nullptr);
+	/** @brief 添加子节点并返回新节点。 */
+	TreeNode* AddNode(const std::wstring& text, std::shared_ptr<BitmapSource> image = nullptr);
+	/** @brief 添加已有子节点，返回传入节点。 */
+	TreeNode* AddNode(TreeNode* node);
+	/** @brief 移除指定子节点。deleteNode 为 true 时释放该节点。 */
+	bool RemoveNode(TreeNode* node, bool deleteNode = true);
+	/** @brief 移除指定索引的子节点。deleteNode 为 true 时释放该节点。 */
+	bool RemoveNodeAt(int index, bool deleteNode = true);
+	/** @brief 清空所有子节点。 */
+	void ClearNodes();
+	/** @brief 查找直接子节点。 */
+	TreeNode* FindChild(const std::wstring& text) const;
 	ID2D1Bitmap* GetImageBitmap(D2DGraphics* render);
 	float CurrentExpandProgress();
 	void SetExpanded(bool expanded);
@@ -58,6 +70,7 @@ public:
 	virtual UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
 	bool HandlesMouseWheel() const override { return true; }
+	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
@@ -78,7 +91,24 @@ public:
 	SelectionChangedEvent SelectionChanged;
 	TreeView(int x, int y, int width = 120, int height = 24);
 	~TreeView();
+	/** @brief 添加顶层节点。 */
+	TreeNode* AddNode(const std::wstring& text, std::shared_ptr<BitmapSource> image = nullptr);
+	/** @brief 在指定父节点下添加子节点；parent 为空时添加到顶层。 */
+	TreeNode* AddNode(TreeNode* parent, const std::wstring& text, std::shared_ptr<BitmapSource> image = nullptr);
+	/** @brief 移除节点。deleteNode 为 true 时释放节点及子树。 */
+	bool RemoveNode(TreeNode* node, bool deleteNode = true);
+	/** @brief 清空顶层节点。 */
+	void ClearNodes();
+	/** @brief 深度优先查找第一个文本匹配的节点。 */
+	TreeNode* FindNode(const std::wstring& text) const;
+	/** @brief 程序化选择节点。 */
+	void SelectNode(TreeNode* node, bool fireEvent = true);
+	/** @brief 设置节点展开状态。 */
+	void SetNodeExpanded(TreeNode* node, bool expanded);
+	/** @brief 展开全部节点。 */
+	void ExpandAll();
+	/** @brief 收起全部节点。 */
+	void CollapseAll();
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 };
-

@@ -1,6 +1,5 @@
-﻿#include "DemoWindow.h"
+#include "DemoWindow.h"
 #include "imgs.h"
-#include "nanosvg.h"
 #include <memory>
 #include "../CUI/GUI/WebBrowser.h"
 
@@ -183,108 +182,6 @@ namespace {
 		}
 		out.push_back(L'"');
 		return out;
-	}
-
-	std::shared_ptr<BitmapSource> ToBitmapFromSvg(const char* data)
-	{
-		if (!data) return {};
-		int len = (int)strlen(data) + 1;
-		char* svg_text = new char[len];
-		memcpy(svg_text, data, len);
-		NSVGimage* image = nsvgParse(svg_text, "px", 96.0f);
-		delete[] svg_text;
-		if (!image) return {};
-		float percen = 1.0f;
-		if (image->width > 4096 || image->height > 4096)
-		{
-			float maxv = image->width > image->height ? image->width : image->height;
-			percen = 4096.0f / maxv;
-		}
-		auto renderSource = BitmapSource::CreateEmpty(image->width * percen, image->height * percen);
-		auto subg = new D2DGraphics(renderSource.get());
-		NSVGshape* shape;
-		NSVGpath* path;
-		subg->BeginRender();
-		subg->Clear(D2D1::ColorF(0, 0, 0, 0));
-		for (shape = image->shapes; shape != NULL; shape = shape->next)
-		{
-			auto geo = Factory::CreateGeomtry();
-			if (geo)
-			{
-				ID2D1GeometrySink* skin = NULL;
-				geo->Open(&skin);
-				if (skin)
-				{
-					for (path = shape->paths; path != NULL; path = path->next)
-					{
-						for (int i = 0; i < path->npts - 1; i += 3)
-						{
-							float* p = &path->pts[i * 2];
-							if (i == 0)
-								skin->BeginFigure({ p[0] * percen, p[1] * percen }, D2D1_FIGURE_BEGIN_FILLED);
-							skin->AddBezier({ {p[2] * percen, p[3] * percen},{p[4] * percen, p[5] * percen},{p[6] * percen, p[7] * percen} });
-						}
-						skin->EndFigure(path->closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
-					}
-				}
-				skin->Close();
-			}
-
-			auto getSvgBrush = [](NSVGpaint paint, float opacity, D2DGraphics* g) -> ID2D1Brush*
-				{
-					const auto ic2fc = [](int colorInt, float opacity) -> D2D1_COLOR_F
-						{
-							return D2D1_COLOR_F{ (float)GetRValue(colorInt) / 255.0f ,(float)GetGValue(colorInt) / 255.0f ,(float)GetBValue(colorInt) / 255.0f ,opacity };
-						};
-					switch (paint.type)
-					{
-					case NSVG_PAINT_NONE:
-						return NULL;
-					case NSVG_PAINT_COLOR:
-						return g->CreateSolidColorBrush(ic2fc(paint.color, opacity));
-					case NSVG_PAINT_LINEAR_GRADIENT:
-					{
-						std::vector<D2D1_GRADIENT_STOP> cols;
-						for (int i = 0; i < paint.gradient->nstops; i++)
-						{
-							auto stop = paint.gradient->stops[i];
-							cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
-						}
-						return g->CreateLinearGradientBrush(cols.data(), cols.size());
-					}
-					case NSVG_PAINT_RADIAL_GRADIENT:
-					{
-						std::vector<D2D1_GRADIENT_STOP> cols;
-						for (int i = 0; i < paint.gradient->nstops; i++)
-						{
-							auto stop = paint.gradient->stops[i];
-							cols.push_back({ stop.offset, ic2fc(stop.color, opacity) });
-						}
-						return g->CreateRadialGradientBrush(cols.data(), cols.size(), { paint.gradient->fx,paint.gradient->fy });
-					}
-					}
-					return NULL;
-				};
-
-			ID2D1Brush* brush = getSvgBrush(shape->fill, shape->opacity, subg);
-			if (brush)
-			{
-				subg->FillGeometry(geo, brush);
-				brush->Release();
-			}
-			brush = getSvgBrush(shape->stroke, shape->opacity, subg);
-			if (brush)
-			{
-				subg->DrawGeometry(geo, brush, shape->strokeWidth);
-				brush->Release();
-			}
-			geo->Release();
-		}
-		nsvgDelete(image);
-		subg->EndRender();
-		delete subg;
-
-		return renderSource;
 	}
 
 	std::wstring FileNameFromPath(const std::wstring& path)
@@ -544,7 +441,7 @@ void DemoWindow::Theme_ApplyCurrent()
 			}
 		};
 
-	for (int i = 0; i < this->Controls.size(); ++i)
+	for (size_t i = 0; i < this->Controls.size(); ++i)
 	{
 		applyControlTheme(applyControlTheme, this->Controls[i]);
 	}
@@ -699,7 +596,7 @@ void DemoWindow::Picture_OnOpenImage(class Control* sender, MouseEventArgs e)
 	if (file.Extension() == ".svg" || file.Extension() == ".SVG")
 	{
 		auto svg = File::ReadAllText(file.FullName());
-		_picture->SetImageEx(ToBitmapFromSvg(svg.c_str()));
+		_picture->SetImageEx(D2DGraphics::ToBitmapFromSvg(svg.c_str()));
 	}
 	else if (StringHelper::Contains(".jpg.jpeg.png.bmp.webp", StringHelper::ToLower(file.Extension())))
 	{
@@ -722,7 +619,7 @@ void DemoWindow::Picture_OnDropFile(class Control* sender, std::vector<std::wstr
 	if (file.Extension() == ".svg" || file.Extension() == ".SVG")
 	{
 		auto svg = File::ReadAllText(file.FullName());
-		_picture->SetImageEx(ToBitmapFromSvg(svg.c_str()));
+		_picture->SetImageEx(D2DGraphics::ToBitmapFromSvg(svg.c_str()));
 	}
 	else if (StringHelper::Contains(".png.jpg.jpeg.bmp.webp", StringHelper::ToLower(file.Extension())))
 	{
@@ -865,9 +762,10 @@ void DemoWindow::BuildTabs()
 			this->Theme_OnSelectionChanged(sender);
 		};
 
-	_tabs = this->AddControl(new TabControl(10, _topSlider->Bottom + 8, this->Size.cx - 20, this->Size.cy - (_topSlider->Bottom + 8) - 10));
+	const int tabsTop = static_cast<int>(_topSlider->Bottom + 8);
+	_tabs = this->AddControl(new TabControl(10, tabsTop, this->Size.cx - 20, this->Size.cy - tabsTop - 10));
 	_tabs->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.0f };
-	_tabs->Margin = Thickness(10, (float)(_topSlider->Bottom + 8), 10, 40);
+	_tabs->Margin = Thickness(10, static_cast<float>(tabsTop), 10, 40);
 	_tabs->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
 	_tabs->AnimationMode = TabControlAnimationMode::SlideHorizontal;
 	auto pBasic = _tabs->AddPage(L"基础控件");
@@ -1002,15 +900,17 @@ void DemoWindow::BuildTab_Containers(TabPage* page)
 	_progress = panel->AddControl(new ProgressBar(110, 230, 390, 24));
 	_progress->PercentageValue = 0.25f;
 
-	page->AddControl(new Label(L"LoadingRing", panel->Right + 20, panel->Top + 100));
-	_loadingRing = page->AddControl(new LoadingRing(panel->Right + 44, panel->Top + 130, 56, 56));
+	const int panelRight = static_cast<int>(panel->Right);
+	const int panelTop = static_cast<int>(panel->Top);
+	page->AddControl(new Label(L"LoadingRing", panelRight + 20, panelTop + 100));
+	_loadingRing = page->AddControl(new LoadingRing(panelRight + 44, panelTop + 130, 56, 56));
 
-	page->AddControl(new Label(L"ProgressRing", panel->Right + 118, panel->Top + 100));
-	_progressRing = page->AddControl(new ProgressRing(panel->Right + 136, panel->Top + 124, 92, 92));
+	page->AddControl(new Label(L"ProgressRing", panelRight + 118, panelTop + 100));
+	_progressRing = page->AddControl(new ProgressRing(panelRight + 136, panelTop + 124, 92, 92));
 	_progressRing->PercentageValue = 0.25f;
 
-	auto swEnable = page->AddControl(new Switch(panel->Right + 20, panel->Top + 10));
-	page->AddControl(new Label(L"Enable Panel", swEnable->Right + 8, swEnable->Top));
+	auto swEnable = page->AddControl(new Switch(panelRight + 20, panelTop + 10));
+	page->AddControl(new Label(L"Enable Panel", static_cast<int>(swEnable->Right + 8), static_cast<int>(swEnable->Top)));
 	swEnable->Checked = true;
 	swEnable->OnMouseClick += [panel, this](class Control* sender, MouseEventArgs e)
 		{
@@ -1020,8 +920,8 @@ void DemoWindow::BuildTab_Containers(TabPage* page)
 			this->Invalidate();
 		};
 
-	auto swVisible = page->AddControl(new Switch(panel->Right + 20, panel->Top + 50));
-	page->AddControl(new Label(L"Visible PictureBox", swVisible->Right + 8, swVisible->Top));
+	auto swVisible = page->AddControl(new Switch(panelRight + 20, panelTop + 50));
+	page->AddControl(new Label(L"Visible PictureBox", static_cast<int>(swVisible->Right + 8), static_cast<int>(swVisible->Top)));
 	swVisible->Checked = true;
 	swVisible->OnMouseClick += [this](class Control* sender, MouseEventArgs e)
 		{
@@ -1089,27 +989,31 @@ void DemoWindow::BuildTab_Data(TabPage* page)
 	_grid = page->AddControl(new GridView(390, 70, 980, 390));
 	_grid->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
 	_grid->Margin = Thickness(390, 70, 10, 10);
-	_grid->AllowUserToAddRows = false;
+	_grid->AllowUserToAddRows = true;
 	_grid->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
 	_grid->HeadFont = new Font(L"Arial", 16);
 	_grid->Font = new Font(L"Arial", 16);
 
-	_grid->Columns.push_back(GridViewColumn(L"Image", 80, ColumnType::Image));
+	_grid->AddColumn(GridViewColumn(L"Image", 80, ColumnType::Image));
 	GridViewColumn comColumn = GridViewColumn(L"ComboBox", 120, ColumnType::ComboBox);
 	comColumn.ComboBoxItems = { L"Item 1", L"Item 2", L"Item 3" };
-	_grid->Columns.push_back(comColumn);
-	_grid->Columns.push_back(GridViewColumn(L"Check", 80, ColumnType::Check));
+	_grid->AddColumn(comColumn);
+	_grid->AddColumn(GridViewColumn(L"Check", 80, ColumnType::Check));
 	GridViewColumn textColumn = GridViewColumn(L"Text", 160, ColumnType::Text, true);
-	_grid->Columns.push_back(textColumn);
+	_grid->AddColumn(textColumn);
 	GridViewColumn buttonColumn = GridViewColumn(L"Button", 80, ColumnType::Button);
 	buttonColumn.ButtonText = L"OK";
-	_grid->Columns.push_back(buttonColumn);
-
-	for (int i = 0; i < 48; i++)
+	_grid->AddColumn(buttonColumn);
+	_grid->OnUserAddedRow += [this](class GridView* sender, int newRowIndex)
+		{
+			GridViewRow* row = sender->GetRow(newRowIndex);
+			row->Cells[0] = _bmps[newRowIndex % 10];
+		};
+	for (int i = 0; i < 500; i++)
 	{
 		GridViewRow row;
 		row.Cells = { _bmps[i % 10], L"Item 1", i % 2 == 0, std::to_wstring(Random::Next()), L"" };
-		_grid->Rows.push_back(row);
+		_grid->AddRow(row);
 	}
 
 	_gridEnableSwitch = page->AddControl(new Switch(390, 40));
@@ -1485,21 +1389,21 @@ void DemoWindow::BuildTab_Media(TabPage* page)
 
 DemoWindow::DemoWindow() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
 {
-	_bmps[0] = ToBitmapFromSvg(_0_ico);
-	_bmps[1] = ToBitmapFromSvg(_1_ico);
-	_bmps[2] = ToBitmapFromSvg(_2_ico);
-	_bmps[3] = ToBitmapFromSvg(_3_ico);
-	_bmps[4] = ToBitmapFromSvg(_4_ico);
-	_bmps[5] = ToBitmapFromSvg(_5_ico);
-	_bmps[6] = ToBitmapFromSvg(_6_ico);
-	_bmps[7] = ToBitmapFromSvg(_7_ico);
-	_bmps[8] = ToBitmapFromSvg(_8_ico);
-	_bmps[9] = ToBitmapFromSvg(_9_ico);
-	_icons[0] = ToBitmapFromSvg(icon0);
-	_icons[1] = ToBitmapFromSvg(icon1);
-	_icons[2] = ToBitmapFromSvg(icon2);
-	_icons[3] = ToBitmapFromSvg(icon3);
-	_icons[4] = ToBitmapFromSvg(icon4);
+	_bmps[0] = D2DGraphics::ToBitmapFromSvg(_0_ico);
+	_bmps[1] = D2DGraphics::ToBitmapFromSvg(_1_ico);
+	_bmps[2] = D2DGraphics::ToBitmapFromSvg(_2_ico);
+	_bmps[3] = D2DGraphics::ToBitmapFromSvg(_3_ico);
+	_bmps[4] = D2DGraphics::ToBitmapFromSvg(_4_ico);
+	_bmps[5] = D2DGraphics::ToBitmapFromSvg(_5_ico);
+	_bmps[6] = D2DGraphics::ToBitmapFromSvg(_6_ico);
+	_bmps[7] = D2DGraphics::ToBitmapFromSvg(_7_ico);
+	_bmps[8] = D2DGraphics::ToBitmapFromSvg(_8_ico);
+	_bmps[9] = D2DGraphics::ToBitmapFromSvg(_9_ico);
+	_icons[0] = D2DGraphics::ToBitmapFromSvg(icon0);
+	_icons[1] = D2DGraphics::ToBitmapFromSvg(icon1);
+	_icons[2] = D2DGraphics::ToBitmapFromSvg(icon2);
+	_icons[3] = D2DGraphics::ToBitmapFromSvg(icon3);
+	_icons[4] = D2DGraphics::ToBitmapFromSvg(icon4);
 
 	_taskbar = new Taskbar(this->Handle);
 	_notify = new NotifyIcon();

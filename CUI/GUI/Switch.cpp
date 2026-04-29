@@ -6,6 +6,11 @@
 #pragma comment(lib, "Imm32.lib")
 UIClass Switch::Type() { return UIClass::UI_Switch; }
 
+bool Switch::HandlesNavigationKey(WPARAM key) const
+{
+	return key == VK_SPACE || key == VK_RETURN;
+}
+
 static D2D1_COLOR_F LerpColor(const D2D1_COLOR_F& from, const D2D1_COLOR_F& to, float t)
 {
 	t = (std::clamp)(t, 0.0f, 1.0f);
@@ -26,6 +31,20 @@ Switch::Switch(int x, int y, int width, int height)
 	this->BackColor = bc;
 	this->Cursor = CursorKind::Hand;
 	SyncAnimationState();
+}
+
+void Switch::SetChecked(bool checked, bool fireEvent)
+{
+	if (this->Checked == checked) return;
+	StartToggleAnimation(checked);
+	if (fireEvent)
+		this->OnChecked(this);
+	this->PostRender();
+}
+
+void Switch::Toggle(bool fireEvent)
+{
+	this->SetChecked(!this->Checked, fireEvent);
 }
 
 void Switch::SyncAnimationState()
@@ -92,27 +111,29 @@ void Switch::Update()
 	if (this->IsVisual == false)return;
 	auto d2d = this->ParentForm->Render;
 	auto size = this->ActualSize();
-	float clipW = last_width > size.cx ? (float)last_width : (float)size.cx;
-	this->BeginRender(clipW, (float)size.cy);
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
+	float clipW = last_width > actualWidth ? last_width : actualWidth;
+	this->BeginRender(clipW, actualHeight);
 	{
 		const float progress = CurrentThumbProgress();
-		float r = size.cy / 2.0f;
+		float r = actualHeight / 2.0f;
 		float x1 = r;
-		float x2 = size.cx - r;
+		float x2 = actualWidth - r;
 		float y = r;
 		const float thumbX = x1 + (x2 - x1) * progress;
 		auto trackColor = LerpColor(Colors::Red, Colors::Green, progress);
 		d2d->FillEllipse({ x1,y }, r, r, trackColor);
 		d2d->FillEllipse({ x2,y }, r, r, trackColor);
-		d2d->FillRect(x1, 0, x2 - x1, size.cy, trackColor);
+		d2d->FillRect(x1, 0, x2 - x1, actualHeight, trackColor);
 		d2d->FillEllipse({ thumbX, y }, r - 2.0f, r - 2.0f, Colors::White);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(0, 0, clipW, (float)size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, clipW, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	this->EndRender();
-	last_width = size.cx;
+	last_width = actualWidth;
 }
 
 bool Switch::DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const
@@ -132,8 +153,7 @@ void Switch::BeforeDefaultMouseUp(UINT message, MouseEventArgs& e, bool wasSelec
 	(void)e;
 	if (message == WM_LBUTTONUP && wasSelected)
 	{
-		StartToggleAnimation(!this->Checked);
-		this->OnChecked(this);
+		this->Toggle(true);
 	}
 }
 
@@ -142,7 +162,18 @@ void Switch::BeforeDefaultMouseDoubleClick(UINT message, MouseEventArgs& e, bool
 	(void)e;
 	if (message == WM_LBUTTONDBLCLK && wasSelected)
 	{
-		StartToggleAnimation(!this->Checked);
-		this->OnChecked(this);
+		this->Toggle(true);
 	}
+}
+
+bool Switch::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+{
+	if (message == WM_KEYDOWN && (wParam == VK_SPACE || wParam == VK_RETURN))
+	{
+		this->Toggle(true);
+		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyDown(this, event_obj);
+		return true;
+	}
+	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
 }

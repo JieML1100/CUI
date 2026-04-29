@@ -10,6 +10,7 @@
 #include <dxgiformat.h>
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <vector>
 #include <wrl/client.h>
 
@@ -234,6 +235,8 @@ public:
 	void ClearTransform();
 
 	static D2D1_SIZE_F GetTextLayoutSize(IDWriteTextLayout* textLayout);
+	static std::shared_ptr<BitmapSource> ToBitmapFromSvg(std::string_view svgText, UINT maxBitmapExtent = 4096);
+	static std::shared_ptr<BitmapSource> ToBitmapFromSvg(const char* svgText, UINT maxBitmapExtent = 4096);
 
 protected:
 	HRESULT Initialize(const InitOptions& options);

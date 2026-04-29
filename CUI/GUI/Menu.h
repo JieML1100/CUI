@@ -45,6 +45,11 @@ public:
 	MenuItem* AddSubItem(std::wstring text, int id = 0);
 	/** @brief 添加一个分隔符子项。 */
 	MenuItem* AddSeparator();
+	MenuItem* FindSubItemById(int id) const;
+	MenuItem* FindSubItemByText(const std::wstring& text) const;
+	bool RemoveSubItem(MenuItem* item);
+	bool RemoveSubItemById(int id);
+	void ClearSubItems();
 	/** @brief 创建一个分隔符项。 */
 	static MenuItem* CreateSeparator();
 
@@ -111,6 +116,12 @@ public:
 	 * @return 新建 MenuItem 指针（所有权属于 Menu）。
 	 */
 	MenuItem* AddItem(std::wstring text);
+	MenuItem* FindItemByText(const std::wstring& text) const;
+	MenuItem* FindItemById(int id) const;
+	bool RemoveItem(MenuItem* item);
+	bool RemoveItemAt(int index);
+	bool RemoveItemById(int id);
+	void ClearItems();
 
 	bool ContainsPoint(int xof, int yof) override;
 	bool AutoCloseOnOutsideClick() const override { return _expand; }

@@ -43,8 +43,12 @@ public:
 	float OffsetX = 0.0f;
 	/** @brief 文本内边距（像素）。 */
 	float TextMargin = 5.0f;
+	/** @brief 密码掩码字符。 */
+	wchar_t PasswordChar = L'*';
+	/** @brief 是否临时显示明文。 */
+	bool RevealPassword = false;
 protected:
-		D2D1_RECT_F _caretRectCache = { 0,0,0,0 };
+	D2D1_RECT_F _caretRectCache = { 0,0,0,0 };
 	bool _caretRectCacheValid = false;
 public:
 	/** @brief 创建密码输入框。 */
@@ -57,6 +61,22 @@ private:
 public:
 	/** @brief 获取当前选择文本。 */
 	std::wstring GetSelectedString();
+	/** @brief 当前选区长度。 */
+	int SelectionLength() const;
+	/** @brief 是否存在非空选区。 */
+	bool HasSelection() const;
+	/** @brief 设置选区，length 为选中字符数。 */
+	void Select(int start, int length);
+	/** @brief 选中全部文本。 */
+	void SelectAll();
+	/** @brief 清除选区并将光标放在当前选区末尾。 */
+	void ClearSelection();
+	/** @brief 清空密码文本。 */
+	void Clear();
+	/** @brief 在当前光标或选区插入文本。 */
+	void InsertText(std::wstring text);
+	/** @brief 从剪贴板粘贴文本。 */
+	bool Paste();
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 };

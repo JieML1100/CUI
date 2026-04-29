@@ -74,7 +74,6 @@
     <ClCompile Include="Utils\FileInfo.cpp" />
     <ClCompile Include="Utils\FileStream.cpp" />
     <ClCompile Include="Utils\Guid.cpp" />
-    <ClCompile Include="Utils\HttpHelper.cpp" />
     <ClCompile Include="Utils\httplib.cpp" />
     <ClCompile Include="Utils\MD5.cpp" />
     <ClCompile Include="Utils\ProcessOperator.cpp" />
@@ -82,7 +81,9 @@
     <ClCompile Include="Utils\SHA256.cpp" />
     <ClCompile Include="Utils\Socket.cpp" />
     <ClCompile Include="Utils\SqliteHelper.cpp" />
-    <ClCompile Include="Utils\sqlite\sqlite3.c" />
+    <ClCompile Include="Utils\sqlite\sqlite3.c">
+      <DisableSpecificWarnings>4028;4113;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
     <ClCompile Include="Utils\StopWatch.cpp" />
     <ClCompile Include="Utils\StringBuilder.cpp" />
     <ClCompile Include="Utils\StringHelper.cpp" />
@@ -165,6 +166,7 @@
       </PrecompiledHeaderFile>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>
@@ -186,6 +188,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
     </ClCompile>
     <Link>
       <SubSystem>
@@ -204,6 +207,7 @@
       </PrecompiledHeaderFile>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>
@@ -225,6 +229,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
     </ClCompile>
     <Link>
       <SubSystem>

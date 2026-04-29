@@ -21,6 +21,13 @@ public:
     Taskbar(HWND handle);
 	/** @brief 设置进度值与总量。 */
     void SetValue(ULONGLONG value, ULONGLONG total);
+	/** @brief 设置任务栏进度状态。 */
+	void SetState(TBPFLAG state);
+	void Clear();
+	void SetIndeterminate();
+	void SetPaused();
+	void SetError();
+	void SetNormal();
     ~Taskbar();
 };
 

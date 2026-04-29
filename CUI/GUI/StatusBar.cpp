@@ -42,6 +42,46 @@ int StatusBar::AddPart(const std::wstring& text, int width)
 	return (int)_parts.size() - 1;
 }
 
+int StatusBar::InsertPart(int index, const std::wstring& text, int width)
+{
+	auto label = this->AddControl(new Label(text, 0, 0));
+	label->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	label->ForeColor = this->ForeColor;
+	const int insertIndex = std::clamp(index, 0, (int)_parts.size());
+	_parts.insert(_parts.begin() + insertIndex, Part{ label, width });
+	UpdateCompatPointers();
+	LayoutItems();
+	this->PostRender();
+	return insertIndex;
+}
+
+bool StatusBar::RemovePartAt(int index)
+{
+	if (index < 0 || index >= (int)_parts.size()) return false;
+	auto part = _parts[index];
+	_parts.erase(_parts.begin() + index);
+	if (part.LabelCtrl)
+	{
+		this->RemoveControl(part.LabelCtrl);
+		delete part.LabelCtrl;
+	}
+	UpdateCompatPointers();
+	LayoutItems();
+	this->PostRender();
+	return true;
+}
+
+int StatusBar::FindPart(const std::wstring& text) const
+{
+	for (int i = 0; i < (int)_parts.size(); i++)
+	{
+		auto* label = _parts[i].LabelCtrl;
+		if (label && label->Text == text)
+			return i;
+	}
+	return -1;
+}
+
 void StatusBar::ClearParts()
 {
 	for (auto& p : _parts)
@@ -216,9 +256,11 @@ void StatusBar::Update()
 
 	auto d2d = this->ParentForm->Render;
 	auto size = this->ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
 	this->BeginRender();
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
+		d2d->FillRect(0, 0, actualWidth, actualHeight, this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -236,11 +278,11 @@ void StatusBar::Update()
 			float y2 = (float)this->Height - 5.0f;
 			d2d->DrawLine(x, y1, x, y2, _separatorColor, 1.0f);
 		}
-		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
+		d2d->DrawRect(0, 0, actualWidth, actualHeight, this->BolderColor, this->Boder);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	this->EndRender();
 }

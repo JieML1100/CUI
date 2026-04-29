@@ -126,7 +126,7 @@ public:
 	 * @brief 获取 WebView2 当前建议的系统光标 id。
 	 * @return true 表示可用。
 	 */
-	bool TryGetSystemCursorId(UINT32& outId) const;
+	bool TryGetSystemCursorId(UINT32& outId) const override;
 
 	/** @brief 导航到指定 URL（未就绪时会缓存）。 */
 	void Navigate(const std::wstring& url);
@@ -178,16 +178,20 @@ public:
 
 	/** @brief 异步获取当前页面 HTML（实现依赖注入的 JS）。 */
 	void GetHtmlAsync(std::function<void(HRESULT hr, const std::wstring& html)> callback);
+
 	/** @brief 异步设置匹配元素的 innerHTML。 */
 	void SetElementInnerHtmlAsync(const std::wstring& cssSelector, const std::wstring& html,
 		std::function<void(HRESULT hr)> callback = {});
+
 	/** @brief 异步查询匹配元素的 outerHTML 列表（以 JSON 数组返回）。 */
 	void QuerySelectorAllOuterHtmlAsync(const std::wstring& cssSelector,
 		std::function<void(HRESULT hr, const std::wstring& jsonArray)> callback);
 
 	// 是否可见且就绪
 	/** @brief WebView 是否已创建且当前控件可见。 */
-	bool IsWebViewVisible() const { return _webviewReady && this->Visible; }
+	bool IsWebViewVisible() { return _webviewReady && this->IsVisual; }
+	/** @brief 同步 WebView2 原生合成层的可见性与位置，不触发延迟初始化。 */
+	void SyncNativeSurface() override;
 
 	// WebView2 事件
 	NavigationStartingEvent OnNavigationStarting = NavigationStartingEvent();
@@ -276,7 +280,7 @@ public:
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
 
-	bool TryGetSystemCursorId(UINT32& outId) const { (void)outId; return false; }
+	bool TryGetSystemCursorId(UINT32& outId) const override { (void)outId; return false; }
 	void Navigate(const std::wstring& url) { (void)url; }
 	void SetHtml(const std::wstring& html) { (void)html; }
 	void Reload() {}
@@ -314,6 +318,7 @@ public:
 		if (callback) callback(E_NOTIMPL, L"");
 	}
 	bool IsWebViewVisible() const { return false; }
+	void SyncNativeSurface() override {}
 };
 
 #endif

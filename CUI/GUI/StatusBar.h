@@ -61,6 +61,12 @@ public:
 	 * @return 新分段索引。
 	 */
 	int AddPart(const std::wstring& text = L"", int width = 0);
+	/** @brief 插入分段并返回实际索引。 */
+	int InsertPart(int index, const std::wstring& text = L"", int width = 0);
+	/** @brief 移除指定分段。 */
+	bool RemovePartAt(int index);
+	/** @brief 查找分段文本，未找到返回 -1。 */
+	int FindPart(const std::wstring& text) const;
 	/** @brief 清空所有分段。 */
 	void ClearParts();
 	/** @brief 获取分段数量。 */

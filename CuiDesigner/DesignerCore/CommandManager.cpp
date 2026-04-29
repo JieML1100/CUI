@@ -53,6 +53,7 @@ bool CommandManager::Redo()
 	_redoStack.pop_back();
 	if (!command->Execute())
 	{
+		_redoStack.push_back(std::move(command));
 		return false;
 	}
 	_undoStack.push_back(std::move(command));

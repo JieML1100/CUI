@@ -20,6 +20,7 @@ GET_CPP(Slider, float, Min)
 SET_CPP(Slider, float, Min)
 {
 	this->_min = value;
+	if (this->_max < this->_min) this->_max = this->_min;
 	this->SetValueInternal(this->_value, false);
 	this->PostRender();
 }
@@ -31,6 +32,7 @@ GET_CPP(Slider, float, Max)
 SET_CPP(Slider, float, Max)
 {
 	this->_max = value;
+	if (this->_min > this->_max) this->_min = this->_max;
 	this->SetValueInternal(this->_value, false);
 	this->PostRender();
 }
@@ -42,6 +44,33 @@ GET_CPP(Slider, float, Value)
 SET_CPP(Slider, float, Value)
 {
 	this->SetValueInternal(value, true);
+}
+
+void Slider::SetRange(float minValue, float maxValue, float value)
+{
+	if (maxValue < minValue)
+		std::swap(minValue, maxValue);
+	this->_min = minValue;
+	this->_max = maxValue;
+	this->SetValueInternal(value, true);
+	this->PostRender();
+}
+
+void Slider::Increment(float delta)
+{
+	const float step = (delta != 0.0f) ? delta : (this->Step > 0.0f ? this->Step : 1.0f);
+	this->SetValueInternal(this->_value + step, true);
+}
+
+void Slider::Decrement(float delta)
+{
+	const float step = (delta != 0.0f) ? delta : (this->Step > 0.0f ? this->Step : 1.0f);
+	this->SetValueInternal(this->_value - step, true);
+}
+
+void Slider::Reset()
+{
+	this->SetValueInternal(this->_min, true);
 }
 
 CursorKind Slider::QueryCursor(int xof, int yof)
@@ -59,6 +88,8 @@ void Slider::Update()
 	if (!this->IsVisual) return;
 	auto d2d = this->ParentForm->Render;
 	auto size = this->ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
 	this->BeginRender();
 	{
 		// track (TrackLeftLocal/RightLocal/YLocal 均为相对控件左上角的局部偏移)
@@ -86,7 +117,7 @@ void Slider::Update()
 		(void)size;
 	}
 	if (!this->Enable)
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 	this->EndRender();
 }
 

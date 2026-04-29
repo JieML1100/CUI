@@ -44,6 +44,23 @@ LoadingRing::LoadingRing(int x, int y, int width, int height)
 	this->_animStartTick = ::GetTickCount64();
 }
 
+void LoadingRing::Start()
+{
+	this->Active = true;
+}
+
+void LoadingRing::Stop()
+{
+	this->Active = false;
+}
+
+void LoadingRing::Restart()
+{
+	this->_animStartTick = ::GetTickCount64();
+	this->_active = true;
+	this->PostRender();
+}
+
 float LoadingRing::GetAnimationPhase() const
 {
 	if (!_active)
@@ -73,10 +90,12 @@ void LoadingRing::Update()
 
 	auto d2d = this->ParentForm->Render;
 	auto size = this->ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
 	this->BeginRender();
 	{
-		const float diameter = (float)(std::min)(size.cx, size.cy);
-		const D2D1_POINT_2F center = D2D1::Point2F(size.cx * 0.5f, size.cy * 0.5f);
+		const float diameter = (std::min)(actualWidth, actualHeight);
+		const D2D1_POINT_2F center = D2D1::Point2F(actualWidth * 0.5f, actualHeight * 0.5f);
 		const float orbitRadius = (std::max)(6.0f, diameter * 0.31f);
 		const float trackWidth = (std::max)(1.5f, diameter * 0.055f);
 		const float phase = GetAnimationPhase();
@@ -103,7 +122,7 @@ void LoadingRing::Update()
 
 	if (!this->Enable)
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f, 1.0f, 1.0f, 0.5f });
+		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f, 1.0f, 1.0f, 0.5f });
 	}
 	this->EndRender();
 }

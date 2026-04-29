@@ -340,6 +340,78 @@ MenuItem* ContextMenu::AddSeparator()
 	return item;
 }
 
+namespace
+{
+	MenuItem* FindMenuItemByIdRecursive(const std::vector<MenuItem*>& items, int id)
+	{
+		for (auto* item : items)
+		{
+			if (!item) continue;
+			if (!item->Separator && item->Id == id) return item;
+			if (auto* found = FindMenuItemByIdRecursive(item->SubItems, id))
+				return found;
+		}
+		return nullptr;
+	}
+
+	MenuItem* FindMenuItemByTextRecursive(const std::vector<MenuItem*>& items, const std::wstring& text)
+	{
+		for (auto* item : items)
+		{
+			if (!item) continue;
+			if (!item->Separator && item->Text == text) return item;
+			if (auto* found = FindMenuItemByTextRecursive(item->SubItems, text))
+				return found;
+		}
+		return nullptr;
+	}
+
+	bool RemoveMenuItemRecursive(std::vector<MenuItem*>& items, MenuItem* target)
+	{
+		for (auto it = items.begin(); it != items.end(); ++it)
+		{
+			auto* item = *it;
+			if (item == target)
+			{
+				items.erase(it);
+				delete item;
+				return true;
+			}
+			if (item && RemoveMenuItemRecursive(item->SubItems, target))
+				return true;
+		}
+		return false;
+	}
+}
+
+MenuItem* ContextMenu::FindItemById(int id) const
+{
+	return FindMenuItemByIdRecursive(_items, id);
+}
+
+MenuItem* ContextMenu::FindItemByText(const std::wstring& text) const
+{
+	return FindMenuItemByTextRecursive(_items, text);
+}
+
+bool ContextMenu::RemoveItem(MenuItem* item)
+{
+	if (!item) return false;
+	bool removed = RemoveMenuItemRecursive(_items, item);
+	if (removed)
+	{
+		ClearHoverState();
+		if (this->ParentForm)
+			this->ParentForm->Invalidate(false);
+	}
+	return removed;
+}
+
+bool ContextMenu::RemoveItemById(int id)
+{
+	return RemoveItem(FindItemById(id));
+}
+
 void ContextMenu::ClearItems()
 {
 	for (auto* item : _items)

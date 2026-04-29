@@ -1,4 +1,5 @@
 ﻿#include "Graphics.h"
+#include "SvgParserInternal.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -20,7 +21,7 @@ using Microsoft::WRL::ComPtr;
 #define M_PI 3.14159265358979323846
 #endif
 constexpr float INV_255_1 = 1.0f / 255.0f;
-constexpr float DEG_TO_RAD = M_PI / 180.0f;
+constexpr float DEG_TO_RAD = std::numbers::pi_v<float> / 180.0f;
 constexpr float OUTLINE_OFFSET = 1.0f;
 
 namespace {
@@ -1512,6 +1513,171 @@ D2D1_SIZE_F D2DGraphics::GetTextLayoutSize(IDWriteTextLayout* textLayout) {
 	return minSize;
 }
 
+namespace {
+	float SvgClamp01(float value) {
+		if (!std::isfinite(value)) {
+			return 0.0f;
+		}
+		return std::clamp(value, 0.0f, 1.0f);
+	}
+
+	D2D1_COLOR_F SvgColorToD2D(unsigned int color, float opacity) {
+		const float alpha = SvgClamp01(((color >> 24) & 0xff) * INV_255_1 * opacity);
+		return D2D1_COLOR_F{
+			(color & 0xff) * INV_255_1,
+			((color >> 8) & 0xff) * INV_255_1,
+			((color >> 16) & 0xff) * INV_255_1,
+			alpha
+		};
+	}
+
+	ComPtr<ID2D1Brush> CreateSvgPaintBrush(const SvgPaint& paint, float opacity, D2DGraphics& graphics) {
+		ComPtr<ID2D1Brush> brush;
+		switch (paint.type) {
+		case SVG_PAINT_NONE:
+			return {};
+		case SVG_PAINT_COLOR:
+			brush.Attach(graphics.CreateSolidColorBrush(SvgColorToD2D(paint.color, opacity)));
+			return brush;
+		case SVG_PAINT_LINEAR_GRADIENT:
+		{
+			if (!paint.gradient || paint.gradient->nstops <= 0) {
+				return {};
+			}
+			std::vector<D2D1_GRADIENT_STOP> stops;
+			stops.reserve(static_cast<size_t>(paint.gradient->nstops));
+			for (int i = 0; i < paint.gradient->nstops; ++i) {
+				const auto& stop = paint.gradient->stops[i];
+				stops.push_back(D2D1_GRADIENT_STOP{ SvgClamp01(stop.offset), SvgColorToD2D(stop.color, opacity) });
+			}
+			brush.Attach(graphics.CreateLinearGradientBrush(stops.data(), static_cast<unsigned int>(stops.size())));
+			return brush;
+		}
+		case SVG_PAINT_RADIAL_GRADIENT:
+		{
+			if (!paint.gradient || paint.gradient->nstops <= 0) {
+				return {};
+			}
+			std::vector<D2D1_GRADIENT_STOP> stops;
+			stops.reserve(static_cast<size_t>(paint.gradient->nstops));
+			for (int i = 0; i < paint.gradient->nstops; ++i) {
+				const auto& stop = paint.gradient->stops[i];
+				stops.push_back(D2D1_GRADIENT_STOP{ SvgClamp01(stop.offset), SvgColorToD2D(stop.color, opacity) });
+			}
+			brush.Attach(graphics.CreateRadialGradientBrush(
+				stops.data(),
+				static_cast<unsigned int>(stops.size()),
+				D2D1::Point2F(paint.gradient->fx, paint.gradient->fy)));
+			return brush;
+		}
+		default:
+			return {};
+		}
+	}
+}
+
+std::shared_ptr<BitmapSource> D2DGraphics::ToBitmapFromSvg(const char* svgText, UINT maxBitmapExtent) {
+	if (!svgText) {
+		return {};
+	}
+	return ToBitmapFromSvg(std::string_view(svgText), maxBitmapExtent);
+}
+
+std::shared_ptr<BitmapSource> D2DGraphics::ToBitmapFromSvg(std::string_view svgText, UINT maxBitmapExtent) {
+	if (svgText.empty() || maxBitmapExtent == 0) {
+		return {};
+	}
+
+	std::vector<char> mutableSvg(svgText.begin(), svgText.end());
+	mutableSvg.push_back('\0');
+
+	struct SvgImageDeleter {
+		void operator()(SvgImage* image) const noexcept {
+			DeleteSvgImageInternal(image);
+		}
+	};
+	std::unique_ptr<SvgImage, SvgImageDeleter> image(ParseSvgImageInternal(mutableSvg.data(), "px", 96.0f));
+	if (!image || !std::isfinite(image->width) || !std::isfinite(image->height) || image->width <= 0.0f || image->height <= 0.0f) {
+		return {};
+	}
+
+	const float largestExtent = (std::max)(image->width, image->height);
+	if (largestExtent <= 0.0f || !std::isfinite(largestExtent)) {
+		return {};
+	}
+	const float scale = largestExtent > static_cast<float>(maxBitmapExtent)
+		? static_cast<float>(maxBitmapExtent) / largestExtent
+		: 1.0f;
+
+	const auto pixelWidth = static_cast<int>((std::max)(1.0f, std::ceil(image->width * scale)));
+	const auto pixelHeight = static_cast<int>((std::max)(1.0f, std::ceil(image->height * scale)));
+	auto bitmapSource = BitmapSource::CreateEmpty(pixelWidth, pixelHeight);
+	if (!bitmapSource) {
+		return {};
+	}
+
+	D2DGraphics graphics(bitmapSource.get());
+	graphics.BeginRender();
+	graphics.Clear(D2D1::ColorF(0, 0.0f));
+
+	for (const SvgShape* shape = image->shapes; shape; shape = shape->next) {
+		if ((shape->flags & SVG_FLAGS_VISIBLE) == 0) {
+			continue;
+		}
+
+		ComPtr<ID2D1PathGeometry> geometry;
+		geometry.Attach(Factory::CreateGeomtry());
+		if (!geometry) {
+			continue;
+		}
+
+		ComPtr<ID2D1GeometrySink> sink;
+		if (FAILED(geometry->Open(&sink)) || !sink) {
+			continue;
+		}
+
+		bool hasFigure = false;
+		for (const SvgPath* path = shape->paths; path; path = path->next) {
+			if (!path->pts || path->npts < 4) {
+				continue;
+			}
+
+			const float* points = path->pts;
+			sink->BeginFigure(
+				D2D1::Point2F(points[0] * scale, points[1] * scale),
+				shape->fill.type == SVG_PAINT_NONE ? D2D1_FIGURE_BEGIN_HOLLOW : D2D1_FIGURE_BEGIN_FILLED);
+			hasFigure = true;
+
+			for (int i = 0; i < path->npts - 1; i += 3) {
+				const float* p = &path->pts[i * 2];
+				sink->AddBezier(D2D1::BezierSegment(
+					D2D1::Point2F(p[2] * scale, p[3] * scale),
+					D2D1::Point2F(p[4] * scale, p[5] * scale),
+					D2D1::Point2F(p[6] * scale, p[7] * scale)));
+			}
+
+			sink->EndFigure(path->closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
+		}
+
+		if (!hasFigure || FAILED(sink->Close())) {
+			continue;
+		}
+
+		auto fillBrush = CreateSvgPaintBrush(shape->fill, shape->opacity, graphics);
+		if (fillBrush) {
+			graphics.FillGeometry(geometry.Get(), fillBrush.Get());
+		}
+
+		auto strokeBrush = CreateSvgPaintBrush(shape->stroke, shape->opacity, graphics);
+		if (strokeBrush && shape->strokeWidth > 0.0f) {
+			graphics.DrawGeometry(geometry.Get(), strokeBrush.Get(), shape->strokeWidth * scale);
+		}
+	}
+
+	graphics.EndRender();
+	return bitmapSource;
+}
+
 CompatibleGraphics::CompatibleGraphics(D2DGraphics* parent, D2D1_SIZE_F desiredSize) {
 	Initialize(parent, desiredSize);
 }
@@ -1732,5 +1898,4 @@ void CompositionSwapChainGraphics::EndRender() {
 		_deviceLost = true;
 	}
 }
-
 

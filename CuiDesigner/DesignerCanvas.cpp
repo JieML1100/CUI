@@ -1,4 +1,4 @@
-﻿#include "DesignerCanvas.h"
+#include "DesignerCanvas.h"
 #include "CodeGenInput.h"
 #include "DesignerCore/DesignerCommandCoordinator.h"
 #include "DesignerCore/HitTestService.h"
@@ -1726,14 +1726,15 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 	{
 		if ((GetKeyState(VK_CONTROL) & 0x8000) != 0)
 		{
-			if (wParam == 'Z')
+			const bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+			if (wParam == 'Z' && !shiftDown)
 			{
 				if (UndoCommand())
 				{
 					return true;
 				}
 			}
-			else if (wParam == 'Y')
+			else if (wParam == 'Y' || (wParam == 'Z' && shiftDown))
 			{
 				if (RedoCommand())
 				{
@@ -3393,9 +3394,9 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			{
 				auto* gv = (GridView*)c;
 				DesignValue cols = DesignValue::array();
-				for (int i = 0; i < gv->Columns.size(); i++)
+				for (int i = 0; i < gv->ColumnCount(); i++)
 				{
-					auto& col = gv->Columns[i];
+					auto& col = gv->ColumnAt(static_cast<int>(i));
 					DesignValue cj = DesignValue::object();
 					cj["name"] = ToUtf8(col.Name);
 					cj["width"] = col.Width;
@@ -3931,7 +3932,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				else if (it.type == UIClass::UI_GridView)
 				{
 					auto* gv = (GridView*)c;
-					gv->Columns.clear();
+					gv->ClearColumns();
 					if (it.extra.contains("columns") && it.extra["columns"].is_array())
 					{
 						for (auto& cj : it.extra["columns"])
@@ -3942,7 +3943,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 							col.Width = cj.value("width", col.Width);
 							col.Type = (ColumnType)cj.value("type", (int)col.Type);
 							col.CanEdit = cj.value("canEdit", col.CanEdit);
-							gv->Columns.push_back(col);
+							gv->AddColumn(col);
 						}
 					}
 				}

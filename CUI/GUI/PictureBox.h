@@ -18,5 +18,11 @@ public:
 	float Boder = 1.0f;
 	/** @brief 创建图片控件。 */
 	PictureBox(int x, int y, int width = 120, int height = 24);
+	/** @brief 从文件加载图片。 */
+	bool LoadFromFile(const std::wstring& path);
+	/** @brief 清空图片。 */
+	void ClearImage();
+	/** @brief 将控件大小设为图片像素尺寸。 */
+	bool SizeToImage();
 	void Update() override;
 };

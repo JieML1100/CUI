@@ -3,6 +3,11 @@
 #include "Form.h"
 UIClass CheckBox::Type() { return UIClass::UI_CheckBox; }
 D2D1_COLOR_F UnderMouseColor = Colors::DarkSlateGray;
+bool CheckBox::HandlesNavigationKey(WPARAM key) const
+{
+	return key == VK_SPACE || key == VK_RETURN;
+}
+
 CheckBox::CheckBox(std::wstring text, int x, int y)
 {
 	this->Text = text;
@@ -10,6 +15,21 @@ CheckBox::CheckBox(std::wstring text, int x, int y)
 	this->BackColor = D2D1_COLOR_F{ 0.75f , 0.75f , 0.75f , 0.75f };
 	this->Cursor = CursorKind::Hand;
 }
+
+void CheckBox::SetChecked(bool checked, bool fireEvent)
+{
+	if (this->Checked == checked) return;
+	this->Checked = checked;
+	if (fireEvent)
+		this->OnChecked(this);
+	this->PostRender();
+}
+
+void CheckBox::Toggle(bool fireEvent)
+{
+	this->SetChecked(!this->Checked, fireEvent);
+}
+
 SIZE CheckBox::ActualSize()
 {
 	auto d2d = this->ParentForm->Render;
@@ -51,7 +71,7 @@ void CheckBox::Update()
 		d2d->FillRect(0, 0, clipW, (float)size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	this->EndRender();
-	last_width = size.cx;
+	last_width = static_cast<float>(size.cx);
 }
 
 bool CheckBox::DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const
@@ -71,8 +91,7 @@ void CheckBox::BeforeDefaultMouseUp(UINT message, MouseEventArgs& e, bool wasSel
 	(void)e;
 	if (message == WM_LBUTTONUP && wasSelected)
 	{
-		this->Checked = !this->Checked;
-		this->OnChecked(this);
+		this->Toggle(true);
 	}
 }
 
@@ -81,8 +100,18 @@ void CheckBox::BeforeDefaultMouseDoubleClick(UINT message, MouseEventArgs& e, bo
 	(void)e;
 	if (message == WM_LBUTTONDBLCLK && wasSelected)
 	{
-		this->Checked = !this->Checked;
-		this->OnChecked(this);
+		this->Toggle(true);
 	}
 }
 
+bool CheckBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+{
+	if (message == WM_KEYDOWN && (wParam == VK_SPACE || wParam == VK_RETURN))
+	{
+		this->Toggle(true);
+		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyDown(this, event_obj);
+		return true;
+	}
+	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+}

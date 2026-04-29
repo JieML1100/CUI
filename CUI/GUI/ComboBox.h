@@ -43,6 +43,7 @@ public:
 	bool AutoCloseOnFormFocusLoss() const override { return true; }
 	void ClosePopup() override { SetExpanded(false); }
 	bool HandlesMouseWheel() const override { return true; }
+	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
@@ -67,6 +68,22 @@ public:
 	float Boder = 1.5f;
 	/** @brief 创建 ComboBox。 */
 	ComboBox(std::wstring text, int x, int y, int width = 120, int height = 24);
+	/** @brief 返回条目数量。 */
+	int ItemCount() const;
+	/** @brief 返回当前选中项文本；未选中时返回空字符串。 */
+	std::wstring GetSelectedItem() const;
+	/** @brief 设置当前选中索引，越界时自动夹取。 */
+	void SetSelectedIndex(int index);
+	/** @brief 查找条目索引，未找到返回 -1。 */
+	int FindItem(const std::wstring& text) const;
+	/** @brief 添加条目并返回新条目索引。 */
+	int AddItem(const std::wstring& text);
+	/** @brief 插入条目，返回实际插入位置。 */
+	int InsertItem(int index, const std::wstring& text);
+	/** @brief 移除指定索引条目，成功返回 true。 */
+	bool RemoveItemAt(int index);
+	/** @brief 清空所有条目。 */
+	void ClearItems();
 	void SetExpanded(bool expanded);
 	SIZE ActualSize() override;
 	void DrawScroll();

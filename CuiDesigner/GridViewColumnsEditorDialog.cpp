@@ -1,4 +1,4 @@
-﻿#include "GridViewColumnsEditorDialog.h"
+#include "GridViewColumnsEditorDialog.h"
 #include <sstream>
 
 namespace
@@ -81,25 +81,24 @@ bool GridViewColumnsEditorDialog::TryParseColumnType(const std::wstring& s, Colu
 void GridViewColumnsEditorDialog::RefreshGridFromTarget()
 {
 	if (!_grid) return;
-	_grid->Rows.clear();
+	_grid->ClearRows();
 	if (!_target) return;
 	auto typeItems = BuildColumnTypeItems();
-	for (int i = 0; i < _target->Columns.size(); i++)
+	for (size_t i = 0; i < _target->ColumnCount(); i++)
 	{
-		auto c = _target->Columns[i];
+		auto c = _target->ColumnAt(static_cast<int>(i));
 		const int typeIdx = TypeToComboIndex(c.Type);
 		GridViewRow r;
 		r.Cells.push_back(CellValue(c.Name));
 		r.Cells.push_back(CellValue(std::to_wstring((int)c.Width)));
 		CellValue typeCell;
-		typeCell.Tag = typeIdx;
-		typeCell.Text = (typeIdx >= 0 && typeIdx < typeItems.size()) ? typeItems[typeIdx] : L"text";
+		typeCell.SetComboSelection(typeIdx, (typeIdx >= 0 && static_cast<size_t>(typeIdx) < typeItems.size()) ? typeItems[typeIdx] : L"text");
 		r.Cells.push_back(typeCell);
 		r.Cells.push_back(CellValue(c.CanEdit));
 		r.Cells.push_back(CellValue(c.ButtonText));
 		{
 			std::wstring comboItems;
-			for (int k = 0; k < c.ComboBoxItems.size(); k++)
+			for (size_t k = 0; k < c.ComboBoxItems.size(); k++)
 			{
 				if (k > 0) comboItems += L"|";
 				comboItems += c.ComboBoxItems[k];
@@ -109,7 +108,7 @@ void GridViewColumnsEditorDialog::RefreshGridFromTarget()
 		r.Cells.push_back(CellValue(L""));
 		r.Cells.push_back(CellValue(L""));
 		r.Cells.push_back(CellValue(L""));
-		_grid->Rows.push_back(r);
+		_grid->AddRow(r);
 	}
 }
 
@@ -127,7 +126,7 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 	tip->Font = new ::Font(L"Microsoft YaHei", 12.0f);
 
 	_grid = this->AddControl(new GridView(12, 38, 596, 310));
-	_grid->Columns.clear();
+	_grid->ClearColumns();
 	{
 		GridViewColumn c0(L"Name", 200.0f, ColumnType::Text, true);
 		GridViewColumn c1(L"Width", 70.0f, ColumnType::Text, true);
@@ -143,15 +142,15 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 		GridViewColumn c8(L"", 45.0f, ColumnType::Button, false);
 		c8.ButtonText = L"删除";
 
-		_grid->Columns.push_back(c0);
-		_grid->Columns.push_back(c1);
-		_grid->Columns.push_back(c2);
-		_grid->Columns.push_back(c3);
-		_grid->Columns.push_back(c4);
-		_grid->Columns.push_back(c5);
-		_grid->Columns.push_back(c6);
-		_grid->Columns.push_back(c7);
-		_grid->Columns.push_back(c8);
+		_grid->AddColumn(c0);
+		_grid->AddColumn(c1);
+		_grid->AddColumn(c2);
+		_grid->AddColumn(c3);
+		_grid->AddColumn(c4);
+		_grid->AddColumn(c5);
+		_grid->AddColumn(c6);
+		_grid->AddColumn(c7);
+		_grid->AddColumn(c8);
 	}
 	_grid->AllowUserToAddRows = true;
 	RefreshGridFromTarget();
@@ -159,44 +158,43 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 	_grid->OnUserAddedRow += [this](GridView*, int newRowIndex)
 		{
 			if (!_grid) return;
-			if (newRowIndex < 0 || newRowIndex >= _grid->Rows.size()) return;
-			auto& row = _grid->Rows[newRowIndex];
+			if (newRowIndex < 0 || static_cast<size_t>(newRowIndex) >= _grid->RowCount()) return;
+			auto& row = _grid->RowAt(static_cast<int>(newRowIndex));
 			if (row.Cells.size() < 9)
 				row.Cells.resize(9);
-			row.Cells[COL_NAME].Text = L"Column";
-			row.Cells[COL_WIDTH].Text = L"120";
-			row.Cells[COL_TYPE].Tag = 0;
-			row.Cells[COL_TYPE].Text = L"text";
-			row.Cells[COL_CANEDIT].Tag = 1;
-			row.Cells[COL_BUTTONTEXT].Text = L"";
-			row.Cells[COL_COMBOITEMS].Text = L"";
+			row.Cells[COL_NAME].SetText(L"Column");
+			row.Cells[COL_WIDTH].SetText(L"120");
+			row.Cells[COL_TYPE].SetComboSelection(0, L"text");
+			row.Cells[COL_CANEDIT].SetBool(true);
+			row.Cells[COL_BUTTONTEXT].SetText(L"");
+			row.Cells[COL_COMBOITEMS].SetText(L"");
 			_grid->ChangeEditionSelected(COL_NAME, newRowIndex);
 		};
 
 	_grid->OnGridViewButtonClick += [this](GridView*, int c, int r)
 		{
 			if (!_grid) return;
-			if (r < 0 || r >= _grid->Rows.size()) return;
+			if (r < 0 || static_cast<size_t>(r) >= _grid->RowCount()) return;
 			if (c == COL_UP)
 			{
 				if (r <= 0) return;
-				std::swap(_grid->Rows[r], _grid->Rows[r - 1]);
+				_grid->SwapRows(r, r - 1);
 				_grid->SelectedRowIndex = r - 1;
 				_grid->SelectedColumnIndex = COL_NAME;
 				_grid->PostRender();
 			}
 			else if (c == COL_DOWN)
 			{
-				if (r + 1 >= _grid->Rows.size()) return;
-				std::swap(_grid->Rows[r], _grid->Rows[r + 1]);
+				if (static_cast<size_t>(r + 1) >= _grid->RowCount()) return;
+				_grid->SwapRows(r, r + 1);
 				_grid->SelectedRowIndex = r + 1;
 				_grid->SelectedColumnIndex = COL_NAME;
 				_grid->PostRender();
 			}
 			else if (c == COL_DELETE)
 			{
-				_grid->Rows.erase(_grid->Rows.begin() + r);
-				if (_grid->Rows.size() <= 0)
+				_grid->RemoveRowAt(r);
+				if (_grid->RowCount() <= 0)
 				{
 					_grid->SelectedRowIndex = -1;
 					_grid->SelectedColumnIndex = -1;
@@ -204,7 +202,7 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 				else
 				{
 					int sel = r;
-					if (sel >= _grid->Rows.size()) sel = _grid->Rows.size() - 1;
+					if (static_cast<size_t>(sel) >= _grid->RowCount()) sel = static_cast<int>(_grid->RowCount()) - 1;
 					_grid->SelectedRowIndex = sel;
 					_grid->SelectedColumnIndex = COL_NAME;
 				}
@@ -219,18 +217,18 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 		if (!_target || !_grid) { this->Close(); return; }
 		_grid->ChangeEditionSelected(-1, -1);
 
-		_target->Columns.clear();
+		_target->ClearColumns();
 		auto typeItems = BuildColumnTypeItems();
-		for (int i = 0; i < _grid->Rows.size(); i++)
+		for (size_t i = 0; i < _grid->RowCount(); i++)
 		{
-			auto& row = _grid->Rows[i];
-			std::wstring name = (row.Cells.size() > 0) ? Trim(row.Cells[0].Text) : L"";
+			auto& row = _grid->RowAt(static_cast<int>(i));
+			std::wstring name = (row.Cells.size() > 0) ? Trim(row.Cells[0].GetText()) : L"";
 			if (name.empty()) continue;
 
 			float width = 120.0f;
 			if (row.Cells.size() > 1)
 			{
-				auto w = Trim(row.Cells[1].Text);
+				auto w = Trim(row.Cells[1].GetText());
 				if (!w.empty())
 				{
 					try { width = (float)std::stoi(w); }
@@ -242,8 +240,8 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 			ColumnType type = ColumnType::Text;
 			if (row.Cells.size() > COL_TYPE)
 			{
-				const __int64 idx = row.Cells[COL_TYPE].Tag;
-				if (idx >= 0 && idx < typeItems.size())
+				const __int64 idx = row.Cells[COL_TYPE].GetTag();
+				if (idx >= 0 && static_cast<size_t>(idx) < typeItems.size())
 				{
 					ColumnType parsed{};
 					if (TryParseColumnType(typeItems[(int)idx], parsed))
@@ -251,7 +249,7 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 				}
 				else
 				{
-					auto t = Trim(row.Cells[COL_TYPE].Text);
+					auto t = Trim(row.Cells[COL_TYPE].GetText());
 					if (!t.empty())
 					{
 						ColumnType parsed{};
@@ -262,20 +260,20 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 
 			bool canEdit = true;
 			if (row.Cells.size() > COL_CANEDIT)
-				canEdit = (row.Cells[COL_CANEDIT].Tag != 0);
+				canEdit = row.Cells[COL_CANEDIT].GetBool();
 
 			GridViewColumn newCol(name, width, type, canEdit);
 
 			if (type == ColumnType::Button)
 			{
 				if (row.Cells.size() > COL_BUTTONTEXT)
-					newCol.ButtonText = Trim(row.Cells[COL_BUTTONTEXT].Text);
+					newCol.ButtonText = Trim(row.Cells[COL_BUTTONTEXT].GetText());
 			}
 			else if (type == ColumnType::ComboBox)
 			{
 				if (row.Cells.size() > COL_COMBOITEMS)
 				{
-					auto raw = Trim(row.Cells[COL_COMBOITEMS].Text);
+					auto raw = Trim(row.Cells[COL_COMBOITEMS].GetText());
 					auto parts = SplitByPipe(raw);
 					for (auto& p : parts)
 					{
@@ -286,7 +284,7 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 				}
 			}
 
-			_target->Columns.push_back(newCol);
+			_target->AddColumn(newCol);
 		}
 
 		Applied = true;

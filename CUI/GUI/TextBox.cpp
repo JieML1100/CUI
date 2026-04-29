@@ -14,6 +14,71 @@ namespace
 		}
 		return std::wstring(buffer.data());
 	}
+
+	bool WriteClipboardText(HWND hwnd, const std::wstring& text)
+	{
+		if (text.empty() || !OpenClipboard(hwnd)) return false;
+		EmptyClipboard();
+		const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+		HANDLE hData = GlobalAlloc(GMEM_MOVEABLE, bytes);
+		if (!hData)
+		{
+			CloseClipboard();
+			return false;
+		}
+		wchar_t* data = static_cast<wchar_t*>(GlobalLock(hData));
+		if (!data)
+		{
+			GlobalFree(hData);
+			CloseClipboard();
+			return false;
+		}
+		memcpy(data, text.c_str(), bytes);
+		GlobalUnlock(hData);
+		if (!SetClipboardData(CF_UNICODETEXT, hData))
+		{
+			GlobalFree(hData);
+			CloseClipboard();
+			return false;
+		}
+		CloseClipboard();
+		return true;
+	}
+
+	bool ReadClipboardText(HWND hwnd, std::wstring& text)
+	{
+		text.clear();
+		if (!OpenClipboard(hwnd)) return false;
+		if (IsClipboardFormatAvailable(CF_UNICODETEXT))
+		{
+			HANDLE hClip = GetClipboardData(CF_UNICODETEXT);
+			const wchar_t* data = static_cast<const wchar_t*>(GlobalLock(hClip));
+			if (data)
+			{
+				text = data;
+				GlobalUnlock(hClip);
+			}
+		}
+		else if (IsClipboardFormatAvailable(CF_TEXT))
+		{
+			HANDLE hClip = GetClipboardData(CF_TEXT);
+			const char* data = static_cast<const char*>(GlobalLock(hClip));
+			if (data)
+			{
+				const int len = MultiByteToWideChar(CP_ACP, 0, data, -1, NULL, 0);
+				if (len > 0)
+				{
+					std::wstring buffer(static_cast<size_t>(len), L'\0');
+					MultiByteToWideChar(CP_ACP, 0, data, -1, &buffer[0], len);
+					if (!buffer.empty() && buffer.back() == L'\0') buffer.pop_back();
+					text = buffer;
+				}
+				GlobalUnlock(hClip);
+			}
+		}
+		CloseClipboard();
+		return !text.empty();
+	}
 }
 
 UIClass TextBox::Type() { return UIClass::UI_TextBox; }
@@ -42,10 +107,12 @@ void TextBox::InputText(std::wstring input)
 	std::wstring oldStr = this->Text;
 	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
 	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
+	int textLength = static_cast<int>(this->Text.size());
+	int inputLength = static_cast<int>(input.size());
 	UndoRecord rec;
 	bool shouldRecord = false;
-	int recSels = std::clamp(sels, 0, (int)this->Text.size());
-	int recSele = std::clamp(sele, 0, (int)this->Text.size());
+	int recSels = std::clamp(sels, 0, textLength);
+	int recSele = std::clamp(sele, 0, textLength);
 	if (!this->isApplyingUndoRedo && (!input.empty() || recSele > recSels))
 	{
 		rec.pos = recSels;
@@ -59,10 +126,10 @@ void TextBox::InputText(std::wstring input)
 		rec.selEndBefore = this->SelectionEnd;
 		shouldRecord = true;
 	}
-	if (sele >= this->Text.size() && sels >= this->Text.size())
+	if (sele >= textLength && sels >= textLength)
 	{
 		this->Text += input;
-		SelectionEnd = SelectionStart = this->Text.size();
+		SelectionEnd = SelectionStart = static_cast<int>(this->Text.size());
 	}
 	else
 	{
@@ -74,27 +141,27 @@ void TextBox::InputText(std::wstring input)
 			{
 				tmp.erase(tmp.begin() + sels);
 			}
-			for (int i = 0; i < input.size(); i++)
+			for (int i = 0; i < inputLength; i++)
 			{
 				tmp.insert(tmp.begin() + sels + i, input[i]);
 			}
-			SelectionEnd = SelectionStart = sels + (input.size());
+			SelectionEnd = SelectionStart = sels + inputLength;
 			this->Text = BuildTextFromBuffer(tmp);
 		}
 		else if (sele == sels && sele >= 0)
 		{
-			for (int i = 0; i < input.size(); i++)
+			for (int i = 0; i < inputLength; i++)
 			{
 				tmp.insert(tmp.begin() + sels + i, input[i]);
 			}
-			SelectionEnd += input.size();
-			SelectionStart += input.size();
+			SelectionEnd += inputLength;
+			SelectionStart += inputLength;
 			this->Text = BuildTextFromBuffer(tmp);
 		}
 		else
 		{
 			this->Text += input;
-			SelectionEnd = SelectionStart = this->Text.size();
+			SelectionEnd = SelectionStart = static_cast<int>(this->Text.size());
 		}
 	}
 	if(this->Text.empty())
@@ -102,7 +169,7 @@ void TextBox::InputText(std::wstring input)
 		this->Text = L"";
 	}
 	std::vector<wchar_t> tmp = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
-	for (int i = 0; i < tmp.size(); i++)
+	for (size_t i = 0; i < tmp.size(); i++)
 	{
 		if (tmp[i] == L'\r' || tmp[i] == L'\n')
 		{
@@ -208,7 +275,7 @@ void TextBox::InputDelete()
 	}
 	else
 	{
-		if (sels < this->Text.size())
+		if (sels < static_cast<int>(this->Text.size()))
 		{
 			if (!this->isApplyingUndoRedo)
 			{
@@ -320,6 +387,84 @@ std::wstring TextBox::GetSelectedString()
 	}
 	return L"";
 }
+
+int TextBox::SelectionLength() const
+{
+	return std::abs(this->SelectionEnd - this->SelectionStart);
+}
+
+bool TextBox::HasSelection() const
+{
+	return this->SelectionLength() > 0;
+}
+
+void TextBox::Select(int start, int length)
+{
+	const int textLength = static_cast<int>(this->Text.size());
+	const int selStart = std::clamp(start, 0, textLength);
+	const int selEnd = std::clamp(selStart + std::max(0, length), 0, textLength);
+	this->SelectionStart = selStart;
+	this->SelectionEnd = selEnd;
+	this->UpdateScroll();
+	this->PostRender();
+}
+
+void TextBox::SelectAll()
+{
+	this->Select(0, static_cast<int>(this->Text.size()));
+}
+
+void TextBox::ClearSelection()
+{
+	const int caret = std::clamp(std::max(this->SelectionStart, this->SelectionEnd), 0, static_cast<int>(this->Text.size()));
+	this->SelectionStart = caret;
+	this->SelectionEnd = caret;
+	this->UpdateScroll();
+	this->PostRender();
+}
+
+void TextBox::Clear()
+{
+	if (this->Text.empty()) return;
+	this->SelectAll();
+	this->InputBack();
+	this->UpdateScroll();
+	this->PostRender();
+}
+
+void TextBox::InsertText(std::wstring text)
+{
+	this->InputText(text);
+	this->UpdateScroll();
+	this->PostRender();
+}
+
+bool TextBox::Copy()
+{
+	const HWND hwnd = this->ParentForm ? this->ParentForm->Handle : NULL;
+	return WriteClipboardText(hwnd, this->GetSelectedString());
+}
+
+bool TextBox::Cut()
+{
+	if (!this->HasSelection() || !this->Copy()) return false;
+	this->InputBack();
+	this->UpdateScroll();
+	this->PostRender();
+	return true;
+}
+
+bool TextBox::Paste()
+{
+	std::wstring text;
+	const HWND hwnd = this->ParentForm ? this->ParentForm->Handle : NULL;
+	if (!ReadClipboardText(hwnd, text)) return false;
+	this->InputText(text);
+	this->UpdateScroll();
+	this->PostRender();
+	return true;
+}
+
 void TextBox::Update()
 {
 	if (this->IsVisual == false)return;
@@ -331,6 +476,8 @@ void TextBox::Update()
 	float OffsetY = (this->Height - textSize.height) * 0.5f;
 	if (OffsetY < 0.0f)OffsetY = 0.0f;
 	auto size = this->ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
 	bool isSelected = this->ParentForm->Selected == this;
 	this->_caretRectCacheValid = false;
 	bool shouldDrawCaret = false;
@@ -345,7 +492,7 @@ void TextBox::Update()
 			backColor.g = std::min(1.0f, backColor.g * 1.2f);
 			backColor.b = std::min(1.0f, backColor.b * 1.2f);
 		}
-		d2d->FillRect(0, 0, size.cx, size.cy, backColor);
+		d2d->FillRect(0, 0, actualWidth, actualHeight, backColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -379,7 +526,7 @@ void TextBox::Update()
 						const float cy = caret.top + OffsetY;
 						const float ch = caret.height > 0 ? caret.height : font->FontHeight;
 						auto abs = this->AbsLocation;
-						this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ch + 2.0f };
+						this->_caretRectCache = { static_cast<float>(abs.x) + cx - 2.0f, static_cast<float>(abs.y) + cy - 2.0f, static_cast<float>(abs.x) + cx + 2.0f, static_cast<float>(abs.y) + cy + ch + 2.0f };
 						this->_caretRectCacheValid = true;
 						shouldDrawCaret = true;
 						caretStart = { selRange[0].left + TextMargin - OffsetX, selRange[0].top + OffsetY };
@@ -416,7 +563,7 @@ void TextBox::Update()
 				const float cy = OffsetY;
 				const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
 				auto abs = this->AbsLocation;
-				this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ch + 2.0f };
+				this->_caretRectCache = { static_cast<float>(abs.x) + cx - 2.0f, static_cast<float>(abs.y) + cy - 2.0f, static_cast<float>(abs.x) + cx + 2.0f, static_cast<float>(abs.y) + cy + ch + 2.0f };
 				this->_caretRectCacheValid = true;
 				shouldDrawCaret = true;
 				caretStart = { (float)TextMargin - OffsetX, OffsetY };
@@ -428,15 +575,15 @@ void TextBox::Update()
 		{
 			d2d->DrawLine(caretStart, caretEnd, this->ForeColor);
 		}
-		d2d->DrawRect(0, 0, size.cx, size.cy, this->BolderColor, this->Boder);
+		d2d->DrawRect(0, 0, actualWidth, actualHeight, this->BolderColor, this->Boder);
 		if (!this->Enable)
 		{
-			d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+			d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 		}
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	this->EndRender();
 }
@@ -456,7 +603,7 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
 		TCHAR strFileName[MAX_PATH];
 		std::vector<std::wstring> files;
-		for (int i = 0; i < uFileNum; i++)
+		for (UINT i = 0; i < uFileNum; i++)
 		{
 			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
 			files.push_back(strFileName);
@@ -576,16 +723,17 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 		}
 		else if (wParam == VK_RIGHT)
 		{
-			if (this->SelectionEnd < this->Text.size())
+			int textLength = static_cast<int>(this->Text.size());
+			if (this->SelectionEnd < textLength)
 			{
 				this->SelectionEnd = this->SelectionEnd + 1;
 				if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 				{
 					this->SelectionStart = this->SelectionEnd;
 				}
-				if (this->SelectionEnd > this->Text.size())
+				if (this->SelectionEnd > textLength)
 				{
-					this->SelectionEnd = this->Text.size();
+					this->SelectionEnd = textLength;
 				}
 				UpdateScroll();
 			}
@@ -630,9 +778,10 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 			{
 				this->SelectionStart = this->SelectionEnd;
 			}
-			if (this->SelectionEnd > this->Text.size())
+			int textLength = static_cast<int>(this->Text.size());
+			if (this->SelectionEnd > textLength)
 			{
-				this->SelectionEnd = this->Text.size();
+				this->SelectionEnd = textLength;
 			}
 			UpdateScroll();
 		}
@@ -660,9 +809,10 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 			{
 				this->SelectionStart = this->SelectionEnd;
 			}
-			if (this->SelectionEnd > this->Text.size())
+			int textLength = static_cast<int>(this->Text.size());
+			if (this->SelectionEnd > textLength)
 			{
-				this->SelectionEnd = this->Text.size();
+				this->SelectionEnd = textLength;
 			}
 			UpdateScroll(true);
 		}
@@ -683,7 +833,7 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 		else if (ch == 1)
 		{
 			this->SelectionStart = 0;
-			this->SelectionEnd = this->Text.size();
+			this->SelectionEnd = static_cast<int>(this->Text.size());
 			UpdateScroll();
 		}
 		else if (ch == 8)
@@ -781,7 +931,7 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 			{
 
 				std::vector<wchar_t> tmp;
-				for (int i = 0; i < dwSize - 2; i++)
+				for (DWORD i = 0; i < dwSize - 2; i++)
 				{
 					if (input[i] > 0xFF)
 					{

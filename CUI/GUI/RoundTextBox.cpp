@@ -20,6 +20,8 @@ void RoundTextBox::Update()
 	float OffsetY = std::max((Height - textSize.height) * 0.5f, 0.0f);
 
 	auto size = ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
 	bool isSelected = ParentForm->Selected == this;
 	this->_caretRectCacheValid = false;
 	bool shouldDrawCaret = false;
@@ -35,10 +37,10 @@ void RoundTextBox::Update()
 			backColor.g = std::min(1.0f, backColor.g * 1.2f);
 			backColor.b = std::min(1.0f, backColor.b * 1.2f);
 		}
-		d2d->FillRoundRect(0, 0, size.cx, size.cy, backColor, TextMargin);
+		d2d->FillRoundRect(0, 0, actualWidth, actualHeight, backColor, TextMargin);
 		RenderImage();
 		// 内部文本裁剪：本地坐标下从 TextMargin 开始
-		d2d->PushDrawRect(TextMargin, 0, (float)size.cx - TextMargin * 2.0f, (float)size.cy);
+		d2d->PushDrawRect(TextMargin, 0, actualWidth - TextMargin * 2.0f, actualHeight);
 
 		if (Text.size() > 0)
 		{
@@ -60,7 +62,7 @@ void RoundTextBox::Update()
 					const float cy = caret.top + OffsetY;
 					const float ch = caret.height > 0 ? caret.height : font->FontHeight;
 					auto abs = this->AbsLocation;
-					this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ch + 2.0f };
+					this->_caretRectCache = { static_cast<float>(abs.x) + cx - 2.0f, static_cast<float>(abs.y) + cy - 2.0f, static_cast<float>(abs.x) + cx + 2.0f, static_cast<float>(abs.y) + cy + ch + 2.0f };
 					this->_caretRectCacheValid = true;
 					shouldDrawCaret = true;
 					caretStart = { selRange[0].left + TextMargin - OffsetX, selRange[0].top + OffsetY };
@@ -95,7 +97,7 @@ void RoundTextBox::Update()
 			const float cy = OffsetY;
 			const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
 			auto abs = this->AbsLocation;
-			this->_caretRectCache = { abs.x + cx - 2.0f, abs.y + cy - 2.0f, abs.x + cx + 2.0f, abs.y + cy + ch + 2.0f };
+			this->_caretRectCache = { static_cast<float>(abs.x) + cx - 2.0f, static_cast<float>(abs.y) + cy - 2.0f, static_cast<float>(abs.x) + cx + 2.0f, static_cast<float>(abs.y) + cy + ch + 2.0f };
 			this->_caretRectCacheValid = true;
 			shouldDrawCaret = true;
 			caretStart = { (float)TextMargin - OffsetX, OffsetY };
@@ -111,7 +113,7 @@ void RoundTextBox::Update()
 
 	if (!Enable)
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 
 	this->EndRender();

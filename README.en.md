@@ -4,7 +4,7 @@
 
 [完整文档(中文)](ReadMeFull.md)
 
-CUI is a modern native Windows GUI framework based on **Direct2D** and **DirectComposition** (C++20). It also comes with a **visual designer** (drag & drop, JSON save/load, and automatic C++ code generation).
+CUI is a modern native Windows GUI framework based on **Direct2D** and **DirectComposition** (C++20). It also comes with a **visual designer** (drag & drop, XML save/load, and automatic C++ code generation).
 
 This repository mainly contains:
 - `CUI/`: runtime GUI framework and controls
@@ -22,7 +22,7 @@ This repository mainly contains:
 - **SVG support**: built-in nanosvg (included)
 - **Media playback**: built-in MediaPlayer control
 - **WebView2 integration**: embed modern web content via Microsoft WebView2
-- **Designer workflow**: property editing, live preview, JSON design files, and C++ code generation
+- **Designer workflow**: property editing, live preview, XML design files, and C++ code generation
 
 ## Screenshots
 
@@ -71,7 +71,7 @@ The MediaPlayer page demonstrates the built-in media playback control.
   - `CUITest` now carries the small helper code it previously consumed from `Utils`, so it no longer depends on `Utils`
   - `CuiDesigner` currently depends on `CUI` and `Utils`
 - **Third-party dependencies**: WebView2; the graphics and utility source used by this repo is already included locally
-- **Designer output**: the designer saves JSON and generates C++ code; it’s recommended to version-control generated code and keep the JSON design files as the long-term UI source.
+- **Designer output**: the designer saves XML and generates C++ code; it’s recommended to version-control generated code and keep the XML design files as the long-term UI source.
 
 ## Community
 

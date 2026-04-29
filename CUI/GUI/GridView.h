@@ -1,10 +1,15 @@
 ﻿#pragma once
 #include "Control.h"
 #include <functional>
+#include <cstdint>
+#include <list>
+#include <unordered_map>
+#include <variant>
 #pragma comment(lib, "Imm32.lib")
 typedef Event<void(class GridView*, int c, int r, bool v) > OnGridViewCheckStateChangedEvent;
 typedef Event<void(class GridView*, int c, int r)> OnGridViewButtonClickEvent;
 typedef Event<void(class GridView*, int c, int r, int selectedIndex, std::wstring selectedText)> OnGridViewComboBoxSelectionChangedEvent;
+typedef Event<void(class GridView*, bool& cancel)> OnGridViewUserAddingRowEvent;
 typedef Event<void(class GridView*, int newRowIndex)> OnGridViewUserAddedRowEvent;
 enum class ColumnType
 {
@@ -13,6 +18,17 @@ enum class ColumnType
 	Check,
 	Button,
 	ComboBox,
+};
+
+enum class CellValueKind
+{
+	Empty,
+	Text,
+	Image,
+	Integer,
+	Boolean,
+	Pointer,
+	ComboSelection,
 };
 
 /**
@@ -56,12 +72,18 @@ public:
 class CellValue
 {
 public:
-	std::wstring Text;
-	std::shared_ptr<BitmapSource> Image;
-	Microsoft::WRL::ComPtr<ID2D1Bitmap> ImageCache;
-	ID2D1RenderTarget* ImageCacheTarget = nullptr;
-	const BitmapSource* ImageCacheSource = nullptr;
-	__int64 Tag;
+	struct ComboSelectionValue
+	{
+		int SelectedIndex = -1;
+		std::wstring Text;
+	};
+	struct TaggedTextValue
+	{
+		std::wstring Text;
+		__int64 Tag = 0;
+	};
+
+	CellValueKind Kind = CellValueKind::Empty;
 	CellValue();
 	CellValue(std::wstring s);
 	CellValue(wchar_t* s);
@@ -73,7 +95,21 @@ public:
 	CellValue(unsigned __int32 tag);
 	CellValue(unsigned __int64 tag);
 	CellValue(PVOID tag);
-	ID2D1Bitmap* GetImageBitmap(D2DGraphics* render);
+	std::wstring GetText() const;
+	void SetText(std::wstring text);
+	std::shared_ptr<BitmapSource> GetImage() const;
+	void SetImage(std::shared_ptr<BitmapSource> image);
+	__int64 GetTag() const;
+	void SetTag(__int64 tag);
+	PVOID GetPointer() const;
+	void SetPointer(PVOID pointer);
+	bool GetBool() const;
+	void SetBool(bool value);
+	int GetComboIndex() const;
+	void SetComboSelection(int selectedIndex, const std::wstring& selectedText);
+private:
+	using Storage = std::variant<std::monostate, std::wstring, std::shared_ptr<BitmapSource>, __int64, bool, PVOID, ComboSelectionValue, TaggedTextValue>;
+	Storage _storage;
 };
 class GridViewRow
 {
@@ -87,6 +123,7 @@ public:
 	UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
 	bool HandlesMouseWheel() const override { return true; }
+	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
 	bool HandlesNavigationKey(WPARAM key) const override;
 	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override { return GetCaretBlinkInvalidRect(outRect); }
@@ -97,8 +134,6 @@ public:
 	bool InScroll = false;
 	bool InHScroll = false;
 	ScrollChangedEvent ScrollChanged;
-	std::vector<GridViewColumn> Columns = std::vector<GridViewColumn>();
-	std::vector<GridViewRow> Rows = std::vector<GridViewRow>();
 	GridViewRow& operator[](int idx);
 	float HeadHeight = 0.0f;
 	float RowHeight = 0.0f;
@@ -110,6 +145,8 @@ public:
 	int ScrollRowPosition = 0;
 	int SelectedColumnIndex = -1;
 	int SelectedRowIndex = -1;
+	/** @brief 是否按整行显示选中效果。 */
+	bool FullRowSelect = true;
 	int SortedColumnIndex = -1;
 	bool SortAscending = true;
 	int UnderMouseColumnIndex = -1;
@@ -136,27 +173,101 @@ public:
 	// 新行相关属性
 	/** @brief 新增行区域：是否允许用户手动添加新行。 */
 	bool AllowUserToAddRows = false;           // 是否允许用户手动添加新行
-	bool AllowUserToDeleteRows = true;         // 是否允许用户删除行
 	D2D1_COLOR_F NewRowBackColor = { 0.95f, 0.95f, 0.95f, 1.0f };  // 新行背景色
 	D2D1_COLOR_F NewRowForeColor = Colors::gray81;                     // 新行文字颜色
 	D2D1_COLOR_F NewRowIndicatorColor = Colors::RoyalBlue;           // 新行指示符颜色
 	OnGridViewCheckStateChangedEvent OnGridViewCheckStateChanged;
 	OnGridViewButtonClickEvent OnGridViewButtonClick;
 	OnGridViewComboBoxSelectionChangedEvent OnGridViewComboBoxSelectionChanged;
+	OnGridViewUserAddingRowEvent OnUserAddingRow;
 	OnGridViewUserAddedRowEvent OnUserAddedRow;
 	SelectionChangedEvent SelectionChanged;
 	float ScrollXOffset = 0.0f;
 	GridViewRow& SelectedRow();
-	std::wstring& SelectedValue();
+	std::wstring SelectedValue() const;
+	/** @brief 行数。 */
+	int RowCount() const;
+	/** @brief 列数。 */
+	int ColumnCount() const;
+	const std::vector<GridViewColumn>& GetColumns() const;
+	const std::vector<GridViewRow>& GetRows() const;
+	GridViewColumn* GetColumn(int index);
+	const GridViewColumn* GetColumn(int index) const;
+	GridViewColumn& ColumnAt(int index);
+	const GridViewColumn& ColumnAt(int index) const;
+	GridViewRow* GetRow(int index);
+	const GridViewRow* GetRow(int index) const;
+	GridViewRow& RowAt(int index);
+	const GridViewRow& RowAt(int index) const;
+	/** @brief 添加列并返回新列索引。 */
+	int AddColumn(const GridViewColumn& column);
+	void ClearColumns();
+	/** @brief 移除指定列。 */
+	bool RemoveColumnAt(int index);
+	/** @brief 添加行并返回新行索引。 */
+	int AddRow(const GridViewRow& row = GridViewRow());
+	void ClearRows();
+	bool SwapRows(int first, int second);
+	/** @brief 移除指定行。 */
+	bool RemoveRowAt(int index);
+	/** @brief 获取单元格，越界返回 nullptr。 */
+	CellValue* GetCell(int col, int row);
+	/** @brief 获取单元格，越界返回 nullptr。 */
+	const CellValue* GetCell(int col, int row) const;
+	/** @brief 设置单元格值，必要时扩展该行单元格数量。 */
+	bool SetCellValue(int col, int row, const CellValue& value);
+	/** @brief 程序化选择单元格。 */
+	void SelectCell(int col, int row, bool fireEvent = true);
+	/** @brief 程序化选择整行，活动列会尽量保留。 */
+	void SelectRow(int row, bool fireEvent = true);
 	/** @brief 清空列与行数据。 */
 	void Clear();
 	/** @brief 切换编辑光标/选择到指定单元格。 */
 	void ChangeEditionSelected(int col, int row);
 	/** @brief 调整行集合大小。 */
 	void ReSizeRows(int count);
+	void NormalizeRows();
 	/** @brief 按指定列排序。 */
 	void SortByColumn(int col, bool ascending = true);
+	/** @brief 设置图片位图缓存上限，避免超大数据集滚动时无限增长。 */
+	void SetImageCacheLimit(size_t limit);
+	/** @brief 获取图片位图缓存上限。 */
+	size_t GetImageCacheLimit() const;
 private:
+	std::vector<GridViewColumn> _columns;
+	std::vector<GridViewRow> _rows;
+
+	struct ImageCacheKey
+	{
+		const BitmapSource* Source = nullptr;
+		ID2D1RenderTarget* Target = nullptr;
+
+		bool operator==(const ImageCacheKey& other) const
+		{
+			return Source == other.Source && Target == other.Target;
+		}
+	};
+
+	struct ImageCacheKeyHash
+	{
+		size_t operator()(const ImageCacheKey& key) const
+		{
+			auto source = reinterpret_cast<std::uintptr_t>(key.Source);
+			auto target = reinterpret_cast<std::uintptr_t>(key.Target);
+			return static_cast<size_t>(source ^ (target + 0x9e3779b97f4a7c15ull + (source << 6) + (source >> 2)));
+		}
+	};
+
+	struct ImageCacheEntry
+	{
+		ImageCacheKey Key;
+		Microsoft::WRL::ComPtr<ID2D1Bitmap> Bitmap;
+	};
+	using ImageCacheList = std::list<ImageCacheEntry>;
+	ImageCacheList _imageCacheLru;
+	std::unordered_map<ImageCacheKey, ImageCacheList::iterator, ImageCacheKeyHash> _imageCacheIndex;
+	size_t _imageCacheLimit = 2048;
+
 	float _vScrollThumbGrabOffsetY = 0.0f;
 	float _hScrollThumbGrabOffsetX = 0.0f;
 	struct ScrollLayout
@@ -221,6 +332,15 @@ private:
 	int EditSelectionStart = 0;
 	int EditSelectionEnd = 0;
 	float EditOffsetX = 0.0f;
+	struct EditHistoryState
+	{
+		std::wstring Text;
+		int SelectionStart = 0;
+		int SelectionEnd = 0;
+	};
+	std::vector<EditHistoryState> _editUndoStack;
+	std::vector<EditHistoryState> _editRedoStack;
+	size_t _editHistoryLimit = 128;
 
 	class ComboBox* _cellComboBox = NULL;
 	int _cellComboBoxColumnIndex = -1;
@@ -241,8 +361,15 @@ private:
 	void EditInputText(const std::wstring& input);
 	void EditInputBack();
 	void EditInputDelete();
+	void EditPushUndoState();
+	void EditClearHistory();
+	void EditRestoreState(const EditHistoryState& state);
+	void EditSyncCellText();
+	bool EditUndo();
+	bool EditRedo();
 	void EditUpdateScroll(float cellWidth);
 	int EditHitTestTextPosition(float cellWidth, float cellHeight, float x, float y);
+	bool BeginEditSelectionFromMouse(int xof, int yof);
 	std::wstring EditGetSelectedString();
 	void EditEnsureSelectionInRange();
 	void EditSetImeCompositionWindow();
@@ -250,8 +377,9 @@ private:
 	// 新行相关方法
 	bool IsNewRowArea(int x, int y);
 	int HitTestNewRow(int x, int y, int& outColumnIndex);
-	void DrawNewRowIndicator();
 	void AddNewRow();
+	ID2D1Bitmap* GetImageBitmap(const std::shared_ptr<BitmapSource>& image, D2DGraphics* render);
+	void ClearImageCache();
 public:
 	void Update() override;
 	/** @brief 根据内容自动调整某列宽度。 */

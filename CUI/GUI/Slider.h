@@ -107,6 +107,15 @@ public:
 	GET(float, Value);
 	SET(float, Value);
 
+	/** @brief 同时设置最小值、最大值和当前值。 */
+	void SetRange(float minValue, float maxValue, float value);
+	/** @brief 按 Step 或指定 delta 增加当前值。 */
+	void Increment(float delta = 0.0f);
+	/** @brief 按 Step 或指定 delta 减少当前值。 */
+	void Decrement(float delta = 0.0f);
+	/** @brief 重置为最小值。 */
+	void Reset();
+
 	CursorKind QueryCursor(int xof, int yof) override;
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;

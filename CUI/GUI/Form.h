@@ -128,8 +128,10 @@ private:
 
 	bool TryGetCaptionButtonRect(CaptionButtonKind kind, RECT& out);
 	bool HitTestCaptionButtons(POINT ptClient, CaptionButtonKind& outKind);
+	bool HitTestCaptionButtonResizeExclusion(POINT ptClient);
 	void UpdateCaptionHover(POINT ptClient);
 	void ExecuteCaptionButton(CaptionButtonKind kind);
+	void ApplyWindowIcon();
 	void ClearCaptionStates();
 	void RefreshAnimationTimer();
 	void InvalidateControl(class Control* c, int inflatePx = 2, bool immediate = false);
@@ -138,6 +140,7 @@ private:
 	static RECT ToRECT(D2D1_RECT_F r, int inflatePx = 0);
 
 	void ApplyCursor(CursorKind kind);
+	bool ApplySystemCursorId(UINT32 cursorId);
 	void UpdateCursor(POINT mouseClient, POINT contentMouse);
 	CursorKind QueryCursorAt(POINT mouseClient, POINT contentMouse);
 	class Control* HitTestControlAt(POINT contentMouse);
@@ -161,6 +164,7 @@ private:
 	// 鼠标 Hover/Leave 跟踪
 	bool _mouseLeaveTracking = false;
 	class Control* _hoverControl = NULL;
+	class Control* _mouseCaptureControl = NULL;
 	// 焦点通知同步：用于捕获直接写 Selected 的旧代码路径
 	class Control* _focusNotifiedSelected = NULL;
 	// OLE Drag&Drop 支持：用于在拖动悬停时返回接受/不接受光标，并支持文本拖放

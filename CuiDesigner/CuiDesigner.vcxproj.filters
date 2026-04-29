@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="源文件">
@@ -108,9 +108,6 @@
     <ClCompile Include="DesignerModel\DesignDocumentSerializer.cpp">
       <Filter>DesignerModel</Filter>
     </ClCompile>
-    <ClCompile Include="nanosvg.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CodeGenInput.h">
@@ -196,9 +193,6 @@
     </ClInclude>
     <ClInclude Include="DesignerModel\DesignDocumentSerializer.h">
       <Filter>DesignerModel</Filter>
-    </ClInclude>
-    <ClInclude Include="nanosvg.h">
-      <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

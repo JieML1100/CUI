@@ -55,6 +55,10 @@ public:
 
 	MenuItem* AddItem(std::wstring text, int id = 0);
 	MenuItem* AddSeparator();
+	MenuItem* FindItemById(int id) const;
+	MenuItem* FindItemByText(const std::wstring& text) const;
+	bool RemoveItem(MenuItem* item);
+	bool RemoveItemById(int id);
 	void ClearItems();
 	void ShowAt(int x, int y, bool ignoreNextMouseUp = false);
 	void ShowAt(class Control* relativeTo, int x, int y, bool ignoreNextMouseUp = false);

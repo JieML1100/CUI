@@ -54,6 +54,8 @@ void GroupBox::Update()
 
 	auto d2d = this->ParentForm->Render;
 	auto size = this->ActualSize();
+	const float actualWidth = static_cast<float>(size.cx);
+	const float actualHeight = static_cast<float>(size.cy);
 	auto font = this->Font;
 	float textWidth = 0.0f;
 	if (font)
@@ -66,11 +68,11 @@ void GroupBox::Update()
 	float gapLeft = CaptionMarginLeft;
 	float gapRight = CaptionMarginLeft + textWidth + CaptionPaddingX * 2.0f;
 	gapLeft = (std::max)(0.0f, gapLeft);
-	gapRight = (std::min)((float)size.cx, gapRight);
+	gapRight = (std::min)(actualWidth, gapRight);
 
 	this->BeginRender();
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, this->BackColor);
+		d2d->FillRect(0, 0, actualWidth, actualHeight, this->BackColor);
 		if (this->Image)
 		{
 			this->RenderImage();
@@ -89,15 +91,15 @@ void GroupBox::Update()
 
 		if (gapLeft > 0.0f)
 			d2d->DrawLine(D2D1::Point2F(0.0f, borderY), D2D1::Point2F(gapLeft, borderY), this->BolderColor, this->Boder);
-		if (gapRight < (float)size.cx)
-			d2d->DrawLine(D2D1::Point2F(gapRight, borderY), D2D1::Point2F((float)size.cx, borderY), this->BolderColor, this->Boder);
-		d2d->DrawLine(D2D1::Point2F(0.0f, borderY), D2D1::Point2F(0.0f, (float)size.cy), this->BolderColor, this->Boder);
-		d2d->DrawLine(D2D1::Point2F((float)size.cx, borderY), D2D1::Point2F((float)size.cx, (float)size.cy), this->BolderColor, this->Boder);
-		d2d->DrawLine(D2D1::Point2F(0.0f, (float)size.cy), D2D1::Point2F((float)size.cx, (float)size.cy), this->BolderColor, this->Boder);
+		if (gapRight < actualWidth)
+			d2d->DrawLine(D2D1::Point2F(gapRight, borderY), D2D1::Point2F(actualWidth, borderY), this->BolderColor, this->Boder);
+		d2d->DrawLine(D2D1::Point2F(0.0f, borderY), D2D1::Point2F(0.0f, actualHeight), this->BolderColor, this->Boder);
+		d2d->DrawLine(D2D1::Point2F(actualWidth, borderY), D2D1::Point2F(actualWidth, actualHeight), this->BolderColor, this->Boder);
+		d2d->DrawLine(D2D1::Point2F(0.0f, actualHeight), D2D1::Point2F(actualWidth, actualHeight), this->BolderColor, this->Boder);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, actualWidth, actualHeight, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	this->EndRender();
 }

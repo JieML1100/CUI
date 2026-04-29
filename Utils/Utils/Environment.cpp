@@ -54,7 +54,7 @@ std::vector<std::string> Environment::LogicalDrives() {
 	char buffer[MAX_PATH];
 	GetLogicalDriveStringsA(MAX_PATH, buffer);
 	std::string str = std::string(buffer);
-	int index = 0;
+	size_t index = 0;
 	while (index < str.size()) {
 		std::string drive = str.substr(index, 3);
 		result.push_back(drive);
