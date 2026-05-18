@@ -1,0 +1,564 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<ClassDiagram MajorVersion="1" MinorVersion="1">
+  <Class Name="System::Xml::XmlParser" Collapsed="true">
+    <Position X="39.75" Y="1.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>UACRAAoIAASEgwAMAAEAMMJgJAIQAhECCUAAAAgEACA=</HashCode>
+      <FileName>src\XmlDocument.cpp</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::StreamXmlReaderInputSource" Collapsed="true">
+    <Position X="1" Y="4.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AEAQUCEIqEACOAIAQAAQBCAIGAbIUDAAOEEBEgGIAIA=</HashCode>
+      <FileName>src\XmlReader.cpp</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::MemoryMappedXmlReaderInputSource" Collapsed="true">
+    <Position X="3.25" Y="4.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAQAAAEAIAAAIAAAAACAAABAAAMIAAAAAAEBAACAAAA=</HashCode>
+      <FileName>src\XmlReader.cpp</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::SubrangeXmlReaderInputSource" Collapsed="true">
+    <Position X="5.5" Y="4.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAEAIAAAIAAgAAAABAAIAAAIAAAAAAEBAAGIAAA=</HashCode>
+      <FileName>src\XmlReader.cpp</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlReaderTokenizer" Collapsed="true">
+    <Position X="43.25" Y="1.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>CAiQCAEAAAAAYAQAAAAAIAAIAAEIAwARAAABAA2AAgA=</HashCode>
+      <FileName>src\XmlReader.cpp</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlConvert" Collapsed="true">
+    <Position X="38" Y="0.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>IABAIAAAAEQAACAEABFAIBAACAAAAAAAAJABpAAAEAI=</HashCode>
+      <FileName>include\XmlConvert.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlSchemaSet" Collapsed="true">
+    <Position X="45" Y="1.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>YgAIAAAAQAAEAlIAAAcwIwQAARAQgFhAAAAyAAAIEgQ=</HashCode>
+      <FileName>include\XmlSchemaSet.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlReader" Collapsed="true">
+    <Position X="41.5" Y="1.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>ziC4aiqPyMCMh3/e4rNpYsTzr9fLi+/j0cStyR3mlDc=</HashCode>
+      <FileName>include\XmlReader.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlWriter" Collapsed="true">
+    <Position X="36.25" Y="2.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>QBNEgIgYQHCGCUQAkhiUBAQBAELAgDsGgZQANUqsIAI=</HashCode>
+      <FileName>include\XmlWriter.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlDocument" Collapsed="true">
+    <Position X="20.25" Y="1.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>QIAhzIgARAGgCBQMAAEghAihixkAQiCCYCAAEAICaBA=</HashCode>
+      <FileName>include\XmlDocument.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlNode" Collapsed="true">
+    <Position X="18" Y="0.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>IAWghCEACwIGCwIAWAhIAkQCGAsBYKIHIMCgAIISKCA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlNamespaceManager" Collapsed="true">
+    <Position X="43.25" Y="0.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAEAAAAAAAAQAAEAAAAAAAQBAAAAAAAAAAAAAABABgA=</HashCode>
+      <FileName>include\XmlNamespaceManager.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlNameTable" Collapsed="true">
+    <Position X="45" Y="0.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAIAAIIAAAAAAABAAAAAAAQQgAAEAAAAAAAgAAAAAEA=</HashCode>
+      <FileName>include\XmlNameTable.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlAttribute" Collapsed="true">
+    <Position X="6.75" Y="1.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAQAAAgAAAAAAAABAAAAAAGAAAAAAAAAAAAAEAAAgAQ=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlDeclaration" Collapsed="true">
+    <Position X="9" Y="1.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>IAAAAAAAAAAAAAAQAACAAAAAgAAAAIAAAABIAAAAAAA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlDocumentType" Collapsed="true">
+    <Position X="11.25" Y="1.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AgAAAAAAAAACAAACAAwAAhAAAAAQAQAAAAEAAAIAAAA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlDocumentFragment" Collapsed="true">
+    <Position X="13.5" Y="1.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAAAAAIAA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlEntity" Collapsed="true">
+    <Position X="15.75" Y="1.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AgAAAAAIIAAAEAAAAAAAABAAAAAQAAAAAAAAAAIAAAA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlElement" Collapsed="true">
+    <Position X="22.5" Y="1.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>gQlABAEVECkAERAAEEwAIwAQQAGA0AICQAAAAaAhAoE=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlNodeReader" Collapsed="true">
+    <Position X="38" Y="1.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>ACAAACAEmACABS6QQAAgQASjJICDCUKiAGAgxhxCFAk=</HashCode>
+      <FileName>include\XmlNodeReader.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlNotation" Collapsed="true">
+    <Position X="2.25" Y="1.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AkAAAAAAAAAAAAAAAAAAABAAAAAQAAAAAAAAAAIAAAA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XPathNavigator" Collapsed="true">
+    <Position X="41.5" Y="2.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AABAACACCAAAATAAABAIAgQCAAIDAAABBQAgQAAAQBU=</HashCode>
+      <FileName>include\XmlXPath.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XPathDocument" Collapsed="true">
+    <Position X="38" Y="2.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAggAAAAABgAAAAQAAAAAAAAAIAAAACAAAAAAAAAAA=</HashCode>
+      <FileName>include\XmlXPath.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XPathValue" Collapsed="true">
+    <Position X="43.25" Y="2.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAIAACAAAAhoQACAgAgJAAAAAAAAAQAAQAAABAA=</HashCode>
+      <FileName>include\XmlXPath.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XPathExpression" Collapsed="true">
+    <Position X="39.75" Y="2.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAAAAAAIAAAAABAAAAAAQAAAAAAAIAEA=</HashCode>
+      <FileName>include\XmlXPath.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlNodeList" Collapsed="true">
+    <Position X="36.25" Y="1.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAECAAAAAAAAAAIAAAQUAAAAAAAAAAAAAAAAIAA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlAttributeCollection" Collapsed="true">
+    <Position X="36.25" Y="0.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAACAAAAAAAAAAIAAAQUAAAAgAABAAAAAAAAAAA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlNamedNodeMap" Collapsed="true">
+    <Position X="41.5" Y="0.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAACAAAAAAAAEAIAIAQUAAAAAAAAAAAAAAAAIAA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlCharacterData" Collapsed="true">
+    <Position X="29.25" Y="1.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAABAEAAAAAEAAAAAABAQAAAAFAAAAAAABQAAAA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlText" Collapsed="true">
+    <Position X="24.75" Y="3.25" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlEntityReference" Collapsed="true">
+    <Position X="4.5" Y="1.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlWhitespace" Collapsed="true">
+    <Position X="27" Y="3.25" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAIA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlSignificantWhitespace" Collapsed="true">
+    <Position X="29.25" Y="3.25" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAgAAAAAAAAAAAAAAAgAAAAAAAAAAAAA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlCDataSection" Collapsed="true">
+    <Position X="31.5" Y="3.25" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlComment" Collapsed="true">
+    <Position X="33.75" Y="3.25" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlProcessingInstruction" Collapsed="true">
+    <Position X="18" Y="1.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAABAAAAAAABAAAAACAAAAAAABAAAAAAAAAAAAA=</HashCode>
+      <FileName>include\XmlNode.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlReaderInputSource" Collapsed="true">
+    <Position X="4.25" Y="3.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAIAAAAAAAACAIAAAIAAAAAAEBABCAAAA=</HashCode>
+      <FileName>include\XmlReaderInternal.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::StringXmlReaderInputSource" Collapsed="true">
+    <Position X="7.75" Y="4.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAEAIAABIAAAgAAAAAAAAAAIAAAAAAEBCACAAAA=</HashCode>
+      <FileName>include\XmlReaderInternal.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlResolver" Collapsed="true">
+    <Position X="0.75" Y="6.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAACAAAAAAAAAAAABAAAAAAAAAAAAAAgAAAAAAAA=</HashCode>
+      <FileName>include\XmlResolver.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlUrlResolver" Collapsed="true">
+    <Position X="0.75" Y="7.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAACAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAA=</HashCode>
+      <FileName>include\XmlResolver.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Class Name="System::Xml::XmlException" Collapsed="true">
+    <Position X="39.75" Y="0.5" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAAAAAABAAAAAAAAAgAAAAgAAAAABIAA=</HashCode>
+      <FileName>include\XmlTypes.h</FileName>
+    </TypeIdentifier>
+  </Class>
+  <Struct Name="System::Xml::PendingSchemaIdReference" Collapsed="true">
+    <Position X="38" Y="4.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAABAAAAAAAAAAAAAAACAAAAAAAAAAAAA=</HashCode>
+      <FileName>src\XmlDocument.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::SchemaIdentityValidationState" Collapsed="true">
+    <Position X="39.75" Y="5.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AQAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAA=</HashCode>
+      <FileName>src\XmlDocument.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::SchemaObservedChildElement" Collapsed="true">
+    <Position X="43.25" Y="5.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAAAAAAAAAAEIAAAEAAAAAAAAAAAAAAE=</HashCode>
+      <FileName>src\XmlDocument.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::SchemaElementObservedContent" Collapsed="true">
+    <Position X="36.25" Y="5.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAgAAAAAAAAAAAAABAAAAAAAAAAABAAA=</HashCode>
+      <FileName>src\XmlDocument.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::SchemaObservedAttribute" Collapsed="true">
+    <Position X="41.5" Y="5.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAAAAAAAAAAEAAAAEAiAAAAAAAAAAAAE=</HashCode>
+      <FileName>src\XmlDocument.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::SchemaIdentityNodeSnapshot" Collapsed="true">
+    <Position X="38" Y="5.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAARAAAAAAAEAAAAEEAAAAAAAAAABAAE=</HashCode>
+      <FileName>src\XmlDocument.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::ReaderIdentitySelection" Collapsed="true">
+    <Position X="45" Y="4.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AQAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAAA=</HashCode>
+      <FileName>src\XmlDocument.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::SchemaValidationFrame" Collapsed="true">
+    <Position X="45" Y="5.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAMAAAAAAAAACCgAAAAAAAGIAAAEAAAAAAAAIAAAAAE=</HashCode>
+      <FileName>src\XmlDocument.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::XmlQuotedValueToken" Collapsed="true">
+    <Position X="41.5" Y="6.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAQ=</HashCode>
+      <FileName>src\XmlReader.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::XmlEntityReferenceToken" Collapsed="true">
+    <Position X="38" Y="6.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAKAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAA=</HashCode>
+      <FileName>src\XmlReader.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::XPathName" Collapsed="true">
+    <Position X="38" Y="7.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAAAAAgAACAEAAAAEAgAAAAAAAAAAAAA=</HashCode>
+      <FileName>src\XmlXPath.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::XPathStep" Collapsed="true">
+    <Position X="41.5" Y="7.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAIAAAFAgAEAAgEgAAAAAAAEAAIAAAAAAAAAABA=</HashCode>
+      <FileName>src\XmlXPath.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::XPathContext" Collapsed="true">
+    <Position X="36.25" Y="7.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AQAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAA=</HashCode>
+      <FileName>src\XmlXPath.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::XPathNavigatorShortcutResult" Collapsed="true">
+    <Position X="39.75" Y="7.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</HashCode>
+      <FileName>src\XmlXPath.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::CompiledXPathBranch" Collapsed="true">
+    <Position X="38" Y="3.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAQAAAAAAAAAAAAAAABAAAAAAAAAAAAEAAAA=</HashCode>
+      <FileName>src\XmlXPath.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::CompiledXPathExpression" Collapsed="true">
+    <Position X="39.75" Y="3.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAA=</HashCode>
+      <FileName>src\XmlXPath.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::XmlWriterSettings" Collapsed="true">
+    <Position X="45" Y="6.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAEEAAAAEAAAAAAAgAAAAAAAIAAAAABgAAA=</HashCode>
+      <FileName>include\XmlTypes.h</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::XmlReaderSettings" Collapsed="true">
+    <Position X="43.25" Y="6.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAABAAAAAACAAAAAAAAAAAAYAAhAIAAAgiAA=</HashCode>
+      <FileName>include\XmlTypes.h</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::XmlNodeChangedEventArgs" Collapsed="true">
+    <Position X="39.75" Y="6.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAQAAAACAAAAAAAACAAAEAAAAAAAAAAAAAAAAAEAAAQ=</HashCode>
+      <FileName>include\XmlTypes.h</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::`anonymous-namespace'::DtdContentModelNode" Collapsed="true">
+    <Position X="41.5" Y="3.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAAQAQgAAAAAAAAAEAAAAAAAAAAAAAAA=</HashCode>
+      <FileName>src\XmlReader.cpp</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::`anonymous-namespace'::XmlAttributeAssignmentToken" Collapsed="true">
+    <Position X="36.25" Y="6.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAFAgAAIAAAgAAAAAAAAAAAAAAEAAAAEAAAAAAAAAY=</HashCode>
+      <FileName>include\XmlReaderInternal.h</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::`anonymous-namespace'::ParsedDocumentTypeDeclaration" Collapsed="true">
+    <Position X="45" Y="3.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AgAAAAAAAAAAAAAAAAAAAhAAAAAEAAAAAAAAAAAAAAA=</HashCode>
+      <FileName>include\XmlReaderInternal.h</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::`anonymous-namespace'::ParsedXmlDeclarationData" Collapsed="true">
+    <Position X="36.25" Y="4.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAACAAAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAACAA=</HashCode>
+      <FileName>include\XmlReaderInternal.h</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::`anonymous-namespace'::PracticalIntegerValue" Collapsed="true">
+    <Position X="43.25" Y="4.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAA=</HashCode>
+      <FileName>include\XmlSchemaInternal.h</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::`anonymous-namespace'::PracticalDecimalValue" Collapsed="true">
+    <Position X="39.75" Y="4.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AIAAAAAAAAAAAAAAAAAAAAACAAABAAAAAAAAAAAAAAA=</HashCode>
+      <FileName>include\XmlSchemaInternal.h</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::`anonymous-namespace'::BuiltinSimpleTypeDescriptor" Collapsed="true">
+    <Position X="36.25" Y="3.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAQAAAAAAAAAAAAAACAAAAAgAAAAAAAACAAEAAAA=</HashCode>
+      <FileName>include\XmlSchemaInternal.h</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::`anonymous-namespace'::PracticalDurationValue" Collapsed="true">
+    <Position X="41.5" Y="4.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AIAAAAEAAAAAAAAACAAAAAAAAAAAAAAAAAAAAAAAAAA=</HashCode>
+      <FileName>include\XmlSchemaInternal.h</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Struct Name="System::Xml::`anonymous-namespace'::IdentityConstraintFieldEvaluationResult" Collapsed="true">
+    <Position X="43.25" Y="3.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAIAAAAAAAABAAAAAAACAAAAAAAAAAAAA=</HashCode>
+      <FileName>include\XmlSchemaInternal.h</FileName>
+    </TypeIdentifier>
+  </Struct>
+  <Enum Name="System::Xml::XmlNodeType" Collapsed="true">
+    <Position X="41.5" Y="9.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>EAAAAAAEBAACAAAAEAyAgAAAAIYAAAACAQAACAEAAAA=</HashCode>
+      <FileName>include\XmlTypes.h</FileName>
+    </TypeIdentifier>
+  </Enum>
+  <Enum Name="System::Xml::XmlNewLineHandling" Collapsed="true">
+    <Position X="38" Y="9.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAAAAAEAACA=</HashCode>
+      <FileName>include\XmlTypes.h</FileName>
+    </TypeIdentifier>
+  </Enum>
+  <Enum Name="System::Xml::DtdProcessing" Collapsed="true">
+    <Position X="39.75" Y="9" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAgAAAACAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAA=</HashCode>
+      <FileName>include\XmlTypes.h</FileName>
+    </TypeIdentifier>
+  </Enum>
+  <Enum Name="System::Xml::ConformanceLevel" Collapsed="true">
+    <Position X="36.25" Y="9" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAQAAAAAAAAAAAAAAAAAAAAACAAAAACAAAAA=</HashCode>
+      <FileName>include\XmlTypes.h</FileName>
+    </TypeIdentifier>
+  </Enum>
+  <Enum Name="System::Xml::ValidationType" Collapsed="true">
+    <Position X="43.25" Y="9" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAAAAAAAAAAAEAAAABAAAAAAAAAEAAAA=</HashCode>
+      <FileName>include\XmlTypes.h</FileName>
+    </TypeIdentifier>
+  </Enum>
+  <Enum Name="System::Xml::ReadState" Collapsed="true">
+    <Position X="41.5" Y="9" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAQAAAAAAAAQAAAAAAAAAAAgAABCAAAA=</HashCode>
+      <FileName>include\XmlTypes.h</FileName>
+    </TypeIdentifier>
+  </Enum>
+  <Enum Name="System::Xml::WriteState" Collapsed="true">
+    <Position X="45" Y="9" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAiACAQAAAAgAAAAAAAAAAAAAAIAAAACAAAA=</HashCode>
+      <FileName>include\XmlTypes.h</FileName>
+    </TypeIdentifier>
+  </Enum>
+  <Enum Name="System::Xml::XmlNodeChangedAction" Collapsed="true">
+    <Position X="39.75" Y="9.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAEAAAABAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAA=</HashCode>
+      <FileName>include\XmlTypes.h</FileName>
+    </TypeIdentifier>
+  </Enum>
+  <Enum Name="System::Xml::XPathValueType" Collapsed="true">
+    <Position X="43.25" Y="9.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAQAAAAAAQEAAAAAAAAAAAIAAAAAAAAEAAAA=</HashCode>
+      <FileName>include\XmlXPath.h</FileName>
+    </TypeIdentifier>
+  </Enum>
+  <Enum Name="System::Xml::`anonymous-namespace'::DtdContentModelNodeKind" Collapsed="true">
+    <Position X="38" Y="9" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAAAAAAAAAAAAAAAAAAAAQAAAAACAAAAAAAAAEAAAA=</HashCode>
+      <FileName>src\XmlReader.cpp</FileName>
+    </TypeIdentifier>
+  </Enum>
+  <Enum Name="System::Xml::`anonymous-namespace'::XmlMarkupKind" Collapsed="true">
+    <Position X="36.25" Y="9.75" Width="1.5" />
+    <TypeIdentifier>
+      <HashCode>AAAABEAEBAAAQAAAAAiAgAAAAAAAAAAAAAAAAAEAAAA=</HashCode>
+      <FileName>include\XmlReaderInternal.h</FileName>
+    </TypeIdentifier>
+  </Enum>
+  <Font Name="Microsoft YaHei UI" Size="9" />
+</ClassDiagram>

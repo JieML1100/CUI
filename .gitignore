@@ -1,0 +1,138 @@
+# ---> C
+# Prerequisites
+*.d
+
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Linker output
+*.ilk
+*.map
+*.exp
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Kernel Module Compile Results
+*.mod*
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf
+
+# ---> C++
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+/.vs
+/M-GX/Debug
+/M-GX/KCE/x64/Release
+/M-GX/x64
+/PML/x64
+/SCUMX/SCUMX/x64/Release
+/TestClient/x64
+/x64
+/SCUMX/x64
+/CUI/x64
+/.vscode
+
+# NuGet / tooling (native WebView2 package)
+/packages/
+/.tools/
+/Release/CUI.exe.WebView2/EBWebView
+/CUI/CUI/x64
+/CUI/Release
+/CuiDesigner/x64
+/CUITest/x64/Release
+/CuiDesigner/Designer/x64/Debug
+/CUITest/x64/Debug
+/CuiDesigner/Release
+/CuiDesigner/Designer/x64/Release
+/CUITest/Release
+/CUI_Legacy/CUI/x64/Debug
+/CUI_Legacy/CUI/x64/Release
+/CUI_Legacy/x64
+/CUI_Legacy/Win32/Release/CUI_Legacy
+/CUI_Legacy/Release
+/Release/CUITest.exe.WebView2/EBWebView
+/CUITest/CUITest/x64
+/CUITest_Legacy/x64
+/CUITest_Legacy/CUITest_Legacy/x64/Release
+/MediaLibrary/.vs/MediaLibrary
+/CppUtils/Graphics/x64/Release
+/CppUtils/CppUtils/x64/Release
+/CppUtils/UtilsTest/x64/Release
+/CUITest_Legacy/CUITest_Legacy/x64/Debug
+/CUI_Legacy/CUI_Legacy/x64/Debug
+/CuiDesigner/RefactorSketch.md
+/Utils/Release
+/Utils/Utils/x64/Debug
+/Utils/x64
+/D2DGraphics/D2DGraphics/x64/Debug
+/D2DGraphics/Release
+/D2DGraphics/x64
+/LibXML/x64
+/CUI_Legacy/CUI_Legacy/x64/Release
+/LibXML/LibXML/x64/Release/LibXML.tlog

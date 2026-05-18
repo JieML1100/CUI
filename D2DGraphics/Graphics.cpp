@@ -1,0 +1,1932 @@
+﻿#include "Graphics.h"
+#include "SvgParserInternal.h"
+
+#include <algorithm>
+#include <cfloat>
+#include <cmath>
+#include <cstdio>
+#include <numbers>
+
+#include <d2derr.h>
+
+#include <d3d11.h>
+#include <d3d10_1.h>
+#include <dxgi1_2.h>
+
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
+
+using Microsoft::WRL::ComPtr;
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+constexpr float INV_255_1 = 1.0f / 255.0f;
+constexpr float DEG_TO_RAD = std::numbers::pi_v<float> / 180.0f;
+constexpr float OUTLINE_OFFSET = 1.0f;
+
+namespace {
+	struct SharedD2D11Resources {
+		ComPtr<ID3D11Device> d3dDevice;
+		ComPtr<ID3D11DeviceContext> d3dContext;
+		ComPtr<IDXGIDevice> dxgiDevice;
+		ComPtr<ID2D1Device> d2dDevice;
+	};
+
+	SharedD2D11Resources& Shared() {
+		static SharedD2D11Resources s;
+		return s;
+	}
+
+	bool IsDeviceRemovedHr(HRESULT hr) {
+		return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG ||
+			hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
+	}
+
+	void ResetSharedDevice() {
+		auto& s = Shared();
+		s.d2dDevice.Reset();
+		s.dxgiDevice.Reset();
+		s.d3dContext.Reset();
+		s.d3dDevice.Reset();
+	}
+
+	HRESULT CreateSharedDeviceIfNeeded() {
+		auto& s = Shared();
+		if (s.d3dDevice) {
+			HRESULT reason = s.d3dDevice->GetDeviceRemovedReason();
+			if (reason != S_OK && IsDeviceRemovedHr(reason)) {
+				ResetSharedDevice();
+			}
+		}
+		if (s.d2dDevice && s.dxgiDevice && s.d3dDevice) {
+			return S_OK;
+		}
+
+		UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+#if defined(_DEBUG)
+		flags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+
+		D3D_FEATURE_LEVEL featureLevels[] = {
+			D3D_FEATURE_LEVEL_11_1,
+			D3D_FEATURE_LEVEL_11_0,
+			D3D_FEATURE_LEVEL_10_1,
+			D3D_FEATURE_LEVEL_10_0,
+		};
+		D3D_FEATURE_LEVEL obtained = D3D_FEATURE_LEVEL_10_0;
+
+		ComPtr<ID3D11Device> dev;
+		ComPtr<ID3D11DeviceContext> ctx;
+		HRESULT hr = D3D11CreateDevice(
+			nullptr,
+			D3D_DRIVER_TYPE_HARDWARE,
+			nullptr,
+			flags,
+			featureLevels,
+			_countof(featureLevels),
+			D3D11_SDK_VERSION,
+			&dev,
+			&obtained,
+			&ctx);
+
+		if (FAILED(hr) && (flags & D3D11_CREATE_DEVICE_VIDEO_SUPPORT)) {
+			hr = D3D11CreateDevice(
+				nullptr,
+				D3D_DRIVER_TYPE_HARDWARE,
+				nullptr,
+				flags & ~D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+				featureLevels,
+				_countof(featureLevels),
+				D3D11_SDK_VERSION,
+				&dev,
+				&obtained,
+				&ctx);
+		}
+
+		if (FAILED(hr)) {
+			hr = D3D11CreateDevice(
+				nullptr,
+				D3D_DRIVER_TYPE_WARP,
+				nullptr,
+				flags,
+				featureLevels,
+				_countof(featureLevels),
+				D3D11_SDK_VERSION,
+				&dev,
+				&obtained,
+				&ctx);
+			if (FAILED(hr) && (flags & D3D11_CREATE_DEVICE_VIDEO_SUPPORT)) {
+				hr = D3D11CreateDevice(
+					nullptr,
+					D3D_DRIVER_TYPE_WARP,
+					nullptr,
+					flags & ~D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+					featureLevels,
+					_countof(featureLevels),
+					D3D11_SDK_VERSION,
+					&dev,
+					&obtained,
+					&ctx);
+			}
+		}
+		if (FAILED(hr)) {
+			return hr;
+		}
+		ComPtr<ID3D10Multithread> multithread;
+		if (SUCCEEDED(dev.As(&multithread)) && multithread) {
+			multithread->SetMultithreadProtected(TRUE);
+		}
+
+		ComPtr<IDXGIDevice> dxgiDevice;
+		hr = dev.As(&dxgiDevice);
+		if (FAILED(hr)) {
+			return hr;
+		}
+
+		ComPtr<ID2D1Device> d2dDevice;
+		hr = _D2DFactory->CreateDevice(dxgiDevice.Get(), &d2dDevice);
+		if (FAILED(hr)) {
+			return hr;
+		}
+
+		s.d3dDevice = dev;
+		s.d3dContext = ctx;
+		s.dxgiDevice = dxgiDevice;
+		s.d2dDevice = d2dDevice;
+		return S_OK;
+	}
+
+	bool WritePixelsToWicBitmap(IWICBitmap* dst, const void* src, UINT stride, UINT width, UINT height) {
+		if (!dst || !src || width == 0 || height == 0 || stride == 0) {
+			return false;
+		}
+
+		WICRect rect{ 0,0, static_cast<INT>(width), static_cast<INT>(height) };
+		ComPtr<IWICBitmapLock> lock;
+		if (FAILED(dst->Lock(&rect, WICBitmapLockWrite, &lock))) {
+			return false;
+		}
+		UINT dstStride = 0;
+		UINT dstSize = 0;
+		BYTE* dstPtr = nullptr;
+		if (FAILED(lock->GetStride(&dstStride)) || FAILED(lock->GetDataPointer(&dstSize, &dstPtr)) || !dstPtr) {
+			return false;
+		}
+
+		const BYTE* srcBytes = static_cast<const BYTE*>(src);
+		UINT copyStride = std::min<UINT>(dstStride, stride);
+		for (UINT y = 0; y < height; ++y) {
+			memcpy(dstPtr + y * dstStride, srcBytes + y * stride, copyStride);
+		}
+		return true;
+	}
+}
+
+HRESULT Graphics_EnsureSharedD3DDevice() {
+	return CreateSharedDeviceIfNeeded();
+}
+
+ID3D11Device* Graphics_GetSharedD3DDevice() {
+	CreateSharedDeviceIfNeeded();
+	return Shared().d3dDevice.Get();
+}
+
+IDXGIDevice* Graphics_GetSharedDXGIDevice() {
+	CreateSharedDeviceIfNeeded();
+	return Shared().dxgiDevice.Get();
+}
+
+namespace {
+	Font* DefaultFontObject1() {
+		static Font* defaultFont = new Font(L"Arial", 18.0f);
+		return defaultFont;
+	}
+}
+
+D2DGraphics::D2DGraphics() = default;
+
+D2DGraphics::D2DGraphics(IWICBitmap* bitmap, bool takeOwnership) {
+	InitializeWithWicBitmap(
+		bitmap,
+		takeOwnership,
+		96.0f,
+		96.0f,
+		DXGI_FORMAT_B8G8R8A8_UNORM,
+		D2D1_ALPHA_MODE_PREMULTIPLIED);
+}
+
+D2DGraphics::D2DGraphics(const BitmapSource* bitmap) {
+	InitializeWithWicBitmap(
+		bitmap ? bitmap->GetWicBitmap() : nullptr,
+		false,
+		96.0f,
+		96.0f,
+		DXGI_FORMAT_B8G8R8A8_UNORM,
+		D2D1_ALPHA_MODE_PREMULTIPLIED);
+}
+
+D2DGraphics::D2DGraphics(IDXGISwapChain* swapChain) {
+	HRESULT hr = InitializeWithSwapChain(swapChain);
+}
+
+D2DGraphics::D2DGraphics(const InitOptions& options) {
+	Initialize(options);
+}
+
+D2DGraphics::~D2DGraphics() = default;
+
+void D2DGraphics::SetDpi(FLOAT dpiX, FLOAT dpiY) {
+	if (pDeviceContext) {
+		pDeviceContext->SetDpi(dpiX, dpiY);
+	}
+}
+
+HRESULT D2DGraphics::EnsureDeviceContext() {
+	return EnsureDeviceResources();
+}
+
+HRESULT D2DGraphics::EnsureDeviceResources() {
+	if (pD2DDevice && pDeviceContext) {
+		return S_OK;
+	}
+
+	HRESULT hr = CreateSharedDeviceIfNeeded();
+	if (FAILED(hr)) {
+		return hr;
+	}
+
+	pD2DDevice = Shared().d2dDevice;
+	if (!pD2DDevice) {
+		return E_FAIL;
+	}
+
+	ComPtr<ID2D1DeviceContext> dc;
+	hr = pD2DDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &dc);
+	if (FAILED(hr)) {
+		return hr;
+	}
+	pDeviceContext = dc;
+	return S_OK;
+}
+
+void D2DGraphics::ResetTarget() {
+	pSwapChain.Reset();
+	pTargetBitmap.Reset();
+	pDeviceContext.Reset();
+	pD2DDevice.Reset();
+
+	pWicTargetBitmap.Reset();
+	Default_Brush.Reset();
+	Default_Brush_Back.Reset();
+
+	surfaceKind = SurfaceKind::None;
+	wicDirty = false;
+}
+
+HRESULT D2DGraphics::ConfigDefaultObjects() {
+	if (!pDeviceContext) {
+		return E_FAIL;
+	}
+	D2D1_COLOR_F defaultColor{ 1.0f, 1.0f, 1.0f, 1.0f };
+	if (!Default_Brush) {
+		HRESULT hr = pDeviceContext->CreateSolidColorBrush(defaultColor, Default_Brush.ReleaseAndGetAddressOf());
+		if (FAILED(hr)) {
+			return hr;
+		}
+	}
+	else {
+		Default_Brush->SetColor(defaultColor);
+	}
+
+	if (!Default_Brush_Back) {
+		HRESULT hr = pDeviceContext->CreateSolidColorBrush(defaultColor, Default_Brush_Back.ReleaseAndGetAddressOf());
+		if (FAILED(hr)) {
+			return hr;
+		}
+	}
+	else {
+		Default_Brush_Back->SetColor(defaultColor);
+	}
+
+	return S_OK;
+}
+
+HRESULT D2DGraphics::Initialize(const InitOptions& options) {
+	HRESULT hr = S_OK;
+	switch (options.kind) {
+	case SurfaceKind::Offscreen:
+		hr = InitializeWithSize(options.width, options.height, options.dpiX, options.dpiY, options.format, options.alphaMode);
+		break;
+	case SurfaceKind::ExternalBitmap:
+		hr = InitializeWithWicBitmap(options.wicBitmap, options.takeOwnership, options.dpiX, options.dpiY, options.format, options.alphaMode);
+		break;
+	case SurfaceKind::None:
+	case SurfaceKind::Compatible:
+	case SurfaceKind::Hwnd:
+	case SurfaceKind::DxgiSwapChain:
+	default:
+		hr = E_INVALIDARG;
+		break;
+	}
+	return hr;
+}
+
+HRESULT D2DGraphics::CreateTargetBitmapForSize(UINT width, UINT height, FLOAT dpiX, FLOAT dpiY, DXGI_FORMAT format, D2D1_ALPHA_MODE alphaMode) {
+	if (!pDeviceContext) {
+		return E_FAIL;
+	}
+	if (width == 0 || height == 0) {
+		return E_INVALIDARG;
+	}
+
+	D2D1_BITMAP_PROPERTIES1 props = D2D1::BitmapProperties1(
+		D2D1_BITMAP_OPTIONS_TARGET,
+		D2D1::PixelFormat(format, alphaMode),
+		dpiX,
+		dpiY);
+
+	ComPtr<ID2D1Bitmap1> bmp;
+	HRESULT hr = pDeviceContext->CreateBitmap(D2D1::SizeU(width, height), nullptr, 0, &props, &bmp);
+	if (FAILED(hr)) {
+		return hr;
+	}
+
+	pTargetBitmap = bmp;
+	pDeviceContext->SetTarget(pTargetBitmap.Get());
+	return S_OK;
+}
+
+HRESULT D2DGraphics::InitializeWithSize(UINT width, UINT height, FLOAT dpiX, FLOAT dpiY, DXGI_FORMAT format, D2D1_ALPHA_MODE alphaMode) {
+	if (width == 0 || height == 0) {
+		return E_INVALIDARG;
+	}
+	ResetTarget();
+
+	HRESULT hr = EnsureDeviceResources();
+	if (FAILED(hr)) {
+		return hr;
+	}
+
+	hr = CreateTargetBitmapForSize(width, height, dpiX, dpiY, format, alphaMode);
+	if (FAILED(hr)) {
+		return hr;
+	}
+
+	ComPtr<IWICBitmap> wic;
+	hr = _ImageFactory->CreateBitmap(width, height, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &wic);
+	if (FAILED(hr)) {
+		return hr;
+	}
+	pWicTargetBitmap = wic;
+
+	surfaceKind = SurfaceKind::Offscreen;
+	wicDirty = true;
+	return ConfigDefaultObjects();
+}
+
+HRESULT D2DGraphics::InitializeWithWicBitmap(IWICBitmap* bitmap, bool takeOwnership, FLOAT dpiX, FLOAT dpiY, DXGI_FORMAT format, D2D1_ALPHA_MODE alphaMode) {
+	if (!bitmap) {
+		return E_INVALIDARG;
+	}
+	ResetTarget();
+
+	if (takeOwnership) {
+		pWicTargetBitmap.Attach(bitmap);
+	}
+	else {
+		pWicTargetBitmap = bitmap;
+	}
+
+	UINT width = 0, height = 0;
+	if (FAILED(pWicTargetBitmap->GetSize(&width, &height)) || width == 0 || height == 0) {
+		ResetTarget();
+		return E_INVALIDARG;
+	}
+
+	HRESULT hr = EnsureDeviceResources();
+	if (FAILED(hr)) {
+		ResetTarget();
+		return hr;
+	}
+
+	hr = CreateTargetBitmapForSize(width, height, dpiX, dpiY, format, alphaMode);
+	if (FAILED(hr)) {
+		ResetTarget();
+		return hr;
+	}
+
+	WICRect rect{ 0,0, static_cast<INT>(width), static_cast<INT>(height) };
+	ComPtr<IWICBitmapLock> lock;
+	if (SUCCEEDED(pWicTargetBitmap->Lock(&rect, WICBitmapLockRead, &lock))) {
+		UINT stride = 0;
+		UINT bufSize = 0;
+		BYTE* buf = nullptr;
+		if (SUCCEEDED(lock->GetStride(&stride)) && SUCCEEDED(lock->GetDataPointer(&bufSize, &buf)) && buf && stride) {
+			pTargetBitmap->CopyFromMemory(nullptr, buf, stride);
+		}
+	}
+
+	surfaceKind = SurfaceKind::ExternalBitmap;
+	wicDirty = false;
+	return ConfigDefaultObjects();
+}
+
+HRESULT D2DGraphics::CreateTargetBitmapForSwapChain(IDXGISwapChain* swapChain) {
+	if (!swapChain || !pDeviceContext) {
+		return E_INVALIDARG;
+	}
+	ComPtr<IDXGISurface> surface;
+	HRESULT hr = swapChain->GetBuffer(0, IID_PPV_ARGS(&surface));
+	if (FAILED(hr)) {
+		return hr;
+	}
+	if (!surface) {
+		return E_FAIL;
+	}
+
+	D2D1_BITMAP_PROPERTIES1 props = D2D1::BitmapProperties1(
+		D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+		D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_PREMULTIPLIED),
+		0.0f,
+		0.0f);
+
+	ComPtr<ID2D1Bitmap1> bmp;
+	hr = pDeviceContext->CreateBitmapFromDxgiSurface(surface.Get(), &props, &bmp);
+	if (FAILED(hr)) {
+		return hr;
+	}
+	pTargetBitmap = bmp;
+	pDeviceContext->SetTarget(pTargetBitmap.Get());
+	return S_OK;
+}
+
+HRESULT D2DGraphics::InitializeWithSwapChain(IDXGISwapChain* swapChain) {
+	if (!swapChain) {
+		return E_INVALIDARG;
+	}
+	ResetTarget();
+	ComPtr<IDXGIDevice> dxgiDevice;
+	HRESULT hr = swapChain->GetDevice(IID_PPV_ARGS(&dxgiDevice));
+	if (FAILED(hr)) {
+		return hr;
+	}
+
+	ComPtr<ID2D1Device> d2dDevice;
+	hr = _D2DFactory->CreateDevice(dxgiDevice.Get(), &d2dDevice);
+	if (FAILED(hr)) {
+		return hr;
+	}
+
+	ComPtr<ID2D1DeviceContext> dc;
+	hr = d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &dc);
+	if (FAILED(hr)) {
+		return hr;
+	}
+
+	pD2DDevice = d2dDevice;
+	pDeviceContext = dc;
+
+	pSwapChain = swapChain;
+	hr = CreateTargetBitmapForSwapChain(pSwapChain.Get());
+	if (FAILED(hr)) {
+		ResetTarget();
+		return hr;
+	}
+
+	surfaceKind = SurfaceKind::DxgiSwapChain;
+	wicDirty = false;
+	hr = ConfigDefaultObjects();
+	return hr;
+}
+
+void D2DGraphics::BeginRender() {
+	if (!pDeviceContext) {
+		return;
+	}
+	pDeviceContext->BeginDraw();
+}
+
+HRESULT D2DGraphics::SyncTargetToWicIfNeeded() {
+	if (!pDeviceContext || !pTargetBitmap || !pWicTargetBitmap) {
+		return S_OK;
+	}
+	if (!wicDirty) {
+		return S_OK;
+	}
+
+	D2D1_SIZE_U size = pTargetBitmap->GetPixelSize();
+	if (size.width == 0 || size.height == 0) {
+		wicDirty = false;
+		return S_OK;
+	}
+
+	D2D1_BITMAP_PROPERTIES1 cpuProps = D2D1::BitmapProperties1(
+		D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+		pTargetBitmap->GetPixelFormat(),
+		96.0f,
+		96.0f);
+
+	ComPtr<ID2D1Bitmap1> cpuBitmap;
+	HRESULT hr = pDeviceContext->CreateBitmap(size, nullptr, 0, &cpuProps, &cpuBitmap);
+	if (FAILED(hr)) {
+		return hr;
+	}
+
+	hr = cpuBitmap->CopyFromBitmap(nullptr, pTargetBitmap.Get(), nullptr);
+	if (FAILED(hr)) {
+		return hr;
+	}
+
+	D2D1_MAPPED_RECT mapped{};
+	hr = cpuBitmap->Map(D2D1_MAP_OPTIONS_READ, &mapped);
+	if (FAILED(hr)) {
+		return hr;
+	}
+
+	bool ok = WritePixelsToWicBitmap(pWicTargetBitmap.Get(), mapped.bits, mapped.pitch, size.width, size.height);
+	cpuBitmap->Unmap();
+
+	if (!ok) {
+		return E_FAIL;
+	}
+
+	wicDirty = false;
+	return S_OK;
+}
+
+void D2DGraphics::EndRender() {
+	if (!pDeviceContext) {
+		return;
+	}
+	HRESULT hr = pDeviceContext->EndDraw();
+
+	if (surfaceKind == SurfaceKind::Offscreen || surfaceKind == SurfaceKind::ExternalBitmap) {
+		wicDirty = true;
+		SyncTargetToWicIfNeeded();
+	}
+
+	if (surfaceKind == SurfaceKind::DxgiSwapChain && pSwapChain) {
+		pSwapChain->Present(1, 0);
+	}
+
+	if (hr == D2DERR_RECREATE_TARGET) {
+		if (surfaceKind == SurfaceKind::DxgiSwapChain && pSwapChain) {
+			CreateTargetBitmapForSwapChain(pSwapChain.Get());
+			ConfigDefaultObjects();
+		}
+	}
+}
+
+void D2DGraphics::ReSize(UINT width, UINT height) {
+	if (!pDeviceContext) {
+		return;
+	}
+
+	width = std::max<UINT>(1, width);
+	height = std::max<UINT>(1, height);
+
+	if (surfaceKind == SurfaceKind::Offscreen) {
+		InitializeWithSize(width, height, 96.0f, 96.0f, DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED);
+		return;
+	}
+
+	if (surfaceKind == SurfaceKind::DxgiSwapChain && pSwapChain) {
+		pTargetBitmap.Reset();
+		pDeviceContext->SetTarget(nullptr);
+		pDeviceContext->Flush();
+
+		pSwapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+		CreateTargetBitmapForSwapChain(pSwapChain.Get());
+		ConfigDefaultObjects();
+		return;
+	}
+}
+
+void D2DGraphics::Clear(D2D1_COLOR_F color) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	ctx->Clear(color);
+	wicDirty = true;
+}
+
+ID2D1SolidColorBrush* D2DGraphics::GetColorBrush(D2D1_COLOR_F newcolor) {
+	if (!Default_Brush && pDeviceContext) {
+		if (FAILED(pDeviceContext->CreateSolidColorBrush(newcolor, Default_Brush.ReleaseAndGetAddressOf()))) {
+			return nullptr;
+		}
+	}
+	if (!Default_Brush) return nullptr;
+	Default_Brush->SetColor(newcolor);
+	return Default_Brush.Get();
+}
+ID2D1SolidColorBrush* D2DGraphics::GetColorBrush(COLORREF newcolor) {
+	return GetColorBrush(D2D1_COLOR_F{ GetRValue(newcolor) * INV_255_1,GetGValue(newcolor) * INV_255_1,GetBValue(newcolor) * INV_255_1,1.0f });
+}
+ID2D1SolidColorBrush* D2DGraphics::GetColorBrush(int r, int g, int b) {
+	return GetColorBrush(D2D1_COLOR_F{ r * INV_255_1,g * INV_255_1,b * INV_255_1,1.0f });
+}
+ID2D1SolidColorBrush* D2DGraphics::GetColorBrush(float r, float g, float b, float a) {
+	return GetColorBrush(D2D1_COLOR_F{ r,g,b,a });
+}
+
+ID2D1SolidColorBrush* D2DGraphics::GetBackColorBrush(D2D1_COLOR_F newcolor) {
+	if (!Default_Brush_Back && pDeviceContext) {
+		if (FAILED(pDeviceContext->CreateSolidColorBrush(newcolor, Default_Brush_Back.ReleaseAndGetAddressOf()))) {
+			return nullptr;
+		}
+	}
+	if (!Default_Brush_Back) return nullptr;
+	Default_Brush_Back->SetColor(newcolor);
+	return Default_Brush_Back.Get();
+}
+ID2D1SolidColorBrush* D2DGraphics::GetBackColorBrush(COLORREF newcolor) {
+	return GetBackColorBrush(D2D1_COLOR_F{ GetRValue(newcolor) * INV_255_1,GetGValue(newcolor) * INV_255_1,GetBValue(newcolor) * INV_255_1,1.0f });
+}
+ID2D1SolidColorBrush* D2DGraphics::GetBackColorBrush(int r, int g, int b) {
+	return GetBackColorBrush(D2D1_COLOR_F{ r * INV_255_1,g * INV_255_1,b * INV_255_1,1.0f });
+}
+ID2D1SolidColorBrush* D2DGraphics::GetBackColorBrush(float r, float g, float b, float a) {
+	return GetBackColorBrush(D2D1_COLOR_F{ r,g,b,a });
+}
+
+// ---- 绘制/文本 API：基本沿用 Graphics.cpp（DeviceContext 继承 RenderTarget）----
+
+void D2DGraphics::DrawLine(D2D1_POINT_2F p1, D2D1_POINT_2F p2, D2D1_COLOR_F color, float linewidth) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ctx->DrawLine(p1, p2, brush, linewidth);
+}
+void D2DGraphics::DrawLine(D2D1_POINT_2F p1, D2D1_POINT_2F p2, ID2D1Brush* brush, float linewidth) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !brush) return;
+	ctx->DrawLine(p1, p2, brush, linewidth);
+}
+void D2DGraphics::DrawLine(float p1_x, float p1_y, float p2_x, float p2_y, D2D1_COLOR_F color, float linewidth) {
+	DrawLine(D2D1::Point2F(p1_x, p1_y), D2D1::Point2F(p2_x, p2_y), color, linewidth);
+}
+void D2DGraphics::DrawLine(float p1_x, float p1_y, float p2_x, float p2_y, ID2D1Brush* brush, float linewidth) {
+	DrawLine(D2D1::Point2F(p1_x, p1_y), D2D1::Point2F(p2_x, p2_y), brush, linewidth);
+}
+void D2DGraphics::DrawRect(D2D1_RECT_F rect, D2D1_COLOR_F color, float linewidth) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ctx->DrawRectangle(rect, brush, linewidth);
+}
+void D2DGraphics::DrawRect(float left, float top, float width, float height, D2D1_COLOR_F color, float linewidth) {
+	DrawRect(D2D1::RectF(left, top, left + width, top + height), color, linewidth);
+}
+void D2DGraphics::DrawRoundRect(D2D1_RECT_F rect, D2D1_COLOR_F color, float linewidth, float r) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ctx->DrawRoundedRectangle(D2D1::RoundedRect(rect, r, r), brush, linewidth);
+}
+void D2DGraphics::DrawRoundRect(float left, float top, float width, float height, D2D1_COLOR_F color, float linewidth, float r) {
+	DrawRoundRect(D2D1::RectF(left, top, left + width, top + height), color, linewidth, r);
+}
+void D2DGraphics::FillRect(D2D1_RECT_F rect, D2D1_COLOR_F color) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ctx->FillRectangle(rect, brush);
+	wicDirty = true;
+}
+void D2DGraphics::FillRect(D2D1_RECT_F rect, ID2D1Brush* brush) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !brush) return;
+	ctx->FillRectangle(rect, brush);
+	wicDirty = true;
+}
+void D2DGraphics::FillRect(float left, float top, float width, float height, D2D1_COLOR_F color) {
+	FillRect(D2D1::RectF(left, top, left + width, top + height), color);
+}
+void D2DGraphics::FillRect(float left, float top, float width, float height, ID2D1Brush* brush) {
+	FillRect(D2D1::RectF(left, top, left + width, top + height), brush);
+}
+void D2DGraphics::FillRoundRect(D2D1_RECT_F rect, D2D1_COLOR_F color, float r) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ctx->FillRoundedRectangle(D2D1::RoundedRect(rect, r, r), brush);
+	wicDirty = true;
+}
+void D2DGraphics::FillRoundRect(float left, float top, float width, float height, D2D1_COLOR_F color, float r) {
+	FillRoundRect(D2D1::RectF(left, top, left + width, top + height), color, r);
+}
+void D2DGraphics::DrawEllipse(D2D1_POINT_2F cent, float xr, float yr, D2D1_COLOR_F color, float linewidth) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ctx->DrawEllipse(D2D1::Ellipse(cent, xr, yr), brush, linewidth);
+}
+void D2DGraphics::DrawEllipse(float x, float y, float xr, float yr, D2D1_COLOR_F color, float linewidth) {
+	DrawEllipse(D2D1::Point2F(x, y), xr, yr, color, linewidth);
+}
+void D2DGraphics::FillEllipse(D2D1_POINT_2F cent, float xr, float yr, D2D1_COLOR_F color) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ctx->FillEllipse(D2D1::Ellipse(cent, xr, yr), brush);
+	wicDirty = true;
+}
+void D2DGraphics::FillEllipse(float cx, float cy, float xr, float yr, D2D1_COLOR_F color) {
+	FillEllipse(D2D1::Point2F(cx, cy), xr, yr, color);
+}
+void D2DGraphics::DrawGeometry(ID2D1Geometry* geo, D2D1_COLOR_F color, float linewidth) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !geo) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ctx->DrawGeometry(geo, brush, linewidth);
+}
+void D2DGraphics::DrawGeometry(ID2D1Geometry* geo, ID2D1Brush* brush, float linewidth) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !geo || !brush) return;
+	ctx->DrawGeometry(geo, brush, linewidth);
+}
+void D2DGraphics::FillGeometry(ID2D1Geometry* geo, D2D1_COLOR_F color) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !geo) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ctx->FillGeometry(geo, brush);
+	wicDirty = true;
+}
+void D2DGraphics::FillGeometry(ID2D1Geometry* geo, ID2D1Brush* brush) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !geo || !brush) return;
+	ctx->FillGeometry(geo, brush);
+	wicDirty = true;
+}
+
+namespace {
+	ComPtr<ID2D1PathGeometry> CreatePieGeometry(D2D1_POINT_2F center, float width, float height,
+		float startAngle, float sweepAngle) {
+		ComPtr<ID2D1PathGeometry> geo;
+		geo.Attach(Factory::CreateGeomtry());
+		if (!geo) return nullptr;
+
+		ComPtr<ID2D1GeometrySink> sink;
+		if (FAILED(geo->Open(&sink))) return nullptr;
+
+		sink->BeginFigure(center, D2D1_FIGURE_BEGIN_FILLED);
+		float startRad = startAngle * DEG_TO_RAD;
+		float endRad = (startAngle + sweepAngle) * DEG_TO_RAD;
+		D2D1_POINT_2F startPoint{ center.x + (width * 0.5f) * cosf(startRad), center.y - (height * 0.5f) * sinf(startRad) };
+		D2D1_POINT_2F endPoint{ center.x + (width * 0.5f) * cosf(endRad), center.y - (height * 0.5f) * sinf(endRad) };
+		sink->AddLine(startPoint);
+		D2D1_SIZE_F arcSize{ width * 0.5f, height * 0.5f };
+		D2D1_ARC_SIZE arcSizeFlag = (std::fabs(sweepAngle) <= 180.0f) ? D2D1_ARC_SIZE_SMALL : D2D1_ARC_SIZE_LARGE;
+		D2D1_SWEEP_DIRECTION sweepDir = sweepAngle >= 0.0f ? D2D1_SWEEP_DIRECTION_CLOCKWISE : D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE;
+		sink->AddArc(D2D1::ArcSegment(endPoint, arcSize, 0.0f, sweepDir, arcSizeFlag));
+		sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+		sink->Close();
+		return geo;
+	}
+}
+
+void D2DGraphics::FillPie(D2D1_POINT_2F center, float width, float height, float startAngle, float sweepAngle, D2D1_COLOR_F color) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	auto geo = CreatePieGeometry(center, width, height, startAngle, sweepAngle);
+	if (!geo) return;
+	ctx->FillGeometry(geo.Get(), brush);
+	wicDirty = true;
+}
+
+void D2DGraphics::FillPie(D2D1_POINT_2F center, float width, float height, float startAngle, float sweepAngle, ID2D1Brush* brush) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !brush) return;
+	auto geo = CreatePieGeometry(center, width, height, startAngle, sweepAngle);
+	if (!geo) return;
+	ctx->FillGeometry(geo.Get(), brush);
+	wicDirty = true;
+}
+
+void D2DGraphics::DrawBitmap(ID2D1Bitmap* bmp, float x, float y, float opacity) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !bmp) return;
+	D2D1_SIZE_F siz = bmp->GetSize();
+	ctx->DrawBitmap(bmp, D2D1::RectF(x, y, siz.width + x, siz.height + y), opacity);
+}
+void D2DGraphics::DrawBitmap(ID2D1Bitmap* bmp, D2D1_RECT_F rect, float opacity) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !bmp) return;
+	ctx->DrawBitmap(bmp, rect, opacity);
+}
+void D2DGraphics::DrawBitmap(ID2D1Bitmap* bmp, D2D1_RECT_F destRect, D2D1_RECT_F srcRect, float opacity) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !bmp) return;
+	ctx->DrawBitmap(bmp, destRect, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, srcRect);
+}
+void D2DGraphics::DrawBitmap(ID2D1Bitmap* bmp, float x, float y, float w, float h, float opacity) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !bmp) return;
+	ctx->DrawBitmap(bmp, D2D1::RectF(x, y, w + x, h + y), opacity);
+}
+void D2DGraphics::DrawBitmap(ID2D1Bitmap* bmp, float dest_x, float dest_y, float dest_w, float dest_h, float src_x, float src_y, float src_w, float src_h, float opacity) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !bmp) return;
+	ctx->DrawBitmap(bmp, D2D1::RectF(dest_x, dest_y, dest_w + dest_x, dest_h + dest_y), opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1::RectF(src_x, src_y, src_w + src_x, src_h + src_y));
+}
+
+void D2DGraphics::FillOpacityMask(ID2D1Bitmap* mask, D2D1_POINT_2F destPoint, D2D1_COLOR_F color, D2D1_OPACITY_MASK_CONTENT content) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !mask) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	auto bitmapSize = mask->GetSize();
+	D2D1_RECT_F maskRect = D2D1::RectF(0, 0, bitmapSize.width, bitmapSize.height);
+	D2D1_RECT_F destRect = D2D1::RectF(destPoint.x, destPoint.y, destPoint.x + bitmapSize.width, destPoint.y + bitmapSize.height);
+	ctx->FillOpacityMask(mask, brush, content, &destRect, &maskRect);
+	wicDirty = true;
+}
+void D2DGraphics::FillOpacityMask(ID2D1Bitmap* mask, D2D1_RECT_F destRect, D2D1_COLOR_F color, D2D1_OPACITY_MASK_CONTENT content) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !mask) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	auto bitmapSize = mask->GetSize();
+	D2D1_RECT_F maskRect = D2D1::RectF(0, 0, bitmapSize.width, bitmapSize.height);
+	ctx->FillOpacityMask(mask, brush, content, &destRect, &maskRect);
+	wicDirty = true;
+}
+void D2DGraphics::FillOpacityMask(ID2D1Bitmap* mask, D2D1_RECT_F destRect, D2D1_RECT_F srcRect, D2D1_COLOR_F color, D2D1_OPACITY_MASK_CONTENT content) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !mask) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ctx->FillOpacityMask(mask, brush, content, &destRect, &srcRect);
+	wicDirty = true;
+}
+
+void D2DGraphics::FillMesh(ID2D1Mesh* mesh, D2D1_COLOR_F color) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !mesh) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ctx->FillMesh(mesh, brush);
+	wicDirty = true;
+}
+
+IDWriteTextLayout* D2DGraphics::CreateStringLayout(const std::wstring& str, float width, float height, Font* font) {
+	IDWriteTextLayout* textLayout = nullptr;
+	Font* resolvedFont = font ? font : DefaultFontObject1();
+	if (!resolvedFont) return nullptr;
+	IDWriteTextFormat* fnt = resolvedFont->FontObject;
+	_DWriteFactory->CreateTextLayout(str.c_str(), static_cast<UINT32>(str.size()), fnt, width, height, &textLayout);
+	return textLayout;
+}
+
+void D2DGraphics::DrawStringLayout(IDWriteTextLayout* layout, float x, float y, D2D1_COLOR_F color) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !layout) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, brush);
+	wicDirty = true;
+}
+void D2DGraphics::DrawStringLayout(IDWriteTextLayout* layout, float x, float y, ID2D1Brush* brush) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !layout || !brush) return;
+	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, brush);
+	wicDirty = true;
+}
+
+void D2DGraphics::DrawStringLayoutCentered(IDWriteTextLayout* layout, float centerX, float centerY, D2D1_COLOR_F color) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !layout) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	D2D1_SIZE_F textSize = GetTextLayoutSize(layout);
+	float x = centerX - textSize.width * 0.5f;
+	float y = centerY - textSize.height * 0.5f;
+	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, brush);
+	wicDirty = true;
+}
+void D2DGraphics::DrawStringLayoutCentered(IDWriteTextLayout* layout, float centerX, float centerY, ID2D1Brush* brush) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !layout || !brush) return;
+	D2D1_SIZE_F textSize = GetTextLayoutSize(layout);
+	float x = centerX - textSize.width * 0.5f;
+	float y = centerY - textSize.height * 0.5f;
+	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, brush);
+	wicDirty = true;
+}
+
+namespace {
+	void DrawTextOutline(ID2D1DeviceContext* ctx, IDWriteTextLayout* layout, float x, float y,
+		ID2D1SolidColorBrush* outlineBrush) {
+		ctx->DrawTextLayout(D2D1::Point2F(x - OUTLINE_OFFSET, y - OUTLINE_OFFSET), layout, outlineBrush);
+		ctx->DrawTextLayout(D2D1::Point2F(x + OUTLINE_OFFSET, y - OUTLINE_OFFSET), layout, outlineBrush);
+		ctx->DrawTextLayout(D2D1::Point2F(x - OUTLINE_OFFSET, y + OUTLINE_OFFSET), layout, outlineBrush);
+		ctx->DrawTextLayout(D2D1::Point2F(x + OUTLINE_OFFSET, y + OUTLINE_OFFSET), layout, outlineBrush);
+	}
+}
+
+void D2DGraphics::DrawStringLayoutOutlined(IDWriteTextLayout* layout, float x, float y, D2D1_COLOR_F textColor, D2D1_COLOR_F outlineColor) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !layout) return;
+	auto textBrush = GetColorBrush(textColor);
+	auto outlineBrush = GetBackColorBrush(outlineColor);
+	if (!textBrush || !outlineBrush) return;
+	DrawTextOutline(ctx, layout, x, y, outlineBrush);
+	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, textBrush);
+	wicDirty = true;
+}
+
+void D2DGraphics::DrawStringLayoutOutlined(IDWriteTextLayout* layout, float x, float y, ID2D1Brush* textBrush, D2D1_COLOR_F outlineColor) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !layout || !textBrush) return;
+	auto outlineBrush = GetBackColorBrush(outlineColor);
+	if (!outlineBrush) return;
+	DrawTextOutline(ctx, layout, x, y, outlineBrush);
+	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, textBrush);
+	wicDirty = true;
+}
+
+void D2DGraphics::DrawStringLayoutCenteredOutlined(IDWriteTextLayout* layout, float centerX, float centerY, D2D1_COLOR_F textColor, D2D1_COLOR_F outlineColor) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !layout) return;
+	auto textBrush = GetColorBrush(textColor);
+	auto outlineBrush = GetBackColorBrush(outlineColor);
+	if (!textBrush || !outlineBrush) return;
+	D2D1_SIZE_F textSize = GetTextLayoutSize(layout);
+	float x = centerX - textSize.width * 0.5f;
+	float y = centerY - textSize.height * 0.5f;
+	DrawTextOutline(ctx, layout, x, y, outlineBrush);
+	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, textBrush);
+	wicDirty = true;
+}
+
+void D2DGraphics::DrawStringLayoutCenteredOutlined(IDWriteTextLayout* layout, float centerX, float centerY, ID2D1Brush* textBrush, D2D1_COLOR_F outlineColor) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !layout || !textBrush) return;
+	auto outlineBrush = GetBackColorBrush(outlineColor);
+	if (!outlineBrush) return;
+	D2D1_SIZE_F textSize = GetTextLayoutSize(layout);
+	float x = centerX - textSize.width * 0.5f;
+	float y = centerY - textSize.height * 0.5f;
+	DrawTextOutline(ctx, layout, x, y, outlineBrush);
+	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, textBrush);
+	wicDirty = true;
+}
+
+void D2DGraphics::DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, float y, D2D1_COLOR_F color, DWRITE_TEXT_RANGE subRange, D2D1_COLOR_F fontBack, Font* font) {
+	if (!layout) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto backBrush = GetBackColorBrush(fontBack);
+	auto frontBrush = GetColorBrush(color);
+	if (!backBrush || !frontBrush) return;
+	layout->SetDrawingEffect(NULL, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
+	layout->SetDrawingEffect(backBrush, subRange);
+	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, frontBrush);
+	wicDirty = true;
+}
+void D2DGraphics::DrawStringLayoutEffect(IDWriteTextLayout* layout, float x, float y, ID2D1Brush* brush, DWRITE_TEXT_RANGE subRange, D2D1_COLOR_F fontBack, Font* font) {
+	if (!layout || !brush) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto backBrush = GetBackColorBrush(fontBack);
+	if (!backBrush) return;
+	layout->SetDrawingEffect(NULL, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
+	layout->SetDrawingEffect(backBrush, subRange);
+	ctx->DrawTextLayout(D2D1::Point2F(x, y), layout, brush);
+	wicDirty = true;
+}
+
+void D2DGraphics::DrawString(const std::wstring& str, float x, float y, D2D1_COLOR_F color, Font* font) {
+	D2D1_RECT_F rect = D2D1::RectF(x, y, FLT_MAX, FLT_MAX);
+	Font* resolvedFont = font ? font : DefaultFontObject1();
+	if (!resolvedFont) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ctx->DrawText(str.c_str(), static_cast<UINT32>(str.size()), resolvedFont->FontObject, &rect, brush);
+	wicDirty = true;
+}
+void D2DGraphics::DrawString(const std::wstring& str, float x, float y, ID2D1Brush* brush, Font* font) {
+	D2D1_RECT_F rect = D2D1::RectF(x, y, FLT_MAX, FLT_MAX);
+	Font* resolvedFont = font ? font : DefaultFontObject1();
+	if (!resolvedFont) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !brush) return;
+	ctx->DrawText(str.c_str(), static_cast<UINT32>(str.size()), resolvedFont->FontObject, &rect, brush);
+	wicDirty = true;
+}
+void D2DGraphics::DrawString(const std::wstring& str, float x, float y, float w, float h, D2D1_COLOR_F color, Font* font) {
+	IDWriteTextLayout* textLayout = CreateStringLayout(str, w, h, font ? font : DefaultFontObject1());
+	if (!textLayout) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) { textLayout->Release(); return; }
+	auto brush = GetColorBrush(color);
+	if (!brush) { textLayout->Release(); return; }
+	ctx->DrawTextLayout({ x,y }, textLayout, brush);
+	textLayout->Release();
+	wicDirty = true;
+}
+void D2DGraphics::DrawString(const std::wstring& str, float x, float y, float w, float h, ID2D1Brush* brush, Font* font) {
+	IDWriteTextLayout* textLayout = CreateStringLayout(str, w, h, font ? font : DefaultFontObject1());
+	if (!textLayout) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !brush) { textLayout->Release(); return; }
+	ctx->DrawTextLayout({ x,y }, textLayout, brush);
+	textLayout->Release();
+	wicDirty = true;
+}
+void D2DGraphics::DrawStringCentered(const std::wstring& str, float centerX, float centerY, D2D1_COLOR_F color, Font* font) {
+	Font* resolvedFont = font ? font : DefaultFontObject1();
+	if (!resolvedFont) return;
+	IDWriteTextLayout* textLayout = CreateStringLayout(str, FLT_MAX, FLT_MAX, resolvedFont);
+	if (!textLayout) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) { textLayout->Release(); return; }
+	auto brush = GetColorBrush(color);
+	if (!brush) { textLayout->Release(); return; }
+	D2D1_SIZE_F textSize = GetTextLayoutSize(textLayout);
+	float x = centerX - textSize.width * 0.5f;
+	float y = centerY - textSize.height * 0.5f;
+	ctx->DrawTextLayout({ x, y }, textLayout, brush);
+	textLayout->Release();
+	wicDirty = true;
+}
+void D2DGraphics::DrawStringCentered(const std::wstring& str, float centerX, float centerY, ID2D1Brush* brush, Font* font) {
+	Font* resolvedFont = font ? font : DefaultFontObject1();
+	if (!resolvedFont) return;
+	IDWriteTextLayout* textLayout = CreateStringLayout(str, FLT_MAX, FLT_MAX, resolvedFont);
+	if (!textLayout) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !brush) { textLayout->Release(); return; }
+	D2D1_SIZE_F textSize = GetTextLayoutSize(textLayout);
+	float x = centerX - textSize.width * 0.5f;
+	float y = centerY - textSize.height * 0.5f;
+	ctx->DrawTextLayout({ x, y }, textLayout, brush);
+	textLayout->Release();
+	wicDirty = true;
+}
+void D2DGraphics::DrawStringOutlined(const std::wstring& str, float x, float y, D2D1_COLOR_F textColor, D2D1_COLOR_F outlineColor, Font* font) {
+	Font* resolvedFont = font ? font : DefaultFontObject1();
+	if (!resolvedFont) return;
+	IDWriteTextLayout* textLayout = CreateStringLayout(str, FLT_MAX, FLT_MAX, resolvedFont);
+	if (!textLayout) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) { textLayout->Release(); return; }
+	auto textBrush = GetColorBrush(textColor);
+	auto outlineBrush = GetBackColorBrush(outlineColor);
+	if (!textBrush || !outlineBrush) { textLayout->Release(); return; }
+	DrawTextOutline(ctx, textLayout, x, y, outlineBrush);
+	ctx->DrawTextLayout({ x, y }, textLayout, textBrush);
+	textLayout->Release();
+	wicDirty = true;
+}
+void D2DGraphics::DrawStringOutlined(const std::wstring& str, float x, float y, ID2D1Brush* textBrush, D2D1_COLOR_F outlineColor, Font* font) {
+	Font* resolvedFont = font ? font : DefaultFontObject1();
+	if (!resolvedFont) return;
+	IDWriteTextLayout* textLayout = CreateStringLayout(str, FLT_MAX, FLT_MAX, resolvedFont);
+	if (!textLayout) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !textBrush) { textLayout->Release(); return; }
+	auto outlineBrush = GetBackColorBrush(outlineColor);
+	if (!outlineBrush) { textLayout->Release(); return; }
+	DrawTextOutline(ctx, textLayout, x, y, outlineBrush);
+	ctx->DrawTextLayout({ x, y }, textLayout, textBrush);
+	textLayout->Release();
+	wicDirty = true;
+}
+void D2DGraphics::DrawStringCenteredOutlined(const std::wstring& str, float centerX, float centerY, D2D1_COLOR_F textColor, D2D1_COLOR_F outlineColor, Font* font) {
+	Font* resolvedFont = font ? font : DefaultFontObject1();
+	if (!resolvedFont) return;
+	IDWriteTextLayout* textLayout = CreateStringLayout(str, FLT_MAX, FLT_MAX, resolvedFont);
+	if (!textLayout) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) { textLayout->Release(); return; }
+	auto textBrush = GetColorBrush(textColor);
+	auto outlineBrush = GetBackColorBrush(outlineColor);
+	if (!textBrush || !outlineBrush) { textLayout->Release(); return; }
+	D2D1_SIZE_F textSize = GetTextLayoutSize(textLayout);
+	float x = centerX - textSize.width * 0.5f;
+	float y = centerY - textSize.height * 0.5f;
+	DrawTextOutline(ctx, textLayout, x, y, outlineBrush);
+	ctx->DrawTextLayout({ x, y }, textLayout, textBrush);
+	textLayout->Release();
+	wicDirty = true;
+}
+void D2DGraphics::DrawStringCenteredOutlined(const std::wstring& str, float centerX, float centerY, ID2D1Brush* textBrush, D2D1_COLOR_F outlineColor, Font* font) {
+	Font* resolvedFont = font ? font : DefaultFontObject1();
+	if (!resolvedFont) return;
+	IDWriteTextLayout* textLayout = CreateStringLayout(str, FLT_MAX, FLT_MAX, resolvedFont);
+	if (!textLayout) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !textBrush) { textLayout->Release(); return; }
+	auto outlineBrush = GetBackColorBrush(outlineColor);
+	if (!outlineBrush) { textLayout->Release(); return; }
+	D2D1_SIZE_F textSize = GetTextLayoutSize(textLayout);
+	float x = centerX - textSize.width * 0.5f;
+	float y = centerY - textSize.height * 0.5f;
+	DrawTextOutline(ctx, textLayout, x, y, outlineBrush);
+	ctx->DrawTextLayout({ x, y }, textLayout, textBrush);
+	textLayout->Release();
+	wicDirty = true;
+}
+
+void D2DGraphics::FillTriangle(D2D1_TRIANGLE triangle, D2D1_COLOR_F color) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) {
+		return;
+	}
+	auto brush = GetColorBrush(color);
+	if (!brush) {
+		return;
+	}
+	ComPtr<ID2D1PathGeometry> geo;
+	geo.Attach(Factory::CreateGeomtry());
+	if (!geo) {
+		return;
+	}
+	ComPtr<ID2D1GeometrySink> sink;
+	if (FAILED(geo->Open(&sink))) {
+		return;
+	}
+
+	sink->BeginFigure(triangle.point1, D2D1_FIGURE_BEGIN_FILLED);
+	sink->AddLine(triangle.point2);
+	sink->AddLine(triangle.point3);
+	sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+	sink->Close();
+	ctx->FillGeometry(geo.Get(), brush);
+	wicDirty = true;
+}
+void D2DGraphics::DrawTriangle(D2D1_TRIANGLE triangle, D2D1_COLOR_F color, float width) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ctx->DrawLine(triangle.point1, triangle.point2, brush, width);
+	ctx->DrawLine(triangle.point2, triangle.point3, brush, width);
+	ctx->DrawLine(triangle.point3, triangle.point1, brush, width);
+	wicDirty = true;
+}
+
+void D2DGraphics::FillPolygon(std::vector<D2D1_POINT_2F> points, D2D1_COLOR_F color) {
+	if (points.size() <= 2) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ComPtr<ID2D1PathGeometry> geo;
+	geo.Attach(Factory::CreateGeomtry());
+	if (!geo) return;
+	ComPtr<ID2D1GeometrySink> sink;
+	if (FAILED(geo->Open(&sink))) return;
+	sink->BeginFigure(points.front(), D2D1_FIGURE_BEGIN_FILLED);
+	sink->AddLines(points.data() + 1, static_cast<UINT32>(points.size() - 1));
+	sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+	sink->Close();
+	ctx->FillGeometry(geo.Get(), brush);
+	wicDirty = true;
+}
+void D2DGraphics::FillPolygon(std::initializer_list<D2D1_POINT_2F> points, D2D1_COLOR_F color) {
+	if (points.size() <= 2) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ComPtr<ID2D1PathGeometry> geo;
+	geo.Attach(Factory::CreateGeomtry());
+	if (!geo) return;
+	ComPtr<ID2D1GeometrySink> sink;
+	if (FAILED(geo->Open(&sink))) return;
+	sink->BeginFigure(*points.begin(), D2D1_FIGURE_BEGIN_FILLED);
+	sink->AddLines(points.begin() + 1, static_cast<UINT32>(points.size() - 1));
+	sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+	sink->Close();
+	ctx->FillGeometry(geo.Get(), brush);
+	wicDirty = true;
+}
+void D2DGraphics::DrawPolygon(std::initializer_list<D2D1_POINT_2F> points, D2D1_COLOR_F color, float width) {
+	if (points.size() <= 1) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ComPtr<ID2D1PathGeometry> geo;
+	geo.Attach(Factory::CreateGeomtry());
+	if (!geo) return;
+	ComPtr<ID2D1GeometrySink> sink;
+	if (FAILED(geo->Open(&sink))) return;
+	sink->BeginFigure(*points.begin(), D2D1_FIGURE_BEGIN_HOLLOW);
+	sink->AddLines(points.begin() + 1, static_cast<UINT32>(points.size() - 1));
+	sink->EndFigure(D2D1_FIGURE_END_OPEN);
+	sink->Close();
+	ctx->DrawGeometry(geo.Get(), brush, width);
+	wicDirty = true;
+}
+void D2DGraphics::DrawPolygon(std::vector<D2D1_POINT_2F> points, D2D1_COLOR_F color, float width) {
+	if (points.size() <= 1) return;
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	ComPtr<ID2D1PathGeometry> geo;
+	geo.Attach(Factory::CreateGeomtry());
+	if (!geo) return;
+	ComPtr<ID2D1GeometrySink> sink;
+	if (FAILED(geo->Open(&sink))) return;
+	sink->BeginFigure(points.front(), D2D1_FIGURE_BEGIN_HOLLOW);
+	sink->AddLines(points.data() + 1, static_cast<UINT32>(points.size() - 1));
+	sink->EndFigure(D2D1_FIGURE_END_OPEN);
+	sink->Close();
+	ctx->DrawGeometry(geo.Get(), brush, width);
+	wicDirty = true;
+}
+
+void D2DGraphics::DrawArc(D2D1_POINT_2F center, float size, float sa, float ea, D2D1_COLOR_F color, float width) {
+	const auto angleToPoint = [](D2D1_POINT_2F cent, float angle, float len) {
+		return len > 0 ? D2D1::Point2F(
+			cent.x + sinf(angle * DEG_TO_RAD) * len,
+			cent.y - cosf(angle * DEG_TO_RAD) * len) : cent;
+		};
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	if (size <= 0.0f || width <= 0.0f) return;
+	float ts = sa;
+	float te = ea;
+	float sweepDegrees = te - ts;
+	if (sweepDegrees <= 0.0f) {
+		sweepDegrees = std::fmod(sweepDegrees, 360.0f) + 360.0f;
+	}
+	if (sweepDegrees <= 0.001f) return;
+	if (sweepDegrees >= 359.999f) {
+		ctx->DrawEllipse(D2D1::Ellipse(center, size, size), brush, width);
+		wicDirty = true;
+		return;
+	}
+	ComPtr<ID2D1PathGeometry> geo;
+	geo.Attach(Factory::CreateGeomtry());
+	if (!geo) return;
+	if (te < ts) te += 360.0f;
+	D2D1_ARC_SIZE sweep = (te - ts < 180.0f) ? D2D1_ARC_SIZE_SMALL : D2D1_ARC_SIZE_LARGE;
+	ComPtr<ID2D1GeometrySink> sink;
+	if (FAILED(geo->Open(&sink))) return;
+	auto start = angleToPoint(center, sa, size);
+	auto end = angleToPoint(center, ea, size);
+	sink->BeginFigure(start, D2D1_FIGURE_BEGIN_HOLLOW);
+	sink->AddArc(D2D1::ArcSegment(end, D2D1::SizeF(size, size), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, sweep));
+	sink->EndFigure(D2D1_FIGURE_END_OPEN);
+	sink->Close();
+	ctx->DrawGeometry(geo.Get(), brush, width);
+	wicDirty = true;
+}
+void D2DGraphics::DrawArcCounter(D2D1_POINT_2F center, float size, float sa, float ea, D2D1_COLOR_F color, float width) {
+	const auto angleToPoint = [](D2D1_POINT_2F cent, float angle, float len) {
+		return len > 0 ? D2D1::Point2F(
+			cent.x + sinf(angle * DEG_TO_RAD) * len,
+			cent.y - cosf(angle * DEG_TO_RAD) * len) : cent;
+		};
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	auto brush = GetColorBrush(color);
+	if (!brush) return;
+	if (size <= 0.0f || width <= 0.0f) return;
+	float ts = sa;
+	float te = ea;
+	float sweepDegrees = te - ts;
+	if (sweepDegrees <= 0.0f) {
+		sweepDegrees = std::fmod(sweepDegrees, 360.0f) + 360.0f;
+	}
+	if (sweepDegrees <= 0.001f) return;
+	if (sweepDegrees >= 359.999f) {
+		ctx->DrawEllipse(D2D1::Ellipse(center, size, size), brush, width);
+		wicDirty = true;
+		return;
+	}
+	ComPtr<ID2D1PathGeometry> geo;
+	geo.Attach(Factory::CreateGeomtry());
+	if (!geo) return;
+	if (te < ts) te += 360.0f;
+	D2D1_ARC_SIZE sweep = (te - ts < 180.0f) ? D2D1_ARC_SIZE_SMALL : D2D1_ARC_SIZE_LARGE;
+	ComPtr<ID2D1GeometrySink> sink;
+	if (FAILED(geo->Open(&sink))) return;
+	auto start = angleToPoint(center, sa, size);
+	auto end = angleToPoint(center, ea, size);
+	sink->BeginFigure(start, D2D1_FIGURE_BEGIN_HOLLOW);
+	sink->AddArc(D2D1::ArcSegment(end, D2D1::SizeF(size, size), 0.0f, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, sweep));
+	sink->EndFigure(D2D1_FIGURE_END_OPEN);
+	sink->Close();
+	ctx->DrawGeometry(geo.Get(), brush, width);
+	wicDirty = true;
+}
+
+void D2DGraphics::PushDrawRect(float left, float top, float width, float height) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	ctx->PushAxisAlignedClip(D2D1::RectF(left, top, left + width, top + height), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+}
+void D2DGraphics::PopDrawRect() {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	ctx->PopAxisAlignedClip();
+}
+bool D2DGraphics::PushRoundClip(float left, float top, float width, float height, float radius) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || width <= 0.0f || height <= 0.0f || radius <= 0.0f) return false;
+	radius = (std::clamp)(radius, 0.0f, (std::min)(width, height) * 0.5f);
+	if (radius <= 0.0f) return false;
+
+	ComPtr<ID2D1RoundedRectangleGeometry> roundedGeometry;
+	auto rect = D2D1::RectF(left, top, left + width, top + height);
+	if (FAILED(_D2DFactory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(rect, radius, radius), &roundedGeometry)))
+		return false;
+
+	ComPtr<ID2D1Layer> layer;
+	if (FAILED(ctx->CreateLayer(D2D1::SizeF(width, height), &layer)))
+		return false;
+
+	auto params = D2D1::LayerParameters(rect, roundedGeometry.Get(), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+	ctx->PushLayer(&params, layer.Get());
+
+	ComPtr<ID2D1Geometry> geometry;
+	roundedGeometry.As(&geometry);
+	_roundClipLayerStack.push_back(layer);
+	_roundClipGeometryStack.push_back(geometry);
+	return true;
+}
+void D2DGraphics::PopRoundClip() {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || _roundClipLayerStack.empty()) return;
+	ctx->PopLayer();
+	_roundClipLayerStack.pop_back();
+	if (!_roundClipGeometryStack.empty())
+		_roundClipGeometryStack.pop_back();
+}
+void D2DGraphics::PushLocalTransform(float tx, float ty, float clipW, float clipH) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	D2D1_MATRIX_3X2_F current;
+	ctx->GetTransform(&current);
+	_transformStack.push_back(current);
+	ctx->SetTransform(D2D1::Matrix3x2F::Translation(tx, ty));
+	ctx->PushAxisAlignedClip(D2D1::RectF(0.f, 0.f, clipW, clipH), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+}
+void D2DGraphics::PopLocalTransform() {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	ctx->PopAxisAlignedClip();
+	if (!_transformStack.empty()) {
+		ctx->SetTransform(_transformStack.back());
+		_transformStack.pop_back();
+	}
+}
+void D2DGraphics::SetAntialiasMode(D2D1_ANTIALIAS_MODE antialiasMode) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	ctx->SetAntialiasMode(antialiasMode);
+}
+void D2DGraphics::SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE antialiasMode) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return;
+	ctx->SetTextAntialiasMode(antialiasMode);
+}
+
+ID2D1RenderTarget* D2DGraphics::GetRenderTargetRaw() const {
+	return pDeviceContext.Get();
+}
+ComPtr<ID2D1RenderTarget> D2DGraphics::GetRenderTarget() const {
+	ComPtr<ID2D1RenderTarget> t;
+	if (pDeviceContext) {
+		pDeviceContext.As(&t);
+	}
+	return t;
+}
+ID2D1DeviceContext* D2DGraphics::GetDeviceContextRaw() const {
+	return pDeviceContext.Get();
+}
+ComPtr<ID2D1DeviceContext> D2DGraphics::GetDeviceContext() const {
+	return pDeviceContext;
+}
+IWICBitmap* D2DGraphics::GetTargetWicBitmap() const {
+	return pWicTargetBitmap.Get();
+}
+
+ID2D1Bitmap* D2DGraphics::CreateBitmap(IWICBitmap* wb) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !wb) return nullptr;
+	ComPtr<ID2D1Bitmap> bitmap;
+	if (FAILED(ctx->CreateBitmapFromWicBitmap(wb, &bitmap))) {
+		return nullptr;
+	}
+	return bitmap.Detach();
+}
+ID2D1Bitmap* D2DGraphics::CreateBitmap(IWICFormatConverter* conv, D2D1_BITMAP_PROPERTIES* props) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !conv) return nullptr;
+	ComPtr<ID2D1Bitmap> bitmap;
+	if (FAILED(ctx->CreateBitmapFromWicBitmap(conv, props, &bitmap))) {
+		return nullptr;
+	}
+	return bitmap.Detach();
+}
+ID2D1Bitmap* D2DGraphics::CreateBitmap(const std::shared_ptr<BitmapSource>& bitmapSource) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !bitmapSource) return nullptr;
+	ComPtr<ID2D1Bitmap> bitmap;
+	if (FAILED(ctx->CreateBitmapFromWicBitmap(bitmapSource->GetWicBitmap(), nullptr, &bitmap))) {
+		return nullptr;
+	}
+	return bitmap.Detach();
+}
+
+ID2D1Bitmap1* D2DGraphics::CreateBitmapFromDxgiSurface(IDXGISurface* surface) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !surface) return nullptr;
+
+	D2D1_BITMAP_PROPERTIES1 props = D2D1::BitmapProperties1(
+		D2D1_BITMAP_OPTIONS_NONE,
+		D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+		96.0f,
+		96.0f);
+
+	ComPtr<ID2D1Bitmap1> bitmap;
+	HRESULT hr = ctx->CreateBitmapFromDxgiSurface(surface, &props, &bitmap);
+	if (FAILED(hr)) {
+		return nullptr;
+	}
+	return bitmap.Detach();
+}
+
+void D2DGraphics::DrawDxgiSurface(IDXGISurface* surface, float x, float y, float width, float height, float opacity) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !surface) return;
+
+	ComPtr<ID2D1Bitmap1> bitmap;
+	bitmap.Attach(CreateBitmapFromDxgiSurface(surface));
+	if (!bitmap) return;
+
+	D2D1_RECT_F destRect = D2D1::RectF(x, y, x + width, y + height);
+	ctx->DrawBitmap(bitmap.Get(), destRect, opacity, D2D1_INTERPOLATION_MODE_LINEAR);
+	wicDirty = true;
+}
+
+ID2D1LinearGradientBrush* D2DGraphics::CreateLinearGradientBrush(D2D1_GRADIENT_STOP* stops, unsigned int stopcount) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !stops || stopcount == 0) return nullptr;
+	ComPtr<ID2D1GradientStopCollection> collection;
+	if (FAILED(ctx->CreateGradientStopCollection(stops, stopcount, &collection))) return nullptr;
+	ComPtr<ID2D1LinearGradientBrush> brush;
+	if (FAILED(ctx->CreateLinearGradientBrush({}, collection.Get(), &brush))) return nullptr;
+	return brush.Detach();
+}
+ID2D1RadialGradientBrush* D2DGraphics::CreateRadialGradientBrush(D2D1_GRADIENT_STOP* stops, unsigned int stopcount, D2D1_POINT_2F center) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !stops || stopcount == 0) return nullptr;
+	ComPtr<ID2D1GradientStopCollection> collection;
+	if (FAILED(ctx->CreateGradientStopCollection(stops, stopcount, &collection))) return nullptr;
+	D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES props{};
+	props.center = center;
+	ComPtr<ID2D1RadialGradientBrush> brush;
+	if (FAILED(ctx->CreateRadialGradientBrush(props, collection.Get(), &brush))) return nullptr;
+	return brush.Detach();
+}
+ID2D1BitmapBrush* D2DGraphics::CreateBitmapBrush(ID2D1Bitmap* bmp) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || !bmp) return nullptr;
+	ComPtr<ID2D1BitmapBrush> brush;
+	if (FAILED(ctx->CreateBitmapBrush(bmp, nullptr, nullptr, &brush))) return nullptr;
+	return brush.Detach();
+}
+ID2D1SolidColorBrush* D2DGraphics::CreateSolidColorBrush(D2D1_COLOR_F color) {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx) return nullptr;
+	ComPtr<ID2D1SolidColorBrush> result;
+	if (FAILED(ctx->CreateSolidColorBrush(color, &result))) return nullptr;
+	return result.Detach();
+}
+
+D2D1_SIZE_F D2DGraphics::Size() {
+	if (!pDeviceContext) return D2D1::SizeF(0.0f, 0.0f);
+	if (pTargetBitmap) {
+		auto sz = pTargetBitmap->GetSize();
+		return sz;
+	}
+	return pDeviceContext->GetSize();
+}
+
+void D2DGraphics::SetTransform(D2D1_MATRIX_3X2_F matrix) {
+	if (pDeviceContext) pDeviceContext->SetTransform(matrix);
+}
+void D2DGraphics::ClearTransform() {
+	if (pDeviceContext) pDeviceContext->SetTransform(D2D1::Matrix3x2F::Identity());
+}
+
+D2D1_SIZE_F D2DGraphics::GetTextLayoutSize(IDWriteTextLayout* textLayout) {
+	D2D1_SIZE_F minSize = { 0,0 };
+	if (!textLayout) return minSize;
+	DWRITE_TEXT_METRICS metrics;
+	HRESULT hr = textLayout->GetMetrics(&metrics);
+	if (SUCCEEDED(hr)) {
+		minSize = D2D1::Size((float)ceil(metrics.widthIncludingTrailingWhitespace), (float)ceil(metrics.height));
+		return minSize;
+	}
+	return minSize;
+}
+
+namespace {
+	float SvgClamp01(float value) {
+		if (!std::isfinite(value)) {
+			return 0.0f;
+		}
+		return std::clamp(value, 0.0f, 1.0f);
+	}
+
+	D2D1_COLOR_F SvgColorToD2D(unsigned int color, float opacity) {
+		const float alpha = SvgClamp01(((color >> 24) & 0xff) * INV_255_1 * opacity);
+		return D2D1_COLOR_F{
+			(color & 0xff) * INV_255_1,
+			((color >> 8) & 0xff) * INV_255_1,
+			((color >> 16) & 0xff) * INV_255_1,
+			alpha
+		};
+	}
+
+	ComPtr<ID2D1Brush> CreateSvgPaintBrush(const SvgPaint& paint, float opacity, D2DGraphics& graphics) {
+		ComPtr<ID2D1Brush> brush;
+		switch (paint.type) {
+		case SVG_PAINT_NONE:
+			return {};
+		case SVG_PAINT_COLOR:
+			brush.Attach(graphics.CreateSolidColorBrush(SvgColorToD2D(paint.color, opacity)));
+			return brush;
+		case SVG_PAINT_LINEAR_GRADIENT:
+		{
+			if (!paint.gradient || paint.gradient->nstops <= 0) {
+				return {};
+			}
+			std::vector<D2D1_GRADIENT_STOP> stops;
+			stops.reserve(static_cast<size_t>(paint.gradient->nstops));
+			for (int i = 0; i < paint.gradient->nstops; ++i) {
+				const auto& stop = paint.gradient->stops[i];
+				stops.push_back(D2D1_GRADIENT_STOP{ SvgClamp01(stop.offset), SvgColorToD2D(stop.color, opacity) });
+			}
+			brush.Attach(graphics.CreateLinearGradientBrush(stops.data(), static_cast<unsigned int>(stops.size())));
+			return brush;
+		}
+		case SVG_PAINT_RADIAL_GRADIENT:
+		{
+			if (!paint.gradient || paint.gradient->nstops <= 0) {
+				return {};
+			}
+			std::vector<D2D1_GRADIENT_STOP> stops;
+			stops.reserve(static_cast<size_t>(paint.gradient->nstops));
+			for (int i = 0; i < paint.gradient->nstops; ++i) {
+				const auto& stop = paint.gradient->stops[i];
+				stops.push_back(D2D1_GRADIENT_STOP{ SvgClamp01(stop.offset), SvgColorToD2D(stop.color, opacity) });
+			}
+			brush.Attach(graphics.CreateRadialGradientBrush(
+				stops.data(),
+				static_cast<unsigned int>(stops.size()),
+				D2D1::Point2F(paint.gradient->fx, paint.gradient->fy)));
+			return brush;
+		}
+		default:
+			return {};
+		}
+	}
+}
+
+std::shared_ptr<BitmapSource> D2DGraphics::ToBitmapFromSvg(const char* svgText, UINT maxBitmapExtent) {
+	if (!svgText) {
+		return {};
+	}
+	return ToBitmapFromSvg(std::string_view(svgText), maxBitmapExtent);
+}
+
+std::shared_ptr<BitmapSource> D2DGraphics::ToBitmapFromSvg(std::string_view svgText, UINT maxBitmapExtent) {
+	if (svgText.empty() || maxBitmapExtent == 0) {
+		return {};
+	}
+
+	std::vector<char> mutableSvg(svgText.begin(), svgText.end());
+	mutableSvg.push_back('\0');
+
+	struct SvgImageDeleter {
+		void operator()(SvgImage* image) const noexcept {
+			DeleteSvgImageInternal(image);
+		}
+	};
+	std::unique_ptr<SvgImage, SvgImageDeleter> image(ParseSvgImageInternal(mutableSvg.data(), "px", 96.0f));
+	if (!image || !std::isfinite(image->width) || !std::isfinite(image->height) || image->width <= 0.0f || image->height <= 0.0f) {
+		return {};
+	}
+
+	const float largestExtent = (std::max)(image->width, image->height);
+	if (largestExtent <= 0.0f || !std::isfinite(largestExtent)) {
+		return {};
+	}
+	const float scale = largestExtent > static_cast<float>(maxBitmapExtent)
+		? static_cast<float>(maxBitmapExtent) / largestExtent
+		: 1.0f;
+
+	const auto pixelWidth = static_cast<int>((std::max)(1.0f, std::ceil(image->width * scale)));
+	const auto pixelHeight = static_cast<int>((std::max)(1.0f, std::ceil(image->height * scale)));
+	auto bitmapSource = BitmapSource::CreateEmpty(pixelWidth, pixelHeight);
+	if (!bitmapSource) {
+		return {};
+	}
+
+	D2DGraphics graphics(bitmapSource.get());
+	graphics.BeginRender();
+	graphics.Clear(D2D1::ColorF(0, 0.0f));
+
+	for (const SvgShape* shape = image->shapes; shape; shape = shape->next) {
+		if ((shape->flags & SVG_FLAGS_VISIBLE) == 0) {
+			continue;
+		}
+
+		ComPtr<ID2D1PathGeometry> geometry;
+		geometry.Attach(Factory::CreateGeomtry());
+		if (!geometry) {
+			continue;
+		}
+
+		ComPtr<ID2D1GeometrySink> sink;
+		if (FAILED(geometry->Open(&sink)) || !sink) {
+			continue;
+		}
+
+		bool hasFigure = false;
+		for (const SvgPath* path = shape->paths; path; path = path->next) {
+			if (!path->pts || path->npts < 4) {
+				continue;
+			}
+
+			const float* points = path->pts;
+			sink->BeginFigure(
+				D2D1::Point2F(points[0] * scale, points[1] * scale),
+				shape->fill.type == SVG_PAINT_NONE ? D2D1_FIGURE_BEGIN_HOLLOW : D2D1_FIGURE_BEGIN_FILLED);
+			hasFigure = true;
+
+			for (int i = 0; i < path->npts - 1; i += 3) {
+				const float* p = &path->pts[i * 2];
+				sink->AddBezier(D2D1::BezierSegment(
+					D2D1::Point2F(p[2] * scale, p[3] * scale),
+					D2D1::Point2F(p[4] * scale, p[5] * scale),
+					D2D1::Point2F(p[6] * scale, p[7] * scale)));
+			}
+
+			sink->EndFigure(path->closed ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
+		}
+
+		if (!hasFigure || FAILED(sink->Close())) {
+			continue;
+		}
+
+		auto fillBrush = CreateSvgPaintBrush(shape->fill, shape->opacity, graphics);
+		if (fillBrush) {
+			graphics.FillGeometry(geometry.Get(), fillBrush.Get());
+		}
+
+		auto strokeBrush = CreateSvgPaintBrush(shape->stroke, shape->opacity, graphics);
+		if (strokeBrush && shape->strokeWidth > 0.0f) {
+			graphics.DrawGeometry(geometry.Get(), strokeBrush.Get(), shape->strokeWidth * scale);
+		}
+	}
+
+	graphics.EndRender();
+	return bitmapSource;
+}
+
+CompatibleGraphics::CompatibleGraphics(D2DGraphics* parent, D2D1_SIZE_F desiredSize) {
+	Initialize(parent, desiredSize);
+}
+
+HRESULT CompatibleGraphics::Initialize(D2DGraphics* parent, D2D1_SIZE_F desiredSize) {
+	if (!parent) return E_INVALIDARG;
+	parent->EnsureDeviceContext();
+	auto* pdc = parent->GetDeviceContextRaw();
+	if (pdc) {
+		pdc->GetDevice(&parentDevice);
+	}
+	if (!parentDevice) return E_FAIL;
+	this->desiredSize = desiredSize;
+	return RecreateTarget();
+}
+
+HRESULT CompatibleGraphics::RecreateTarget() {
+	ResetTarget();
+	pD2DDevice = parentDevice;
+	if (!pD2DDevice) return E_FAIL;
+	HRESULT hr = pD2DDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &pDeviceContext);
+	if (FAILED(hr)) return hr;
+
+	UINT w = std::max<UINT>(1, static_cast<UINT>(desiredSize.width));
+	UINT h = std::max<UINT>(1, static_cast<UINT>(desiredSize.height));
+
+	hr = CreateTargetBitmapForSize(w, h, 96.0f, 96.0f, DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED);
+	if (FAILED(hr)) return hr;
+
+	surfaceKind = SurfaceKind::Compatible;
+	wicDirty = false;
+	return ConfigDefaultObjects();
+}
+
+void CompatibleGraphics::ReSize(UINT width, UINT height) {
+	width = std::max<UINT>(1, width);
+	height = std::max<UINT>(1, height);
+	desiredSize = D2D1::SizeF((FLOAT)width, (FLOAT)height);
+	RecreateTarget();
+}
+
+ID2D1Bitmap* CompatibleGraphics::GetBitmap() const {
+	return pTargetBitmap.Get();
+}
+
+HRESULT HwndGraphics::InitDevice() {
+	if (!hwnd) return E_INVALIDARG;
+
+	HRESULT hr = EnsureDeviceResources();
+	if (FAILED(hr)) return hr;
+
+	RECT rc{};
+	GetClientRect(hwnd, &rc);
+	UINT width = std::max<UINT>(1, static_cast<UINT>(rc.right - rc.left));
+	UINT height = std::max<UINT>(1, static_cast<UINT>(rc.bottom - rc.top));
+
+	// CreateSwapChainForHwnd 需要 IDXGIFactory2
+	ComPtr<IDXGIDevice> dxgiDevice = Shared().dxgiDevice;
+	if (!dxgiDevice) return E_FAIL;
+	ComPtr<IDXGIAdapter> adapter;
+	hr = dxgiDevice->GetAdapter(&adapter);
+	if (FAILED(hr)) return hr;
+	ComPtr<IDXGIFactory2> factory;
+	hr = adapter->GetParent(IID_PPV_ARGS(&factory));
+	if (FAILED(hr)) return hr;
+
+	DXGI_SWAP_CHAIN_DESC1 desc{};
+	desc.Width = width;
+	desc.Height = height;
+	desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+	desc.SampleDesc.Count = 1;
+	desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+	desc.BufferCount = 2;
+	desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+	desc.Scaling = DXGI_SCALING_STRETCH;
+	desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+
+	ComPtr<IDXGISwapChain1> swapChain1;
+	hr = factory->CreateSwapChainForHwnd(Shared().d3dDevice.Get(), hwnd, &desc, nullptr, nullptr, &swapChain1);
+	if (SUCCEEDED(hr)) {
+		factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+		pSwapChain = swapChain1;
+	}
+	else {
+		DXGI_SWAP_CHAIN_DESC legacyDesc{};
+		legacyDesc.BufferDesc.Width = width;
+		legacyDesc.BufferDesc.Height = height;
+		legacyDesc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+		legacyDesc.BufferDesc.RefreshRate.Numerator = 60;
+		legacyDesc.BufferDesc.RefreshRate.Denominator = 1;
+		legacyDesc.SampleDesc.Count = 1;
+		legacyDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+		legacyDesc.BufferCount = 2;
+		legacyDesc.OutputWindow = hwnd;
+		legacyDesc.Windowed = TRUE;
+		legacyDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+
+		ComPtr<IDXGIFactory> legacyFactory;
+		hr = adapter->GetParent(IID_PPV_ARGS(&legacyFactory));
+		if (FAILED(hr)) return hr;
+
+		ComPtr<IDXGISwapChain> legacySwapChain;
+		hr = legacyFactory->CreateSwapChain(Shared().d3dDevice.Get(), &legacyDesc, &legacySwapChain);
+		if (FAILED(hr)) return hr;
+
+		legacyFactory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+		pSwapChain = legacySwapChain;
+	}
+
+	hr = CreateTargetBitmapForSwapChain(pSwapChain.Get());
+	if (FAILED(hr)) return hr;
+
+	surfaceKind = SurfaceKind::Hwnd;
+	wicDirty = false;
+	return ConfigDefaultObjects();
+}
+
+HwndGraphics::HwndGraphics(HWND hWnd) {
+	hwnd = hWnd;
+	InitDevice();
+}
+
+void HwndGraphics::ReSize(UINT width, UINT height) {
+	if (!pSwapChain || !pDeviceContext) return;
+	width = std::max<UINT>(1, width);
+	height = std::max<UINT>(1, height);
+
+	pTargetBitmap.Reset();
+	pDeviceContext->SetTarget(nullptr);
+	pDeviceContext->Flush();
+
+	HRESULT hr = pSwapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+	if (FAILED(hr) && IsDeviceRemovedHr(hr)) {
+		_deviceLost = true;
+		ResetTarget();
+		if (SUCCEEDED(InitDevice())) {
+			_deviceLost = false;
+			::InvalidateRect(hwnd, nullptr, FALSE);
+		}
+		return;
+	}
+	CreateTargetBitmapForSwapChain(pSwapChain.Get());
+	ConfigDefaultObjects();
+}
+
+void HwndGraphics::BeginRender() {
+	D2DGraphics::BeginRender();
+}
+
+void HwndGraphics::EndRender() {
+	// Hwnd：既需要 EndDraw，也需要 Present
+	if (!pDeviceContext) return;
+	_lastEndDrawHr = pDeviceContext->EndDraw();
+	_lastPresentHr = S_OK;
+	if (pSwapChain) {
+		_lastPresentHr = pSwapChain->Present(1, 0);
+	}
+	if (_lastEndDrawHr == D2DERR_RECREATE_TARGET && pSwapChain) {
+		CreateTargetBitmapForSwapChain(pSwapChain.Get());
+		ConfigDefaultObjects();
+		_deviceLost = false;
+		return;
+	}
+	if (IsDeviceRemovedHr(_lastEndDrawHr) || IsDeviceRemovedHr(_lastPresentHr)) {
+		_deviceLost = true;
+		ResetTarget();
+		if (SUCCEEDED(InitDevice())) {
+			_deviceLost = false;
+			::InvalidateRect(hwnd, nullptr, FALSE);
+		}
+	}
+}
+
+// ---------------- CompositionSwapChainGraphics ----------------
+
+CompositionSwapChainGraphics::CompositionSwapChainGraphics(IDXGISwapChain1* swapChain) {
+	swapChain1 = swapChain;
+	InitializeWithSwapChain(swapChain);
+}
+
+void CompositionSwapChainGraphics::ReSize(UINT width, UINT height) {
+	if (!pSwapChain || !pDeviceContext) return;
+	width = std::max<UINT>(1, width);
+	height = std::max<UINT>(1, height);
+
+	pTargetBitmap.Reset();
+	pDeviceContext->SetTarget(nullptr);
+	pDeviceContext->Flush();
+
+	HRESULT hr = pSwapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+	if (FAILED(hr) && IsDeviceRemovedHr(hr)) {
+		// Composition swapchain 的生命周期由 DCompLayeredHost 管理：这里只标记，交由上层重建。
+		_deviceLost = true;
+		return;
+	}
+	CreateTargetBitmapForSwapChain(pSwapChain.Get());
+	ConfigDefaultObjects();
+}
+
+void CompositionSwapChainGraphics::BeginRender() {
+	D2DGraphics::BeginRender();
+}
+
+void CompositionSwapChainGraphics::EndRender() {
+	if (!pDeviceContext) return;
+	_lastEndDrawHr = pDeviceContext->EndDraw();
+	_lastPresentHr = S_OK;
+	if (pSwapChain) {
+		_lastPresentHr = pSwapChain->Present(1, 0);
+	}
+	if (_lastEndDrawHr == D2DERR_RECREATE_TARGET && pSwapChain) {
+		CreateTargetBitmapForSwapChain(pSwapChain.Get());
+		ConfigDefaultObjects();
+		_deviceLost = false;
+		return;
+	}
+	if (IsDeviceRemovedHr(_lastEndDrawHr) || IsDeviceRemovedHr(_lastPresentHr)) {
+		_deviceLost = true;
+	}
+}

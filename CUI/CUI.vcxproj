@@ -1,0 +1,355 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{48316892-3a38-48f2-8c34-4d676304f769}</ProjectGuid>
+    <RootNamespace>CUI</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <!-- WebView2 (NuGet: Microsoft.Web.WebView2) -->
+  <PropertyGroup Label="WebView2Package">
+    <WebView2PackageVersion>1.0.3650.58</WebView2PackageVersion>
+    <WebView2PackageDir>$(SolutionDir)packages\Microsoft.Web.WebView2.$(WebView2PackageVersion)</WebView2PackageDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Platform)'=='Win32'" Label="WebView2Arch">
+    <WebView2ArchDir>x86</WebView2ArchDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Platform)'=='x64'" Label="WebView2Arch">
+    <WebView2ArchDir>x64</WebView2ArchDir>
+  </PropertyGroup>
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ExternalIncludePath>$(ExternalIncludePath)</ExternalIncludePath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ExternalIncludePath>$(ExternalIncludePath)</ExternalIncludePath>
+    <CopyCppRuntimeToOutputDir>false</CopyCppRuntimeToOutputDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ExternalIncludePath>$(ExternalIncludePath)</ExternalIncludePath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ExternalIncludePath>$(ExternalIncludePath)</ExternalIncludePath>
+    <CopyCppRuntimeToOutputDir>false</CopyCppRuntimeToOutputDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>false</SDLCheck>
+      <PreprocessorDefinitions>CUI_ENABLE_WEBVIEW2;WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <PrecompiledHeaderFile />
+      <PrecompiledHeaderOutputFile />
+      <EnableModules>false</EnableModules>
+      <BuildStlModules>true</BuildStlModules>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>false</SDLCheck>
+      <PreprocessorDefinitions>CUI_ENABLE_WEBVIEW2;WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <PrecompiledHeaderFile />
+      <PrecompiledHeaderOutputFile />
+      <EnableModules>false</EnableModules>
+      <BuildStlModules>true</BuildStlModules>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>false</SDLCheck>
+      <PreprocessorDefinitions>CUI_ENABLE_WEBVIEW2;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <PrecompiledHeaderFile />
+      <PrecompiledHeaderOutputFile />
+      <EnableModules>false</EnableModules>
+      <BuildStlModules>true</BuildStlModules>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <UACExecutionLevel>AsInvoker</UACExecutionLevel>
+      <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>false</SDLCheck>
+      <PreprocessorDefinitions>CUI_ENABLE_WEBVIEW2;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild>false</MinimalRebuild>
+      <PrecompiledHeaderFile />
+      <PrecompiledHeaderOutputFile />
+      <EnableModules>false</EnableModules>
+      <BuildStlModules>true</BuildStlModules>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <FavorSizeOrSpeed>Size</FavorSizeOrSpeed>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <IgnoreAllDefaultLibraries>
+      </IgnoreAllDefaultLibraries>
+      <EntryPointSymbol>
+      </EntryPointSymbol>
+      <GenerateWindowsMetadata>false</GenerateWindowsMetadata>
+      <RandomizedBaseAddress>false</RandomizedBaseAddress>
+      <MergeSections>.rdata=.text</MergeSections>
+      <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="GUI\Application.h" />
+    <ClInclude Include="GUI\Button.h" />
+    <ClInclude Include="GUI\CalendarView.h" />
+    <ClInclude Include="GUI\ChartView.h" />
+    <ClInclude Include="GUI\CheckBox.h" />
+    <ClInclude Include="GUI\ColorPicker.h" />
+    <ClInclude Include="GUI\ColorPickerPopup.h" />
+    <ClInclude Include="GUI\ComboBox.h" />
+    <ClInclude Include="GUI\ContextMenu.h" />
+    <ClInclude Include="GUI\DateTimePicker.h" />
+    <ClInclude Include="GUI\FilterBar.h" />
+    <ClInclude Include="GUI\Control.h" />
+    <ClInclude Include="GUI\DCompLayeredHost.h" />
+    <ClInclude Include="GUI\DropDownPopup.h" />
+    <ClInclude Include="GUI\Event.h" />
+    <ClInclude Include="GUI\Expander.h" />
+    <ClInclude Include="GUI\Form.h" />
+    <ClInclude Include="GUI\GridView.h" />
+    <ClInclude Include="GUI\GroupBox.h" />
+    <ClInclude Include="GUI\KpiCard.h" />
+    <ClInclude Include="GUI\Label.h" />
+    <ClInclude Include="GUI\LinkLabel.h" />
+    <ClInclude Include="GUI\ListView.h" />
+    <ClInclude Include="GUI\Menu.h" />
+    <ClInclude Include="GUI\MessageDialog.h" />
+    <ClInclude Include="GUI\NavigationView.h" />
+    <ClInclude Include="GUI\NumericUpDown.h" />
+    <ClInclude Include="GUI\NotifyIcon.h" />
+    <ClInclude Include="GUI\Panel.h" />
+    <ClInclude Include="GUI\PasswordBox.h" />
+    <ClInclude Include="GUI\PagedGridView.h" />
+    <ClInclude Include="GUI\PictureBox.h" />
+    <ClInclude Include="GUI\PropertyGrid.h" />
+    <ClInclude Include="GUI\LoadingRing.h" />
+    <ClInclude Include="GUI\ProgressBar.h" />
+    <ClInclude Include="GUI\ProgressRing.h" />
+    <ClInclude Include="GUI\RadioBox.h" />
+    <ClInclude Include="GUI\ReportView.h" />
+    <ClInclude Include="GUI\RichTextBox.h" />
+    <ClInclude Include="GUI\RoundTextBox.h" />
+    <ClInclude Include="GUI\ScrollView.h" />
+    <ClInclude Include="GUI\Slider.h" />
+    <ClInclude Include="GUI\Switch.h" />
+    <ClInclude Include="GUI\TabControl.h" />
+    <ClInclude Include="GUI\Taskbar.h" />
+    <ClInclude Include="GUI\ToolTip.h" />
+    <ClInclude Include="GUI\Toast.h" />
+    <ClInclude Include="GUI\ToolBar.h" />
+    <ClInclude Include="GUI\StatusBar.h" />
+    <ClInclude Include="GUI\SplitContainer.h" />
+    <ClInclude Include="GUI\WebBrowser.h" />
+    <ClInclude Include="GUI\TextBox.h" />
+    <ClInclude Include="GUI\TreeView.h" />
+    <ClInclude Include="GUI\MediaPlayer.h" />
+    <ClInclude Include="GUI\Layout\LayoutTypes.h" />
+    <ClInclude Include="GUI\Layout\LayoutEngine.h" />
+    <ClInclude Include="GUI\Layout\StackPanel.h" />
+    <ClInclude Include="GUI\Layout\GridPanel.h" />
+    <ClInclude Include="GUI\Layout\DockPanel.h" />
+    <ClInclude Include="GUI\Layout\WrapPanel.h" />
+    <ClInclude Include="GUI\Layout\RelativePanel.h" />
+    <ClInclude Include="GUI\Layout\Layout.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="GUI\Application.cpp" />
+    <ClCompile Include="GUI\Button.cpp" />
+    <ClCompile Include="GUI\CalendarView.cpp" />
+    <ClCompile Include="GUI\ChartView.cpp" />
+    <ClCompile Include="GUI\CheckBox.cpp" />
+    <ClCompile Include="GUI\ColorPicker.cpp" />
+    <ClCompile Include="GUI\ColorPickerPopup.cpp" />
+    <ClCompile Include="GUI\ComboBox.cpp" />
+    <ClCompile Include="GUI\ContextMenu.cpp" />
+    <ClCompile Include="GUI\DateTimePicker.cpp" />
+    <ClCompile Include="GUI\FilterBar.cpp" />
+    <ClCompile Include="GUI\Control.cpp" />
+    <ClCompile Include="GUI\DCompLayeredHost.cpp" />
+    <ClCompile Include="GUI\DropDownPopup.cpp" />
+    <ClCompile Include="GUI\Expander.cpp" />
+    <ClCompile Include="GUI\Form.cpp" />
+    <ClCompile Include="GUI\GridView.cpp" />
+    <ClCompile Include="GUI\GroupBox.cpp" />
+    <ClCompile Include="GUI\KpiCard.cpp" />
+    <ClCompile Include="GUI\Label.cpp" />
+    <ClCompile Include="GUI\LinkLabel.cpp" />
+    <ClCompile Include="GUI\ListView.cpp" />
+    <ClCompile Include="GUI\Menu.cpp" />
+    <ClCompile Include="GUI\MessageDialog.cpp" />
+    <ClCompile Include="GUI\NavigationView.cpp" />
+    <ClCompile Include="GUI\NumericUpDown.cpp" />
+    <ClCompile Include="GUI\NotifyIcon.cpp" />
+    <ClCompile Include="GUI\Panel.cpp" />
+    <ClCompile Include="GUI\PasswordBox.cpp" />
+    <ClCompile Include="GUI\PagedGridView.cpp" />
+    <ClCompile Include="GUI\PictureBox.cpp" />
+    <ClCompile Include="GUI\PropertyGrid.cpp" />
+    <ClCompile Include="GUI\LoadingRing.cpp" />
+    <ClCompile Include="GUI\ProgressBar.cpp" />
+    <ClCompile Include="GUI\ProgressRing.cpp" />
+    <ClCompile Include="GUI\RadioBox.cpp" />
+    <ClCompile Include="GUI\ReportView.cpp" />
+    <ClCompile Include="GUI\RichTextBox.cpp" />
+    <ClCompile Include="GUI\RoundTextBox.cpp" />
+    <ClCompile Include="GUI\ScrollView.cpp" />
+    <ClCompile Include="GUI\Slider.cpp" />
+    <ClCompile Include="GUI\Switch.cpp" />
+    <ClCompile Include="GUI\TabControl.cpp" />
+    <ClCompile Include="GUI\Taskbar.cpp" />
+    <ClCompile Include="GUI\ToolTip.cpp" />
+    <ClCompile Include="GUI\Toast.cpp" />
+    <ClCompile Include="GUI\ToolBar.cpp" />
+    <ClCompile Include="GUI\StatusBar.cpp" />
+    <ClCompile Include="GUI\SplitContainer.cpp" />
+    <ClCompile Include="GUI\WebBrowser.cpp" />
+    <ClCompile Include="GUI\TextBox.cpp" />
+    <ClCompile Include="GUI\TreeView.cpp" />
+    <ClCompile Include="GUI\MediaPlayer.cpp" />
+    <ClCompile Include="GUI\Layout\StackPanel.cpp" />
+    <ClCompile Include="GUI\Layout\GridPanel.cpp" />
+    <ClCompile Include="GUI\Layout\DockPanel.cpp" />
+    <ClCompile Include="GUI\Layout\WrapPanel.cpp" />
+    <ClCompile Include="GUI\Layout\RelativePanel.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="ClassDiagram.cd" />
+    <None Include="packages.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\D2DGraphics\D2DGraphics.vcxproj">
+      <Project>{dbe82cef-212b-4fcd-8a2b-99f17c3b7f19}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="..\packages\Microsoft.Web.WebView2.1.0.3712-prerelease\build\native\Microsoft.Web.WebView2.targets" Condition="Exists('..\packages\Microsoft.Web.WebView2.1.0.3712-prerelease\build\native\Microsoft.Web.WebView2.targets')" />
+  </ImportGroup>
+  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <ErrorText>这台计算机上缺少此项目引用的 NuGet 程序包。使用“NuGet 程序包还原”可下载这些程序包。有关更多信息，请参见 http://go.microsoft.com/fwlink/?LinkID=322105。缺少的文件是 {0}。</ErrorText>
+    </PropertyGroup>
+    <Error Condition="!Exists('..\packages\Microsoft.Web.WebView2.1.0.3712-prerelease\build\native\Microsoft.Web.WebView2.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Microsoft.Web.WebView2.1.0.3712-prerelease\build\native\Microsoft.Web.WebView2.targets'))" />
+  </Target>
+</Project>

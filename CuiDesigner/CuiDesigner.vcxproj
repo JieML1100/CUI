@@ -1,0 +1,238 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{328d4361-1094-47d8-b085-0a933a42ea91}</ProjectGuid>
+    <RootNamespace>CuiDesigner</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>Designer</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils;$(ProjectDir)..\LibXML\include</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils;$(ProjectDir)..\LibXML\include</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils;$(ProjectDir)..\LibXML\include</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils;$(ProjectDir)..\LibXML\include</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="CodeGenerator.cpp" />
+    <ClCompile Include="ComboBoxItemsEditorDialog.cpp" />
+    <ClCompile Include="DesignerCore\CommandManager.cpp" />
+    <ClCompile Include="DesignerCore\DesignerCommandCoordinator.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\HitTestService.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\LayoutBridge.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\SelectionService.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\Commands\AddDeleteCommand.cpp" />
+    <ClCompile Include="DesignerCore\Commands\DocumentSnapshotCommand.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\Commands\UpdatePropertyCommand.cpp" />
+    <ClCompile Include="DesignerCore\PropertyGridBinder.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerModel\DesignDocumentCodeGenInputBuilder.cpp" />
+    <ClCompile Include="DesignerModel\DesignDocument.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerModel\DesignDocumentSerializer.cpp" />
+    <ClCompile Include="FakeWebBrowser.cpp" />
+    <ClCompile Include="MenuItemsEditorDialog.cpp" />
+    <ClCompile Include="StatusBarPartsEditorDialog.cpp" />
+    <ClCompile Include="main.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="Designer.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerCanvas.cpp" />
+    <ClCompile Include="DesignerTypes.cpp" />
+    <ClCompile Include="GridPanelDefinitionsEditorDialog.cpp" />
+    <ClCompile Include="GridViewColumnsEditorDialog.cpp" />
+    <ClCompile Include="PropertyGrid.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="TabControlPagesEditorDialog.cpp" />
+    <ClCompile Include="ToolBarButtonsEditorDialog.cpp" />
+    <ClCompile Include="ToolBox.cpp" />
+    <ClCompile Include="TreeViewNodesEditorDialog.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="CodeGenerator.h" />
+    <ClInclude Include="CodeGenInput.h" />
+    <ClInclude Include="ComboBoxItemsEditorDialog.h" />
+    <ClInclude Include="DesignerCore\CommandManager.h" />
+    <ClInclude Include="DesignerCore\DesignerCommandCoordinator.h" />
+    <ClInclude Include="DesignerCore\HitTestService.h" />
+    <ClInclude Include="DesignerCore\LayoutBridge.h" />
+    <ClInclude Include="DesignerCore\SelectionService.h" />
+    <ClInclude Include="DesignerCore\Commands\AddDeleteCommand.h" />
+    <ClInclude Include="DesignerCore\Commands\DocumentSnapshotCommand.h" />
+    <ClInclude Include="DesignerCore\Commands\UpdatePropertyCommand.h" />
+    <ClInclude Include="DesignerCore\PropertyGridBinder.h" />
+    <ClInclude Include="DesignerModel\DesignDocumentCodeGenInputBuilder.h" />
+    <ClInclude Include="DesignerModel\DesignDocument.h" />
+    <ClInclude Include="DesignerModel\DesignDocumentSerializer.h" />
+    <ClInclude Include="FakeWebBrowser.h" />
+    <ClInclude Include="MenuItemsEditorDialog.h" />
+    <ClInclude Include="StatusBarPartsEditorDialog.h" />
+    <ClInclude Include="Designer.h" />
+    <ClInclude Include="DesignerCanvas.h" />
+    <ClInclude Include="DesignerTypes.h" />
+    <ClInclude Include="GridPanelDefinitionsEditorDialog.h" />
+    <ClInclude Include="GridViewColumnsEditorDialog.h" />
+    <ClInclude Include="PropertyGrid.h" />
+    <ClInclude Include="TabControlPagesEditorDialog.h" />
+    <ClInclude Include="ToolBarButtonsEditorDialog.h" />
+    <ClInclude Include="ToolBox.h" />
+    <ClInclude Include="TreeViewNodesEditorDialog.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\D2DGraphics\D2DGraphics.vcxproj">
+      <Project>{dbe82cef-212b-4fcd-8a2b-99f17c3b7f19}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\CUI\CUI.vcxproj">
+      <Project>{48316892-3a38-48f2-8c34-4d676304f769}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\LibXML\LibXML.vcxproj">
+      <Project>{4eb8ee5e-bdd7-4744-9651-7d64df66f413}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
