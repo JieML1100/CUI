@@ -91,13 +91,13 @@ public:
 	void SetSingleSeries(const std::vector<ChartPoint>& points, const std::wstring& name = L"Series");
 	void ResetView();
 	bool SelectPoint(int seriesIndex, int pointIndex);
-	bool HitTestPoint(int xof, int yof, int& seriesIndex, int& pointIndex);
+	bool HitTestPoint(int localX, int localY, int& seriesIndex, int& pointIndex);
 
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 private:
 	struct HitRegion
@@ -128,10 +128,10 @@ private:
 	void DrawTooltip(D2DGraphics* d2d, float width, float height);
 	void DrawHorizontalScrollBar(D2DGraphics* d2d, float width, float height);
 	void RebuildHitRegions();
-	bool HitTestInternal(int xof, int yof, int& seriesIndex, int& pointIndex);
-	void UpdateHover(int xof, int yof);
+	bool HitTestInternal(int localX, int localY, int& seriesIndex, int& pointIndex);
+	void UpdateHover(int localX, int localY);
 	void ClampViewport();
-	void UpdateHorizontalScrollDrag(float xof, float width, float height);
+	void UpdateHorizontalScrollDrag(float localX, float width, float height);
 
 	D2D1_RECT_F GetContentRect(float width, float height) const;
 	D2D1_RECT_F GetPlotRect(float width, float height) const;

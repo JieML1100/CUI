@@ -77,11 +77,11 @@ public:
 	static bool TryParseColor(const std::wstring& text, D2D1_COLOR_F& out);
 	static std::wstring ColorToString(D2D1_COLOR_F color);
 
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesNavigationKey(WPARAM key) const override;
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

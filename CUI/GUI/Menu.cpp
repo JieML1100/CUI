@@ -111,7 +111,7 @@ void MenuItem::Update()
 	this->EndRender();
 }
 
-bool MenuItem::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool MenuItem::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	switch (message)
@@ -120,7 +120,7 @@ bool MenuItem::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		this->ParentForm->UnderMouse = this;
 		break;
 	}
-	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 }
 
 UIClass Menu::Type() { return UIClass::UI_Menu; }
@@ -142,9 +142,9 @@ MenuItem* Menu::AddItem(std::wstring text)
 	return item;
 }
 
-bool Menu::ContainsPoint(int xof, int yof)
+bool Menu::ContainsPoint(int localX, int localY)
 {
-	if (xof >= 0 && xof <= this->Width && yof >= 0 && yof < BarHeight)
+	if (localX >= 0 && localX <= this->Width && localY >= 0 && localY < BarHeight)
 		return true;
 
 	if (!_expand || DropCount() <= 0)
@@ -236,7 +236,7 @@ bool Menu::ContainsPoint(int xof, int yof)
 
 	for (const auto& panel : panels)
 	{
-		if (xof >= panel.X && xof <= panel.X + panel.W && yof >= panel.Y && yof <= panel.Y + panel.H)
+		if (localX >= panel.X && localX <= panel.X + panel.W && localY >= panel.Y && localY <= panel.Y + panel.H)
 			return true;
 	}
 
@@ -260,7 +260,7 @@ void Menu::ClosePopup()
 		{
 			if (selected == this)
 			{
-				this->ParentForm->SetSelectedControl(NULL, false);
+				this->ParentForm->SetSelectedControl(nullptr, false);
 				break;
 			}
 		}
@@ -605,7 +605,7 @@ void Menu::Update()
 	this->EndRender();
 }
 
-bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 
@@ -616,7 +616,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	}
 
 	// route to top items (bar area only)
-	if (yof >= 0 && yof < BarHeight)
+	if (localY >= 0 && localY < BarHeight)
 	{
 		_hoverTopIndex = -1;
 		for (int i = 0; i < this->Count; i++)
@@ -625,10 +625,10 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			if (!it) continue;
 			auto loc = it->ActualLocation;
 			auto sz = it->ActualSize();
-			if (xof >= loc.x && xof <= (loc.x + sz.cx))
+			if (localX >= loc.x && localX <= (loc.x + sz.cx))
 			{
 				_hoverTopIndex = i;
-				it->ProcessMessage(message, wParam, lParam, xof - loc.x, yof - loc.y);
+				it->ProcessMessage(message, wParam, lParam, localX - loc.x, localY - loc.y);
 				break;
 			}
 		}
@@ -667,7 +667,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			}
 		}
 
-		return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 	}
 
 	// dropdown interactions (支持任意层级)
@@ -763,7 +763,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			int hitLevel = -1;
 			for (int i = (int)panels.size() - 1; i >= 0; i--)
 			{
-				if (pointInRect((float)xof, (float)yof, panels[i]))
+				if (pointInRect((float)localX, (float)localY, panels[i]))
 				{
 					hitLevel = i;
 					break;
@@ -779,7 +779,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 				float bridgeR = std::max(a.X + a.W - 2.0f, b.X + 2.0f);
 				float bridgeT = b.Y;
 				float bridgeB = b.Y + b.H;
-				if ((float)xof >= bridgeL && (float)xof <= bridgeR && (float)yof >= bridgeT && (float)yof <= bridgeB)
+				if ((float)localX >= bridgeL && (float)localX <= bridgeR && (float)localY >= bridgeT && (float)localY <= bridgeB)
 				{
 					inBridge = true;
 					break;
@@ -801,10 +801,10 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 				if (hitLevel >= 0)
 				{
 					const auto& pn = panels[hitLevel];
-					int idx = (int)(((float)yof - (pn.Y + DropPaddingY)) / (float)DropItemHeight);
-					int cnt = pn.Items ? (int)pn.Items->size() : 0;
-					if (idx < 0 || idx >= cnt) idx = -1;
-					bool need = false;
+					int itemIndex = (int)(((float)localY - (pn.Y + DropPaddingY)) / (float)DropItemHeight);
+					int itemCount = pn.Items ? (int)pn.Items->size() : 0;
+					if (itemIndex < 0 || itemIndex >= itemCount) itemIndex = -1;
+					bool needsUpdate = false;
 
 					ensureSize(_hoverPath, (size_t)hitLevel + 1);
 					ensureSize(_openPath, (size_t)hitLevel + 1);
@@ -814,25 +814,25 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 					if (_openPath.size() > (size_t)hitLevel + 1)
 						_openPath.resize((size_t)hitLevel + 1, -1);
 
-					if (_hoverPath[hitLevel] != idx)
+					if (_hoverPath[hitLevel] != itemIndex)
 					{
-						_hoverPath[hitLevel] = idx;
-						need = true;
+						_hoverPath[hitLevel] = itemIndex;
+						needsUpdate = true;
 					}
 
 					int newOpen = -1;
 					MenuItem* hovered = nullptr;
-					if (idx >= 0 && pn.Items && idx < (int)pn.Items->size())
-						hovered = (*pn.Items)[idx];
+					if (itemIndex >= 0 && pn.Items && itemIndex < (int)pn.Items->size())
+						hovered = (*pn.Items)[itemIndex];
 					if (itemHasSubMenu(hovered))
-						newOpen = idx;
+						newOpen = itemIndex;
 
 					if (_openPath[hitLevel] != newOpen)
 					{
 						_openPath[hitLevel] = newOpen;
-						need = true;
+						needsUpdate = true;
 					}
-					if (need) this->InvalidateVisual();
+					if (needsUpdate) this->InvalidateVisual();
 				}
 				else if (inBridge)
 				{
@@ -854,30 +854,30 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 				if (hitLevel >= 0)
 				{
 					const auto& pn = panels[hitLevel];
-					int idx = (int)(((float)yof - (pn.Y + DropPaddingY)) / (float)DropItemHeight);
-					int cnt = pn.Items ? (int)pn.Items->size() : 0;
-					if (idx >= 0 && idx < cnt)
+					int itemIndex = (int)(((float)localY - (pn.Y + DropPaddingY)) / (float)DropItemHeight);
+					int itemCount = pn.Items ? (int)pn.Items->size() : 0;
+					if (itemIndex >= 0 && itemIndex < itemCount)
 					{
-						auto* it = (*pn.Items)[idx];
-						if (it && !it->Separator)
+						auto* item = (*pn.Items)[itemIndex];
+						if (item && !item->Separator)
 						{
 							// 点击有子菜单项：展开下一层但不触发命令
-							if (!it->SubItems.empty())
+							if (!item->SubItems.empty())
 							{
 								ensureSize(_hoverPath, (size_t)hitLevel + 1);
 								ensureSize(_openPath, (size_t)hitLevel + 1);
 								_hoverPath.resize((size_t)hitLevel + 1, -1);
 								_openPath.resize((size_t)hitLevel + 1, -1);
-								_hoverPath[hitLevel] = idx;
-								_openPath[hitLevel] = idx;
+								_hoverPath[hitLevel] = itemIndex;
+								_openPath[hitLevel] = itemIndex;
 								this->InvalidateVisual();
-								return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+								return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 							}
 							// 叶子项：触发命令并收起
-							if (it->Id != 0)
-								this->OnMenuCommand(this, it->Id);
+							if (item->Id != 0)
+								this->OnMenuCommand(this, item->Id);
 							ClosePopup();
-							return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+							return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 						}
 					}
 					// 点击分隔符：不处理
@@ -886,7 +886,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 				{
 					// 点击到下拉外区域：只收起
 					ClosePopup();
-					return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+					return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 				}
 			}
 		}
@@ -897,6 +897,6 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		ClosePopup();
 	}
 
-	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 }
 

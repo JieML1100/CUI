@@ -112,14 +112,14 @@ public:
 	void SetPaneOpen(bool value);
 	void TogglePane();
 	void SetScrollOffset(float offsetY);
-	int HitTestItem(int xof, int yof) const;
+	int HitTestItem(int localX, int localY) const;
 
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool HandlesNavigationKey(WPARAM key) const override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 protected:
 	bool IsCompactMode() const;
@@ -152,12 +152,12 @@ private:
 	float GetRowHeight(const NavigationViewItem& item) const;
 	D2D1_RECT_F GetRowRect(const RowInfo& row, const Layout& layout) const;
 	void ClampScroll(Layout& layout);
-	bool HitTestToggle(const Layout& layout, int xof, int yof) const;
+	bool HitTestToggle(const Layout& layout, int localX, int localY) const;
 	void DrawHeader(D2DGraphics* d2d, const Layout& layout);
 	void DrawRows(D2DGraphics* d2d, const std::vector<RowInfo>& rows, const Layout& layout);
 	void DrawScrollBar(D2DGraphics* d2d, const Layout& layout);
-	void UpdateHover(int xof, int yof);
-	void UpdateScrollByThumb(float yof);
+	void UpdateHover(int localX, int localY);
+	void UpdateScrollByThumb(float localY);
 	void MoveSelectionBy(int delta);
 	void SyncSelectedIndexFromItems();
 };
@@ -213,11 +213,11 @@ public:
 	void SetPath(const std::vector<std::wstring>& path);
 	void ClearItems();
 	bool SelectItem(int index);
-	int HitTestItem(int xof, int yof) const;
+	int HitTestItem(int localX, int localY) const;
 
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 private:
 	struct ItemRegion

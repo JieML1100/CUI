@@ -1,4 +1,4 @@
-#define NOMINMAX
+﻿#define NOMINMAX
 #include "CalendarView.h"
 #include "Form.h"
 
@@ -54,9 +54,9 @@ namespace
 		const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
 		y = static_cast<int>(yoe) + era * 400;
 		const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-		const unsigned mp = (5 * doy + 2) / 153;
-		d = static_cast<int>(doy - (153 * mp + 2) / 5 + 1);
-		m = static_cast<int>(mp + (mp < 10 ? 3 : -9));
+		const unsigned monthPrime = (5 * doy + 2) / 153;
+		d = static_cast<int>(doy - (153 * monthPrime + 2) / 5 + 1);
+		m = static_cast<int>(monthPrime + (monthPrime < 10 ? 3 : -9));
 		y += (m <= 2);
 	}
 
@@ -87,16 +87,16 @@ namespace
 
 	SYSTEMTIME DateFromSerial(int serial)
 	{
-		int y = 0, m = 0, d = 0;
-		CivilFromDays(serial, y, m, d);
-		return MakeDate(y, m, d);
+		int year = 0, month = 0, day = 0;
+		CivilFromDays(serial, year, month, day);
+		return MakeDate(year, month, day);
 	}
 
 	int CompareDate(const SYSTEMTIME& lhs, const SYSTEMTIME& rhs)
 	{
-		int a = DateSerial(lhs);
-		int b = DateSerial(rhs);
-		return a < b ? -1 : (a > b ? 1 : 0);
+		int lhsSerial = DateSerial(lhs);
+		int rhsSerial = DateSerial(rhs);
+		return lhsSerial < rhsSerial ? -1 : (lhsSerial > rhsSerial ? 1 : 0);
 	}
 
 	bool IsSameDate(const SYSTEMTIME& lhs, const SYSTEMTIME& rhs)
@@ -113,11 +113,11 @@ namespace
 	{
 		static const int days[] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
 		month = (std::clamp)(month, 1, 12);
-		int d = days[month - 1];
+		int daysInSelectedMonth = days[month - 1];
 		bool leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
 		if (month == 2 && leap)
-			d = 29;
-		return d;
+			daysInSelectedMonth = 29;
+		return daysInSelectedMonth;
 	}
 
 	int FirstWeekday(int year, int month)
@@ -188,11 +188,11 @@ namespace
 
 	bool DateInClosedRange(const SYSTEMTIME& date, const SYSTEMTIME& start, const SYSTEMTIME& end)
 	{
-		int v = DateSerial(date);
-		int a = DateSerial(start);
-		int b = DateSerial(end);
-		if (a > b) std::swap(a, b);
-		return v >= a && v <= b;
+		int dateSerial = DateSerial(date);
+		int startSerial = DateSerial(start);
+		int endSerial = DateSerial(end);
+		if (startSerial > endSerial) std::swap(startSerial, endSerial);
+		return dateSerial >= startSerial && dateSerial <= endSerial;
 	}
 
 	void DrawMonthArrow(D2DGraphics* d2d, const D2D1_RECT_F& rect, bool next, D2D1_COLOR_F color)
@@ -373,13 +373,13 @@ CalendarView::Layout CalendarView::CalcLayout() const
 	return layout;
 }
 
-int CalendarView::HitTestDate(int xof, int yof, SYSTEMTIME& outDate, bool& inDisplayMonth) const
+int CalendarView::HitTestDate(int localX, int localY, SYSTEMTIME& outDate, bool& inDisplayMonth) const
 {
 	auto layout = CalcLayout();
-	if (!PtInRectF(layout.GridRect, (float)xof, (float)yof) || layout.CellWidth <= 0.0f || layout.CellHeight <= 0.0f)
+	if (!PtInRectF(layout.GridRect, (float)localX, (float)localY) || layout.CellWidth <= 0.0f || layout.CellHeight <= 0.0f)
 		return -1;
-	int col = (int)(((float)xof - layout.GridRect.left) / layout.CellWidth);
-	int row = (int)(((float)yof - layout.GridRect.top) / layout.CellHeight);
+	int col = (int)(((float)localX - layout.GridRect.left) / layout.CellWidth);
+	int row = (int)(((float)localY - layout.GridRect.top) / layout.CellHeight);
 	col = (std::clamp)(col, 0, 6);
 	row = (std::clamp)(row, 0, 5);
 	int cell = row * 7 + col;
@@ -389,15 +389,15 @@ int CalendarView::HitTestDate(int xof, int yof, SYSTEMTIME& outDate, bool& inDis
 	return cell;
 }
 
-CursorKind CalendarView::QueryCursor(int xof, int yof)
+CursorKind CalendarView::QueryCursor(int localX, int localY)
 {
 	if (!Enable) return CursorKind::Arrow;
 	auto layout = CalcLayout();
-	if (ShowHeader && (PtInRectF(layout.PrevRect, (float)xof, (float)yof) || PtInRectF(layout.NextRect, (float)xof, (float)yof)))
+	if (ShowHeader && (PtInRectF(layout.PrevRect, (float)localX, (float)localY) || PtInRectF(layout.NextRect, (float)localX, (float)localY)))
 		return CursorKind::Hand;
 	SYSTEMTIME date{};
 	bool inMonth = false;
-	return HitTestDate(xof, yof, date, inMonth) >= 0 ? CursorKind::Hand : CursorKind::Arrow;
+	return HitTestDate(localX, localY, date, inMonth) >= 0 ? CursorKind::Hand : CursorKind::Arrow;
 }
 
 bool CalendarView::HandlesNavigationKey(WPARAM key) const
@@ -565,7 +565,7 @@ void CalendarView::Update()
 	this->EndRender();
 }
 
-bool CalendarView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool CalendarView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	(void)lParam;
@@ -573,7 +573,7 @@ bool CalendarView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, in
 	{
 	case WM_MOUSEWHEEL:
 		AddMonths(GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1);
-		OnMouseWheel(this, MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam)));
+		OnMouseWheel(this, MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam)));
 		return true;
 	case WM_MOUSEMOVE:
 	{
@@ -581,14 +581,14 @@ bool CalendarView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, in
 		auto layout = CalcLayout();
 		int newHover = -1;
 		bool newHoverInMonth = true;
-		if (ShowHeader && PtInRectF(layout.PrevRect, (float)xof, (float)yof))
+		if (ShowHeader && PtInRectF(layout.PrevRect, (float)localX, (float)localY))
 			newHover = -2;
-		else if (ShowHeader && PtInRectF(layout.NextRect, (float)xof, (float)yof))
+		else if (ShowHeader && PtInRectF(layout.NextRect, (float)localX, (float)localY))
 			newHover = -3;
 		else
 		{
 			SYSTEMTIME date{};
-			if (HitTestDate(xof, yof, date, newHoverInMonth) >= 0)
+			if (HitTestDate(localX, localY, date, newHoverInMonth) >= 0)
 				newHover = (int)date.wDay;
 		}
 		if (newHover != HoverDay || newHoverInMonth != HoverDayInMonth)
@@ -597,28 +597,28 @@ bool CalendarView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, in
 			HoverDayInMonth = newHoverInMonth;
 			InvalidateVisual();
 		}
-		OnMouseMove(this, MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam)));
+		OnMouseMove(this, MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam)));
 		return true;
 	}
 	case WM_LBUTTONDOWN:
 		if (ParentForm) ParentForm->SetSelectedControl(this, false);
-		OnMouseDown(this, MouseEventArgs(MouseButtons::Left, 0, xof, yof, HIWORD(wParam)));
+		OnMouseDown(this, MouseEventArgs(MouseButtons::Left, 0, localX, localY, HIWORD(wParam)));
 		return true;
 	case WM_LBUTTONUP:
 	{
 		auto layout = CalcLayout();
-		if (ShowHeader && PtInRectF(layout.PrevRect, (float)xof, (float)yof))
+		if (ShowHeader && PtInRectF(layout.PrevRect, (float)localX, (float)localY))
 			AddMonths(-1);
-		else if (ShowHeader && PtInRectF(layout.NextRect, (float)xof, (float)yof))
+		else if (ShowHeader && PtInRectF(layout.NextRect, (float)localX, (float)localY))
 			AddMonths(1);
 		else
 		{
 			SYSTEMTIME date{};
 			bool inMonth = true;
-			if (HitTestDate(xof, yof, date, inMonth) >= 0)
+			if (HitTestDate(localX, localY, date, inMonth) >= 0)
 				SelectDateFromInput(date, inMonth);
 		}
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseUp(this, e);
 		OnMouseClick(this, e);
 		return true;
@@ -644,7 +644,7 @@ bool CalendarView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, in
 	default:
 		break;
 	}
-	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 }
 
 UIClass DateRangePicker::Type()
@@ -691,7 +691,7 @@ float DateRangePicker::CurrentDropProgress()
 		if (wasCollapsing)
 			_collapseCleanupPending = true;
 		if (_dropProgress <= 0.001f && this->ParentForm && this->ParentForm->ForegroundControl == this)
-			this->ParentForm->ForegroundControl = NULL;
+			this->ParentForm->ForegroundControl = nullptr;
 		return _dropProgress;
 	}
 	t = 1.0f - std::pow(1.0f - (std::clamp)(t, 0.0f, 1.0f), 3.0f);
@@ -772,7 +772,7 @@ void DateRangePicker::SetExpanded(bool value)
 		_dropProgress = _animTargetProgress;
 		_animating = false;
 		if (!Expand && this->ParentForm && this->ParentForm->ForegroundControl == this)
-			this->ParentForm->ForegroundControl = NULL;
+			this->ParentForm->ForegroundControl = nullptr;
 	}
 	else
 	{
@@ -871,23 +871,23 @@ void DateRangePicker::AddMonths(int delta)
 	InvalidateVisual();
 }
 
-DateRangePicker::HitPart DateRangePicker::HitTestPart(const Layout& layout, int xof, int yof, SYSTEMTIME& outDate, bool& inDisplayMonth) const
+DateRangePicker::HitPart DateRangePicker::HitTestPart(const Layout& layout, int localX, int localY, SYSTEMTIME& outDate, bool& inDisplayMonth) const
 {
 	outDate = SYSTEMTIME{};
 	inDisplayMonth = true;
-	if (yof >= 0 && yof <= this->_size.cy)
+	if (localY >= 0 && localY <= this->_size.cy)
 		return HitPart::Header;
 	const bool dropVisible = this->Expand || _animating || _dropProgress > 0.001f;
 	if (!dropVisible)
 		return HitPart::None;
-	if (PtInRectF(layout.PrevRect, (float)xof, (float)yof)) return HitPart::PrevMonth;
-	if (PtInRectF(layout.NextRect, (float)xof, (float)yof)) return HitPart::NextMonth;
-	if (PtInRectF(layout.TodayRect, (float)xof, (float)yof)) return HitPart::Today;
-	if (PtInRectF(layout.ClearRect, (float)xof, (float)yof)) return HitPart::Clear;
-	if (PtInRectF(layout.GridRect, (float)xof, (float)yof) && layout.CellWidth > 0.0f && layout.CellHeight > 0.0f)
+	if (PtInRectF(layout.PrevRect, (float)localX, (float)localY)) return HitPart::PrevMonth;
+	if (PtInRectF(layout.NextRect, (float)localX, (float)localY)) return HitPart::NextMonth;
+	if (PtInRectF(layout.TodayRect, (float)localX, (float)localY)) return HitPart::Today;
+	if (PtInRectF(layout.ClearRect, (float)localX, (float)localY)) return HitPart::Clear;
+	if (PtInRectF(layout.GridRect, (float)localX, (float)localY) && layout.CellWidth > 0.0f && layout.CellHeight > 0.0f)
 	{
-		int col = (int)(((float)xof - layout.GridRect.left) / layout.CellWidth);
-		int row = (int)(((float)yof - layout.GridRect.top) / layout.CellHeight);
+		int col = (int)(((float)localX - layout.GridRect.left) / layout.CellWidth);
+		int row = (int)(((float)localY - layout.GridRect.top) / layout.CellHeight);
 		col = (std::clamp)(col, 0, 6);
 		row = (std::clamp)(row, 0, 5);
 		int cell = row * 7 + col;
@@ -899,12 +899,12 @@ DateRangePicker::HitPart DateRangePicker::HitTestPart(const Layout& layout, int 
 	return HitPart::None;
 }
 
-void DateRangePicker::UpdateHoverState(int xof, int yof)
+void DateRangePicker::UpdateHoverState(int localX, int localY)
 {
 	auto layout = CalcLayout();
 	SYSTEMTIME date{};
 	bool inMonth = true;
-	auto part = HitTestPart(layout, xof, yof, date, inMonth);
+	auto part = HitTestPart(layout, localX, localY, date, inMonth);
 	int day = part == HitPart::DayCell ? (int)date.wDay : -1;
 	if (part != _hoverPart || day != _hoverDay || inMonth != _hoverInMonth)
 	{
@@ -953,13 +953,13 @@ void DateRangePicker::SelectDateFromInput(const SYSTEMTIME& date, bool inDisplay
 	InvalidateVisual();
 }
 
-CursorKind DateRangePicker::QueryCursor(int xof, int yof)
+CursorKind DateRangePicker::QueryCursor(int localX, int localY)
 {
 	if (!Enable) return CursorKind::Arrow;
 	auto layout = CalcLayout();
 	SYSTEMTIME date{};
 	bool inMonth = true;
-	auto part = HitTestPart(layout, xof, yof, date, inMonth);
+	auto part = HitTestPart(layout, localX, localY, date, inMonth);
 	return part == HitPart::None ? CursorKind::Arrow : CursorKind::Hand;
 }
 
@@ -1085,7 +1085,7 @@ void DateRangePicker::Update()
 		_collapseCleanupPending = false;
 }
 
-bool DateRangePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool DateRangePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	(void)lParam;
@@ -1097,23 +1097,23 @@ bool DateRangePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam,
 	case WM_MOUSEWHEEL:
 		if (Expand)
 			AddMonths(GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1);
-		OnMouseWheel(this, MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam)));
+		OnMouseWheel(this, MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam)));
 		return true;
 	case WM_MOUSEMOVE:
 		if (ParentForm) ParentForm->UnderMouse = this;
 		if (Expand)
-			UpdateHoverState(xof, yof);
-		OnMouseMove(this, MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam)));
+			UpdateHoverState(localX, localY);
+		OnMouseMove(this, MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam)));
 		return true;
 	case WM_LBUTTONDOWN:
-		OnMouseDown(this, MouseEventArgs(MouseButtons::Left, 0, xof, yof, HIWORD(wParam)));
+		OnMouseDown(this, MouseEventArgs(MouseButtons::Left, 0, localX, localY, HIWORD(wParam)));
 		return true;
 	case WM_LBUTTONUP:
 	{
 		auto layout = CalcLayout();
 		SYSTEMTIME date{};
 		bool inMonth = true;
-		auto part = HitTestPart(layout, xof, yof, date, inMonth);
+		auto part = HitTestPart(layout, localX, localY, date, inMonth);
 		switch (part)
 		{
 		case HitPart::Header:
@@ -1142,7 +1142,7 @@ bool DateRangePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam,
 		default:
 			break;
 		}
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseUp(this, e);
 		OnMouseClick(this, e);
 		return true;
@@ -1160,5 +1160,5 @@ bool DateRangePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam,
 	default:
 		break;
 	}
-	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 }

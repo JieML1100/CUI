@@ -34,8 +34,8 @@ public:
 
 class Convert {
 public:
-    static std::wstring string_to_wstring(const std::string& str);
-    static std::string wstring_to_string(const std::wstring& str);
+    static std::wstring StringToWString(const std::string& str);
+    static std::string WStringToString(const std::wstring& str);
 };
 
 class OpenFileDialog {

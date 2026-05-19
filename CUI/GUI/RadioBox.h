@@ -12,7 +12,7 @@
  */
 class RadioBox : public Control
 {
-	float last_width = 0.0f;
+	float lastMeasuredWidth = 0.0f;
 	float _selectProgress = 0.0f;
 	float _animStartProgress = 0.0f;
 	float _animTargetProgress = 0.0f;

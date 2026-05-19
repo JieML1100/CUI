@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 /**
  * @file ToolBox.h
@@ -54,7 +54,7 @@ public:
 	ToolBox(int x, int y, int width, int height);
 	virtual ~ToolBox();
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 	
 	Event<void(UIClass)> OnControlSelected;
 };

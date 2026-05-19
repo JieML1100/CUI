@@ -550,44 +550,44 @@ public:
 		if (!Child)
 			return T();
 
-		uint8_t* tmpkey = reinterpret_cast<uint8_t*>(&key);
-		KeyTable64<T>* tmp = this;
-		for (int i = 0; i < 8; i++, tmpkey++) {
-			if (!tmp->Child || !tmp->Child[*tmpkey])
+		uint8_t* keyByte = reinterpret_cast<uint8_t*>(&key);
+		KeyTable64<T>* currentNode = this;
+		for (int i = 0; i < 8; i++, keyByte++) {
+			if (!currentNode->Child || !currentNode->Child[*keyByte])
 				return T();
-			tmp = tmp->Child[*tmpkey];
+			currentNode = currentNode->Child[*keyByte];
 		}
-		return tmp->Value;
+		return currentNode->Value;
 	}
 
 	bool Contains(uint64_t key) {
 		if (!Child)
 			return false;
 
-		uint8_t* tmpkey = reinterpret_cast<uint8_t*>(&key);
-		KeyTable64<T>* tmp = this;
-		for (int i = 0; i < 8; i++, tmpkey++) {
-			if (!tmp->Child || !tmp->Child[*tmpkey])
+		uint8_t* keyByte = reinterpret_cast<uint8_t*>(&key);
+		KeyTable64<T>* currentNode = this;
+		for (int i = 0; i < 8; i++, keyByte++) {
+			if (!currentNode->Child || !currentNode->Child[*keyByte])
 				return false;
-			tmp = tmp->Child[*tmpkey];
+			currentNode = currentNode->Child[*keyByte];
 		}
 		return true;
 	}
 
 	void Set(uint64_t key, T value) {
-		uint8_t* tmpkey = reinterpret_cast<uint8_t*>(&key);
-		KeyTable64<T>* tmp = this;
-		for (int i = 0; i < 8; i++, tmpkey++) {
-			if (!tmp->Child) {
-				tmp->Child = new KeyTable64<T>*[0x100]();
-				memset(tmp->Child, 0, sizeof(0x100 * sizeof(KeyTable64<T>*)));
+		uint8_t* keyByte = reinterpret_cast<uint8_t*>(&key);
+		KeyTable64<T>* currentNode = this;
+		for (int i = 0; i < 8; i++, keyByte++) {
+			if (!currentNode->Child) {
+				currentNode->Child = new KeyTable64<T>*[0x100]();
+				memset(currentNode->Child, 0, sizeof(0x100 * sizeof(KeyTable64<T>*)));
 			}
-			if (!tmp->Child[*tmpkey]) {
-				tmp->Child[*tmpkey] = new KeyTable64<T>();
+			if (!currentNode->Child[*keyByte]) {
+				currentNode->Child[*keyByte] = new KeyTable64<T>();
 			}
-			tmp = tmp->Child[*tmpkey];
+			currentNode = currentNode->Child[*keyByte];
 		}
-		tmp->Value = value;
+		currentNode->Value = value;
 	}
 };
 
@@ -618,78 +618,78 @@ public:
 	}
 
 	T Get(uint32_t key) {
-		uint8_t* tmpkey = (uint8_t*)&key;
-		KeyTable32<T>* tmp = this;
+		uint8_t* keyBytes = (uint8_t*)&key;
+		KeyTable32<T>* currentNode = this;
 
-		if (!tmp->Child || !tmp->Child[tmpkey[3]])
+		if (!currentNode->Child || !currentNode->Child[keyBytes[3]])
 			return T();
-		tmp = tmp->Child[tmpkey[3]];
+		currentNode = currentNode->Child[keyBytes[3]];
 
-		if (!tmp->Child || !tmp->Child[tmpkey[2]])
+		if (!currentNode->Child || !currentNode->Child[keyBytes[2]])
 			return T();
-		tmp = tmp->Child[tmpkey[2]];
+		currentNode = currentNode->Child[keyBytes[2]];
 
-		if (!tmp->Child || !tmp->Child[tmpkey[1]])
+		if (!currentNode->Child || !currentNode->Child[keyBytes[1]])
 			return T();
-		tmp = tmp->Child[tmpkey[1]];
+		currentNode = currentNode->Child[keyBytes[1]];
 
-		if (!tmp->Child || !tmp->Child[tmpkey[0]])
+		if (!currentNode->Child || !currentNode->Child[keyBytes[0]])
 			return T();
-		tmp = tmp->Child[tmpkey[0]];
+		currentNode = currentNode->Child[keyBytes[0]];
 
-		return tmp->Value;
+		return currentNode->Value;
 	}
 
 	bool Contains(uint32_t key) {
-		uint8_t* tmpkey = (uint8_t*)&key;
-		KeyTable32<T>* tmp = this;
+		uint8_t* keyBytes = (uint8_t*)&key;
+		KeyTable32<T>* currentNode = this;
 
-		if (!tmp->Child || !tmp->Child[tmpkey[3]])
+		if (!currentNode->Child || !currentNode->Child[keyBytes[3]])
 			return false;
-		tmp = tmp->Child[tmpkey[3]];
+		currentNode = currentNode->Child[keyBytes[3]];
 
-		if (!tmp->Child || !tmp->Child[tmpkey[2]])
+		if (!currentNode->Child || !currentNode->Child[keyBytes[2]])
 			return false;
-		tmp = tmp->Child[tmpkey[2]];
+		currentNode = currentNode->Child[keyBytes[2]];
 
-		if (!tmp->Child || !tmp->Child[tmpkey[1]])
+		if (!currentNode->Child || !currentNode->Child[keyBytes[1]])
 			return false;
-		tmp = tmp->Child[tmpkey[1]];
+		currentNode = currentNode->Child[keyBytes[1]];
 
-		if (!tmp->Child || !tmp->Child[tmpkey[0]])
+		if (!currentNode->Child || !currentNode->Child[keyBytes[0]])
 			return false;
 
 		return true;
 	}
 
 	void Set(uint32_t key, T value) {
-		uint8_t* tmpkey = (uint8_t*)&key;
-		KeyTable32<T>* tmp = this;
+		uint8_t* keyBytes = (uint8_t*)&key;
+		KeyTable32<T>* currentNode = this;
 
-		if (!tmp->Child)
-			tmp->Child = new KeyTable32<T>*[0x100]();
-		if (!tmp->Child[tmpkey[3]])
-			tmp->Child[tmpkey[3]] = new KeyTable32<T>();
-		tmp = tmp->Child[tmpkey[3]];
+		if (!currentNode->Child)
+			currentNode->Child = new KeyTable32<T>*[0x100]();
+		if (!currentNode->Child[keyBytes[3]])
+			currentNode->Child[keyBytes[3]] = new KeyTable32<T>();
+		currentNode = currentNode->Child[keyBytes[3]];
 
-		if (!tmp->Child)
-			tmp->Child = new KeyTable32<T>*[0x100]();
-		if (!tmp->Child[tmpkey[2]])
-			tmp->Child[tmpkey[2]] = new KeyTable32<T>();
-		tmp = tmp->Child[tmpkey[2]];
+		if (!currentNode->Child)
+			currentNode->Child = new KeyTable32<T>*[0x100]();
+		if (!currentNode->Child[keyBytes[2]])
+			currentNode->Child[keyBytes[2]] = new KeyTable32<T>();
+		currentNode = currentNode->Child[keyBytes[2]];
 
-		if (!tmp->Child)
-			tmp->Child = new KeyTable32<T>*[0x100]();
-		if (!tmp->Child[tmpkey[1]])
-			tmp->Child[tmpkey[1]] = new KeyTable32<T>();
-		tmp = tmp->Child[tmpkey[1]];
+		if (!currentNode->Child)
+			currentNode->Child = new KeyTable32<T>*[0x100]();
+		if (!currentNode->Child[keyBytes[1]])
+			currentNode->Child[keyBytes[1]] = new KeyTable32<T>();
+		currentNode = currentNode->Child[keyBytes[1]];
 
-		if (!tmp->Child)
-			tmp->Child = new KeyTable32<T>*[0x100]();
-		if (!tmp->Child[tmpkey[0]])
-			tmp->Child[tmpkey[0]] = new KeyTable32<T>();
-		tmp = tmp->Child[tmpkey[0]];
+		if (!currentNode->Child)
+			currentNode->Child = new KeyTable32<T>*[0x100]();
+		if (!currentNode->Child[keyBytes[0]])
+			currentNode->Child[keyBytes[0]] = new KeyTable32<T>();
+		currentNode = currentNode->Child[keyBytes[0]];
 
-		tmp->Value = value;
+		currentNode->Value = value;
 	}
 };

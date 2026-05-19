@@ -111,14 +111,14 @@ ToolBox::ToolBox(int x, int y, int width, int height)
 	auto controls = ControlRegistry::GetAvailableControls();
 	int yOffset = 0;
 	
-	for (const auto& ctrl : controls)
+	for (const auto& controlInfo : controls)
 	{
-		auto item = new ToolBoxItem(ctrl.DisplayName, ctrl.Type, GetToolBoxSvg(ctrl.Type), 10, yOffset, width - 25, 34);
+		auto item = new ToolBoxItem(controlInfo.DisplayName, controlInfo.Type, GetToolBoxSvg(controlInfo.Type), 10, yOffset, width - 25, 34);
 		item->Round = 0.18f;
 		
 		// 点击事件
-		item->OnMouseClick += [this, ctrl](Control* sender, MouseEventArgs e) {
-			OnControlSelected(ctrl.Type);
+		item->OnMouseClick += [this, controlInfo](Control* sender, MouseEventArgs e) {
+			OnControlSelected(controlInfo.Type);
 		};
 		
 		_itemsHost->AddControl(item);
@@ -181,7 +181,7 @@ void ToolBox::Update()
 	Panel::Update();
 }
 
-bool ToolBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool ToolBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
-	return Panel::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Panel::ProcessMessage(message, wParam, lParam, localX, localY);
 }

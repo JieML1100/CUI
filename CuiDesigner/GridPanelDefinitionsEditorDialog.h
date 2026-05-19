@@ -29,6 +29,6 @@ private:
 	static std::vector<std::wstring> SplitLines(const std::wstring& text);
 	static bool TryParseGridLength(const std::wstring& token, GridLength& out);
 	static std::wstring GridLengthToString(const GridLength& gl);
-	static std::wstring JoinRows(GridPanel* gp);
-	static std::wstring JoinCols(GridPanel* gp);
+	static std::wstring JoinRows(GridPanel* gridPanel);
+	static std::wstring JoinCols(GridPanel* gridPanel);
 };

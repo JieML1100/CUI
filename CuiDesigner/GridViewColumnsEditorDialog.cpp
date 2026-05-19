@@ -243,20 +243,20 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 			ColumnType type = ColumnType::Text;
 			if (row.Cells.size() > COL_TYPE)
 			{
-				const __int64 idx = row.Cells[COL_TYPE].GetTag();
-				if (idx >= 0 && static_cast<size_t>(idx) < typeItems.size())
+				const __int64 typeIndex = row.Cells[COL_TYPE].GetTag();
+				if (typeIndex >= 0 && static_cast<size_t>(typeIndex) < typeItems.size())
 				{
 					ColumnType parsed{};
-					if (TryParseColumnType(typeItems[(int)idx], parsed))
+					if (TryParseColumnType(typeItems[(int)typeIndex], parsed))
 						type = parsed;
 				}
 				else
 				{
-					auto t = Trim(row.Cells[COL_TYPE].GetText());
-					if (!t.empty())
+					auto typeText = Trim(row.Cells[COL_TYPE].GetText());
+					if (!typeText.empty())
 					{
 						ColumnType parsed{};
-						if (TryParseColumnType(t, parsed)) type = parsed;
+						if (TryParseColumnType(typeText, parsed)) type = parsed;
 					}
 				}
 			}

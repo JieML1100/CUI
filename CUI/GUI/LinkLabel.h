@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #pragma once
 #include "Label.h"
 
@@ -26,5 +26,5 @@ public:
 	/** @brief 创建 LinkLabel。 */
 	LinkLabel(std::wstring text, int x, int y);
 	void Update() override;
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 };

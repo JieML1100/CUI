@@ -75,20 +75,20 @@ std::wstring TreeViewNodesEditorDialog::StripIndentTabs(const std::wstring& s)
 
 void TreeViewNodesEditorDialog::SerializeNodes(std::wstringstream& ss, std::vector<TreeNode*>& nodes, int depth)
 {
-	for (auto n : nodes)
+	for (auto* node : nodes)
 	{
 		for (int i = 0; i < depth; i++) ss << L"\t";
-		ss << (n ? n->Text : L"") << L"\r\n";
-		if (n && n->Children.size() > 0)
-			SerializeNodes(ss, n->Children, depth + 1);
+		ss << (node ? node->Text : L"") << L"\r\n";
+		if (node && node->Children.size() > 0)
+			SerializeNodes(ss, node->Children, depth + 1);
 	}
 }
 
-std::wstring TreeViewNodesEditorDialog::NodesToText(TreeView* tv)
+std::wstring TreeViewNodesEditorDialog::NodesToText(TreeView* treeView)
 {
-	if (!tv || !tv->Root) return L"";
+	if (!treeView || !treeView->Root) return L"";
 	std::wstringstream ss;
-	SerializeNodes(ss, tv->Root->Children, 0);
+	SerializeNodes(ss, treeView->Root->Children, 0);
 	return ss.str();
 }
 
@@ -121,7 +121,7 @@ TreeViewNodesEditorDialog::TreeViewNodesEditorDialog(TreeView* target)
 		auto lines = SplitLines(_editor->Text);
 
 		// 清空旧节点
-		for (auto n : _target->Root->Children) delete n;
+		for (auto node : _target->Root->Children) delete node;
 		_target->Root->Children.clear();
 		_target->SelectedNode = nullptr;
 		_target->HoveredNode = nullptr;

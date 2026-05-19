@@ -1,4 +1,4 @@
-#ifdef CUI_ENABLE_WEBVIEW2
+﻿#ifdef CUI_ENABLE_WEBVIEW2
 
 #include "WebBrowser.h"
 #include "Form.h"
@@ -333,7 +333,7 @@ void WebBrowser::EnsureInitialized()
 	_cachedSource.clear();
 	_cachedTitle.clear();
 
-	_lastCoInitHr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+	_lastCoInitHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
 		// DirectComposition：为每个 WebBrowser 创建一个独立的 Visual，并交给 Form 的 DComp 层栈排序
 	IDCompositionDevice* dcompDevice = this->ParentForm->GetDCompDevice();
@@ -697,9 +697,9 @@ void WebBrowser::EnsureInteropInstalled()
 		L" else { setTimeout(notifyDom,0); }"
 		L" chrome.webview.addEventListener('message', function(ev){"
 		L"   try{"
-		L"     const msg = String(ev.data||'');"
-		L"     if(!msg.startsWith('cui://resp?')) return;"
-		L"     const q = msg.substring('cui://resp?'.length);"
+		L"     const messageText = String(ev.data||'');"
+		L"     if(!messageText.startsWith('cui://resp?')) return;"
+		L"     const q = messageText.substring('cui://resp?'.length);"
 		L"     const params = new URLSearchParams(q);"
 		L"     const id = params.get('id');"
 		L"     const ok = params.get('ok') === '1';"
@@ -751,14 +751,14 @@ void WebBrowser::EnsureInteropInstalled()
 
 				LPWSTR raw = nullptr;
 				if (FAILED(args->TryGetWebMessageAsString(&raw)) || !raw) return S_OK;
-				std::wstring msg(raw);
+				std::wstring messageText(raw);
 				CoTaskMemFree(raw);
 
 				std::wstring action;
 				std::unordered_map<std::wstring, std::wstring> q;
-				if (!TryParseCuiUrl(msg, action, q))
+				if (!TryParseCuiUrl(messageText, action, q))
 				{
-					WebBrowser::WebMessageReceivedArgs ev{ msg };
+					WebBrowser::WebMessageReceivedArgs ev{ messageText };
 					OnWebMessageReceived(this, ev);
 					return S_OK;
 				}
@@ -816,7 +816,7 @@ void WebBrowser::EnsureInteropInstalled()
 				}
 				else
 				{
-					WebBrowser::WebMessageReceivedArgs ev{ msg };
+					WebBrowser::WebMessageReceivedArgs ev{ messageText };
 					OnWebMessageReceived(this, ev);
 				}
 				return S_OK;
@@ -936,11 +936,11 @@ void WebBrowser::Update()
 }
 
 
-bool WebBrowser::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool WebBrowser::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	// Composition 模式下需要显式转发鼠标输入
-	ForwardMouseMessageToWebView(message, wParam, lParam, xof, yof);
-	Control::ProcessMessage(message, wParam, lParam, xof, yof);
+	ForwardMouseMessageToWebView(message, wParam, lParam, localX, localY);
+	Control::ProcessMessage(message, wParam, lParam, localX, localY);
 	return true;
 }
 
@@ -952,7 +952,7 @@ bool WebBrowser::TryGetSystemCursorId(UINT32& outId) const
 	return true;
 }
 
-bool WebBrowser::ForwardMouseMessageToWebView(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool WebBrowser::ForwardMouseMessageToWebView(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	(void)lParam;
 	if (!_webviewReady || !_compositionController) return false;
@@ -991,9 +991,9 @@ bool WebBrowser::ForwardMouseMessageToWebView(UINT message, WPARAM wParam, LPARA
 	if (GetKeyState(VK_CONTROL) & 0x8000) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_CONTROL);
 	if (GetKeyState(VK_SHIFT) & 0x8000) vkeys = (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)(vkeys | COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_SHIFT);
 
-	// xof/yof are in logical (96-DPI) units; SendMouseInput expects physical pixels within the DComp visual
+	// localX/localY are in logical (96-DPI) units; SendMouseInput expects physical pixels within the DComp visual
 	const float dpiSc = (this->ParentForm ? this->ParentForm->GetDpiScale() : 1.0f);
-	POINT pt{ (LONG)(xof * dpiSc), (LONG)(yof * dpiSc) };
+	POINT pt{ (LONG)(localX * dpiSc), (LONG)(localY * dpiSc) };
 	_compositionController->SendMouseInput(kind, vkeys, mouseData, pt);
 
 	// 尽量同步光标（Form 的 UpdateCursor 会覆盖一次，这里在鼠标移动时再补一刀）
@@ -1004,7 +1004,7 @@ bool WebBrowser::ForwardMouseMessageToWebView(UINT message, WPARAM wParam, LPARA
 		{
 			_lastSystemCursorId = id;
 			_hasSystemCursorId = true;
-			auto h = LoadCursorW(NULL, MAKEINTRESOURCEW((ULONG_PTR)id));
+			auto h = LoadCursorW(nullptr, MAKEINTRESOURCEW((ULONG_PTR)id));
 			if (h) ::SetCursor(h);
 		}
 	}
@@ -1141,7 +1141,7 @@ void WebBrowser::ExecuteScriptAsync(const std::wstring& script,
 		return;
 	}
 
-	auto cb = Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+	auto scriptCallback = Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
 		[callback, this](HRESULT errorCode, LPCWSTR resultObjectAsJson) -> HRESULT
 		{
 			if (callback)
@@ -1150,7 +1150,7 @@ void WebBrowser::ExecuteScriptAsync(const std::wstring& script,
 			return S_OK;
 		});
 
-	_webview->ExecuteScript(script.c_str(), cb.Get());
+	_webview->ExecuteScript(script.c_str(), scriptCallback.Get());
 }
 
 void WebBrowser::GetHtmlAsync(std::function<void(HRESULT hr, const std::wstring& html)> callback)
@@ -1204,13 +1204,13 @@ void WebBrowser::Update()
 {
 }
 
-bool WebBrowser::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool WebBrowser::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	(void)message;
 	(void)wParam;
 	(void)lParam;
-	(void)xof;
-	(void)yof;
+	(void)localX;
+	(void)localY;
 	return true;
 }
 

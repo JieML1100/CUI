@@ -1,4 +1,4 @@
-#define NOMINMAX
+﻿#define NOMINMAX
 #include "PropertyGrid.h"
 #include "ColorPickerPopup.h"
 #include "DropDownPopup.h"
@@ -149,13 +149,13 @@ PropertyGridView::~PropertyGridView()
 	if (this->_dropDownPopup)
 	{
 		delete this->_dropDownPopup;
-		this->_dropDownPopup = NULL;
+		this->_dropDownPopup = nullptr;
 	}
 	this->_dropDownPopupIndex = -1;
 	if (this->_colorPicker)
 	{
 		delete this->_colorPicker;
-		this->_colorPicker = NULL;
+		this->_colorPicker = nullptr;
 	}
 	this->_colorPickerIndex = -1;
 }
@@ -463,7 +463,7 @@ void PropertyGridView::EnsureVisible(int index)
 	}
 }
 
-int PropertyGridView::HitTestItem(int xof, int yof) const
+int PropertyGridView::HitTestItem(int localX, int localY) const
 {
 	auto rows = BuildRows();
 	auto layout = CalcLayout(rows);
@@ -471,7 +471,7 @@ int PropertyGridView::HitTestItem(int xof, int yof) const
 	{
 		if (row.IsCategory) continue;
 		auto rect = GetVisibleRowRect(row, layout);
-		if (PtInRectF(rect, (float)xof, (float)yof))
+		if (PtInRectF(rect, (float)localX, (float)localY))
 			return row.ItemIndex;
 	}
 	return -1;
@@ -490,7 +490,7 @@ bool PropertyGridView::GetValueRectForItem(int index, const std::vector<RowInfo>
 	return false;
 }
 
-bool PropertyGridView::IsValueCell(int xof, int yof, const std::vector<RowInfo>& rows, const Layout& layout, int& itemIndex) const
+bool PropertyGridView::IsValueCell(int localX, int localY, const std::vector<RowInfo>& rows, const Layout& layout, int& itemIndex) const
 {
 	itemIndex = -1;
 	for (const auto& row : rows)
@@ -499,7 +499,7 @@ bool PropertyGridView::IsValueCell(int xof, int yof, const std::vector<RowInfo>&
 		auto rect = GetRowRect(row, layout);
 		auto visibleRect = GetVisibleRowRect(row, layout);
 		auto valueRect = IntersectRectF(GetValueRect(rect), visibleRect);
-		if (PtInRectF(valueRect, (float)xof, (float)yof))
+		if (PtInRectF(valueRect, (float)localX, (float)localY))
 		{
 			itemIndex = row.ItemIndex;
 			return true;
@@ -508,17 +508,17 @@ bool PropertyGridView::IsValueCell(int xof, int yof, const std::vector<RowInfo>&
 	return false;
 }
 
-bool PropertyGridView::IsOverSplitter(int xof, int yof) const
+bool PropertyGridView::IsOverSplitter(int localX, int localY) const
 {
 	auto rows = BuildRows();
 	auto layout = CalcLayout(rows);
-	if (!PtInRectF(layout.ContentRect, (float)xof, (float)yof) && !PtInRectF(layout.HeaderRect, (float)xof, (float)yof))
+	if (!PtInRectF(layout.ContentRect, (float)localX, (float)localY) && !PtInRectF(layout.HeaderRect, (float)localX, (float)localY))
 		return false;
 	float splitX = std::clamp(this->NameColumnWidth, 48.0f, std::max(48.0f, RectWidth(layout.ContentRect) - 48.0f));
-	return std::fabs((float)xof - splitX) <= std::max(3.0f, this->SplitterWidth);
+	return std::fabs((float)localX - splitX) <= std::max(3.0f, this->SplitterWidth);
 }
 
-CursorKind PropertyGridView::QueryCursor(int xof, int yof)
+CursorKind PropertyGridView::QueryCursor(int localX, int localY)
 {
 	if (!this->Enable)
 		return CursorKind::Arrow;
@@ -526,25 +526,25 @@ CursorKind PropertyGridView::QueryCursor(int xof, int yof)
 		return CursorKind::SizeWE;
 	if (_dragVScroll)
 		return CursorKind::SizeNS;
-	if (IsOverSplitter(xof, yof))
+	if (IsOverSplitter(localX, localY))
 		return CursorKind::SizeWE;
 
 	auto rows = BuildRows();
 	auto layout = CalcLayout(rows);
-	if (layout.NeedVScroll && PtInRectF(layout.ScrollTrackRect, (float)xof, (float)yof))
+	if (layout.NeedVScroll && PtInRectF(layout.ScrollTrackRect, (float)localX, (float)localY))
 		return CursorKind::SizeNS;
 
 	for (const auto& row : rows)
 	{
 		auto rect = GetRowRect(row, layout);
 		auto visibleRect = GetVisibleRowRect(row, layout);
-		if (IsEmptyRectF(visibleRect) || !PtInRectF(visibleRect, (float)xof, (float)yof))
+		if (IsEmptyRectF(visibleRect) || !PtInRectF(visibleRect, (float)localX, (float)localY))
 			continue;
 		if (row.IsCategory)
 			return CursorKind::Hand;
 
 		auto valueRect = IntersectRectF(GetValueRect(rect), visibleRect);
-		if (!PtInRectF(valueRect, (float)xof, (float)yof))
+		if (!PtInRectF(valueRect, (float)localX, (float)localY))
 			return CursorKind::Arrow;
 		if (!IsEditableItem(row.ItemIndex))
 			return CursorKind::Arrow;
@@ -567,11 +567,11 @@ CursorKind PropertyGridView::QueryCursor(int xof, int yof)
 	return CursorKind::Arrow;
 }
 
-bool PropertyGridView::CanHandleMouseWheel(int delta, int xof, int yof)
+bool PropertyGridView::CanHandleMouseWheel(int delta, int localX, int localY)
 {
 	(void)delta;
-	(void)xof;
-	(void)yof;
+	(void)localX;
+	(void)localY;
 	auto rows = BuildRows();
 	auto layout = CalcLayout(rows);
 	return layout.NeedVScroll;
@@ -902,9 +902,9 @@ void PropertyGridView::DrawScrollBar(D2DGraphics* d2d, const Layout& layout)
 	d2d->FillRoundRect(layout.ScrollThumbRect, this->ScrollForeColor, RectWidth(layout.ScrollThumbRect) * 0.5f);
 }
 
-void PropertyGridView::UpdateHover(int xof, int yof)
+void PropertyGridView::UpdateHover(int localX, int localY)
 {
-	int index = HitTestItem(xof, yof);
+	int index = HitTestItem(localX, localY);
 	if (index != this->HoveredIndex)
 	{
 		this->HoveredIndex = index;
@@ -912,7 +912,7 @@ void PropertyGridView::UpdateHover(int xof, int yof)
 	}
 }
 
-void PropertyGridView::UpdateScrollByThumb(float yof)
+void PropertyGridView::UpdateScrollByThumb(float localY)
 {
 	auto rows = BuildRows();
 	auto layout = CalcLayout(rows);
@@ -920,7 +920,7 @@ void PropertyGridView::UpdateScrollByThumb(float yof)
 	float trackH = RectHeight(layout.ScrollTrackRect);
 	float thumbH = RectHeight(layout.ScrollThumbRect);
 	float movable = std::max(1.0f, trackH - thumbH);
-	float newTop = std::clamp(yof - _scrollThumbGrabOffsetY, layout.ScrollTrackRect.top, layout.ScrollTrackRect.bottom - thumbH);
+	float newTop = std::clamp(localY - _scrollThumbGrabOffsetY, layout.ScrollTrackRect.top, layout.ScrollTrackRect.bottom - thumbH);
 	SetScrollOffset(((newTop - layout.ScrollTrackRect.top) / movable) * layout.MaxScrollY);
 }
 
@@ -1122,13 +1122,13 @@ int PropertyGridView::EditHitTestTextPosition(float cellWidth, float cellHeight,
 		(x - this->EditTextMargin) + _editOffsetX, y - this->EditTextMargin);
 }
 
-bool PropertyGridView::SetEditingCaretFromMousePoint(int xof, int yof, const D2D1_RECT_F& valueRect)
+bool PropertyGridView::SetEditingCaretFromMousePoint(int localX, int localY, const D2D1_RECT_F& valueRect)
 {
 	if (!_editing) return false;
 	auto editRect = D2D1::RectF(valueRect.left + 3.0f, valueRect.top + 3.0f, valueRect.right - 3.0f, valueRect.bottom - 3.0f);
 	float cellWidth = RectWidth(editRect);
 	float cellHeight = RectHeight(editRect);
-	int pos = EditHitTestTextPosition(cellWidth, cellHeight, (float)xof - editRect.left, (float)yof - editRect.top);
+	int pos = EditHitTestTextPosition(cellWidth, cellHeight, (float)localX - editRect.left, (float)localY - editRect.top);
 	_editSelectionStart = _editSelectionEnd = std::clamp(pos, 0, (int)_editingText.size());
 	_editCaret = _editSelectionEnd;
 	EditUpdateScroll(cellWidth);
@@ -1136,15 +1136,15 @@ bool PropertyGridView::SetEditingCaretFromMousePoint(int xof, int yof, const D2D
 	return true;
 }
 
-bool PropertyGridView::UpdateEditingSelectionFromMousePoint(int xof, int yof, const D2D1_RECT_F& valueRect)
+bool PropertyGridView::UpdateEditingSelectionFromMousePoint(int localX, int localY, const D2D1_RECT_F& valueRect)
 {
 	if (!_editing) return false;
 	auto editRect = D2D1::RectF(valueRect.left + 3.0f, valueRect.top + 3.0f, valueRect.right - 3.0f, valueRect.bottom - 3.0f);
 	float cellWidth = RectWidth(editRect);
 	float cellHeight = RectHeight(editRect);
-	float localX = std::clamp((float)xof, editRect.left, editRect.right) - editRect.left;
-	float localY = std::clamp((float)yof, editRect.top, editRect.bottom) - editRect.top;
-	int pos = EditHitTestTextPosition(cellWidth, cellHeight, localX, localY);
+	float editLocalX = std::clamp((float)localX, editRect.left, editRect.right) - editRect.left;
+	float editLocalY = std::clamp((float)localY, editRect.top, editRect.bottom) - editRect.top;
+	int pos = EditHitTestTextPosition(cellWidth, cellHeight, editLocalX, editLocalY);
 	_editSelectionEnd = std::clamp(pos, 0, (int)_editingText.size());
 	_editCaret = _editSelectionEnd;
 	EditUpdateScroll(cellWidth);
@@ -1186,7 +1186,7 @@ void PropertyGridView::HandleImeComposition(LPARAM lParam)
 		HIMC hIMC = ImmGetContext(this->ParentForm->Handle);
 		if (hIMC)
 		{
-			LONG bytes = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, NULL, 0);
+			LONG bytes = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, nullptr, 0);
 			if (bytes > 0)
 			{
 				int wcharCount = bytes / (int)sizeof(wchar_t);
@@ -1433,7 +1433,7 @@ void PropertyGridView::Update()
 		this->InvalidateVisual();
 }
 
-bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 
@@ -1449,7 +1449,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 			const float step = (float)std::max(8, this->MouseWheelStep);
 			SetScrollOffset(this->ScrollYOffset + (delta < 0 ? step : -step));
 		}
-		MouseEventArgs e(MouseButtons::None, 0, xof, yof, delta);
+		MouseEventArgs e(MouseButtons::None, 0, localX, localY, delta);
 		this->OnMouseWheel(this, e);
 		return true;
 	}
@@ -1463,22 +1463,22 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 			auto layout = CalcLayout(rows);
 			D2D1_RECT_F valueRect{};
 			if (GetValueRectForItem(_editingIndex, rows, layout, valueRect))
-				UpdateEditingSelectionFromMousePoint(xof, yof, valueRect);
+				UpdateEditingSelectionFromMousePoint(localX, localY, valueRect);
 		}
 		else if (_dragVScroll)
-			UpdateScrollByThumb((float)yof);
+			UpdateScrollByThumb((float)localY);
 		else if (_dragSplitter)
 		{
 			CloseDropDownEditor();
 			CloseColorPickerEditor();
 			auto rows = BuildRows();
 			auto layout = CalcLayout(rows);
-			this->NameColumnWidth = std::clamp((float)xof, 48.0f, std::max(48.0f, RectWidth(layout.ContentRect) - 48.0f));
+			this->NameColumnWidth = std::clamp((float)localX, 48.0f, std::max(48.0f, RectWidth(layout.ContentRect) - 48.0f));
 			this->InvalidateVisual();
 		}
 		else
-			UpdateHover(xof, yof);
-		MouseEventArgs e(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
+			UpdateHover(localX, localY);
+		MouseEventArgs e(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseMove(this, e);
 		return true;
 	}
@@ -1488,18 +1488,18 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 			this->ParentForm->SetSelectedControl(this, false);
 		auto rows = BuildRows();
 		auto layout = CalcLayout(rows);
-		if (layout.NeedVScroll && PtInRectF(layout.ScrollThumbRect, (float)xof, (float)yof))
+		if (layout.NeedVScroll && PtInRectF(layout.ScrollThumbRect, (float)localX, (float)localY))
 		{
 			_dragVScroll = true;
-			_scrollThumbGrabOffsetY = (float)yof - layout.ScrollThumbRect.top;
+			_scrollThumbGrabOffsetY = (float)localY - layout.ScrollThumbRect.top;
 			return true;
 		}
-		if (layout.NeedVScroll && PtInRectF(layout.ScrollTrackRect, (float)xof, (float)yof))
+		if (layout.NeedVScroll && PtInRectF(layout.ScrollTrackRect, (float)localX, (float)localY))
 		{
-			SetScrollOffset(this->ScrollYOffset + ((float)yof < layout.ScrollThumbRect.top ? -RectHeight(layout.ContentRect) : RectHeight(layout.ContentRect)));
+			SetScrollOffset(this->ScrollYOffset + ((float)localY < layout.ScrollThumbRect.top ? -RectHeight(layout.ContentRect) : RectHeight(layout.ContentRect)));
 			return true;
 		}
-		if (IsOverSplitter(xof, yof))
+		if (IsOverSplitter(localX, localY))
 		{
 			_dragSplitter = true;
 			return true;
@@ -1509,7 +1509,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 		for (const auto& row : rows)
 		{
 			auto rect = GetRowRect(row, layout);
-			if (!PtInRectF(rect, (float)xof, (float)yof)) continue;
+			if (!PtInRectF(rect, (float)localX, (float)localY)) continue;
 			handledRow = true;
 			if (row.IsCategory)
 			{
@@ -1521,7 +1521,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 			else
 			{
 				int valueIndex = -1;
-				bool inValue = IsValueCell(xof, yof, rows, layout, valueIndex);
+				bool inValue = IsValueCell(localX, localY, rows, layout, valueIndex);
 				SelectItem(row.ItemIndex);
 				this->OnItemClick(this, row.ItemIndex);
 				if (inValue && IsEditableItem(row.ItemIndex))
@@ -1546,7 +1546,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 						CloseColorPickerEditor();
 						if (_editing && _editingIndex == row.ItemIndex)
 						{
-							SetEditingCaretFromMousePoint(xof, yof, GetValueRect(rect));
+							SetEditingCaretFromMousePoint(localX, localY, GetValueRect(rect));
 							_dragEditSelection = true;
 							if (this->ParentForm && this->ParentForm->Handle)
 								SetCapture(this->ParentForm->Handle);
@@ -1555,7 +1555,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 						{
 							BeginEdit(row.ItemIndex);
 							if (_editing && _editingIndex == row.ItemIndex)
-								SetEditingCaretFromMousePoint(xof, yof, GetValueRect(rect));
+								SetEditingCaretFromMousePoint(localX, localY, GetValueRect(rect));
 							_dragEditSelection = true;
 							if (this->ParentForm && this->ParentForm->Handle)
 								SetCapture(this->ParentForm->Handle);
@@ -1578,7 +1578,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 			CloseDropDownEditor();
 			CloseColorPickerEditor();
 		}
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseDown(this, e);
 		return true;
 	}
@@ -1591,7 +1591,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 			_dragEditSelection = false;
 			ReleaseCapture();
 		}
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseUp(this, e);
 		return true;
 	}
@@ -1599,7 +1599,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 	{
 		auto rows = BuildRows();
 		auto layout = CalcLayout(rows);
-		int index = HitTestItem(xof, yof);
+		int index = HitTestItem(localX, localY);
 		if (index >= 0)
 		{
 			D2D1_RECT_F valueRect{};
@@ -1629,7 +1629,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 			else
 				BeginEdit(index);
 		}
-		MouseEventArgs e(MouseButtons::Left, 2, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 2, localX, localY, HIWORD(wParam));
 		this->OnMouseDoubleClick(this, e);
 		return true;
 	}
@@ -1841,5 +1841,5 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 	default:
 		break;
 	}
-	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 }

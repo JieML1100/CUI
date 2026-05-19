@@ -12,7 +12,7 @@ class Label : public Control
 {
 public:
 	/** @brief 上一次渲染/测量使用的宽度（用于缓存/重算）。 */
-	float last_width = 0.0f;
+	float lastMeasuredWidth = 0.0f;
 	virtual UIClass Type();
 	/** @brief 创建 Label。 */
 	Label(std::wstring text, int x, int y);

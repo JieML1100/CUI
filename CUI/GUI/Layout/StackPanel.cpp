@@ -14,9 +14,9 @@ SIZE StackLayoutEngine::Measure(Control* container, SIZE availableSize)
 	if (_orientation == Orientation::Vertical)
 	{
 		// 垂直堆叠：高度累加，宽度取最大
-		for (int i = 0; i < container->Count; i++)
+		for (int childIndex = 0; childIndex < container->Count; childIndex++)
 		{
-			auto child = container->operator[](i);
+			auto child = container->operator[](childIndex);
 			if (!child || !child->Visible) continue;
 			
 			SIZE childSize = child->MeasureCore(availableSize);
@@ -42,9 +42,9 @@ SIZE StackLayoutEngine::Measure(Control* container, SIZE availableSize)
 	else // Horizontal
 	{
 		// 水平堆叠：宽度累加，高度取最大
-		for (int i = 0; i < container->Count; i++)
+		for (int childIndex = 0; childIndex < container->Count; childIndex++)
 		{
-			auto child = container->operator[](i);
+			auto child = container->operator[](childIndex);
 			if (!child || !child->Visible) continue;
 			
 			SIZE childSize = child->MeasureCore(availableSize);
@@ -89,37 +89,37 @@ void StackLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 	if (_orientation == Orientation::Vertical)
 	{
 		// 垂直排列
-		for (int i = 0; i < container->Count; i++)
+		for (int childIndex = 0; childIndex < container->Count; childIndex++)
 		{
-			auto child = container->operator[](i);
+			auto child = container->operator[](childIndex);
 			if (!child || !child->Visible) continue;
 			
 			SIZE childSize = child->MeasureCore({ (LONG)containerWidth, INT_MAX });
 			Thickness margin = child->Margin;
-			HorizontalAlignment hAlign = child->HAlign;
+			HorizontalAlignment horizontalAlignment = child->HAlign;
 			float availableWidth = containerWidth - margin.Left - margin.Right;
 			if (availableWidth < 0.0f) availableWidth = 0.0f;
 			
 			float childWidth = (float)childSize.cx;
-			if (hAlign == HorizontalAlignment::Stretch)
+			if (horizontalAlignment == HorizontalAlignment::Stretch)
 			{
 				childWidth = availableWidth;
 			}
 			
 			float childX = margin.Left;
-			if (hAlign == HorizontalAlignment::Center)
+			if (horizontalAlignment == HorizontalAlignment::Center)
 			{
 				childX = margin.Left + (availableWidth - childWidth) / 2.0f;
 			}
-			else if (hAlign == HorizontalAlignment::Right)
+			else if (horizontalAlignment == HorizontalAlignment::Right)
 			{
 				childX = containerWidth - margin.Right - childWidth;
 			}
 			
-			POINT loc = { (LONG)(originX + childX), (LONG)(currentY + margin.Top) };
+			POINT childLocation = { (LONG)(originX + childX), (LONG)(currentY + margin.Top) };
 			float childHeight = (float)childSize.cy;
-			SIZE size = { (LONG)childWidth, (LONG)childHeight };
-			child->ApplyLayout(loc, size);
+			SIZE arrangedSize = { (LONG)childWidth, (LONG)childHeight };
+			child->ApplyLayout(childLocation, arrangedSize);
 			
 			// 移动到下一个位置
 			currentY += childHeight + margin.Top + margin.Bottom + _spacing;
@@ -128,37 +128,37 @@ void StackLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 	else // Horizontal
 	{
 		// 水平排列
-		for (int i = 0; i < container->Count; i++)
+		for (int childIndex = 0; childIndex < container->Count; childIndex++)
 		{
-			auto child = container->operator[](i);
+			auto child = container->operator[](childIndex);
 			if (!child || !child->Visible) continue;
 			
 			SIZE childSize = child->MeasureCore({ INT_MAX, (LONG)containerHeight });
 			Thickness margin = child->Margin;
-			VerticalAlignment vAlign = child->VAlign;
+			VerticalAlignment verticalAlignment = child->VAlign;
 			float availableHeight = containerHeight - margin.Top - margin.Bottom;
 			if (availableHeight < 0.0f) availableHeight = 0.0f;
 			
 			float childHeight = (float)childSize.cy;
-			if (vAlign == VerticalAlignment::Stretch)
+			if (verticalAlignment == VerticalAlignment::Stretch)
 			{
 				childHeight = availableHeight;
 			}
 			
 			float childY = margin.Top;
-			if (vAlign == VerticalAlignment::Center)
+			if (verticalAlignment == VerticalAlignment::Center)
 			{
 				childY = margin.Top + (availableHeight - childHeight) / 2.0f;
 			}
-			else if (vAlign == VerticalAlignment::Bottom)
+			else if (verticalAlignment == VerticalAlignment::Bottom)
 			{
 				childY = containerHeight - margin.Bottom - childHeight;
 			}
 			
-			POINT loc = { (LONG)(currentX + margin.Left), (LONG)(originY + childY) };
+			POINT childLocation = { (LONG)(currentX + margin.Left), (LONG)(originY + childY) };
 			float childWidth = (float)childSize.cx;
-			SIZE size = { (LONG)childWidth, (LONG)childHeight };
-			child->ApplyLayout(loc, size);
+			SIZE arrangedSize = { (LONG)childWidth, (LONG)childHeight };
+			child->ApplyLayout(childLocation, arrangedSize);
 			
 			// 移动到下一个位置
 			currentX += childWidth + margin.Left + margin.Right + _spacing;

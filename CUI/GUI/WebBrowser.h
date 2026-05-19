@@ -42,7 +42,7 @@ public:
 	UIClass Type() override { return UIClass::UI_WebBrowser; }
 	bool HandlesMouseWheel() const override { return true; }
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 	// 事件参数定义
 	struct NavigationStartingArgs
@@ -210,7 +210,7 @@ private:
 	void EnsureInitialized();
 	void EnsureInteropInstalled();
 	void EnsureControllerBounds();
-	bool ForwardMouseMessageToWebView(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof);
+	bool ForwardMouseMessageToWebView(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY);
 
 	static std::wstring JsStringLiteral(const std::wstring& s);
 	static std::wstring UrlEncodeUtf8(const std::wstring& s);
@@ -278,7 +278,7 @@ public:
 	UIClass Type() override { return UIClass::UI_WebBrowser; }
 	bool HandlesMouseWheel() const override { return true; }
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 	bool TryGetSystemCursorId(UINT32& outId) const override { (void)outId; return false; }
 	void Navigate(const std::wstring& url) { (void)url; }

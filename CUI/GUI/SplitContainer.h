@@ -24,9 +24,9 @@ public:
 	SplitContainer(int x, int y, int width, int height);
 
 	UIClass Type() override;
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 	void SetSplitterDistance(int value);
 	void RefreshSplitterLayout();
 
@@ -37,14 +37,14 @@ private:
 	Panel* _panel1 = nullptr;
 	Panel* _panel2 = nullptr;
 	bool _draggingSplitter = false;
-	int _dragOffset = 0;
-	bool _hoverSplitter = false;
+	int _splitterDragOffset = 0;
+	bool _isSplitterHovered = false;
 
 	void EnsureChildPanels();
 	void ArrangeSplitPanels();
 	RECT GetSplitterRect();
-	bool HitSplitter(int xof, int yof);
+	bool HitSplitter(int localX, int localY);
 	int ClampSplitterDistance(int value);
 	void SetSplitterDistanceInternal(int value);
-	bool HitChildPanel(Panel* child, int xof, int yof, int& childX, int& childY);
+	bool HitChildPanel(Panel* child, int localX, int localY, int& childX, int& childY);
 };

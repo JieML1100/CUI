@@ -1,4 +1,4 @@
-#include "KpiCard.h"
+﻿#include "KpiCard.h"
 #include "Form.h"
 #include <algorithm>
 #include <cmath>
@@ -31,10 +31,10 @@ KpiCard::KpiCard(int x, int y, int width, int height)
 	this->Cursor = CursorKind::Hand;
 }
 
-CursorKind KpiCard::QueryCursor(int xof, int yof)
+CursorKind KpiCard::QueryCursor(int localX, int localY)
 {
-	(void)xof;
-	(void)yof;
+	(void)localX;
+	(void)localY;
 	return (Enable && Clickable) ? CursorKind::Hand : CursorKind::Arrow;
 }
 
@@ -148,7 +148,7 @@ void KpiCard::Update()
 	EndRender();
 }
 
-bool KpiCard::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool KpiCard::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!Enable || !Visible) return true;
 	(void)lParam;
@@ -157,7 +157,7 @@ bool KpiCard::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 	case WM_MOUSEMOVE:
 	{
 		if (ParentForm) ParentForm->UnderMouse = this;
-		MouseEventArgs e(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
 		OnMouseMove(this, e);
 		break;
 	}
@@ -165,38 +165,38 @@ bool KpiCard::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 	{
 		_pressed = true;
 		if (ParentForm) ParentForm->SetSelectedControl(this, false);
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseDown(this, e);
 		InvalidateVisual();
 		break;
 	}
 	case WM_LBUTTONUP:
 	{
-		bool clicked = _pressed && xof >= 0 && yof >= 0 && xof <= Width && yof <= Height;
+		bool clicked = _pressed && localX >= 0 && localY >= 0 && localX <= Width && localY <= Height;
 		_pressed = false;
 		if (clicked && Clickable)
 		{
 			if (ToggleActiveOnClick)
 				Active = !Active;
 			OnCardClick(this);
-			MouseEventArgs click(MouseButtons::Left, 1, xof, yof, HIWORD(wParam));
+			MouseEventArgs click(MouseButtons::Left, 1, localX, localY, HIWORD(wParam));
 			OnMouseClick(this, click);
 		}
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseUp(this, e);
 		if (ParentForm && ParentForm->Selected == this)
-			ParentForm->SetSelectedControl(NULL, false);
+			ParentForm->SetSelectedControl(nullptr, false);
 		InvalidateVisual();
 		break;
 	}
 	case WM_LBUTTONDBLCLK:
 	{
-		MouseEventArgs e(MouseButtons::Left, 2, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 2, localX, localY, HIWORD(wParam));
 		OnMouseDoubleClick(this, e);
 		break;
 	}
 	default:
-		return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 	}
 	return true;
 }

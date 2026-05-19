@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #define NOMINMAX
 #include "GridView.h"
 #include "DropDownPopup.h"
@@ -8,19 +8,19 @@
 #include <cwchar>
 #pragma comment(lib, "Imm32.lib")
 
-CellValue::CellValue() : Text(L"null"), Image(nullptr), Tag(NULL)
+CellValue::CellValue() : Text(L"null"), Image(nullptr), Tag(0)
 {
 }
-CellValue::CellValue(std::wstring s) : Text(s), Tag(NULL), Image(nullptr)
+CellValue::CellValue(std::wstring s) : Text(s), Tag(0), Image(nullptr)
 {
 }
-CellValue::CellValue(wchar_t* s) :Text(s), Tag(NULL), Image(nullptr)
+CellValue::CellValue(wchar_t* s) :Text(s), Tag(0), Image(nullptr)
 {
 }
-CellValue::CellValue(const wchar_t* s) : Text(s), Tag(NULL), Image(nullptr)
+CellValue::CellValue(const wchar_t* s) : Text(s), Tag(0), Image(nullptr)
 {
 }
-CellValue::CellValue(std::shared_ptr<BitmapSource> img) : Text(L""), Tag(NULL), Image(std::move(img))
+CellValue::CellValue(std::shared_ptr<BitmapSource> img) : Text(L""), Tag(0), Image(std::move(img))
 {
 }
 CellValue::CellValue(__int64 tag) : Text(std::to_wstring(tag)), Tag(tag), Image(nullptr)
@@ -113,9 +113,9 @@ ID2D1Bitmap* CellValue::GetImageBitmap(D2DGraphics* render)
 	ImageCache.Attach(bmp);
 	return ImageCache.Get();
 }
-CellValue& GridViewRow::operator[](int idx)
+CellValue& GridViewRow::operator[](int index)
 {
-	return Cells[idx];
+	return Cells[index];
 }
 GridViewColumn::GridViewColumn(std::wstring name, float width, ColumnType type, bool canEdit)
 {
@@ -249,7 +249,7 @@ GridView::~GridView()
 	if (this->_dropDownPopup)
 	{
 		delete this->_dropDownPopup;
-		this->_dropDownPopup = NULL;
+		this->_dropDownPopup = nullptr;
 	}
 	this->_dropDownPopupColumnIndex = -1;
 	this->_dropDownPopupRowIndex = -1;
@@ -259,7 +259,7 @@ GridView::~GridView()
 	{
 		delete this->HeadFont;
 	}
-	this->HeadFont = NULL;
+	this->HeadFont = nullptr;
 }
 
 float GridView::GetTotalColumnsWidth()
@@ -340,7 +340,7 @@ GridView::ScrollLayout GridView::CalcScrollLayout()
 	return l;
 }
 
-CursorKind GridView::QueryCursor(int xof, int yof)
+CursorKind GridView::QueryCursor(int localX, int localY)
 {
 	if (!this->Enable) return CursorKind::Arrow;
 	if (this->_resizingColumn) return CursorKind::SizeWE;
@@ -349,17 +349,17 @@ CursorKind GridView::QueryCursor(int xof, int yof)
 		auto l = this->CalcScrollLayout();
 		const int renderW = (int)l.RenderWidth;
 		const int renderH = (int)l.RenderHeight;
-		if (l.NeedH && yof >= renderH && xof >= 0 && xof < renderW)
+		if (l.NeedH && localY >= renderH && localX >= 0 && localX < renderW)
 			return CursorKind::SizeWE;
-		if (l.NeedV && xof >= renderW && yof >= 0 && yof < renderH)
+		if (l.NeedV && localX >= renderW && localY >= 0 && localY < renderH)
 			return CursorKind::SizeNS;
 	}
 
-	if (HitTestHeaderDivider(xof, yof) >= 0)
+	if (HitTestHeaderDivider(localX, localY) >= 0)
 		return CursorKind::SizeWE;
 
 	{
-		POINT undermouseIndex = GetGridViewUnderMouseItem(xof, yof, this);
+		POINT undermouseIndex = GetGridViewUnderMouseItem(localX, localY, this);
 		if (undermouseIndex.y >= 0 && undermouseIndex.x >= 0 &&
 			undermouseIndex.y < static_cast<LONG>(this->Rows.size()) && undermouseIndex.x < static_cast<LONG>(this->Columns.size()))
 		{
@@ -376,8 +376,8 @@ CursorKind GridView::QueryCursor(int xof, int yof)
 		D2D1_RECT_F rect{};
 		if (TryGetCellRectLocal(this->EditingColumnIndex, this->EditingRowIndex, rect))
 		{
-			if ((float)xof >= rect.left && (float)xof <= rect.right &&
-				(float)yof >= rect.top && (float)yof <= rect.bottom)
+			if ((float)localX >= rect.left && (float)localX <= rect.right &&
+				(float)localY >= rect.top && (float)localY <= rect.bottom)
 			{
 				return CursorKind::IBeam;
 			}
@@ -388,7 +388,7 @@ CursorKind GridView::QueryCursor(int xof, int yof)
 	if (this->AllowUserToAddRows)
 	{
 		int newRowCol = -1;
-		if (HitTestNewRow(xof, yof, newRowCol) >= 0 && newRowCol >= 0)
+		if (HitTestNewRow(localX, localY, newRowCol) >= 0 && newRowCol >= 0)
 		{
 			return CursorKind::IBeam;  // 在新行区域显示IBeam光标表示可以编辑
 		}
@@ -396,9 +396,9 @@ CursorKind GridView::QueryCursor(int xof, int yof)
 
 	return CursorKind::Arrow;
 }
-GridViewRow& GridView::operator[](int idx)
+GridViewRow& GridView::operator[](int index)
 {
-	return Rows[idx];
+	return Rows[index];
 }
 
 void GridView::ClearRows()
@@ -580,42 +580,39 @@ void GridView::SortByColumn(int col, bool ascending)
 #pragma region _GridView_
 POINT GridView::GetGridViewUnderMouseItem(int x, int y, GridView* ct)
 {
-	auto l = ct->CalcScrollLayout();
-	float _render_width = l.RenderWidth;
-	float _render_height = l.RenderHeight;
+	auto layout = ct->CalcScrollLayout();
+	float renderWidth = layout.RenderWidth;
+	float renderHeight = layout.RenderHeight;
 	if (x < 0 || y < 0) return { -1,-1 };
-	if (x >= (int)_render_width || y >= (int)_render_height) return { -1,-1 };
+	if (x >= (int)renderWidth || y >= (int)renderHeight) return { -1,-1 };
 
-	float row_height = l.RowHeight;
-	float head_height = l.HeadHeight;
-	if (y < head_height)
+	float rowHeight = layout.RowHeight;
+	float headerHeight = layout.HeadHeight;
+	if (y < headerHeight)
 	{
 		return { -1,-1 };
 	}
-	unsigned int s_x = 0;
-	unsigned int s_y = 0;
-	float yf = head_height;
 	float virtualX = (float)x + ct->ScrollXOffset;
-	int xindex = -1;
-	int yindex = -1;
-	float acc = 0.0f;
-	for (; s_x < ct->Columns.size(); s_x++)
+	int columnIndex = -1;
+	int rowIndex = -1;
+	float columnLeft = 0.0f;
+	for (unsigned int column = 0; column < ct->Columns.size(); column++)
 	{
-		float c_width = ct->Columns[s_x].Width;
-		if (virtualX >= acc && virtualX < acc + c_width)
+		float cellWidth = ct->Columns[column].Width;
+		if (virtualX >= columnLeft && virtualX < columnLeft + cellWidth)
 		{
-			xindex = s_x;
+			columnIndex = column;
 			break;
 		}
-		acc += ct->Columns[s_x].Width;
+		columnLeft += ct->Columns[column].Width;
 	}
-	const float virtualY = ((float)y - head_height) + ct->ScrollYOffset;
-	if (virtualY >= 0.0f && row_height > 0.0f)
+	const float virtualY = ((float)y - headerHeight) + ct->ScrollYOffset;
+	if (virtualY >= 0.0f && rowHeight > 0.0f)
 	{
-		const int idx = (int)(virtualY / row_height);
-		if (idx >= 0 && idx < static_cast<int>(ct->Rows.size())) yindex = idx;
+		const int rowIndexFromOffset = (int)(virtualY / rowHeight);
+		if (rowIndexFromOffset >= 0 && rowIndexFromOffset < static_cast<int>(ct->Rows.size())) rowIndex = rowIndexFromOffset;
 	}
-	return { xindex,yindex };
+	return { columnIndex,rowIndex };
 }
 
 int GridView::HitTestHeaderColumn(int x, int y)
@@ -662,28 +659,28 @@ int GridView::HitTestHeaderDivider(int x, int y)
 }
 D2D1_RECT_F GridView::GetGridViewScrollBlockRect(GridView* ct)
 {
-	auto absloc = ct->AbsLocation;
-	auto l = ct->CalcScrollLayout();
-	float _render_width = l.RenderWidth;
-	float _render_height = l.RenderHeight;
-	float row_height = l.RowHeight;
-	float head_height = l.HeadHeight;
-	const float contentH = std::max(0.0f, _render_height - head_height);
-	const float totalH = (row_height > 0.0f) ? (row_height * (float)ct->Rows.size()) : 0.0f;
-	if (totalH > contentH && contentH > 0.0f)
+	auto absoluteLocation = ct->AbsLocation;
+	auto layout = ct->CalcScrollLayout();
+	float renderWidth = layout.RenderWidth;
+	float renderHeight = layout.RenderHeight;
+	float rowHeight = layout.RowHeight;
+	float headerHeight = layout.HeadHeight;
+	const float viewportBodyHeight = std::max(0.0f, renderHeight - headerHeight);
+	const float totalRowsHeight = (rowHeight > 0.0f) ? (rowHeight * (float)ct->Rows.size()) : 0.0f;
+	if (totalRowsHeight > viewportBodyHeight && viewportBodyHeight > 0.0f)
 	{
-		float thumbH = _render_height * (contentH / totalH);
-		const float minThumbH = _render_height * 0.1f;
-		if (thumbH < minThumbH) thumbH = minThumbH;
-		if (thumbH > _render_height) thumbH = _render_height;
+		float thumbHeight = renderHeight * (viewportBodyHeight / totalRowsHeight);
+		const float minThumbH = renderHeight * 0.1f;
+		if (thumbHeight < minThumbH) thumbHeight = minThumbH;
+		if (thumbHeight > renderHeight) thumbHeight = renderHeight;
 
-		const float maxScrollY = std::max(0.0f, totalH - contentH);
-		const float moveSpace = std::max(0.0f, _render_height - thumbH);
-		float per = 0.0f;
+		const float maxScrollY = std::max(0.0f, totalRowsHeight - viewportBodyHeight);
+		const float thumbMoveSpace = std::max(0.0f, renderHeight - thumbHeight);
+		float scrollRatio = 0.0f;
 		if (maxScrollY > 0.0f)
-			per = std::clamp(ct->ScrollYOffset / maxScrollY, 0.0f, 1.0f);
-		const float thumbTop = per * moveSpace;
-		return { (float)absloc.x + _render_width, (float)absloc.y + thumbTop, 8.0f, thumbH };
+			scrollRatio = std::clamp(ct->ScrollYOffset / maxScrollY, 0.0f, 1.0f);
+		const float thumbTop = scrollRatio * thumbMoveSpace;
+		return { (float)absoluteLocation.x + renderWidth, (float)absoluteLocation.y + thumbTop, 8.0f, thumbHeight };
 	}
 	return { 0,0,0,0 };
 }
@@ -700,30 +697,30 @@ void GridView::DrawScroll()
 
 	if (l.NeedV && this->Rows.size() > 0)
 	{
-		float _render_width = l.RenderWidth;
-		float _render_height = l.RenderHeight;
-		const float row_height = this->GetRowHeightPx();
-		const float head_height = this->GetHeadHeightPx();
-		const float contentH = std::max(0.0f, _render_height - head_height);
-		const float totalH = (row_height > 0.0f) ? (row_height * (float)this->Rows.size()) : 0.0f;
-		if (totalH > contentH && contentH > 0.0f)
+		float renderWidth = l.RenderWidth;
+		float renderHeight = l.RenderHeight;
+		const float rowHeight = this->GetRowHeightPx();
+		const float headerHeight = this->GetHeadHeightPx();
+		const float viewportBodyHeight = std::max(0.0f, renderHeight - headerHeight);
+		const float totalRowsHeight = (rowHeight > 0.0f) ? (rowHeight * (float)this->Rows.size()) : 0.0f;
+		if (totalRowsHeight > viewportBodyHeight && viewportBodyHeight > 0.0f)
 		{
-			float thumbH = _render_height * (contentH / totalH);
-			const float minThumbH = _render_height * 0.1f;
-			if (thumbH < minThumbH) thumbH = minThumbH;
-			if (thumbH > _render_height) thumbH = _render_height;
+			float thumbHeight = renderHeight * (viewportBodyHeight / totalRowsHeight);
+			const float minThumbH = renderHeight * 0.1f;
+			if (thumbHeight < minThumbH) thumbHeight = minThumbH;
+			if (thumbHeight > renderHeight) thumbHeight = renderHeight;
 
-			const float maxScrollY = std::max(0.0f, totalH - contentH);
-			const float moveSpace = std::max(0.0f, _render_height - thumbH);
-			float per = 0.0f;
+			const float maxScrollY = std::max(0.0f, totalRowsHeight - viewportBodyHeight);
+			const float thumbMoveSpace = std::max(0.0f, renderHeight - thumbHeight);
+			float scrollRatio = 0.0f;
 			if (maxScrollY > 0.0f)
-				per = std::clamp(this->ScrollYOffset / maxScrollY, 0.0f, 1.0f);
-			const float thumbTop = per * moveSpace;
+				scrollRatio = std::clamp(this->ScrollYOffset / maxScrollY, 0.0f, 1.0f);
+			const float thumbTop = scrollRatio * thumbMoveSpace;
 
 			const float barW = (std::max)(5.0f, l.ScrollBarSize - 2.0f);
-			const float barX = _render_width + (l.ScrollBarSize - barW) * 0.5f;
-			d2d->FillRoundRect(barX, 4.0f, barW, (std::max)(0.0f, _render_height - 8.0f), this->ScrollBackColor, barW * 0.5f);
-			d2d->FillRoundRect(barX, thumbTop + 2.0f, barW, (std::max)(4.0f, thumbH - 4.0f), this->ScrollForeColor, barW * 0.5f);
+			const float barX = renderWidth + (l.ScrollBarSize - barW) * 0.5f;
+			d2d->FillRoundRect(barX, 4.0f, barW, (std::max)(0.0f, renderHeight - 8.0f), this->ScrollBackColor, barW * 0.5f);
+			d2d->FillRoundRect(barX, thumbTop + 2.0f, barW, (std::max)(4.0f, thumbHeight - 4.0f), this->ScrollForeColor, barW * 0.5f);
 		}
 	}
 
@@ -746,22 +743,22 @@ void GridView::DrawHScroll(const ScrollLayout& l)
 	if (l.TotalColumnsWidth <= barW) return;
 
 	const float maxScrollX = std::max(0.0f, l.TotalColumnsWidth - barW);
-	float per = 0.0f;
+	float scrollRatio = 0.0f;
 	if (maxScrollX > 0.0f)
-		per = std::clamp(this->ScrollXOffset / maxScrollX, 0.0f, 1.0f);
+		scrollRatio = std::clamp(this->ScrollXOffset / maxScrollX, 0.0f, 1.0f);
 
-	float thumbW = (barW * barW) / l.TotalColumnsWidth;
+	float thumbWidth = (barW * barW) / l.TotalColumnsWidth;
 	const float minThumbW = barW * 0.1f;
-	if (thumbW < minThumbW) thumbW = minThumbW;
-	if (thumbW > barW) thumbW = barW;
+	if (thumbWidth < minThumbW) thumbWidth = minThumbW;
+	if (thumbWidth > barW) thumbWidth = barW;
 
-	const float moveSpace = barW - thumbW;
-	const float thumbX = barX + (per * moveSpace);
+	const float thumbMoveSpace = barW - thumbWidth;
+	const float thumbX = barX + (scrollRatio * thumbMoveSpace);
 
 	const float trackH = (std::max)(5.0f, barH - 2.0f);
 	const float trackY = barY + (barH - trackH) * 0.5f;
 	d2d->FillRoundRect(barX + 4.0f, trackY, (std::max)(0.0f, barW - 8.0f), trackH, this->ScrollBackColor, trackH * 0.5f);
-	d2d->FillRoundRect(thumbX + 2.0f, trackY, (std::max)(4.0f, thumbW - 4.0f), trackH, this->ScrollForeColor, trackH * 0.5f);
+	d2d->FillRoundRect(thumbX + 2.0f, trackY, (std::max)(4.0f, thumbWidth - 4.0f), trackH, this->ScrollForeColor, trackH * 0.5f);
 }
 
 void GridView::DrawCorner(const ScrollLayout& l)
@@ -772,7 +769,7 @@ void GridView::DrawCorner(const ScrollLayout& l)
 	d2d->FillRoundRect(x + 1.0f, y + 1.0f, l.ScrollBarSize - 2.0f, l.ScrollBarSize - 2.0f, this->ScrollBackColor, 3.0f);
 }
 
-void GridView::SetScrollByPos(float yof)
+void GridView::SetScrollByPos(float localY)
 {
 	const int rowCount = static_cast<int>(this->Rows.size());
 	if (rowCount == 0) return;
@@ -787,18 +784,18 @@ void GridView::SetScrollByPos(float yof)
 
 	if (maxScrollY > 0.0f && contentHeight > 0.0f)
 	{
-		float thumbH = renderingHeight * (contentHeight / totalHeight);
+		float thumbHeight = renderingHeight * (contentHeight / totalHeight);
 		const float minThumbH = renderingHeight * 0.1f;
-		if (thumbH < minThumbH) thumbH = minThumbH;
-		if (thumbH > renderingHeight) thumbH = renderingHeight;
+		if (thumbHeight < minThumbH) thumbHeight = minThumbH;
+		if (thumbHeight > renderingHeight) thumbHeight = renderingHeight;
 
-		const float moveSpace = std::max(0.0f, renderingHeight - thumbH);
-		float grab = std::clamp(_vScrollThumbGrabOffsetY, 0.0f, thumbH);
-		if (grab <= 0.0f) grab = thumbH * 0.5f;
-		float target = yof - grab;
-		target = std::clamp(target, 0.0f, moveSpace);
-		const float per = (moveSpace > 0.0f) ? (target / moveSpace) : 0.0f;
-		this->ScrollYOffset = std::clamp(per * maxScrollY, 0.0f, maxScrollY);
+		const float thumbMoveSpace = std::max(0.0f, renderingHeight - thumbHeight);
+		float thumbGrabOffset = std::clamp(_vScrollThumbGrabOffsetY, 0.0f, thumbHeight);
+		if (thumbGrabOffset <= 0.0f) thumbGrabOffset = thumbHeight * 0.5f;
+		float targetThumbTop = localY - thumbGrabOffset;
+		targetThumbTop = std::clamp(targetThumbTop, 0.0f, thumbMoveSpace);
+		const float scrollRatio = (thumbMoveSpace > 0.0f) ? (targetThumbTop / thumbMoveSpace) : 0.0f;
+		this->ScrollYOffset = std::clamp(scrollRatio * maxScrollY, 0.0f, maxScrollY);
 	}
 	else
 	{
@@ -809,7 +806,7 @@ void GridView::SetScrollByPos(float yof)
 	this->ScrollChanged(this);
 }
 
-void GridView::SetHScrollByPos(float xof)
+void GridView::SetHScrollByPos(float localX)
 {
 	auto l = this->CalcScrollLayout();
 	if (!l.NeedH) return;
@@ -819,20 +816,20 @@ void GridView::SetHScrollByPos(float xof)
 	const float maxScrollX = std::max(0.0f, l.TotalColumnsWidth - barW);
 	if (maxScrollX <= 0.0f) { this->ScrollXOffset = 0.0f; return; }
 
-	float thumbW = (barW * barW) / l.TotalColumnsWidth;
+	float thumbWidth = (barW * barW) / l.TotalColumnsWidth;
 	const float minThumbW = barW * 0.1f;
-	if (thumbW < minThumbW) thumbW = minThumbW;
-	if (thumbW > barW) thumbW = barW;
+	if (thumbWidth < minThumbW) thumbWidth = minThumbW;
+	if (thumbWidth > barW) thumbWidth = barW;
 
-	const float moveSpace = barW - thumbW;
-	if (moveSpace <= 0.0f) { this->ScrollXOffset = 0.0f; return; }
+	const float thumbMoveSpace = barW - thumbWidth;
+	if (thumbMoveSpace <= 0.0f) { this->ScrollXOffset = 0.0f; return; }
 
-	float grab = std::clamp(_hScrollThumbGrabOffsetX, 0.0f, thumbW);
-	if (grab <= 0.0f) grab = thumbW * 0.5f;
-	float target = xof - grab;
-	target = std::clamp(target, 0.0f, moveSpace);
-	float per = target / moveSpace;
-	this->ScrollXOffset = std::clamp(per * maxScrollX, 0.0f, maxScrollX);
+	float thumbGrabOffset = std::clamp(_hScrollThumbGrabOffsetX, 0.0f, thumbWidth);
+	if (thumbGrabOffset <= 0.0f) thumbGrabOffset = thumbWidth * 0.5f;
+	float targetThumbLeft = localX - thumbGrabOffset;
+	targetThumbLeft = std::clamp(targetThumbLeft, 0.0f, thumbMoveSpace);
+	float scrollRatio = targetThumbLeft / thumbMoveSpace;
+	this->ScrollXOffset = std::clamp(scrollRatio * maxScrollX, 0.0f, maxScrollX);
 }
 
 void GridView::Update()
@@ -853,16 +850,16 @@ void GridView::Update()
 			this->RenderImage(this->CellCornerRadius);
 		}
 		auto font = this->Font;
-		auto head_font = HeadFont ? HeadFont : font;
+		auto headerFont = HeadFont ? HeadFont : font;
 		{
 			auto l = this->CalcScrollLayout();
-			float _render_width = l.RenderWidth;
-			float _render_height = l.RenderHeight;
-			float font_height = font->FontHeight;
-			float head_font_height = head_font->FontHeight;
-			float row_height = l.RowHeight;
-			float text_top = (row_height - font_height) * 0.5f;
-			if (text_top < 0) text_top = 0;
+			float renderWidth = l.RenderWidth;
+			float renderHeight = l.RenderHeight;
+			float fontHeight = font->FontHeight;
+			float headerFontHeight = headerFont->FontHeight;
+			float rowHeight = l.RowHeight;
+			float textTop = (rowHeight - fontHeight) * 0.5f;
+			if (textTop < 0) textTop = 0;
 			if (this->Rows.size() <= 0)
 			{
 				this->ScrollYOffset = 0.0f;
@@ -872,42 +869,42 @@ void GridView::Update()
 			{
 				if (this->ScrollYOffset < 0.0f) this->ScrollYOffset = 0.0f;
 				if (this->ScrollYOffset > l.MaxScrollY) this->ScrollYOffset = l.MaxScrollY;
-				this->ScrollRowPosition = (row_height > 0.0f) ? (int)std::floor(this->ScrollYOffset / row_height) : 0;
+				this->ScrollRowPosition = (rowHeight > 0.0f) ? (int)std::floor(this->ScrollYOffset / rowHeight) : 0;
 				if (this->ScrollRowPosition < 0) this->ScrollRowPosition = 0;
 				if (this->ScrollRowPosition >= static_cast<int>(this->Rows.size())) this->ScrollRowPosition = static_cast<int>(this->Rows.size()) - 1;
 			}
 			if (this->ScrollXOffset < 0.0f) this->ScrollXOffset = 0.0f;
 			if (this->ScrollXOffset > l.MaxScrollX) this->ScrollXOffset = l.MaxScrollX;
 
-			int s_x = 0;
-			int s_y = this->ScrollRowPosition;
-			float head_height = l.HeadHeight;
-			float row_offset = (row_height > 0.0f) ? std::fmod(this->ScrollYOffset, row_height) : 0.0f;
-			float yf = head_height - row_offset;
+			int startColumn = 0;
+			int startRow = this->ScrollRowPosition;
+			float headerHeight = l.HeadHeight;
+			float rowOffset = (rowHeight > 0.0f) ? std::fmod(this->ScrollYOffset, rowHeight) : 0.0f;
+			float yf = headerHeight - rowOffset;
 			float xf = -this->ScrollXOffset;
-			int i = s_x;
+			int i = startColumn;
 			for (; i < static_cast<int>(this->Columns.size()); i++)
 			{
 				float colW = this->Columns[i].Width;
-				if (xf >= _render_width) break;
+				if (xf >= renderWidth) break;
 				if (xf + colW <= 0.0f) { xf += colW; continue; }
 
 				float drawX = xf;
-				float c_width = colW;
-				if (drawX < 0.0f) { c_width += drawX; drawX = 0.0f; }
-				if (drawX + c_width > _render_width) c_width = _render_width - drawX;
-				if (c_width <= 0.0f) { xf += colW; continue; }
+				float cellWidth = colW;
+				if (drawX < 0.0f) { cellWidth += drawX; drawX = 0.0f; }
+				if (drawX + cellWidth > renderWidth) cellWidth = renderWidth - drawX;
+				if (cellWidth <= 0.0f) { xf += colW; continue; }
 				const float clipX = drawX;
-				const float clipW = c_width;
+				const float clipW = cellWidth;
 				drawX = xf;
-				c_width = colW;
+				cellWidth = colW;
 
-				float draw_y_offset = (head_height - head_font_height) / 2.0f;
-				if (draw_y_offset < 0)draw_y_offset = 0;
-				d2d->PushDrawRect(clipX, 0, clipW, head_height);
+				float headerTextOffsetY = (headerHeight - headerFontHeight) / 2.0f;
+				if (headerTextOffsetY < 0)headerTextOffsetY = 0;
+				d2d->PushDrawRect(clipX, 0, clipW, headerHeight);
 				{
 					const bool sorted = (i == this->SortedColumnIndex);
-					D2D1_RECT_F headRect = D2D1::RectF(drawX + 2.0f, 3.0f, drawX + c_width - 2.0f, head_height - 3.0f);
+					D2D1_RECT_F headRect = D2D1::RectF(drawX + 2.0f, 3.0f, drawX + cellWidth - 2.0f, headerHeight - 3.0f);
 					d2d->FillRoundRect(headRect, sorted ? this->HeadHoverBackColor : this->HeadBackColor, this->CellCornerRadius);
 					if (sorted)
 					{
@@ -915,18 +912,18 @@ void GridView::Update()
 							(std::max)(6.0f, (headRect.right - headRect.left) - 12.0f), 2.0f,
 							this->AccentColor, 1.0f);
 					}
-					DrawGridCellLines(d2d, drawX, 0.0f, c_width, head_height, this->GridLineColor);
+					DrawGridCellLines(d2d, drawX, 0.0f, cellWidth, headerHeight, this->GridLineColor);
 					const float sortReserve = sorted ? 16.0f : 0.0f;
-					const float textWidth = (std::max)(1.0f, c_width - 16.0f - sortReserve);
+					const float textWidth = (std::max)(1.0f, cellWidth - 16.0f - sortReserve);
 					d2d->DrawString(this->Columns[i].Name,
 						drawX + 8.0f,
-						draw_y_offset,
+						headerTextOffsetY,
 						textWidth,
-						head_font_height + 2.0f,
-						this->HeadForeColor, head_font);
+						headerFontHeight + 2.0f,
+						this->HeadForeColor, headerFont);
 					if (sorted)
 					{
-						DrawGridChevron(d2d, drawX + c_width - 11.0f, head_height * 0.5f, 9.0f,
+						DrawGridChevron(d2d, drawX + cellWidth - 11.0f, headerHeight * 0.5f, 9.0f,
 							this->SortAscending, this->AccentColor);
 					}
 				}
@@ -936,41 +933,41 @@ void GridView::Update()
 
 			const int maxRows = l.VisibleRows;
 			i = 0;
-	for (int r = s_y; r < static_cast<int>(this->Rows.size()) && i < maxRows; r++, i++)
+	for (int r = startRow; r < static_cast<int>(this->Rows.size()) && i < maxRows; r++, i++)
 	{
 		GridViewRow& row = this->Rows[static_cast<size_t>(r)];
 				float clipY = yf;
-				float clipH = row_height;
-				if (clipY < head_height)
+				float clipH = rowHeight;
+				if (clipY < headerHeight)
 				{
-					clipH -= (head_height - clipY);
-					clipY = head_height;
+					clipH -= (headerHeight - clipY);
+					clipY = headerHeight;
 				}
-				if (clipY + clipH > _render_height)
-					clipH = _render_height - clipY;
+				if (clipY + clipH > renderHeight)
+					clipH = renderHeight - clipY;
 				if (clipH <= 0.0f)
 				{
-					yf += row_height;
+					yf += rowHeight;
 					continue;
 				}
 				float xf = -this->ScrollXOffset;
-		for (int c = s_x; c < static_cast<int>(this->Columns.size()); c++)
+		for (int c = startColumn; c < static_cast<int>(this->Columns.size()); c++)
 		{
 			float colW = this->Columns[static_cast<size_t>(c)].Width;
-					if (xf >= _render_width) break;
+					if (xf >= renderWidth) break;
 					if (xf + colW <= 0.0f) { xf += colW; continue; }
 
 					float drawX = xf;
-					float c_width = colW;
-					if (drawX < 0.0f) { c_width += drawX; drawX = 0.0f; }
-					if (drawX + c_width > _render_width) c_width = _render_width - drawX;
-					if (c_width <= 0.0f) { xf += colW; continue; }
+					float cellWidth = colW;
+					if (drawX < 0.0f) { cellWidth += drawX; drawX = 0.0f; }
+					if (drawX + cellWidth > renderWidth) cellWidth = renderWidth - drawX;
+					if (cellWidth <= 0.0f) { xf += colW; continue; }
 					const float clipX = drawX;
-					const float clipW = c_width;
+					const float clipW = cellWidth;
 					drawX = xf;
-					c_width = colW;
+					cellWidth = colW;
 
-					float _r_height = row_height;
+					float currentRowHeight = rowHeight;
 					d2d->PushDrawRect(clipX, clipY, clipW, clipH);
 					{
 						switch (this->Columns[c].Type)
@@ -989,21 +986,21 @@ void GridView::Update()
 									}
 									else
 									{
-										float renderHeight = _r_height - (this->EditTextMargin * 2.0f);
+										float renderHeight = currentRowHeight - (this->EditTextMargin * 2.0f);
 										if (renderHeight < 0.0f) renderHeight = 0.0f;
 
 										EditEnsureSelectionInRange();
 										EditUpdateScroll(clipW);
 
 										auto textSize = font->GetTextSize(this->EditingText, FLT_MAX, renderHeight);
-										float offsetY = (_r_height - textSize.height) * 0.5f;
+										float offsetY = (currentRowHeight - textSize.height) * 0.5f;
 										if (offsetY < 0.0f) offsetY = 0.0f;
 
-										auto editRect = GridInsetRect(drawX, yf, c_width, _r_height, 3.0f, 3.0f);
+										auto editRect = GridInsetRect(drawX, yf, cellWidth, currentRowHeight, 3.0f, 3.0f);
 										d2d->FillRoundRect(editRect, this->EditBackColor, this->CellCornerRadius);
 										d2d->DrawRoundRect(editRect.left, editRect.top, editRect.right - editRect.left,
 											editRect.bottom - editRect.top, this->AccentColor, 1.2f, this->CellCornerRadius);
-										DrawGridCellLines(d2d, drawX, yf, c_width, _r_height, this->GridLineColor);
+										DrawGridCellLines(d2d, drawX, yf, cellWidth, currentRowHeight, this->GridLineColor);
 
 										int sels = EditSelectionStart <= EditSelectionEnd ? EditSelectionStart : EditSelectionEnd;
 										int sele = EditSelectionEnd >= EditSelectionStart ? EditSelectionEnd : EditSelectionStart;
@@ -1030,8 +1027,8 @@ void GridView::Update()
 												const float caretX = selRange[0].left + drawX + this->EditTextMargin - this->EditOffsetX;
 												const float caretTop = (selRange[0].top + yf) + offsetY;
 												const float caretBottom = (selRange[0].top + yf + selRange[0].height) + offsetY;
-												auto abs = this->AbsLocation;
-												caretRect = { abs.x + caretX - 2.0f, abs.y + caretTop - 2.0f, abs.x + caretX + 2.0f, abs.y + caretBottom + 2.0f };
+												auto absoluteLocation = this->AbsLocation;
+												caretRect = { absoluteLocation.x + caretX - 2.0f, absoluteLocation.y + caretTop - 2.0f, absoluteLocation.x + caretX + 2.0f, absoluteLocation.y + caretBottom + 2.0f };
 												caretRectValid = true;
 											}
 										}
@@ -1050,11 +1047,11 @@ void GridView::Update()
 										{
 											UpdateCaretBlinkState(false, 0, 1, false, nullptr);
 										}
-										auto lot = Factory::CreateStringLayout(this->EditingText, FLT_MAX, renderHeight, font->FontObject);
-										if (lot) {
+										auto textLayout = Factory::CreateStringLayout(this->EditingText, FLT_MAX, renderHeight, font->FontObject);
+										if (textLayout) {
 											if (selLen != 0)
 											{
-												d2d->DrawStringLayoutEffect(lot,
+												d2d->DrawStringLayoutEffect(textLayout,
 													drawX + this->EditTextMargin - this->EditOffsetX, (yf)+offsetY,
 													this->EditForeColor,
 													DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
@@ -1063,48 +1060,48 @@ void GridView::Update()
 											}
 											else
 											{
-												d2d->DrawStringLayout(lot,
+												d2d->DrawStringLayout(textLayout,
 													drawX + this->EditTextMargin - this->EditOffsetX, (yf)+offsetY,
 													this->EditForeColor);
 											}
-											lot->Release();
+											textLayout->Release();
 										}
 									}
 								}
 								else
 								{
-									DrawGridCellState(this, d2d, drawX, yf, c_width, _r_height, true, false);
-									DrawGridCellLines(d2d, drawX, yf, c_width, _r_height, this->GridLineColor);
+									DrawGridCellState(this, d2d, drawX, yf, cellWidth, currentRowHeight, true, false);
+									DrawGridCellLines(d2d, drawX, yf, cellWidth, currentRowHeight, this->GridLineColor);
 									if (row.Cells.size() > static_cast<size_t>(c))
 										d2d->DrawString(row.Cells[static_cast<size_t>(c)].Text,
 											drawX + this->CellHorizontalPadding,
-											yf + text_top,
-											(std::max)(1.0f, c_width - this->CellHorizontalPadding * 2.0f),
-											font_height + 2.0f,
+											yf + textTop,
+											(std::max)(1.0f, cellWidth - this->CellHorizontalPadding * 2.0f),
+											fontHeight + 2.0f,
 											this->SelectedItemForeColor, font);
 								}
 							}
 							else if (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex)
 							{
-								DrawGridCellState(this, d2d, drawX, yf, c_width, _r_height, false, true);
-								DrawGridCellLines(d2d, drawX, yf, c_width, _r_height, this->GridLineColor);
+								DrawGridCellState(this, d2d, drawX, yf, cellWidth, currentRowHeight, false, true);
+								DrawGridCellLines(d2d, drawX, yf, cellWidth, currentRowHeight, this->GridLineColor);
 								if (row.Cells.size() > static_cast<size_t>(c))
 									d2d->DrawString(row.Cells[static_cast<size_t>(c)].Text,
 										drawX + this->CellHorizontalPadding,
-										yf + text_top,
-										(std::max)(1.0f, c_width - this->CellHorizontalPadding * 2.0f),
-										font_height + 2.0f,
+										yf + textTop,
+										(std::max)(1.0f, cellWidth - this->CellHorizontalPadding * 2.0f),
+										fontHeight + 2.0f,
 										this->UnderMouseItemForeColor, font);
 							}
 							else
 							{
-								DrawGridCellLines(d2d, drawX, yf, c_width, _r_height, this->GridLineColor);
+								DrawGridCellLines(d2d, drawX, yf, cellWidth, currentRowHeight, this->GridLineColor);
 								if (row.Cells.size() > static_cast<size_t>(c))
 									d2d->DrawString(row.Cells[static_cast<size_t>(c)].Text,
 										drawX + this->CellHorizontalPadding,
-										yf + text_top,
-										(std::max)(1.0f, c_width - this->CellHorizontalPadding * 2.0f),
-										font_height + 2.0f,
+										yf + textTop,
+										(std::max)(1.0f, cellWidth - this->CellHorizontalPadding * 2.0f),
+										fontHeight + 2.0f,
 										this->ForeColor, font);
 							}
 						}
@@ -1114,12 +1111,12 @@ void GridView::Update()
 							const bool selectedCell = (c == this->SelectedColumnIndex && r == this->SelectedRowIndex);
 							const bool hoverCell = (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex);
 							if (selectedCell || hoverCell)
-								DrawGridCellState(this, d2d, drawX, yf, c_width, _r_height, selectedCell, hoverCell);
-							DrawGridCellLines(d2d, drawX, yf, c_width, _r_height, this->GridLineColor);
+								DrawGridCellState(this, d2d, drawX, yf, cellWidth, currentRowHeight, selectedCell, hoverCell);
+							DrawGridCellLines(d2d, drawX, yf, cellWidth, currentRowHeight, this->GridLineColor);
 							if (row.Cells.size() > static_cast<size_t>(c))
 							{
 								DrawGridLinkedText(this, d2d, font, row.Cells[static_cast<size_t>(c)].Text,
-									drawX, yf, c_width, _r_height, text_top, hoverCell);
+									drawX, yf, cellWidth, currentRowHeight, textTop, hoverCell);
 							}
 						}
 						break;
@@ -1135,8 +1132,8 @@ void GridView::Update()
 							if (isPressed) back = this->ButtonPressedBackColor;
 							else if (isHot) back = this->ButtonHoverBackColor;
 
-							DrawGridCellLines(d2d, drawX, yf, c_width, _r_height, this->GridLineColor);
-							D2D1_RECT_F buttonRect = GridInsetRect(drawX, yf, c_width, _r_height, 6.0f, 4.0f);
+							DrawGridCellLines(d2d, drawX, yf, cellWidth, currentRowHeight, this->GridLineColor);
+							D2D1_RECT_F buttonRect = GridInsetRect(drawX, yf, cellWidth, currentRowHeight, 6.0f, 4.0f);
 							d2d->FillRoundRect(buttonRect, back, this->CellCornerRadius);
 							d2d->DrawRoundRect(buttonRect.left, buttonRect.top, buttonRect.right - buttonRect.left,
 								buttonRect.bottom - buttonRect.top,
@@ -1148,16 +1145,16 @@ void GridView::Update()
 							if (!buttonText.empty())
 							{
 								auto textSize = font->GetTextSize(buttonText);
-								float tx = (c_width - textSize.width) * 0.5f;
-								float ty = (_r_height - textSize.height) * 0.5f;
+								float tx = (cellWidth - textSize.width) * 0.5f;
+								float ty = (currentRowHeight - textSize.height) * 0.5f;
 								if (tx < 0.0f) tx = 0.0f;
 								if (ty < 0.0f) ty = 0.0f;
 								if (isPressed) { tx += 1.0f; ty += 1.0f; }
 								d2d->DrawString(buttonText,
 									drawX + tx,
 									yf + ty,
-									(std::max)(1.0f, c_width - 12.0f),
-									font_height + 2.0f,
+									(std::max)(1.0f, cellWidth - 12.0f),
+									fontHeight + 2.0f,
 									this->ForeColor, font);
 							}
 						}
@@ -1187,28 +1184,28 @@ void GridView::Update()
 							}
 
 							if (fill)
-								DrawGridCellState(this, d2d, drawX, yf, c_width, _r_height,
+								DrawGridCellState(this, d2d, drawX, yf, cellWidth, currentRowHeight,
 									c == this->SelectedColumnIndex && r == this->SelectedRowIndex,
 									c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex);
-							DrawGridCellLines(d2d, drawX, yf, c_width, _r_height, this->GridLineColor);
+							DrawGridCellLines(d2d, drawX, yf, cellWidth, currentRowHeight, this->GridLineColor);
 							if (row.Cells.size() > static_cast<size_t>(c))
 							{
 								d2d->DrawString(row.Cells[static_cast<size_t>(c)].Text,
 									drawX + this->CellHorizontalPadding,
-									yf + text_top,
-									(std::max)(1.0f, c_width - this->CellHorizontalPadding * 2.0f - 14.0f),
-									font_height + 2.0f,
+									yf + textTop,
+									(std::max)(1.0f, cellWidth - this->CellHorizontalPadding * 2.0f - 14.0f),
+									fontHeight + 2.0f,
 									fore, font);
 							}
 
 							// Draw drop arrow on right
 							{
-								const float h = _r_height;
+								const float h = currentRowHeight;
 								float iconSize = h * 0.38f;
 								if (iconSize < 8.0f) iconSize = 8.0f;
 								if (iconSize > 14.0f) iconSize = 14.0f;
 								const float padRight = 8.0f;
-								const float cx = drawX + c_width - padRight - iconSize * 0.5f;
+								const float cx = drawX + cellWidth - padRight - iconSize * 0.5f;
 								const float cy = yf + h * 0.5f;
 								DrawGridChevron(d2d, cx, cy, iconSize, dropDownProgress, fore);
 							}
@@ -1216,16 +1213,16 @@ void GridView::Update()
 						break;
 						case ColumnType::Image:
 						{
-							float _size = c_width < row_height ? c_width : row_height;
+							float _size = cellWidth < rowHeight ? cellWidth : rowHeight;
 							if (_size > 22.0f) _size = 22.0f;
-							float left = (c_width - _size) / 2.0f;
-							float top = (row_height - _size) / 2.0f;
+							float left = (cellWidth - _size) / 2.0f;
+							float top = (rowHeight - _size) / 2.0f;
 							const bool selectedCell = (c == this->SelectedColumnIndex && r == this->SelectedRowIndex);
 							const bool hoverCell = (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex);
 							if (selectedCell || hoverCell)
 							{
-								DrawGridCellState(this, d2d, drawX, yf, c_width, _r_height, selectedCell, hoverCell);
-								DrawGridCellLines(d2d, drawX, yf, c_width, _r_height, this->GridLineColor);
+								DrawGridCellState(this, d2d, drawX, yf, cellWidth, currentRowHeight, selectedCell, hoverCell);
+								DrawGridCellLines(d2d, drawX, yf, cellWidth, currentRowHeight, this->GridLineColor);
 								if (row.Cells.size() > static_cast<size_t>(c))
 								{
 									if (auto* bmp = row.Cells[static_cast<size_t>(c)].GetImageBitmap(d2d))
@@ -1238,7 +1235,7 @@ void GridView::Update()
 							}
 							else
 							{
-								DrawGridCellLines(d2d, drawX, yf, c_width, _r_height, this->GridLineColor);
+								DrawGridCellLines(d2d, drawX, yf, cellWidth, currentRowHeight, this->GridLineColor);
 								if (row.Cells.size() > static_cast<size_t>(c))
 								{
 									if (auto* bmp = row.Cells[static_cast<size_t>(c)].GetImageBitmap(d2d))
@@ -1253,16 +1250,16 @@ void GridView::Update()
 						break;
 						case ColumnType::Check:
 						{
-							float _size = c_width < row_height ? c_width : row_height;
+							float _size = cellWidth < rowHeight ? cellWidth : rowHeight;
 							if (_size > 22)_size = 22;
-							float left = (c_width - _size) / 2.0f;
-							float top = (row_height - _size) / 2.0f;
+							float left = (cellWidth - _size) / 2.0f;
+							float top = (rowHeight - _size) / 2.0f;
 							float _rsize = _size;
 							const bool selectedCell = (c == this->SelectedColumnIndex && r == this->SelectedRowIndex);
 							const bool hoverCell = (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex);
 							if (selectedCell || hoverCell)
-								DrawGridCellState(this, d2d, drawX, yf, c_width, _r_height, selectedCell, hoverCell);
-							DrawGridCellLines(d2d, drawX, yf, c_width, _r_height, this->GridLineColor);
+								DrawGridCellState(this, d2d, drawX, yf, cellWidth, currentRowHeight, selectedCell, hoverCell);
+							DrawGridCellLines(d2d, drawX, yf, cellWidth, currentRowHeight, this->GridLineColor);
 							if (row.Cells.size() > static_cast<size_t>(c))
 							{
 								D2D1_RECT_F box = D2D1::RectF(
@@ -1295,21 +1292,21 @@ void GridView::Update()
 					d2d->PopDrawRect();
 					xf += colW;
 				}
-				yf += row_height;
+				yf += rowHeight;
 			}
 
 			// 渲染新行区域（如果启用）
 			if (this->AllowUserToAddRows && this->Columns.size() > 0)
 			{
 				float newRowY = yf;
-				if (newRowY < head_height) newRowY = head_height;
+				if (newRowY < headerHeight) newRowY = headerHeight;
 
 				// 确保新行在可视区域内
-				if (newRowY < _render_height)
+				if (newRowY < renderHeight)
 				{
-					float newRowHeight = row_height;
-					if (newRowY + newRowHeight > _render_height)
-						newRowHeight = _render_height - newRowY;
+					float newRowHeight = rowHeight;
+					if (newRowY + newRowHeight > renderHeight)
+						newRowHeight = renderHeight - newRowY;
 
 					if (newRowHeight > 0.0f)
 					{
@@ -1317,30 +1314,30 @@ void GridView::Update()
 						for (int c = 0; c < static_cast<int>(this->Columns.size()); c++)
 						{
 							float colW = this->Columns[static_cast<size_t>(c)].Width;
-							if (xf >= _render_width) break;
+							if (xf >= renderWidth) break;
 							if (xf + colW <= 0.0f) { xf += colW; continue; }
 
 							float drawX = xf;
-							float c_width = colW;
-							if (drawX < 0.0f) { c_width += drawX; drawX = 0.0f; }
-							if (drawX + c_width > _render_width) c_width = _render_width - drawX;
-							if (c_width <= 0.0f) { xf += colW; continue; }
+							float cellWidth = colW;
+							if (drawX < 0.0f) { cellWidth += drawX; drawX = 0.0f; }
+							if (drawX + cellWidth > renderWidth) cellWidth = renderWidth - drawX;
+							if (cellWidth <= 0.0f) { xf += colW; continue; }
 
 							const float clipX = drawX;
-							const float clipW = c_width;
+							const float clipW = cellWidth;
 
 							d2d->PushDrawRect(clipX, newRowY, clipW, newRowHeight);
 							{
-								D2D1_RECT_F rowRect = GridInsetRect(drawX, newRowY, c_width, newRowHeight, 3.0f, 3.0f);
+								D2D1_RECT_F rowRect = GridInsetRect(drawX, newRowY, cellWidth, newRowHeight, 3.0f, 3.0f);
 								d2d->FillRoundRect(rowRect, this->_isUnderNewRow ? this->UnderMouseItemBackColor : this->NewRowBackColor, this->CellCornerRadius);
 
 								// 绘制新行单元格内容（空单元格样式）
 								if (c == 0)
 								{
 									// 在第一列显示新行指示符 (*)
-									float asteriskSize = font_height * 0.5f;
-									float asteriskX = drawX + text_top;
-									float asteriskY = newRowY + text_top;
+									float asteriskSize = fontHeight * 0.5f;
+									float asteriskX = drawX + textTop;
+									float asteriskY = newRowY + textTop;
 
 									// 绘制星号
 									d2d->DrawString(L"*",
@@ -1357,7 +1354,7 @@ void GridView::Update()
 										this->NewRowForeColor, font);
 								}
 
-								DrawGridCellLines(d2d, drawX, newRowY, c_width, newRowHeight, this->GridLineColor);
+								DrawGridCellLines(d2d, drawX, newRowY, cellWidth, newRowHeight, this->GridLineColor);
 							}
 							d2d->PopDrawRect();
 							xf += colW;
@@ -1504,11 +1501,11 @@ void GridView::AutoSizeColumn(int col)
 	if (col >= 0 && col < static_cast<int>(this->Columns.size()))
 	{
 		auto font = this->Font;
-		float font_height = font->FontHeight;
-		float row_height = font_height + 2.0f;
+		float fontHeight = font->FontHeight;
+		float rowHeight = fontHeight + 2.0f;
 		if (RowHeight != 0.0f)
 		{
-			row_height = RowHeight;
+			rowHeight = RowHeight;
 		}
 		auto& column = this->Columns[static_cast<size_t>(col)];
 		column.Width = 10.0f;
@@ -1540,7 +1537,7 @@ void GridView::AutoSizeColumn(int col)
 				}
 				else
 				{
-					column.Width = row_height;
+					column.Width = rowHeight;
 				}
 			}
 		}
@@ -1579,8 +1576,8 @@ void GridView::EnsureComboBoxCellDefaultSelection(int col, int row)
 		rowObj.Cells.resize((size_t)col + 1);
 	auto& cell = rowObj.Cells[static_cast<size_t>(col)];
 
-	const __int64 idx = cell.Tag;
-	if (idx < 0 || idx >= static_cast<__int64>(column.ComboBoxItems.size()))
+	const __int64 selectedTagIndex = cell.Tag;
+	if (selectedTagIndex < 0 || selectedTagIndex >= static_cast<__int64>(column.ComboBoxItems.size()))
 	{
 		cell.Tag = 0;
 		cell.Text = column.ComboBoxItems[0];
@@ -1588,9 +1585,9 @@ void GridView::EnsureComboBoxCellDefaultSelection(int col, int row)
 	else
 	{
 		// Keep Text in sync with index if needed
-		const auto& t = column.ComboBoxItems[static_cast<size_t>(idx)];
-		if (cell.Text != t)
-			cell.Text = t;
+		const auto& selectedText = column.ComboBoxItems[static_cast<size_t>(selectedTagIndex)];
+		if (cell.Text != selectedText)
+			cell.Text = selectedText;
 	}
 }
 
@@ -1651,9 +1648,9 @@ void GridView::ToggleDropDownEditor(int col, int row)
 	D2D1_RECT_F cellLocal{};
 	if (!TryGetCellRectLocal(col, row, cellLocal)) return;
 
-	const auto abs = this->AbsLocation;
-	const int x = (int)std::round((float)abs.x + cellLocal.left);
-	const int y = (int)std::round((float)abs.y + cellLocal.top);
+	const auto absoluteLocation = this->AbsLocation;
+	const int x = (int)std::round((float)absoluteLocation.x + cellLocal.left);
+	const int y = (int)std::round((float)absoluteLocation.y + cellLocal.top);
 	const int w = (int)std::round(cellLocal.right - cellLocal.left);
 	const int h = (int)std::round(cellLocal.bottom - cellLocal.top);
 
@@ -1693,13 +1690,13 @@ void GridView::ToggleDropDownEditor(int col, int row)
 			if (this->Columns[static_cast<size_t>(col)].Type != ColumnType::ComboBox) return;
 			auto& column2 = this->Columns[static_cast<size_t>(col)];
 			if (column2.ComboBoxItems.size() <= 0) return;
-			int idx = selectedIndex;
-			if (idx < 0) idx = 0;
-			if (idx >= static_cast<int>(column2.ComboBoxItems.size())) idx = static_cast<int>(column2.ComboBoxItems.size()) - 1;
+			int clampedSelectedIndex = selectedIndex;
+			if (clampedSelectedIndex < 0) clampedSelectedIndex = 0;
+			if (clampedSelectedIndex >= static_cast<int>(column2.ComboBoxItems.size())) clampedSelectedIndex = static_cast<int>(column2.ComboBoxItems.size()) - 1;
 			auto& cell2 = this->Rows[static_cast<size_t>(row)].Cells[static_cast<size_t>(col)];
-			cell2.Tag = (__int64)idx;
-			cell2.Text = column2.ComboBoxItems[static_cast<size_t>(idx)];
-			this->OnGridViewComboBoxSelectionChanged(this, col, row, idx, cell2.Text);
+			cell2.Tag = (__int64)clampedSelectedIndex;
+			cell2.Text = column2.ComboBoxItems[static_cast<size_t>(clampedSelectedIndex)];
+			this->OnGridViewComboBoxSelectionChanged(this, col, row, clampedSelectedIndex, cell2.Text);
 			this->InvalidateVisual();
 		};
 	this->_dropDownPopup->Closed.Clear();
@@ -1817,10 +1814,10 @@ bool GridView::CanScrollDown()
 	auto l = this->CalcScrollLayout();
 	return this->ScrollYOffset < l.MaxScrollY;
 }
-bool GridView::CanHandleMouseWheel(int delta, int xof, int yof)
+bool GridView::CanHandleMouseWheel(int delta, int localX, int localY)
 {
-	(void)xof;
-	(void)yof;
+	(void)localX;
+	(void)localY;
 	if (delta == 0) return false;
 	auto l = this->CalcScrollLayout();
 	if ((GetKeyState(VK_SHIFT) & 0x8000) && l.NeedH && l.MaxScrollX > 0.0f)
@@ -1835,9 +1832,9 @@ bool GridView::CanHandleMouseWheel(int delta, int xof, int yof)
 		? this->ScrollYOffset > 0.0f
 		: this->ScrollYOffset < l.MaxScrollY;
 }
-void GridView::UpdateUnderMouseIndices(int xof, int yof)
+void GridView::UpdateUnderMouseIndices(int localX, int localY)
 {
-	POINT undermouseIndex = GetGridViewUnderMouseItem(xof, yof, this);
+	POINT undermouseIndex = GetGridViewUnderMouseItem(localX, localY, this);
 	this->UnderMouseColumnIndex = undermouseIndex.x;
 	this->UnderMouseRowIndex = undermouseIndex.y;
 }
@@ -1852,14 +1849,14 @@ void GridView::ChangeEditionSelected(int col, int row)
 void GridView::HandleDropFiles(WPARAM wParam)
 {
 	HDROP hDropInfo = HDROP(wParam);
-	UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
-	TCHAR strFileName[MAX_PATH];
+	UINT fileCount = DragQueryFile(hDropInfo, 0xffffffff, nullptr, 0);
+	TCHAR fileName[MAX_PATH];
 	std::vector<std::wstring> files;
 
-	for (UINT i = 0; i < uFileNum; i++)
+	for (UINT i = 0; i < fileCount; i++)
 	{
-		DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-		files.push_back(strFileName);
+		DragQueryFile(hDropInfo, i, fileName, MAX_PATH);
+		files.push_back(fileName);
 	}
 	DragFinish(hDropInfo);
 
@@ -1868,7 +1865,7 @@ void GridView::HandleDropFiles(WPARAM wParam)
 		this->OnDropFile(this, files);
 	}
 }
-void GridView::HandleMouseWheel(WPARAM wParam, int xof, int yof)
+void GridView::HandleMouseWheel(WPARAM wParam, int localX, int localY)
 {
 	bool needUpdate = false;
 	int delta = GET_WHEEL_DELTA_WPARAM(wParam);
@@ -1883,9 +1880,9 @@ void GridView::HandleMouseWheel(WPARAM wParam, int xof, int yof)
 		if (this->ScrollXOffset > l.MaxScrollX) this->ScrollXOffset = l.MaxScrollX;
 		needUpdate = true;
 
-		UpdateUnderMouseIndices(xof, yof);
-		MouseEventArgs event_obj(MouseButtons::None, 0, xof, yof, delta);
-		this->OnMouseWheel(this, event_obj);
+		UpdateUnderMouseIndices(localX, localY);
+		MouseEventArgs eventArgs(MouseButtons::None, 0, localX, localY, delta);
+		this->OnMouseWheel(this, eventArgs);
 		if (needUpdate) this->InvalidateVisual();
 		return;
 	}
@@ -1915,23 +1912,23 @@ void GridView::HandleMouseWheel(WPARAM wParam, int xof, int yof)
 		}
 	}
 
-	UpdateUnderMouseIndices(xof, yof);
-	MouseEventArgs event_obj(MouseButtons::None, 0, xof, yof, delta);
-	this->OnMouseWheel(this, event_obj);
+	UpdateUnderMouseIndices(localX, localY);
+	MouseEventArgs eventArgs(MouseButtons::None, 0, localX, localY, delta);
+	this->OnMouseWheel(this, eventArgs);
 
 	if (needUpdate)
 	{
 		this->InvalidateVisual();
 	}
 }
-void GridView::HandleMouseMove(int xof, int yof)
+void GridView::HandleMouseMove(int localX, int localY)
 {
 	this->ParentForm->UnderMouse = this;
 	bool needUpdate = false;
 
 	if (this->_resizingColumn)
 	{
-		float dx = (float)xof - this->_resizeStartX;
+		float dx = (float)localX - this->_resizeStartX;
 		float newWidth = this->_resizeStartWidth + dx;
 		if (newWidth < this->_minColumnWidth) newWidth = this->_minColumnWidth;
 		if (this->_resizeColumnIndex >= 0 && this->_resizeColumnIndex < static_cast<int>(this->Columns.size()))
@@ -1942,8 +1939,8 @@ void GridView::HandleMouseMove(int xof, int yof)
 				needUpdate = true;
 			}
 		}
-		MouseEventArgs event_obj(MouseButtons::None, 0, xof, yof, 0);
-		this->OnMouseMove(this, event_obj);
+		MouseEventArgs eventArgs(MouseButtons::None, 0, localX, localY, 0);
+		this->OnMouseMove(this, eventArgs);
 		if (needUpdate) this->InvalidateVisual();
 		return;
 	}
@@ -1951,12 +1948,12 @@ void GridView::HandleMouseMove(int xof, int yof)
 	if (this->InScroll)
 	{
 		needUpdate = true;
-		SetScrollByPos(static_cast<float>(yof));
+		SetScrollByPos(static_cast<float>(localY));
 	}
 	else if (this->InHScroll)
 	{
 		needUpdate = true;
-		SetHScrollByPos((float)xof);
+		SetHScrollByPos((float)localX);
 	}
 	else
 	{
@@ -1967,14 +1964,14 @@ void GridView::HandleMouseMove(int xof, int yof)
 			{
 				float cellWidth = rect.right - rect.left;
 				float cellHeight = rect.bottom - rect.top;
-				float lx = (float)xof - rect.left;
-				float ly = (float)yof - rect.top;
+				float lx = (float)localX - rect.left;
+				float ly = (float)localY - rect.top;
 				this->EditSelectionEnd = EditHitTestTextPosition(cellWidth, cellHeight, lx, ly);
 				EditUpdateScroll(cellWidth);
 				needUpdate = true;
 			}
 		}
-		POINT undermouseIndex = GetGridViewUnderMouseItem(xof, yof, this);
+		POINT undermouseIndex = GetGridViewUnderMouseItem(localX, localY, this);
 		if (this->UnderMouseColumnIndex != undermouseIndex.x ||
 			this->UnderMouseRowIndex != undermouseIndex.y)
 		{
@@ -1987,7 +1984,7 @@ void GridView::HandleMouseMove(int xof, int yof)
 		if (this->AllowUserToAddRows)
 		{
 			int newRowCol = -1;
-			int hitResult = HitTestNewRow(xof, yof, newRowCol);
+			int hitResult = HitTestNewRow(localX, localY, newRowCol);
 			bool isUnderNewRow = (hitResult >= 0 && newRowCol >= 0);
 			if (this->_isUnderNewRow != isUnderNewRow)
 			{
@@ -1998,15 +1995,15 @@ void GridView::HandleMouseMove(int xof, int yof)
 		}
 	}
 
-	MouseEventArgs event_obj(MouseButtons::None, 0, xof, yof, 0);
-	this->OnMouseMove(this, event_obj);
+	MouseEventArgs eventArgs(MouseButtons::None, 0, localX, localY, 0);
+	this->OnMouseMove(this, eventArgs);
 
 	if (needUpdate)
 	{
 		this->InvalidateVisual();
 	}
 }
-void GridView::HandleLeftButtonDown(int xof, int yof)
+void GridView::HandleLeftButtonDown(int localX, int localY)
 {
 	auto lastSelected = this->ParentForm->Selected;
 	this->ParentForm->Selected = this;
@@ -2020,7 +2017,7 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 	const int renderW = (int)l.RenderWidth;
 	const int renderH = (int)l.RenderHeight;
 
-	if (l.NeedH && yof >= renderH && xof >= 0 && xof < renderW)
+	if (l.NeedH && localY >= renderH && localX >= 0 && localX < renderW)
 	{
 		CancelEditing(true);
 		this->InHScroll = true;
@@ -2036,23 +2033,23 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 			float per = 0.0f;
 			if (maxScrollX > 0.0f) per = std::clamp(this->ScrollXOffset / maxScrollX, 0.0f, 1.0f);
 			const float thumbX = per * moveSpace;
-			const float localX = (float)xof;
-			const bool hitThumb = (localX >= thumbX && localX <= (thumbX + thumbW));
-			_hScrollThumbGrabOffsetX = hitThumb ? (localX - thumbX) : (thumbW * 0.5f);
+			const float pointerX = (float)localX;
+			const bool hitThumb = (pointerX >= thumbX && pointerX <= (thumbX + thumbW));
+			_hScrollThumbGrabOffsetX = hitThumb ? (pointerX - thumbX) : (thumbW * 0.5f);
 		}
 		else
 		{
 			_hScrollThumbGrabOffsetX = 0.0f;
 		}
-		SetHScrollByPos((float)xof);
+		SetHScrollByPos((float)localX);
 		SetCapture(this->ParentForm->Handle);
-		MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
-		this->OnMouseDown(this, event_obj);
+		MouseEventArgs eventArgs(MouseButtons::Left, 0, localX, localY, 0);
+		this->OnMouseDown(this, eventArgs);
 		this->InvalidateVisual();
 		return;
 	}
 
-	if (l.NeedV && xof >= renderW && yof >= 0 && yof < renderH)
+	if (l.NeedV && localX >= renderW && localY >= 0 && localY < renderH)
 	{
 		CancelEditing(true);
 		this->InScroll = true;
@@ -2067,39 +2064,39 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 			const float moveSpace = std::max(0.0f, renderingHeight - thumbH);
 			float per = std::clamp(this->ScrollYOffset / l.MaxScrollY, 0.0f, 1.0f);
 			const float thumbTop = per * moveSpace;
-			const float localY = (float)yof;
-			const bool hitThumb = (localY >= thumbTop && localY <= (thumbTop + thumbH));
-			_vScrollThumbGrabOffsetY = hitThumb ? (localY - thumbTop) : (thumbH * 0.5f);
+			const float pointerY = (float)localY;
+			const bool hitThumb = (pointerY >= thumbTop && pointerY <= (thumbTop + thumbH));
+			_vScrollThumbGrabOffsetY = hitThumb ? (pointerY - thumbTop) : (thumbH * 0.5f);
 		}
 		else
 		{
 			_vScrollThumbGrabOffsetY = 0.0f;
 		}
-		SetScrollByPos((float)yof);
+		SetScrollByPos((float)localY);
 		SetCapture(this->ParentForm->Handle);
-		MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
-		this->OnMouseDown(this, event_obj);
+		MouseEventArgs eventArgs(MouseButtons::Left, 0, localX, localY, 0);
+		this->OnMouseDown(this, eventArgs);
 		this->InvalidateVisual();
 		return;
 	}
 
-	if (xof < renderW && yof < renderH)
+	if (localX < renderW && localY < renderH)
 	{
-		int divCol = HitTestHeaderDivider(xof, yof);
+		int divCol = HitTestHeaderDivider(localX, localY);
 		if (divCol >= 0)
 		{
 			CancelEditing(true);
 			this->_resizingColumn = true;
 			this->_resizeColumnIndex = divCol;
-			this->_resizeStartX = (float)xof;
+			this->_resizeStartX = (float)localX;
 			this->_resizeStartWidth = this->Columns[divCol].Width;
 			SetCapture(this->ParentForm->Handle);
-			MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
-			this->OnMouseDown(this, event_obj);
+			MouseEventArgs eventArgs(MouseButtons::Left, 0, localX, localY, 0);
+			this->OnMouseDown(this, eventArgs);
 			return;
 		}
 
-		int headCol = HitTestHeaderColumn(xof, yof);
+		int headCol = HitTestHeaderColumn(localX, localY);
 		if (headCol >= 0)
 		{
 			CancelEditing(true);
@@ -2108,12 +2105,12 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 				ascending = !this->SortAscending;
 			SortByColumn(headCol, ascending);
 
-			MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
-			this->OnMouseDown(this, event_obj);
+			MouseEventArgs eventArgs(MouseButtons::Left, 0, localX, localY, 0);
+			this->OnMouseDown(this, eventArgs);
 			return;
 		}
 
-		POINT undermouseIndex = GetGridViewUnderMouseItem(xof, yof, this);
+		POINT undermouseIndex = GetGridViewUnderMouseItem(localX, localY, this);
 		if (undermouseIndex.y >= 0 && undermouseIndex.x >= 0 &&
 			undermouseIndex.y < static_cast<LONG>(this->Rows.size()) && undermouseIndex.x < static_cast<LONG>(this->Columns.size()))
 		{
@@ -2136,8 +2133,8 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 				this->_buttonDownRowIndex = undermouseIndex.y;
 				SetCapture(this->ParentForm->Handle);
 
-				MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
-				this->OnMouseDown(this, event_obj);
+				MouseEventArgs eventArgs(MouseButtons::Left, 0, localX, localY, 0);
+				this->OnMouseDown(this, eventArgs);
 				this->InvalidateVisual();
 				return;
 			}
@@ -2157,22 +2154,22 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 				this->_linkedTextDownRowIndex = undermouseIndex.y;
 				SetCapture(this->ParentForm->Handle);
 
-				MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
-				this->OnMouseDown(this, event_obj);
+				MouseEventArgs eventArgs(MouseButtons::Left, 0, localX, localY, 0);
+				this->OnMouseDown(this, eventArgs);
 				this->InvalidateVisual();
 				return;
 			}
 
 			if (this->Editing && undermouseIndex.x == this->EditingColumnIndex && undermouseIndex.y == this->EditingRowIndex)
 			{
-				SetEditingCaretFromMousePoint(xof, yof);
+				SetEditingCaretFromMousePoint(localX, localY);
 			}
 			else
 			{
 				HandleCellClick(undermouseIndex.x, undermouseIndex.y);
 				if (this->Editing && undermouseIndex.x == this->EditingColumnIndex && undermouseIndex.y == this->EditingRowIndex)
 				{
-					SetEditingCaretFromMousePoint(xof, yof);
+					SetEditingCaretFromMousePoint(localX, localY);
 				}
 			}
 		}
@@ -2185,7 +2182,7 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 		if (this->AllowUserToAddRows && undermouseIndex.y < 0 && undermouseIndex.x >= 0)
 		{
 			int newRowCol = -1;
-			int hitResult = HitTestNewRow(xof, yof, newRowCol);
+			int hitResult = HitTestNewRow(localX, localY, newRowCol);
 			if (hitResult >= 0 && newRowCol >= 0 && newRowCol < static_cast<int>(this->Columns.size()))
 			{
 				CancelEditing(true);
@@ -2195,26 +2192,26 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 		}
 	}
 
-	MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
-	this->OnMouseDown(this, event_obj);
+	MouseEventArgs eventArgs(MouseButtons::Left, 0, localX, localY, 0);
+	this->OnMouseDown(this, eventArgs);
 	this->InvalidateVisual();
 }
-void GridView::HandleLeftButtonUp(int xof, int yof)
+void GridView::HandleLeftButtonUp(int localX, int localY)
 {
 	if (this->_resizingColumn)
 	{
 		this->_resizingColumn = false;
 		this->_resizeColumnIndex = -1;
 		ReleaseCapture();
-		MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
-		this->OnMouseUp(this, event_obj);
+		MouseEventArgs eventArgs(MouseButtons::Left, 0, localX, localY, 0);
+		this->OnMouseUp(this, eventArgs);
 		this->InvalidateVisual();
 		return;
 	}
 
 	if (this->_buttonMouseDown)
 	{
-		POINT undermouseIndex = GetGridViewUnderMouseItem(xof, yof, this);
+		POINT undermouseIndex = GetGridViewUnderMouseItem(localX, localY, this);
 		const bool hitSameCell = (undermouseIndex.x == this->_buttonDownColumnIndex && undermouseIndex.y == this->_buttonDownRowIndex);
 		const bool validCell = (undermouseIndex.x >= 0 && undermouseIndex.y >= 0 &&
 			undermouseIndex.x < static_cast<LONG>(this->Columns.size()) && undermouseIndex.y < static_cast<LONG>(this->Rows.size()));
@@ -2227,8 +2224,8 @@ void GridView::HandleLeftButtonUp(int xof, int yof)
 		this->InScroll = false;
 		this->InHScroll = false;
 		ReleaseCapture();
-		MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
-		this->OnMouseUp(this, event_obj);
+		MouseEventArgs eventArgs(MouseButtons::Left, 0, localX, localY, 0);
+		this->OnMouseUp(this, eventArgs);
 
 		if (hitSameCell && isButtonCell)
 		{
@@ -2240,7 +2237,7 @@ void GridView::HandleLeftButtonUp(int xof, int yof)
 
 	if (this->_linkedTextMouseDown)
 	{
-		POINT undermouseIndex = GetGridViewUnderMouseItem(xof, yof, this);
+		POINT undermouseIndex = GetGridViewUnderMouseItem(localX, localY, this);
 		const bool hitSameCell = (undermouseIndex.x == this->_linkedTextDownColumnIndex && undermouseIndex.y == this->_linkedTextDownRowIndex);
 		const bool validCell = (undermouseIndex.x >= 0 && undermouseIndex.y >= 0 &&
 			undermouseIndex.x < static_cast<LONG>(this->Columns.size()) && undermouseIndex.y < static_cast<LONG>(this->Rows.size()));
@@ -2253,8 +2250,8 @@ void GridView::HandleLeftButtonUp(int xof, int yof)
 		this->InScroll = false;
 		this->InHScroll = false;
 		ReleaseCapture();
-		MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
-		this->OnMouseUp(this, event_obj);
+		MouseEventArgs eventArgs(MouseButtons::Left, 0, localX, localY, 0);
+		this->OnMouseUp(this, eventArgs);
 
 		if (hitSameCell && isLinkedTextCell)
 		{
@@ -2267,13 +2264,13 @@ void GridView::HandleLeftButtonUp(int xof, int yof)
 	this->InScroll = false;
 	this->InHScroll = false;
 	ReleaseCapture();
-	MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
-	this->OnMouseUp(this, event_obj);
+	MouseEventArgs eventArgs(MouseButtons::Left, 0, localX, localY, 0);
+	this->OnMouseUp(this, eventArgs);
 	this->InvalidateVisual();
 }
-void GridView::HandleLeftButtonDoubleClick(WPARAM wParam, int xof, int yof)
+void GridView::HandleLeftButtonDoubleClick(WPARAM wParam, int localX, int localY)
 {
-	POINT undermouseIndex = GetGridViewUnderMouseItem(xof, yof, this);
+	POINT undermouseIndex = GetGridViewUnderMouseItem(localX, localY, this);
 	if (undermouseIndex.x >= 0 && undermouseIndex.y >= 0 &&
 		undermouseIndex.x < static_cast<LONG>(this->Columns.size()) &&
 		undermouseIndex.y < static_cast<LONG>(this->Rows.size()) &&
@@ -2294,8 +2291,8 @@ void GridView::HandleLeftButtonDoubleClick(WPARAM wParam, int xof, int yof)
 		}
 	}
 
-	MouseEventArgs event_obj(MouseButtons::Left, 2, xof, yof, HIWORD(wParam));
-	this->OnMouseDoubleClick(this, event_obj);
+	MouseEventArgs eventArgs(MouseButtons::Left, 2, localX, localY, HIWORD(wParam));
+	this->OnMouseDoubleClick(this, eventArgs);
 }
 void GridView::HandleKeyDown(WPARAM wParam)
 {
@@ -2376,8 +2373,8 @@ void GridView::HandleKeyDown(WPARAM wParam)
 			return;
 		}
 
-		KeyEventArgs event_obj(static_cast<Keys>(wParam));
-		this->OnKeyDown(this, event_obj);
+		KeyEventArgs eventArgs(static_cast<Keys>(wParam));
+		this->OnKeyDown(this, eventArgs);
 		this->InvalidateVisual();
 		return;
 	}
@@ -2401,14 +2398,14 @@ void GridView::HandleKeyDown(WPARAM wParam)
 	}
 
 	AdjustScrollPosition();
-	KeyEventArgs event_obj(static_cast<Keys>(wParam));
-	this->OnKeyDown(this, event_obj);
+	KeyEventArgs eventArgs(static_cast<Keys>(wParam));
+	this->OnKeyDown(this, eventArgs);
 	this->InvalidateVisual();
 }
 void GridView::HandleKeyUp(WPARAM wParam)
 {
-	KeyEventArgs event_obj(static_cast<Keys>(wParam));
-	this->OnKeyUp(this, event_obj);
+	KeyEventArgs eventArgs(static_cast<Keys>(wParam));
+	this->OnKeyUp(this, eventArgs);
 }
 void GridView::HandleCharInput(WPARAM wParam)
 {
@@ -2494,7 +2491,7 @@ void GridView::HandleImeComposition(LPARAM lParam)
 		HIMC hIMC = ImmGetContext(this->ParentForm->Handle);
 		if (hIMC)
 		{
-			LONG bytes = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, NULL, 0);
+			LONG bytes = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, nullptr, 0);
 			if (bytes > 0)
 			{
 				int wcharCount = bytes / (int)sizeof(wchar_t);
@@ -2543,7 +2540,7 @@ void GridView::HandleCellClick(int col, int row)
 		StartEditingCell(col, row);
 	}
 }
-bool GridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool GridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	switch (message)
@@ -2553,23 +2550,23 @@ bool GridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		break;
 
 	case WM_MOUSEWHEEL:
-		HandleMouseWheel(wParam, xof, yof);
+		HandleMouseWheel(wParam, localX, localY);
 		break;
 
 	case WM_MOUSEMOVE:
-		HandleMouseMove(xof, yof);
+		HandleMouseMove(localX, localY);
 		break;
 
 	case WM_LBUTTONDOWN:
-		HandleLeftButtonDown(xof, yof);
+		HandleLeftButtonDown(localX, localY);
 		break;
 
 	case WM_LBUTTONUP:
-		HandleLeftButtonUp(xof, yof);
+		HandleLeftButtonUp(localX, localY);
 		break;
 
 	case WM_LBUTTONDBLCLK:
-		HandleLeftButtonDoubleClick(wParam, xof, yof);
+		HandleLeftButtonDoubleClick(wParam, localX, localY);
 		break;
 
 	case WM_KEYDOWN:
@@ -2646,7 +2643,7 @@ bool GridView::IsEditableTextCell(int col, int row)
 	if (col >= static_cast<int>(this->Columns.size()) || row >= static_cast<int>(this->Rows.size())) return false;
 	return this->Columns[static_cast<size_t>(col)].Type == ColumnType::Text && this->Columns[static_cast<size_t>(col)].CanEdit;
 }
-bool GridView::SetEditingCaretFromMousePoint(int xof, int yof)
+bool GridView::SetEditingCaretFromMousePoint(int localX, int localY)
 {
 	if (!this->Editing) return false;
 	D2D1_RECT_F rect{};
@@ -2654,8 +2651,8 @@ bool GridView::SetEditingCaretFromMousePoint(int xof, int yof)
 
 	float cellWidth = rect.right - rect.left;
 	float cellHeight = rect.bottom - rect.top;
-	float lx = (float)xof - rect.left;
-	float ly = (float)yof - rect.top;
+	float lx = (float)localX - rect.left;
+	float ly = (float)localY - rect.top;
 	int pos = EditHitTestTextPosition(cellWidth, cellHeight, lx, ly);
 	this->EditSelectionStart = this->EditSelectionEnd = pos;
 	EditUpdateScroll(cellWidth);

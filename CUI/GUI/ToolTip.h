@@ -20,8 +20,8 @@ public:
 	float Border = 1.0f;
 	float PaddingX = 10.0f;
 	float PaddingY = 6.0f;
-	int OffsetX = 10;
-	int OffsetY = 8;
+	int PopupOffsetX = 10;
+	int PopupOffsetY = 8;
 	float CornerRadius = 8.0f;
 	float ShadowOffsetY = 3.0f;
 	UINT PopupAnimationDurationMs = 90;

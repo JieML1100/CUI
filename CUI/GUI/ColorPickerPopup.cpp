@@ -1,4 +1,4 @@
-#define NOMINMAX
+﻿#define NOMINMAX
 #include "ColorPickerPopup.h"
 #include "Form.h"
 
@@ -217,12 +217,12 @@ std::wstring ColorPickerPopup::ColorToString(D2D1_COLOR_F color)
 	int r = ToByte(color.r);
 	int g = ToByte(color.g);
 	int b = ToByte(color.b);
-	int a = ToByte(color.a);
+	int alpha = ToByte(color.a);
 	std::wostringstream ss;
 	ss << L"#" << std::uppercase << std::hex << std::setfill(L'0');
 	if (color.a < 0.995f)
 	{
-		ss << std::setw(2) << a;
+		ss << std::setw(2) << alpha;
 	}
 	ss << std::setw(2) << r << std::setw(2) << g << std::setw(2) << b;
 	return ss.str();
@@ -354,7 +354,7 @@ void ColorPickerPopup::FinishCollapsed()
 	_dragSV = _dragHue = _dragAlpha = false;
 	_hasAnchorRect = false;
 	if (form && form->ForegroundControl == this)
-		form->ForegroundControl = NULL;
+		form->ForegroundControl = nullptr;
 	if (form && form->Selected == this)
 		form->SetSelectedControl(owner && owner->IsVisual ? owner : nullptr, false);
 	this->_owner = nullptr;
@@ -388,11 +388,11 @@ bool ColorPickerPopup::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 	return true;
 }
 
-bool ColorPickerPopup::ContainsPoint(int xof, int yof)
+bool ColorPickerPopup::ContainsPoint(int localX, int localY)
 {
-	if (Control::ContainsPoint(xof, yof))
+	if (Control::ContainsPoint(localX, localY))
 		return true;
-	return _hasAnchorRect && PtInRectF(_anchorRect, (float)xof, (float)yof);
+	return _hasAnchorRect && PtInRectF(_anchorRect, (float)localX, (float)localY);
 }
 
 void ColorPickerPopup::ShowAt(Form* form, int x, int y, D2D1_COLOR_F initialColor)
@@ -480,60 +480,60 @@ void ColorPickerPopup::AddHistory(const std::wstring& value)
 		g_colorHistory.resize(10);
 }
 
-void ColorPickerPopup::SetSVFromPoint(int xof, int yof)
+void ColorPickerPopup::SetSVFromPoint(int localX, int localY)
 {
 	auto layout = CalcLayout();
-	_saturation = std::clamp(((float)xof - layout.SvRect.left) / std::max(1.0f, RectWidth(layout.SvRect)), 0.0f, 1.0f);
-	_value = 1.0f - std::clamp(((float)yof - layout.SvRect.top) / std::max(1.0f, RectHeight(layout.SvRect)), 0.0f, 1.0f);
+	_saturation = std::clamp(((float)localX - layout.SvRect.left) / std::max(1.0f, RectWidth(layout.SvRect)), 0.0f, 1.0f);
+	_value = 1.0f - std::clamp(((float)localY - layout.SvRect.top) / std::max(1.0f, RectHeight(layout.SvRect)), 0.0f, 1.0f);
 	UpdateColorFromHsv();
 }
 
-void ColorPickerPopup::SetHueFromPoint(int xof, int yof)
+void ColorPickerPopup::SetHueFromPoint(int localX, int localY)
 {
-	(void)xof;
+	(void)localX;
 	auto layout = CalcLayout();
-	float t = std::clamp(((float)yof - layout.HueRect.top) / std::max(1.0f, RectHeight(layout.HueRect)), 0.0f, 1.0f);
+	float t = std::clamp(((float)localY - layout.HueRect.top) / std::max(1.0f, RectHeight(layout.HueRect)), 0.0f, 1.0f);
 	_hue = t * 360.0f;
 	UpdateColorFromHsv();
 }
 
-void ColorPickerPopup::SetAlphaFromPoint(int xof, int yof)
+void ColorPickerPopup::SetAlphaFromPoint(int localX, int localY)
 {
-	(void)yof;
+	(void)localY;
 	auto layout = CalcLayout();
-	_alpha = std::clamp(((float)xof - layout.AlphaRect.left) / std::max(1.0f, RectWidth(layout.AlphaRect)), 0.0f, 1.0f);
+	_alpha = std::clamp(((float)localX - layout.AlphaRect.left) / std::max(1.0f, RectWidth(layout.AlphaRect)), 0.0f, 1.0f);
 	UpdateColorFromHsv();
 }
 
-void ColorPickerPopup::UpdateHover(int xof, int yof)
+void ColorPickerPopup::UpdateHover(int localX, int localY)
 {
 	auto layout = CalcLayout();
 	_hoverCommon = -1;
 	_hoverHistory = -1;
-	_hoverClear = PtInRectF(layout.ClearRect, (float)xof, (float)yof);
-	_hoverOk = PtInRectF(layout.OkRect, (float)xof, (float)yof);
+	_hoverClear = PtInRectF(layout.ClearRect, (float)localX, (float)localY);
+	_hoverOk = PtInRectF(layout.OkRect, (float)localX, (float)localY);
 	for (int i = 0; i < (int)layout.CommonRects.size(); i++)
-		if (PtInRectF(layout.CommonRects[i], (float)xof, (float)yof)) _hoverCommon = i;
+		if (PtInRectF(layout.CommonRects[i], (float)localX, (float)localY)) _hoverCommon = i;
 	for (int i = 0; i < (int)layout.HistoryRects.size(); i++)
-		if (PtInRectF(layout.HistoryRects[i], (float)xof, (float)yof)) _hoverHistory = i;
+		if (PtInRectF(layout.HistoryRects[i], (float)localX, (float)localY)) _hoverHistory = i;
 }
 
-CursorKind ColorPickerPopup::QueryCursor(int xof, int yof)
+CursorKind ColorPickerPopup::QueryCursor(int localX, int localY)
 {
-	const bool inPanel = Control::ContainsPoint(xof, yof);
-	if (!inPanel && _hasAnchorRect && PtInRectF(_anchorRect, (float)xof, (float)yof))
+	const bool inPanel = Control::ContainsPoint(localX, localY);
+	if (!inPanel && _hasAnchorRect && PtInRectF(_anchorRect, (float)localX, (float)localY))
 		return CursorKind::Hand;
 	auto layout = CalcLayout();
-	if (PtInRectF(layout.SvRect, (float)xof, (float)yof) ||
-		PtInRectF(layout.HueRect, (float)xof, (float)yof) ||
-		PtInRectF(layout.AlphaRect, (float)xof, (float)yof) ||
-		PtInRectF(layout.ClearRect, (float)xof, (float)yof) ||
-		PtInRectF(layout.OkRect, (float)xof, (float)yof))
+	if (PtInRectF(layout.SvRect, (float)localX, (float)localY) ||
+		PtInRectF(layout.HueRect, (float)localX, (float)localY) ||
+		PtInRectF(layout.AlphaRect, (float)localX, (float)localY) ||
+		PtInRectF(layout.ClearRect, (float)localX, (float)localY) ||
+		PtInRectF(layout.OkRect, (float)localX, (float)localY))
 		return CursorKind::Hand;
 	for (auto& r : layout.CommonRects)
-		if (PtInRectF(r, (float)xof, (float)yof)) return CursorKind::Hand;
+		if (PtInRectF(r, (float)localX, (float)localY)) return CursorKind::Hand;
 	for (auto& r : layout.HistoryRects)
-		if (PtInRectF(r, (float)xof, (float)yof)) return CursorKind::Hand;
+		if (PtInRectF(r, (float)localX, (float)localY)) return CursorKind::Hand;
 	return CursorKind::Arrow;
 }
 
@@ -705,23 +705,23 @@ void ColorPickerPopup::Update()
 		this->InvalidateVisual();
 }
 
-bool ColorPickerPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool ColorPickerPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
-	const bool inPanel = Control::ContainsPoint(xof, yof);
+	const bool inPanel = Control::ContainsPoint(localX, localY);
 	const bool draggingPicker = _dragSV || _dragHue || _dragAlpha;
-	if (!draggingPicker && !inPanel && _hasAnchorRect && PtInRectF(_anchorRect, (float)xof, (float)yof))
+	if (!draggingPicker && !inPanel && _hasAnchorRect && PtInRectF(_anchorRect, (float)localX, (float)localY))
 	{
 		if (_expanded && message == WM_LBUTTONDOWN)
 		{
 			Hide(false);
-			MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+			MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 			this->OnMouseDown(this, e);
 			return true;
 		}
 		if (message == WM_LBUTTONUP)
 		{
-			MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+			MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 			this->OnMouseUp(this, e);
 			return true;
 		}
@@ -732,34 +732,34 @@ bool ColorPickerPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 	case WM_MOUSEMOVE:
 	{
 		if (this->ParentForm) this->ParentForm->UnderMouse = this;
-		if (_dragSV) SetSVFromPoint(xof, yof);
-		else if (_dragHue) SetHueFromPoint(xof, yof);
-		else if (_dragAlpha) SetAlphaFromPoint(xof, yof);
-		UpdateHover(xof, yof);
-		MouseEventArgs e(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
+		if (_dragSV) SetSVFromPoint(localX, localY);
+		else if (_dragHue) SetHueFromPoint(localX, localY);
+		else if (_dragAlpha) SetAlphaFromPoint(localX, localY);
+		UpdateHover(localX, localY);
+		MouseEventArgs e(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseMove(this, e);
 		return true;
 	}
 	case WM_LBUTTONDOWN:
 	{
 		auto layout = CalcLayout();
-		UpdateHover(xof, yof);
-		if (PtInRectF(layout.SvRect, (float)xof, (float)yof))
+		UpdateHover(localX, localY);
+		if (PtInRectF(layout.SvRect, (float)localX, (float)localY))
 		{
 			_dragSV = true;
-			SetSVFromPoint(xof, yof);
+			SetSVFromPoint(localX, localY);
 			if (this->ParentForm && this->ParentForm->Handle) SetCapture(this->ParentForm->Handle);
 		}
-		else if (PtInRectF(layout.HueRect, (float)xof, (float)yof))
+		else if (PtInRectF(layout.HueRect, (float)localX, (float)localY))
 		{
 			_dragHue = true;
-			SetHueFromPoint(xof, yof);
+			SetHueFromPoint(localX, localY);
 			if (this->ParentForm && this->ParentForm->Handle) SetCapture(this->ParentForm->Handle);
 		}
-		else if (PtInRectF(layout.AlphaRect, (float)xof, (float)yof))
+		else if (PtInRectF(layout.AlphaRect, (float)localX, (float)localY))
 		{
 			_dragAlpha = true;
-			SetAlphaFromPoint(xof, yof);
+			SetAlphaFromPoint(localX, localY);
 			if (this->ParentForm && this->ParentForm->Handle) SetCapture(this->ParentForm->Handle);
 		}
 		else if (_hoverCommon >= 0)
@@ -794,7 +794,7 @@ bool ColorPickerPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 			ClearValue();
 		else if (_hoverOk)
 			Hide(true);
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseDown(this, e);
 		return true;
 	}
@@ -802,7 +802,7 @@ bool ColorPickerPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 	{
 		_dragSV = _dragHue = _dragAlpha = false;
 		ReleaseCapture();
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseUp(this, e);
 		return true;
 	}
@@ -817,5 +817,5 @@ bool ColorPickerPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 	default:
 		break;
 	}
-	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 }

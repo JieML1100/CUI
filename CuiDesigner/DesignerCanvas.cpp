@@ -377,13 +377,13 @@ void DesignerCanvas::Update()
 	}
 
 	auto d2d = this->ParentForm->Render;
-	auto abslocation = this->AbsLocation;
+	auto absoluteLocation = this->AbsLocation;
 	auto size = this->ActualSize();
-	auto absRect = this->AbsRect;
+	auto absoluteRect = this->AbsRect;
 
-	d2d->PushDrawRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top);
+	d2d->PushDrawRect(absoluteRect.left, absoluteRect.top, absoluteRect.right - absoluteRect.left, absoluteRect.bottom - absoluteRect.top);
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, (float)size.cx, (float)size.cy, this->BackColor);
+		d2d->FillRect(absoluteLocation.x, absoluteLocation.y, (float)size.cx, (float)size.cy, this->BackColor);
 		DrawGrid();
 		if (_designSurface)
 		{
@@ -566,11 +566,11 @@ void DesignerCanvas::Update()
 			d2d->PopDrawRect();
 		}
 
-		d2d->DrawRect(abslocation.x, abslocation.y, (float)size.cx, (float)size.cy, this->BorderColor, this->BorderThickness);
+		d2d->DrawRect(absoluteLocation.x, absoluteLocation.y, (float)size.cx, (float)size.cy, this->BorderColor, this->BorderThickness);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(abslocation.x, abslocation.y, (float)size.cx, (float)size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(absoluteLocation.x, absoluteLocation.y, (float)size.cx, (float)size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	d2d->PopDrawRect();
 }
@@ -1059,12 +1059,12 @@ RECT DesignerCanvas::ApplyMoveSnap(RECT desiredRectInCanvas, Control* referenceP
 		{
 			for (int cx : candX)
 			{
-				int d = rx - cx;
-				int a = std::abs(d);
-				if (a <= _snapThreshold && a < bestAbsX)
+				int delta = rx - cx;
+				int absDelta = std::abs(delta);
+				if (absDelta <= _snapThreshold && absDelta < bestAbsX)
 				{
-					bestAbsX = a;
-					bestDx = d;
+					bestAbsX = absDelta;
+					bestDx = delta;
 					bestGuideX = rx;
 				}
 			}
@@ -1075,12 +1075,12 @@ RECT DesignerCanvas::ApplyMoveSnap(RECT desiredRectInCanvas, Control* referenceP
 		{
 			for (int cy : candY)
 			{
-				int d = ry - cy;
-				int a = std::abs(d);
-				if (a <= _snapThreshold && a < bestAbsY)
+				int delta = ry - cy;
+				int absDelta = std::abs(delta);
+				if (absDelta <= _snapThreshold && absDelta < bestAbsY)
 				{
-					bestAbsY = a;
-					bestDy = d;
+					bestAbsY = absDelta;
+					bestDy = delta;
 					bestGuideY = ry;
 				}
 			}
@@ -1174,12 +1174,12 @@ RECT DesignerCanvas::ApplyResizeSnap(RECT desiredRectInCanvas, Control* referenc
 			int bestDx = 0; int bestAbs = _snapThreshold + 1; int bestGuide = INT_MIN;
 			for (int rx : refX)
 			{
-				int d = rx - edge;
-				int a = std::abs(d);
-				if (a <= _snapThreshold && a < bestAbs)
+				int delta = rx - edge;
+				int absDelta = std::abs(delta);
+				if (absDelta <= _snapThreshold && absDelta < bestAbs)
 				{
-					bestAbs = a;
-					bestDx = d;
+					bestAbs = absDelta;
+					bestDx = delta;
 					bestGuide = rx;
 				}
 			}
@@ -1197,12 +1197,12 @@ RECT DesignerCanvas::ApplyResizeSnap(RECT desiredRectInCanvas, Control* referenc
 			int bestDy = 0; int bestAbs = _snapThreshold + 1; int bestGuide = INT_MIN;
 			for (int ry : refY)
 			{
-				int d = ry - edge;
-				int a = std::abs(d);
-				if (a <= _snapThreshold && a < bestAbs)
+				int delta = ry - edge;
+				int absDelta = std::abs(delta);
+				if (absDelta <= _snapThreshold && absDelta < bestAbs)
 				{
-					bestAbs = a;
-					bestDy = d;
+					bestAbs = absDelta;
+					bestDy = delta;
 					bestGuide = ry;
 				}
 			}
@@ -1298,15 +1298,15 @@ bool DesignerCanvas::TryHandleTabHeaderClick(POINT ptCanvas)
 	{
 		if (!dc || !dc->ControlInstance) continue;
 		if (dc->Type != UIClass::UI_TabControl) continue;
-		auto* tc = dynamic_cast<TabControl*>(dc->ControlInstance);
-		if (!tc) continue;
-		auto r = GetControlRectInCanvas(tc);
+		auto* tabControl = dynamic_cast<TabControl*>(dc->ControlInstance);
+		if (!tabControl) continue;
+		auto r = GetControlRectInCanvas(tabControl);
 		if (ptCanvas.x < r.left || ptCanvas.x > r.right || ptCanvas.y < r.top || ptCanvas.y > r.bottom) continue;
 		int area = (r.right - r.left) * (r.bottom - r.top);
 		if (area < bestArea)
 		{
 			bestArea = area;
-			bestTc = tc;
+			bestTc = tabControl;
 			bestDc = dc;
 		}
 	}
@@ -1326,15 +1326,15 @@ bool DesignerCanvas::TryHandleTabHeaderClick(POINT ptCanvas)
 		return true;
 	}
 
-	int idx = -1;
-	if (!bestTc->TryGetTitleIndexAt(localX, localY, idx)) return false;
+	int titleIndex = -1;
+	if (!bestTc->TryGetTitleIndexAt(localX, localY, titleIndex)) return false;
 
-	bestTc->SelectedIndex = idx;
-	bestTc->EnsureTitleVisible(idx);
+	bestTc->SelectedIndex = titleIndex;
+	bestTc->EnsureTitleVisible(titleIndex);
 	bestTc->InvalidateVisual();
 
 	// 切页后：清除之前页上选中的控件，避免选框残留；并把 TabControl 设为当前选中。
-	// 即使 idx 未变化，点击标题栏也视为在操作 TabControl。
+	// 即使 titleIndex 未变化，点击标题栏也视为在操作 TabControl。
 	ClearSelection();
 	AddToSelection(bestDc, true, true);
 	return true;
@@ -1392,14 +1392,14 @@ void DesignerCanvas::DrawSelectionHandles(std::shared_ptr<DesignerControl> dc)
 	if (!dc || !dc->ControlInstance || !this->ParentForm) return;
 	
 	auto d2d = this->ParentForm->Render;
-	auto absloc = this->AbsLocation;
+	auto absoluteLocation = this->AbsLocation;
 	auto rect = GetControlRectInCanvas(dc->ControlInstance);
 	int w = rect.right - rect.left;
 	int h = rect.bottom - rect.top;
 	
 	// 绘制选中边框
-	float x = (float)(absloc.x + rect.left);
-	float y = (float)(absloc.y + rect.top);
+	float x = (float)(absoluteLocation.x + rect.left);
+	float y = (float)(absoluteLocation.y + rect.top);
 	d2d->DrawRect(x, y, (float)w, (float)h, Colors::DodgerBlue, 2.0f);
 	
 	// 绘制8个调整手柄
@@ -1407,8 +1407,8 @@ void DesignerCanvas::DrawSelectionHandles(std::shared_ptr<DesignerControl> dc)
 	
 	for (const auto& r : rects)
 	{
-		float hx = (float)(absloc.x + r.left);
-		float hy = (float)(absloc.y + r.top);
+		float hx = (float)(absoluteLocation.x + r.left);
+		float hy = (float)(absoluteLocation.y + r.top);
 		float hw = (float)(r.right - r.left);
 		float hh = (float)(r.bottom - r.top);
 		d2d->FillRect(hx, hy, hw, hh, Colors::White);
@@ -1452,11 +1452,11 @@ RECT DesignerCanvas::GetControlRectInCanvas(Control* c)
 {
 	RECT r{ 0,0,0,0 };
 	if (!c) return r;
-	auto abs = c->AbsLocation;
+	auto absoluteLocation = c->AbsLocation;
 	auto canvasAbs = this->AbsLocation;
 	auto size = c->ActualSize();
-	int left = abs.x - canvasAbs.x;
-	int top = abs.y - canvasAbs.y;
+	int left = absoluteLocation.x - canvasAbs.x;
+	int top = absoluteLocation.y - canvasAbs.y;
 	r.left = left;
 	r.top = top;
 	r.right = left + size.cx;
@@ -1570,9 +1570,9 @@ void DesignerCanvas::RemoveDesignerControlsInSubtree(Control* root)
 	};
 
 	bool selectionRemoved = false;
-	for (auto& s : _selectedControls)
+	for (auto& selectedControl : _selectedControls)
 	{
-		if (s && s->ControlInstance && isInSubtree(s->ControlInstance))
+		if (selectedControl && selectedControl->ControlInstance && isInSubtree(selectedControl->ControlInstance))
 		{
 			selectionRemoved = true;
 			break;
@@ -1607,10 +1607,10 @@ POINT DesignerCanvas::CanvasToContainerPoint(POINT ptCanvas, Control* container)
 {
 	if (!container) return ptCanvas;
 	auto canvasAbs = this->AbsLocation;
-	auto abs = container->AbsLocation;
-	POINT p{ ptCanvas.x - (abs.x - canvasAbs.x), ptCanvas.y - (abs.y - canvasAbs.y) };
+	auto containerLocation = container->AbsLocation;
+	POINT containerPoint{ ptCanvas.x - (containerLocation.x - canvasAbs.x), ptCanvas.y - (containerLocation.y - canvasAbs.y) };
 	// TabPage content 的坐标已经是 page 本地坐标，不需要额外处理
-	return p;
+	return containerPoint;
 }
 
 Control* DesignerCanvas::FindBestContainerAtPoint(POINT ptCanvas, Control* ignore)
@@ -1730,12 +1730,12 @@ CursorKind DesignerCanvas::GetSplitContainerSplitterCursor(SplitContainer* split
 	return split->SplitOrientation == Orientation::Horizontal ? CursorKind::SizeWE : CursorKind::SizeNS;
 }
 
-bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable) return false;
 	
-	// Note: xof/yof are already local coordinates relative to this canvas.
-	POINT mousePos = { xof, yof };
+	// Note: localX/localY are already local coordinates relative to this canvas.
+	POINT mousePos = { localX, localY };
 	
 	switch (message)
 	{
@@ -2231,7 +2231,7 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 	}
 	}
 	
-	return Panel::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Panel::ProcessMessage(message, wParam, lParam, localX, localY);
 }
 
 void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
@@ -2341,15 +2341,15 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 		break;
 	case UIClass::UI_ListView:
 	{
-		auto* lv = new ListView(centerX, centerY, 320, 220);
-		lv->ViewMode = ListViewViewMode::Details;
-		lv->AddColumn(ListViewColumn(L"名称", 160));
-		lv->AddColumn(ListViewColumn(L"说明", 130));
+		auto* listView = new ListView(centerX, centerY, 320, 220);
+		listView->ViewMode = ListViewViewMode::Details;
+		listView->AddColumn(ListViewColumn(L"名称", 160));
+		listView->AddColumn(ListViewColumn(L"说明", 130));
 		ListViewItem first(L"ListViewItem 1", L"Details row");
 		first.SubItems.push_back(L"Details row");
-		lv->AddItem(first);
-		lv->AddItem(ListViewItem(L"ListViewItem 2", L"Selectable"));
-		newControl = lv;
+		listView->AddItem(first);
+		listView->AddItem(ListViewItem(L"ListViewItem 2", L"Selectable"));
+		newControl = listView;
 		typeName = L"ListView";
 		break;
 	}
@@ -2962,10 +2962,10 @@ namespace
 		j["separator"] = it->Separator;
 		j["enable"] = it->Enable;
 		DesignValue subs = DesignValue::array();
-		for (auto* s : it->SubItems)
+		for (auto* subItem : it->SubItems)
 		{
-			if (!s) continue;
-			subs.push_back(MenuItemToValue(s));
+			if (!subItem) continue;
+			subs.push_back(MenuItemToValue(subItem));
 		}
 		j["subItems"] = subs;
 		return j;
@@ -2981,19 +2981,19 @@ namespace
 			bool sep = j.value("separator", false);
 			if (sep)
 			{
-				auto* s = owner->AddSeparator();
-				if (!s) continue;
+				auto* separatorItem = owner->AddSeparator();
+				if (!separatorItem) continue;
 				continue;
 			}
 			auto text = FromUtf8(j.value("text", std::string()));
 			int id = j.value("id", 0);
-			auto* s = owner->AddSubItem(text, id);
-			if (!s) continue;
-			s->Shortcut = FromUtf8(j.value("shortcut", std::string()));
-			s->Enable = j.value("enable", true);
+			auto* subItem = owner->AddSubItem(text, id);
+			if (!subItem) continue;
+			subItem->Shortcut = FromUtf8(j.value("shortcut", std::string()));
+			subItem->Enable = j.value("enable", true);
 			if (j.contains("subItems"))
 			{
-				ValueToMenuSubItems(j["subItems"], out, s);
+				ValueToMenuSubItems(j["subItems"], out, subItem);
 			}
 		}
 	}
@@ -3157,14 +3157,14 @@ namespace
 	static DesignValue TreeNodesToValue(std::vector<TreeNode*>& nodes)
 	{
 		DesignValue arr = DesignValue::array();
-		for (auto* n : nodes)
+		for (auto* node : nodes)
 		{
-			if (!n) continue;
+			if (!node) continue;
 			DesignValue one = DesignValue::object();
-			one["text"] = ToUtf8(n->Text);
-			one["expand"] = n->Expand;
-			if (n->Children.size() > 0)
-				one["children"] = TreeNodesToValue(n->Children);
+			one["text"] = ToUtf8(node->Text);
+			one["expand"] = node->Expand;
+			if (node->Children.size() > 0)
+				one["children"] = TreeNodesToValue(node->Children);
 			arr.push_back(one);
 		}
 		return arr;
@@ -3461,10 +3461,10 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 		{
 			if (!dc || !dc->ControlInstance) continue;
 			if (dc->Type != UIClass::UI_TabControl) continue;
-			auto* tc = (TabControl*)dc->ControlInstance;
-			for (int i = 0; i < tc->Count; i++)
+			auto* tabControl = (TabControl*)dc->ControlInstance;
+			for (int i = 0; i < tabControl->Count; i++)
 			{
-				auto* page = tc->operator[](i);
+				auto* page = tabControl->operator[](i);
 				if (!page) continue;
 				std::wstring wid = dc->Name + L"#page" + std::to_wstring(i);
 				tabPageIdOf[page] = ToUtf8(wid);
@@ -3542,13 +3542,13 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			DesignValue extra = DesignValue::object();
 			if (dc->Type == UIClass::UI_ComboBox)
 			{
-				auto* cb = (ComboBox*)c;
+				auto* comboBox = (ComboBox*)c;
 				DesignValue items = DesignValue::array();
-				for (int i = 0; i < cb->Items.size(); i++)
-					items.push_back(ToUtf8(cb->Items[i]));
+				for (int i = 0; i < comboBox->Items.size(); i++)
+					items.push_back(ToUtf8(comboBox->Items[i]));
 				extra["items"] = items;
-				extra["expandCount"] = cb->ExpandCount;
-				extra["selectedIndex"] = cb->SelectedIndex;
+				extra["expandCount"] = comboBox->ExpandCount;
+				extra["selectedIndex"] = comboBox->SelectedIndex;
 			}
 			else if (dc->Type == UIClass::UI_ProgressBar)
 			{
@@ -3560,14 +3560,14 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			}
 			else if (dc->Type == UIClass::UI_ProgressRing)
 			{
-				auto* pr = (ProgressRing*)c;
-				extra["percentageValue"] = pr->PercentageValue;
-				extra["showPercentage"] = pr->ShowPercentage;
+				auto* progressRing = (ProgressRing*)c;
+				extra["percentageValue"] = progressRing->PercentageValue;
+				extra["showPercentage"] = progressRing->ShowPercentage;
 			}
 			else if (dc->Type == UIClass::UI_DateTimePicker)
 			{
-				auto* dtp = (DateTimePicker*)c;
-				const SYSTEMTIME st = dtp->Value;
+				auto* dateTimePicker = (DateTimePicker*)c;
+				const SYSTEMTIME st = dateTimePicker->Value;
 				extra["value"] = DesignValue{
 					{"year", st.wYear},
 					{"month", st.wMonth},
@@ -3577,36 +3577,36 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 					{"second", st.wSecond},
 					{"milliseconds", st.wMilliseconds}
 				};
-				extra["mode"] = (int)dtp->Mode;
-				extra["allowDateSelection"] = dtp->AllowDateSelection;
-				extra["allowTimeSelection"] = dtp->AllowTimeSelection;
-				extra["allowModeSwitch"] = dtp->AllowModeSwitch;
-				extra["expand"] = dtp->Expand;
+				extra["mode"] = (int)dateTimePicker->Mode;
+				extra["allowDateSelection"] = dateTimePicker->AllowDateSelection;
+				extra["allowTimeSelection"] = dateTimePicker->AllowTimeSelection;
+				extra["allowModeSwitch"] = dateTimePicker->AllowModeSwitch;
+				extra["expand"] = dateTimePicker->Expand;
 			}
 			else if (dc->Type == UIClass::UI_NumericUpDown)
 			{
-				auto* n = (NumericUpDown*)c;
-				extra["min"] = n->Min;
-				extra["max"] = n->Max;
-				extra["value"] = n->Value;
-				extra["step"] = n->Step;
-				extra["snapToStep"] = n->SnapToStep;
-				extra["decimalPlaces"] = n->DecimalPlaces;
-				extra["useMouseWheel"] = n->UseMouseWheel;
+				auto* numericUpDown = (NumericUpDown*)c;
+				extra["min"] = numericUpDown->Min;
+				extra["max"] = numericUpDown->Max;
+				extra["value"] = numericUpDown->Value;
+				extra["step"] = numericUpDown->Step;
+				extra["snapToStep"] = numericUpDown->SnapToStep;
+				extra["decimalPlaces"] = numericUpDown->DecimalPlaces;
+				extra["useMouseWheel"] = numericUpDown->UseMouseWheel;
 			}
 			else if (dc->Type == UIClass::UI_GroupBox)
 			{
-				auto* gb = (GroupBox*)c;
-				extra["captionMarginLeft"] = gb->CaptionMarginLeft;
-				extra["captionPaddingX"] = gb->CaptionPaddingX;
-				extra["captionPaddingY"] = gb->CaptionPaddingY;
+				auto* groupBox = (GroupBox*)c;
+				extra["captionMarginLeft"] = groupBox->CaptionMarginLeft;
+				extra["captionPaddingX"] = groupBox->CaptionPaddingX;
+				extra["captionPaddingY"] = groupBox->CaptionPaddingY;
 			}
 			else if (dc->Type == UIClass::UI_Expander)
 			{
-				auto* ex = (Expander*)c;
-				extra["headerHeight"] = ex->HeaderHeight;
-				extra["isExpanded"] = ex->IsExpanded;
-				extra["animationDurationMs"] = (int)ex->AnimationDurationMs;
+				auto* expander = (Expander*)c;
+				extra["headerHeight"] = expander->HeaderHeight;
+				extra["isExpanded"] = expander->IsExpanded;
+				extra["animationDurationMs"] = (int)expander->AnimationDurationMs;
 			}
 			else if (dc->Type == UIClass::UI_SplitContainer)
 			{
@@ -3620,29 +3620,29 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			}
 			else if (dc->Type == UIClass::UI_Slider)
 			{
-				auto* s = (Slider*)c;
-				extra["min"] = s->Min;
-				extra["max"] = s->Max;
-				extra["value"] = s->Value;
-				extra["step"] = s->Step;
-				extra["snapToStep"] = s->SnapToStep;
+				auto* slider = (Slider*)c;
+				extra["min"] = slider->Min;
+				extra["max"] = slider->Max;
+				extra["value"] = slider->Value;
+				extra["step"] = slider->Step;
+				extra["snapToStep"] = slider->SnapToStep;
 			}
 			else if (dc->Type == UIClass::UI_ListView || dc->Type == UIClass::UI_ListBox)
 			{
-				auto* lv = (ListView*)c;
-				extra["viewMode"] = (int)lv->ViewMode;
-				extra["selectionMode"] = (int)lv->SelectionMode;
-				extra["showCheckBoxes"] = lv->ShowCheckBoxes;
-				extra["showColumnHeaders"] = lv->ShowColumnHeaders;
-				extra["alternatingRows"] = lv->AlternatingRows;
-				extra["rowHeight"] = lv->RowHeight;
-				extra["tileHeight"] = lv->TileHeight;
-				extra["iconSize"] = lv->IconSize;
-				extra["selectedItemBackColor"] = ColorToValue(lv->SelectedItemBackColor);
-				extra["underMouseItemBackColor"] = ColorToValue(lv->UnderMouseItemBackColor);
-				extra["selectedItemForeColor"] = ColorToValue(lv->SelectedItemForeColor);
+				auto* listView = (ListView*)c;
+				extra["viewMode"] = (int)listView->ViewMode;
+				extra["selectionMode"] = (int)listView->SelectionMode;
+				extra["showCheckBoxes"] = listView->ShowCheckBoxes;
+				extra["showColumnHeaders"] = listView->ShowColumnHeaders;
+				extra["alternatingRows"] = listView->AlternatingRows;
+				extra["rowHeight"] = listView->RowHeight;
+				extra["tileHeight"] = listView->TileHeight;
+				extra["iconSize"] = listView->IconSize;
+				extra["selectedItemBackColor"] = ColorToValue(listView->SelectedItemBackColor);
+				extra["underMouseItemBackColor"] = ColorToValue(listView->UnderMouseItemBackColor);
+				extra["selectedItemForeColor"] = ColorToValue(listView->SelectedItemForeColor);
 				DesignValue cols = DesignValue::array();
-				for (auto& col : lv->Columns)
+				for (auto& col : listView->Columns)
 				{
 					DesignValue cj = DesignValue::object();
 					cj["header"] = ToUtf8(col.Header);
@@ -3651,15 +3651,15 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 					cols.push_back(cj);
 				}
 				extra["columns"] = cols;
-				extra["items"] = ListViewItemsToValue(lv->Items);
+				extra["items"] = ListViewItemsToValue(listView->Items);
 			}
 			else if (dc->Type == UIClass::UI_GridView)
 			{
-				auto* gv = (GridView*)c;
+				auto* gridView = (GridView*)c;
 				DesignValue cols = DesignValue::array();
-				for (int i = 0; i < gv->ColumnCount(); i++)
+				for (int i = 0; i < gridView->ColumnCount(); i++)
 				{
-					auto& col = gv->ColumnAt(static_cast<int>(i));
+					auto& col = gridView->ColumnAt(static_cast<int>(i));
 					DesignValue cj = DesignValue::object();
 					cj["name"] = ToUtf8(col.Name);
 					cj["width"] = col.Width;
@@ -3683,25 +3683,25 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			}
 			else if (dc->Type == UIClass::UI_TreeView)
 			{
-				auto* tv = (TreeView*)c;
-				if (tv->Root)
-					extra["nodes"] = TreeNodesToValue(tv->Root->Children);
-				extra["selectedBackColor"] = ColorToValue(tv->SelectedBackColor);
-				extra["underMouseItemBackColor"] = ColorToValue(tv->UnderMouseItemBackColor);
-				extra["selectedForeColor"] = ColorToValue(tv->SelectedForeColor);
+				auto* treeView = (TreeView*)c;
+				if (treeView->Root)
+					extra["nodes"] = TreeNodesToValue(treeView->Root->Children);
+				extra["selectedBackColor"] = ColorToValue(treeView->SelectedBackColor);
+				extra["underMouseItemBackColor"] = ColorToValue(treeView->UnderMouseItemBackColor);
+				extra["selectedForeColor"] = ColorToValue(treeView->SelectedForeColor);
 			}
 			else if (dc->Type == UIClass::UI_TabControl)
 			{
-				auto* tc = (TabControl*)c;
-				extra["selectedIndex"] = tc->SelectedIndex;
-				extra["titleHeight"] = tc->TitleHeight;
-				extra["titleWidth"] = tc->TitleWidth;
-				extra["titlePosition"] = (int)tc->TitlePosition;
-				extra["animationMode"] = (int)tc->AnimationMode;
+				auto* tabControl = (TabControl*)c;
+				extra["selectedIndex"] = tabControl->SelectedIndex;
+				extra["titleHeight"] = tabControl->TitleHeight;
+				extra["titleWidth"] = tabControl->TitleWidth;
+				extra["titlePosition"] = (int)tabControl->TitlePosition;
+				extra["animationMode"] = (int)tabControl->AnimationMode;
 				DesignValue pages = DesignValue::array();
-				for (int i = 0; i < tc->Count; i++)
+				for (int i = 0; i < tabControl->Count; i++)
 				{
-					auto* page = tc->operator[](i);
+					auto* page = tabControl->operator[](i);
 					if (!page) continue;
 					DesignValue pj = DesignValue::object();
 					std::wstring wid = dc->Name + L"#page" + std::to_wstring(i);
@@ -3713,29 +3713,29 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			}
 			else if (dc->Type == UIClass::UI_ToolBar)
 			{
-				auto* tb = (ToolBar*)c;
-				extra["padding"] = tb->Padding;
-				extra["gap"] = tb->Gap;
-				extra["itemHeight"] = tb->ItemHeight;
+				auto* toolBar = (ToolBar*)c;
+				extra["padding"] = toolBar->Padding;
+				extra["gap"] = toolBar->Gap;
+				extra["itemHeight"] = toolBar->ItemHeight;
 			}
 			else if (dc->Type == UIClass::UI_ScrollView)
 			{
-				auto* sv = (ScrollView*)c;
-				extra["scrollBackColor"] = ColorToValue(sv->ScrollBackColor);
-				extra["scrollForeColor"] = ColorToValue(sv->ScrollForeColor);
-				extra["alwaysShowVScroll"] = sv->AlwaysShowVScroll;
-				extra["alwaysShowHScroll"] = sv->AlwaysShowHScroll;
-				extra["autoContentSize"] = sv->AutoContentSize;
-				extra["contentSize"] = DesignValue{{"w", sv->ContentSize.cx}, {"h", sv->ContentSize.cy}};
-				extra["scrollXOffset"] = sv->ScrollXOffset;
-				extra["scrollYOffset"] = sv->ScrollYOffset;
-				extra["mouseWheelStep"] = sv->MouseWheelStep;
+				auto* scrollView = (ScrollView*)c;
+				extra["scrollBackColor"] = ColorToValue(scrollView->ScrollBackColor);
+				extra["scrollForeColor"] = ColorToValue(scrollView->ScrollForeColor);
+				extra["alwaysShowVScroll"] = scrollView->AlwaysShowVScroll;
+				extra["alwaysShowHScroll"] = scrollView->AlwaysShowHScroll;
+				extra["autoContentSize"] = scrollView->AutoContentSize;
+				extra["contentSize"] = DesignValue{{"w", scrollView->ContentSize.cx}, {"h", scrollView->ContentSize.cy}};
+				extra["scrollXOffset"] = scrollView->ScrollXOffset;
+				extra["scrollYOffset"] = scrollView->ScrollYOffset;
+				extra["mouseWheelStep"] = scrollView->MouseWheelStep;
 			}
 			else if (dc->Type == UIClass::UI_GridPanel)
 			{
-				auto* gp = (GridPanel*)c;
+				auto* gridPanel = (GridPanel*)c;
 				DesignValue rows = DesignValue::array();
-				for (auto& r : gp->GetRows())
+				for (auto& r : gridPanel->GetRows())
 				{
 					rows.push_back(DesignValue{
 						{"height", GridLengthToValue(r.Height)},
@@ -3744,7 +3744,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 					});
 				}
 				DesignValue cols = DesignValue::array();
-				for (auto& col : gp->GetColumns())
+				for (auto& col : gridPanel->GetColumns())
 				{
 					cols.push_back(DesignValue{
 						{"width", GridLengthToValue(col.Width)},
@@ -3757,32 +3757,32 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			}
 			else if (dc->Type == UIClass::UI_StackPanel)
 			{
-				auto* sp = (StackPanel*)c;
-				extra["orientation"] = OrientationToString(sp->GetOrientation());
-				extra["spacing"] = sp->GetSpacing();
+				auto* stackPanel = (StackPanel*)c;
+				extra["orientation"] = OrientationToString(stackPanel->GetOrientation());
+				extra["spacing"] = stackPanel->GetSpacing();
 			}
 			else if (dc->Type == UIClass::UI_WrapPanel)
 			{
-				auto* wp = (WrapPanel*)c;
-				extra["orientation"] = OrientationToString(wp->GetOrientation());
-				extra["itemWidth"] = wp->GetItemWidth();
-				extra["itemHeight"] = wp->GetItemHeight();
+				auto* wrapPanel = (WrapPanel*)c;
+				extra["orientation"] = OrientationToString(wrapPanel->GetOrientation());
+				extra["itemWidth"] = wrapPanel->GetItemWidth();
+				extra["itemHeight"] = wrapPanel->GetItemHeight();
 			}
 			else if (dc->Type == UIClass::UI_DockPanel)
 			{
-				auto* dp = (DockPanel*)c;
-				extra["lastChildFill"] = dp->GetLastChildFill();
+				auto* dockPanel = (DockPanel*)c;
+				extra["lastChildFill"] = dockPanel->GetLastChildFill();
 			}
 			else if (dc->Type == UIClass::UI_StatusBar)
 			{
-				auto* sb = (StatusBar*)c;
-				extra["topMost"] = sb->TopMost;
+				auto* statusBar = (StatusBar*)c;
+				extra["topMost"] = statusBar->TopMost;
 				DesignValue parts = DesignValue::array();
-				for (int i = 0; i < sb->PartCount(); i++)
+				for (int i = 0; i < statusBar->PartCount(); i++)
 				{
 					DesignValue pj = DesignValue::object();
-					pj["text"] = ToUtf8(sb->GetPartText(i));
-					pj["width"] = sb->GetPartWidth(i);
+					pj["text"] = ToUtf8(statusBar->GetPartText(i));
+					pj["width"] = statusBar->GetPartWidth(i);
 					parts.push_back(pj);
 				}
 				extra["parts"] = parts;
@@ -3801,16 +3801,16 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			}
 			else if (dc->Type == UIClass::UI_MediaPlayer)
 			{
-				auto* mp = (MediaPlayer*)c;
+				auto* mediaPlayer = (MediaPlayer*)c;
 				// 设计期保存：媒体源路径放在 DesignStrings 中，避免加载文件也能保持可往返。
 				auto it = dc->DesignStrings.find(L"mediaFile");
-				std::wstring mediaFile = (it != dc->DesignStrings.end()) ? it->second : mp->MediaFile;
+				std::wstring mediaFile = (it != dc->DesignStrings.end()) ? it->second : mediaPlayer->MediaFile;
 				if (!mediaFile.empty()) extra["mediaFile"] = ToUtf8(mediaFile);
-				extra["autoPlay"] = mp->AutoPlay;
-				extra["loop"] = mp->Loop;
-				extra["volume"] = mp->Volume;
-				extra["playbackRate"] = mp->PlaybackRate;
-				extra["renderMode"] = (int)mp->RenderMode;
+				extra["autoPlay"] = mediaPlayer->AutoPlay;
+				extra["loop"] = mediaPlayer->Loop;
+				extra["volume"] = mediaPlayer->Volume;
+				extra["playbackRate"] = mediaPlayer->PlaybackRate;
+				extra["renderMode"] = (int)mediaPlayer->RenderMode;
 			}
 
 			if (auto* splitParent = AsSplitContainer(dc->DesignerParent))
@@ -3841,9 +3841,9 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 
 		return true;
 	}
-	catch (const std::exception& ex)
+	catch (const std::exception& expander)
 	{
-		if (outError) *outError = L"保存失败: " + FromUtf8(ex.what());
+		if (outError) *outError = L"保存失败: " + FromUtf8(expander.what());
 		return false;
 	}
 	catch (...)
@@ -4113,9 +4113,9 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 			{
 				if (it.type == UIClass::UI_GridPanel)
 				{
-					auto* gp = (GridPanel*)c;
-					gp->ClearRows();
-					gp->ClearColumns();
+					auto* gridPanel = (GridPanel*)c;
+					gridPanel->ClearRows();
+					gridPanel->ClearColumns();
 					if (it.extra.contains("rows") && it.extra["rows"].is_array())
 					{
 						for (auto& r : it.extra["rows"])
@@ -4124,7 +4124,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 							GridLength h = GridLengthFromValue(r.contains("height") ? r["height"] : DesignValue(), GridLength::Auto());
 							float minH = r.value("min", 0.0f);
 							float maxH = r.value("max", FLT_MAX);
-							gp->AddRow(h, minH, maxH);
+							gridPanel->AddRow(h, minH, maxH);
 						}
 					}
 					if (it.extra.contains("columns") && it.extra["columns"].is_array())
@@ -4135,18 +4135,18 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 							GridLength w = GridLengthFromValue(col.contains("width") ? col["width"] : DesignValue(), GridLength::Auto());
 							float minW = col.value("min", 0.0f);
 							float maxW = col.value("max", FLT_MAX);
-							gp->AddColumn(w, minW, maxW);
+							gridPanel->AddColumn(w, minW, maxW);
 						}
 					}
 				}
 				else if (it.type == UIClass::UI_TabControl)
 				{
-					auto* tc = (TabControl*)c;
-					tc->SelectedIndex = it.extra.value("selectedIndex", tc->SelectedIndex);
-					tc->TitleHeight = it.extra.value("titleHeight", tc->TitleHeight);
-					tc->TitleWidth = it.extra.value("titleWidth", tc->TitleWidth);
-					tc->TitlePosition = (TabControlTitlePosition)it.extra.value("titlePosition", (int)tc->TitlePosition);
-					tc->AnimationMode = (TabControlAnimationMode)it.extra.value("animationMode", (int)tc->AnimationMode);
+					auto* tabControl = (TabControl*)c;
+					tabControl->SelectedIndex = it.extra.value("selectedIndex", tabControl->SelectedIndex);
+					tabControl->TitleHeight = it.extra.value("titleHeight", tabControl->TitleHeight);
+					tabControl->TitleWidth = it.extra.value("titleWidth", tabControl->TitleWidth);
+					tabControl->TitlePosition = (TabControlTitlePosition)it.extra.value("titlePosition", (int)tabControl->TitlePosition);
+					tabControl->AnimationMode = (TabControlAnimationMode)it.extra.value("animationMode", (int)tabControl->AnimationMode);
 					if (it.extra.contains("pages") && it.extra["pages"].is_array())
 					{
 						for (auto& pj : it.extra["pages"])
@@ -4154,7 +4154,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 							if (!pj.is_object()) continue;
 							std::wstring id = FromUtf8(pj.value("id", std::string()));
 							auto text = FromUtf8(pj.value("text", std::string("Page")));
-							auto* page = tc->AddPage(text);
+							auto* page = tabControl->AddPage(text);
 							if (page)
 								tabPageOf[id] = page;
 						}
@@ -4162,79 +4162,79 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				}
 				else if (it.type == UIClass::UI_StackPanel)
 				{
-					auto* sp = (StackPanel*)c;
+					auto* stackPanel = (StackPanel*)c;
 					Orientation o;
 					if (it.extra.contains("orientation") && it.extra["orientation"].is_string() && TryParseOrientation(it.extra["orientation"].get<std::string>(), o))
-						sp->SetOrientation(o);
-					sp->SetSpacing(it.extra.value("spacing", sp->GetSpacing()));
+						stackPanel->SetOrientation(o);
+					stackPanel->SetSpacing(it.extra.value("spacing", stackPanel->GetSpacing()));
 				}
 				else if (it.type == UIClass::UI_WrapPanel)
 				{
-					auto* wp = (WrapPanel*)c;
+					auto* wrapPanel = (WrapPanel*)c;
 					Orientation o;
 					if (it.extra.contains("orientation") && it.extra["orientation"].is_string() && TryParseOrientation(it.extra["orientation"].get<std::string>(), o))
-						wp->SetOrientation(o);
-					wp->SetItemWidth(it.extra.value("itemWidth", wp->GetItemWidth()));
-					wp->SetItemHeight(it.extra.value("itemHeight", wp->GetItemHeight()));
+						wrapPanel->SetOrientation(o);
+					wrapPanel->SetItemWidth(it.extra.value("itemWidth", wrapPanel->GetItemWidth()));
+					wrapPanel->SetItemHeight(it.extra.value("itemHeight", wrapPanel->GetItemHeight()));
 				}
 				else if (it.type == UIClass::UI_DockPanel)
 				{
-					auto* dp = (DockPanel*)c;
-					dp->SetLastChildFill(it.extra.value("lastChildFill", dp->GetLastChildFill()));
+					auto* dockPanel = (DockPanel*)c;
+					dockPanel->SetLastChildFill(it.extra.value("lastChildFill", dockPanel->GetLastChildFill()));
 				}
 				else if (it.type == UIClass::UI_ToolBar)
 				{
-					auto* tb = (ToolBar*)c;
-					tb->Padding = it.extra.value("padding", tb->Padding);
-					tb->Gap = it.extra.value("gap", tb->Gap);
-					tb->ItemHeight = it.extra.value("itemHeight", tb->ItemHeight);
+					auto* toolBar = (ToolBar*)c;
+					toolBar->Padding = it.extra.value("padding", toolBar->Padding);
+					toolBar->Gap = it.extra.value("gap", toolBar->Gap);
+					toolBar->ItemHeight = it.extra.value("itemHeight", toolBar->ItemHeight);
 				}
 				else if (it.type == UIClass::UI_ScrollView)
 				{
-					auto* sv = (ScrollView*)c;
-					sv->ScrollBackColor = ColorFromValue(it.extra.contains("scrollBackColor") ? it.extra["scrollBackColor"] : DesignValue(), sv->ScrollBackColor);
-					sv->ScrollForeColor = ColorFromValue(it.extra.contains("scrollForeColor") ? it.extra["scrollForeColor"] : DesignValue(), sv->ScrollForeColor);
-					sv->AlwaysShowVScroll = it.extra.value("alwaysShowVScroll", sv->AlwaysShowVScroll);
-					sv->AlwaysShowHScroll = it.extra.value("alwaysShowHScroll", sv->AlwaysShowHScroll);
-					sv->AutoContentSize = it.extra.value("autoContentSize", sv->AutoContentSize);
+					auto* scrollView = (ScrollView*)c;
+					scrollView->ScrollBackColor = ColorFromValue(it.extra.contains("scrollBackColor") ? it.extra["scrollBackColor"] : DesignValue(), scrollView->ScrollBackColor);
+					scrollView->ScrollForeColor = ColorFromValue(it.extra.contains("scrollForeColor") ? it.extra["scrollForeColor"] : DesignValue(), scrollView->ScrollForeColor);
+					scrollView->AlwaysShowVScroll = it.extra.value("alwaysShowVScroll", scrollView->AlwaysShowVScroll);
+					scrollView->AlwaysShowHScroll = it.extra.value("alwaysShowHScroll", scrollView->AlwaysShowHScroll);
+					scrollView->AutoContentSize = it.extra.value("autoContentSize", scrollView->AutoContentSize);
 					if (it.extra.contains("contentSize") && it.extra["contentSize"].is_object())
 					{
 						auto& cs = it.extra["contentSize"];
-						sv->ContentSize = { cs.value("w", sv->ContentSize.cx), cs.value("h", sv->ContentSize.cy) };
+						scrollView->ContentSize = { cs.value("w", scrollView->ContentSize.cx), cs.value("h", scrollView->ContentSize.cy) };
 					}
-					sv->ScrollXOffset = it.extra.value("scrollXOffset", sv->ScrollXOffset);
-					sv->ScrollYOffset = it.extra.value("scrollYOffset", sv->ScrollYOffset);
-					sv->MouseWheelStep = it.extra.value("mouseWheelStep", sv->MouseWheelStep);
+					scrollView->ScrollXOffset = it.extra.value("scrollXOffset", scrollView->ScrollXOffset);
+					scrollView->ScrollYOffset = it.extra.value("scrollYOffset", scrollView->ScrollYOffset);
+					scrollView->MouseWheelStep = it.extra.value("mouseWheelStep", scrollView->MouseWheelStep);
 				}
 				else if (it.type == UIClass::UI_ComboBox)
 				{
-					auto* cb = (ComboBox*)c;
-					cb->Items.clear();
+					auto* comboBox = (ComboBox*)c;
+					comboBox->Items.clear();
 					if (it.extra.contains("items") && it.extra["items"].is_array())
 					{
 						for (auto& sj : it.extra["items"])
-							if (sj.is_string()) cb->Items.push_back(FromUtf8(sj.get<std::string>()));
+							if (sj.is_string()) comboBox->Items.push_back(FromUtf8(sj.get<std::string>()));
 					}
-					cb->ExpandCount = std::max(1, it.extra.value("expandCount", cb->ExpandCount));
-					cb->SelectedIndex = it.extra.value("selectedIndex", cb->SelectedIndex);
-					if (cb->Items.size() > 0 && cb->SelectedIndex >= 0 && cb->SelectedIndex < cb->Items.size())
-						cb->Text = cb->Items[cb->SelectedIndex];
+					comboBox->ExpandCount = std::max(1, it.extra.value("expandCount", comboBox->ExpandCount));
+					comboBox->SelectedIndex = it.extra.value("selectedIndex", comboBox->SelectedIndex);
+					if (comboBox->Items.size() > 0 && comboBox->SelectedIndex >= 0 && comboBox->SelectedIndex < comboBox->Items.size())
+						comboBox->Text = comboBox->Items[comboBox->SelectedIndex];
 				}
 				else if (it.type == UIClass::UI_ListView || it.type == UIClass::UI_ListBox)
 				{
-					auto* lv = (ListView*)c;
-					lv->ViewMode = (ListViewViewMode)it.extra.value("viewMode", (int)lv->ViewMode);
-					lv->SelectionMode = (ListViewSelectionMode)it.extra.value("selectionMode", (int)lv->SelectionMode);
-					lv->ShowCheckBoxes = it.extra.value("showCheckBoxes", lv->ShowCheckBoxes);
-					lv->ShowColumnHeaders = it.extra.value("showColumnHeaders", lv->ShowColumnHeaders);
-					lv->AlternatingRows = it.extra.value("alternatingRows", lv->AlternatingRows);
-					lv->RowHeight = it.extra.value("rowHeight", lv->RowHeight);
-					lv->TileHeight = it.extra.value("tileHeight", lv->TileHeight);
-					lv->IconSize = it.extra.value("iconSize", lv->IconSize);
-					lv->SelectedItemBackColor = ColorFromValue(it.extra.contains("selectedItemBackColor") ? it.extra["selectedItemBackColor"] : DesignValue(), lv->SelectedItemBackColor);
-					lv->UnderMouseItemBackColor = ColorFromValue(it.extra.contains("underMouseItemBackColor") ? it.extra["underMouseItemBackColor"] : DesignValue(), lv->UnderMouseItemBackColor);
-					lv->SelectedItemForeColor = ColorFromValue(it.extra.contains("selectedItemForeColor") ? it.extra["selectedItemForeColor"] : DesignValue(), lv->SelectedItemForeColor);
-					lv->ClearColumns();
+					auto* listView = (ListView*)c;
+					listView->ViewMode = (ListViewViewMode)it.extra.value("viewMode", (int)listView->ViewMode);
+					listView->SelectionMode = (ListViewSelectionMode)it.extra.value("selectionMode", (int)listView->SelectionMode);
+					listView->ShowCheckBoxes = it.extra.value("showCheckBoxes", listView->ShowCheckBoxes);
+					listView->ShowColumnHeaders = it.extra.value("showColumnHeaders", listView->ShowColumnHeaders);
+					listView->AlternatingRows = it.extra.value("alternatingRows", listView->AlternatingRows);
+					listView->RowHeight = it.extra.value("rowHeight", listView->RowHeight);
+					listView->TileHeight = it.extra.value("tileHeight", listView->TileHeight);
+					listView->IconSize = it.extra.value("iconSize", listView->IconSize);
+					listView->SelectedItemBackColor = ColorFromValue(it.extra.contains("selectedItemBackColor") ? it.extra["selectedItemBackColor"] : DesignValue(), listView->SelectedItemBackColor);
+					listView->UnderMouseItemBackColor = ColorFromValue(it.extra.contains("underMouseItemBackColor") ? it.extra["underMouseItemBackColor"] : DesignValue(), listView->UnderMouseItemBackColor);
+					listView->SelectedItemForeColor = ColorFromValue(it.extra.contains("selectedItemForeColor") ? it.extra["selectedItemForeColor"] : DesignValue(), listView->SelectedItemForeColor);
+					listView->ClearColumns();
 					if (it.extra.contains("columns") && it.extra["columns"].is_array())
 					{
 						for (auto& cj : it.extra["columns"])
@@ -4244,18 +4244,18 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 							col.Header = FromUtf8(cj.value("header", std::string()));
 							col.Width = cj.value("width", col.Width);
 							col.Align = (ListViewCellAlign)cj.value("align", (int)col.Align);
-							lv->Columns.push_back(col);
+							listView->Columns.push_back(col);
 						}
 					}
-					lv->Items.clear();
+					listView->Items.clear();
 					if (it.extra.contains("items"))
-						ValueToListViewItems(it.extra["items"], lv->Items);
-					lv->ScrollYOffset = 0.0f;
+						ValueToListViewItems(it.extra["items"], listView->Items);
+					listView->ScrollYOffset = 0.0f;
 				}
 				else if (it.type == UIClass::UI_GridView)
 				{
-					auto* gv = (GridView*)c;
-					gv->ClearColumns();
+					auto* gridView = (GridView*)c;
+					gridView->ClearColumns();
 					if (it.extra.contains("columns") && it.extra["columns"].is_array())
 					{
 						for (auto& cj : it.extra["columns"])
@@ -4266,7 +4266,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 							col.Width = cj.value("width", col.Width);
 							col.Type = (ColumnType)cj.value("type", (int)col.Type);
 							col.CanEdit = cj.value("canEdit", col.CanEdit);
-							gv->AddColumn(col);
+							gridView->AddColumn(col);
 						}
 					}
 				}
@@ -4287,17 +4287,17 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				}
 				else if (it.type == UIClass::UI_TreeView)
 				{
-					auto* tv = (TreeView*)c;
-					if (tv->Root)
+					auto* treeView = (TreeView*)c;
+					if (treeView->Root)
 					{
-						for (auto n : tv->Root->Children) delete n;
-						tv->Root->Children.clear();
+						for (auto node : treeView->Root->Children) delete node;
+						treeView->Root->Children.clear();
 						if (it.extra.contains("nodes"))
-							ValueToTreeNodes(it.extra["nodes"], tv->Root->Children);
+							ValueToTreeNodes(it.extra["nodes"], treeView->Root->Children);
 					}
-					tv->SelectedBackColor = ColorFromValue(it.extra.contains("selectedBackColor") ? it.extra["selectedBackColor"] : DesignValue(), tv->SelectedBackColor);
-					tv->UnderMouseItemBackColor = ColorFromValue(it.extra.contains("underMouseItemBackColor") ? it.extra["underMouseItemBackColor"] : DesignValue(), tv->UnderMouseItemBackColor);
-					tv->SelectedForeColor = ColorFromValue(it.extra.contains("selectedForeColor") ? it.extra["selectedForeColor"] : DesignValue(), tv->SelectedForeColor);
+					treeView->SelectedBackColor = ColorFromValue(it.extra.contains("selectedBackColor") ? it.extra["selectedBackColor"] : DesignValue(), treeView->SelectedBackColor);
+					treeView->UnderMouseItemBackColor = ColorFromValue(it.extra.contains("underMouseItemBackColor") ? it.extra["underMouseItemBackColor"] : DesignValue(), treeView->UnderMouseItemBackColor);
+					treeView->SelectedForeColor = ColorFromValue(it.extra.contains("selectedForeColor") ? it.extra["selectedForeColor"] : DesignValue(), treeView->SelectedForeColor);
 				}
 				else if (it.type == UIClass::UI_ProgressBar)
 				{
@@ -4309,16 +4309,16 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				}
 				else if (it.type == UIClass::UI_ProgressRing)
 				{
-					auto* pr = (ProgressRing*)c;
-					pr->PercentageValue = it.extra.value("percentageValue", pr->PercentageValue);
-					pr->ShowPercentage = it.extra.value("showPercentage", pr->ShowPercentage);
+					auto* progressRing = (ProgressRing*)c;
+					progressRing->PercentageValue = it.extra.value("percentageValue", progressRing->PercentageValue);
+					progressRing->ShowPercentage = it.extra.value("showPercentage", progressRing->ShowPercentage);
 				}
 				else if (it.type == UIClass::UI_DateTimePicker)
 				{
-					auto* dtp = (DateTimePicker*)c;
+					auto* dateTimePicker = (DateTimePicker*)c;
 					if (it.extra.contains("value") && it.extra["value"].is_object())
 					{
-						SYSTEMTIME st = dtp->Value;
+						SYSTEMTIME st = dateTimePicker->Value;
 						auto& v = it.extra["value"];
 						st.wYear = (WORD)v.value("year", (int)st.wYear);
 						st.wMonth = (WORD)v.value("month", (int)st.wMonth);
@@ -4327,38 +4327,38 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 						st.wMinute = (WORD)v.value("minute", (int)st.wMinute);
 						st.wSecond = (WORD)v.value("second", (int)st.wSecond);
 						st.wMilliseconds = (WORD)v.value("milliseconds", (int)st.wMilliseconds);
-						dtp->Value = st;
+						dateTimePicker->Value = st;
 					}
-					dtp->Mode = (DateTimePickerMode)it.extra.value("mode", (int)dtp->Mode);
-					dtp->AllowDateSelection = it.extra.value("allowDateSelection", dtp->AllowDateSelection);
-					dtp->AllowTimeSelection = it.extra.value("allowTimeSelection", dtp->AllowTimeSelection);
-					dtp->AllowModeSwitch = it.extra.value("allowModeSwitch", dtp->AllowModeSwitch);
-					dtp->SetExpanded(it.extra.value("expand", dtp->Expand));
+					dateTimePicker->Mode = (DateTimePickerMode)it.extra.value("mode", (int)dateTimePicker->Mode);
+					dateTimePicker->AllowDateSelection = it.extra.value("allowDateSelection", dateTimePicker->AllowDateSelection);
+					dateTimePicker->AllowTimeSelection = it.extra.value("allowTimeSelection", dateTimePicker->AllowTimeSelection);
+					dateTimePicker->AllowModeSwitch = it.extra.value("allowModeSwitch", dateTimePicker->AllowModeSwitch);
+					dateTimePicker->SetExpanded(it.extra.value("expand", dateTimePicker->Expand));
 				}
 				else if (it.type == UIClass::UI_NumericUpDown)
 				{
-					auto* n = (NumericUpDown*)c;
-					n->Min = it.extra.value("min", n->Min);
-					n->Max = it.extra.value("max", n->Max);
-					n->Step = it.extra.value("step", n->Step);
-					n->SnapToStep = it.extra.value("snapToStep", n->SnapToStep);
-					n->DecimalPlaces = it.extra.value("decimalPlaces", n->DecimalPlaces);
-					n->UseMouseWheel = it.extra.value("useMouseWheel", n->UseMouseWheel);
-					n->Value = it.extra.value("value", n->Value);
+					auto* numericUpDown = (NumericUpDown*)c;
+					numericUpDown->Min = it.extra.value("min", numericUpDown->Min);
+					numericUpDown->Max = it.extra.value("max", numericUpDown->Max);
+					numericUpDown->Step = it.extra.value("step", numericUpDown->Step);
+					numericUpDown->SnapToStep = it.extra.value("snapToStep", numericUpDown->SnapToStep);
+					numericUpDown->DecimalPlaces = it.extra.value("decimalPlaces", numericUpDown->DecimalPlaces);
+					numericUpDown->UseMouseWheel = it.extra.value("useMouseWheel", numericUpDown->UseMouseWheel);
+					numericUpDown->Value = it.extra.value("value", numericUpDown->Value);
 				}
 				else if (it.type == UIClass::UI_GroupBox)
 				{
-					auto* gb = (GroupBox*)c;
-					gb->CaptionMarginLeft = (float)it.extra.value("captionMarginLeft", (double)gb->CaptionMarginLeft);
-					gb->CaptionPaddingX = (float)it.extra.value("captionPaddingX", (double)gb->CaptionPaddingX);
-					gb->CaptionPaddingY = (float)it.extra.value("captionPaddingY", (double)gb->CaptionPaddingY);
+					auto* groupBox = (GroupBox*)c;
+					groupBox->CaptionMarginLeft = (float)it.extra.value("captionMarginLeft", (double)groupBox->CaptionMarginLeft);
+					groupBox->CaptionPaddingX = (float)it.extra.value("captionPaddingX", (double)groupBox->CaptionPaddingX);
+					groupBox->CaptionPaddingY = (float)it.extra.value("captionPaddingY", (double)groupBox->CaptionPaddingY);
 				}
 				else if (it.type == UIClass::UI_Expander)
 				{
-					auto* ex = (Expander*)c;
-					ex->HeaderHeight = (float)it.extra.value("headerHeight", (double)ex->HeaderHeight);
-					ex->AnimationDurationMs = (UINT)it.extra.value("animationDurationMs", (int)ex->AnimationDurationMs);
-					ex->SetExpanded(it.extra.value("isExpanded", ex->IsExpanded));
+					auto* expander = (Expander*)c;
+					expander->HeaderHeight = (float)it.extra.value("headerHeight", (double)expander->HeaderHeight);
+					expander->AnimationDurationMs = (UINT)it.extra.value("animationDurationMs", (int)expander->AnimationDurationMs);
+					expander->SetExpanded(it.extra.value("isExpanded", expander->IsExpanded));
 				}
 				else if (it.type == UIClass::UI_SplitContainer)
 				{
@@ -4376,18 +4376,18 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				}
 				else if (it.type == UIClass::UI_Slider)
 				{
-					auto* s = (Slider*)c;
-					s->Min = it.extra.value("min", s->Min);
-					s->Max = it.extra.value("max", s->Max);
-					s->Value = it.extra.value("value", s->Value);
-					s->Step = it.extra.value("step", s->Step);
-					s->SnapToStep = it.extra.value("snapToStep", s->SnapToStep);
+					auto* slider = (Slider*)c;
+					slider->Min = it.extra.value("min", slider->Min);
+					slider->Max = it.extra.value("max", slider->Max);
+					slider->Value = it.extra.value("value", slider->Value);
+					slider->Step = it.extra.value("step", slider->Step);
+					slider->SnapToStep = it.extra.value("snapToStep", slider->SnapToStep);
 				}
 				else if (it.type == UIClass::UI_StatusBar)
 				{
-					auto* sb = (StatusBar*)c;
-					sb->TopMost = it.extra.value("topMost", sb->TopMost);
-					sb->ClearParts();
+					auto* statusBar = (StatusBar*)c;
+					statusBar->TopMost = it.extra.value("topMost", statusBar->TopMost);
+					statusBar->ClearParts();
 					if (it.extra.contains("parts") && it.extra["parts"].is_array())
 					{
 						for (auto& pj : it.extra["parts"])
@@ -4395,19 +4395,19 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 							if (!pj.is_object()) continue;
 							std::wstring text = FromUtf8(pj.value("text", std::string()));
 							int w = pj.value("width", 0);
-							sb->AddPart(text, w);
+							statusBar->AddPart(text, w);
 						}
 					}
 				}
 				else if (it.type == UIClass::UI_MediaPlayer)
 				{
-					auto* mp = (MediaPlayer*)c;
+					auto* mediaPlayer = (MediaPlayer*)c;
 					// 仅恢复属性与“媒体源路径”字段；不在设计器中自动加载/播放媒体。
-					mp->AutoPlay = it.extra.value("autoPlay", mp->AutoPlay);
-					mp->Loop = it.extra.value("loop", mp->Loop);
-					mp->Volume = it.extra.value("volume", mp->Volume);
-					mp->PlaybackRate = (float)it.extra.value("playbackRate", (double)mp->PlaybackRate);
-					mp->RenderMode = (MediaPlayer::VideoRenderMode)it.extra.value("renderMode", (int)mp->RenderMode);
+					mediaPlayer->AutoPlay = it.extra.value("autoPlay", mediaPlayer->AutoPlay);
+					mediaPlayer->Loop = it.extra.value("loop", mediaPlayer->Loop);
+					mediaPlayer->Volume = it.extra.value("volume", mediaPlayer->Volume);
+					mediaPlayer->PlaybackRate = (float)it.extra.value("playbackRate", (double)mediaPlayer->PlaybackRate);
+					mediaPlayer->RenderMode = (MediaPlayer::VideoRenderMode)it.extra.value("renderMode", (int)mediaPlayer->RenderMode);
 					if (it.extra.contains("mediaFile") && it.extra["mediaFile"].is_string())
 						dc->DesignStrings[L"mediaFile"] = FromUtf8(it.extra["mediaFile"].get<std::string>());
 					else
@@ -4439,8 +4439,8 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 							top->Enable = ij.value("enable", true);
 							if (ij.contains("subItems"))
 							{
-								std::vector<MenuItem*> tmp;
-								ValueToMenuSubItems(ij["subItems"], tmp, top);
+								std::vector<MenuItem*> subItems;
+								ValueToMenuSubItems(ij["subItems"], subItems, top);
 							}
 						}
 					}
@@ -4529,8 +4529,8 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				attachChildren(ch->name, dcOf[ch->name]->ControlInstance, dcOf[ch->name]->ControlInstance);
 				if (ch->type == UIClass::UI_TabControl)
 				{
-					auto* tc = (TabControl*)dcOf[ch->name]->ControlInstance;
-					(void)tc;
+					auto* tabControl = (TabControl*)dcOf[ch->name]->ControlInstance;
+					(void)tabControl;
 					for (auto& kv : tabPageOf)
 					{
 						std::wstring prefix = ch->name + L"#page";
@@ -4587,9 +4587,9 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 		this->InvalidateVisual();
 		return true;
 	}
-	catch (const std::exception& ex)
+	catch (const std::exception& expander)
 	{
-		if (outError) *outError = L"加载失败: " + FromUtf8(ex.what());
+		if (outError) *outError = L"加载失败: " + FromUtf8(expander.what());
 		return false;
 	}
 	catch (...)

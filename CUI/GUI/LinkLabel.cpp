@@ -1,4 +1,4 @@
-﻿#include "LinkLabel.h"
+#include "LinkLabel.h"
 #include "Form.h"
 
 UIClass LinkLabel::Type() { return UIClass::UI_LinkLabel; }
@@ -18,7 +18,7 @@ void LinkLabel::Update()
 	auto size = this->ActualSize();
 	auto font = this->Font;
 
-	float clipW = last_width > static_cast<float>(size.cx) ? last_width : FLT_MAX;
+	float clipW = lastMeasuredWidth > static_cast<float>(size.cx) ? lastMeasuredWidth : FLT_MAX;
 	this->BeginRender(clipW, FLT_MAX);
 	{
 		if (this->Image)
@@ -40,18 +40,18 @@ void LinkLabel::Update()
 
 	if (!this->Enable)
 	{
-		float w = last_width > static_cast<float>(size.cx) ? last_width : static_cast<float>(size.cx);
+		float w = lastMeasuredWidth > static_cast<float>(size.cx) ? lastMeasuredWidth : static_cast<float>(size.cx);
 		d2d->FillRect(0, 0, w, static_cast<float>(size.cy), { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 
 	this->EndRender();
-	last_width = static_cast<float>(size.cx);
+	lastMeasuredWidth = static_cast<float>(size.cx);
 }
 
-CursorKind LinkLabel::QueryCursor(int xof, int yof)
+CursorKind LinkLabel::QueryCursor(int localX, int localY)
 {
-	(void)xof;
-	(void)yof;
+	(void)localX;
+	(void)localY;
 	return CursorKind::Hand;
 }
 

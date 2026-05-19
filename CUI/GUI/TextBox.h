@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "Control.h"
 #pragma comment(lib, "Imm32.lib")
 
@@ -8,14 +8,14 @@
  *
  * 关键字段：
  * - SelectionStart/SelectionEnd：选择区间（基于字符索引）
- * - OffsetX：水平滚动偏移（像素），用于长文本显示
+ * - HorizontalScrollOffset：水平滚动偏移（像素），用于长文本显示
  * - GetAnimatedInvalidRect：用于光标闪烁等动画区域增量刷新
  */
 class TextBox : public Control
 {
 public:
 	virtual UIClass Type();
-	CursorKind QueryCursor(int xof, int yof) override { (void)xof; (void)yof; return this->Enable ? CursorKind::IBeam : CursorKind::Arrow; }
+	CursorKind QueryCursor(int localX, int localY) override { (void)localX; (void)localY; return this->Enable ? CursorKind::IBeam : CursorKind::Arrow; }
 	bool HandlesMouseWheel() const override { return true; }
 	bool HandlesNavigationKey(WPARAM key) const override;
 	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
@@ -39,7 +39,7 @@ public:
 	/** @brief 聚焦时边框宽度。 */
 	float FocusBorder = 1.6f;
 	/** @brief 水平滚动偏移（像素）。 */
-	float OffsetX = 0.0f;
+	float HorizontalScrollOffset = 0.0f;
 	/** @brief 文本与边框之间的内边距（像素）。 */
 	float TextMargin = 5.0f;
 	/** @brief 创建文本框。 */
@@ -72,5 +72,5 @@ public:
 	/** @brief 返回当前选中的文本片段。 */
 	std::wstring GetSelectedString();
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

@@ -1,4 +1,4 @@
-#include "FilterBar.h"
+﻿#include "FilterBar.h"
 #include "Form.h"
 #include <algorithm>
 #include <utility>
@@ -81,12 +81,12 @@ void FilterBar::SetQueryText(const std::wstring& text)
 	InvalidateVisual();
 }
 
-CursorKind FilterBar::QueryCursor(int xof, int yof)
+CursorKind FilterBar::QueryCursor(int localX, int localY)
 {
 	if (!Enable) return CursorKind::Arrow;
 	auto size = ActualSize();
 	BuildLayout((float)size.cx, (float)size.cy);
-	auto hit = HitTest(xof, yof);
+	auto hit = HitTest(localX, localY);
 	if (hit.Kind == HitKind::Search)
 		return CursorKind::IBeam;
 	if (hit.Kind == HitKind::Chip || hit.Kind == HitKind::Apply || hit.Kind == HitKind::Reset)
@@ -140,10 +140,10 @@ void FilterBar::BuildLayout(float width, float height)
 	}
 }
 
-FilterBar::HitRegion FilterBar::HitTest(int xof, int yof)
+FilterBar::HitRegion FilterBar::HitTest(int localX, int localY)
 {
-	float x = (float)xof;
-	float y = (float)yof;
+	float x = (float)localX;
+	float y = (float)localY;
 	for (auto it = _regions.rbegin(); it != _regions.rend(); ++it)
 	{
 		if (PointInRect(x, y, it->Rect))
@@ -233,7 +233,7 @@ void FilterBar::Update()
 	EndRender();
 }
 
-bool FilterBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool FilterBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!Enable || !Visible) return true;
 	(void)lParam;
@@ -245,20 +245,20 @@ bool FilterBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 	case WM_MOUSEMOVE:
 	{
 		if (ParentForm) ParentForm->UnderMouse = this;
-		auto hit = HitTest(xof, yof);
+		auto hit = HitTest(localX, localY);
 		int oldIndex = _hoverIndex;
 		HitKind oldKind = _hoverKind;
 		_hoverKind = hit.Kind;
 		_hoverIndex = hit.Index;
 		if (oldIndex != _hoverIndex || oldKind != _hoverKind)
 			InvalidateVisual();
-		MouseEventArgs e(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
 		OnMouseMove(this, e);
 		break;
 	}
 	case WM_LBUTTONDOWN:
 	{
-		auto hit = HitTest(xof, yof);
+		auto hit = HitTest(localX, localY);
 		_searchFocused = hit.Kind == HitKind::Search;
 		if (ParentForm) ParentForm->SetSelectedControl(this, false);
 		if (hit.Kind == HitKind::Chip && hit.Index >= 0 && hit.Index < (int)Items.size())
@@ -276,7 +276,7 @@ bool FilterBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 		{
 			ResetFilters();
 		}
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseDown(this, e);
 		if (hit.Kind != HitKind::Reset)
 			InvalidateVisual();
@@ -284,7 +284,7 @@ bool FilterBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 	}
 	case WM_LBUTTONUP:
 	{
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseUp(this, e);
 		break;
 	}
@@ -323,7 +323,7 @@ bool FilterBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 		{
 			_searchFocused = false;
 			if (ParentForm && ParentForm->Selected == this)
-				ParentForm->SetSelectedControl(NULL, false);
+				ParentForm->SetSelectedControl(nullptr, false);
 			InvalidateVisual();
 		}
 		KeyEventArgs e((Keys)(wParam | 0));
@@ -331,7 +331,7 @@ bool FilterBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 		break;
 	}
 	default:
-		return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 	}
 	return true;
 }

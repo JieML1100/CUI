@@ -45,10 +45,10 @@ public:
 
 	KpiCardEvent OnCardClick;
 
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	void SetSparkline(const std::vector<double>& values);
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 private:
 	bool _pressed = false;

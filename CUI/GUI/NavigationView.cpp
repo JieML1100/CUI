@@ -333,18 +333,18 @@ void NavigationView::SetScrollOffset(float offsetY)
 	this->InvalidateVisual();
 }
 
-bool NavigationView::HitTestToggle(const Layout& layout, int xof, int yof) const
+bool NavigationView::HitTestToggle(const Layout& layout, int localX, int localY) const
 {
 	if (!this->ShowToggleButton)
 		return false;
-	return PtInRectF(layout.ToggleRect, (float)xof, (float)yof);
+	return PtInRectF(layout.ToggleRect, (float)localX, (float)localY);
 }
 
-int NavigationView::HitTestItem(int xof, int yof) const
+int NavigationView::HitTestItem(int localX, int localY) const
 {
 	std::vector<RowInfo> rows;
 	auto layout = CalcLayout(&rows);
-	if (!PtInRectF(layout.ContentRect, (float)xof, (float)yof))
+	if (!PtInRectF(layout.ContentRect, (float)localX, (float)localY))
 		return -1;
 	for (const auto& row : rows)
 	{
@@ -354,28 +354,28 @@ int NavigationView::HitTestItem(int xof, int yof) const
 		if (item.Kind != NavigationViewItemKind::Item || !item.Enabled)
 			continue;
 		auto rect = GetRowRect(row, layout);
-		if (PtInRectF(rect, (float)xof, (float)yof))
+		if (PtInRectF(rect, (float)localX, (float)localY))
 			return row.Index;
 	}
 	return -1;
 }
 
-CursorKind NavigationView::QueryCursor(int xof, int yof)
+CursorKind NavigationView::QueryCursor(int localX, int localY)
 {
 	if (!this->Enable) return CursorKind::Arrow;
 	std::vector<RowInfo> rows;
 	auto layout = CalcLayout(&rows);
-	if (HitTestToggle(layout, xof, yof))
+	if (HitTestToggle(layout, localX, localY))
 		return CursorKind::Hand;
-	if (layout.NeedVScroll && PtInRectF(layout.ScrollTrackRect, (float)xof, (float)yof))
+	if (layout.NeedVScroll && PtInRectF(layout.ScrollTrackRect, (float)localX, (float)localY))
 		return CursorKind::SizeNS;
-	return HitTestItem(xof, yof) >= 0 ? CursorKind::Hand : CursorKind::Arrow;
+	return HitTestItem(localX, localY) >= 0 ? CursorKind::Hand : CursorKind::Arrow;
 }
 
-bool NavigationView::CanHandleMouseWheel(int delta, int xof, int yof)
+bool NavigationView::CanHandleMouseWheel(int delta, int localX, int localY)
 {
-	(void)xof;
-	(void)yof;
+	(void)localX;
+	(void)localY;
 	if (delta == 0) return false;
 	auto layout = CalcLayout();
 	if (!layout.NeedVScroll) return false;
@@ -522,9 +522,9 @@ void NavigationView::DrawScrollBar(D2DGraphics* d2d, const Layout& layout)
 	d2d->FillRoundRect(layout.ScrollThumbRect, ScrollForeColor, RectWidth(layout.ScrollThumbRect) * 0.5f);
 }
 
-void NavigationView::UpdateHover(int xof, int yof)
+void NavigationView::UpdateHover(int localX, int localY)
 {
-	int hit = HitTestItem(xof, yof);
+	int hit = HitTestItem(localX, localY);
 	if (hit != this->HoveredIndex)
 	{
 		this->HoveredIndex = hit;
@@ -532,7 +532,7 @@ void NavigationView::UpdateHover(int xof, int yof)
 	}
 }
 
-void NavigationView::UpdateScrollByThumb(float yof)
+void NavigationView::UpdateScrollByThumb(float localY)
 {
 	auto layout = CalcLayout();
 	if (!layout.NeedVScroll) return;
@@ -540,7 +540,7 @@ void NavigationView::UpdateScrollByThumb(float yof)
 	const float thumbH = RectHeight(layout.ScrollThumbRect);
 	const float range = trackH - thumbH;
 	if (range <= 0.0f || layout.MaxScrollY <= 0.0f) return;
-	float targetTop = yof - _scrollThumbGrabOffsetY;
+	float targetTop = localY - _scrollThumbGrabOffsetY;
 	float t = (targetTop - layout.ScrollTrackRect.top) / range;
 	SetScrollOffset((std::clamp)(t, 0.0f, 1.0f) * layout.MaxScrollY);
 }
@@ -612,7 +612,7 @@ void NavigationView::Update()
 	this->EndRender();
 }
 
-bool NavigationView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool NavigationView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 
@@ -626,7 +626,7 @@ bool NavigationView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			const float step = (float)(std::max)(8, this->MouseWheelStep);
 			SetScrollOffset(this->ScrollYOffset + (delta < 0 ? step : -step));
 		}
-		MouseEventArgs e(MouseButtons::None, 0, xof, yof, delta);
+		MouseEventArgs e(MouseButtons::None, 0, localX, localY, delta);
 		this->OnMouseWheel(this, e);
 		return true;
 	}
@@ -635,10 +635,10 @@ bool NavigationView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		if (this->ParentForm)
 			this->ParentForm->UnderMouse = this;
 		if (_dragVScroll)
-			UpdateScrollByThumb((float)yof);
+			UpdateScrollByThumb((float)localY);
 		else
-			UpdateHover(xof, yof);
-		MouseEventArgs e(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
+			UpdateHover(localX, localY);
+		MouseEventArgs e(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseMove(this, e);
 		return true;
 	}
@@ -647,26 +647,26 @@ bool NavigationView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		if (this->ParentForm)
 			this->ParentForm->SetSelectedControl(this, false);
 		auto layout = CalcLayout();
-		if (HitTestToggle(layout, xof, yof))
+		if (HitTestToggle(layout, localX, localY))
 		{
 			TogglePane();
 			return true;
 		}
-		if (layout.NeedVScroll && PtInRectF(layout.ScrollThumbRect, (float)xof, (float)yof))
+		if (layout.NeedVScroll && PtInRectF(layout.ScrollThumbRect, (float)localX, (float)localY))
 		{
 			_dragVScroll = true;
-			_scrollThumbGrabOffsetY = (float)yof - layout.ScrollThumbRect.top;
+			_scrollThumbGrabOffsetY = (float)localY - layout.ScrollThumbRect.top;
 			return true;
 		}
-		if (layout.NeedVScroll && PtInRectF(layout.ScrollTrackRect, (float)xof, (float)yof))
+		if (layout.NeedVScroll && PtInRectF(layout.ScrollTrackRect, (float)localX, (float)localY))
 		{
-			SetScrollOffset(this->ScrollYOffset + ((float)yof < layout.ScrollThumbRect.top ? -RectHeight(layout.ContentRect) : RectHeight(layout.ContentRect)));
+			SetScrollOffset(this->ScrollYOffset + ((float)localY < layout.ScrollThumbRect.top ? -RectHeight(layout.ContentRect) : RectHeight(layout.ContentRect)));
 			return true;
 		}
-		int hit = HitTestItem(xof, yof);
+		int hit = HitTestItem(localX, localY);
 		if (hit >= 0)
 			this->FocusedIndex = hit;
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseDown(this, e);
 		return true;
 	}
@@ -674,11 +674,11 @@ bool NavigationView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 	{
 		bool wasDragging = _dragVScroll;
 		_dragVScroll = false;
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseUp(this, e);
 		if (!wasDragging)
 		{
-			int hit = HitTestItem(xof, yof);
+			int hit = HitTestItem(localX, localY);
 			if (hit >= 0)
 			{
 				if (AutoSelectOnClick)
@@ -691,8 +691,8 @@ bool NavigationView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 	}
 	case WM_LBUTTONDBLCLK:
 	{
-		int hit = HitTestItem(xof, yof);
-		MouseEventArgs e(MouseButtons::Left, 2, xof, yof, HIWORD(wParam));
+		int hit = HitTestItem(localX, localY);
+		MouseEventArgs e(MouseButtons::Left, 2, localX, localY, HIWORD(wParam));
 		this->OnMouseDoubleClick(this, e);
 		if (hit >= 0)
 			this->OnItemDoubleClick(this, hit);
@@ -746,7 +746,7 @@ bool NavigationView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		break;
 	}
 
-	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 }
 
 UIClass SideBar::Type()
@@ -854,21 +854,21 @@ std::vector<BreadcrumbBar::ItemRegion> BreadcrumbBar::BuildLayout() const
 	return regions;
 }
 
-int BreadcrumbBar::HitTestItem(int xof, int yof) const
+int BreadcrumbBar::HitTestItem(int localX, int localY) const
 {
 	auto regions = BuildLayout();
 	for (auto it = regions.rbegin(); it != regions.rend(); ++it)
 	{
-		if (PtInRectF(it->Rect, (float)xof, (float)yof))
+		if (PtInRectF(it->Rect, (float)localX, (float)localY))
 			return it->Index;
 	}
 	return -1;
 }
 
-CursorKind BreadcrumbBar::QueryCursor(int xof, int yof)
+CursorKind BreadcrumbBar::QueryCursor(int localX, int localY)
 {
 	if (!Enable) return CursorKind::Arrow;
-	int hit = HitTestItem(xof, yof);
+	int hit = HitTestItem(localX, localY);
 	return hit >= 0 && Items[hit].Enabled ? CursorKind::Hand : CursorKind::Arrow;
 }
 
@@ -921,7 +921,7 @@ void BreadcrumbBar::Update()
 	this->EndRender();
 }
 
-bool BreadcrumbBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool BreadcrumbBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	(void)lParam;
@@ -931,13 +931,13 @@ bool BreadcrumbBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 	{
 		if (this->ParentForm)
 			this->ParentForm->UnderMouse = this;
-		int hit = HitTestItem(xof, yof);
+		int hit = HitTestItem(localX, localY);
 		if (hit != HoveredIndex)
 		{
 			HoveredIndex = hit;
 			InvalidateVisual();
 		}
-		MouseEventArgs e(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
 		OnMouseMove(this, e);
 		return true;
 	}
@@ -945,15 +945,15 @@ bool BreadcrumbBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 	{
 		if (this->ParentForm)
 			this->ParentForm->SetSelectedControl(this, false);
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseDown(this, e);
 		return true;
 	}
 	case WM_LBUTTONUP:
 	{
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseUp(this, e);
-		int hit = HitTestItem(xof, yof);
+		int hit = HitTestItem(localX, localY);
 		if (hit >= 0 && Items[hit].Enabled)
 		{
 			SelectItem(hit);
@@ -965,5 +965,5 @@ bool BreadcrumbBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 	default:
 		break;
 	}
-	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 }

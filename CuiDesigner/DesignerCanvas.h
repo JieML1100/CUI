@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 /**
  * @file DesignerCanvas.h
@@ -218,7 +218,7 @@ public:
 	bool LoadDesignFile(const std::wstring& filePath, std::wstring* outError = nullptr);
 	
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 	
 	// 控件管理
 	void AddControlToCanvas(UIClass type, POINT canvasPos);

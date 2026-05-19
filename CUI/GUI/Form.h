@@ -102,7 +102,7 @@ private:
 	bool _autoCenterOnCreate = false;
 	SIZE _initialSize;
 	std::wstring _text;
-	Font* _font = NULL;
+	Font* _font = nullptr;
 	bool _ownsFont = false;
 	std::shared_ptr<BitmapSource> _imageSource;
 	Microsoft::WRL::ComPtr<ID2D1Bitmap> _imageCache;
@@ -140,10 +140,10 @@ private:
 	void ApplyWindowIcon();
 	void ClearCaptionStates();
 	void RefreshAnimationTimer();
-	void InvalidateControl(class Control* c, int inflatePx = 2, bool immediate = false);
+	void InvalidateControl(class Control* control, int inflatePx = 2, bool immediate = false);
 	void InvalidateAnimatedControls(bool immediate = false);
 	static bool RectIntersects(const RECT& a, const RECT& b);
-	static RECT ToRECT(D2D1_RECT_F r, int inflatePx = 0);
+	static RECT ToRECT(D2D1_RECT_F rect, int inflatePx = 0);
 
 	void ApplyCursor(CursorKind kind);
 	bool ApplySystemCursorId(UINT32 cursorId);
@@ -157,7 +157,7 @@ private:
 	bool _needsLayout = false;
 	bool _resourcesCleaned = false;
 	class DCompLayeredHost* _dcompHost = nullptr;
-		bool EnsureDCompInitialized();
+	bool EnsureDCompInitialized();
 	bool _dcompSceneRenderActive = false;
 	int _dcompSceneOrderCounter = 0;
 	struct DCompD2DLayer
@@ -180,7 +180,7 @@ private:
 	D2DGraphics* GetDCompD2DLayerRender(size_t index, int layer, int order);
 	void ReleaseDCompD2DLayers();
 	void ClearUnusedDCompD2DLayers(size_t usedCount, float logW, float logH);
-	void RenderDCompRootLayers(const RECT& contentDirty, int top, float dpiSc);
+	void RenderDCompRootLayers(const RECT& contentDirty, int titleBarOffset, float dpiScale);
 	void RenderDCompControlTree(class Control* control, DCompSceneBuildState& state);
 	void BeginDCompD2DSegment(DCompSceneBuildState& state, int order);
 	void EndDCompD2DSegment(DCompSceneBuildState& state);
@@ -200,10 +200,10 @@ private:
 	void EnsureInitialDpiApplied();
 	// 鼠标 Hover/Leave 跟踪
 	bool _mouseLeaveTracking = false;
-	class Control* _hoverControl = NULL;
-	class Control* _mouseCaptureControl = NULL;
+	class Control* _hoverControl = nullptr;
+	class Control* _mouseCaptureControl = nullptr;
 	// 焦点通知同步：用于捕获直接写 Selected 的旧代码路径
-	class Control* _focusNotifiedSelected = NULL;
+	class Control* _focusNotifiedSelected = nullptr;
 	// OLE Drag&Drop 支持：用于在拖动悬停时返回接受/不接受光标，并支持文本拖放
 	struct IDropTarget* _dropTarget = nullptr;
 	bool _dropRegistered = false;
@@ -255,7 +255,7 @@ public:
 	CommandEvent OnCommand;
 
 	/** @brief Win32 窗口句柄。 */
-	HWND Handle = NULL;
+	HWND Handle = nullptr;
 	bool MinBox = true;
 	bool MaxBox = true;
 	bool CloseBox = true;
@@ -263,18 +263,18 @@ public:
 	bool CenterTitle = true;
 	bool ControlChanged = false;
 	/** @brief 当前具有键盘焦点的控件。 */
-	class Control* Selected = NULL;
-	class Control* UnderMouse = NULL;
+	class Control* Selected = nullptr;
+	class Control* UnderMouse = nullptr;
 	/** @brief 顶层控件集合（通常包含布局容器与各控件）。 */
 	std::vector<class Control*> Controls = std::vector<class Control*>();
 	// 置顶控件：最多只允许一个（用于 ComboBox 下拉、临时浮层等）
-	class Control* ForegroundControl = NULL;
+	class Control* ForegroundControl = nullptr;
 	// 主菜单：单独管理（菜单栏/下拉菜单）
-	class Menu* MainMenu = NULL;
+	class Menu* MainMenu = nullptr;
 	// 主工具栏：单独管理（跟随客户区宽度，位于主菜单下方）
-	class ToolBar* MainToolBar = NULL;
+	class ToolBar* MainToolBar = nullptr;
 	// 状态栏：单独管理（置底但置顶于普通控件；需要独立渲染与消息处理）
-	class StatusBar* MainStatusBar = NULL;
+	class StatusBar* MainStatusBar = nullptr;
 	/** @brief 主渲染器（控件树渲染）。 */
 	D2DGraphics* Render;
 	/** @brief 覆盖层渲染器（用于前景控件/临时浮层等）。 */
@@ -325,7 +325,7 @@ public:
 	GET(bool, AllowResize);
 	SET(bool, AllowResize);
 
-	HICON Icon = NULL;
+	HICON Icon = nullptr;
 	/**
 	 * @brief 创建一个顶层窗口。
 	 * @param _text 窗口标题。
@@ -342,7 +342,7 @@ public:
 	/** @brief 以非模态方式显示窗口。 */
 	void Show();
 	/** @brief 以模态方式显示窗口。 */
-	void ShowDialog(HWND parent = NULL);
+	void ShowDialog(HWND parent = nullptr);
 	/** @brief 请求关闭窗口。 */
 	void Close();
 	/** @brief 根据当前鼠标位置刷新窗口光标显示。 */
@@ -353,50 +353,50 @@ public:
 
 
 	template<typename T>
-	T AddControl(T c)
+	T AddControl(T control)
 	{
-		if (c->Parent)
+		if (control->Parent)
 		{
 			throw "该控件已属于其他容器!";
-			return NULL;
+			return nullptr;
 		}
-		if (std::find(this->Controls.begin(), this->Controls.end(), c) != this->Controls.end())
+		if (std::find(this->Controls.begin(), this->Controls.end(), control) != this->Controls.end())
 		{
-			return c;
+			return control;
 		}
-		this->Controls.push_back(c);
-		c->Parent = NULL;
-		c->ParentForm = this;
+		this->Controls.push_back(control);
+		control->Parent = nullptr;
+		control->ParentForm = this;
 
 		// 递归设置所有子控件的ParentForm
-		Control::SetChildrenParentForm(c, this);
+		Control::SetChildrenParentForm(control, this);
 
 		// 主菜单单独管理
-		if (c->Type() == UIClass::UI_Menu)
+		if (control->Type() == UIClass::UI_Menu)
 		{
-			this->MainMenu = (Menu*)c;
+			this->MainMenu = dynamic_cast<Menu*>(control);
 		}
-		if (c->Type() == UIClass::UI_ToolBar)
+		if (control->Type() == UIClass::UI_ToolBar)
 		{
-			this->MainToolBar = (ToolBar*)c;
+			this->MainToolBar = dynamic_cast<ToolBar*>(control);
 		}
 		// 状态栏单独管理（TopMost=true 时）
-		if (c->Type() == UIClass::UI_StatusBar)
+		if (control->Type() == UIClass::UI_StatusBar)
 		{
-			auto* sb = (StatusBar*)c;
-			if (sb && sb->TopMost)
-				this->MainStatusBar = sb;
+			auto* statusBar = dynamic_cast<StatusBar*>(control);
+			if (statusBar && statusBar->TopMost)
+				this->MainStatusBar = statusBar;
 		}
 		// 触发布局
 		_needsLayout = true;
-		return c;
+		return control;
 	}
 	/**
 	 * @brief 移除一个顶层控件。
 	 * @return true 表示成功移除。
 	 */
-	bool RemoveControl(Control* c);
-	virtual bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof);
+	bool RemoveControl(Control* control);
+	virtual bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY);
 	virtual bool Update(bool force = false);
 	virtual bool UpdateDirtyRect(const RECT& dirty, bool force = false);
 	virtual bool ForceUpdate();
@@ -407,10 +407,10 @@ public:
 	void Invalidate(bool immediate = false);
 	/**
 	 * @brief 使窗口指定区域失效（触发重绘）。
-	 * @param rc 需要重绘的矩形（客户区坐标）。
+	 * @param rect 需要重绘的矩形（客户区坐标）。
 	 */
-	void Invalidate(const RECT& rc, bool immediate = false);
-	void Invalidate(D2D1_RECT_F rc, bool immediate = false);
+	void Invalidate(const RECT& rect, bool immediate = false);
+	void Invalidate(D2D1_RECT_F rect, bool immediate = false);
 	virtual void RenderImage();
 	D2D1_RECT_F ChildRect();
 	Control* LastChild();

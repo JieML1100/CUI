@@ -271,11 +271,11 @@ D2D1_RECT_F NumericUpDown::TextRect() const
 	return D2D1::RectF(TextPaddingX, 0.0f, (std::max)(TextPaddingX, buttons.left - TextPaddingX), h);
 }
 
-int NumericUpDown::HitTestButton(int xof, int yof) const
+int NumericUpDown::HitTestButton(int localX, int localY) const
 {
-	if (PtInRectF(UpButtonRect(), (float)xof, (float)yof))
+	if (PtInRectF(UpButtonRect(), (float)localX, (float)localY))
 		return 1;
-	if (PtInRectF(DownButtonRect(), (float)xof, (float)yof))
+	if (PtInRectF(DownButtonRect(), (float)localX, (float)localY))
 		return -1;
 	return 0;
 }
@@ -329,17 +329,17 @@ float NumericUpDown::CurrentHoverProgress()
 	return _hoverProgress;
 }
 
-CursorKind NumericUpDown::QueryCursor(int xof, int yof)
+CursorKind NumericUpDown::QueryCursor(int localX, int localY)
 {
 	if (!Enable)
 		return CursorKind::Arrow;
-	return HitTestButton(xof, yof) == 0 ? CursorKind::IBeam : CursorKind::Hand;
+	return HitTestButton(localX, localY) == 0 ? CursorKind::IBeam : CursorKind::Hand;
 }
 
-bool NumericUpDown::CanHandleMouseWheel(int delta, int xof, int yof)
+bool NumericUpDown::CanHandleMouseWheel(int delta, int localX, int localY)
 {
-	(void)xof;
-	(void)yof;
+	(void)localX;
+	(void)localY;
 	if (!UseMouseWheel || delta == 0 || !Enable)
 		return false;
 	return true;
@@ -459,7 +459,7 @@ void NumericUpDown::Update()
 	this->EndRender();
 }
 
-bool NumericUpDown::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool NumericUpDown::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	(void)lParam;
@@ -469,24 +469,24 @@ bool NumericUpDown::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 	case WM_MOUSEWHEEL:
 		if (UseMouseWheel)
 			StepBy(GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? 1 : -1);
-		OnMouseWheel(this, MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam)));
+		OnMouseWheel(this, MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam)));
 		return true;
 	case WM_MOUSEMOVE:
 	{
 		if (ParentForm) ParentForm->UnderMouse = this;
-		int hit = HitTestButton(xof, yof);
+		int hit = HitTestButton(localX, localY);
 		if (hit != _hoverButton)
 		{
 			_hoverButton = hit;
 			StartHoverAnimation(hit == 0 ? 0.0f : 1.0f);
 		}
-		OnMouseMove(this, MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam)));
+		OnMouseMove(this, MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam)));
 		return true;
 	}
 	case WM_LBUTTONDOWN:
 	{
 		if (ParentForm) ParentForm->SetSelectedControl(this, false);
-		int hit = HitTestButton(xof, yof);
+		int hit = HitTestButton(localX, localY);
 		if (hit != 0)
 		{
 			_dragUp = hit > 0;
@@ -499,7 +499,7 @@ bool NumericUpDown::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 		{
 			BeginEdit();
 		}
-		OnMouseDown(this, MouseEventArgs(MouseButtons::Left, 0, xof, yof, HIWORD(wParam)));
+		OnMouseDown(this, MouseEventArgs(MouseButtons::Left, 0, localX, localY, HIWORD(wParam)));
 		InvalidateVisual();
 		return true;
 	}
@@ -507,13 +507,13 @@ bool NumericUpDown::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 	{
 		_dragUp = false;
 		_dragDown = false;
-		int hit = HitTestButton(xof, yof);
+		int hit = HitTestButton(localX, localY);
 		if (hit != _hoverButton)
 		{
 			_hoverButton = hit;
 			StartHoverAnimation(hit == 0 ? 0.0f : 1.0f);
 		}
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseUp(this, e);
 		OnMouseClick(this, e);
 		InvalidateVisual();
@@ -601,5 +601,5 @@ bool NumericUpDown::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 		break;
 	}
 
-	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 }

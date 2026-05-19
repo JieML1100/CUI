@@ -97,5 +97,5 @@ public:
 	/** @brief 重新布局所有工具项。 */
 	void LayoutItems();
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

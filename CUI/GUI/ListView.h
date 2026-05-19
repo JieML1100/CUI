@@ -136,14 +136,14 @@ public:
 	std::vector<int> GetSelectedIndices() const;
 	void EnsureVisible(int index);
 	void SetScrollOffset(float offsetY);
-	int HitTestItem(int xof, int yof) const;
+	int HitTestItem(int localX, int localY) const;
 
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool HandlesNavigationKey(WPARAM key) const override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 protected:
 	virtual bool IsListBox() const { return false; }
@@ -182,8 +182,8 @@ private:
 	void DrawIconItem(D2DGraphics* d2d, int index, const D2D1_RECT_F& rect);
 	void DrawCheckBox(D2DGraphics* d2d, const D2D1_RECT_F& rect, bool checked, bool enabled);
 	void DrawScrollBar(D2DGraphics* d2d, const Layout& layout);
-	void UpdateHover(int xof, int yof);
-	void UpdateScrollByThumb(float yof);
+	void UpdateHover(int localX, int localY);
+	void UpdateScrollByThumb(float localY);
 	void ToggleCheckAt(int index);
 	void MoveSelectionBy(int delta);
 	void PageSelection(int direction);

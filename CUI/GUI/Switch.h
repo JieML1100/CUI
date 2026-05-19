@@ -12,7 +12,7 @@
  */
 class Switch : public Control
 {
-	float last_width = 0.0f;
+	float lastMeasuredWidth = 0.0f;
 	float _thumbProgress = 0.0f;
 	float _animStartProgress = 0.0f;
 	float _animTargetProgress = 0.0f;

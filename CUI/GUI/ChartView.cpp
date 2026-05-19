@@ -1,4 +1,4 @@
-#include "ChartView.h"
+﻿#include "ChartView.h"
 #include "Form.h"
 #include <algorithm>
 #include <cmath>
@@ -158,37 +158,37 @@ bool ChartView::SelectPoint(int seriesIndex, int pointIndex)
 	return true;
 }
 
-bool ChartView::HitTestPoint(int xof, int yof, int& seriesIndex, int& pointIndex)
+bool ChartView::HitTestPoint(int localX, int localY, int& seriesIndex, int& pointIndex)
 {
 	RebuildHitRegions();
-	return HitTestInternal(xof, yof, seriesIndex, pointIndex);
+	return HitTestInternal(localX, localY, seriesIndex, pointIndex);
 }
 
-CursorKind ChartView::QueryCursor(int xof, int yof)
+CursorKind ChartView::QueryCursor(int localX, int localY)
 {
 	if (!Enable) return CursorKind::Arrow;
 	if (_scrolling) return CursorKind::SizeWE;
 
 	int s = -1;
 	int p = -1;
-	if (HitTestPoint(xof, yof, s, p))
+	if (HitTestPoint(localX, localY, s, p))
 		return CursorKind::Hand;
 	if (HasHorizontalScrollBar())
 	{
 		auto size = ActualSize();
-		if (PointInRect((float)xof, (float)yof, GetHorizontalScrollTrackRect((float)size.cx, (float)size.cy)))
+		if (PointInRect((float)localX, (float)localY, GetHorizontalScrollTrackRect((float)size.cx, (float)size.cy)))
 			return CursorKind::SizeWE;
 	}
 	return Cursor;
 }
 
-bool ChartView::CanHandleMouseWheel(int delta, int xof, int yof)
+bool ChartView::CanHandleMouseWheel(int delta, int localX, int localY)
 {
 	(void)delta;
 	if (!EnablePanZoom || ChartKind == ChartViewKind::Pie || GetPointCount() <= 1)
 		return false;
 	auto size = ActualSize();
-	return PointInRect((float)xof, (float)yof, GetPlotRect((float)size.cx, (float)size.cy));
+	return PointInRect((float)localX, (float)localY, GetPlotRect((float)size.cx, (float)size.cy));
 }
 
 void ChartView::Update()
@@ -234,12 +234,12 @@ void ChartView::Update()
 	EndRender();
 }
 
-bool ChartView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool ChartView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!Enable || !Visible) return true;
 	(void)lParam;
-	_lastMouseX = xof;
-	_lastMouseY = yof;
+	_lastMouseX = localX;
+	_lastMouseY = localY;
 
 	switch (message)
 	{
@@ -249,23 +249,23 @@ bool ChartView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 		if (_scrolling)
 		{
 			auto size = ActualSize();
-			UpdateHorizontalScrollDrag((float)xof, (float)size.cx, (float)size.cy);
+			UpdateHorizontalScrollDrag((float)localX, (float)size.cx, (float)size.cy);
 		}
-		UpdateHover(xof, yof);
-		MouseEventArgs eventObj(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
+		UpdateHover(localX, localY);
+		MouseEventArgs eventObj(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
 		OnMouseMove(this, eventObj);
 		break;
 	}
 	case WM_MOUSEWHEEL:
 	{
 		int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-		if (CanHandleMouseWheel(delta, xof, yof))
+		if (CanHandleMouseWheel(delta, localX, localY))
 		{
 			auto size = ActualSize();
 			auto plot = GetPlotRect((float)size.cx, (float)size.cy);
 			int count = GetPointCount();
 			float oldZoom = (std::max)(1.0f, ZoomX);
-			float rel = ((float)xof - plot.left) / (std::max)(1.0f, RectWidth(plot));
+			float rel = ((float)localX - plot.left) / (std::max)(1.0f, RectWidth(plot));
 			rel = std::clamp(rel, 0.0f, 1.0f);
 			float oldVirtualWidth = RectWidth(plot) * oldZoom;
 			float anchorRatio = (PanX + RectWidth(plot) * rel) / (std::max)(1.0f, oldVirtualWidth);
@@ -277,7 +277,7 @@ bool ChartView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 			OnViewportChanged(this);
 			InvalidateVisual();
 		}
-		MouseEventArgs eventObj(MouseButtons::None, 0, xof, yof, delta);
+		MouseEventArgs eventObj(MouseButtons::None, 0, localX, localY, delta);
 		OnMouseWheel(this, eventObj);
 		break;
 	}
@@ -289,22 +289,22 @@ bool ChartView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 		float height = (float)size.cy;
 		int s = -1;
 		int p = -1;
-		if (HasHorizontalScrollBar() && PointInRect((float)xof, (float)yof, GetHorizontalScrollTrackRect(width, height)))
+		if (HasHorizontalScrollBar() && PointInRect((float)localX, (float)localY, GetHorizontalScrollTrackRect(width, height)))
 		{
 			auto thumb = GetHorizontalScrollThumbRect(width, height);
-			if (PointInRect((float)xof, (float)yof, thumb))
-				_scrollGrabOffsetX = (float)xof - thumb.left;
+			if (PointInRect((float)localX, (float)localY, thumb))
+				_scrollGrabOffsetX = (float)localX - thumb.left;
 			else
 				_scrollGrabOffsetX = RectWidth(thumb) * 0.5f;
 			_scrolling = true;
-			UpdateHorizontalScrollDrag((float)xof, width, height);
+			UpdateHorizontalScrollDrag((float)localX, width, height);
 		}
-		else if (HitTestPoint(xof, yof, s, p))
+		else if (HitTestPoint(localX, localY, s, p))
 		{
 			SelectPoint(s, p);
 			OnPointClick(this, s, p);
 		}
-		MouseEventArgs eventObj(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs eventObj(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseDown(this, eventObj);
 		InvalidateVisual();
 		break;
@@ -312,22 +312,22 @@ bool ChartView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 	case WM_LBUTTONUP:
 	{
 		_scrolling = false;
-		MouseEventArgs eventObj(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs eventObj(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseUp(this, eventObj);
 		if (ParentForm && ParentForm->Selected == this)
-			ParentForm->SetSelectedControl(NULL, false);
+			ParentForm->SetSelectedControl(nullptr, false);
 		InvalidateVisual();
 		break;
 	}
 	case WM_LBUTTONDBLCLK:
 	{
 		ResetView();
-		MouseEventArgs eventObj(MouseButtons::Left, 2, xof, yof, HIWORD(wParam));
+		MouseEventArgs eventObj(MouseButtons::Left, 2, localX, localY, HIWORD(wParam));
 		OnMouseDoubleClick(this, eventObj);
 		break;
 	}
 	default:
-		return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 	}
 	return true;
 }
@@ -753,10 +753,10 @@ void ChartView::RebuildHitRegions()
 	}
 }
 
-bool ChartView::HitTestInternal(int xof, int yof, int& seriesIndex, int& pointIndex)
+bool ChartView::HitTestInternal(int localX, int localY, int& seriesIndex, int& pointIndex)
 {
-	float x = (float)xof;
-	float y = (float)yof;
+	float x = (float)localX;
+	float y = (float)localY;
 	for (auto it = _hitRegions.rbegin(); it != _hitRegions.rend(); ++it)
 	{
 		const auto& r = *it;
@@ -788,12 +788,12 @@ bool ChartView::HitTestInternal(int xof, int yof, int& seriesIndex, int& pointIn
 	return false;
 }
 
-void ChartView::UpdateHover(int xof, int yof)
+void ChartView::UpdateHover(int localX, int localY)
 {
 	int s = -1;
 	int p = -1;
 	RebuildHitRegions();
-	HitTestInternal(xof, yof, s, p);
+	HitTestInternal(localX, localY, s, p);
 	if (HoveredSeriesIndex == s && HoveredPointIndex == p)
 		return;
 	HoveredSeriesIndex = s;
@@ -818,7 +818,7 @@ void ChartView::ClampViewport()
 	PanX = std::clamp(PanX, 0.0f, maxPan);
 }
 
-void ChartView::UpdateHorizontalScrollDrag(float xof, float width, float height)
+void ChartView::UpdateHorizontalScrollDrag(float localX, float width, float height)
 {
 	if (!HasHorizontalScrollBar())
 	{
@@ -829,7 +829,7 @@ void ChartView::UpdateHorizontalScrollDrag(float xof, float width, float height)
 	auto track = GetHorizontalScrollTrackRect(width, height);
 	auto thumb = GetHorizontalScrollThumbRect(width, height);
 	float travel = (std::max)(1.0f, RectWidth(track) - RectWidth(thumb));
-	float t = (xof - _scrollGrabOffsetX - track.left) / travel;
+	float t = (localX - _scrollGrabOffsetX - track.left) / travel;
 	t = std::clamp(t, 0.0f, 1.0f);
 
 	float maxPan = GetMaxViewScrollX(width, height);

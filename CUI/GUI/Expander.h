@@ -21,7 +21,7 @@ private:
 
 	float CurrentExpandProgress();
 	void PerformExpanderLayoutIfNeeded();
-	bool HeaderHitTest(int xof, int yof) const;
+	bool HeaderHitTest(int localX, int localY) const;
 	void SetExpandedInternal(bool value, bool fireEvent);
 
 public:
@@ -54,12 +54,12 @@ public:
 	void Toggle();
 
 	SIZE ActualSize() override;
-	CursorKind QueryCursor(int xof, int yof) override;
-	bool ShouldHitTestChildrenAt(int xof, int yof) const override;
+	CursorKind QueryCursor(int localX, int localY) override;
+	bool ShouldHitTestChildrenAt(int localX, int localY) const override;
 	D2D1_RECT_F GetChildrenClipRect() override;
 	bool HandlesNavigationKey(WPARAM key) const override;
 	bool IsAnimationRunning() override;
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

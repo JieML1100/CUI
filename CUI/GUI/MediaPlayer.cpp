@@ -779,11 +779,11 @@ private:
 					const float* b2 = FramePtrAbs(startAbs + i);
 					for (UINT32 c = 0; c < chs; c++)
 					{
-						const double ca = ((double)a2[c] - (double)a1[c]) - ((double)a1[c] - (double)a0[c]);
-						const double cb = ((double)b2[c] - (double)b1[c]) - ((double)b1[c] - (double)b0[c]);
-						const double diff = ca - cb;
+						const double tailCurvature = ((double)a2[c] - (double)a1[c]) - ((double)a1[c] - (double)a0[c]);
+						const double headCurvature = ((double)b2[c] - (double)b1[c]) - ((double)b1[c] - (double)b0[c]);
+						const double diff = tailCurvature - headCurvature;
 						transientError += diff * diff;
-						transientScale += ca * ca + cb * cb;
+						transientScale += tailCurvature * tailCurvature + headCurvature * headCurvature;
 					}
 				}
 			}
@@ -1006,14 +1006,14 @@ static void ApplyVolume(void* data, size_t bytes, UINT32 bitsPerSample, float vo
 static bool TryGetVideoAperture(IMFMediaType* mt, MFVideoArea& area)
 {
 	if (!mt) return false;
-	UINT32 cb = sizeof(MFVideoArea);
-	if (SUCCEEDED(mt->GetBlob(MF_MT_MINIMUM_DISPLAY_APERTURE, (UINT8*)&area, cb, &cb)) && cb == sizeof(MFVideoArea))
+	UINT32 blobSize = sizeof(MFVideoArea);
+	if (SUCCEEDED(mt->GetBlob(MF_MT_MINIMUM_DISPLAY_APERTURE, (UINT8*)&area, blobSize, &blobSize)) && blobSize == sizeof(MFVideoArea))
 		return true;
-	cb = sizeof(MFVideoArea);
-	if (SUCCEEDED(mt->GetBlob(MF_MT_GEOMETRIC_APERTURE, (UINT8*)&area, cb, &cb)) && cb == sizeof(MFVideoArea))
+	blobSize = sizeof(MFVideoArea);
+	if (SUCCEEDED(mt->GetBlob(MF_MT_GEOMETRIC_APERTURE, (UINT8*)&area, blobSize, &blobSize)) && blobSize == sizeof(MFVideoArea))
 		return true;
-	cb = sizeof(MFVideoArea);
-	if (SUCCEEDED(mt->GetBlob(MF_MT_PAN_SCAN_APERTURE, (UINT8*)&area, cb, &cb)) && cb == sizeof(MFVideoArea))
+	blobSize = sizeof(MFVideoArea);
+	if (SUCCEEDED(mt->GetBlob(MF_MT_PAN_SCAN_APERTURE, (UINT8*)&area, blobSize, &blobSize)) && blobSize == sizeof(MFVideoArea))
 		return true;
 	return false;
 }
@@ -3765,7 +3765,7 @@ void MediaPlayer::ReportPerfStatsIfDue()
 	return;
 }
 
-bool MediaPlayer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool MediaPlayer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 
@@ -3774,15 +3774,15 @@ bool MediaPlayer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	case WM_DROPFILES:
 	{
 		HDROP hDropInfo = HDROP(wParam);
-		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
-		if (uFileNum > 0)
+		UINT fileCount = DragQueryFile(hDropInfo, 0xffffffff, nullptr, 0);
+		if (fileCount > 0)
 		{
-			TCHAR strFileName[MAX_PATH];
-			DragQueryFile(hDropInfo, 0, strFileName, MAX_PATH);
+			TCHAR fileName[MAX_PATH];
+			DragQueryFile(hDropInfo, 0, fileName, MAX_PATH);
 			DragFinish(hDropInfo);
 
 			// 加载第一个文件
-			Load(strFileName);
+			Load(fileName);
 		}
 	}
 	return true;
@@ -3803,7 +3803,7 @@ bool MediaPlayer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	}
 	break;
 	default:
-		return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 	}
 
 	return true;

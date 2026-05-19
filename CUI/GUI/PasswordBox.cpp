@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #define NOMINMAX
 #include "PasswordBox.h"
 #include "Form.h"
@@ -50,31 +50,31 @@ void PasswordBox::InputText(std::wstring input)
 	}
 	else
 	{
-		std::vector<wchar_t> tmp = std::vector<wchar_t>();
-		tmp.insert(tmp.end(), this->_text.begin(), this->_text.end());
+		std::vector<wchar_t> editBuffer = std::vector<wchar_t>();
+		editBuffer.insert(editBuffer.end(), this->_text.begin(), this->_text.end());
 		if (sele > sels)
 		{
-			int sublen = sele - sels;
-			for (int i = 0; i < sublen; i++)
+			int removeLength = sele - sels;
+			for (int i = 0; i < removeLength; i++)
 			{
-				tmp.erase(tmp.begin() + sels);
+				editBuffer.erase(editBuffer.begin() + sels);
 			}
 			for (int i = 0; i < inputLength; i++)
 			{
-				tmp.insert(tmp.begin() + sels + i, input[i]);
+				editBuffer.insert(editBuffer.begin() + sels + i, input[i]);
 			}
 			SelectionEnd = SelectionStart = sels + inputLength;
-			this->Text = BuildTextFromBuffer(tmp);
+			this->Text = BuildTextFromBuffer(editBuffer);
 		}
 		else if (sele == sels && sele >= 0)
 		{
 			for (int i = 0; i < inputLength; i++)
 			{
-				tmp.insert(tmp.begin() + sels + i, input[i]);
+				editBuffer.insert(editBuffer.begin() + sels + i, input[i]);
 			}
 			SelectionEnd += inputLength;
 			SelectionStart += inputLength;
-			this->Text = BuildTextFromBuffer(tmp);
+			this->Text = BuildTextFromBuffer(editBuffer);
 		}
 		else
 		{
@@ -82,17 +82,17 @@ void PasswordBox::InputText(std::wstring input)
 			SelectionEnd = SelectionStart = static_cast<int>(this->Text.size());
 		}
 	}
-	std::vector<wchar_t> tmp = std::vector<wchar_t>();
-	tmp.insert(tmp.end(), this->_text.begin(), this->_text.end());
-	tmp.push_back(L'\0');
-	for (size_t i = 0; i < tmp.size(); i++)
+	std::vector<wchar_t> editBuffer = std::vector<wchar_t>();
+	editBuffer.insert(editBuffer.end(), this->_text.begin(), this->_text.end());
+	editBuffer.push_back(L'\0');
+	for (size_t i = 0; i < editBuffer.size(); i++)
 	{
-		if (tmp[i] == L'\r' || tmp[i] == L'\n')
+		if (editBuffer[i] == L'\r' || editBuffer[i] == L'\n')
 		{
-			tmp[i] = L' ';
+			editBuffer[i] = L' ';
 		}
 	}
-	this->Text = BuildTextFromBuffer(tmp);
+	this->Text = BuildTextFromBuffer(editBuffer);
 }
 void PasswordBox::InputBack()
 {
@@ -101,22 +101,22 @@ void PasswordBox::InputBack()
 	int selLen = sele - sels;
 	if (selLen > 0)
 	{
-		std::vector<wchar_t> tmp = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
+		std::vector<wchar_t> editBuffer = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
 		for (int i = 0; i < selLen; i++)
 		{
-			tmp.erase(tmp.begin() + sels);
+			editBuffer.erase(editBuffer.begin() + sels);
 		}
 		this->SelectionStart = this->SelectionEnd = sels;
-		this->Text = BuildTextFromBuffer(tmp);
+		this->Text = BuildTextFromBuffer(editBuffer);
 	}
 	else
 	{
 		if (sels > 0)
 		{
-			std::vector<wchar_t> tmp = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
-			tmp.erase(tmp.begin() + sels - 1);
+			std::vector<wchar_t> editBuffer = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
+			editBuffer.erase(editBuffer.begin() + sels - 1);
 			this->SelectionStart = this->SelectionEnd = sels - 1;
-			this->Text = BuildTextFromBuffer(tmp);
+			this->Text = BuildTextFromBuffer(editBuffer);
 		}
 	}
 }
@@ -127,38 +127,38 @@ void PasswordBox::InputDelete()
 	int selLen = sele - sels;
 	if (selLen > 0)
 	{
-		std::vector<wchar_t> tmp = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
+		std::vector<wchar_t> editBuffer = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
 		for (int i = 0; i < selLen; i++)
 		{
-			tmp.erase(tmp.begin() + sels);
+			editBuffer.erase(editBuffer.begin() + sels);
 		}
 		this->SelectionStart = this->SelectionEnd = sels;
-		this->Text = BuildTextFromBuffer(tmp);
+		this->Text = BuildTextFromBuffer(editBuffer);
 	}
 	else
 	{
 		if (sels < static_cast<int>(this->Text.size()))
 		{
-			std::vector<wchar_t> tmp = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
-			tmp.erase(tmp.begin() + sels);
+			std::vector<wchar_t> editBuffer = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
+			editBuffer.erase(editBuffer.begin() + sels);
 			this->SelectionStart = this->SelectionEnd = sels;
-			this->Text = BuildTextFromBuffer(tmp);
+			this->Text = BuildTextFromBuffer(editBuffer);
 		}
 	}
 }
 void PasswordBox::UpdateScroll(bool arrival)
 {
-	float render_width = this->Width - (TextMargin * 2.0f);
+	float renderWidth = this->Width - (TextMargin * 2.0f);
 	auto font = this->Font;
-	std::wstring MaskText(this->Text.size(), L'*');
-	auto lastSelect = font->HitTestTextRange(MaskText, (UINT32)SelectionEnd, (UINT32)0)[0];
-	if ((lastSelect.left + lastSelect.width) - OffsetX > render_width)
+	std::wstring maskedText(this->Text.size(), L'*');
+	auto lastSelect = font->HitTestTextRange(maskedText, (UINT32)SelectionEnd, (UINT32)0)[0];
+	if ((lastSelect.left + lastSelect.width) - HorizontalScrollOffset > renderWidth)
 	{
-		OffsetX = (lastSelect.left + lastSelect.width) - render_width;
+		HorizontalScrollOffset = (lastSelect.left + lastSelect.width) - renderWidth;
 	}
-	if (lastSelect.left - OffsetX < 0.0f)
+	if (lastSelect.left - HorizontalScrollOffset < 0.0f)
 	{
-		OffsetX = lastSelect.left;
+		HorizontalScrollOffset = lastSelect.left;
 	}
 }
 std::wstring PasswordBox::GetSelectedString()
@@ -182,11 +182,11 @@ void PasswordBox::Update()
 	bool isUnderMouse = this->ParentForm->UnderMouse == this;
 	auto d2d = this->ParentForm->Render;
 	auto font = this->Font;
-	float render_height = this->Height - (TextMargin * 2.0f);
-	std::wstring MaskText(this->Text.size(), L'*');
-	textSize = font->GetTextSize(MaskText, FLT_MAX, render_height);
-	float OffsetY = (this->Height - textSize.height) * 0.5f;
-	if (OffsetY < 0.0f)OffsetY = 0.0f;
+	float renderHeight = this->Height - (TextMargin * 2.0f);
+	std::wstring maskedText(this->Text.size(), L'*');
+	textSize = font->GetTextSize(maskedText, FLT_MAX, renderHeight);
+	float textOffsetY = (this->Height - textSize.height) * 0.5f;
+	if (textOffsetY < 0.0f) textOffsetY = 0.0f;
 	auto size = this->ActualSize();
 	const float actualWidth = static_cast<float>(size.cx);
 	const float actualHeight = static_cast<float>(size.cy);
@@ -214,12 +214,12 @@ void PasswordBox::Update()
 				int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
 				int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
 				int selLen = sele - sels;
-				auto selRange = font->HitTestTextRange(MaskText, (UINT32)sels, (UINT32)selLen);
+				auto selRange = font->HitTestTextRange(maskedText, (UINT32)sels, (UINT32)selLen);
 				if (selLen != 0)
 				{
 					for (auto sr : selRange)
 					{
-						d2d->FillRect(sr.left + TextMargin - OffsetX, sr.top + OffsetY, sr.width, sr.height, this->SelectedBackColor);
+						d2d->FillRect(sr.left + TextMargin - HorizontalScrollOffset, sr.top + textOffsetY, sr.width, sr.height, this->SelectedBackColor);
 					}
 				}
 				else
@@ -227,36 +227,36 @@ void PasswordBox::Update()
 					if (!selRange.empty())
 					{
 						const auto caret = selRange[0];
-						const float cx = caret.left + TextMargin - OffsetX;
-						const float cy = caret.top + OffsetY;
+						const float cx = caret.left + TextMargin - HorizontalScrollOffset;
+						const float cy = caret.top + textOffsetY;
 						const float ch = caret.height > 0 ? caret.height : font->FontHeight;
-						auto abs = this->AbsLocation;
-						this->_caretRectCache = { static_cast<float>(abs.x) + cx - 2.0f, static_cast<float>(abs.y) + cy - 2.0f, static_cast<float>(abs.x) + cx + 2.0f, static_cast<float>(abs.y) + cy + ch + 2.0f };
+						auto absoluteLocation = this->AbsLocation;
+						this->_caretRectCache = { static_cast<float>(absoluteLocation.x) + cx - 2.0f, static_cast<float>(absoluteLocation.y) + cy - 2.0f, static_cast<float>(absoluteLocation.x) + cx + 2.0f, static_cast<float>(absoluteLocation.y) + cy + ch + 2.0f };
 						this->_caretRectCacheValid = true;
 						shouldDrawCaret = true;
-						caretStart = { selRange[0].left + TextMargin - OffsetX, selRange[0].top + OffsetY };
-						caretEnd = { selRange[0].left + TextMargin - OffsetX, selRange[0].top + selRange[0].height + OffsetY };
+						caretStart = { selRange[0].left + TextMargin - HorizontalScrollOffset, selRange[0].top + textOffsetY };
+						caretEnd = { selRange[0].left + TextMargin - HorizontalScrollOffset, selRange[0].top + selRange[0].height + textOffsetY };
 					}
 				}
-				auto lot = Factory::CreateStringLayout(MaskText, FLT_MAX, render_height, font->FontObject);
-				if (lot) {
-					d2d->DrawStringLayoutEffect(lot,
-						TextMargin - OffsetX, OffsetY,
+				auto textLayout = Factory::CreateStringLayout(maskedText, FLT_MAX, renderHeight, font->FontObject);
+				if (textLayout) {
+					d2d->DrawStringLayoutEffect(textLayout,
+						TextMargin - HorizontalScrollOffset, textOffsetY,
 						this->ForeColor,
 						DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
 						this->SelectedForeColor,
 						font);
-					lot->Release();
+					textLayout->Release();
 				}
 			}
 			else
 			{
-				auto lot = Factory::CreateStringLayout(MaskText, FLT_MAX, render_height, font->FontObject);
-				if (lot) {
-					d2d->DrawStringLayout(lot,
-						TextMargin - OffsetX, OffsetY,
+				auto textLayout = Factory::CreateStringLayout(maskedText, FLT_MAX, renderHeight, font->FontObject);
+				if (textLayout) {
+					d2d->DrawStringLayout(textLayout,
+						TextMargin - HorizontalScrollOffset, textOffsetY,
 						this->ForeColor);
-					lot->Release();
+					textLayout->Release();
 				}
 			}
 		}
@@ -264,15 +264,15 @@ void PasswordBox::Update()
 		{
 			if (isSelected)
 			{
-				const float cx = (float)TextMargin - OffsetX;
-				const float cy = OffsetY;
+				const float cx = (float)TextMargin - HorizontalScrollOffset;
+				const float cy = textOffsetY;
 				const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
-				auto abs = this->AbsLocation;
-				this->_caretRectCache = { static_cast<float>(abs.x) + cx - 2.0f, static_cast<float>(abs.y) + cy - 2.0f, static_cast<float>(abs.x) + cx + 2.0f, static_cast<float>(abs.y) + cy + ch + 2.0f };
+				auto absoluteLocation = this->AbsLocation;
+				this->_caretRectCache = { static_cast<float>(absoluteLocation.x) + cx - 2.0f, static_cast<float>(absoluteLocation.y) + cy - 2.0f, static_cast<float>(absoluteLocation.x) + cx + 2.0f, static_cast<float>(absoluteLocation.y) + cy + ch + 2.0f };
 				this->_caretRectCacheValid = true;
 				shouldDrawCaret = true;
-				caretStart = { (float)TextMargin - OffsetX, OffsetY };
-				caretEnd = { (float)TextMargin - OffsetX, OffsetY + 16.0f };
+				caretStart = { (float)TextMargin - HorizontalScrollOffset, textOffsetY };
+				caretEnd = { (float)TextMargin - HorizontalScrollOffset, textOffsetY + 16.0f };
 			}
 		}
 		UpdateCaretBlinkState(isSelected, this->SelectionStart, this->SelectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
@@ -298,7 +298,7 @@ bool PasswordBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 {
 	return GetCaretBlinkInvalidRect(outRect);
 }
-bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	switch (message)
@@ -306,13 +306,13 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	case WM_DROPFILES:
 	{
 		HDROP hDropInfo = HDROP(wParam);
-		UINT uFileNum = DragQueryFile(hDropInfo, 0xFFFFFFFF, NULL, 0);
-		TCHAR strFileName[MAX_PATH]{};
+		UINT fileCount = DragQueryFile(hDropInfo, 0xFFFFFFFF, nullptr, 0);
+		TCHAR fileName[MAX_PATH]{};
 		std::vector<std::wstring> files;
-		for (UINT i = 0; i < uFileNum; i++)
+		for (UINT fileIndex = 0; fileIndex < fileCount; fileIndex++)
 		{
-			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.push_back(strFileName);
+			DragQueryFile(hDropInfo, fileIndex, fileName, MAX_PATH);
+			files.push_back(fileName);
 		}
 		DragFinish(hDropInfo);
 		if (!files.empty())
@@ -323,8 +323,8 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	break;
 	case WM_MOUSEWHEEL:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
-		this->OnMouseWheel(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam));
+		this->OnMouseWheel(this, eventArgs);
 	}
 	break;
 	case WM_MOUSEMOVE:
@@ -333,14 +333,14 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) && this->ParentForm->Selected == this)
 		{
 			auto font = this->Font;
-			float render_height = this->Height - (TextMargin * 2.0f);
-			std::wstring MaskText(this->Text.size(), L'*');
-			SelectionEnd = font->HitTestTextPosition(MaskText, FLT_MAX, render_height, (xof - TextMargin) + this->OffsetX, yof - TextMargin);
+			float renderHeight = this->Height - (TextMargin * 2.0f);
+			std::wstring maskedText(this->Text.size(), L'*');
+			SelectionEnd = font->HitTestTextPosition(maskedText, FLT_MAX, renderHeight, (localX - TextMargin) + this->HorizontalScrollOffset, localY - TextMargin);
 			UpdateScroll();
 			this->InvalidateVisual();
 		}
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
-		this->OnMouseMove(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
+		this->OnMouseMove(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONDOWN:
@@ -351,17 +351,17 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		{
 			if (this->ParentForm->Selected != this)
 			{
-				auto lse = this->ParentForm->Selected;
+				auto previousSelection = this->ParentForm->Selected;
 				this->ParentForm->Selected = this;
-				if (lse) lse->InvalidateVisual();
+				if (previousSelection) previousSelection->InvalidateVisual();
 			}
 			auto font = this->Font;
-			float render_height = this->Height - (TextMargin * 2.0f);
-			std::wstring MaskText(this->Text.size(), L'*');
-			this->SelectionStart = this->SelectionEnd = font->HitTestTextPosition(MaskText, FLT_MAX, render_height, (xof - TextMargin) + this->OffsetX, yof - TextMargin);
+			float renderHeight = this->Height - (TextMargin * 2.0f);
+			std::wstring maskedText(this->Text.size(), L'*');
+			this->SelectionStart = this->SelectionEnd = font->HitTestTextPosition(maskedText, FLT_MAX, renderHeight, (localX - TextMargin) + this->HorizontalScrollOffset, localY - TextMargin);
 		}
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDown(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDown(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;
@@ -371,21 +371,21 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	{
 		if (this->ParentForm->Selected == this)
 		{
-			float render_height = this->Height - (TextMargin * 2.0f);
+			float renderHeight = this->Height - (TextMargin * 2.0f);
 			auto font = this->Font;
-			std::wstring MaskText(this->Text.size(), L'*');
-			SelectionEnd = font->HitTestTextPosition(MaskText, FLT_MAX, render_height, (xof - TextMargin) + this->OffsetX, yof - TextMargin);
+			std::wstring maskedText(this->Text.size(), L'*');
+			SelectionEnd = font->HitTestTextPosition(maskedText, FLT_MAX, renderHeight, (localX - TextMargin) + this->HorizontalScrollOffset, localY - TextMargin);
 		}
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseUp(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseUp(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;
 	case WM_LBUTTONDBLCLK:
 	{
 		this->ParentForm->Selected = this;
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDoubleClick(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDoubleClick(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;
@@ -400,9 +400,9 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			}
 			else
 			{
-				auto abs = this->AbsLocation;
-				float caretX = (float)abs.x + this->TextMargin - this->OffsetX;
-				float caretY = (float)abs.y;
+				auto absoluteLocation = this->AbsLocation;
+				float caretX = (float)absoluteLocation.x + this->TextMargin - this->HorizontalScrollOffset;
+				float caretY = (float)absoluteLocation.y;
 				float caretH = (this->Font && this->Font->FontHeight > 0.0f) ? this->Font->FontHeight : 16.0f;
 				imeRect = D2D1_RECT_F{ caretX, caretY, caretX + 1.0f, caretY + caretH };
 			}
@@ -449,9 +449,9 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		else if (wParam == VK_HOME)
 		{
 			auto font = this->Font;
-			std::wstring MaskText(this->Text.size(), L'*');
-			auto hit = font->HitTestTextRange(MaskText, (UINT32)this->SelectionEnd, (UINT32)0);
-			this->SelectionEnd = font->HitTestTextPosition(MaskText, 0, hit[0].top + (font->FontHeight * 0.5f));
+			std::wstring maskedText(this->Text.size(), L'*');
+			auto hit = font->HitTestTextRange(maskedText, (UINT32)this->SelectionEnd, (UINT32)0);
+			this->SelectionEnd = font->HitTestTextPosition(maskedText, 0, hit[0].top + (font->FontHeight * 0.5f));
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 			{
 				this->SelectionStart = this->SelectionEnd;
@@ -464,10 +464,10 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 		else if (wParam == VK_END)
 		{
-			std::wstring MaskText(this->Text.size(), L'*');
+			std::wstring maskedText(this->Text.size(), L'*');
 			auto font = this->Font;
-			auto hit = font->HitTestTextRange(MaskText, (UINT32)this->SelectionEnd, (UINT32)0);
-			this->SelectionEnd = font->HitTestTextPosition(MaskText, FLT_MAX, hit[0].top + (font->FontHeight * 0.5f));
+			auto hit = font->HitTestTextRange(maskedText, (UINT32)this->SelectionEnd, (UINT32)0);
+			this->SelectionEnd = font->HitTestTextPosition(maskedText, FLT_MAX, hit[0].top + (font->FontHeight * 0.5f));
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 			{
 				this->SelectionStart = this->SelectionEnd;
@@ -482,9 +482,9 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		else if (wParam == VK_PRIOR)
 		{
 			auto font = this->Font;
-			std::wstring MaskText(this->Text.size(), L'*');
-			auto hit = font->HitTestTextRange(MaskText, (UINT32)this->SelectionEnd, (UINT32)0);
-			this->SelectionEnd = font->HitTestTextPosition(MaskText, hit[0].left, hit[0].top - this->Height);
+			std::wstring maskedText(this->Text.size(), L'*');
+			auto hit = font->HitTestTextRange(maskedText, (UINT32)this->SelectionEnd, (UINT32)0);
+			this->SelectionEnd = font->HitTestTextPosition(maskedText, hit[0].left, hit[0].top - this->Height);
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 			{
 				this->SelectionStart = this->SelectionEnd;
@@ -498,9 +498,9 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		else if (wParam == VK_NEXT)
 		{
 			auto font = this->Font;
-			std::wstring MaskText(this->Text.size(), L'*');
-			auto hit = font->HitTestTextRange(MaskText, (UINT32)this->SelectionEnd, (UINT32)0);
-			this->SelectionEnd = font->HitTestTextPosition(MaskText, hit[0].left, hit[0].top + this->Height);
+			std::wstring maskedText(this->Text.size(), L'*');
+			auto hit = font->HitTestTextRange(maskedText, (UINT32)this->SelectionEnd, (UINT32)0);
+			this->SelectionEnd = font->HitTestTextPosition(maskedText, hit[0].left, hit[0].top + this->Height);
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 			{
 				this->SelectionStart = this->SelectionEnd;
@@ -512,8 +512,8 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			}
 			UpdateScroll(true);
 		}
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyDown(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyDown(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;
@@ -547,10 +547,10 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 				if (IsClipboardFormatAvailable(CF_UNICODETEXT))
 				{
 					HANDLE hClip = GetClipboardData(CF_UNICODETEXT);
-					const wchar_t* pBuf = hClip ? (const wchar_t*)GlobalLock(hClip) : nullptr;
-					if (pBuf)
+					const wchar_t* clipboardText = hClip ? (const wchar_t*)GlobalLock(hClip) : nullptr;
+					if (clipboardText)
 					{
-						this->InputText(pBuf);
+						this->InputText(clipboardText);
 						UpdateScroll();
 						GlobalUnlock(hClip);
 					}
@@ -565,19 +565,19 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	{
 		if (lParam & GCS_RESULTSTR)
 		{
-			HIMC hIMC = ImmGetContext(this->ParentForm->Handle);
-			if (hIMC)
+			HIMC imeContext = ImmGetContext(this->ParentForm->Handle);
+			if (imeContext)
 			{
-				LONG bytes = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, NULL, 0);
-				if (bytes > 0)
+				LONG byteCount = ImmGetCompositionStringW(imeContext, GCS_RESULTSTR, nullptr, 0);
+				if (byteCount > 0)
 				{
-					int wcharCount = bytes / (int)sizeof(wchar_t);
+					int wcharCount = byteCount / (int)sizeof(wchar_t);
 					std::wstring buffer;
 					buffer.resize(wcharCount);
-					ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, buffer.data(), bytes);
+					ImmGetCompositionStringW(imeContext, GCS_RESULTSTR, buffer.data(), byteCount);
 					this->InputText(buffer);
 				}
-				ImmReleaseContext(this->ParentForm->Handle, hIMC);
+				ImmReleaseContext(this->ParentForm->Handle, imeContext);
 			}
 			UpdateScroll();
 			this->InvalidateVisual();
@@ -586,8 +586,8 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	break;
 	case WM_KEYUP:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyUp(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyUp(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;

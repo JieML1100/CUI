@@ -100,7 +100,7 @@ void Switch::Update()
 	auto size = this->ActualSize();
 	const float actualWidth = static_cast<float>(size.cx);
 	const float actualHeight = static_cast<float>(size.cy);
-	float clipW = last_width > actualWidth ? last_width : actualWidth;
+	float clipW = lastMeasuredWidth > actualWidth ? lastMeasuredWidth : actualWidth;
 	this->BeginRender(clipW, actualHeight);
 	{
 		const float progress = CurrentThumbProgress();
@@ -134,7 +134,7 @@ void Switch::Update()
 		d2d->FillRoundRect(0.0f, 0.0f, clipW, actualHeight, DisabledOverlayColor, actualHeight * 0.5f);
 	}
 	this->EndRender();
-	last_width = actualWidth;
+	lastMeasuredWidth = actualWidth;
 }
 
 bool Switch::DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const

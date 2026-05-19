@@ -90,28 +90,28 @@ class GridViewRow
 {
 public:
 	std::vector<CellValue> Cells = std::vector<CellValue>();
-	CellValue& operator[](int idx);
+	CellValue& operator[](int index);
 };
 class GridView : public Control
 {
 public:
 	UIClass Type();
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool HandlesNavigationKey(WPARAM key) const override;
 	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override { return GetCaretBlinkInvalidRect(outRect); }
 	GridView(int x = 0, int y = 0, int width = 120, int height = 20);
 	~GridView() override;
 	/** @brief 表头字体（为空则使用默认字体/继承字体）。 */
-	class Font* HeadFont = NULL;
+	class Font* HeadFont = nullptr;
 	bool InScroll = false;
 	bool InHScroll = false;
 	ScrollChangedEvent ScrollChanged;
 	std::vector<GridViewColumn> Columns = std::vector<GridViewColumn>();
 	std::vector<GridViewRow> Rows = std::vector<GridViewRow>();
-	GridViewRow& operator[](int idx);
+	GridViewRow& operator[](int index);
 	float HeadHeight = 0.0f;
 	float RowHeight = 0.0f;
 	float BorderThickness = 1.5f;
@@ -227,14 +227,14 @@ private:
 	void DrawScroll();
 	void DrawHScroll(const ScrollLayout& l);
 	void DrawCorner(const ScrollLayout& l);
-	void SetScrollByPos(float yof);
-	void SetHScrollByPos(float xof);
+	void SetScrollByPos(float localY);
+	void SetHScrollByPos(float localX);
 	void HandleDropFiles(WPARAM wParam);
-	void HandleMouseWheel(WPARAM wParam, int xof, int yof);
-	void HandleMouseMove(int xof, int yof);
-	void HandleLeftButtonDown(int xof, int yof);
-	void HandleLeftButtonUp(int xof, int yof);
-	void HandleLeftButtonDoubleClick(WPARAM wParam, int xof, int yof);
+	void HandleMouseWheel(WPARAM wParam, int localX, int localY);
+	void HandleMouseMove(int localX, int localY);
+	void HandleLeftButtonDown(int localX, int localY);
+	void HandleLeftButtonUp(int localX, int localY);
+	void HandleLeftButtonDoubleClick(WPARAM wParam, int localX, int localY);
 	void HandleKeyDown(WPARAM wParam);
 	void HandleKeyUp(WPARAM wParam);
 	void HandleCharInput(WPARAM wParam);
@@ -250,7 +250,7 @@ private:
 	void SaveCurrentEditingCell(bool commit = true);
 	void AdjustScrollPosition();
 	bool CanScrollDown();
-	void UpdateUnderMouseIndices(int xof, int yof);
+	void UpdateUnderMouseIndices(int localX, int localY);
 
 	bool _resizingColumn = false;
 	int _resizeColumnIndex = -1;
@@ -267,7 +267,7 @@ private:
 	int EditSelectionEnd = 0;
 	float EditOffsetX = 0.0f;
 
-	class DropDownPopup* _dropDownPopup = NULL;
+	class DropDownPopup* _dropDownPopup = nullptr;
 	int _dropDownPopupColumnIndex = -1;
 	int _dropDownPopupRowIndex = -1;
 
@@ -287,7 +287,7 @@ private:
 	float GetHeadHeightPx();
 	bool TryGetCellRectLocal(int col, int row, D2D1_RECT_F& outRect);
 	bool IsEditableTextCell(int col, int row);
-	bool SetEditingCaretFromMousePoint(int xof, int yof);
+	bool SetEditingCaretFromMousePoint(int localX, int localY);
 	void EditInputText(const std::wstring& input);
 	void EditInputBack();
 	void EditInputDelete();
@@ -306,5 +306,5 @@ public:
 	void Update() override;
 	/** @brief 根据内容自动调整某列宽度。 */
 	void AutoSizeColumn(int col);
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

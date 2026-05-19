@@ -79,10 +79,10 @@ void GroupBox::Update()
 		}
 		if (!this->ParentForm || !this->ParentForm->IsDCompSceneRenderActive())
 		{
-			for (auto c : this->GetChildrenInZOrder())
+			for (auto child : this->GetChildrenInZOrder())
 			{
-				if (!c || !c->Visible) continue;
-				c->Update();
+				if (!child || !child->Visible) continue;
+				child->Update();
 			}
 		}
 
@@ -122,8 +122,8 @@ void GroupBox::Update()
 	this->EndRender();
 }
 
-bool GroupBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool GroupBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	PerformGroupLayoutIfNeeded();
-	return Panel::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Panel::ProcessMessage(message, wParam, lParam, localX, localY);
 }

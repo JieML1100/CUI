@@ -247,7 +247,7 @@ void Designer::OnOpenClick()
 	if (r != DialogResult::OK || ofd.SelectedPaths.empty())
 		return;
 
-	std::wstring path = Convert::string_to_wstring(ofd.SelectedPaths[0]);
+	std::wstring path = Convert::StringToWString(ofd.SelectedPaths[0]);
 	std::wstring err;
 	if (_canvas->LoadDesignFile(path, &err))
 	{
@@ -280,7 +280,7 @@ void Designer::OnSaveClick()
 		}
 		if (r != DialogResult::OK)
 			return;
-		path = Convert::string_to_wstring(sfd.SelectedPath);
+		path = Convert::StringToWString(sfd.SelectedPath);
 		if (path.empty()) return;
 		if (!path.ends_with(L".xml") && !path.ends_with(L".XML"))
 		{
@@ -344,7 +344,7 @@ void Designer::OnExportClick()
 
 	if (dialogResult == DialogResult::OK)
 	{
-		std::wstring selectedPath = Convert::string_to_wstring(saveFileDialog.SelectedPath);
+		std::wstring selectedPath = Convert::StringToWString(saveFileDialog.SelectedPath);
 		if (selectedPath.empty())
 			return;
 

@@ -179,7 +179,7 @@ protected:
 	Microsoft::WRL::ComPtr<ID2D1Bitmap> _imageCache;
 	ID2D1RenderTarget* _imageCacheTarget = nullptr;
 	std::wstring _text = std::wstring(L"");
-	Font* _font = NULL;
+	Font* _font = nullptr;
 	bool _ownsFont = false;
 	D2D1_RECT_F _lastInvalidatedClientRect{ 0,0,0,0 };
 	bool _hasLastInvalidatedClientRect = false;
@@ -365,43 +365,43 @@ public:
 	READONLY_PROPERTY(int, Count);
 	GET(int, Count);
 	Control* operator[](int index);
-	Control* get(int index);
+	Control* GetChild(int index);
 	std::vector<Control*> GetChildrenInZOrder() const;
 	std::vector<Control*> GetChildrenInReverseZOrder() const;
 
 	template<typename T>
-	T AddControl(T c) {
-		if (c->Parent) {
+	T AddControl(T control) {
+		if (control->Parent) {
 			throw std::exception("该控件已属于其他容器!");
-			return NULL;
+			return nullptr;
 		}
 		for(auto& child : this->Children) {
-			if (child == c) {
-				return c;
+			if (child == control) {
+				return control;
 			}
 		}
-		c->Parent = this;
-		c->ParentForm = this->ParentForm;
-		this->Children.push_back(c);
+		control->Parent = this;
+		control->ParentForm = this->ParentForm;
+		this->Children.push_back(control);
 		
 		// 递归设置所有子控件的ParentForm
-		SetChildrenParentForm(c, this->ParentForm);
-		return c;
+		SetChildrenParentForm(control, this->ParentForm);
+		return control;
 	}
 	
 	// 递归设置所有子控件的ParentForm
-	static void SetChildrenParentForm(Control* c, Form* form) {
-		if (!c) return;
-		c->ParentForm = form;
-		for (size_t i = 0; i < c->Children.size(); i++) {
-			SetChildrenParentForm(c->Children[i], form);
+	static void SetChildrenParentForm(Control* control, Form* form) {
+		if (!control) return;
+		control->ParentForm = form;
+		for (size_t i = 0; i < control->Children.size(); i++) {
+			SetChildrenParentForm(control->Children[i], form);
 		}
 	}
 	/**
 	 * @brief 从子控件列表移除一个控件。
-	 * @param c 需要移除的控件。
+	 * @param child 需要移除的控件。
 	 */
-	void RemoveControl(Control* c);
+	void RemoveControl(Control* child);
 	READONLY_PROPERTY(POINT, AbsLocation);
 	GET(POINT, AbsLocation);
 	READONLY_PROPERTY(POINT, ActualLocation);
@@ -508,27 +508,27 @@ public:
 	CursorKind Cursor = CursorKind::Arrow;
 	/**
 	 * @brief 根据命中区域返回光标类型。
-	 * @param xof 相对于控件客户区的 X。
-	 * @param yof 相对于控件客户区的 Y。
+	 * @param localX 相对于控件客户区的 X。
+	 * @param localY 相对于控件客户区的 Y。
 	 */
-	virtual CursorKind QueryCursor(int xof, int yof) { (void)xof; (void)yof; return this->Cursor; }
+	virtual CursorKind QueryCursor(int localX, int localY) { (void)localX; (void)localY; return this->Cursor; }
 	virtual bool TryGetSystemCursorId(UINT32& outId) const { (void)outId; return false; }
-	virtual bool ContainsPoint(int xof, int yof)
+	virtual bool ContainsPoint(int localX, int localY)
 	{
-		auto size = this->ActualSize();
-		return xof >= 0 && yof >= 0 && xof <= size.cx && yof <= size.cy;
+		auto actualSize = this->ActualSize();
+		return localX >= 0 && localY >= 0 && localX <= actualSize.cx && localY <= actualSize.cy;
 	}
 	virtual bool HitTestChildren() const { return true; }
-	virtual bool ShouldHitTestChildrenAt(int xof, int yof) const { (void)xof; (void)yof; return this->HitTestChildren(); }
+	virtual bool ShouldHitTestChildrenAt(int localX, int localY) const { (void)localX; (void)localY; return this->HitTestChildren(); }
 	virtual POINT GetChildrenRenderOffset() const { return POINT{ 0, 0 }; }
-		virtual bool ClipsChildren() { return false; }
-		virtual D2D1_RECT_F GetChildrenClipRect()
+	virtual bool ClipsChildren() { return false; }
+	virtual D2D1_RECT_F GetChildrenClipRect()
 	{
-			auto size = this->ActualSize();
-		return D2D1_RECT_F{ 0.0f, 0.0f, (float)size.cx, (float)size.cy };
+		auto actualSize = this->ActualSize();
+		return D2D1_RECT_F{ 0.0f, 0.0f, (float)actualSize.cx, (float)actualSize.cy };
 	}
 	virtual bool HandlesMouseWheel() const { return false; }
-	virtual bool CanHandleMouseWheel(int delta, int xof, int yof) { (void)delta; (void)xof; (void)yof; return false; }
+	virtual bool CanHandleMouseWheel(int delta, int localX, int localY) { (void)delta; (void)localX; (void)localY; return false; }
 	virtual bool HandlesNavigationKey(WPARAM key) const { (void)key; return false; }
 	virtual bool AutoCloseOnOutsideClick() const { return false; }
 	virtual bool AutoCloseOnFormFocusLoss() const { return false; }
@@ -538,11 +538,11 @@ public:
 	bool TryGetDCompSceneOrderOverride(int& order) const { if (!_hasDCompSceneOrderOverride) return false; order = _dcompSceneOrderOverride; return true; }
 	virtual void RenderImage(float cornerRadius = 0.0f);
 	virtual SIZE ActualSize();
-	void setTextPrivate(std::wstring);
+	void SetTextInternal(std::wstring text);
 	bool IsSelected();
 	/**
 	 * @brief 处理窗口消息并分发到控件。
 	 * @return true 表示已处理。
 	 */
-	virtual bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof);
+	virtual bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY);
 };

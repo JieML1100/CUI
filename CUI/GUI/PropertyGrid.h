@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "Control.h"
 
 enum class PropertyGridValueType
@@ -101,17 +101,17 @@ public:
 	void CollapseAll();
 	void EnsureVisible(int index);
 	void SetScrollOffset(float offsetY);
-	int HitTestItem(int xof, int yof) const;
+	int HitTestItem(int localX, int localY) const;
 
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool HandlesNavigationKey(WPARAM key) const override;
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 private:
 	struct RowInfo
@@ -164,9 +164,9 @@ private:
 	float _editOffsetX = 0.0f;
 	std::wstring _imeCommittedTextToSuppress;
 	UINT64 _imeCommitSuppressTick = 0;
-	class DropDownPopup* _dropDownPopup = NULL;
+	class DropDownPopup* _dropDownPopup = nullptr;
 	int _dropDownPopupIndex = -1;
-	class ColorPickerPopup* _colorPicker = NULL;
+	class ColorPickerPopup* _colorPicker = nullptr;
 	int _colorPickerIndex = -1;
 
 	std::vector<RowInfo> BuildRows() const;
@@ -182,8 +182,8 @@ private:
 	void DrawItemRow(D2DGraphics* d2d, const RowInfo& row, const D2D1_RECT_F& rect, int visibleItemOrdinal);
 	void DrawCheckBox(D2DGraphics* d2d, const D2D1_RECT_F& rect, bool checked);
 	void DrawScrollBar(D2DGraphics* d2d, const Layout& layout);
-	void UpdateHover(int xof, int yof);
-	void UpdateScrollByThumb(float yof);
+	void UpdateHover(int localX, int localY);
+	void UpdateScrollByThumb(float localY);
 	void SelectItem(int index);
 	void BeginEdit(int index);
 	void CommitEdit();
@@ -195,8 +195,8 @@ private:
 	void EditEnsureSelectionInRange();
 	void EditUpdateScroll(float cellWidth);
 	int EditHitTestTextPosition(float cellWidth, float cellHeight, float x, float y);
-	bool SetEditingCaretFromMousePoint(int xof, int yof, const D2D1_RECT_F& valueRect);
-	bool UpdateEditingSelectionFromMousePoint(int xof, int yof, const D2D1_RECT_F& valueRect);
+	bool SetEditingCaretFromMousePoint(int localX, int localY, const D2D1_RECT_F& valueRect);
+	bool UpdateEditingSelectionFromMousePoint(int localX, int localY, const D2D1_RECT_F& valueRect);
 	std::wstring EditGetSelectedString() const;
 	void EditSetImeCompositionWindow();
 	void HandleImeComposition(LPARAM lParam);
@@ -209,8 +209,8 @@ private:
 	void CloseColorPickerEditor();
 	bool IsEditableItem(int index) const;
 	bool GetValueRectForItem(int index, const std::vector<RowInfo>& rows, const Layout& layout, D2D1_RECT_F& outRect) const;
-	bool IsValueCell(int xof, int yof, const std::vector<RowInfo>& rows, const Layout& layout, int& itemIndex) const;
-	bool IsOverSplitter(int xof, int yof) const;
+	bool IsValueCell(int localX, int localY, const std::vector<RowInfo>& rows, const Layout& layout, int& itemIndex) const;
+	bool IsOverSplitter(int localX, int localY) const;
 	void StartCategoryAnimation(const std::wstring& category, bool collapsing);
 	bool PruneCategoryAnimations();
 	float CategoryContentProgress(const std::wstring& category, bool collapsed) const;

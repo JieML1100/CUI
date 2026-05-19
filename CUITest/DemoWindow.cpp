@@ -1,35 +1,30 @@
-#include "DemoWindow.h"
+﻿#include "DemoWindow.h"
 #include "imgs.h"
 #include <memory>
 #include "../CUI/GUI/WebBrowser.h"
 
 namespace {
 
-	D2D1_COLOR_F Color(float r, float g, float b, float a = 1.0f)
-	{
-		return D2D1_COLOR_F{ r, g, b, a };
-	}
-
 	struct DemoThemePalette
 	{
 		FormThemeFrame Window;
-		D2D1_COLOR_F Surface = Color(0.15f, 0.17f, 0.21f, 1.0f);
-		D2D1_COLOR_F SurfaceAlt = Color(0.19f, 0.22f, 0.27f, 1.0f);
-		D2D1_COLOR_F SurfacePanel = Color(0.20f, 0.23f, 0.28f, 0.92f);
-		D2D1_COLOR_F SurfacePanelSoft = Color(0.23f, 0.26f, 0.31f, 0.96f);
-		D2D1_COLOR_F InputBack = Color(0.17f, 0.18f, 0.20f, 0.98f);
-		D2D1_COLOR_F InputHover = Color(0.24f, 0.25f, 0.28f, 1.0f);
-		D2D1_COLOR_F Border = Color(0.46f, 0.50f, 0.58f, 0.95f);
-		D2D1_COLOR_F BorderStrong = Color(0.76f, 0.80f, 0.87f, 0.65f);
-		D2D1_COLOR_F Text = Color(0.95f, 0.96f, 0.98f, 1.0f);
-		D2D1_COLOR_F TextMuted = Color(0.76f, 0.79f, 0.84f, 1.0f);
-		D2D1_COLOR_F Accent = Color(0.28f, 0.63f, 0.98f, 0.98f);
-		D2D1_COLOR_F AccentSoft = Color(0.34f, 0.66f, 0.98f, 0.30f);
-		D2D1_COLOR_F AccentText = Color(0.98f, 0.99f, 1.0f, 1.0f);
-		D2D1_COLOR_F Selection = Color(0.27f, 0.57f, 0.96f, 0.72f);
-		D2D1_COLOR_F InputSelection = Color(0.10f, 0.52f, 0.98f, 0.96f);
-		D2D1_COLOR_F ScrollTrack = Color(0.31f, 0.34f, 0.41f, 0.72f);
-		D2D1_COLOR_F ScrollThumb = Color(0.63f, 0.69f, 0.80f, 0.92f);
+		D2D1_COLOR_F Surface = D2D1::ColorF(0.15f, 0.17f, 0.21f, 1.0f);
+		D2D1_COLOR_F SurfaceAlt = D2D1::ColorF(0.19f, 0.22f, 0.27f, 1.0f);
+		D2D1_COLOR_F SurfacePanel = D2D1::ColorF(0.20f, 0.23f, 0.28f, 0.92f);
+		D2D1_COLOR_F SurfacePanelSoft = D2D1::ColorF(0.23f, 0.26f, 0.31f, 0.96f);
+		D2D1_COLOR_F InputBack = D2D1::ColorF(0.17f, 0.18f, 0.20f, 0.98f);
+		D2D1_COLOR_F InputHover = D2D1::ColorF(0.24f, 0.25f, 0.28f, 1.0f);
+		D2D1_COLOR_F Border = D2D1::ColorF(0.46f, 0.50f, 0.58f, 0.95f);
+		D2D1_COLOR_F BorderStrong = D2D1::ColorF(0.76f, 0.80f, 0.87f, 0.65f);
+		D2D1_COLOR_F Text = D2D1::ColorF(0.95f, 0.96f, 0.98f, 1.0f);
+		D2D1_COLOR_F TextMuted = D2D1::ColorF(0.76f, 0.79f, 0.84f, 1.0f);
+		D2D1_COLOR_F Accent = D2D1::ColorF(0.28f, 0.63f, 0.98f, 0.98f);
+		D2D1_COLOR_F AccentSoft = D2D1::ColorF(0.34f, 0.66f, 0.98f, 0.30f);
+		D2D1_COLOR_F AccentText = D2D1::ColorF(0.98f, 0.99f, 1.0f, 1.0f);
+		D2D1_COLOR_F Selection = D2D1::ColorF(0.27f, 0.57f, 0.96f, 0.72f);
+		D2D1_COLOR_F InputSelection = D2D1::ColorF(0.10f, 0.52f, 0.98f, 0.96f);
+		D2D1_COLOR_F ScrollTrack = D2D1::ColorF(0.31f, 0.34f, 0.41f, 0.72f);
+		D2D1_COLOR_F ScrollThumb = D2D1::ColorF(0.63f, 0.69f, 0.80f, 0.92f);
 	};
 
 	const std::wstring& DemoThemeKeyLight()
@@ -61,49 +56,49 @@ namespace {
 		static const DemoThemePalette light = []()
 			{
 				DemoThemePalette theme;
-				theme.Window.WindowBackColor = Color(0.95f, 0.96f, 0.98f, 1.0f);
-				theme.Window.WindowForeColor = Color(0.10f, 0.12f, 0.15f, 1.0f);
-				theme.Window.WindowBorderLightColor = Color(1.0f, 1.0f, 1.0f, 1.0f);
-				theme.Window.WindowBorderDarkColor = Color(0.60f, 0.65f, 0.74f, 0.95f);
-				theme.Window.TitleBarBackColor = Color(0.98f, 0.99f, 1.0f, 0.92f);
-				theme.Window.CaptionHoverColor = Color(0.18f, 0.42f, 0.88f, 0.12f);
-				theme.Window.CaptionPressedColor = Color(0.18f, 0.42f, 0.88f, 0.20f);
-				theme.Window.CloseHoverColor = Color(0.88f, 0.26f, 0.26f, 0.24f);
-				theme.Window.ClosePressedColor = Color(0.88f, 0.26f, 0.26f, 0.38f);
-				theme.Surface = Color(0.95f, 0.96f, 0.98f, 1.0f);
-				theme.SurfaceAlt = Color(0.91f, 0.93f, 0.96f, 1.0f);
-				theme.SurfacePanel = Color(1.0f, 1.0f, 1.0f, 0.96f);
-				theme.SurfacePanelSoft = Color(0.97f, 0.98f, 1.0f, 0.98f);
-				theme.InputBack = Color(1.0f, 1.0f, 1.0f, 0.98f);
-				theme.InputHover = Color(0.95f, 0.95f, 0.96f, 1.0f);
-				theme.Border = Color(0.76f, 0.80f, 0.87f, 1.0f);
-				theme.BorderStrong = Color(0.52f, 0.58f, 0.68f, 0.95f);
-				theme.Text = Color(0.10f, 0.12f, 0.15f, 1.0f);
-				theme.TextMuted = Color(0.33f, 0.38f, 0.46f, 1.0f);
-				theme.Accent = Color(0.13f, 0.46f, 0.93f, 0.96f);
-				theme.AccentSoft = Color(0.13f, 0.46f, 0.93f, 0.16f);
-				theme.AccentText = Color(1.0f, 1.0f, 1.0f, 1.0f);
-				theme.Selection = Color(0.19f, 0.50f, 0.95f, 0.26f);
-				theme.InputSelection = Color(0.12f, 0.48f, 0.94f, 0.88f);
-				theme.ScrollTrack = Color(0.81f, 0.84f, 0.89f, 0.95f);
-				theme.ScrollThumb = Color(0.46f, 0.54f, 0.66f, 0.92f);
+				theme.Window.WindowBackColor = D2D1::ColorF(0.95f, 0.96f, 0.98f, 1.0f);
+				theme.Window.WindowForeColor = D2D1::ColorF(0.10f, 0.12f, 0.15f, 1.0f);
+				theme.Window.WindowBorderLightColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
+				theme.Window.WindowBorderDarkColor = D2D1::ColorF(0.60f, 0.65f, 0.74f, 0.95f);
+				theme.Window.TitleBarBackColor = D2D1::ColorF(0.98f, 0.99f, 1.0f, 0.92f);
+				theme.Window.CaptionHoverColor = D2D1::ColorF(0.18f, 0.42f, 0.88f, 0.12f);
+				theme.Window.CaptionPressedColor = D2D1::ColorF(0.18f, 0.42f, 0.88f, 0.20f);
+				theme.Window.CloseHoverColor = D2D1::ColorF(0.88f, 0.26f, 0.26f, 0.24f);
+				theme.Window.ClosePressedColor = D2D1::ColorF(0.88f, 0.26f, 0.26f, 0.38f);
+				theme.Surface = D2D1::ColorF(0.95f, 0.96f, 0.98f, 1.0f);
+				theme.SurfaceAlt = D2D1::ColorF(0.91f, 0.93f, 0.96f, 1.0f);
+				theme.SurfacePanel = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.96f);
+				theme.SurfacePanelSoft = D2D1::ColorF(0.97f, 0.98f, 1.0f, 0.98f);
+				theme.InputBack = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f);
+				theme.InputHover = D2D1::ColorF(0.95f, 0.95f, 0.96f, 1.0f);
+				theme.Border = D2D1::ColorF(0.76f, 0.80f, 0.87f, 1.0f);
+				theme.BorderStrong = D2D1::ColorF(0.52f, 0.58f, 0.68f, 0.95f);
+				theme.Text = D2D1::ColorF(0.10f, 0.12f, 0.15f, 1.0f);
+				theme.TextMuted = D2D1::ColorF(0.33f, 0.38f, 0.46f, 1.0f);
+				theme.Accent = D2D1::ColorF(0.13f, 0.46f, 0.93f, 0.96f);
+				theme.AccentSoft = D2D1::ColorF(0.13f, 0.46f, 0.93f, 0.16f);
+				theme.AccentText = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
+				theme.Selection = D2D1::ColorF(0.19f, 0.50f, 0.95f, 0.26f);
+				theme.InputSelection = D2D1::ColorF(0.12f, 0.48f, 0.94f, 0.88f);
+				theme.ScrollTrack = D2D1::ColorF(0.81f, 0.84f, 0.89f, 0.95f);
+				theme.ScrollThumb = D2D1::ColorF(0.46f, 0.54f, 0.66f, 0.92f);
 				return theme;
 			}();
 
 		static const DemoThemePalette dark = []()
 			{
 				DemoThemePalette theme;
-				theme.Window.WindowBackColor = Color(0.15f, 0.17f, 0.21f, 1.0f);
-				theme.Window.WindowForeColor = Color(0.95f, 0.96f, 0.98f, 1.0f);
-				theme.Window.WindowBorderLightColor = Color(0.80f, 0.84f, 0.90f, 0.28f);
-				theme.Window.WindowBorderDarkColor = Color(0.05f, 0.06f, 0.09f, 0.95f);
-				theme.Window.TitleBarBackColor = Color(0.10f, 0.12f, 0.15f, 0.94f);
-				theme.Window.CaptionHoverColor = Color(1.0f, 1.0f, 1.0f, 0.14f);
-				theme.Window.CaptionPressedColor = Color(1.0f, 1.0f, 1.0f, 0.24f);
-				theme.Window.CloseHoverColor = Color(0.90f, 0.24f, 0.24f, 0.42f);
-				theme.Window.ClosePressedColor = Color(0.90f, 0.24f, 0.24f, 0.58f);
-				theme.InputBack = Color(0.16f, 0.17f, 0.19f, 0.98f);
-				theme.InputHover = Color(0.22f, 0.23f, 0.26f, 1.0f);
+				theme.Window.WindowBackColor = D2D1::ColorF(0.15f, 0.17f, 0.21f, 1.0f);
+				theme.Window.WindowForeColor = D2D1::ColorF(0.95f, 0.96f, 0.98f, 1.0f);
+				theme.Window.WindowBorderLightColor = D2D1::ColorF(0.80f, 0.84f, 0.90f, 0.28f);
+				theme.Window.WindowBorderDarkColor = D2D1::ColorF(0.05f, 0.06f, 0.09f, 0.95f);
+				theme.Window.TitleBarBackColor = D2D1::ColorF(0.10f, 0.12f, 0.15f, 0.94f);
+				theme.Window.CaptionHoverColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f);
+				theme.Window.CaptionPressedColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.24f);
+				theme.Window.CloseHoverColor = D2D1::ColorF(0.90f, 0.24f, 0.24f, 0.42f);
+				theme.Window.ClosePressedColor = D2D1::ColorF(0.90f, 0.24f, 0.24f, 0.58f);
+				theme.InputBack = D2D1::ColorF(0.16f, 0.17f, 0.19f, 0.98f);
+				theme.InputHover = D2D1::ColorF(0.22f, 0.23f, 0.26f, 1.0f);
 				return theme;
 			}();
 
@@ -115,14 +110,14 @@ namespace {
 		if (!textBox) return;
 		textBox->BackColor = theme.InputBack;
 		textBox->ForeColor = theme.Text;
-		textBox->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
-		textBox->UnderMouseColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.055f);
+		textBox->BorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
+		textBox->UnderMouseColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.055f);
 		textBox->FocusedColor = theme.Accent;
 		textBox->SelectedBackColor = theme.InputSelection;
 		textBox->SelectedForeColor = theme.AccentText;
 		textBox->ScrollBackColor = theme.ScrollTrack;
 		textBox->ScrollForeColor = theme.ScrollThumb;
-		textBox->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+		textBox->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 		textBox->CornerRadius = 6.0f;
 		textBox->FocusBorder = 1.6f;
 	}
@@ -132,14 +127,14 @@ namespace {
 		if (!textBox) return;
 		textBox->BackColor = theme.InputBack;
 		textBox->ForeColor = theme.Text;
-		textBox->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
-		textBox->UnderMouseColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.055f);
+		textBox->BorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
+		textBox->UnderMouseColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.055f);
 		textBox->FocusedColor = theme.Accent;
 		textBox->SelectedBackColor = theme.InputSelection;
 		textBox->SelectedForeColor = theme.AccentText;
 		textBox->ScrollBackColor = theme.ScrollTrack;
 		textBox->ScrollForeColor = theme.ScrollThumb;
-		textBox->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+		textBox->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 		textBox->CornerRadius = 6.0f;
 		textBox->FocusBorder = 1.6f;
 	}
@@ -149,14 +144,14 @@ namespace {
 		if (!textBox) return;
 		textBox->BackColor = theme.InputBack;
 		textBox->ForeColor = theme.Text;
-		textBox->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
-		textBox->UnderMouseColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.055f);
+		textBox->BorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
+		textBox->UnderMouseColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.055f);
 		textBox->FocusedColor = theme.Accent;
 		textBox->SelectedBackColor = theme.InputSelection;
 		textBox->SelectedForeColor = theme.AccentText;
 		textBox->ScrollBackColor = theme.ScrollTrack;
 		textBox->ScrollForeColor = theme.ScrollThumb;
-		textBox->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+		textBox->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 		textBox->CornerRadius = 7.0f;
 		textBox->FocusBorder = 1.6f;
 	}
@@ -234,7 +229,7 @@ void DemoWindow::Theme_ApplyCurrent()
 			switch (control->Type())
 			{
 			case UIClass::UI_Label:
-				control->BackColor = Color(0, 0, 0, 0);
+				control->BackColor = D2D1::ColorF(0, 0, 0, 0);
 				control->ForeColor = theme.TextMuted;
 				break;
 			case UIClass::UI_Button:
@@ -242,26 +237,26 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* button = (Button*)control;
 				const bool inToolbar = button->Parent && button->Parent->Type() == UIClass::UI_ToolBar;
 				button->ForeColor = theme.Text;
-				button->UnderMouseColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.11f);
-				button->CheckedColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.18f);
-				button->HighlightColor = Color(1.0f, 1.0f, 1.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.10f : 0.035f);
-				button->ShadowColor = Color(0.0f, 0.0f, 0.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.04f : 0.08f);
-				button->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+				button->UnderMouseColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.11f);
+				button->CheckedColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.18f);
+				button->HighlightColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.10f : 0.035f);
+				button->ShadowColor = D2D1::ColorF(0.0f, 0.0f, 0.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.04f : 0.08f);
+				button->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				button->Raised = false;
 				if (inToolbar)
 				{
-					button->BackColor = Color(0, 0, 0, 0);
-					button->BorderColor = Color(0, 0, 0, 0);
-					button->UnderMouseColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
-					button->CheckedColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.18f);
-					button->HighlightColor = Color(0, 0, 0, 0);
-					button->ShadowColor = Color(0, 0, 0, 0);
+					button->BackColor = D2D1::ColorF(0, 0, 0, 0);
+					button->BorderColor = D2D1::ColorF(0, 0, 0, 0);
+					button->UnderMouseColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
+					button->CheckedColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.18f);
+					button->HighlightColor = D2D1::ColorF(0, 0, 0, 0);
+					button->ShadowColor = D2D1::ColorF(0, 0, 0, 0);
 					button->BorderThickness = 0.0f;
 				}
 				else
 				{
 					button->BackColor = theme.SurfaceAlt;
-					button->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.52f);
+					button->BorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.52f);
 					button->BorderThickness = 1.0f;
 				}
 				break;
@@ -269,36 +264,36 @@ void DemoWindow::Theme_ApplyCurrent()
 			case UIClass::UI_CheckBox:
 			{
 				auto* check = (CheckBox*)control;
-				check->UnderMouseColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
-				check->BoxBackColor = Color(theme.InputBack.r, theme.InputBack.g, theme.InputBack.b, 0.68f);
-				check->BoxBorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.72f);
-				check->CheckedBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.92f);
+				check->UnderMouseColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
+				check->BoxBackColor = D2D1::ColorF(theme.InputBack.r, theme.InputBack.g, theme.InputBack.b, 0.68f);
+				check->BoxBorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.72f);
+				check->CheckedBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.92f);
 				check->CheckMarkColor = theme.AccentText;
-				check->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+				check->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				check->BoxCornerRadius = 4.0f;
 				break;
 			}
 			case UIClass::UI_RadioBox:
 			{
 				auto* radio = (RadioBox*)control;
-				radio->UnderMouseColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
-				radio->CircleBackColor = Color(theme.InputBack.r, theme.InputBack.g, theme.InputBack.b, 0.68f);
-				radio->CircleBorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.72f);
-				radio->SelectedColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.92f);
+				radio->UnderMouseColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
+				radio->CircleBackColor = D2D1::ColorF(theme.InputBack.r, theme.InputBack.g, theme.InputBack.b, 0.68f);
+				radio->CircleBorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.72f);
+				radio->SelectedColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.92f);
 				radio->DotColor = theme.AccentText;
-				radio->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+				radio->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				break;
 			}
 			case UIClass::UI_Switch:
 			{
 				auto* sw = (Switch*)control;
-				sw->UnderMouseColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
-				sw->TrackOffColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.34f : 0.28f);
-				sw->TrackOnColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.92f);
-				sw->TrackBorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.42f);
-				sw->ThumbColor = Color(0.98f, 0.99f, 1.0f, 1.0f);
-				sw->ThumbShadowColor = Color(0.0f, 0.0f, 0.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.18f : 0.30f);
-				sw->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+				sw->UnderMouseColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
+				sw->TrackOffColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.34f : 0.28f);
+				sw->TrackOnColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.92f);
+				sw->TrackBorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.42f);
+				sw->ThumbColor = D2D1::ColorF(0.98f, 0.99f, 1.0f, 1.0f);
+				sw->ThumbShadowColor = D2D1::ColorF(0.0f, 0.0f, 0.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.18f : 0.30f);
+				sw->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				sw->TrackPadding = 3.0f;
 				break;
 			}
@@ -317,18 +312,18 @@ void DemoWindow::Theme_ApplyCurrent()
 				const bool inToolbar = combo->Parent && combo->Parent->Type() == UIClass::UI_ToolBar;
 				combo->BackColor = inToolbar ? theme.SurfaceAlt : theme.InputBack;
 				combo->ForeColor = theme.Text;
-				combo->BorderColor = inToolbar ? Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.55f) : theme.Border;
+				combo->BorderColor = inToolbar ? D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.55f) : theme.Border;
 				combo->AccentColor = theme.Accent;
-				combo->HeaderHoverBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.06f);
+				combo->HeaderHoverBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.06f);
 				combo->DropBackColor = theme.SurfacePanel;
 				combo->DropBorderColor = theme.Border;
-				combo->SelectedItemBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
-				combo->UnderMouseBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
+				combo->SelectedItemBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
+				combo->UnderMouseBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
 				combo->SelectedItemForeColor = theme.Text;
 				combo->UnderMouseForeColor = theme.Text;
 				combo->ScrollBackColor = theme.ScrollTrack;
 				combo->ScrollForeColor = theme.ScrollThumb;
-				combo->ButtonBackColor = inToolbar ? Color(0, 0, 0, 0) : theme.Accent;
+				combo->ButtonBackColor = inToolbar ? D2D1::ColorF(0, 0, 0, 0) : theme.Accent;
 				if (inToolbar)
 				{
 					combo->CornerRadius = 6.0f;
@@ -347,9 +342,9 @@ void DemoWindow::Theme_ApplyCurrent()
 				picker->DropBackColor = theme.SurfacePanel;
 				picker->DropBorderColor = theme.Border;
 				picker->AccentColor = theme.Accent;
-				picker->HeaderHoverBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.06f);
-				picker->HoverColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
-				picker->SelectedBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
+				picker->HeaderHoverBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.06f);
+				picker->HoverColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
+				picker->SelectedBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
 				picker->SelectedForeColor = theme.Text;
 				picker->SecondaryTextColor = theme.TextMuted;
 				picker->FocusBorderColor = theme.Accent;
@@ -364,10 +359,10 @@ void DemoWindow::Theme_ApplyCurrent()
 				picker->DropBackColor = theme.SurfacePanel;
 				picker->DropBorderColor = theme.Border;
 				picker->AccentColor = theme.Accent;
-				picker->HeaderHoverBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.06f);
-				picker->HoverColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
-				picker->SelectedBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
-				picker->RangeBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.09f);
+				picker->HeaderHoverBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.06f);
+				picker->HoverColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
+				picker->SelectedBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
+				picker->RangeBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.09f);
 				picker->SelectedForeColor = theme.Text;
 				picker->SecondaryTextColor = theme.TextMuted;
 				picker->FocusBorderColor = theme.Accent;
@@ -379,14 +374,14 @@ void DemoWindow::Theme_ApplyCurrent()
 			{
 				auto* picker = (ColorPicker*)control;
 				picker->PanelBackColor = theme.InputBack;
-				picker->PanelHoverColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.08f);
+				picker->PanelHoverColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.08f);
 				picker->ButtonBackColor = theme.SurfaceAlt;
 				picker->ForeColor = theme.Text;
-				picker->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
+				picker->BorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
 				picker->AccentColor = theme.Accent;
 				picker->FocusBorderColor = theme.Accent;
 				picker->MutedTextColor = theme.TextMuted;
-				picker->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+				picker->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				break;
 			}
 			case UIClass::UI_NumericUpDown:
@@ -394,14 +389,14 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* number = (NumericUpDown*)control;
 				number->PanelBackColor = theme.InputBack;
 				number->ForeColor = theme.Text;
-				number->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
+				number->BorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
 				number->ButtonBackColor = theme.SurfaceAlt;
-				number->ButtonHoverColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.12f);
-				number->ButtonPressedColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.22f);
+				number->ButtonHoverColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.12f);
+				number->ButtonPressedColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.22f);
 				number->AccentColor = theme.Accent;
 				number->FocusBorderColor = theme.Accent;
 				number->MutedTextColor = theme.TextMuted;
-				number->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+				number->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				number->CornerRadius = 6.0f;
 				number->ButtonWidth = 28.0f;
 				break;
@@ -415,10 +410,10 @@ void DemoWindow::Theme_ApplyCurrent()
 				calendar->SurfaceColor = theme.SurfacePanelSoft;
 				calendar->HeaderBackColor = theme.SurfaceAlt;
 				calendar->MutedTextColor = theme.TextMuted;
-				calendar->TrailingTextColor = Color(theme.TextMuted.r, theme.TextMuted.g, theme.TextMuted.b, 0.62f);
-				calendar->HoverColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
-				calendar->SelectedBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
-				calendar->RangeBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.09f);
+				calendar->TrailingTextColor = D2D1::ColorF(theme.TextMuted.r, theme.TextMuted.g, theme.TextMuted.b, 0.62f);
+				calendar->HoverColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
+				calendar->SelectedBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
+				calendar->RangeBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.09f);
 				calendar->SelectedForeColor = theme.Text;
 				calendar->AccentColor = theme.Accent;
 				break;
@@ -429,18 +424,18 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* nav = (NavigationView*)control;
 				nav->BackColor = theme.SurfacePanelSoft;
 				nav->ForeColor = theme.Text;
-				nav->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.58f);
+				nav->BorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.58f);
 				nav->SurfaceColor = theme.SurfacePanelSoft;
 				nav->HeaderBackColor = theme.SurfaceAlt;
 				nav->MutedTextColor = theme.TextMuted;
-				nav->SelectedItemBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
+				nav->SelectedItemBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
 				nav->SelectedItemForeColor = theme.Text;
-				nav->UnderMouseItemBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
+				nav->UnderMouseItemBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
 				nav->AccentColor = theme.Accent;
-				nav->IconPlaceholderColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.18f);
+				nav->IconPlaceholderColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.18f);
 				nav->BadgeBackColor = theme.Accent;
 				nav->BadgeForeColor = theme.AccentText;
-				nav->SeparatorColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.45f);
+				nav->SeparatorColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.45f);
 				nav->ScrollBackColor = theme.ScrollTrack;
 				nav->ScrollForeColor = theme.ScrollThumb;
 				break;
@@ -450,10 +445,10 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* breadcrumb = (BreadcrumbBar*)control;
 				breadcrumb->BackColor = theme.SurfacePanelSoft;
 				breadcrumb->ForeColor = theme.Text;
-				breadcrumb->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.50f);
+				breadcrumb->BorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.50f);
 				breadcrumb->SurfaceColor = theme.SurfacePanelSoft;
-				breadcrumb->HoverBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
-				breadcrumb->SelectedBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
+				breadcrumb->HoverBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
+				breadcrumb->SelectedBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
 				breadcrumb->MutedTextColor = theme.TextMuted;
 				breadcrumb->AccentColor = theme.Accent;
 				break;
@@ -461,17 +456,17 @@ void DemoWindow::Theme_ApplyCurrent()
 			case UIClass::UI_Menu:
 			{
 				auto* menu = (Menu*)control;
-				menu->BackColor = Color(0, 0, 0, 0);
+				menu->BackColor = D2D1::ColorF(0, 0, 0, 0);
 				menu->ForeColor = theme.Text;
-				menu->BarBackColor = Color(theme.SurfacePanel.r, theme.SurfacePanel.g, theme.SurfacePanel.b, 0.72f);
-				menu->BarBorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.34f);
-				menu->BarItemHoverColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.08f);
-				menu->BarItemActiveColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.14f);
+				menu->BarBackColor = D2D1::ColorF(theme.SurfacePanel.r, theme.SurfacePanel.g, theme.SurfacePanel.b, 0.72f);
+				menu->BarBorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.34f);
+				menu->BarItemHoverColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.08f);
+				menu->BarItemActiveColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.14f);
 				menu->DropBackColor = theme.SurfacePanelSoft;
-				menu->DropBorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
-				menu->DropHoverColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.12f);
+				menu->DropBorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
+				menu->DropHoverColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.12f);
 				menu->DropTextColor = theme.Text;
-				menu->DropSeparatorColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.45f);
+				menu->DropSeparatorColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.45f);
 				menu->BarItemCornerRadius = 6.0f;
 				menu->DropCornerRadius = 8.0f;
 				menu->DropItemCornerRadius = 6.0f;
@@ -482,8 +477,8 @@ void DemoWindow::Theme_ApplyCurrent()
 			case UIClass::UI_MenuItem:
 			{
 				auto* item = (MenuItem*)control;
-				item->HoverBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.08f);
-				item->ActiveBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.14f);
+				item->HoverBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.08f);
+				item->ActiveBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.14f);
 				item->CornerRadius = 6.0f;
 				break;
 			}
@@ -491,10 +486,10 @@ void DemoWindow::Theme_ApplyCurrent()
 			{
 				auto* popup = (ContextMenu*)control;
 				popup->PopupBackColor = theme.SurfacePanelSoft;
-				popup->PopupBorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
-				popup->PopupHoverColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.12f);
+				popup->PopupBorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
+				popup->PopupHoverColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.12f);
 				popup->PopupTextColor = theme.Text;
-				popup->PopupSeparatorColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.45f);
+				popup->PopupSeparatorColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.45f);
 				popup->PopupCornerRadius = 8.0f;
 				popup->ItemCornerRadius = 6.0f;
 				popup->ItemHorizontalInset = 6.0f;
@@ -505,9 +500,9 @@ void DemoWindow::Theme_ApplyCurrent()
 			{
 				auto* tip = (ToolTip*)control;
 				tip->PopupBackColor = theme.SurfacePanelSoft;
-				tip->PopupBorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
+				tip->PopupBorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
 				tip->PopupTextColor = theme.Text;
-				tip->PopupShadowColor = Color(0.0f, 0.0f, 0.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.14f : 0.22f);
+				tip->PopupShadowColor = D2D1::ColorF(0.0f, 0.0f, 0.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.14f : 0.22f);
 				tip->CornerRadius = 8.0f;
 				tip->PopupAnimationDurationMs = 90;
 				break;
@@ -516,14 +511,14 @@ void DemoWindow::Theme_ApplyCurrent()
 			{
 				auto* toast = (ToastHost*)control;
 				toast->ToastBackColor = theme.SurfacePanelSoft;
-				toast->ToastBorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
+				toast->ToastBorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
 				toast->TitleColor = theme.Text;
 				toast->MessageColor = theme.TextMuted;
-				toast->CloseHoverColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.12f);
+				toast->CloseHoverColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.12f);
 				toast->InfoColor = theme.Accent;
-				toast->SuccessColor = Color(0.10f, 0.68f, 0.48f, 1.0f);
-				toast->WarningColor = Color(0.95f, 0.62f, 0.18f, 1.0f);
-				toast->ErrorColor = Color(0.90f, 0.20f, 0.24f, 1.0f);
+				toast->SuccessColor = D2D1::ColorF(0.10f, 0.68f, 0.48f, 1.0f);
+				toast->WarningColor = D2D1::ColorF(0.95f, 0.62f, 0.18f, 1.0f);
+				toast->ErrorColor = D2D1::ColorF(0.90f, 0.20f, 0.24f, 1.0f);
 				break;
 			}
 			case UIClass::UI_ToolBar:
@@ -531,9 +526,9 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* toolbar = (ToolBar*)control;
 				toolbar->BackColor = theme.SurfacePanelSoft;
 				toolbar->ForeColor = theme.Text;
-				toolbar->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.42f);
-				toolbar->SeparatorColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.52f);
-				toolbar->BottomLineColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.34f);
+				toolbar->BorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.42f);
+				toolbar->SeparatorColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.52f);
+				toolbar->BottomLineColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.34f);
 				toolbar->CornerRadius = 8.0f;
 				break;
 			}
@@ -542,11 +537,11 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* status = (StatusBar*)control;
 				status->BackColor = theme.SurfacePanelSoft;
 				status->ForeColor = theme.TextMuted;
-				status->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.34f);
-				status->TopLineColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.38f);
-				status->SeparatorColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.34f);
-				status->PartBackColor = Color(0, 0, 0, 0);
-				status->PartBorderColor = Color(0, 0, 0, 0);
+				status->BorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.34f);
+				status->TopLineColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.38f);
+				status->SeparatorColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.34f);
+				status->PartBackColor = D2D1::ColorF(0, 0, 0, 0);
+				status->PartBorderColor = D2D1::ColorF(0, 0, 0, 0);
 				status->CornerRadius = 0.0f;
 				status->ShowBorder = false;
 				status->UsePartPills = false;
@@ -563,10 +558,10 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* panel = (Panel*)control;
 				control->BackColor = theme.SurfacePanel;
 				control->ForeColor = theme.Text;
-				control->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
+				control->BorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
 				panel->BorderThickness = control->Type() == UIClass::UI_TabPage ? 0.0f : 1.0f;
 				panel->CornerRadius = 8.0f;
-				panel->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+				panel->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				break;
 			}
 			case UIClass::UI_GroupBox:
@@ -574,28 +569,28 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* group = (GroupBox*)control;
 				group->BackColor = theme.SurfacePanel;
 				group->ForeColor = theme.Text;
-				group->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
+				group->BorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
 				group->CaptionBackColor = theme.SurfacePanelSoft;
-				group->CaptionBorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.42f : 0.34f);
+				group->CaptionBorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.42f : 0.34f);
 				group->CaptionCornerRadius = 7.0f;
 				group->CornerRadius = 9.0f;
 				group->BorderThickness = 1.0f;
-				group->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+				group->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				break;
 			}
 			case UIClass::UI_Expander:
 			{
 				auto* expander = (Expander*)control;
-				expander->BackColor = Color(0, 0, 0, 0);
+				expander->BackColor = D2D1::ColorF(0, 0, 0, 0);
 				expander->ForeColor = theme.Text;
-				expander->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
+				expander->BorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
 				expander->SurfaceColor = theme.SurfacePanel;
 				expander->HeaderBackColor = theme.SurfacePanelSoft;
-				expander->HeaderHoverBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
-				expander->ContentBackColor = Color(theme.SurfacePanelSoft.r, theme.SurfacePanelSoft.g, theme.SurfacePanelSoft.b, 0.35f);
+				expander->HeaderHoverBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
+				expander->ContentBackColor = D2D1::ColorF(theme.SurfacePanelSoft.r, theme.SurfacePanelSoft.g, theme.SurfacePanelSoft.b, 0.35f);
 				expander->AccentColor = theme.Accent;
 				expander->MutedTextColor = theme.TextMuted;
-				expander->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+				expander->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				expander->CornerRadius = 8.0f;
 				expander->Border = 1.0f;
 				break;
@@ -605,27 +600,27 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* split = (SplitContainer*)control;
 				split->BackColor = theme.SurfacePanel;
 				split->ForeColor = theme.Text;
-				split->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
-				split->SplitterColor = Color(theme.BorderStrong.r, theme.BorderStrong.g, theme.BorderStrong.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.30f : 0.24f);
-				split->SplitterHotColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.22f);
-				split->SplitterPressedColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.78f);
+				split->BorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
+				split->SplitterColor = D2D1::ColorF(theme.BorderStrong.r, theme.BorderStrong.g, theme.BorderStrong.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.30f : 0.24f);
+				split->SplitterHotColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.22f);
+				split->SplitterPressedColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.78f);
 				split->SplitterCornerRadius = 3.0f;
 				split->SplitterVisualInset = 8.0f;
 				split->CornerRadius = 8.0f;
 				split->BorderThickness = 1.0f;
-				split->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+				split->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				break;
 			}
 			case UIClass::UI_ScrollView:
 			{
 				auto* scroll = (ScrollView*)control;
 				scroll->BackColor = theme.SurfacePanel;
-				scroll->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
+				scroll->BorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
 				scroll->ScrollBackColor = theme.ScrollTrack;
 				scroll->ScrollForeColor = theme.ScrollThumb;
 				scroll->CornerRadius = 8.0f;
 				scroll->BorderThickness = 1.0f;
-				scroll->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+				scroll->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				break;
 			}
 			case UIClass::UI_TreeView:
@@ -637,8 +632,8 @@ void DemoWindow::Theme_ApplyCurrent()
 				tree->ScrollBackColor = theme.ScrollTrack;
 				tree->ScrollForeColor = theme.ScrollThumb;
 				tree->AccentColor = theme.Accent;
-				tree->SelectedBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
-				tree->UnderMouseItemBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.09f);
+				tree->SelectedBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
+				tree->UnderMouseItemBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.09f);
 				tree->SelectedForeColor = theme.Text;
 				break;
 			}
@@ -651,10 +646,10 @@ void DemoWindow::Theme_ApplyCurrent()
 				list->BorderColor = theme.Border;
 				list->HeaderBackColor = theme.SurfaceAlt;
 				list->HeaderForeColor = theme.Text;
-				list->GridLineColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.42f);
-				list->SelectedItemBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.18f);
+				list->GridLineColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.42f);
+				list->SelectedItemBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.18f);
 				list->SelectedItemForeColor = theme.Text;
-				list->UnderMouseItemBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
+				list->UnderMouseItemBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
 				list->MutedTextColor = theme.TextMuted;
 				list->AccentColor = theme.Accent;
 				list->ScrollBackColor = theme.ScrollTrack;
@@ -673,9 +668,9 @@ void DemoWindow::Theme_ApplyCurrent()
 				pg->HeaderForeColor = theme.Text;
 				pg->CategoryBackColor = theme.SurfaceAlt;
 				pg->CategoryForeColor = theme.Text;
-				pg->GridLineColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.42f);
-				pg->SelectedItemBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.18f);
-				pg->UnderMouseItemBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
+				pg->GridLineColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.42f);
+				pg->SelectedItemBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.18f);
+				pg->UnderMouseItemBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
 				pg->ReadOnlyForeColor = theme.TextMuted;
 				pg->AccentColor = theme.Accent;
 				pg->EditBackColor = theme.InputBack;
@@ -689,29 +684,29 @@ void DemoWindow::Theme_ApplyCurrent()
 			case UIClass::UI_GridView:
 			{
 				auto* grid = (GridView*)control;
-				grid->BackColor = Color(0, 0, 0, 0);
+				grid->BackColor = D2D1::ColorF(0, 0, 0, 0);
 				grid->ForeColor = theme.Text;
 				grid->BorderColor = theme.Border;
 				grid->HeadBackColor = theme.SurfaceAlt;
 				grid->HeadForeColor = theme.Text;
-				grid->HeadHoverBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.08f);
-				grid->GridLineColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.55f);
+				grid->HeadHoverBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.08f);
+				grid->GridLineColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.55f);
 				grid->AccentColor = theme.Accent;
 				grid->ButtonBackColor = theme.SurfaceAlt;
 				grid->ButtonCheckedColor = theme.SurfacePanelSoft;
-				grid->ButtonHoverBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
-				grid->ButtonPressedBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.18f);
+				grid->ButtonHoverBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
+				grid->ButtonPressedBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.18f);
 				grid->ButtonBorderDarkColor = theme.BorderStrong;
 				grid->ButtonBorderLightColor = theme.Border;
-				grid->SelectedItemBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
+				grid->SelectedItemBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
 				grid->SelectedItemForeColor = theme.Text;
-				grid->UnderMouseItemBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.09f);
+				grid->UnderMouseItemBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.09f);
 				grid->UnderMouseItemForeColor = theme.Text;
 				grid->ScrollBackColor = theme.ScrollTrack;
 				grid->ScrollForeColor = theme.ScrollThumb;
 				grid->EditBackColor = theme.InputBack;
 				grid->EditForeColor = theme.Text;
-				grid->EditSelectedBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.30f);
+				grid->EditSelectedBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.30f);
 				grid->EditSelectedForeColor = theme.Text;
 				grid->NewRowBackColor = theme.SurfaceAlt;
 				grid->NewRowForeColor = theme.TextMuted;
@@ -721,16 +716,16 @@ void DemoWindow::Theme_ApplyCurrent()
 			case UIClass::UI_PagedGridView:
 			{
 				auto* paged = (PagedGridView*)control;
-				paged->BackColor = Color(0, 0, 0, 0);
+				paged->BackColor = D2D1::ColorF(0, 0, 0, 0);
 				paged->ForeColor = theme.Text;
 				paged->PagerBackColor = theme.SurfacePanelSoft;
-				paged->PagerBorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.55f);
+				paged->PagerBorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.55f);
 				paged->PagerButtonBackColor = theme.SurfaceAlt;
-				paged->PagerButtonHoverColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.11f);
-				paged->PagerButtonCheckedColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.18f);
+				paged->PagerButtonHoverColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.11f);
+				paged->PagerButtonCheckedColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.18f);
 				paged->PagerTextColor = theme.TextMuted;
 				paged->AccentColor = theme.Accent;
-				paged->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+				paged->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				break;
 			}
 			case UIClass::UI_ChartView:
@@ -747,7 +742,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				chart->TooltipBackColor = theme.SurfacePanelSoft;
 				chart->TooltipBorderColor = theme.BorderStrong;
 				chart->TooltipTextColor = theme.Text;
-				chart->SelectedColor = Color(1.0f, 1.0f, 1.0f, 0.42f);
+				chart->SelectedColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.42f);
 				chart->HoverColor = theme.AccentSoft;
 				chart->ScrollBackColor = theme.Border;
 				chart->ScrollForeColor = theme.BorderStrong;
@@ -761,10 +756,10 @@ void DemoWindow::Theme_ApplyCurrent()
 				report->BorderColor = theme.Border;
 				report->HeaderBackColor = theme.SurfaceAlt;
 				report->HeaderForeColor = theme.Text;
-				report->RowBackColor = Color(1.0f, 1.0f, 1.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.035f);
+				report->RowBackColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.035f);
 				report->AlternateRowBackColor = theme.SurfacePanelSoft;
 				report->GroupBackColor = theme.AccentSoft;
-				report->SummaryBackColor = Color(0.95f, 0.72f, 0.22f, 0.20f);
+				report->SummaryBackColor = D2D1::ColorF(0.95f, 0.72f, 0.22f, 0.20f);
 				report->SelectedRowBackColor = theme.Selection;
 				report->UnderMouseRowBackColor = theme.AccentSoft;
 				report->GridLineColor = theme.Border;
@@ -776,7 +771,7 @@ void DemoWindow::Theme_ApplyCurrent()
 			case UIClass::UI_KpiCard:
 			{
 				auto* card = (KpiCard*)control;
-				card->BackColor = Color(0, 0, 0, 0);
+				card->BackColor = D2D1::ColorF(0, 0, 0, 0);
 				card->SurfaceColor = theme.SurfacePanel;
 				card->ForeColor = theme.Text;
 				card->BorderColor = theme.Border;
@@ -790,7 +785,7 @@ void DemoWindow::Theme_ApplyCurrent()
 			case UIClass::UI_FilterBar:
 			{
 				auto* filter = (FilterBar*)control;
-				filter->BackColor = Color(0, 0, 0, 0);
+				filter->BackColor = D2D1::ColorF(0, 0, 0, 0);
 				filter->SurfaceColor = theme.SurfacePanel;
 				filter->ForeColor = theme.Text;
 				filter->BorderColor = theme.Border;
@@ -809,13 +804,13 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* slider = (Slider*)control;
 				slider->TrackBackColor = theme.ScrollTrack;
 				slider->TrackForeColor = theme.Accent;
-				slider->TrackHoverColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.12f);
-				slider->TrackBorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.24f);
+				slider->TrackHoverColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.12f);
+				slider->TrackBorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.24f);
 				slider->ThumbColor = theme.SurfacePanelSoft;
-				slider->ThumbHoverColor = Color(0.98f, 0.99f, 1.0f, 1.0f);
+				slider->ThumbHoverColor = D2D1::ColorF(0.98f, 0.99f, 1.0f, 1.0f);
 				slider->ThumbBorderColor = theme.BorderStrong;
-				slider->ThumbShadowColor = Color(0.0f, 0.0f, 0.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.18f : 0.30f);
-				slider->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+				slider->ThumbShadowColor = D2D1::ColorF(0.0f, 0.0f, 0.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.18f : 0.30f);
+				slider->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				slider->TrackHeight = 5.0f;
 				slider->ThumbRadius = 8.0f;
 				break;
@@ -823,12 +818,12 @@ void DemoWindow::Theme_ApplyCurrent()
 			case UIClass::UI_TabControl:
 			{
 				auto* tabs = (TabControl*)control;
-				tabs->BackColor = Color(0, 0, 0, 0);
+				tabs->BackColor = D2D1::ColorF(0, 0, 0, 0);
 				tabs->ForeColor = theme.Text;
 				tabs->BorderColor = theme.Border;
-				tabs->TitleBackColor = Color(0, 0, 0, 0);
-				tabs->SelectedTitleBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.13f);
-				tabs->TitleHoverBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.08f);
+				tabs->TitleBackColor = D2D1::ColorF(0, 0, 0, 0);
+				tabs->SelectedTitleBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.13f);
+				tabs->TitleHoverBackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.08f);
 				tabs->AccentColor = theme.Accent;
 				tabs->TitleMutedForeColor = theme.TextMuted;
 				break;
@@ -856,26 +851,26 @@ void DemoWindow::Theme_ApplyCurrent()
 				control->BackColor = theme.ScrollTrack;
 				control->ForeColor = theme.Accent;
 				control->BorderColor = theme.Border;
-				progress->TrackBorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.28f);
-				progress->FillHighlightColor = Color(1.0f, 1.0f, 1.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.18f : 0.10f);
-				progress->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+				progress->TrackBorderColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.28f);
+				progress->FillHighlightColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.18f : 0.10f);
+				progress->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				progress->CornerRadius = -1.0f;
 				progress->InnerPadding = 2.0f;
 				break;
 			}
 			case UIClass::UI_LoadingRing:
 				control->ForeColor = theme.Accent;
-				control->BackColor = Color(0, 0, 0, 0);
+				control->BackColor = D2D1::ColorF(0, 0, 0, 0);
 				break;
 			case UIClass::UI_ProgressRing:
 			{
 				auto* ring = (ProgressRing*)control;
 				ring->ForeColor = theme.Accent;
-				ring->BackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.13f : 0.18f);
-				ring->ProgressGlowColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.10f : 0.18f);
+				ring->BackColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.13f : 0.18f);
+				ring->ProgressGlowColor = D2D1::ColorF(theme.Accent.r, theme.Accent.g, theme.Accent.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.10f : 0.18f);
 				ring->CenterTextColor = theme.Text;
-				ring->CenterBackColor = Color(theme.SurfacePanel.r, theme.SurfacePanel.g, theme.SurfacePanel.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.56f : 0.18f);
-				ring->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
+				ring->CenterBackColor = D2D1::ColorF(theme.SurfacePanel.r, theme.SurfacePanel.g, theme.SurfacePanel.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.56f : 0.18f);
+				ring->DisabledOverlayColor = D2D1::ColorF(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				ring->RingThickness = -1.0f;
 				ring->ShowCaps = true;
 				break;
@@ -916,10 +911,10 @@ void DemoWindow::Theme_ApplyCurrent()
 	{
 		_statusbar->BackColor = theme.SurfacePanelSoft;
 		_statusbar->ForeColor = theme.TextMuted;
-		_statusbar->TopLineColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.38f);
-		_statusbar->SeparatorColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.34f);
-		_statusbar->PartBackColor = Color(0, 0, 0, 0);
-		_statusbar->PartBorderColor = Color(0, 0, 0, 0);
+		_statusbar->TopLineColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.38f);
+		_statusbar->SeparatorColor = D2D1::ColorF(theme.Border.r, theme.Border.g, theme.Border.b, 0.34f);
+		_statusbar->PartBackColor = D2D1::ColorF(0, 0, 0, 0);
+		_statusbar->PartBorderColor = D2D1::ColorF(0, 0, 0, 0);
 		_statusbar->CornerRadius = 0.0f;
 		_statusbar->UsePartPills = false;
 	}
@@ -1060,7 +1055,7 @@ void DemoWindow::Picture_OnOpenImage(class Control* sender, MouseEventArgs e)
 	}
 	else if (StringHelper::Contains(".jpg.jpeg.png.bmp.webp", StringHelper::ToLower(file.Extension())))
 	{
-		auto img = BitmapSource::FromFile(Convert::string_to_wstring(ofd.SelectedPaths[0]));
+		auto img = BitmapSource::FromFile(Convert::StringToWString(ofd.SelectedPaths[0]));
 		_picture->SetImageEx(std::move(img));
 	}
 
@@ -1075,7 +1070,7 @@ void DemoWindow::Picture_OnDropFile(class Control* sender, std::vector<std::wstr
 
 	_picture->Image = nullptr;
 
-	FileInfo file(Convert::wstring_to_string(files[0]));
+	FileInfo file(Convert::WStringToString(files[0]));
 	if (file.Extension() == ".svg" || file.Extension() == ".SVG")
 	{
 		auto svg = File::ReadAllText(file.FullName());
@@ -1787,9 +1782,9 @@ void DemoWindow::BuildTab_Analytics(TabPage* page)
 	_salesChart->ShowLegend = true;
 
 	std::vector<std::wstring> months = { L"1月", L"2月", L"3月", L"4月", L"5月", L"6月", L"7月", L"8月" };
-	ChartSeries retail(L"零售", Color(0.17f, 0.49f, 0.96f, 0.95f));
-	ChartSeries enterprise(L"企业", Color(0.10f, 0.68f, 0.55f, 0.95f));
-	ChartSeries channel(L"渠道", Color(0.94f, 0.53f, 0.18f, 0.95f));
+	ChartSeries retail(L"零售", D2D1::ColorF(0.17f, 0.49f, 0.96f, 0.95f));
+	ChartSeries enterprise(L"企业", D2D1::ColorF(0.10f, 0.68f, 0.55f, 0.95f));
+	ChartSeries channel(L"渠道", D2D1::ColorF(0.94f, 0.53f, 0.18f, 0.95f));
 	double retailValues[] = { 118.0, 134.5, 126.2, 156.8, 178.4, 172.0, 191.3, 218.5 };
 	double enterpriseValues[] = { 92.4, 108.0, 131.8, 139.0, 151.2, 169.5, 182.8, 197.0 };
 	double channelValues[] = { 66.0, 72.5, 84.0, 90.4, 96.0, 104.3, 112.0, 128.6 };
@@ -2115,7 +2110,7 @@ void DemoWindow::BuildTab_Media(TabPage* page)
 	_media->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
 	_media->AutoPlay = true;
 	_media->Loop = false;
-	MediaPlayer* mp = _media;
+	MediaPlayer* mediaPlayer = _media;
 
 	Panel* controlPanel = page->AddControl(new Panel(10, 430, 1200, 110));
 	controlPanel->Margin = Thickness(10, 0, 10, 10);
@@ -2137,7 +2132,7 @@ void DemoWindow::BuildTab_Media(TabPage* page)
 			ofd.Title = "选择媒体文件";
 			if (ofd.ShowDialog(this->Handle) == DialogResult::OK && !ofd.SelectedPaths.empty())
 			{
-				std::wstring file = Convert::string_to_wstring(ofd.SelectedPaths[0]);
+				std::wstring file = Convert::StringToWString(ofd.SelectedPaths[0]);
 				_media->Load(file);
 				_media->Play();
 				Ui_UpdateStatus(L"MediaPlayer: 已打开并播放 " + FileNameFromPath(file));
@@ -2145,24 +2140,24 @@ void DemoWindow::BuildTab_Media(TabPage* page)
 		};
 
 	Button* btnPlay = controlPanel->AddControl(new Button(L"播放", 100, 10, 70, 30));
-	btnPlay->OnMouseClick += [mp](class Control* sender, MouseEventArgs e) { (void)sender; (void)e; mp->Play(); };
+	btnPlay->OnMouseClick += [mediaPlayer](class Control* sender, MouseEventArgs e) { (void)sender; (void)e; mediaPlayer->Play(); };
 	Button* btnPause = controlPanel->AddControl(new Button(L"暂停", 180, 10, 70, 30));
-	btnPause->OnMouseClick += [mp](class Control* sender, MouseEventArgs e) { (void)sender; (void)e; mp->Pause(); };
+	btnPause->OnMouseClick += [mediaPlayer](class Control* sender, MouseEventArgs e) { (void)sender; (void)e; mediaPlayer->Pause(); };
 	Button* btnStop = controlPanel->AddControl(new Button(L"停止", 260, 10, 70, 30));
-	btnStop->OnMouseClick += [mp](class Control* sender, MouseEventArgs e) { (void)sender; (void)e; mp->Stop(); };
+	btnStop->OnMouseClick += [mediaPlayer](class Control* sender, MouseEventArgs e) { (void)sender; (void)e; mediaPlayer->Stop(); };
 
 	controlPanel->AddControl(new Label(L"音量", 340, 16));
 	Slider* volume = controlPanel->AddControl(new Slider(390, 12, 140, 30));
 	volume->Min = 0;
 	volume->Max = 100;
 	volume->Value = 80;
-	volume->OnValueChanged += [mp](class Control* sender, float oldValue, float newValue)
+	volume->OnValueChanged += [mediaPlayer](class Control* sender, float oldValue, float newValue)
 		{
 			(void)sender;
 			(void)oldValue;
-			mp->Volume = newValue / 100.0;
+			mediaPlayer->Volume = newValue / 100.0;
 		};
-	mp->Volume = 0.8;
+	mediaPlayer->Volume = 0.8;
 
 	controlPanel->AddControl(new Label(L"速度", 540, 16));
 	Slider* speed = controlPanel->AddControl(new Slider(590, 12, 140, 30));
@@ -2171,17 +2166,17 @@ void DemoWindow::BuildTab_Media(TabPage* page)
 	speed->Value = 100;
 	Label* speedLabel = controlPanel->AddControl(new Label(L"1.00x", 735, 16));
 	speedLabel->ForeColor = Colors::LightGray;
-	speed->OnValueChanged += [mp, speedLabel](class Control* sender, float oldValue, float newValue)
+	speed->OnValueChanged += [mediaPlayer, speedLabel](class Control* sender, float oldValue, float newValue)
 		{
 			(void)sender;
 			(void)oldValue;
-			mp->PlaybackRate = newValue / 100.0f;
+			mediaPlayer->PlaybackRate = newValue / 100.0f;
 			speedLabel->Text = StringHelper::Format(L"%.2fx", newValue / 100.0f);
 			speedLabel->InvalidateVisual();
 		};
 
 	CheckBox* loop = controlPanel->AddControl(new CheckBox(L"循环", 790, 16));
-	loop->OnChecked += [mp](class Control* sender) { mp->Loop = ((CheckBox*)sender)->Checked; };
+	loop->OnChecked += [mediaPlayer](class Control* sender) { mediaPlayer->Loop = ((CheckBox*)sender)->Checked; };
 
 	Label* progressLabel = controlPanel->AddControl(new Label(L"进度", 10, 84));
 	progressLabel->ForeColor = Colors::LightGray;
@@ -2197,14 +2192,14 @@ void DemoWindow::BuildTab_Media(TabPage* page)
 	timeLabel->AnchorStyles = AnchorStyles::Right | AnchorStyles::Top;
 	timeLabel->Width = 200;
 
-	progressSlider->OnValueChanged += [mp, progressUpdating](class Control* sender, float oldValue, float newValue)
+	progressSlider->OnValueChanged += [mediaPlayer, progressUpdating](class Control* sender, float oldValue, float newValue)
 		{
 			(void)sender;
 			(void)oldValue;
 			if (*progressUpdating) return;
-			if (mp->Duration > 0)
+			if (mediaPlayer->Duration > 0)
 			{
-				mp->Position = (newValue / 1000.0) * mp->Duration;
+				mediaPlayer->Position = (newValue / 1000.0) * mediaPlayer->Duration;
 			}
 		};
 
@@ -2279,7 +2274,7 @@ DemoWindow::DemoWindow() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
 	_taskbar = new Taskbar(this->Handle);
 	_notify = new NotifyIcon();
 	_notify->InitNotifyIcon(this->Handle, 1);
-	_notify->SetIcon(LoadIcon(NULL, IDI_APPLICATION));
+	_notify->SetIcon(LoadIcon(nullptr, IDI_APPLICATION));
 	_notify->SetToolTip("CUI Demo");
 	_notify->ClearMenu();
 	_notify->AddMenuItem(NotifyIconMenuItem("Show Window", 1));

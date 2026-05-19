@@ -264,10 +264,10 @@ D2D1_RECT_F ColorPicker::ArrowRect() const
 	return D2D1::RectF(width - bw, 0.0f, width, height);
 }
 
-CursorKind ColorPicker::QueryCursor(int xof, int yof)
+CursorKind ColorPicker::QueryCursor(int localX, int localY)
 {
-	(void)xof;
-	(void)yof;
+	(void)localX;
+	(void)localY;
 	return Enable ? CursorKind::Hand : CursorKind::Arrow;
 }
 
@@ -346,10 +346,10 @@ void ColorPicker::Update()
 		this->InvalidateVisual();
 }
 
-bool ColorPicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool ColorPicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!Enable)
-		return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 
 	switch (message)
 	{
@@ -372,7 +372,7 @@ bool ColorPicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			ClosePopup(false);
 		else
 			OpenPopup();
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseDown(this, e);
 		return true;
 	}
@@ -397,5 +397,5 @@ bool ColorPicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		break;
 	}
 
-	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 }

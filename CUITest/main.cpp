@@ -6,8 +6,13 @@ int main()
 	DemoWindow fm;
 	fm.OnClosing += [](Form* sender, bool& canceled)
 		{
-			if (MessageBoxW(sender->Handle, L"真的要退出吗？", L"提示", MB_ICONQUESTION | MB_YESNO) == IDNO)
-				canceled = true;
+			auto result = MessageDialog::Show(L"确认",
+				L"是否关闭窗口!",
+				MessageDialogButtons::YesNo,
+				MessageDialogIcon::Question,
+				sender->Handle);
+
+			canceled = result != MessageDialogResult::Yes;
 		};
 	fm.Show();
 	while (1)

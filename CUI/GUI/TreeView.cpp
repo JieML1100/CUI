@@ -132,7 +132,7 @@ static void renderNodes(TreeView* tree, D2DGraphics* d2d, float w, float h, floa
 
 static TreeNode* findNode(TreeView* tree, float posX, float posY, float h, float itemHeight, float scrollOffsetY, float& cursorY, int sunLevel, std::vector<TreeNode*>& children, bool& isHitEx)
 {
-	if (!tree) return NULL;
+	if (!tree) return nullptr;
 	const float rowInsetX = (std::max)(0.0f, tree->ItemHorizontalPadding);
 	const float chevronSize = (std::max)(6.0f, tree->ChevronSize);
 	const float chevronSlot = (std::max)(16.0f, chevronSize + 6.0f);
@@ -174,7 +174,7 @@ static TreeNode* findNode(TreeView* tree, float posX, float posY, float h, float
 		}
 	}
 
-	return NULL;
+	return nullptr;
 }
 
 TreeNode::TreeNode(std::wstring text, std::shared_ptr<BitmapSource> image)
@@ -294,10 +294,10 @@ int TreeNode::UnfoldedCount()
 }
 UIClass TreeView::Type() { return UIClass::UI_TreeView; }
 
-bool TreeView::CanHandleMouseWheel(int delta, int xof, int yof)
+bool TreeView::CanHandleMouseWheel(int delta, int localX, int localY)
 {
-	(void)xof;
-	(void)yof;
+	(void)localX;
+	(void)localY;
 	if (delta == 0) return false;
 	const float itemHeight = EffectiveItemHeight(this);
 	const int renderItemCount = itemHeight > 0.0f ? std::max(1, (int)((float)this->Height / itemHeight)) : 1;
@@ -309,9 +309,9 @@ bool TreeView::CanHandleMouseWheel(int delta, int xof, int yof)
 		: this->ScrollIndex < maxScroll;
 }
 
-CursorKind TreeView::QueryCursor(int xof, int yof)
+CursorKind TreeView::QueryCursor(int localX, int localY)
 {
-	(void)yof;
+	(void)localY;
 	if (!this->Enable) return CursorKind::Arrow;
 
 	const float itemHeight = EffectiveItemHeight(this);
@@ -319,7 +319,7 @@ CursorKind TreeView::QueryCursor(int xof, int yof)
 	{
 		const int renderCount = std::max(1, (int)((float)this->Height / itemHeight));
 		const bool hasVScroll = (_contentRenderItems > (float)renderCount + 0.001f);
-		if (hasVScroll && xof >= (this->Width - 8))
+		if (hasVScroll && localX >= (this->Width - 8))
 			return CursorKind::SizeNS;
 	}
 	return CursorKind::Arrow;
@@ -330,7 +330,7 @@ TreeView::TreeView(int x, int y, int width, int height)
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
 	this->Root = new TreeNode(L"");
-	this->SelectedNode = NULL;
+	this->SelectedNode = nullptr;
 }
 TreeView::~TreeView()
 {
@@ -455,7 +455,7 @@ void TreeView::Update()
 	}
 	this->EndRender();
 }
-bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	switch (message)
@@ -463,13 +463,13 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 	case WM_DROPFILES:
 	{
 		HDROP hDropInfo = HDROP(wParam);
-		UINT uFileNum = DragQueryFile(hDropInfo, 0xFFFFFFFF, NULL, 0);
-		TCHAR strFileName[MAX_PATH];
+		UINT fileCount = DragQueryFile(hDropInfo, 0xFFFFFFFF, nullptr, 0);
+		TCHAR fileName[MAX_PATH];
 		std::vector<std::wstring> files;
-		for (UINT i = 0; i < uFileNum; i++)
+		for (UINT i = 0; i < fileCount; i++)
 		{
-			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.push_back(strFileName);
+			DragQueryFile(hDropInfo, i, fileName, MAX_PATH);
+			files.push_back(fileName);
 		}
 		DragFinish(hDropInfo);
 		if (files.size() > 0)
@@ -502,19 +502,19 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 				this->InvalidateVisual();
 			}
 		}
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
-		this->OnMouseWheel(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam));
+		this->OnMouseWheel(this, eventArgs);
 	}
 	break;
 	case WM_MOUSEMOVE:
 	{
 		this->ParentForm->UnderMouse = this;
 		if (isDraggingScroll) {
-			UpdateScrollDrag(static_cast<float>(yof));
+			UpdateScrollDrag(static_cast<float>(localY));
 		}
 		else
 		{
-			if (xof < 0 || xof > this->Width || yof < 0 || yof > this->Height)
+			if (localX < 0 || localX > this->Width || localY < 0 || localY > this->Height)
 			{
 				if (this->HoveredNode != nullptr)
 				{
@@ -528,14 +528,14 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 				const float itemHeight = EffectiveItemHeight(this);
 				float cursorY = 0.0f;
 				bool isHit = false;
-				auto newHoveredNode = findNode(this, (float)xof, (float)yof, (float)size.cy, itemHeight, (float)this->ScrollIndex * itemHeight, cursorY, 0, this->Root->Children, isHit);
+				auto newHoveredNode = findNode(this, (float)localX, (float)localY, (float)size.cy, itemHeight, (float)this->ScrollIndex * itemHeight, cursorY, 0, this->Root->Children, isHit);
 				bool needUpdate = this->HoveredNode != newHoveredNode;
 				this->HoveredNode = newHoveredNode;
 				if (needUpdate) this->InvalidateVisual();
 			}
 		}
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
-		this->OnMouseMove(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
+		this->OnMouseMove(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONDOWN:
@@ -550,7 +550,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 				this->ParentForm->Selected = this;
 				if (lse) lse->InvalidateVisual();
 			}
-			if (xof >= Width - 8 && xof <= Width)
+			if (localX >= Width - 8 && localX <= Width)
 			{
 				// 竖向滚动条：点在滑块上则用按下点锚定；否则用滑块中心（原行为）
 				const float itemHeight = EffectiveItemHeight(this);
@@ -570,9 +570,9 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 						float per = 0.0f;
 						if (maxScroll > 0) per = std::clamp((float)this->ScrollIndex / (float)maxScroll, 0.0f, 1.0f);
 						const float thumbTop = per * moveSpace;
-						const float localY = (float)yof;
-						const bool hitThumb = (localY >= thumbTop && localY <= (thumbTop + thumbH));
-						_scrollThumbGrabOffsetY = hitThumb ? (localY - thumbTop) : (thumbH * 0.5f);
+						const float pointerY = (float)localY;
+						const bool hitThumb = (pointerY >= thumbTop && pointerY <= (thumbTop + thumbH));
+						_scrollThumbGrabOffsetY = hitThumb ? (pointerY - thumbTop) : (thumbH * 0.5f);
 					}
 					else
 					{
@@ -580,7 +580,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 					}
 				}
 				isDraggingScroll = true;
-				UpdateScrollDrag((float)yof);
+				UpdateScrollDrag((float)localY);
 			}
 			else
 			{
@@ -588,7 +588,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 				const float itemHeight = EffectiveItemHeight(this);
 				float cursorY = 0.0f;
 				bool isHit = false;
-				auto node = findNode(this, (float)xof, (float)yof, (float)size.cy, itemHeight, (float)this->ScrollIndex * itemHeight, cursorY, 0, this->Root->Children, isHit);
+				auto node = findNode(this, (float)localX, (float)localY, (float)size.cy, itemHeight, (float)this->ScrollIndex * itemHeight, cursorY, 0, this->Root->Children, isHit);
 				if (node)
 				{
 					if (isHit)
@@ -604,8 +604,8 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 				}
 			}
 		}
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDown(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDown(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;
@@ -620,12 +620,12 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 			}
 			if (this->ParentForm->Selected == this)
 			{
-				MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-				this->OnMouseClick(this, event_obj);
+				MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+				this->OnMouseClick(this, eventArgs);
 			}
 		}
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseUp(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseUp(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;
@@ -636,7 +636,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		const float itemHeight = EffectiveItemHeight(this);
 		float cursorY = 0.0f;
 		bool isHit = false;
-		auto node = findNode(this, (float)xof, (float)yof, (float)size.cy, itemHeight, (float)this->ScrollIndex * itemHeight, cursorY, 0, this->Root->Children, isHit);
+		auto node = findNode(this, (float)localX, (float)localY, (float)size.cy, itemHeight, (float)this->ScrollIndex * itemHeight, cursorY, 0, this->Root->Children, isHit);
 		if (node)
 		{
 			if (node->Children.size() > 0)
@@ -648,8 +648,8 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 				if (isChanged)this->SelectionChanged(this);
 			}
 		}
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDoubleClick(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDoubleClick(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;
@@ -662,15 +662,15 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 			this->ParentForm->SetImeCompositionWindowFromLogicalRect(
 				D2D1_RECT_F{ (float)pos.x, (float)pos.y, (float)pos.x + 1.0f, (float)pos.y + caretH });
 		}
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyDown(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyDown(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;
 	case WM_KEYUP:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyUp(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyUp(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;

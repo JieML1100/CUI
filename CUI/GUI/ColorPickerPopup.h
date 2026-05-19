@@ -33,10 +33,10 @@ public:
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
-	bool ContainsPoint(int xof, int yof) override;
-	CursorKind QueryCursor(int xof, int yof) override;
+	bool ContainsPoint(int localX, int localY) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 	void ShowAt(Form* form, int x, int y, D2D1_COLOR_F initialColor);
 	void ShowAt(Control* relativeTo, const D2D1_RECT_F& anchorRect, D2D1_COLOR_F initialColor);
@@ -92,10 +92,10 @@ private:
 	void FinishCollapsed();
 	void SetFromColor(D2D1_COLOR_F color);
 	void UpdateColorFromHsv();
-	void SetSVFromPoint(int xof, int yof);
-	void SetHueFromPoint(int xof, int yof);
-	void SetAlphaFromPoint(int xof, int yof);
-	void UpdateHover(int xof, int yof);
+	void SetSVFromPoint(int localX, int localY);
+	void SetHueFromPoint(int localX, int localY);
+	void SetAlphaFromPoint(int localX, int localY);
+	void UpdateHover(int localX, int localY);
 	void Confirm();
 	void ClearValue();
 	void AddHistory(const std::wstring& value);

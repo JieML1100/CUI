@@ -101,7 +101,7 @@ void RadioBox::Update()
 	const bool isUnderMouse = this->ParentForm->UnderMouse == this;
 	auto d2d = this->ParentForm->Render;
 	auto size = this->ActualSize();
-	float clipW = last_width > size.cx ? last_width : (float)size.cx;
+	float clipW = lastMeasuredWidth > size.cx ? lastMeasuredWidth : (float)size.cx;
 	this->BeginRender(clipW, (float)size.cy);
 	{
 		auto font = this->Font;
@@ -136,7 +136,7 @@ void RadioBox::Update()
 		d2d->FillRoundRect(0.0f, 0.0f, clipW, (float)size.cy, DisabledOverlayColor, 4.0f);
 	}
 	this->EndRender();
-	last_width = static_cast<float>(size.cx);
+	lastMeasuredWidth = static_cast<float>(size.cx);
 }
 
 bool RadioBox::DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const

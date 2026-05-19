@@ -50,8 +50,8 @@ POINT ToolTip::CalcPopupOrigin()
 	auto textSize = font->GetTextSize(this->Text);
 	float popupW = textSize.width + PaddingX * 2.0f;
 	float popupH = textSize.height + PaddingY * 2.0f;
-	float x = targetRect.left + (float)OffsetX;
-	float y = targetRect.bottom + (float)OffsetY;
+	float x = targetRect.left + (float)PopupOffsetX;
+	float y = targetRect.bottom + (float)PopupOffsetY;
 	float maxW = (float)this->ParentForm->ClientSize.cx;
 	float maxH = (float)this->ParentForm->ClientSize.cy;
 	if (x + popupW > maxW)

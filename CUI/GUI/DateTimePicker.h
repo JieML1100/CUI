@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "Control.h"
 #include <algorithm>
 
@@ -112,9 +112,9 @@ private:
 	float DropdownTop();
 	float CurrentDropProgress();
 	bool IsDropDownVisible();
-	bool HitTestDayCell(const LayoutMetrics& layout, int xof, int yof, int& outDay) const;
-	void UpdateHoverState(int xof, int yof);
-	HitPart HitTestPart(const LayoutMetrics& layout, int xof, int yof, int& outDay) const;
+	bool HitTestDayCell(const LayoutMetrics& layout, int localX, int localY, int& outDay) const;
+	void UpdateHoverState(int localX, int localY);
+	HitPart HitTestPart(const LayoutMetrics& layout, int localX, int localY, int& outDay) const;
 	void ToggleDateSection();
 	void ToggleTimeSection();
 
@@ -188,8 +188,8 @@ public:
 	SET(bool, AllowTimeSelection);
 
 	SIZE ActualSize() override;
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

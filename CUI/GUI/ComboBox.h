@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "Control.h"
 #pragma comment(lib, "Imm32.lib")
 
@@ -33,20 +33,20 @@ private:
 	float CurrentDropdownHeight();
 	bool IsDropDownVisible();
 	bool IsDropDownInteractive();
-	bool IsHeaderHit(int xof, int yof);
-	bool IsDropdownHit(int xof, int yof, float dropdownHeight);
+	bool IsHeaderHit(int localX, int localY);
+	bool IsDropdownHit(int localX, int localY, float dropdownHeight);
 	float DropdownTop();
 	void EnsureSelectionInRange();
 	void EnsureScrollInRange();
 	std::vector<std::wstring> values;
 public:
 	virtual UIClass Type();
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool AutoCloseOnOutsideClick() const override { return true; }
 	bool AutoCloseOnFormFocusLoss() const override { return true; }
 	void ClosePopup() override { SetExpanded(false); }
 	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
@@ -88,5 +88,5 @@ public:
 	SIZE ActualSize() override;
 	void DrawScroll();
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

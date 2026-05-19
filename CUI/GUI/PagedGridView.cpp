@@ -396,7 +396,7 @@ void PagedGridView::Update()
 	Panel::Update();
 }
 
-bool PagedGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool PagedGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (message == WM_KEYDOWN)
 	{
@@ -411,5 +411,5 @@ bool PagedGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 			return true;
 		}
 	}
-	return Panel::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Panel::ProcessMessage(message, wParam, lParam, localX, localY);
 }

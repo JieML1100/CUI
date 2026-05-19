@@ -72,19 +72,19 @@ public:
 	void ClearToasts();
 	size_t ToastCount() const;
 
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 33; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 private:
 	D2D1_COLOR_F KindColor(ToastKind kind) const;
 	D2D1_RECT_F GetToastRect(int visibleOrdinal) const;
 	D2D1_RECT_F GetCloseRect(const D2D1_RECT_F& toastRect) const;
 	std::vector<int> VisibleIndices() const;
-	int HitTestToast(int xof, int yof) const;
-	int HitTestClose(int xof, int yof) const;
+	int HitTestToast(int localX, int localY) const;
+	int HitTestClose(int localX, int localY) const;
 	bool RemoveExpired();
 };

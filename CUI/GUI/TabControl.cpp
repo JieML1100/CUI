@@ -93,12 +93,12 @@ static void SyncNativeChildWindowsRecursive(Control* root)
 	}
 }
 
-static void SyncNativeChildWindowsForAllPages(TabControl* tc)
+static void SyncNativeChildWindowsForAllPages(TabControl* tabControl)
 {
-	if (!tc) return;
-	for (int i = 0; i < tc->Count; i++)
+	if (!tabControl) return;
+	for (int i = 0; i < tabControl->Count; i++)
 	{
-		auto page = tc->operator[](i);
+		auto page = tabControl->operator[](i);
 		SyncNativeChildWindowsRecursive(page);
 	}
 }
@@ -189,9 +189,9 @@ static int GetMaxTitleScrollOffset(TabControl* tabs)
 	return (std::max)(0, (int)std::ceil(overflow));
 }
 
-static int GetTitleAxisPos(TabControl* tabs, int xof, int yof)
+static int GetTitleAxisPos(TabControl* tabs, int localX, int localY)
 {
-	return IsSideTitle(tabs) ? yof : xof;
+	return IsSideTitle(tabs) ? localY : localX;
 }
 
 static bool GetTitleScrollButtonRects(TabControl* tabs, D2D1_RECT_F& backward, D2D1_RECT_F& forward)
@@ -535,14 +535,14 @@ void TabControl::EnsureTitleVisible(int index)
 	ClampTitleScrollOffset();
 }
 
-int TabControl::HitTestTitleScrollButton(int xof, int yof)
+int TabControl::HitTestTitleScrollButton(int localX, int localY)
 {
 	D2D1_RECT_F backward{}, forward{};
 	if (!GetTitleScrollButtonRects(this, backward, forward))
 		return 0;
-	if (PtInRectF(backward, (float)xof, (float)yof))
+	if (PtInRectF(backward, (float)localX, (float)localY))
 		return -1;
-	if (PtInRectF(forward, (float)xof, (float)yof))
+	if (PtInRectF(forward, (float)localX, (float)localY))
 		return 1;
 	return 0;
 }
@@ -630,21 +630,21 @@ D2D1_RECT_F TabControl::GetTitleRect(int index)
 	}
 }
 
-bool TabControl::TryGetTitleIndexAt(int xof, int yof, int& outIndex)
+bool TabControl::TryGetTitleIndexAt(int localX, int localY, int& outIndex)
 {
 	outIndex = -1;
 	if (this->Count <= 0) return false;
 	if (this->TitleWidth <= 0 || this->TitleHeight <= 0) return false;
 	auto viewport = this->GetTitleViewportRect();
-	if (!PtInRectF(viewport, (float)xof, (float)yof)) return false;
-	if (this->HitTestTitleScrollButton(xof, yof) != 0) return false;
+	if (!PtInRectF(viewport, (float)localX, (float)localY)) return false;
+	if (this->HitTestTitleScrollButton(localX, localY) != 0) return false;
 
 	for (int i = 0; i < this->Count; i++)
 	{
 		auto rect = this->GetTitleRect(i);
 		if (rect.right <= rect.left || rect.bottom <= rect.top) continue;
 		if (!RectIntersects(rect, viewport)) continue;
-		if ((float)xof >= rect.left && (float)xof < rect.right && (float)yof >= rect.top && (float)yof < rect.bottom)
+		if ((float)localX >= rect.left && (float)localX < rect.right && (float)localY >= rect.top && (float)localY < rect.bottom)
 		{
 			outIndex = i;
 			return true;
@@ -811,21 +811,21 @@ bool TabControl::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 	return true;
 }
 
-CursorKind TabControl::QueryCursor(int xof, int yof)
+CursorKind TabControl::QueryCursor(int localX, int localY)
 {
 	if (!this->Enable) return CursorKind::Arrow;
 	auto viewport = this->GetTitleViewportRect();
-	if (PtInRectF(viewport, (float)xof, (float)yof))
+	if (PtInRectF(viewport, (float)localX, (float)localY))
 		return CursorKind::Hand;
 	return this->Cursor;
 }
 
-bool TabControl::CanHandleMouseWheel(int delta, int xof, int yof)
+bool TabControl::CanHandleMouseWheel(int delta, int localX, int localY)
 {
 	if (delta == 0 || !this->IsTitleOverflowing())
 		return false;
 	auto viewport = this->GetTitleViewportRect();
-	if (!PtInRectF(viewport, (float)xof, (float)yof))
+	if (!PtInRectF(viewport, (float)localX, (float)localY))
 		return false;
 	const int maxOffset = GetMaxTitleScrollOffset(this);
 	return delta > 0 ? this->TitleScrollOffset > 0 : this->TitleScrollOffset < maxOffset;
@@ -1064,7 +1064,7 @@ void TabControl::Update()
 	}
 	this->EndRender();
 }
-bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 
@@ -1072,8 +1072,8 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 	{
 		EnsureSelectionState();
 		auto contentRect = this->GetContentRect();
-		const int contentX = xof - (int)std::lround(contentRect.left);
-		const int contentY = yof - (int)std::lround(contentRect.top);
+		const int contentX = localX - (int)std::lround(contentRect.left);
+		const int contentY = localY - (int)std::lround(contentRect.top);
 
 		bool handledTitleClick = false;
 		auto releaseCaptureIfOwned = [&]()
@@ -1105,9 +1105,9 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		if (message == WM_MOUSEMOVE || message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN)
 		{
 			int hoverIndex = -1;
-			int hoverButton = this->HitTestTitleScrollButton(xof, yof);
+			int hoverButton = this->HitTestTitleScrollButton(localX, localY);
 			if (hoverButton == 0 && !this->_titleStripDragMoved)
-				TryGetTitleIndexAt(xof, yof, hoverIndex);
+				TryGetTitleIndexAt(localX, localY, hoverIndex);
 			if (this->_hoverTitleIndex != hoverIndex || this->_hoverTitleScrollButton != hoverButton)
 			{
 				this->_hoverTitleIndex = hoverIndex;
@@ -1125,7 +1125,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		if (message == WM_MOUSEWHEEL)
 		{
 			const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-			if (CanHandleMouseWheel(delta, xof, yof))
+			if (CanHandleMouseWheel(delta, localX, localY))
 			{
 				int steps = delta / WHEEL_DELTA;
 				int scrollDelta = 0;
@@ -1141,7 +1141,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		else if (message == WM_MOUSEHWHEEL && this->IsTitleOverflowing())
 		{
 			auto titleViewport = this->GetTitleViewportRect();
-			if (PtInRectF(titleViewport, (float)xof, (float)yof))
+			if (PtInRectF(titleViewport, (float)localX, (float)localY))
 			{
 				const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
 				ScrollTitleBy(delta > 0 ? (std::max)(1, this->TitleScrollMouseWheelStep) : -(std::max)(1, this->TitleScrollMouseWheelStep));
@@ -1198,7 +1198,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 
 		if (this->_dragTitleStrip && message == WM_MOUSEMOVE)
 		{
-			const int axis = GetTitleAxisPos(this, xof, yof);
+			const int axis = GetTitleAxisPos(this, localX, localY);
 			const int dragDelta = axis - this->_titleDragStartPos;
 			if (std::abs(dragDelta) > 3 || this->_titleStripDragMoved)
 			{
@@ -1223,7 +1223,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 			if (clickSelect)
 			{
 				int hitIndex = -1;
-				if (pressedIndex >= 0 && TryGetTitleIndexAt(xof, yof, hitIndex) && hitIndex == pressedIndex)
+				if (pressedIndex >= 0 && TryGetTitleIndexAt(localX, localY, hitIndex) && hitIndex == pressedIndex)
 					selectTitleIndex(hitIndex);
 			}
 			this->InvalidateVisual();
@@ -1243,11 +1243,11 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 
 		if (!handledTitleClick && message == WM_LBUTTONDOWN)
 		{
-			int scrollButton = HitTestTitleScrollButton(xof, yof);
+			int scrollButton = HitTestTitleScrollButton(localX, localY);
 			if (scrollButton != 0)
 			{
 				this->_pressedTitleScrollButton = scrollButton;
-				this->_capturedChild = NULL;
+				this->_capturedChild = nullptr;
 				ScrollTitleBy(scrollButton * (std::max)(1, this->TitleScrollMouseWheelStep));
 				captureMouse();
 				this->InvalidateVisual();
@@ -1256,15 +1256,15 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 			else
 			{
 				int newSelected = -1;
-				if (TryGetTitleIndexAt(xof, yof, newSelected))
+				if (TryGetTitleIndexAt(localX, localY, newSelected))
 				{
-					this->_capturedChild = NULL;
+					this->_capturedChild = nullptr;
 					this->_pressedTitleIndex = newSelected;
 					if (IsTitleOverflowing())
 					{
 						this->_dragTitleStrip = true;
 						this->_titleStripDragMoved = false;
-						this->_titleDragStartPos = GetTitleAxisPos(this, xof, yof);
+						this->_titleDragStartPos = GetTitleAxisPos(this, localX, localY);
 						this->_titleDragStartOffset = this->TitleScrollOffset;
 						captureMouse();
 					}
@@ -1295,7 +1295,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		{
 			if (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP)
 			{
-				this->_capturedChild = NULL;
+				this->_capturedChild = nullptr;
 				if (this->ParentForm && GetCapture() == this->ParentForm->Handle)
 					ReleaseCapture();
 			}
@@ -1305,7 +1305,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 			forwardToChild(this->_capturedChild);
 			if (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP)
 			{
-				this->_capturedChild = NULL;
+				this->_capturedChild = nullptr;
 				if (this->ParentForm && GetCapture() == this->ParentForm->Handle)
 					ReleaseCapture();
 			}
@@ -1323,9 +1323,9 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 				message == WM_MOUSEMOVE || message == WM_MOUSEWHEEL)
 			{
 				// 只在 content 区域才命中子控件
-				if ((float)xof >= contentRect.left && (float)xof <= contentRect.right && (float)yof >= contentRect.top && (float)yof <= contentRect.bottom)
+				if ((float)localX >= contentRect.left && (float)localX <= contentRect.right && (float)localY >= contentRect.top && (float)localY <= contentRect.bottom)
 				{
-					Control* hit = NULL;
+					Control* hit = nullptr;
 					for (auto c : page->GetChildrenInReverseZOrder())
 					{
 						if (!c || !c->Visible || !c->Enable) continue;
@@ -1363,13 +1363,13 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 	case WM_DROPFILES:
 	{
 		HDROP hDropInfo = HDROP(wParam);
-		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
-		TCHAR strFileName[MAX_PATH];
+		UINT fileCount = DragQueryFile(hDropInfo, 0xffffffff, nullptr, 0);
+		TCHAR fileName[MAX_PATH];
 		std::vector<std::wstring> files;
-		for (UINT i = 0; i < uFileNum; i++)
+		for (UINT i = 0; i < fileCount; i++)
 		{
-			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.push_back(strFileName);
+			DragQueryFile(hDropInfo, i, fileName, MAX_PATH);
+			files.push_back(fileName);
 		}
 		DragFinish(hDropInfo);
 		if (!files.empty())
@@ -1380,22 +1380,22 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 	break;
 	case WM_MOUSEWHEEL:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
-		this->OnMouseWheel(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam));
+		this->OnMouseWheel(this, eventArgs);
 	}
 	break;
 	case WM_MOUSEMOVE:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
-		this->OnMouseMove(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
+		this->OnMouseMove(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONDOWN:
 	case WM_RBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDown(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDown(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONUP:
@@ -1405,27 +1405,27 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		// 防御：如果捕获还在，释放掉
 		if (this->_capturedChild && this->ParentForm && (GetCapture() == this->ParentForm->Handle))
 			ReleaseCapture();
-		this->_capturedChild = NULL;
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseUp(this, event_obj);
+		this->_capturedChild = nullptr;
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseUp(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONDBLCLK:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDoubleClick(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDoubleClick(this, eventArgs);
 	}
 	break;
 	case WM_KEYDOWN:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyDown(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyDown(this, eventArgs);
 	}
 	break;
 	case WM_KEYUP:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyUp(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyUp(this, eventArgs);
 	}
 	break;
 	}

@@ -27,45 +27,45 @@ private:
 	float _value = 0.0f;
 	bool _dragging = false;
 
-	float ClampValue(float v)
+	float ClampValue(float value)
 	{
 		if (_max < _min) return _min;
-		return std::clamp(v, _min, _max);
+		return std::clamp(value, _min, _max);
 	}
 	float TrackLeftLocal() { return (std::max)(12.0f, ThumbRadius + ThumbDragRadiusDelta + 4.0f); }
 	float TrackRightLocal() { return (float)this->Width - TrackLeftLocal(); }
 	float TrackYLocal() { return (float)this->Height * 0.5f; }
 	float ValueToT()
 	{
-		float den = (_max - _min);
-		if (den <= 0.00001f) return 0.0f;
-		return (_value - _min) / den;
+		float range = (_max - _min);
+		if (range <= 0.00001f) return 0.0f;
+		return (_value - _min) / range;
 	}
-	float XToValue(int xof)
+	float XToValue(int localX)
 	{
-		float l = TrackLeftLocal();
-		float r = TrackRightLocal();
-		if (r <= l) return _min;
-		float t = ((float)xof - l) / (r - l);
-		t = std::clamp(t, 0.0f, 1.0f);
-		return _min + t * (_max - _min);
+		float trackLeft = TrackLeftLocal();
+		float trackRight = TrackRightLocal();
+		if (trackRight <= trackLeft) return _min;
+		float ratio = ((float)localX - trackLeft) / (trackRight - trackLeft);
+		ratio = std::clamp(ratio, 0.0f, 1.0f);
+		return _min + ratio * (_max - _min);
 	}
-	void SetValueInternal(float v, bool fireEvent)
+	void SetValueInternal(float value, bool fireEvent)
 	{
-		float old = _value;
-		float nv = ClampValue(v);
+		float oldValue = _value;
+		float newValue = ClampValue(value);
 		if (SnapToStep && Step > 0.0f)
 		{
-			float steps = (nv - _min) / Step;
+			float steps = (newValue - _min) / Step;
 			float snapped = _min + std::round(steps) * Step;
-			nv = ClampValue(snapped);
+			newValue = ClampValue(snapped);
 		}
-		if (nv != _value)
+		if (newValue != _value)
 		{
-			_value = nv;
+			_value = newValue;
 			this->InvalidateVisual();
 			if (fireEvent)
-				this->OnValueChanged(this, old, _value);
+				this->OnValueChanged(this, oldValue, _value);
 		}
 	}
 
@@ -121,8 +121,8 @@ public:
 	GET(float, Value);
 	SET(float, Value);
 
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };
 

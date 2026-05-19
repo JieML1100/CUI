@@ -173,8 +173,8 @@ void StatusBar::LayoutItems()
 		int extra = remaining - each * (int)springIndices.size();
 		for (size_t si = 0; si < springIndices.size(); si++)
 		{
-			int idx = springIndices[si];
-			computedWidths[idx] = each + ((si == springIndices.size() - 1) ? extra : 0);
+			int partIndex = springIndices[si];
+			computedWidths[partIndex] = each + ((si == springIndices.size() - 1) ? extra : 0);
 		}
 	}
 

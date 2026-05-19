@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "Control.h"
 #pragma comment(lib, "Imm32.lib")
 
@@ -7,7 +7,7 @@
  * @brief RichTextBox：富文本/大文本输入控件（支持虚拟化渲染）。
  *
  * 设计要点：
- * - 内部维护 buffer，与 Control::Text 在需要时同步
+ * - 内部维护编辑缓冲区，与 Control::Text 在需要时同步
  * - 支持多行、选择区间、滚动条与光标命中测试
  * - 可启用虚拟化：按块（BlockCharCount）构建多个 DWrite TextLayout，以降低超长文本开销
  */
@@ -16,7 +16,7 @@ class RichTextBox : public Control
 private:
 	std::wstring buffer;
 	bool bufferSyncedFromControl = false;
-	::Font* _lastLayoutFont = NULL;
+	::Font* _lastLayoutFont = nullptr;
 	struct UndoRecord
 	{
 		int pos = 0;
@@ -33,8 +33,8 @@ private:
 
 	POINT selectedPos = { 0,0 };
 	bool isDraggingScroll = false;
-	float _scrollThumbGrabOffsetY = 0.0f;
-	IDWriteTextLayout* layOutCache = NULL;
+	float _verticalScrollThumbGrabOffset = 0.0f;
+	IDWriteTextLayout* _textLayoutCache = nullptr;
 	std::vector<DWRITE_HIT_TEST_METRICS> selRange;
 	bool selRangeDirty = true;
 	SIZE lastLayoutSize = { 0,0 };
@@ -43,21 +43,22 @@ private:
 	{
 		size_t start = 0;
 		size_t len = 0;
-		IDWriteTextLayout* layout = NULL;
+		IDWriteTextLayout* layout = nullptr;
 		float height = -1.0f;
 	};
 	std::vector<TextBlock> blocks;
-	std::vector<float> blockTops; 	bool blocksDirty = true;
+	std::vector<float> blockTops;
+	bool blocksDirty = true;
 	bool blockMetricsDirty = true;
-	bool virtualMode = false;
+	bool _isVirtualized = false;
 	bool layoutWidthHasScrollBar = false;
 	float virtualTotalHeight = 0.0f;
 	float _cachedRenderWidth = 0.0f;
 public:
 	virtual UIClass Type();
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool HandlesNavigationKey(WPARAM key) const override;
 	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
@@ -101,7 +102,7 @@ public:
 	/** @brief 聚焦时边框宽度。 */
 	float FocusBorder = 1.6f;
 	/** @brief 垂直滚动偏移（像素）。 */
-	float OffsetY = 0.0f;
+	float VerticalScrollOffset = 0.0f;
 	/** @brief 文本内边距（像素）。 */
 	float TextMargin = 5.0f;
 	/** @brief 创建富文本框。 */
@@ -123,13 +124,13 @@ private:
 	void TrimToMaxLength();
 	void RebuildBlocks();
 	void ReleaseBlocks();
-	void EnsureBlockLayout(int idx, float renderWidth, float renderHeight);
+	void EnsureBlockLayout(int blockIndex, float renderWidth, float renderHeight);
 	void EnsureAllBlockMetrics(float renderWidth, float renderHeight);
 	int HitTestGlobalIndex(float x, float y);
 	bool GetCaretMetrics(int caretIndex, float& outX, float& outY, float& outH);
 	void DrawScroll();
 	void UpdateScrollDrag(float posY);
-	void SetScrollByPos(float yof);
+	void SetScrollByPos(float localY);
 	void InputText(std::wstring input);
 	void InputBack();
 	void InputDelete();
@@ -147,7 +148,7 @@ public:
 	/** @brief 获取当前选择文本。 */
 	std::wstring GetSelectedString();
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 	/** @brief 滚动到末尾。 */
 	void ScrollToEnd();
 };

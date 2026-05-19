@@ -38,7 +38,7 @@ private:
 	D2D1_RECT_F UpButtonRect() const;
 	D2D1_RECT_F DownButtonRect() const;
 	D2D1_RECT_F TextRect() const;
-	int HitTestButton(int xof, int yof) const;
+	int HitTestButton(int localX, int localY) const;
 	void StepBy(int direction);
 	void StartHoverAnimation(float target);
 	float CurrentHoverProgress();
@@ -82,13 +82,13 @@ public:
 	GET(double, Value);
 	SET(double, Value);
 
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool HandlesNavigationKey(WPARAM key) const override;
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

@@ -15,7 +15,7 @@ Control::Control()
 	Checked(false),
 	ParentForm(nullptr),
 	Parent(nullptr),
-	Tag(NULL),
+	Tag(0),
 	SizeMode(ImageSizeMode::Zoom),
 	_text(L"")
 {
@@ -33,18 +33,18 @@ Control::~Control()
 	{
 		delete this->_font;
 	}
-	this->_font = NULL;
+	this->_font = nullptr;
 	this->_ownsFont = false;
-	for (auto c : this->Children)
+	for (auto child : this->Children)
 	{
-		delete c;
+		delete child;
 	}
 }
 UIClass Control::Type() { return UIClass::UI_Base; }
 
-void Control::setTextPrivate(std::wstring s)
+void Control::SetTextInternal(std::wstring text)
 {
-	this->_text = s;
+	this->_text = std::move(text);
 }
 void Control::Update() {}
 
@@ -67,17 +67,17 @@ void Control::RequestLayout()
 }
 void Control::BeginRender()
 {
-	auto size = this->ActualSize();
-	BeginRender((float)size.cx, (float)size.cy);
+	auto actualSize = this->ActualSize();
+	BeginRender((float)actualSize.cx, (float)actualSize.cy);
 }
 void Control::BeginRender(float clipW, float clipH)
 {
 	if (!this->ParentForm || !this->ParentForm->Render) return;
-	auto abs = this->AbsLocation;
-	// HeadHeight is physical; divide by dpiScale to get logical units that match abs.y (logical)
-	const float dpiSc = this->ParentForm->GetDpiScale();
-	const float top = (this->ParentForm->VisibleHead ? this->ParentForm->HeadHeight / dpiSc : 0.0f);
-	this->ParentForm->Render->PushLocalTransform((float)abs.x, (float)abs.y + top, clipW, clipH);
+	auto absoluteLocation = this->AbsLocation;
+	// HeadHeight is physical; divide by dpiScale to get logical units that match AbsLocation.
+	const float dpiScale = this->ParentForm->GetDpiScale();
+	const float titleBarOffset = (this->ParentForm->VisibleHead ? this->ParentForm->HeadHeight / dpiScale : 0.0f);
+	this->ParentForm->Render->PushLocalTransform((float)absoluteLocation.x, (float)absoluteLocation.y + titleBarOffset, clipW, clipH);
 }
 void Control::EndRender()
 {
@@ -88,38 +88,38 @@ void Control::EndRender()
 void Control::InvalidateVisual()
 {
 	if (!this->IsVisual || !this->ParentForm) return;
-	const float top = (this->ParentForm->VisibleHead ? (float)this->ParentForm->HeadHeight : 0.0f);
-	auto r = this->AbsRect;
-	r.top += top;
-	r.bottom += top;
+	const float titleBarOffset = (this->ParentForm->VisibleHead ? (float)this->ParentForm->HeadHeight : 0.0f);
+	auto currentRect = this->AbsRect;
+	currentRect.top += titleBarOffset;
+	currentRect.bottom += titleBarOffset;
 
 	if (_hasLastInvalidatedClientRect)
 	{
-		D2D1_RECT_F u{};
-		u.left = (std::min)(_lastInvalidatedClientRect.left, r.left);
-		u.top = (std::min)(_lastInvalidatedClientRect.top, r.top);
-		u.right = (std::max)(_lastInvalidatedClientRect.right, r.right);
-		u.bottom = (std::max)(_lastInvalidatedClientRect.bottom, r.bottom);
-		this->ParentForm->Invalidate(u, false);
+		D2D1_RECT_F unionRect{};
+		unionRect.left = (std::min)(_lastInvalidatedClientRect.left, currentRect.left);
+		unionRect.top = (std::min)(_lastInvalidatedClientRect.top, currentRect.top);
+		unionRect.right = (std::max)(_lastInvalidatedClientRect.right, currentRect.right);
+		unionRect.bottom = (std::max)(_lastInvalidatedClientRect.bottom, currentRect.bottom);
+		this->ParentForm->Invalidate(unionRect, false);
 	}
 	else
 	{
-		this->ParentForm->Invalidate(r, false);
+		this->ParentForm->Invalidate(currentRect, false);
 	}
 
-	_lastInvalidatedClientRect = r;
+	_lastInvalidatedClientRect = currentRect;
 	_hasLastInvalidatedClientRect = true;
 }
 
 void Control::UpdateCaretBlinkState(bool focused, int selectionStart, int selectionEnd, bool caretRectValid, const D2D1_RECT_F* caretRect)
 {
-	bool needReset = false;
+	bool shouldResetBlink = false;
 	if (focused != _caretBlinkFocused)
-		needReset = focused;
+		shouldResetBlink = focused;
 	if (selectionStart != _caretBlinkSelectionStart || selectionEnd != _caretBlinkSelectionEnd)
-		needReset = true;
+		shouldResetBlink = true;
 	if (caretRectValid != _caretBlinkRectValid)
-		needReset = true;
+		shouldResetBlink = true;
 	if (caretRectValid && caretRect)
 	{
 		if (!_caretBlinkRectValid ||
@@ -128,7 +128,7 @@ void Control::UpdateCaretBlinkState(bool focused, int selectionStart, int select
 			std::fabs(_caretBlinkRect.right - caretRect->right) > 0.1f ||
 			std::fabs(_caretBlinkRect.bottom - caretRect->bottom) > 0.1f)
 		{
-			needReset = true;
+			shouldResetBlink = true;
 		}
 		_caretBlinkRect = *caretRect;
 	}
@@ -142,7 +142,7 @@ void Control::UpdateCaretBlinkState(bool focused, int selectionStart, int select
 	_caretBlinkSelectionEnd = selectionEnd;
 	_caretBlinkRectValid = caretRectValid;
 
-	if (needReset || _caretBlinkResetTick == 0)
+	if (shouldResetBlink || _caretBlinkResetTick == 0)
 		_caretBlinkResetTick = ::GetTickCount64();
 }
 
@@ -230,20 +230,20 @@ Control* Control::operator[](int index)
 {
 	return this->Children[index];
 }
-Control* Control::get(int index)
+Control* Control::GetChild(int index)
 {
 	if (this->Children.size() <= index)
-		return NULL;
+		return nullptr;
 	return this->Children[index];
 }
 
 std::vector<Control*> Control::GetChildrenInZOrder() const
 {
 	std::vector<Control*> result = this->Children;
-	std::stable_sort(result.begin(), result.end(), [](Control* a, Control* b)
+	std::stable_sort(result.begin(), result.end(), [](Control* left, Control* right)
 		{
-			if (!a || !b) return a != nullptr;
-			return a->ZIndex < b->ZIndex;
+			if (!left || !right) return left != nullptr;
+			return left->ZIndex < right->ZIndex;
 		});
 	return result;
 }
@@ -254,40 +254,40 @@ std::vector<Control*> Control::GetChildrenInReverseZOrder() const
 	std::reverse(result.begin(), result.end());
 	return result;
 }
-void Control::RemoveControl(Control* c)
+void Control::RemoveControl(Control* child)
 {
 	this->Children.erase(
-		std::remove(this->Children.begin(), this->Children.end(), c),
+		std::remove(this->Children.begin(), this->Children.end(), child),
 		this->Children.end());
-	c->Parent = NULL;
-	c->ParentForm = NULL;
+	child->Parent = nullptr;
+	child->ParentForm = nullptr;
 	if (!this->ParentForm) return;
-	if (this->ParentForm->ForegroundControl == c)
-		this->ParentForm->ForegroundControl = NULL;
-	if (this->ParentForm->MainMenu == c)
-		this->ParentForm->MainMenu = NULL;
-	if (this->ParentForm->MainToolBar == c)
-		this->ParentForm->MainToolBar = NULL;
-	if (this->ParentForm->MainStatusBar == c)
-		this->ParentForm->MainStatusBar = NULL;
-	if (this->ParentForm->UnderMouse == c)
-		this->ParentForm->UnderMouse = NULL;
+	if (this->ParentForm->ForegroundControl == child)
+		this->ParentForm->ForegroundControl = nullptr;
+	if (this->ParentForm->MainMenu == child)
+		this->ParentForm->MainMenu = nullptr;
+	if (this->ParentForm->MainToolBar == child)
+		this->ParentForm->MainToolBar = nullptr;
+	if (this->ParentForm->MainStatusBar == child)
+		this->ParentForm->MainStatusBar = nullptr;
+	if (this->ParentForm->UnderMouse == child)
+		this->ParentForm->UnderMouse = nullptr;
 }
 GET_CPP(Control, POINT, AbsLocation)
 {
-	Control* tmpc = this;
-	POINT tmpl = tmpc->ActualLocation;
-	while (tmpc->Parent)
+	Control* ancestor = this;
+	POINT absoluteLocation = ancestor->ActualLocation;
+	while (ancestor->Parent)
 	{
-		tmpc = tmpc->Parent;
-		auto loc = tmpc->ActualLocation;
-		auto childOffset = tmpc->GetChildrenRenderOffset();
-		tmpl.x += loc.x;
-		tmpl.y += loc.y;
-		tmpl.x += childOffset.x;
-		tmpl.y += childOffset.y;
+		ancestor = ancestor->Parent;
+		auto parentLocation = ancestor->ActualLocation;
+		auto childOffset = ancestor->GetChildrenRenderOffset();
+		absoluteLocation.x += parentLocation.x;
+		absoluteLocation.y += parentLocation.y;
+		absoluteLocation.x += childOffset.x;
+		absoluteLocation.y += childOffset.y;
 	}
-	return tmpl;
+	return absoluteLocation;
 }
 GET_CPP(Control, POINT, ActualLocation)
 {
@@ -295,24 +295,23 @@ GET_CPP(Control, POINT, ActualLocation)
 }
 GET_CPP(Control, D2D1_RECT_F, AbsRect)
 {
-	Control* tmpc = this;
-	auto absMin = this->AbsLocation;
-	auto asize = this->ActualSize();
+	auto absoluteLocation = this->AbsLocation;
+	auto actualSize = this->ActualSize();
 	return D2D1_RECT_F{
-		(float)absMin.x,
-		(float)absMin.y,
-		(float)absMin.x + (float)asize.cx,
-		(float)absMin.y + (float)asize.cy
+		(float)absoluteLocation.x,
+		(float)absoluteLocation.y,
+		(float)absoluteLocation.x + (float)actualSize.cx,
+		(float)absoluteLocation.y + (float)actualSize.cy
 	};
 }
 GET_CPP(Control, bool, IsVisual)
 {
 	if (!this->_visible) return false;
-	Control* tmpc = this;
-	while (tmpc->Parent)
+	Control* ancestor = this;
+	while (ancestor->Parent)
 	{
-		tmpc = tmpc->Parent;
-		if (!tmpc->Visible) return false;
+		ancestor = ancestor->Parent;
+		if (!ancestor->Visible) return false;
 	}
 	return true;
 }
@@ -490,40 +489,43 @@ ID2D1Bitmap* Control::EnsureImageCache()
 }
 void Control::RenderImage(float cornerRadius)
 {
-	auto* bmp = this->EnsureImageCache();
-	if (bmp)
+	auto* bitmap = this->EnsureImageCache();
+	if (bitmap)
 	{
-		auto size = bmp->GetSize();
-		if (size.width > 0 && size.height > 0)
+		auto imageSize = bitmap->GetSize();
+		if (imageSize.width > 0 && imageSize.height > 0)
 		{
-			auto asize = this->ActualSize();
-			const float clipRadius = (std::clamp)(cornerRadius, 0.0f, (std::min)((float)asize.cx, (float)asize.cy) * 0.5f);
+			auto actualSize = this->ActualSize();
+			const float clipRadius = (std::clamp)(cornerRadius, 0.0f, (std::min)((float)actualSize.cx, (float)actualSize.cy) * 0.5f);
 			const bool clipPushed = clipRadius > 0.0f && this->ParentForm && this->ParentForm->Render &&
-				this->ParentForm->Render->PushRoundClip(0.0f, 0.0f, (float)asize.cx, (float)asize.cy, clipRadius);
+				this->ParentForm->Render->PushRoundClip(0.0f, 0.0f, (float)actualSize.cx, (float)actualSize.cy, clipRadius);
 			switch (this->SizeMode)
 			{
 			case ImageSizeMode::Normal:
 			{
-				this->ParentForm->Render->DrawBitmap(bmp, 0.0f, 0.0f, size.width, size.height);
+				this->ParentForm->Render->DrawBitmap(bitmap, 0.0f, 0.0f, imageSize.width, imageSize.height);
 			}
 			break;
 			case ImageSizeMode::CenterImage:
 			{
-				this->ParentForm->Render->DrawBitmap(bmp, (asize.cx - size.width) / 2.0f, (asize.cy - size.height) / 2.0f, size.width, size.height);
+				this->ParentForm->Render->DrawBitmap(bitmap, (actualSize.cx - imageSize.width) / 2.0f, (actualSize.cy - imageSize.height) / 2.0f, imageSize.width, imageSize.height);
 			}
 			break;
 			case ImageSizeMode::StretchImage:
 			{
-				this->ParentForm->Render->DrawBitmap(bmp, 0.0f, 0.0f, (float)asize.cx, (float)asize.cy);
+				this->ParentForm->Render->DrawBitmap(bitmap, 0.0f, 0.0f, (float)actualSize.cx, (float)actualSize.cy);
 			}
 			break;
 			case ImageSizeMode::Zoom:
 			{
-				float xp = asize.cx / size.width, yp = asize.cy / size.height;
-				float tp = xp < yp ? xp : yp;
-				float tw = size.width * tp, th = size.height * tp;
-				float xf = (asize.cx - tw) / 2.0f, yf = (asize.cy - th) / 2.0f;
-				this->ParentForm->Render->DrawBitmap(bmp, xf, yf, tw, th);
+				float scaleX = actualSize.cx / imageSize.width;
+				float scaleY = actualSize.cy / imageSize.height;
+				float scale = scaleX < scaleY ? scaleX : scaleY;
+				float renderWidth = imageSize.width * scale;
+				float renderHeight = imageSize.height * scale;
+				float renderX = (actualSize.cx - renderWidth) / 2.0f;
+				float renderY = (actualSize.cy - renderHeight) / 2.0f;
+				this->ParentForm->Render->DrawBitmap(bitmap, renderX, renderY, renderWidth, renderHeight);
 			}
 			break;
 			default:
@@ -543,7 +545,7 @@ bool Control::IsSelected()
 {
 	return this->ParentForm && this->ParentForm->Selected == this;
 }
-bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	switch (message)
@@ -551,13 +553,13 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 	case WM_DROPFILES:
 	{
 		HDROP hDropInfo = HDROP(wParam);
-		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
-		TCHAR strFileName[MAX_PATH];
+		UINT fileCount = DragQueryFile(hDropInfo, 0xffffffff, nullptr, 0);
+		TCHAR fileName[MAX_PATH];
 		std::vector<std::wstring> files;
-		for (int i = 0; i < uFileNum; i++)
+		for (UINT fileIndex = 0; fileIndex < fileCount; fileIndex++)
 		{
-			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.push_back(strFileName);
+			DragQueryFile(hDropInfo, fileIndex, fileName, MAX_PATH);
+			files.push_back(fileName);
 		}
 		DragFinish(hDropInfo);
 		if (files.size() > 0)
@@ -568,17 +570,17 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 	break;
 	case WM_MOUSEWHEEL:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
-		this->OnMouseWheel(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam));
+		this->OnMouseWheel(this, eventArgs);
 	}
 	break;
 	case WM_MOUSEMOVE:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
 		if (this->ParentForm && this->DefaultTrackUnderMouse())
 			this->ParentForm->UnderMouse = this;
-		this->BeforeDefaultMouseMove(event_obj);
-		this->OnMouseMove(this, event_obj);
+		this->BeforeDefaultMouseMove(eventArgs);
+		this->OnMouseMove(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONDOWN:
@@ -589,9 +591,9 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 		{
 			this->ParentForm->SetSelectedControl(this, false);
 		}
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->BeforeDefaultMouseDown(message, event_obj);
-		this->OnMouseDown(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->BeforeDefaultMouseDown(message, eventArgs);
+		this->OnMouseDown(this, eventArgs);
 		if (this->DefaultInvalidateVisualOnMouseDown(message))
 			this->InvalidateVisual();
 	}
@@ -601,18 +603,18 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 	case WM_MBUTTONUP:
 	{
 		bool wasSelected = this->ParentForm && this->ParentForm->Selected == this;
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->BeforeDefaultMouseUp(message, event_obj, wasSelected);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->BeforeDefaultMouseUp(message, eventArgs, wasSelected);
 		if (WM_LBUTTONUP == message && wasSelected && this->DefaultRaiseClickOnLeftButtonUp())
 		{
-			this->BeforeDefaultClick(message, event_obj);
-			this->OnMouseClick(this, event_obj);
+			this->BeforeDefaultClick(message, eventArgs);
+			this->OnMouseClick(this, eventArgs);
 		}
 		if (wasSelected && this->DefaultClearSelectionOnMouseUp() && this->ParentForm && this->ParentForm->Selected == this)
 		{
-			this->ParentForm->SetSelectedControl(NULL, false);
+			this->ParentForm->SetSelectedControl(nullptr, false);
 		}
-		this->OnMouseUp(this, event_obj);
+		this->OnMouseUp(this, eventArgs);
 		if (this->DefaultInvalidateVisualOnMouseUp(message))
 			this->InvalidateVisual();
 	}
@@ -624,24 +626,24 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 		{
 			this->ParentForm->SetSelectedControl(this, false);
 		}
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->BeforeDefaultMouseDoubleClick(message, event_obj, wasSelected);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->BeforeDefaultMouseDoubleClick(message, eventArgs, wasSelected);
 		if (this->DefaultRaiseMouseDoubleClick(message, wasSelected))
-			this->OnMouseDoubleClick(this, event_obj);
+			this->OnMouseDoubleClick(this, eventArgs);
 		if (this->DefaultInvalidateVisualOnMouseDoubleClick(message, wasSelected))
 			this->InvalidateVisual();
 	}
 	break;
 	case WM_KEYDOWN:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyDown(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyDown(this, eventArgs);
 	}
 	break;
 	case WM_KEYUP:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyUp(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyUp(this, eventArgs);
 	}
 	break;
 	}
@@ -792,15 +794,15 @@ SIZE Control::MeasureCore(SIZE availableSize)
 {
 	(void)availableSize;
 	EnsureLayoutBase();
-	SIZE desired = this->_layoutBaseSize;
+	SIZE desiredSize = this->_layoutBaseSize;
 
 	// 应用约束
-	if (desired.cx < _minSize.cx) desired.cx = _minSize.cx;
-	if (desired.cy < _minSize.cy) desired.cy = _minSize.cy;
-	if (desired.cx > _maxSize.cx) desired.cx = _maxSize.cx;
-	if (desired.cy > _maxSize.cy) desired.cy = _maxSize.cy;
+	if (desiredSize.cx < _minSize.cx) desiredSize.cx = _minSize.cx;
+	if (desiredSize.cy < _minSize.cy) desiredSize.cy = _minSize.cy;
+	if (desiredSize.cx > _maxSize.cx) desiredSize.cx = _maxSize.cx;
+	if (desiredSize.cy > _maxSize.cy) desiredSize.cy = _maxSize.cy;
 
-	return desired;
+	return desiredSize;
 }
 
 // 应用布局结果

@@ -11,7 +11,7 @@
  */
 class CheckBox : public Control
 {
-	float last_width = 0.0f;
+	float lastMeasuredWidth = 0.0f;
 	float _checkProgress = 0.0f;
 	float _animStartProgress = 0.0f;
 	float _animTargetProgress = 0.0f;

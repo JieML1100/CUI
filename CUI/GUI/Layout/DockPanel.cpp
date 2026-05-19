@@ -12,9 +12,9 @@ SIZE DockLayoutEngine::Measure(Control* container, SIZE availableSize)
 	SIZE remainingSize = availableSize;
 	
 	// 遍历所有子控件，按停靠位置累计尺寸
-	for (int i = 0; i < container->Count; i++)
+	for (int childIndex = 0; childIndex < container->Count; childIndex++)
 	{
-		auto child = container->operator[](i);
+		auto child = container->operator[](childIndex);
 		if (!child || !child->Visible) continue;
 		
 		SIZE childSize = child->MeasureCore(remainingSize);
@@ -68,134 +68,137 @@ void DockLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 	int lastIndex = childCount - 1;
 	
 	// 遍历子控件并排列
-	for (int i = 0; i < childCount; i++)
+	for (int childIndex = 0; childIndex < childCount; childIndex++)
 	{
-		auto child = container->operator[](i);
+		auto child = container->operator[](childIndex);
 		if (!child || !child->Visible) continue;
 		
 		Dock dock = child->DockPosition;
 		Thickness margin = child->Margin;
-		HorizontalAlignment hAlign = child->HAlign;
-		VerticalAlignment vAlign = child->VAlign;
+		HorizontalAlignment horizontalAlignment = child->HAlign;
+		VerticalAlignment verticalAlignment = child->VAlign;
 		SIZE childSize = child->MeasureCore({ (LONG)(remaining.right - remaining.left), (LONG)(remaining.bottom - remaining.top) });
 		
 		// 最后一个子控件如果启用 LastChildFill，则填充剩余空间
-		bool isLastAndFill = (i == lastIndex && _lastChildFill);
+		bool isLastAndFill = (childIndex == lastIndex && _lastChildFill);
 		if (isLastAndFill)
 		{
 			dock = Dock::Fill;
 		}
 		
-		float x = 0, y = 0, width = 0, height = 0;
+		float finalX = 0.0f;
+		float finalY = 0.0f;
+		float finalWidth = 0.0f;
+		float finalHeight = 0.0f;
 		
 		switch (dock)
 		{
 		case Dock::Left:
 		{
-			float availableH = remaining.bottom - remaining.top - margin.Top - margin.Bottom;
-			if (availableH < 0) availableH = 0;
-			width = (float)childSize.cx;
-			height = (vAlign == VerticalAlignment::Stretch) ? availableH : (float)childSize.cy;
-			if (height > availableH) height = availableH;
+			float availableHeight = remaining.bottom - remaining.top - margin.Top - margin.Bottom;
+			if (availableHeight < 0) availableHeight = 0;
+			finalWidth = (float)childSize.cx;
+			finalHeight = (verticalAlignment == VerticalAlignment::Stretch) ? availableHeight : (float)childSize.cy;
+			if (finalHeight > availableHeight) finalHeight = availableHeight;
 
-			x = remaining.left + margin.Left;
-			if (vAlign == VerticalAlignment::Bottom)
-				y = remaining.bottom - margin.Bottom - height;
-			else if (vAlign == VerticalAlignment::Center)
-				y = remaining.top + margin.Top + (availableH - height) / 2.0f;
+			finalX = remaining.left + margin.Left;
+			if (verticalAlignment == VerticalAlignment::Bottom)
+				finalY = remaining.bottom - margin.Bottom - finalHeight;
+			else if (verticalAlignment == VerticalAlignment::Center)
+				finalY = remaining.top + margin.Top + (availableHeight - finalHeight) / 2.0f;
 			else
-				y = remaining.top + margin.Top;
+				finalY = remaining.top + margin.Top;
 
 			// 更新剩余空间
-			remaining.left += width + margin.Left + margin.Right;
+			remaining.left += finalWidth + margin.Left + margin.Right;
 		}
 			break;
 			
 		case Dock::Top:
 		{
-			float availableW = remaining.right - remaining.left - margin.Left - margin.Right;
-			if (availableW < 0) availableW = 0;
-			width = (hAlign == HorizontalAlignment::Stretch) ? availableW : (float)childSize.cx;
-			if (width > availableW) width = availableW;
-			height = (float)childSize.cy;
+			float availableWidth = remaining.right - remaining.left - margin.Left - margin.Right;
+			if (availableWidth < 0) availableWidth = 0;
+			finalWidth = (horizontalAlignment == HorizontalAlignment::Stretch) ? availableWidth : (float)childSize.cx;
+			if (finalWidth > availableWidth) finalWidth = availableWidth;
+			finalHeight = (float)childSize.cy;
 
-			if (hAlign == HorizontalAlignment::Right)
-				x = remaining.right - margin.Right - width;
-			else if (hAlign == HorizontalAlignment::Center)
-				x = remaining.left + margin.Left + (availableW - width) / 2.0f;
+			if (horizontalAlignment == HorizontalAlignment::Right)
+				finalX = remaining.right - margin.Right - finalWidth;
+			else if (horizontalAlignment == HorizontalAlignment::Center)
+				finalX = remaining.left + margin.Left + (availableWidth - finalWidth) / 2.0f;
 			else
-				x = remaining.left + margin.Left;
-			y = remaining.top + margin.Top;
+				finalX = remaining.left + margin.Left;
+			finalY = remaining.top + margin.Top;
 
 			// 更新剩余空间
-			remaining.top += height + margin.Top + margin.Bottom;
+			remaining.top += finalHeight + margin.Top + margin.Bottom;
 		}
 			break;
 			
 		case Dock::Right:
 		{
-			float availableH = remaining.bottom - remaining.top - margin.Top - margin.Bottom;
-			if (availableH < 0) availableH = 0;
-			width = (float)childSize.cx;
-			height = (vAlign == VerticalAlignment::Stretch) ? availableH : (float)childSize.cy;
-			if (height > availableH) height = availableH;
+			float availableHeight = remaining.bottom - remaining.top - margin.Top - margin.Bottom;
+			if (availableHeight < 0) availableHeight = 0;
+			finalWidth = (float)childSize.cx;
+			finalHeight = (verticalAlignment == VerticalAlignment::Stretch) ? availableHeight : (float)childSize.cy;
+			if (finalHeight > availableHeight) finalHeight = availableHeight;
 
-			x = remaining.right - width - margin.Right;
-			if (vAlign == VerticalAlignment::Bottom)
-				y = remaining.bottom - margin.Bottom - height;
-			else if (vAlign == VerticalAlignment::Center)
-				y = remaining.top + margin.Top + (availableH - height) / 2.0f;
+			finalX = remaining.right - finalWidth - margin.Right;
+			if (verticalAlignment == VerticalAlignment::Bottom)
+				finalY = remaining.bottom - margin.Bottom - finalHeight;
+			else if (verticalAlignment == VerticalAlignment::Center)
+				finalY = remaining.top + margin.Top + (availableHeight - finalHeight) / 2.0f;
 			else
-				y = remaining.top + margin.Top;
+				finalY = remaining.top + margin.Top;
 			
 			// 更新剩余空间
-			remaining.right -= width + margin.Left + margin.Right;
+			remaining.right -= finalWidth + margin.Left + margin.Right;
 		}
 			break;
 			
 		case Dock::Bottom:
 		{
-			float availableW = remaining.right - remaining.left - margin.Left - margin.Right;
-			if (availableW < 0) availableW = 0;
-			width = (hAlign == HorizontalAlignment::Stretch) ? availableW : (float)childSize.cx;
-			if (width > availableW) width = availableW;
-			height = (float)childSize.cy;
+			float availableWidth = remaining.right - remaining.left - margin.Left - margin.Right;
+			if (availableWidth < 0) availableWidth = 0;
+			finalWidth = (horizontalAlignment == HorizontalAlignment::Stretch) ? availableWidth : (float)childSize.cx;
+			if (finalWidth > availableWidth) finalWidth = availableWidth;
+			finalHeight = (float)childSize.cy;
 
-			if (hAlign == HorizontalAlignment::Right)
-				x = remaining.right - margin.Right - width;
-			else if (hAlign == HorizontalAlignment::Center)
-				x = remaining.left + margin.Left + (availableW - width) / 2.0f;
+			if (horizontalAlignment == HorizontalAlignment::Right)
+				finalX = remaining.right - margin.Right - finalWidth;
+			else if (horizontalAlignment == HorizontalAlignment::Center)
+				finalX = remaining.left + margin.Left + (availableWidth - finalWidth) / 2.0f;
 			else
-				x = remaining.left + margin.Left;
-			y = remaining.bottom - height - margin.Bottom;
+				finalX = remaining.left + margin.Left;
+			finalY = remaining.bottom - finalHeight - margin.Bottom;
 			
 			// 更新剩余空间
-			remaining.bottom -= height + margin.Top + margin.Bottom;
+			remaining.bottom -= finalHeight + margin.Top + margin.Bottom;
 		}
 			break;
 			
 		case Dock::Fill:
 		{
-			float availableW = remaining.right - remaining.left - margin.Left - margin.Right;
-			float availableH = remaining.bottom - remaining.top - margin.Top - margin.Bottom;
-			if (availableW < 0) availableW = 0;
-			if (availableH < 0) availableH = 0;
-			x = remaining.left + margin.Left;
-			y = remaining.top + margin.Top;
-			width = availableW;
-			height = availableH;
+			float availableWidth = remaining.right - remaining.left - margin.Left - margin.Right;
+			float availableHeight = remaining.bottom - remaining.top - margin.Top - margin.Bottom;
+			if (availableWidth < 0) availableWidth = 0;
+			if (availableHeight < 0) availableHeight = 0;
+			finalX = remaining.left + margin.Left;
+			finalY = remaining.top + margin.Top;
+			finalWidth = availableWidth;
+			finalHeight = availableHeight;
 		}
 			break;
 		}
 		
 		// 确保尺寸非负
-		if (width < 0) width = 0;
-		if (height < 0) height = 0;
+		if (finalWidth < 0) finalWidth = 0;
+		if (finalHeight < 0) finalHeight = 0;
 		
 		// 应用布局
-		POINT loc = { (LONG)x, (LONG)y };
-		SIZE size = { (LONG)width, (LONG)height };
-		child->ApplyLayout(loc, size);
+		POINT finalLocation = { (LONG)finalX, (LONG)finalY };
+		SIZE finalSize = { (LONG)finalWidth, (LONG)finalHeight };
+		child->ApplyLayout(finalLocation, finalSize);
 	}
 	
 	_needsLayout = false;

@@ -1,4 +1,4 @@
-#include "DesignDocumentSerializer.h"
+﻿#include "DesignDocumentSerializer.h"
 #include "../../LibXML/include/Xml.h"
 #include <algorithm>
 #include <cctype>
@@ -474,9 +474,9 @@ bool DesignDocumentSerializer::SaveToFile(const DesignDocument& document, const 
 		f.write(out.data(), (std::streamsize)out.size());
 		return true;
 	}
-	catch (const std::exception& ex)
+	catch (const std::exception& exception)
 	{
-		if (outError) *outError = L"Save failed: " + FromUtf8(ex.what());
+		if (outError) *outError = L"Save failed: " + FromUtf8(exception.what());
 		return false;
 	}
 	catch (...)
@@ -521,9 +521,9 @@ bool DesignDocumentSerializer::LoadFromFile(const std::wstring& filePath, Design
 
 		return FromXml(content, document, outError);
 	}
-	catch (const std::exception& ex)
+	catch (const std::exception& exception)
 	{
-		if (outError) *outError = L"Load failed: " + FromUtf8(ex.what());
+		if (outError) *outError = L"Load failed: " + FromUtf8(exception.what());
 		return false;
 	}
 	catch (...)

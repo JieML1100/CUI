@@ -164,7 +164,7 @@ float DateTimePicker::CurrentDropProgress()
 		if (wasCollapsing)
 			_collapseCleanupPending = true;
 		if (_dropProgress <= 0.001f && this->ParentForm && this->ParentForm->ForegroundControl == this)
-			this->ParentForm->ForegroundControl = NULL;
+			this->ParentForm->ForegroundControl = nullptr;
 		return _dropProgress;
 	}
 
@@ -210,10 +210,10 @@ SIZE DateTimePicker::ActualSize()
 	return sz;
 }
 
-CursorKind DateTimePicker::QueryCursor(int xof, int yof)
+CursorKind DateTimePicker::QueryCursor(int localX, int localY)
 {
 	if (!this->Enable) return CursorKind::Arrow;
-	if (yof >= 0 && yof <= this->Height)
+	if (localY >= 0 && localY <= this->Height)
 	{
 		if (IsInlineTimeMode())
 		{
@@ -221,7 +221,7 @@ CursorKind DateTimePicker::QueryCursor(int xof, int yof)
 			int day = -1;
 			if (GetInlineTimeLayout(layout))
 			{
-				auto part = HitTestPart(layout, xof, yof, day);
+				auto part = HitTestPart(layout, localX, localY, day);
 				if (part == HitPart::HourField || part == HitPart::MinuteField)
 					return CursorKind::IBeam;
 				if (part != HitPart::None)
@@ -235,7 +235,7 @@ CursorKind DateTimePicker::QueryCursor(int xof, int yof)
 	LayoutMetrics layout{};
 	if (!GetLayoutMetrics(layout)) return CursorKind::Arrow;
 	int day = -1;
-	auto part = HitTestPart(layout, xof, yof, day);
+	auto part = HitTestPart(layout, localX, localY, day);
 	if (part == HitPart::HourField || part == HitPart::MinuteField)
 		return CursorKind::IBeam;
 	if (part != HitPart::None)
@@ -419,23 +419,19 @@ void DateTimePicker::Update()
 					dropW - this->BorderThickness, dropH - this->BorderThickness,
 					this->DropBorderColor, this->BorderThickness, this->DropCornerRadius);
 
-				auto toAbs = [&](D2D1_RECT_F r) -> D2D1_RECT_F {
-					return r;
-					};
-
 				auto drawToggle = [&](D2D1_RECT_F rect, bool enabled, const wchar_t* label, bool hovered)
 					{
 						D2D1_COLOR_F fill = enabled ? this->SelectedBackColor : blendColor(this->DropBackColor, this->DropBorderColor, 0.20f);
 						if (hovered)
 							fill = this->HoverColor;
-						auto absRect = toAbs(rect);
-						d2d->FillRoundRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top, fill, 12.0f);
-						d2d->DrawRoundRect(absRect.left, absRect.top, absRect.right - absRect.left, absRect.bottom - absRect.top,
+						auto drawRect = rect;
+						d2d->FillRoundRect(drawRect.left, drawRect.top, drawRect.right - drawRect.left, drawRect.bottom - drawRect.top, fill, 12.0f);
+						d2d->DrawRoundRect(drawRect.left, drawRect.top, drawRect.right - drawRect.left, drawRect.bottom - drawRect.top,
 							enabled ? this->AccentColor : this->DropBorderColor, enabled ? 1.2f : 1.0f, 12.0f);
 						D2D1_COLOR_F textColor = enabled ? this->SelectedForeColor : this->ForeColor;
 						auto ts = font->GetTextSize(label);
-						float tx = absRect.left + ((absRect.right - absRect.left) - ts.width) * 0.5f;
-						float ty = absRect.top + ((absRect.bottom - absRect.top) - ts.height) * 0.5f;
+						float tx = drawRect.left + ((drawRect.right - drawRect.left) - ts.width) * 0.5f;
+						float ty = drawRect.top + ((drawRect.bottom - drawRect.top) - ts.height) * 0.5f;
 						d2d->DrawString(label, tx, ty, textColor, font);
 					};
 
@@ -448,15 +444,15 @@ void DateTimePicker::Update()
 				if (layout.showDate)
 				{
 					// 月份标题与切换
-					auto prevAbs = toAbs(layout.prevRect);
-					auto nextAbs = toAbs(layout.nextRect);
+					auto prevButtonRect = layout.prevRect;
+					auto nextButtonRect = layout.nextRect;
 					if (_hoverPart == HitPart::PrevMonth)
-						d2d->FillRoundRect(prevAbs.left, prevAbs.top, prevAbs.right - prevAbs.left, prevAbs.bottom - prevAbs.top, this->HoverColor, 4.0f);
+						d2d->FillRoundRect(prevButtonRect.left, prevButtonRect.top, prevButtonRect.right - prevButtonRect.left, prevButtonRect.bottom - prevButtonRect.top, this->HoverColor, 4.0f);
 					if (_hoverPart == HitPart::NextMonth)
-						d2d->FillRoundRect(nextAbs.left, nextAbs.top, nextAbs.right - nextAbs.left, nextAbs.bottom - nextAbs.top, this->HoverColor, 4.0f);
+						d2d->FillRoundRect(nextButtonRect.left, nextButtonRect.top, nextButtonRect.right - nextButtonRect.left, nextButtonRect.bottom - nextButtonRect.top, this->HoverColor, 4.0f);
 
-					DrawDatePickerArrow(d2d, prevAbs, false, this->ForeColor);
-					DrawDatePickerArrow(d2d, nextAbs, true, this->ForeColor);
+					DrawDatePickerArrow(d2d, prevButtonRect, false, this->ForeColor);
+					DrawDatePickerArrow(d2d, nextButtonRect, true, this->ForeColor);
 
 					std::wstring monthText = std::format(L"{:04d}年{:02d}月", _viewYear, _viewMonth);
 					auto monthSize = font->GetTextSize(monthText);
@@ -546,7 +542,7 @@ void DateTimePicker::Update()
 		_collapseCleanupPending = false;
 }
 
-bool DateTimePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool DateTimePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 
@@ -575,7 +571,7 @@ bool DateTimePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			if (hasLayout)
 			{
 				int delta = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1;
-				if (layout.showTime && yof >= (int)layout.timeTop)
+				if (layout.showTime && localY >= (int)layout.timeTop)
 				{
 					AdjustMinute(-delta * 5);
 				}
@@ -585,25 +581,25 @@ bool DateTimePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 				}
 			}
 		}
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
-		this->OnMouseWheel(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam));
+		this->OnMouseWheel(this, eventArgs);
 	}
 	break;
 	case WM_MOUSEMOVE:
 	{
 		this->ParentForm->UnderMouse = this;
 		if (this->Expand || IsInlineTimeMode())
-			UpdateHoverState(xof, yof);
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
-		this->OnMouseMove(this, event_obj);
+			UpdateHoverState(localX, localY);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
+		this->OnMouseMove(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONDOWN:
 	case WM_RBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDown(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDown(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONUP:
@@ -614,13 +610,13 @@ bool DateTimePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		{
 			if (IsInlineTimeMode())
 			{
-				if (yof >= 0 && yof <= this->Height)
+				if (localY >= 0 && localY <= this->Height)
 				{
 					LayoutMetrics layout{};
 					int day = -1;
 					if (GetInlineTimeLayout(layout))
 					{
-						auto part = HitTestPart(layout, xof, yof, day);
+						auto part = HitTestPart(layout, localX, localY, day);
 						if (_editField != EditField::None)
 						{
 							bool sameField = (part == HitPart::HourField && _editField == EditField::Hour) ||
@@ -661,12 +657,12 @@ bool DateTimePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			}
 			else if (!this->Expand)
 			{
-				if (yof >= 0 && yof <= this->Height)
+				if (localY >= 0 && localY <= this->Height)
 					SetExpanded(true);
 			}
 			else
 			{
-				if (yof >= 0 && yof <= this->Height)
+				if (localY >= 0 && localY <= this->Height)
 				{
 					SetExpanded(false);
 				}
@@ -676,7 +672,7 @@ bool DateTimePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 					int day = -1;
 					if (GetLayoutMetrics(layout))
 					{
-						auto part = HitTestPart(layout, xof, yof, day);
+						auto part = HitTestPart(layout, localX, localY, day);
 						if (_editField != EditField::None)
 						{
 							bool sameField = (part == HitPart::HourField && _editField == EditField::Hour) ||
@@ -738,19 +734,19 @@ bool DateTimePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		if (this->ParentForm)
 		{
 			if (_editField == EditField::None)
-				this->ParentForm->Selected = NULL;
+				this->ParentForm->Selected = nullptr;
 			else
 				this->ParentForm->Selected = this;
 		}
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseUp(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseUp(this, eventArgs);
 		this->InvalidateVisual();
 	}
 	break;
 	case WM_LBUTTONDBLCLK:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDoubleClick(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDoubleClick(this, eventArgs);
 	}
 	break;
 	case WM_KEYDOWN:
@@ -759,8 +755,8 @@ bool DateTimePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		{
 			CancelTimeEdit();
 		}
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyDown(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyDown(this, eventArgs);
 	}
 	break;
 	case WM_CHAR:
@@ -774,8 +770,8 @@ bool DateTimePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 	break;
 	case WM_KEYUP:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyUp(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyUp(this, eventArgs);
 	}
 	break;
 	}
@@ -842,11 +838,11 @@ int DateTimePicker::DaysInMonth(int year, int month)
 			return true;
 		};
 	static const int days[] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
-	int m = std::clamp(month, 1, 12);
-	int d = days[m - 1];
-	if (m == 2 && isLeapYear(year))
-		d = 29;
-	return d;
+	int normalizedMonth = std::clamp(month, 1, 12);
+	int daysInSelectedMonth = days[normalizedMonth - 1];
+	if (normalizedMonth == 2 && isLeapYear(year))
+		daysInSelectedMonth = 29;
+	return daysInSelectedMonth;
 }
 
 int DateTimePicker::FirstWeekday(int year, int month)
@@ -1121,36 +1117,36 @@ bool DateTimePicker::GetLayoutMetrics(LayoutMetrics& out)
 	return true;
 }
 
-bool DateTimePicker::HitTestDayCell(const LayoutMetrics& layout, int xof, int yof, int& outDay) const
+bool DateTimePicker::HitTestDayCell(const LayoutMetrics& layout, int localX, int localY, int& outDay) const
 {
 	if (!layout.showDate) return false;
 	float gridLeft = layout.contentLeft;
 	float gridTop = layout.gridTop;
 	float gridRight = gridLeft + layout.cellWidth * 7.0f;
 	float gridBottom = gridTop + layout.cellHeight * layout.gridRows;
-	if (xof < gridLeft || xof > gridRight || yof < gridTop || yof > gridBottom)
+	if (localX < gridLeft || localX > gridRight || localY < gridTop || localY > gridBottom)
 		return false;
 
-	int col = (int)((xof - gridLeft) / layout.cellWidth);
-	int row = (int)((yof - gridTop) / layout.cellHeight);
+	int col = (int)((localX - gridLeft) / layout.cellWidth);
+	int row = (int)((localY - gridTop) / layout.cellHeight);
 	col = std::clamp(col, 0, 6);
 	row = std::clamp(row, 0, 5);
-	int idx = row * 7 + col;
+	int dayCellIndex = row * 7 + col;
 	int first = FirstWeekday(_viewYear, _viewMonth);
-	int day = idx - first + 1;
+	int day = dayCellIndex - first + 1;
 	int days = DaysInMonth(_viewYear, _viewMonth);
 	if (day < 1 || day > days) return false;
 	outDay = day;
 	return true;
 }
 
-void DateTimePicker::UpdateHoverState(int xof, int yof)
+void DateTimePicker::UpdateHoverState(int localX, int localY)
 {
 	LayoutMetrics layout{};
 	bool hasLayout = IsInlineTimeMode() ? GetInlineTimeLayout(layout) : GetLayoutMetrics(layout);
 	if (!hasLayout) return;
 	int day = -1;
-	auto part = HitTestPart(layout, xof, yof, day);
+	auto part = HitTestPart(layout, localX, localY, day);
 	if (part != _hoverPart || day != _hoverDay)
 	{
 		_hoverPart = part;
@@ -1159,12 +1155,12 @@ void DateTimePicker::UpdateHoverState(int xof, int yof)
 	}
 }
 
-DateTimePicker::HitPart DateTimePicker::HitTestPart(const LayoutMetrics& layout, int xof, int yof, int& outDay) const
+DateTimePicker::HitPart DateTimePicker::HitTestPart(const LayoutMetrics& layout, int localX, int localY, int& outDay) const
 {
 	outDay = -1;
 	auto inRect = [&](const D2D1_RECT_F& r) -> bool
 		{
-			return xof >= r.left && xof <= r.right && yof >= r.top && yof <= r.bottom;
+			return localX >= r.left && localX <= r.right && localY >= r.top && localY <= r.bottom;
 		};
 
 	if (layout.showToggleRow)
@@ -1176,7 +1172,7 @@ DateTimePicker::HitPart DateTimePicker::HitTestPart(const LayoutMetrics& layout,
 	{
 		if (inRect(layout.prevRect)) return HitPart::PrevMonth;
 		if (inRect(layout.nextRect)) return HitPart::NextMonth;
-		if (HitTestDayCell(layout, xof, yof, outDay)) return HitPart::DayCell;
+		if (HitTestDayCell(layout, localX, localY, outDay)) return HitPart::DayCell;
 	}
 	if (layout.showTime)
 	{
@@ -1231,7 +1227,7 @@ void DateTimePicker::SetExpanded(bool value)
 		_dropProgress = _animTargetProgress;
 		_animating = false;
 		if (!Expand && this->ParentForm && this->ParentForm->ForegroundControl == this)
-			this->ParentForm->ForegroundControl = NULL;
+			this->ParentForm->ForegroundControl = nullptr;
 	}
 	else
 	{

@@ -84,9 +84,9 @@ public:
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool HandlesNavigationKey(WPARAM key) const override;
 	READONLY_PROPERTY(int, PageCount);
 	GET(int, PageCount);
@@ -101,23 +101,23 @@ public:
 	 * @return 新建页指针（所有权属于 TabControl）。
 	 */
 	TabPage* AddPage(std::wstring name);
-	bool TryGetTitleIndexAt(int xof, int yof, int& outIndex);
+	bool TryGetTitleIndexAt(int localX, int localY, int& outIndex);
 	D2D1_RECT_F GetTitleViewportRect();
 	bool IsTitleOverflowing();
 	void SetTitleScrollOffset(int value);
 	void ScrollTitleBy(int delta);
 	void EnsureTitleVisible(int index);
-	int HitTestTitleScrollButton(int xof, int yof);
+	int HitTestTitleScrollButton(int localX, int localY);
 	D2D1_RECT_F GetContentRect();
 	std::vector<Control*> GetVisibleScenePages();
 	bool ClipsChildren() override { return true; }
 	D2D1_RECT_F GetChildrenClipRect() override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 	// 解决“拖动/松开时鼠标移出控件导致事件丢失”的问题：
 	// TabControl 需要记住鼠标按下命中的子控件，并在按键按住期间持续转发 mousemove / buttonup。
-	Control* _capturedChild = NULL;
+	Control* _capturedChild = nullptr;
 
 	// 记录上一次选择页，用于在 Update 中检测程序切换页并同步原生子窗口控件（如 WebBrowser）
 	int _lastSelectIndex = -1;
