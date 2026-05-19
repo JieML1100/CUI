@@ -120,7 +120,7 @@ private:
 
 public:
 	/** @brief 控件边框宽度。 */
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	/** @brief 圆角半径。 */
 	float Round = 6.0f;
 	/** @brief 下拉面板圆角半径。 */

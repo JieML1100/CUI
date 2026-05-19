@@ -51,7 +51,7 @@ ToastHost::ToastHost(int x, int y, int width, int height)
 	this->Location = { x, y };
 	this->Size = { width, height };
 	this->BackColor = D2D1_COLOR_F{ 1, 1, 1, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 1, 1, 1, 0 };
+	this->BorderColor = D2D1_COLOR_F{ 1, 1, 1, 0 };
 }
 
 D2D1_COLOR_F ToastHost::KindColor(ToastKind kind) const
@@ -76,7 +76,7 @@ int ToastHost::ShowToast(const std::wstring& title, const std::wstring& message,
 		while ((int)this->Toasts.size() > std::max(this->MaxVisible, 1) * 3)
 			this->Toasts.erase(this->Toasts.begin());
 	}
-	this->PostRender();
+	this->InvalidateVisual();
 	return (int)this->Toasts.size() - 1;
 }
 
@@ -88,7 +88,7 @@ bool ToastHost::DismissToast(int index)
 	this->Toasts[index].DismissStartTick = GetTickCount64();
 	this->HoveredIndex = -1;
 	this->PressedCloseIndex = -1;
-	this->PostRender();
+	this->InvalidateVisual();
 	return true;
 }
 
@@ -97,7 +97,7 @@ void ToastHost::ClearToasts()
 	this->Toasts.clear();
 	this->HoveredIndex = -1;
 	this->PressedCloseIndex = -1;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 size_t ToastHost::ToastCount() const
@@ -301,7 +301,7 @@ void ToastHost::Update()
 	this->EndRender();
 
 	if (changed)
-		this->PostRender();
+		this->InvalidateVisual();
 }
 
 bool ToastHost::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
@@ -318,7 +318,7 @@ bool ToastHost::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 		if (hit != this->HoveredIndex)
 		{
 			this->HoveredIndex = hit;
-			this->PostRender();
+			this->InvalidateVisual();
 		}
 		MouseEventArgs e(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
 		this->OnMouseMove(this, e);

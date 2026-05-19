@@ -288,7 +288,7 @@ void ComboBox::UpdateScrollDrag(float posY) {
 		{
 			ExpandScroll = maxScroll;
 		}
-		PostRender();
+		InvalidateVisual();
 	}
 }
 void ComboBox::Update()
@@ -306,7 +306,7 @@ void ComboBox::Update()
 	this->BeginRender(actualWidth, actualHeight);
 	{
 		d2d->FillRect(0, 0, actualWidth, actualHeight, D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.0f });
-		const float border = (std::max)(1.0f, this->Boder);
+		const float border = (std::max)(1.0f, this->BorderThickness);
 		const D2D1_RECT_F headerRect = D2D1::RectF(border * 0.5f, border * 0.5f, controlWidth - border * 0.5f, controlHeight - border * 0.5f);
 		d2d->FillRoundRect(headerRect, this->BackColor, this->CornerRadius);
 		if ((this->ParentForm && this->ParentForm->UnderMouse == this) || IsDropDownVisible())
@@ -377,7 +377,7 @@ void ComboBox::Update()
 			d2d->PopDrawRect();
 			this->DrawScroll();
 		}
-		const auto borderColor = IsDropDownVisible() ? this->AccentColor : this->BolderColor;
+		const auto borderColor = IsDropDownVisible() ? this->AccentColor : this->BorderColor;
 		d2d->DrawRoundRect(headerRect.left, headerRect.top, headerRect.right - headerRect.left,
 			headerRect.bottom - headerRect.top, borderColor, border, this->CornerRadius);
 	}
@@ -402,7 +402,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		{
 			auto se = this->ParentForm->Selected;
 			this->ParentForm->Selected = this;
-			se->PostRender();
+			se->InvalidateVisual();
 		}
 	}
 	switch (message)
@@ -434,7 +434,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 				if (this->ExpandScroll > 0)
 				{
 					this->ExpandScroll -= 1;
-					this->PostRender();
+					this->InvalidateVisual();
 				}
 			}
 			else
@@ -442,7 +442,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 				if (this->ExpandScroll < static_cast<int>(this->values.size()) - visibleCount)
 				{
 					this->ExpandScroll += 1;
-					this->PostRender();
+					this->InvalidateVisual();
 				}
 			}
 		}
@@ -485,7 +485,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 					need_update = true;
 				}
 			}
-			if (need_update)this->PostRender();
+			if (need_update)this->InvalidateVisual();
 		}
 		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
 		this->OnMouseMove(this, event_obj);
@@ -543,7 +543,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 					SetExpanded(!this->Expand);
 					if (this->ParentForm)
 						this->ParentForm->Invalidate(true);
-					this->PostRender();
+					this->InvalidateVisual();
 					this->ParentForm->Selected = NULL;
 					MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 					this->OnMouseUp(this, event_obj);
@@ -561,11 +561,11 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 							this->SelectedIndex = this->_underMouseIndex;
 							this->Text = this->values[static_cast<size_t>(this->SelectedIndex)];
 							this->OnSelectionChanged(this);
-							this->PostRender();
+							this->InvalidateVisual();
 							SetExpanded(false);
 							if (this->ParentForm)
 								this->ParentForm->Invalidate(true);
-							this->PostRender();
+							this->InvalidateVisual();
 						}
 					}
 				}
@@ -574,7 +574,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		this->ParentForm->Selected = NULL;
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 		this->OnMouseUp(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_LBUTTONDBLCLK:

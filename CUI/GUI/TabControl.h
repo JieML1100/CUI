@@ -80,7 +80,7 @@ public:
 	int TitleHeight = 24;
 	/** @brief 单个标题宽度（像素）。 */
 	int TitleWidth = 120;
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;

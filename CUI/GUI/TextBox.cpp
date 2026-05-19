@@ -429,8 +429,8 @@ void TextBox::Update()
 		{
 			d2d->DrawLine(caretStart, caretEnd, this->ForeColor);
 		}
-		const auto borderColor = isSelected ? this->FocusedColor : this->BolderColor;
-		const float borderWidth = isSelected ? (std::max)(this->Boder, this->FocusBorder) : this->Boder;
+		const auto borderColor = isSelected ? this->FocusedColor : this->BorderColor;
+		const float borderWidth = isSelected ? (std::max)(this->BorderThickness, this->FocusBorder) : this->BorderThickness;
 		if (borderWidth > 0.0f && borderColor.a > 0.0f)
 			d2d->DrawRoundRect(borderWidth * 0.5f, borderWidth * 0.5f,
 				(std::max)(0.0f, actualWidth - borderWidth), (std::max)(0.0f, actualHeight - borderWidth),
@@ -489,7 +489,7 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 			float render_height = this->Height - (TextMargin * 2.0f);
 			SelectionEnd = font->HitTestTextPosition(this->Text, FLT_MAX, render_height, (xof - TextMargin) + this->OffsetX, yof - TextMargin);
 			UpdateScroll();
-			this->PostRender();
+			this->InvalidateVisual();
 		}
 		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
 		this->OnMouseMove(this, event_obj);
@@ -505,7 +505,7 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 			{
 				auto lse = this->ParentForm->Selected;
 				this->ParentForm->Selected = this;
-				if (lse) lse->PostRender();
+				if (lse) lse->InvalidateVisual();
 			}
 			auto font = this->Font;
 			float render_height = this->Height - (TextMargin * 2.0f);
@@ -513,7 +513,7 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 		}
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 		this->OnMouseDown(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_LBUTTONUP:
@@ -528,7 +528,7 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 		}
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 		this->OnMouseUp(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_LBUTTONDBLCLK:
@@ -536,7 +536,7 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 		this->ParentForm->Selected = this;
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 		this->OnMouseDoubleClick(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_KEYDOWN:
@@ -547,14 +547,14 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 			{
 				this->Undo();
 				UpdateScroll();
-				this->PostRender();
+				this->InvalidateVisual();
 				return true;
 			}
 			if (wParam == 'Y')
 			{
 				this->Redo();
 				UpdateScroll();
-				this->PostRender();
+				this->InvalidateVisual();
 				return true;
 			}
 		}
@@ -677,7 +677,7 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 		}
 		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
 		this->OnKeyDown(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_CHAR:
@@ -772,7 +772,7 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 			}
 			this->InputBack();
 		}
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_IME_COMPOSITION:
@@ -804,7 +804,7 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 				UpdateScroll();
 			}
 			ImmReleaseContext(this->ParentForm->Handle, hIMC);
-			this->PostRender();
+			this->InvalidateVisual();
 		}
 	}
 	break;
@@ -812,7 +812,7 @@ bool TextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 	{
 		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
 		this->OnKeyUp(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	}

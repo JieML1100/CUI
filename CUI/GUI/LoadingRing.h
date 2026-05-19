@@ -13,7 +13,7 @@ private:
 
 public:
 	virtual UIClass Type();
-	float Boder = 0.0f;
+	float BorderThickness = 0.0f;
 
 	PROPERTY(bool, Active);
 	GET(bool, Active);

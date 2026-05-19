@@ -338,7 +338,7 @@ void RichTextBox::ReleaseBlocks()
 	this->blockMetricsDirty = true;
 	this->virtualTotalHeight = 0.0f;
 	this->layoutWidthHasScrollBar = false;
-	this->cachedRenderWidth = 0.0f;
+	this->_cachedRenderWidth = 0.0f;
 }
 
 void RichTextBox::RebuildBlocks()
@@ -393,10 +393,10 @@ void RichTextBox::EnsureBlockLayout(int idx, float renderWidth, float renderHeig
 
 void RichTextBox::EnsureAllBlockMetrics(float renderWidth, float renderHeight)
 {
-	if (!this->blockMetricsDirty && this->cachedRenderWidth == renderWidth)
+	if (!this->blockMetricsDirty && this->_cachedRenderWidth == renderWidth)
 		return;
 
-	this->cachedRenderWidth = renderWidth;
+	this->_cachedRenderWidth = renderWidth;
 	this->virtualTotalHeight = 0.0f;
 	this->blockTops.resize(this->blocks.size());
 
@@ -529,7 +529,7 @@ void RichTextBox::ScrollToEnd()
 	this->OffsetY = max_scroll;
 	if (this->OffsetY < 0)this->OffsetY = 0;
 	this->SelectionEnd = this->SelectionStart = (int)this->buffer.size();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 void RichTextBox::UpdateScrollDrag(float posY) {
 	if (!isDraggingScroll) return;
@@ -554,7 +554,7 @@ void RichTextBox::UpdateScrollDrag(float posY) {
 		this->OffsetY = newScroll;
 		if (this->OffsetY < 0) this->OffsetY = 0;
 		if (this->OffsetY > maxScroll + 1) this->OffsetY = maxScroll + 1;
-		PostRender();
+		InvalidateVisual();
 	}
 }
 void RichTextBox::SetScrollByPos(float yof)
@@ -1084,8 +1084,8 @@ void RichTextBox::Update()
 			d2d->DrawLine(caretStart, caretEnd, this->ForeColor);
 		}
 		this->DrawScroll();
-		const auto borderColor = isSelected ? this->FocusedColor : this->BolderColor;
-		const float borderWidth = isSelected ? (std::max)(this->Boder, this->FocusBorder) : this->Boder;
+		const auto borderColor = isSelected ? this->FocusedColor : this->BorderColor;
+		const float borderWidth = isSelected ? (std::max)(this->BorderThickness, this->FocusBorder) : this->BorderThickness;
 		if (borderWidth > 0.0f && borderColor.a > 0.0f)
 			d2d->DrawRoundRect(borderWidth * 0.5f, borderWidth * 0.5f,
 				(std::max)(0.0f, actualWidth - borderWidth), (std::max)(0.0f, actualHeight - borderWidth),
@@ -1133,7 +1133,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			{
 				this->OffsetY -= 10;
 				if (this->OffsetY < 0)this->OffsetY = 0;
-				this->PostRender();
+				this->InvalidateVisual();
 			}
 		}
 		else
@@ -1146,7 +1146,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			{
 				this->OffsetY += 10;
 				if (this->OffsetY > textSize.height - render_height)this->OffsetY = textSize.height - render_height;
-				this->PostRender();
+				this->InvalidateVisual();
 			}
 		}
 		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
@@ -1167,7 +1167,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			else
 				SelectionEnd = font->HitTestTextPosition(this->layOutCache, xof - TextMargin, (yof + this->OffsetY) - TextMargin);
 			UpdateScroll();
-			this->PostRender();
+			this->InvalidateVisual();
 			this->selRangeDirty = true;
 		}
 		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
@@ -1184,7 +1184,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			{
 				auto lse = this->ParentForm->Selected;
 				this->ParentForm->Selected = this;
-				if (lse) lse->PostRender();
+				if (lse) lse->InvalidateVisual();
 			}
 			if (xof >= Width - 8 && xof <= Width)
 			{
@@ -1210,7 +1210,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 				}
 				isDraggingScroll = true;
 				UpdateScrollDrag((float)yof);
-				this->PostRender();
+				this->InvalidateVisual();
 			}
 			else
 			{
@@ -1224,7 +1224,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 		this->OnMouseDown(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_LBUTTONUP:
@@ -1245,7 +1245,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 		this->OnMouseUp(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_LBUTTONDBLCLK:
@@ -1253,7 +1253,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		this->ParentForm->Selected = this;
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 		this->OnMouseDoubleClick(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_KEYDOWN:
@@ -1263,7 +1263,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			this->InputText(L"\t");
 			this->selRangeDirty = true;
 			UpdateScroll();
-			this->PostRender();
+			this->InvalidateVisual();
 			return true;
 		}
 		if (!this->ReadOnly && (GetAsyncKeyState(VK_CONTROL) & 0x8000))
@@ -1272,14 +1272,14 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			{
 				this->Undo();
 				UpdateScroll();
-				this->PostRender();
+				this->InvalidateVisual();
 				return true;
 			}
 			if (wParam == 'Y')
 			{
 				this->Redo();
 				UpdateScroll();
-				this->PostRender();
+				this->InvalidateVisual();
 				return true;
 			}
 		}
@@ -1465,7 +1465,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
 		this->OnKeyDown(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_CHAR:
@@ -1554,7 +1554,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			if (!this->ReadOnly)
 				this->InputBack();
 		}
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_IME_COMPOSITION:
@@ -1583,7 +1583,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			}
 			ImmReleaseContext(this->ParentForm->Handle, hIMC);
 			UpdateScroll();
-			this->PostRender();
+			this->InvalidateVisual();
 		}
 	}
 	break;
@@ -1591,7 +1591,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	{
 		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
 		this->OnKeyUp(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	}

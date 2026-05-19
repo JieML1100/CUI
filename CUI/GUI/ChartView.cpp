@@ -99,7 +99,7 @@ ChartView::ChartView(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0.60f, 0.66f, 0.76f, 0.52f };
+	this->BorderColor = D2D1_COLOR_F{ 0.60f, 0.66f, 0.76f, 0.52f };
 	this->ForeColor = D2D1_COLOR_F{ 0.90f, 0.92f, 0.96f, 1.0f };
 	this->Cursor = CursorKind::Arrow;
 }
@@ -118,7 +118,7 @@ int ChartView::AddSeries(const ChartSeries& series)
 {
 	Series.push_back(series);
 	ClampViewport();
-	PostRender();
+	InvalidateVisual();
 	return static_cast<int>(Series.size()) - 1;
 }
 
@@ -137,7 +137,7 @@ void ChartView::ResetView()
 	ZoomX = 1.0f;
 	PanX = 0.0f;
 	ClampViewport();
-	PostRender();
+	InvalidateVisual();
 	OnViewportChanged(this);
 }
 
@@ -154,7 +154,7 @@ bool ChartView::SelectPoint(int seriesIndex, int pointIndex)
 	SelectedSeriesIndex = seriesIndex;
 	SelectedPointIndex = pointIndex;
 	SelectionChanged(this);
-	PostRender();
+	InvalidateVisual();
 	return true;
 }
 
@@ -275,7 +275,7 @@ bool ChartView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 			PanX = anchorRatio * newVirtualWidth - RectWidth(plot) * rel;
 			ClampViewport();
 			OnViewportChanged(this);
-			PostRender();
+			InvalidateVisual();
 		}
 		MouseEventArgs eventObj(MouseButtons::None, 0, xof, yof, delta);
 		OnMouseWheel(this, eventObj);
@@ -306,7 +306,7 @@ bool ChartView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 		}
 		MouseEventArgs eventObj(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
 		OnMouseDown(this, eventObj);
-		PostRender();
+		InvalidateVisual();
 		break;
 	}
 	case WM_LBUTTONUP:
@@ -316,7 +316,7 @@ bool ChartView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 		OnMouseUp(this, eventObj);
 		if (ParentForm && ParentForm->Selected == this)
 			ParentForm->SetSelectedControl(NULL, false);
-		PostRender();
+		InvalidateVisual();
 		break;
 	}
 	case WM_LBUTTONDBLCLK:
@@ -335,7 +335,7 @@ bool ChartView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 void ChartView::DrawFrame(D2DGraphics* d2d, float width, float height)
 {
 	d2d->FillRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, BackColor, CornerRadius);
-	d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, BolderColor, Border, CornerRadius);
+	d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, BorderColor, Border, CornerRadius);
 
 	if (!Title.empty())
 	{
@@ -800,7 +800,7 @@ void ChartView::UpdateHover(int xof, int yof)
 	HoveredPointIndex = p;
 	if (s >= 0 && p >= 0)
 		OnPointHover(this, s, p);
-	PostRender();
+	InvalidateVisual();
 }
 
 void ChartView::ClampViewport()
@@ -839,7 +839,7 @@ void ChartView::UpdateHorizontalScrollDrag(float xof, float width, float height)
 	if (std::fabs(oldPan - PanX) > 0.01f)
 	{
 		OnViewportChanged(this);
-		PostRender();
+		InvalidateVisual();
 	}
 }
 

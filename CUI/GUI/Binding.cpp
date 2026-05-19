@@ -281,7 +281,7 @@ namespace
 			if (target->Checked != checked)
 			{
 				target->Checked = checked;
-				target->PostRender();
+				target->InvalidateVisual();
 			}
 			return true;
 		}
@@ -299,7 +299,7 @@ namespace
 			if (target->Enable != enabled)
 			{
 				target->Enable = enabled;
-				target->PostRender();
+				target->InvalidateVisual();
 			}
 			return true;
 		}
@@ -348,7 +348,7 @@ namespace
 					combo->SelectedIndex = std::clamp(index, 0, (int)items.size() - 1);
 					combo->Text = items[(size_t)combo->SelectedIndex];
 				}
-				combo->PostRender();
+				combo->InvalidateVisual();
 				return true;
 			}
 			if (auto* list = dynamic_cast<ListView*>(target))

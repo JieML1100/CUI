@@ -55,7 +55,7 @@ DateTimePicker::DateTimePicker(std::wstring text, int x, int y, int width, int h
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = Colors::LightGray;
-	this->BolderColor = Colors::DimGrey;
+	this->BorderColor = Colors::DimGrey;
 	this->Cursor = CursorKind::Hand;
 
 	SYSTEMTIME st{};
@@ -105,7 +105,7 @@ SET_CPP(DateTimePicker, DateTimePickerMode, Mode)
 	}
 	EnsureShowFlags();
 	UpdateDisplayText();
-	PostRender();
+	InvalidateVisual();
 }
 
 GET_CPP(DateTimePicker, bool, AllowDateSelection)
@@ -118,7 +118,7 @@ SET_CPP(DateTimePicker, bool, AllowDateSelection)
 	_allowDate = value;
 	EnsureShowFlags();
 	UpdateDisplayText();
-	PostRender();
+	InvalidateVisual();
 }
 
 GET_CPP(DateTimePicker, bool, AllowTimeSelection)
@@ -131,7 +131,7 @@ SET_CPP(DateTimePicker, bool, AllowTimeSelection)
 	_allowTime = value;
 	EnsureShowFlags();
 	UpdateDisplayText();
-	PostRender();
+	InvalidateVisual();
 }
 
 float DateTimePicker::DropdownTop()
@@ -398,10 +398,10 @@ void DateTimePicker::Update()
 			}
 		}
 
-		D2D1_COLOR_F borderColor = (isSelected || IsDropDownVisible()) ? FocusBorderColor : this->BolderColor;
-		d2d->DrawRoundRect(this->Boder * 0.5f, this->Boder * 0.5f,
-			(float)this->Width - this->Boder, (float)this->Height - this->Boder,
-			borderColor, this->Boder, round - this->Boder);
+		D2D1_COLOR_F borderColor = (isSelected || IsDropDownVisible()) ? FocusBorderColor : this->BorderColor;
+		d2d->DrawRoundRect(this->BorderThickness * 0.5f, this->BorderThickness * 0.5f,
+			(float)this->Width - this->BorderThickness, (float)this->Height - this->BorderThickness,
+			borderColor, this->BorderThickness, round - this->BorderThickness);
 
 		if (IsDropDownVisible() && !inlineTime && dropProgress > 0.001f)
 		{
@@ -415,9 +415,9 @@ void DateTimePicker::Update()
 				float visibleDropH = dropH * dropProgress;
 				d2d->PushDrawRect(dropX, dropY, dropW, visibleDropH);
 				d2d->FillRoundRect(dropX, dropY, dropW, dropH, this->DropBackColor, this->DropCornerRadius);
-				d2d->DrawRoundRect(dropX + (this->Boder * 0.5f), dropY + (this->Boder * 0.5f),
-					dropW - this->Boder, dropH - this->Boder,
-					this->DropBorderColor, this->Boder, this->DropCornerRadius);
+				d2d->DrawRoundRect(dropX + (this->BorderThickness * 0.5f), dropY + (this->BorderThickness * 0.5f),
+					dropW - this->BorderThickness, dropH - this->BorderThickness,
+					this->DropBorderColor, this->BorderThickness, this->DropCornerRadius);
 
 				auto toAbs = [&](D2D1_RECT_F r) -> D2D1_RECT_F {
 					return r;
@@ -556,7 +556,7 @@ bool DateTimePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		{
 			auto se = this->ParentForm->Selected;
 			this->ParentForm->Selected = this;
-			se->PostRender();
+			se->InvalidateVisual();
 		}
 		else if (this->ParentForm)
 		{
@@ -744,7 +744,7 @@ bool DateTimePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		}
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 		this->OnMouseUp(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_LBUTTONDBLCLK:
@@ -872,7 +872,7 @@ void DateTimePicker::AdjustMonth(int delta)
 	if (m > 12) { m = 1; y += 1; }
 	_viewMonth = m;
 	_viewYear = y;
-	PostRender();
+	InvalidateVisual();
 }
 
 void DateTimePicker::AdjustHour(int delta)
@@ -904,7 +904,7 @@ void DateTimePicker::BeginTimeEdit(EditField field)
 	_editField = field;
 	if (this->ParentForm)
 		this->ParentForm->Selected = this;
-	PostRender();
+	InvalidateVisual();
 }
 
 void DateTimePicker::CommitTimeEdit(bool keepEditing)
@@ -929,7 +929,7 @@ void DateTimePicker::CommitTimeEdit(bool keepEditing)
 	_editBuffer.clear();
 	if (!keepEditing)
 		_editField = EditField::None;
-	PostRender();
+	InvalidateVisual();
 }
 
 void DateTimePicker::CancelTimeEdit()
@@ -937,7 +937,7 @@ void DateTimePicker::CancelTimeEdit()
 	if (_editField == EditField::None) return;
 	_editBuffer.clear();
 	_editField = EditField::None;
-	PostRender();
+	InvalidateVisual();
 }
 
 bool DateTimePicker::HandleTimeEditChar(wchar_t ch)
@@ -962,7 +962,7 @@ bool DateTimePicker::HandleTimeEditChar(wchar_t ch)
 			}
 		}
 		else
-			PostRender();
+			InvalidateVisual();
 		return true;
 	}
 	if (ch == 8)
@@ -970,7 +970,7 @@ bool DateTimePicker::HandleTimeEditChar(wchar_t ch)
 		if (!_editBuffer.empty())
 		{
 			_editBuffer.pop_back();
-			PostRender();
+			InvalidateVisual();
 		}
 		return true;
 	}
@@ -1040,7 +1040,7 @@ void DateTimePicker::SetValueInternal(const SYSTEMTIME& value, bool fireEvent)
 	_value = value;
 	SyncViewFromValue();
 	UpdateDisplayText();
-	PostRender();
+	InvalidateVisual();
 	if (changed && fireEvent)
 		this->OnSelectionChanged(this);
 }
@@ -1155,7 +1155,7 @@ void DateTimePicker::UpdateHoverState(int xof, int yof)
 	{
 		_hoverPart = part;
 		_hoverDay = day;
-		PostRender();
+		InvalidateVisual();
 	}
 }
 
@@ -1199,7 +1199,7 @@ void DateTimePicker::ToggleDateSection()
 	EnsureShowFlags();
 	UpdateDisplayText();
 	if (this->Expand && this->ParentForm) this->ParentForm->Invalidate(true);
-	PostRender();
+	InvalidateVisual();
 }
 
 void DateTimePicker::ToggleTimeSection()
@@ -1213,7 +1213,7 @@ void DateTimePicker::ToggleTimeSection()
 	EnsureShowFlags();
 	UpdateDisplayText();
 	if (this->Expand && this->ParentForm) this->ParentForm->Invalidate(true);
-	PostRender();
+	InvalidateVisual();
 }
 
 void DateTimePicker::SetExpanded(bool value)
@@ -1250,5 +1250,5 @@ void DateTimePicker::SetExpanded(bool value)
 		_hoverPart = HitPart::None;
 		_hoverDay = -1;
 	}
-	PostRender();
+	InvalidateVisual();
 }

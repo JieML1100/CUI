@@ -10,7 +10,7 @@ UIClass TabPage::Type() { return UIClass::UI_TabPage; }
 TabPage::TabPage()
 {
 	this->Text = L"Page";
-	this->Boder = 0.0f;
+	this->BorderThickness = 0.0f;
 }
 TabPage::TabPage(std::wstring text)
 	: TabPage()
@@ -26,7 +26,7 @@ void TabPage::SetHeaderImage(std::shared_ptr<BitmapSource> value)
 	this->_headerImageCacheSource.reset();
 	this->_headerImageCache.Reset();
 	this->_headerImageCacheTarget = nullptr;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 ID2D1Bitmap* TabPage::EnsureHeaderImageCache()
@@ -288,7 +288,7 @@ static void DrawTitleScrollButton(TabControl* tabs, D2DGraphics* d2d, const D2D1
 	if (!enabled)
 		back = ScaleAlpha(back, 0.42f);
 	d2d->FillRoundRect(rect, back, radius);
-	d2d->DrawRoundRect(rect, enabled ? ScaleAlpha(tabs->AccentColor, 0.28f) : ScaleAlpha(tabs->BolderColor, 0.16f), 1.0f, radius);
+	d2d->DrawRoundRect(rect, enabled ? ScaleAlpha(tabs->AccentColor, 0.28f) : ScaleAlpha(tabs->BorderColor, 0.16f), 1.0f, radius);
 	DrawTitleScrollChevron(d2d, rect, direction, IsSideTitle(tabs),
 		enabled ? tabs->AccentColor : ScaleAlpha(tabs->TitleMutedForeColor, 0.55f));
 }
@@ -494,7 +494,7 @@ void TabControl::SetTitleScrollOffset(int value)
 		return;
 	this->TitleScrollOffset = next;
 	this->OnScrollChanged(this);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void TabControl::ScrollTitleBy(int delta)
@@ -1052,10 +1052,10 @@ void TabControl::Update()
 		}
 		if (contentWidth > 0.0f && contentHeight > 0.0f)
 		{
-			const float border = (std::max)(1.0f, this->Boder);
+			const float border = (std::max)(1.0f, this->BorderThickness);
 			d2d->DrawRoundRect(contentRect.left + border * 0.5f, contentRect.top + border * 0.5f,
 				(std::max)(0.0f, contentWidth - border), (std::max)(0.0f, contentHeight - border),
-				this->BolderColor, border, this->TitleCornerRadius);
+				this->BorderColor, border, this->TitleCornerRadius);
 		}
 	}
 	if (!this->Enable)
@@ -1099,7 +1099,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 				{
 					EnsureTitleVisible(index);
 				}
-				this->PostRender();
+				this->InvalidateVisual();
 			};
 
 		if (message == WM_MOUSEMOVE || message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN)
@@ -1112,14 +1112,14 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 			{
 				this->_hoverTitleIndex = hoverIndex;
 				this->_hoverTitleScrollButton = hoverButton;
-				this->PostRender();
+				this->InvalidateVisual();
 			}
 		}
 		else if (message == WM_MOUSELEAVE && (this->_hoverTitleIndex != -1 || this->_hoverTitleScrollButton != 0))
 		{
 			this->_hoverTitleIndex = -1;
 			this->_hoverTitleScrollButton = 0;
-			this->PostRender();
+			this->InvalidateVisual();
 		}
 
 		if (message == WM_MOUSEWHEEL)
@@ -1206,7 +1206,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 				if (this->_hoverTitleIndex != -1)
 				{
 					this->_hoverTitleIndex = -1;
-					this->PostRender();
+					this->InvalidateVisual();
 				}
 				SetTitleScrollOffset(this->_titleDragStartOffset - dragDelta);
 			}
@@ -1226,14 +1226,14 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 				if (pressedIndex >= 0 && TryGetTitleIndexAt(xof, yof, hitIndex) && hitIndex == pressedIndex)
 					selectTitleIndex(hitIndex);
 			}
-			this->PostRender();
+			this->InvalidateVisual();
 			handledTitleClick = true;
 		}
 		else if (this->_pressedTitleScrollButton != 0 && (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP))
 		{
 			this->_pressedTitleScrollButton = 0;
 			releaseCaptureIfOwned();
-			this->PostRender();
+			this->InvalidateVisual();
 			handledTitleClick = true;
 		}
 		else if (this->_pressedTitleScrollButton != 0 && message == WM_MOUSEMOVE)
@@ -1250,7 +1250,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 				this->_capturedChild = NULL;
 				ScrollTitleBy(scrollButton * (std::max)(1, this->TitleScrollMouseWheelStep));
 				captureMouse();
-				this->PostRender();
+				this->InvalidateVisual();
 				handledTitleClick = true;
 			}
 			else

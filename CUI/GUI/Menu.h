@@ -103,7 +103,7 @@ public:
 
 	int BarHeight = 28;
 	int DropItemHeight = 26;
-	float Boder = 1.0f;
+	float BorderThickness = 1.0f;
 
 	D2D1_COLOR_F BarBackColor = D2D1_COLOR_F{ 0.98f,0.99f,1.0f,0.78f };
 	D2D1_COLOR_F BarBorderColor = D2D1_COLOR_F{ 0.64f,0.71f,0.82f,0.95f };

@@ -772,7 +772,7 @@ void Form::UpdateCursorFromCurrentMouse()
 		UpdateCursor(mouse, contentMouse);
 }
 
-void Form::SetSelectedControl(Control* value, bool postRender)
+void Form::SetSelectedControl(Control* value, bool invalidateVisual)
 {
 	auto* old = this->Selected;
 	if (old == value) return;
@@ -780,12 +780,12 @@ void Form::SetSelectedControl(Control* value, bool postRender)
 	if (old)
 	{
 		old->OnLostFocus(old);
-		if (postRender) old->PostRender();
+		if (invalidateVisual) old->InvalidateVisual();
 	}
 	if (value)
 	{
 		value->OnGotFocus(value);
-		if (postRender) value->PostRender();
+		if (invalidateVisual) value->InvalidateVisual();
 	}
 	this->_focusNotifiedSelected = this->Selected;
 }
@@ -805,14 +805,14 @@ static void RaiseControlMouseEnterLeave(Form* f, Control* oldHover, Control* new
 	if (oldHover)
 	{
 		auto args = makeArgs(oldHover);
-		oldHover->OnMouseLeaved(oldHover, args);
-		oldHover->PostRender();
+		oldHover->OnMouseLeave(oldHover, args);
+		oldHover->InvalidateVisual();
 	}
 	if (newHover)
 	{
 		auto args = makeArgs(newHover);
 		newHover->OnMouseEnter(newHover, args);
-		newHover->PostRender();
+		newHover->InvalidateVisual();
 	}
 }
 
@@ -1120,7 +1120,7 @@ GET_CPP(Form, POINT, Location)
 	}
 	else
 	{
-		return this->_Location_INIT;
+		return this->_initialLocation;
 	}
 }
 SET_CPP(Form, POINT, Location)
@@ -1129,7 +1129,7 @@ SET_CPP(Form, POINT, Location)
 	{
 		SetWindowPos(this->Handle, NULL, value.x, value.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
 	}
-	this->_Location_INIT = value;
+	this->_initialLocation = value;
 }
 GET_CPP(Form, SIZE, Size)
 {
@@ -1142,7 +1142,7 @@ GET_CPP(Form, SIZE, Size)
 	}
 	else
 	{
-		return this->_Size_INTI;
+		return this->_initialSize;
 	}
 }
 SET_CPP(Form, SIZE, Size)
@@ -1151,7 +1151,7 @@ SET_CPP(Form, SIZE, Size)
 	{
 		SetWindowPos(this->Handle, NULL, 0, 0, value.cx, value.cy, SWP_NOMOVE | SWP_NOZORDER);
 	}
-	this->_Size_INTI = value;
+	this->_initialSize = value;
 	this->ControlChanged = true;
 	// 触发布局
 	_needsLayout = true;
@@ -1997,8 +1997,8 @@ void Form::EnsureInitialDpiApplied()
 	{
 		RECT wr{};
 		GetWindowRect(this->Handle, &wr);
-		const int newW = Application::ScaleInt(this->_Size_INTI.cx, 96, dpi);
-		const int newH = Application::ScaleInt(this->_Size_INTI.cy, 96, dpi);
+		const int newW = Application::ScaleInt(this->_initialSize.cx, 96, dpi);
+		const int newH = Application::ScaleInt(this->_initialSize.cy, 96, dpi);
 		RECT workArea = GetWindowWorkArea(this->Handle, POINT{ wr.left, wr.top });
 		POINT origin{};
 		if (this->_autoCenterOnCreate)
@@ -2409,7 +2409,7 @@ bool Form::DoEvent()
 	}
 	return hasMessage;
 }
-bool Form::WaiteEvent()
+bool Form::WaitEvent()
 {
 	MSG msg;
 	if (GetMessageW(&msg, NULL, 0, 0))
@@ -3244,12 +3244,12 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		if (old)
 		{
 			old->OnLostFocus(old);
-			old->PostRender();
+			old->InvalidateVisual();
 		}
 		if (now)
 		{
 			now->OnGotFocus(now);
-			now->PostRender();
+			now->InvalidateVisual();
 		}
 	}
 	if (WM_LBUTTONDOWN == message && HitControl == NULL && this->Selected && HitControl != this->Selected)
@@ -3284,7 +3284,7 @@ void Form::RenderImage()
 				this->Render->DrawBitmap(bmp, xf, yf, size.width, size.height);
 			}
 			break;
-			case ImageSizeMode::StretchIamge:
+			case ImageSizeMode::StretchImage:
 			{
 				this->Render->DrawBitmap(bmp, 0, 0, (float)asize.cx, (float)asize.cy);
 			}

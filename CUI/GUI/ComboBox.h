@@ -81,7 +81,7 @@ public:
 	PROPERTY(std::vector<std::wstring>&, Items);
 	GET(std::vector<std::wstring>&, Items);
 	SET(std::vector<std::wstring>&, Items);
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	/** @brief 创建 ComboBox。 */
 	ComboBox(std::wstring text, int x, int y, int width = 120, int height = 24);
 	void SetExpanded(bool expanded);

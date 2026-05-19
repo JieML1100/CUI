@@ -326,7 +326,7 @@ void MenuItemsEditorDialog::ApplyToTarget()
 			ApplySubItems(top, t.SubItems);
 	}
 
-	_target->PostRender();
+	_target->InvalidateVisual();
 }
 
 MenuItemsEditorDialog::MenuItemsEditorDialog(Menu* target)

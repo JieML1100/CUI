@@ -52,7 +52,7 @@ private:
 	bool virtualMode = false;
 	bool layoutWidthHasScrollBar = false;
 	float virtualTotalHeight = 0.0f;
-	float cachedRenderWidth = 0.0f;
+	float _cachedRenderWidth = 0.0f;
 public:
 	virtual UIClass Type();
 	CursorKind QueryCursor(int xof, int yof) override;
@@ -95,7 +95,7 @@ public:
 	/** @brief 选择结束索引（基于字符）。 */
 	int SelectionEnd = 0;
 	/** @brief 边框宽度（像素）。 */
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	/** @brief 圆角半径。 */
 	float CornerRadius = 7.0f;
 	/** @brief 聚焦时边框宽度。 */

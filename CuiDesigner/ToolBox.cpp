@@ -54,7 +54,7 @@ void ToolBoxItem::Update()
 	this->BeginRender();
 	{
 		float roundVal = this->Height * Round;
-		d2d->FillRoundRect(this->Boder * 0.5f, this->Boder * 0.5f, size.cx - this->Boder, size.cy - this->Boder, this->BackColor, roundVal);
+		d2d->FillRoundRect(this->BorderThickness * 0.5f, this->BorderThickness * 0.5f, size.cx - this->BorderThickness, size.cy - this->BorderThickness, this->BackColor, roundVal);
 		D2D1::ColorF color = isUnderMouse ? (isSelected ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.7f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.4f)) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f);
 		d2d->FillRoundRect(0, 0, size.cx, size.cy, color, roundVal);
 
@@ -74,9 +74,9 @@ void ToolBoxItem::Update()
 		float textTop = (((float)size.cy - textSize.height) / 2.0f);
 		d2d->DrawString(this->Text, textLeft, textTop, this->ForeColor, this->Font);
 
-		d2d->DrawRoundRect(this->Boder * 0.5f, this->Boder * 0.5f,
-			size.cx - this->Boder, size.cy - this->Boder,
-			this->BolderColor, this->Boder, roundVal);
+		d2d->DrawRoundRect(this->BorderThickness * 0.5f, this->BorderThickness * 0.5f,
+			size.cx - this->BorderThickness, size.cy - this->BorderThickness,
+			this->BorderColor, this->BorderThickness, roundVal);
 	}
 
 	if (!this->Enable)
@@ -88,7 +88,7 @@ ToolBox::ToolBox(int x, int y, int width, int height)
 	: Panel(x, y, width, height)
 {
 	this->BackColor = D2D1::ColorF(0.95f, 0.95f, 0.95f, 1.0f);
-	this->Boder = 1.0f;
+	this->BorderThickness = 1.0f;
 	
 	// 标题
 	this->_titleLabel = new Label(L"工具箱", 10, 10);
@@ -98,13 +98,13 @@ ToolBox::ToolBox(int x, int y, int width, int height)
 
 	_scrollView = new ScrollView(0, _contentTop, width, std::max(0, height - _contentTop));
 	_scrollView->BackColor = D2D1::ColorF(0, 0, 0, 0);
-	_scrollView->Boder = 0.0f;
+	_scrollView->BorderThickness = 0.0f;
 	_scrollView->MouseWheelStep = 39;
 	this->AddControl(_scrollView);
 
 	_itemsHost = new Panel(0, 0, width, std::max(0, height - _contentTop));
 	_itemsHost->BackColor = D2D1::ColorF(0, 0, 0, 0);
-	_itemsHost->Boder = 0.0f;
+	_itemsHost->BorderThickness = 0.0f;
 	_scrollView->AddControl(_itemsHost);
 	
 	// 获取可用控件

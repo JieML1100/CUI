@@ -169,7 +169,7 @@ ReportView::ReportView(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0.60f, 0.66f, 0.76f, 0.52f };
+	this->BorderColor = D2D1_COLOR_F{ 0.60f, 0.66f, 0.76f, 0.52f };
 	this->ForeColor = D2D1_COLOR_F{ 0.90f, 0.92f, 0.96f, 1.0f };
 	this->Cursor = CursorKind::Arrow;
 }
@@ -188,13 +188,13 @@ void ReportView::Clear()
 void ReportView::AddColumn(const ReportColumn& column)
 {
 	Columns.push_back(column);
-	PostRender();
+	InvalidateVisual();
 }
 
 int ReportView::AddRow(const ReportRow& row)
 {
 	Rows.push_back(row);
-	PostRender();
+	InvalidateVisual();
 	return (int)Rows.size() - 1;
 }
 
@@ -242,14 +242,14 @@ void ReportView::SortByColumn(int column, bool ascending)
 
 	SortedColumnIndex = column;
 	SortAscending = ascending;
-	PostRender();
+	InvalidateVisual();
 }
 
 void ReportView::ResetScroll()
 {
 	_scrollYOffset = 0.0f;
 	ScrollChanged(this);
-	PostRender();
+	InvalidateVisual();
 }
 
 bool ReportView::SetGroupExpanded(int rowIndex, bool expanded, bool animate)
@@ -263,7 +263,7 @@ bool ReportView::SetGroupExpanded(int rowIndex, bool expanded, bool animate)
 	RebuildVisibleRows();
 	auto size = ActualSize();
 	ClampScroll((float)size.cx, (float)size.cy);
-	PostRender();
+	InvalidateVisual();
 	return true;
 }
 
@@ -370,7 +370,7 @@ bool ReportView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		}
 		int old = UnderMouseRowIndex;
 		UnderMouseRowIndex = HitTestVisibleRow(xof, yof);
-		if (old != UnderMouseRowIndex) PostRender();
+		if (old != UnderMouseRowIndex) InvalidateVisual();
 		MouseEventArgs eventObj(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
 		OnMouseMove(this, eventObj);
 		break;
@@ -417,7 +417,7 @@ bool ReportView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 						SelectionChanged(this);
 						OnRowClick(this, row);
 					}
-					PostRender();
+					InvalidateVisual();
 				}
 			}
 		}
@@ -432,7 +432,7 @@ bool ReportView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		OnMouseUp(this, eventObj);
 		if (ParentForm && ParentForm->Selected == this)
 			ParentForm->SetSelectedControl(NULL, false);
-		PostRender();
+		InvalidateVisual();
 		break;
 	}
 	case WM_LBUTTONDBLCLK:
@@ -596,7 +596,7 @@ void ReportView::SetScrollYOffset(float value, float width, float height)
 	if (std::fabs(old - _scrollYOffset) > 0.1f)
 	{
 		ScrollChanged(this);
-		PostRender();
+		InvalidateVisual();
 	}
 }
 
@@ -669,7 +669,7 @@ int ReportView::HitTestVisibleRow(int xof, int yof)
 void ReportView::DrawFrame(D2DGraphics* d2d, float width, float height)
 {
 	d2d->FillRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, BackColor, CornerRadius);
-	d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, BolderColor, Border, CornerRadius);
+	d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, BorderColor, Border, CornerRadius);
 
 	if (ShowTitle)
 	{

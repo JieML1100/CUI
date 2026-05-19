@@ -42,7 +42,7 @@ MenuItem::MenuItem(std::wstring text, int id)
 	this->Text = text;
 	this->Id = id;
 	this->_backcolor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->_boldercolor = D2D1_COLOR_F{ 0,0,0,0 };
+	this->_bordercolor = D2D1_COLOR_F{ 0,0,0,0 };
 	this->_forecolor = Colors::WhiteSmoke;
 	this->Cursor = CursorKind::Hand;
 }
@@ -131,7 +131,7 @@ Menu::Menu(int x, int y, int width, int height)
 	this->Size = SIZE{ width,height };
 	this->BarHeight = height;
 	this->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->BolderColor = D2D1_COLOR_F{ 0,0,0,0 };
+	this->BorderColor = D2D1_COLOR_F{ 0,0,0,0 };
 	this->Cursor = CursorKind::Arrow;
 }
 
@@ -268,7 +268,7 @@ void Menu::ClosePopup()
 	if (this->ParentForm)
 		this->ParentForm->Invalidate(true);
 	else
-		this->PostRender();
+		this->InvalidateVisual();
 }
 
 int Menu::DropCount()
@@ -422,8 +422,8 @@ void Menu::Update()
 	this->BeginRender((float)size.cx, (float)size.cy);
 	{
 		d2d->FillRect(0, 0, (float)this->Width, (float)BarHeight, BarBackColor);
-		if (Boder > 0.0f && BarBorderColor.a > 0.0f)
-			d2d->DrawLine(0.0f, (float)BarHeight - 0.5f, (float)this->Width, (float)BarHeight - 0.5f, BarBorderColor, Boder);
+		if (BorderThickness > 0.0f && BarBorderColor.a > 0.0f)
+			d2d->DrawLine(0.0f, (float)BarHeight - 0.5f, (float)this->Width, (float)BarHeight - 0.5f, BarBorderColor, BorderThickness);
 
 		float x = 6.0f;
 		auto font = this->Font;
@@ -643,7 +643,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 				_hoverPath.clear();
 				_openPath.clear();
 				BeginPopupReveal(0.42f);
-				this->PostRender();
+				this->InvalidateVisual();
 			}
 		}
 		else if (message == WM_LBUTTONUP)
@@ -663,7 +663,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 					BeginPopupReveal(0.08f);
 				}
 				if (this->ParentForm) this->ParentForm->Invalidate(true);
-				else this->PostRender();
+				else this->InvalidateVisual();
 			}
 		}
 
@@ -832,7 +832,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 						_openPath[hitLevel] = newOpen;
 						need = true;
 					}
-					if (need) this->PostRender();
+					if (need) this->InvalidateVisual();
 				}
 				else if (inBridge)
 				{
@@ -845,7 +845,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 					{
 						_hoverPath.clear();
 						_openPath.clear();
-						this->PostRender();
+						this->InvalidateVisual();
 					}
 				}
 			}
@@ -870,7 +870,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 								_openPath.resize((size_t)hitLevel + 1, -1);
 								_hoverPath[hitLevel] = idx;
 								_openPath[hitLevel] = idx;
-								this->PostRender();
+								this->InvalidateVisual();
 								return Control::ProcessMessage(message, wParam, lParam, xof, yof);
 							}
 							// 叶子项：触发命令并收起

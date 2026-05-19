@@ -28,11 +28,11 @@ void PictureBox::Update()
 			this->RenderImage(radius);
 		}
 		if (radius > 0.0f)
-			d2d->DrawRoundRect(this->Boder * 0.5f, this->Boder * 0.5f,
-				(std::max)(0.0f, actualWidth - this->Boder), (std::max)(0.0f, actualHeight - this->Boder),
-				this->BolderColor, this->Boder, radius);
+			d2d->DrawRoundRect(this->BorderThickness * 0.5f, this->BorderThickness * 0.5f,
+				(std::max)(0.0f, actualWidth - this->BorderThickness), (std::max)(0.0f, actualHeight - this->BorderThickness),
+				this->BorderColor, this->BorderThickness, radius);
 		else
-			d2d->DrawRect(0, 0, actualWidth, actualHeight, this->BolderColor, this->Boder);
+			d2d->DrawRect(0, 0, actualWidth, actualHeight, this->BorderColor, this->BorderThickness);
 	}
 	if (!this->Enable)
 	{

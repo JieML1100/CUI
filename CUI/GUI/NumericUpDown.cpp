@@ -78,7 +78,7 @@ NumericUpDown::NumericUpDown(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.70f };
+	this->BorderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.70f };
 	this->ForeColor = Colors::Black;
 	this->Cursor = CursorKind::IBeam;
 	SyncTextFromValue();
@@ -91,7 +91,7 @@ NumericUpDown::NumericUpDown(int x, int y, int width, int height)
 			_dragUp = false;
 			_dragDown = false;
 			_selectAllPending = false;
-			PostRender();
+			InvalidateVisual();
 		};
 }
 
@@ -106,7 +106,7 @@ SET_CPP(NumericUpDown, double, Min)
 	if (_max < _min)
 		_max = _min;
 	SetValueInternal(_value, false);
-	PostRender();
+	InvalidateVisual();
 }
 
 GET_CPP(NumericUpDown, double, Max)
@@ -120,7 +120,7 @@ SET_CPP(NumericUpDown, double, Max)
 	if (_min > _max)
 		_min = _max;
 	SetValueInternal(_value, false);
-	PostRender();
+	InvalidateVisual();
 }
 
 GET_CPP(NumericUpDown, double, Value)
@@ -168,7 +168,7 @@ void NumericUpDown::SetValueInternal(double value, bool fireEvent)
 		SyncTextFromValue();
 	else
 		this->Text = _editText;
-	PostRender();
+	InvalidateVisual();
 	if (fireEvent)
 		OnValueChanged(this, old, _value);
 }
@@ -195,7 +195,7 @@ void NumericUpDown::BeginEdit()
 	this->Text = _editText;
 	if (ParentForm)
 		ParentForm->SetSelectedControl(this, false);
-	PostRender();
+	InvalidateVisual();
 }
 
 bool NumericUpDown::CommitEdit()
@@ -208,7 +208,7 @@ bool NumericUpDown::CommitEdit()
 		_editing = false;
 		_selectAllPending = false;
 		SyncTextFromValue();
-		PostRender();
+		InvalidateVisual();
 		return false;
 	}
 
@@ -222,7 +222,7 @@ bool NumericUpDown::CommitEdit()
 		_editing = false;
 		_selectAllPending = false;
 		SyncTextFromValue();
-		PostRender();
+		InvalidateVisual();
 		return false;
 	}
 
@@ -230,7 +230,7 @@ bool NumericUpDown::CommitEdit()
 	_selectAllPending = false;
 	SetValueInternal(parsed, true);
 	SyncTextFromValue();
-	PostRender();
+	InvalidateVisual();
 	return true;
 }
 
@@ -239,7 +239,7 @@ void NumericUpDown::CancelEdit()
 	_editing = false;
 	_selectAllPending = false;
 	SyncTextFromValue();
-	PostRender();
+	InvalidateVisual();
 }
 
 D2D1_RECT_F NumericUpDown::ButtonPanelRect() const
@@ -301,14 +301,14 @@ void NumericUpDown::StartHoverAnimation(float target)
 		_hoverProgress = target;
 		_targetHoverProgress = target;
 		_animating = false;
-		PostRender();
+		InvalidateVisual();
 		return;
 	}
 	_animStartProgress = _hoverProgress;
 	_targetHoverProgress = target;
 	_animStartTick = ::GetTickCount64();
 	_animating = true;
-	PostRender();
+	InvalidateVisual();
 }
 
 float NumericUpDown::CurrentHoverProgress()
@@ -411,8 +411,8 @@ void NumericUpDown::Update()
 			d2d->FillRoundRect(rect.left + 2.0f, rect.top + 2.0f,
 				(std::max)(0.0f, RectWidth(rect) - 4.0f), (std::max)(0.0f, RectHeight(rect) - 4.0f), color, 3.5f);
 		}
-		d2d->DrawLine(panelRect.left, 5.0f, panelRect.left, (std::max)(5.0f, height - 5.0f), ScaleAlpha(BolderColor, 0.65f), 1.0f);
-		d2d->DrawLine(panelRect.left + 3.0f, height * 0.5f, width - 4.0f, height * 0.5f, ScaleAlpha(BolderColor, 0.52f), 1.0f);
+		d2d->DrawLine(panelRect.left, 5.0f, panelRect.left, (std::max)(5.0f, height - 5.0f), ScaleAlpha(BorderColor, 0.65f), 1.0f);
+		d2d->DrawLine(panelRect.left + 3.0f, height * 0.5f, width - 4.0f, height * 0.5f, ScaleAlpha(BorderColor, 0.52f), 1.0f);
 		DrawSpinArrow(d2d, upRect, true, _hoverButton > 0 ? ForeColor : MutedTextColor);
 		DrawSpinArrow(d2d, downRect, false, _hoverButton < 0 ? ForeColor : MutedTextColor);
 
@@ -443,7 +443,7 @@ void NumericUpDown::Update()
 			UpdateCaretBlinkState(false, 0, 0, false);
 		d2d->PopDrawRect();
 
-		D2D1_COLOR_F borderColor = isSelected ? FocusBorderColor : BolderColor;
+		D2D1_COLOR_F borderColor = isSelected ? FocusBorderColor : BorderColor;
 		float borderWidth = isSelected ? (std::max)(border, FocusBorder) : border;
 		if (borderWidth > 0.0f && borderColor.a > 0.0f)
 			d2d->DrawRoundRect(borderWidth * 0.5f, borderWidth * 0.5f,
@@ -500,7 +500,7 @@ bool NumericUpDown::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 			BeginEdit();
 		}
 		OnMouseDown(this, MouseEventArgs(MouseButtons::Left, 0, xof, yof, HIWORD(wParam)));
-		PostRender();
+		InvalidateVisual();
 		return true;
 	}
 	case WM_LBUTTONUP:
@@ -516,7 +516,7 @@ bool NumericUpDown::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
 		OnMouseUp(this, e);
 		OnMouseClick(this, e);
-		PostRender();
+		InvalidateVisual();
 		return true;
 	}
 	case WM_KEYDOWN:
@@ -585,13 +585,13 @@ bool NumericUpDown::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 			if ((ch == L'.' && _editText.find(L'.') != std::wstring::npos) ||
 				((ch == L'-' || ch == L'+') && !_editText.empty()))
 			{
-				PostRender();
+				InvalidateVisual();
 				return true;
 			}
 			_editText.push_back(ch);
 			this->Text = _editText;
 		}
-		PostRender();
+		InvalidateVisual();
 		return true;
 	}
 	case WM_KEYUP:

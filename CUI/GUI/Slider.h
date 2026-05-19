@@ -63,7 +63,7 @@ private:
 		if (nv != _value)
 		{
 			_value = nv;
-			this->PostRender();
+			this->InvalidateVisual();
 			if (fireEvent)
 				this->OnValueChanged(this, old, _value);
 		}

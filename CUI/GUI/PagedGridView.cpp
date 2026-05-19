@@ -27,8 +27,8 @@ PagedGridView::PagedGridView(int x, int y, int width, int height)
 	: Panel(x, y, width, height)
 {
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->Boder = 0.0f;
+	this->BorderColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	this->BorderThickness = 0.0f;
 	this->CornerRadius = 8.0f;
 
 	Grid = this->AddControl(new GridView(0, 0, width, (std::max)(1, height - (int)PagerHeight)));
@@ -127,12 +127,12 @@ void PagedGridView::StylePagerButton(Button* button)
 	if (!button) return;
 	button->BackColor = PagerButtonBackColor;
 	button->ForeColor = PagerTextColor;
-	button->BolderColor = PagerBorderColor;
+	button->BorderColor = PagerBorderColor;
 	button->UnderMouseColor = PagerButtonHoverColor;
 	button->CheckedColor = PagerButtonCheckedColor;
 	button->DisabledOverlayColor = D2D1_COLOR_F{ 1, 1, 1, 0.38f };
 	button->Round = 6.0f;
-	button->Boder = 1.0f;
+	button->BorderThickness = 1.0f;
 }
 
 void PagedGridView::LayoutChildren()
@@ -193,7 +193,7 @@ void PagedGridView::UpdatePagerState()
 void PagedGridView::MarkPageDirty()
 {
 	_pageDirty = true;
-	PostRender();
+	InvalidateVisual();
 }
 
 void PagedGridView::Clear()
@@ -349,7 +349,7 @@ void PagedGridView::RefreshPage()
 	_lastSourceSize = Rows.size();
 	_lastPageSize = _pageSize;
 	UpdatePagerState();
-	PostRender();
+	InvalidateVisual();
 }
 
 void PagedGridView::Update()

@@ -118,7 +118,7 @@ NavigationView::NavigationView(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.48f };
+	this->BorderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.48f };
 	this->ForeColor = Colors::Black;
 }
 
@@ -131,7 +131,7 @@ int NavigationView::AddItem(const NavigationViewItem& item)
 {
 	this->Items.push_back(item);
 	SyncSelectedIndexFromItems();
-	PostRender();
+	InvalidateVisual();
 	return (int)this->Items.size() - 1;
 }
 
@@ -158,7 +158,7 @@ void NavigationView::ClearItems()
 	this->FocusedIndex = -1;
 	this->ScrollYOffset = 0.0f;
 	this->SelectionChanged(this);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 bool NavigationView::RemoveItemAt(int index)
@@ -174,7 +174,7 @@ bool NavigationView::RemoveItemAt(int index)
 	SyncSelectedIndexFromItems();
 	if (removedSelected)
 		this->SelectionChanged(this);
-	this->PostRender();
+	this->InvalidateVisual();
 	return true;
 }
 
@@ -208,7 +208,7 @@ bool NavigationView::SelectItem(int index)
 	this->FocusedIndex = index;
 	if (changed)
 		this->SelectionChanged(this);
-	this->PostRender();
+	this->InvalidateVisual();
 	return true;
 }
 
@@ -221,7 +221,7 @@ void NavigationView::ClearSelection()
 	this->FocusedIndex = -1;
 	if (changed)
 		this->SelectionChanged(this);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void NavigationView::SetPaneOpen(bool value)
@@ -229,7 +229,7 @@ void NavigationView::SetPaneOpen(bool value)
 	if (this->IsPaneOpen == value)
 		return;
 	this->IsPaneOpen = value;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void NavigationView::TogglePane()
@@ -330,7 +330,7 @@ void NavigationView::SetScrollOffset(float offsetY)
 		return;
 	this->ScrollYOffset = next;
 	this->ScrollChanged(this);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 bool NavigationView::HitTestToggle(const Layout& layout, int xof, int yof) const
@@ -528,7 +528,7 @@ void NavigationView::UpdateHover(int xof, int yof)
 	if (hit != this->HoveredIndex)
 	{
 		this->HoveredIndex = hit;
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -602,10 +602,10 @@ void NavigationView::Update()
 		DrawHeader(d2d, layout);
 		DrawRows(d2d, rows, layout);
 		DrawScrollBar(d2d, layout);
-		if (Border > 0.0f && this->BolderColor.a > 0.0f)
+		if (Border > 0.0f && this->BorderColor.a > 0.0f)
 			d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f,
 				(std::max)(0.0f, width - Border), (std::max)(0.0f, height - Border),
-				this->BolderColor, Border, CornerRadius);
+				this->BorderColor, Border, CornerRadius);
 		if (!this->Enable)
 			d2d->FillRoundRect(0.0f, 0.0f, width, height, D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.48f }, CornerRadius);
 	}
@@ -778,7 +778,7 @@ BreadcrumbBar::BreadcrumbBar(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.40f };
+	this->BorderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.40f };
 	this->ForeColor = Colors::Black;
 }
 
@@ -787,7 +787,7 @@ int BreadcrumbBar::AddItem(const BreadcrumbBarItem& item)
 	Items.push_back(item);
 	if (SelectedIndex < 0)
 		SelectedIndex = (int)Items.size() - 1;
-	PostRender();
+	InvalidateVisual();
 	return (int)Items.size() - 1;
 }
 
@@ -802,7 +802,7 @@ void BreadcrumbBar::SetPath(const std::vector<std::wstring>& path)
 	for (const auto& item : path)
 		Items.push_back(BreadcrumbBarItem(item));
 	SelectedIndex = Items.empty() ? -1 : (int)Items.size() - 1;
-	PostRender();
+	InvalidateVisual();
 }
 
 void BreadcrumbBar::ClearItems()
@@ -811,7 +811,7 @@ void BreadcrumbBar::ClearItems()
 	SelectedIndex = -1;
 	HoveredIndex = -1;
 	SelectionChanged(this);
-	PostRender();
+	InvalidateVisual();
 }
 
 bool BreadcrumbBar::SelectItem(int index)
@@ -822,7 +822,7 @@ bool BreadcrumbBar::SelectItem(int index)
 	SelectedIndex = index;
 	if (changed)
 		SelectionChanged(this);
-	PostRender();
+	InvalidateVisual();
 	return true;
 }
 
@@ -912,9 +912,9 @@ void BreadcrumbBar::Update()
 				DrawChevron(d2d, sepX, region.Rect.top + RectHeight(region.Rect) * 0.5f, MutedTextColor);
 			}
 		}
-		if (Border > 0.0f && this->BolderColor.a > 0.0f)
+		if (Border > 0.0f && this->BorderColor.a > 0.0f)
 			d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, (std::max)(0.0f, width - Border),
-				(std::max)(0.0f, height - Border), this->BolderColor, Border, CornerRadius);
+				(std::max)(0.0f, height - Border), this->BorderColor, Border, CornerRadius);
 		if (!this->Enable)
 			d2d->FillRoundRect(0.0f, 0.0f, width, height, D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.48f }, CornerRadius);
 	}
@@ -935,7 +935,7 @@ bool BreadcrumbBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 		if (hit != HoveredIndex)
 		{
 			HoveredIndex = hit;
-			PostRender();
+			InvalidateVisual();
 		}
 		MouseEventArgs e(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
 		OnMouseMove(this, e);

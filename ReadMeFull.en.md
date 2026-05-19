@@ -326,7 +326,7 @@ public:
         
         // Add picture box
         auto picture = AddControl(new PictureBox(50, 160, 200, 150));
-        picture->SizeMode = ImageSizeMode::StretchIamge;
+        picture->SizeMode = ImageSizeMode::StretchImage;
         
         // Status bar
         auto statusBar = AddControl(new StatusBar(0, 0, 800, 26));
@@ -390,7 +390,7 @@ auto button = AddControl(new Button(L"OK", 20, 50, 100, 30));
 button->OnMouseClick += [](Control* sender, MouseEventArgs e) {
     // Handle click event
     sender->Text = L"Clicked";
-    sender->PostRender();
+    sender->InvalidateVisual();
 };
 ```
 
@@ -541,7 +541,7 @@ progress->PercentageValue = 0.5f;  // 50%
 ```cpp
 auto panel = AddControl(new Panel(300, 20, 400, 300));
 panel->BackColor = D2D1::ColorF(1, 1, 1, 0.1f);
-panel->BolderColor = D2D1::ColorF(1, 1, 1, 0.2f);
+panel->BorderColor = D2D1::ColorF(1, 1, 1, 0.2f);
 
 // Add child controls to panel
 panel->AddControl(new Label(L"Label in panel", 10, 10));
@@ -727,7 +727,7 @@ paged->OnPageChanged += [](PagedGridView* sender, int oldPage, int newPage) {
 
 ```cpp
 auto picture = AddControl(new PictureBox(20, 20, 300, 200));
-picture->SizeMode = ImageSizeMode::StretchIamge;
+picture->SizeMode = ImageSizeMode::StretchImage;
 
 // Load image
 auto img = BitmapSource::FromFile(L"C:\\image.png");
@@ -1188,7 +1188,7 @@ public:
             (void)e;
             _clickCount++;
             _statusLabel->Text = StringHelper::Format(L"Clicks: %d", _clickCount);
-            _statusLabel->PostRender();
+            _statusLabel->InvalidateVisual();
         };
     }
 };
@@ -1823,7 +1823,7 @@ customControl->OnPaint += [](Control* sender) {
     auto d2d = panel->ParentForm->Render;
     auto size = panel->ActualSize();
     d2d->FillRect(0, 0, (float)size.cx, (float)size.cy, panel->BackColor);
-    d2d->DrawRect(0, 0, (float)size.cx, (float)size.cy, panel->BolderColor, 1.0f);
+    d2d->DrawRect(0, 0, (float)size.cx, (float)size.cy, panel->BorderColor, 1.0f);
 };
 ```
 

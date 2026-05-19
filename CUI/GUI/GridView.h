@@ -114,7 +114,7 @@ public:
 	GridViewRow& operator[](int idx);
 	float HeadHeight = 0.0f;
 	float RowHeight = 0.0f;
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	D2D1_COLOR_F HeadBackColor = Colors::Snow3;
 	D2D1_COLOR_F HeadForeColor = Colors::Black;
 	D2D1_COLOR_F HeadHoverBackColor = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.08f };

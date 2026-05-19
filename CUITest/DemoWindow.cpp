@@ -115,7 +115,7 @@ namespace {
 		if (!textBox) return;
 		textBox->BackColor = theme.InputBack;
 		textBox->ForeColor = theme.Text;
-		textBox->BolderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
+		textBox->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
 		textBox->UnderMouseColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.055f);
 		textBox->FocusedColor = theme.Accent;
 		textBox->SelectedBackColor = theme.InputSelection;
@@ -132,7 +132,7 @@ namespace {
 		if (!textBox) return;
 		textBox->BackColor = theme.InputBack;
 		textBox->ForeColor = theme.Text;
-		textBox->BolderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
+		textBox->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
 		textBox->UnderMouseColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.055f);
 		textBox->FocusedColor = theme.Accent;
 		textBox->SelectedBackColor = theme.InputSelection;
@@ -149,7 +149,7 @@ namespace {
 		if (!textBox) return;
 		textBox->BackColor = theme.InputBack;
 		textBox->ForeColor = theme.Text;
-		textBox->BolderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
+		textBox->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
 		textBox->UnderMouseColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.055f);
 		textBox->FocusedColor = theme.Accent;
 		textBox->SelectedBackColor = theme.InputSelection;
@@ -229,7 +229,7 @@ void DemoWindow::Theme_ApplyCurrent()
 			}
 
 			control->ForeColor = theme.Text;
-			control->BolderColor = theme.Border;
+			control->BorderColor = theme.Border;
 
 			switch (control->Type())
 			{
@@ -251,18 +251,18 @@ void DemoWindow::Theme_ApplyCurrent()
 				if (inToolbar)
 				{
 					button->BackColor = Color(0, 0, 0, 0);
-					button->BolderColor = Color(0, 0, 0, 0);
+					button->BorderColor = Color(0, 0, 0, 0);
 					button->UnderMouseColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
 					button->CheckedColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.18f);
 					button->HighlightColor = Color(0, 0, 0, 0);
 					button->ShadowColor = Color(0, 0, 0, 0);
-					button->Boder = 0.0f;
+					button->BorderThickness = 0.0f;
 				}
 				else
 				{
 					button->BackColor = theme.SurfaceAlt;
-					button->BolderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.52f);
-					button->Boder = 1.0f;
+					button->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.52f);
+					button->BorderThickness = 1.0f;
 				}
 				break;
 			}
@@ -317,7 +317,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				const bool inToolbar = combo->Parent && combo->Parent->Type() == UIClass::UI_ToolBar;
 				combo->BackColor = inToolbar ? theme.SurfaceAlt : theme.InputBack;
 				combo->ForeColor = theme.Text;
-				combo->BolderColor = inToolbar ? Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.55f) : theme.Border;
+				combo->BorderColor = inToolbar ? Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.55f) : theme.Border;
 				combo->AccentColor = theme.Accent;
 				combo->HeaderHoverBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.06f);
 				combo->DropBackColor = theme.SurfacePanel;
@@ -342,7 +342,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* picker = (DateTimePicker*)control;
 				picker->BackColor = theme.InputBack;
 				picker->ForeColor = theme.Text;
-				picker->BolderColor = theme.Border;
+				picker->BorderColor = theme.Border;
 				picker->PanelBackColor = theme.InputBack;
 				picker->DropBackColor = theme.SurfacePanel;
 				picker->DropBorderColor = theme.Border;
@@ -360,7 +360,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* picker = (DateRangePicker*)control;
 				picker->PanelBackColor = theme.InputBack;
 				picker->ForeColor = theme.Text;
-				picker->BolderColor = theme.Border;
+				picker->BorderColor = theme.Border;
 				picker->DropBackColor = theme.SurfacePanel;
 				picker->DropBorderColor = theme.Border;
 				picker->AccentColor = theme.Accent;
@@ -382,7 +382,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				picker->PanelHoverColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.08f);
 				picker->ButtonBackColor = theme.SurfaceAlt;
 				picker->ForeColor = theme.Text;
-				picker->BolderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
+				picker->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
 				picker->AccentColor = theme.Accent;
 				picker->FocusBorderColor = theme.Accent;
 				picker->MutedTextColor = theme.TextMuted;
@@ -394,7 +394,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* number = (NumericUpDown*)control;
 				number->PanelBackColor = theme.InputBack;
 				number->ForeColor = theme.Text;
-				number->BolderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
+				number->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.62f);
 				number->ButtonBackColor = theme.SurfaceAlt;
 				number->ButtonHoverColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.12f);
 				number->ButtonPressedColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.22f);
@@ -411,7 +411,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* calendar = (CalendarView*)control;
 				calendar->BackColor = theme.SurfacePanelSoft;
 				calendar->ForeColor = theme.Text;
-				calendar->BolderColor = theme.Border;
+				calendar->BorderColor = theme.Border;
 				calendar->SurfaceColor = theme.SurfacePanelSoft;
 				calendar->HeaderBackColor = theme.SurfaceAlt;
 				calendar->MutedTextColor = theme.TextMuted;
@@ -429,7 +429,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* nav = (NavigationView*)control;
 				nav->BackColor = theme.SurfacePanelSoft;
 				nav->ForeColor = theme.Text;
-				nav->BolderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.58f);
+				nav->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.58f);
 				nav->SurfaceColor = theme.SurfacePanelSoft;
 				nav->HeaderBackColor = theme.SurfaceAlt;
 				nav->MutedTextColor = theme.TextMuted;
@@ -450,7 +450,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* breadcrumb = (BreadcrumbBar*)control;
 				breadcrumb->BackColor = theme.SurfacePanelSoft;
 				breadcrumb->ForeColor = theme.Text;
-				breadcrumb->BolderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.50f);
+				breadcrumb->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.50f);
 				breadcrumb->SurfaceColor = theme.SurfacePanelSoft;
 				breadcrumb->HoverBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
 				breadcrumb->SelectedBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.16f);
@@ -531,7 +531,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* toolbar = (ToolBar*)control;
 				toolbar->BackColor = theme.SurfacePanelSoft;
 				toolbar->ForeColor = theme.Text;
-				toolbar->BolderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.42f);
+				toolbar->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.42f);
 				toolbar->SeparatorColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.52f);
 				toolbar->BottomLineColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.34f);
 				toolbar->CornerRadius = 8.0f;
@@ -542,7 +542,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* status = (StatusBar*)control;
 				status->BackColor = theme.SurfacePanelSoft;
 				status->ForeColor = theme.TextMuted;
-				status->BolderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.34f);
+				status->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.34f);
 				status->TopLineColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.38f);
 				status->SeparatorColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.34f);
 				status->PartBackColor = Color(0, 0, 0, 0);
@@ -563,8 +563,8 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* panel = (Panel*)control;
 				control->BackColor = theme.SurfacePanel;
 				control->ForeColor = theme.Text;
-				control->BolderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
-				panel->Boder = control->Type() == UIClass::UI_TabPage ? 0.0f : 1.0f;
+				control->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
+				panel->BorderThickness = control->Type() == UIClass::UI_TabPage ? 0.0f : 1.0f;
 				panel->CornerRadius = 8.0f;
 				panel->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				break;
@@ -574,12 +574,12 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* group = (GroupBox*)control;
 				group->BackColor = theme.SurfacePanel;
 				group->ForeColor = theme.Text;
-				group->BolderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
+				group->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
 				group->CaptionBackColor = theme.SurfacePanelSoft;
 				group->CaptionBorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.42f : 0.34f);
 				group->CaptionCornerRadius = 7.0f;
 				group->CornerRadius = 9.0f;
-				group->Boder = 1.0f;
+				group->BorderThickness = 1.0f;
 				group->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				break;
 			}
@@ -588,7 +588,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* expander = (Expander*)control;
 				expander->BackColor = Color(0, 0, 0, 0);
 				expander->ForeColor = theme.Text;
-				expander->BolderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
+				expander->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
 				expander->SurfaceColor = theme.SurfacePanel;
 				expander->HeaderBackColor = theme.SurfacePanelSoft;
 				expander->HeaderHoverBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.10f);
@@ -605,14 +605,14 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* split = (SplitContainer*)control;
 				split->BackColor = theme.SurfacePanel;
 				split->ForeColor = theme.Text;
-				split->BolderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
+				split->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
 				split->SplitterColor = Color(theme.BorderStrong.r, theme.BorderStrong.g, theme.BorderStrong.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.30f : 0.24f);
 				split->SplitterHotColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.22f);
 				split->SplitterPressedColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.78f);
 				split->SplitterCornerRadius = 3.0f;
 				split->SplitterVisualInset = 8.0f;
 				split->CornerRadius = 8.0f;
-				split->Boder = 1.0f;
+				split->BorderThickness = 1.0f;
 				split->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				break;
 			}
@@ -620,11 +620,11 @@ void DemoWindow::Theme_ApplyCurrent()
 			{
 				auto* scroll = (ScrollView*)control;
 				scroll->BackColor = theme.SurfacePanel;
-				scroll->BolderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
+				scroll->BorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.44f);
 				scroll->ScrollBackColor = theme.ScrollTrack;
 				scroll->ScrollForeColor = theme.ScrollThumb;
 				scroll->CornerRadius = 8.0f;
-				scroll->Boder = 1.0f;
+				scroll->BorderThickness = 1.0f;
 				scroll->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
 				break;
 			}
@@ -633,7 +633,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* tree = (TreeView*)control;
 				tree->BackColor = theme.SurfacePanelSoft;
 				tree->ForeColor = theme.Text;
-				tree->BolderColor = theme.Border;
+				tree->BorderColor = theme.Border;
 				tree->ScrollBackColor = theme.ScrollTrack;
 				tree->ScrollForeColor = theme.ScrollThumb;
 				tree->AccentColor = theme.Accent;
@@ -648,7 +648,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* list = (ListView*)control;
 				list->BackColor = theme.SurfacePanelSoft;
 				list->ForeColor = theme.Text;
-				list->BolderColor = theme.Border;
+				list->BorderColor = theme.Border;
 				list->HeaderBackColor = theme.SurfaceAlt;
 				list->HeaderForeColor = theme.Text;
 				list->GridLineColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.42f);
@@ -668,7 +668,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* pg = (PropertyGridView*)control;
 				pg->BackColor = theme.SurfacePanelSoft;
 				pg->ForeColor = theme.Text;
-				pg->BolderColor = theme.Border;
+				pg->BorderColor = theme.Border;
 				pg->HeaderBackColor = theme.SurfaceAlt;
 				pg->HeaderForeColor = theme.Text;
 				pg->CategoryBackColor = theme.SurfaceAlt;
@@ -691,7 +691,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* grid = (GridView*)control;
 				grid->BackColor = Color(0, 0, 0, 0);
 				grid->ForeColor = theme.Text;
-				grid->BolderColor = theme.Border;
+				grid->BorderColor = theme.Border;
 				grid->HeadBackColor = theme.SurfaceAlt;
 				grid->HeadForeColor = theme.Text;
 				grid->HeadHoverBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.08f);
@@ -738,7 +738,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* chart = (ChartView*)control;
 				chart->BackColor = theme.SurfacePanel;
 				chart->ForeColor = theme.Text;
-				chart->BolderColor = theme.Border;
+				chart->BorderColor = theme.Border;
 				chart->PlotBackColor = theme.AccentSoft;
 				chart->GridLineColor = theme.Border;
 				chart->AxisColor = theme.BorderStrong;
@@ -758,7 +758,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* report = (ReportView*)control;
 				report->BackColor = theme.SurfacePanel;
 				report->ForeColor = theme.Text;
-				report->BolderColor = theme.Border;
+				report->BorderColor = theme.Border;
 				report->HeaderBackColor = theme.SurfaceAlt;
 				report->HeaderForeColor = theme.Text;
 				report->RowBackColor = Color(1.0f, 1.0f, 1.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.58f : 0.035f);
@@ -779,7 +779,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				card->BackColor = Color(0, 0, 0, 0);
 				card->SurfaceColor = theme.SurfacePanel;
 				card->ForeColor = theme.Text;
-				card->BolderColor = theme.Border;
+				card->BorderColor = theme.Border;
 				card->AccentColor = theme.Accent;
 				card->ActiveBackColor = theme.AccentSoft;
 				card->HoverColor = theme.SurfacePanelSoft;
@@ -793,7 +793,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				filter->BackColor = Color(0, 0, 0, 0);
 				filter->SurfaceColor = theme.SurfacePanel;
 				filter->ForeColor = theme.Text;
-				filter->BolderColor = theme.Border;
+				filter->BorderColor = theme.Border;
 				filter->InputBackColor = theme.InputBack;
 				filter->ChipBackColor = theme.SurfacePanelSoft;
 				filter->ChipSelectedBackColor = theme.AccentSoft;
@@ -825,7 +825,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* tabs = (TabControl*)control;
 				tabs->BackColor = Color(0, 0, 0, 0);
 				tabs->ForeColor = theme.Text;
-				tabs->BolderColor = theme.Border;
+				tabs->BorderColor = theme.Border;
 				tabs->TitleBackColor = Color(0, 0, 0, 0);
 				tabs->SelectedTitleBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.13f);
 				tabs->TitleHoverBackColor = Color(theme.Accent.r, theme.Accent.g, theme.Accent.b, 0.08f);
@@ -846,7 +846,7 @@ void DemoWindow::Theme_ApplyCurrent()
 			{
 				auto* picture = (PictureBox*)control;
 				picture->BackColor = theme.SurfacePanelSoft;
-				picture->BolderColor = theme.Border;
+				picture->BorderColor = theme.Border;
 				picture->CornerRadius = 8.0f;
 				break;
 			}
@@ -855,7 +855,7 @@ void DemoWindow::Theme_ApplyCurrent()
 				auto* progress = (ProgressBar*)control;
 				control->BackColor = theme.ScrollTrack;
 				control->ForeColor = theme.Accent;
-				control->BolderColor = theme.Border;
+				control->BorderColor = theme.Border;
 				progress->TrackBorderColor = Color(theme.Border.r, theme.Border.g, theme.Border.b, 0.28f);
 				progress->FillHighlightColor = Color(1.0f, 1.0f, 1.0f, this->GetThemeName() == DemoThemeKeyLight() ? 0.18f : 0.10f);
 				progress->DisabledOverlayColor = Color(theme.Surface.r, theme.Surface.g, theme.Surface.b, 0.48f);
@@ -883,7 +883,7 @@ void DemoWindow::Theme_ApplyCurrent()
 			case UIClass::UI_WebBrowser:
 			case UIClass::UI_MediaPlayer:
 				control->BackColor = theme.SurfacePanelSoft;
-				control->BolderColor = theme.Border;
+				control->BorderColor = theme.Border;
 				break;
 			default:
 				break;
@@ -953,12 +953,12 @@ void DemoWindow::Ui_UpdateStatus(const std::wstring& text)
 	if (_topStatus)
 	{
 		_topStatus->Text = text;
-		_topStatus->PostRender();
+		_topStatus->InvalidateVisual();
 	}
 	if (_statusbar)
 	{
 		_statusbar->SetPartText(0, text);
-		_statusbar->PostRender();
+		_statusbar->InvalidateVisual();
 	}
 }
 
@@ -969,12 +969,12 @@ void DemoWindow::Ui_UpdateProgress(float value01)
 	if (_progress)
 	{
 		_progress->PercentageValue = value01;
-		_progress->PostRender();
+		_progress->InvalidateVisual();
 	}
 	if (_progressRing)
 	{
 		_progressRing->PercentageValue = value01;
-		_progressRing->PostRender();
+		_progressRing->InvalidateVisual();
 	}
 	if (_taskbar)
 	{
@@ -1009,7 +1009,7 @@ void DemoWindow::Basic_OnButtonClick(class Control* sender, MouseEventArgs e)
 {
 	(void)e;
 	sender->Text = StringHelper::Format(L"点击计数[%d]", sender->Tag++);
-	sender->PostRender();
+	sender->InvalidateVisual();
 	Ui_UpdateStatus(L"Button: OnMouseClick");
 }
 
@@ -1019,13 +1019,13 @@ void DemoWindow::Basic_OnRadioChecked(class Control* sender)
 	if (sender == _rb1 && _rb1->Checked)
 	{
 		_rb2->Checked = false;
-		_rb2->PostRender();
+		_rb2->InvalidateVisual();
 		Ui_UpdateStatus(L"Radio: 选中 A");
 	}
 	else if (sender == _rb2 && _rb2->Checked)
 	{
 		_rb1->Checked = false;
-		_rb1->PostRender();
+		_rb1->InvalidateVisual();
 		Ui_UpdateStatus(L"Radio: 选中 B");
 	}
 }
@@ -1218,7 +1218,7 @@ void DemoWindow::BuildMenuToolStatus()
 			if (_tabs && pageCombo->SelectedIndex >= 0 && pageCombo->SelectedIndex < _tabs->Count)
 			{
 				_tabs->SelectedIndex = pageCombo->SelectedIndex;
-				_tabs->PostRender();
+				_tabs->InvalidateVisual();
 			}
 			Ui_UpdateStatus(L"ToolBar/ComboBox: " + pageCombo->Text);
 		};
@@ -1233,7 +1233,7 @@ void DemoWindow::BuildMenuToolStatus()
 				_toolbar->Gap = check->Checked ? 3 : 6;
 				_toolbar->Padding = check->Checked ? 4 : 6;
 				_toolbar->LayoutItems();
-				_toolbar->PostRender();
+				_toolbar->InvalidateVisual();
 			}
 			Ui_UpdateStatus(check->Checked ? L"ToolBar/CheckBox: 紧凑布局" : L"ToolBar/CheckBox: 标准布局");
 		};
@@ -1324,7 +1324,7 @@ void DemoWindow::BuildTab_Basic(TabPage* page)
 			if (_basicLink)
 			{
 				_basicLink->Visited = true;
-				_basicLink->PostRender();
+				_basicLink->InvalidateVisual();
 			}
 			Ui_UpdateStatus(L"LinkLabel: OnMouseClick");
 		};
@@ -1341,10 +1341,10 @@ void DemoWindow::BuildTab_Basic(TabPage* page)
 			tb2->Enable = en;
 			tb3->Enable = en;
 			pwd->Enable = en;
-			tb1->PostRender();
-			tb2->PostRender();
-			tb3->PostRender();
-			pwd->PostRender();
+			tb1->InvalidateVisual();
+			tb2->InvalidateVisual();
+			tb3->InvalidateVisual();
+			pwd->InvalidateVisual();
 		};
 
 	auto combo = page->AddControl(new ComboBox(L"item0", 240, 110, 180, 28));
@@ -1437,7 +1437,7 @@ void DemoWindow::BuildTab_Basic(TabPage* page)
 			RichTextBox* rtb = (RichTextBox*)sender;
 			rtb->AppendText(text);
 			rtb->ScrollToEnd();
-			rtb->PostRender();
+			rtb->InvalidateVisual();
 		};
 
 	page->AddControl(new Label(L"Icon Buttons:", 740, 70));
@@ -1447,7 +1447,7 @@ void DemoWindow::BuildTab_Basic(TabPage* page)
 		iconBtn->Image = _icons[i];
 		iconBtn->SizeMode = ImageSizeMode::CenterImage;
 		iconBtn->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-		iconBtn->Boder = 2.0f;
+		iconBtn->BorderThickness = 2.0f;
 		iconBtn->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->Basic_OnIconButtonClick(sender, e); };
 	}
 }
@@ -1461,11 +1461,11 @@ void DemoWindow::BuildTab_Containers(TabPage* page)
 
 	auto panel = page->AddControl(new Panel(10, 78, 520, 320));
 	panel->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
-	panel->BolderColor = D2D1_COLOR_F{ 1,1,1,0.12f };
+	panel->BorderColor = D2D1_COLOR_F{ 1,1,1,0.12f };
 
 	panel->AddControl(new Label(L"PictureBox", 10, 10));
 	_picture = panel->AddControl(new PictureBox(110, 10, 390, 210));
-	_picture->SizeMode = ImageSizeMode::StretchIamge;
+	_picture->SizeMode = ImageSizeMode::StretchImage;
 	_picture->OnDropFile += [this](class Control* sender, std::vector<std::wstring> files) { this->Picture_OnDropFile(sender, files); };
 
 	panel->AddControl(new Label(L"ProgressBar", 10, 235));
@@ -1508,7 +1508,7 @@ void DemoWindow::BuildTab_Containers(TabPage* page)
 	split->SplitterDistance = 150;
 	split->SplitterWidth = 8;
 	split->BackColor = D2D1_COLOR_F{ 1,1,1,0.03f };
-	split->BolderColor = D2D1_COLOR_F{ 1,1,1,0.14f };
+	split->BorderColor = D2D1_COLOR_F{ 1,1,1,0.14f };
 	split->FirstPanel()->BackColor = D2D1_COLOR_F{ 1,1,1,0.05f };
 	split->SecondPanel()->BackColor = D2D1_COLOR_F{ 1,1,1,0.05f };
 	split->FirstPanel()->AddControl(new Label(L"左侧面板", 12, 12));
@@ -1545,7 +1545,7 @@ void DemoWindow::BuildTab_Containers(TabPage* page)
 
 	auto group = page->AddControl(new GroupBox(L"GroupBox", 900, 342, 420, 150));
 	group->BackColor = D2D1_COLOR_F{ 1,1,1,0.04f };
-	group->BolderColor = D2D1_COLOR_F{ 1,1,1,0.20f };
+	group->BorderColor = D2D1_COLOR_F{ 1,1,1,0.20f };
 	group->AddControl(new Label(L"把相关输入项包成一个逻辑区块。", 16, 20));
 	auto groupName = group->AddControl(new TextBox(L"名称", 16, 52, 180, 26));
 	auto groupEnabled = group->AddControl(new CheckBox(L"启用高级选项", 16, 88));
@@ -1553,7 +1553,7 @@ void DemoWindow::BuildTab_Containers(TabPage* page)
 	groupEnabled->OnChecked += [groupName](class Control* sender)
 		{
 			groupName->Enable = ((CheckBox*)sender)->Checked;
-			groupName->PostRender();
+			groupName->InvalidateVisual();
 		};
 
 	auto expander = page->AddControl(new Expander(L"Expander", 540, 342, 330, 150));
@@ -1954,7 +1954,7 @@ void DemoWindow::BuildTab_Layout(TabPage* page)
 	page->AddControl(new Label(L"ScrollView（滚轮、拖动滚动条，内容超出时自动显示横纵滚动条）", 530, 260));
 	auto scroll = page->AddControl(new ScrollView(530, 280, 800, 250));
 	scroll->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
-	scroll->BolderColor = D2D1_COLOR_F{ 1,1,1,0.14f };
+	scroll->BorderColor = D2D1_COLOR_F{ 1,1,1,0.14f };
 	scroll->Padding = Thickness(12);
 
 	for (int row = 0; row < 4; ++row)
@@ -1965,7 +1965,7 @@ void DemoWindow::BuildTab_Layout(TabPage* page)
 			const int top = 16 + (row * 92);
 			auto card = scroll->AddControl(new Panel(left, top, 220, 76));
 			card->BackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.05f };
-			card->BolderColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.10f };
+			card->BorderColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.10f };
 			card->AddControl(new Label(StringHelper::Format(L"Card %d", row * 4 + col + 1), 10, 10));
 			auto btn = card->AddControl(new Button(L"点击", 10, 36, 70, 26));
 			btn->Tag = row * 4 + col + 1;
@@ -2121,7 +2121,7 @@ void DemoWindow::BuildTab_Media(TabPage* page)
 	controlPanel->Margin = Thickness(10, 0, 10, 10);
 	controlPanel->AnchorStyles = AnchorStyles::Left | AnchorStyles::Right | AnchorStyles::Bottom;
 	controlPanel->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
-	controlPanel->BolderColor = D2D1_COLOR_F{ 1,1,1,0.12f };
+	controlPanel->BorderColor = D2D1_COLOR_F{ 1,1,1,0.12f };
 
 	auto progressUpdating = std::make_shared<bool>(false);
 
@@ -2177,7 +2177,7 @@ void DemoWindow::BuildTab_Media(TabPage* page)
 			(void)oldValue;
 			mp->PlaybackRate = newValue / 100.0f;
 			speedLabel->Text = StringHelper::Format(L"%.2fx", newValue / 100.0f);
-			speedLabel->PostRender();
+			speedLabel->InvalidateVisual();
 		};
 
 	CheckBox* loop = controlPanel->AddControl(new CheckBox(L"循环", 790, 16));
@@ -2213,13 +2213,13 @@ void DemoWindow::BuildTab_Media(TabPage* page)
 			MediaPlayer* player = (MediaPlayer*)sender;
 			std::wstring fileName = FileNameFromPath(player->MediaFile);
 			titleLabel->Text = StringHelper::Format(L"MediaPlayer - %s", fileName.c_str());
-			titleLabel->PostRender();
+			titleLabel->InvalidateVisual();
 			*progressUpdating = true;
 			progressSlider->Value = 0;
 			*progressUpdating = false;
 			int total = (int)player->Duration;
 			timeLabel->Text = StringHelper::Format(L"00:00 / %02d:%02d", total / 60, total % 60);
-			timeLabel->PostRender();
+			timeLabel->InvalidateVisual();
 			Ui_UpdateStatus(L"MediaPlayer: MediaOpened");
 		};
 
@@ -2227,7 +2227,7 @@ void DemoWindow::BuildTab_Media(TabPage* page)
 		{
 			(void)sender;
 			timeLabel->Text = L"播放结束";
-			timeLabel->PostRender();
+			timeLabel->InvalidateVisual();
 			Ui_UpdateStatus(L"MediaPlayer: Ended");
 		};
 
@@ -2235,9 +2235,9 @@ void DemoWindow::BuildTab_Media(TabPage* page)
 		{
 			(void)sender;
 			titleLabel->Text = L"MediaPlayer - 加载失败";
-			titleLabel->PostRender();
+			titleLabel->InvalidateVisual();
 			timeLabel->Text = L"加载失败";
-			timeLabel->PostRender();
+			timeLabel->InvalidateVisual();
 			Ui_UpdateStatus(L"MediaPlayer: Failed");
 		};
 
@@ -2248,7 +2248,7 @@ void DemoWindow::BuildTab_Media(TabPage* page)
 			int total = (int)player->Duration;
 			if (total < 0) total = 0;
 			timeLabel->Text = StringHelper::Format(L"%02d:%02d / %02d:%02d", cur / 60, cur % 60, total / 60, total % 60);
-			timeLabel->PostRender();
+			timeLabel->InvalidateVisual();
 			if (player->Duration > 0)
 			{
 				*progressUpdating = true;
@@ -2329,7 +2329,7 @@ DemoWindow::DemoWindow() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
 		_systemContextMenu->OnMenuCommand += [this](class Control* sender, int id) { this->System_OnContextMenuCommand(sender, id); };
 	}
 
-	this->SizeMode = ImageSizeMode::StretchIamge;
+	this->SizeMode = ImageSizeMode::StretchImage;
 	Theme_Apply(DemoThemeKeyDark());
 
 }

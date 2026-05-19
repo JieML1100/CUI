@@ -173,7 +173,7 @@ namespace
 		if (n == L"OnMouseClick") { outEventField = "OnMouseClick"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
 		if (n == L"OnMouseDoubleClick") { outEventField = "OnMouseDoubleClick"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
 		if (n == L"OnMouseEnter") { outEventField = "OnMouseEnter"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
-		if (n == L"OnMouseLeaved") { outEventField = "OnMouseLeaved"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
+		if (n == L"OnMouseLeave") { outEventField = "OnMouseLeave"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
 		if (n == L"OnKeyDown") { outEventField = "OnKeyDown"; outParamList = "Control* sender, KeyEventArgs e"; return true; }
 		if (n == L"OnKeyUp") { outEventField = "OnKeyUp"; outParamList = "Control* sender, KeyEventArgs e"; return true; }
 		if (n == L"OnCharInput") { outEventField = "OnCharInput"; outParamList = "Control* sender, wchar_t ch"; return true; }
@@ -324,7 +324,7 @@ namespace
 
 		if (n == L"OnMouseDoubleClick") { outEventField = "OnMouseDoubleClick"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
 		if (n == L"OnMouseEnter") { outEventField = "OnMouseEnter"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
-		if (n == L"OnMouseLeaved") { outEventField = "OnMouseLeaved"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
+		if (n == L"OnMouseLeave") { outEventField = "OnMouseLeave"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
 		if (n == L"OnClose") { outEventField = "OnClose"; outParamList = "Control* sender"; return true; }
 		return false;
 	}
@@ -935,7 +935,7 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	// 颜色
 	code << indentStr << name << "->BackColor = " << ColorToString(ctrl->BackColor) << ";\n";
 	code << indentStr << name << "->ForeColor = " << ColorToString(ctrl->ForeColor) << ";\n";
-	code << indentStr << name << "->BolderColor = " << ColorToString(ctrl->BolderColor) << ";\n";
+	code << indentStr << name << "->BorderColor = " << ColorToString(ctrl->BorderColor) << ";\n";
 
 	// 布局通用属性
 	auto m = ctrl->Margin;
@@ -1159,7 +1159,7 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 			{
 			case ImageSizeMode::Normal: code << indentStr << name << "->SizeMode = ImageSizeMode::Normal;\n"; break;
 			case ImageSizeMode::CenterImage: code << indentStr << name << "->SizeMode = ImageSizeMode::CenterImage;\n"; break;
-			case ImageSizeMode::StretchIamge: code << indentStr << name << "->SizeMode = ImageSizeMode::StretchIamge;\n"; break;
+			case ImageSizeMode::StretchImage: code << indentStr << name << "->SizeMode = ImageSizeMode::StretchImage;\n"; break;
 			case ImageSizeMode::Zoom: code << indentStr << name << "->SizeMode = ImageSizeMode::Zoom;\n"; break;
 			default: break;
 			}
@@ -1305,8 +1305,8 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 			code << indentStr << name << "->BarHeight = " << menu->BarHeight << ";\n";
 		if (menu->DropItemHeight != 26)
 			code << indentStr << name << "->DropItemHeight = " << menu->DropItemHeight << ";\n";
-		if (std::fabs(menu->Boder - 1.0f) > 1e-6f)
-			code << indentStr << name << "->Boder = " << FloatLiteral(menu->Boder) << ";\n";
+		if (std::fabs(menu->BorderThickness - 1.0f) > 1e-6f)
+			code << indentStr << name << "->BorderThickness = " << FloatLiteral(menu->BorderThickness) << ";\n";
 
 		if (menu->Count > 0)
 		{

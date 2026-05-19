@@ -173,7 +173,7 @@ TreeViewNodesEditorDialog::TreeViewNodesEditorDialog(TreeView* target)
 		}
 
 		Applied = true;
-		_target->PostRender();
+		_target->InvalidateVisual();
 		this->Close();
 	};
 

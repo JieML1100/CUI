@@ -29,7 +29,7 @@ Slider::Slider(int x, int y, int width, int height)
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
 	this->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->BolderColor = D2D1_COLOR_F{ 0,0,0,0 };
+	this->BorderColor = D2D1_COLOR_F{ 0,0,0,0 };
 	this->Cursor = CursorKind::SizeWE;
 }
 
@@ -41,7 +41,7 @@ SET_CPP(Slider, float, Min)
 {
 	this->_min = value;
 	this->SetValueInternal(this->_value, false);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(Slider, float, Max)
@@ -52,7 +52,7 @@ SET_CPP(Slider, float, Max)
 {
 	this->_max = value;
 	this->SetValueInternal(this->_value, false);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(Slider, float, Value)
@@ -143,7 +143,7 @@ bool Slider::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof,
 		SetValueInternal(XToValue(xof), true);
 		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
 		this->OnMouseDown(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_LBUTTONUP:
@@ -155,7 +155,7 @@ bool Slider::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof,
 			this->OnMouseUp(this, event_obj);
 		}
 		this->ParentForm->Selected = NULL;
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	default:

@@ -22,7 +22,7 @@ protected:
 	
 public:
 	virtual UIClass Type();
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	float CornerRadius = 0.0f;
 	D2D1_COLOR_F DisabledOverlayColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.5f };
 	Panel();

@@ -19,7 +19,7 @@ SET_CPP(ProgressBar, float, MaxValue)
 		if (this->_currentValue > this->_maxValue)
 			this->_currentValue = this->_maxValue;
 	}
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(ProgressBar, float, Value)
@@ -30,7 +30,7 @@ GET_CPP(ProgressBar, float, Value)
 SET_CPP(ProgressBar, float, Value)
 {
 	this->_currentValue = (std::clamp)(value, 0.0f, this->_maxValue);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(ProgressBar, float, PercentageValue)
@@ -43,7 +43,7 @@ GET_CPP(ProgressBar, float, PercentageValue)
 SET_CPP(ProgressBar, float, PercentageValue)
 {
 	this->_currentValue = this->_maxValue * (std::clamp)(value, 0.0f, 1.0f);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 ProgressBar::ProgressBar(int x, int y, int width, int height)
@@ -69,8 +69,8 @@ void ProgressBar::Update()
 		{
 			this->RenderImage(radius);
 		}
-		if (Boder > 0.0f && TrackBorderColor.a > 0.0f)
-			d2d->DrawRoundRect(0.5f, 0.5f, (std::max)(0.0f, actualWidth - 1.0f), (std::max)(0.0f, actualHeight - 1.0f), TrackBorderColor, Boder, radius);
+		if (BorderThickness > 0.0f && TrackBorderColor.a > 0.0f)
+			d2d->DrawRoundRect(0.5f, 0.5f, (std::max)(0.0f, actualWidth - 1.0f), (std::max)(0.0f, actualHeight - 1.0f), TrackBorderColor, BorderThickness, radius);
 
 		const float inset = (std::clamp)(InnerPadding, 0.0f, actualHeight * 0.35f);
 		const float fillH = (std::max)(0.0f, actualHeight - inset * 2.0f);

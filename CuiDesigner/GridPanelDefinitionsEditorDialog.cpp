@@ -189,7 +189,7 @@ GridPanelDefinitionsEditorDialog::GridPanelDefinitionsEditorDialog(GridPanel* ta
 		if (addedCols <= 0) _target->AddColumn(GridLength::Star(1.0f));
 
 		Applied = true;
-		_target->PostRender();
+		_target->InvalidateVisual();
 		this->Close();
 	};
 

@@ -10,7 +10,7 @@ private:
 
 public:
 	virtual UIClass Type();
-	float Boder = 0.0f;
+	float BorderThickness = 0.0f;
 	/** @brief 进度弧后方的柔光色。 */
 	D2D1_COLOR_F ProgressGlowColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.14f };
 	/** @brief 中心文字颜色；默认跟随 ForeColor。 */

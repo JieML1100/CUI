@@ -33,7 +33,7 @@ public:
 	int SelectionStart = 0;
 	/** @brief 选择终点（不含/或实现定义，需结合实现使用）。 */
 	int SelectionEnd = 0;
-	float Boder = 1.0f;
+	float BorderThickness = 1.0f;
 	/** @brief 圆角半径。 */
 	float CornerRadius = 6.0f;
 	/** @brief 聚焦时边框宽度。 */

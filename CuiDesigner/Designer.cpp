@@ -186,7 +186,7 @@ void Designer::InitializeComponents()
 			if (canvasW < 100) canvasW = 100;
 			_canvas->Location = { canvasX, toolbarHeight + 10 };
 			_canvas->Size = { canvasW, usableH };
-			_canvas->PostRender();
+			_canvas->InvalidateVisual();
 		}
 	};
 

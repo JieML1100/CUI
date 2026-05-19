@@ -340,7 +340,7 @@ void WebBrowser::EnsureInitialized()
 		if (!dcompDevice)
 	{
 		_lastInitHr = E_NOINTERFACE;
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -350,7 +350,7 @@ void WebBrowser::EnsureInitialized()
 		if (FAILED(hrv) || !_dcompVisual)
 		{
 			_lastInitHr = hrv;
-			this->PostRender();
+			this->InvalidateVisual();
 			return;
 		}
 		dcompDevice->CreateRectangleClip(&_dcompClip);
@@ -368,7 +368,7 @@ void WebBrowser::EnsureInitialized()
 			_lastInitHr = result;
 			if (FAILED(result) || !env)
 			{
-				this->PostRender();
+				this->InvalidateVisual();
 				return S_OK;
 			}
 			_env = env;
@@ -379,7 +379,7 @@ void WebBrowser::EnsureInitialized()
 					_lastControllerHr = result2;
 					if (FAILED(result2) || !compositionController)
 					{
-						this->PostRender();
+						this->InvalidateVisual();
 						return S_OK;
 					}
 					_compositionController = compositionController;
@@ -504,7 +504,7 @@ void WebBrowser::EnsureInitialized()
 									if (!ev.IsSuccess)
 										OnNavigationFailed(this, ev);
 									_navCompletedCount++;
-									this->PostRender();
+									this->InvalidateVisual();
 									return S_OK;
 								}).Get(),
 							&_navCompletedToken);
@@ -526,7 +526,7 @@ void WebBrowser::EnsureInitialized()
 									ev.IsErrorPage = (isError != FALSE);
 									ev.NavigationId = navId;
 									OnContentLoading(this, ev);
-									this->PostRender();
+									this->InvalidateVisual();
 									return S_OK;
 								}).Get(),
 							&_contentLoadingToken);
@@ -653,7 +653,7 @@ void WebBrowser::EnsureInitialized()
 						Navigate(url);
 					}
 
-					this->PostRender();
+					this->InvalidateVisual();
 					return S_OK;
 				});
 
@@ -662,7 +662,7 @@ void WebBrowser::EnsureInitialized()
 			if (FAILED(hrEnv3) || !env3)
 			{
 				_lastControllerHr = hrEnv3;
-				this->PostRender();
+				this->InvalidateVisual();
 				return S_OK;
 			}
 			env3->CreateCoreWebView2CompositionController(this->ParentForm->Handle, ctlCompleted.Get());
@@ -673,7 +673,7 @@ void WebBrowser::EnsureInitialized()
 	if (FAILED(hrStart))
 	{
 		_lastInitHr = hrStart;
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -1146,7 +1146,7 @@ void WebBrowser::ExecuteScriptAsync(const std::wstring& script,
 		{
 			if (callback)
 				callback(errorCode, resultObjectAsJson ? resultObjectAsJson : L"");
-			this->PostRender();
+			this->InvalidateVisual();
 			return S_OK;
 		});
 

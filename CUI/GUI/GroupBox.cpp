@@ -64,7 +64,7 @@ void GroupBox::Update()
 		textWidth = textSize.width;
 	}
 	float captionBandHeight = GetCaptionBandHeight();
-	const float border = (std::max)(0.0f, this->Boder);
+	const float border = (std::max)(0.0f, this->BorderThickness);
 	const float radius = (std::clamp)(this->CornerRadius, 0.0f, (std::min)(actualWidth, actualHeight) * 0.5f);
 
 	this->BeginRender();
@@ -86,14 +86,14 @@ void GroupBox::Update()
 			}
 		}
 
-		if (border > 0.0f && this->BolderColor.a > 0.0f)
+		if (border > 0.0f && this->BorderColor.a > 0.0f)
 		{
 			const float drawW = (std::max)(0.0f, actualWidth - border);
 			const float drawH = (std::max)(0.0f, actualHeight - border);
 			if (radius > 0.0f)
-				d2d->DrawRoundRect(border * 0.5f, border * 0.5f, drawW, drawH, this->BolderColor, border, radius);
+				d2d->DrawRoundRect(border * 0.5f, border * 0.5f, drawW, drawH, this->BorderColor, border, radius);
 			else
-				d2d->DrawRect(border * 0.5f, border * 0.5f, drawW, drawH, this->BolderColor, border);
+				d2d->DrawRect(border * 0.5f, border * 0.5f, drawW, drawH, this->BorderColor, border);
 		}
 
 		if (!this->Text.empty())

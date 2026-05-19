@@ -40,7 +40,7 @@ enum class ImageSizeMode : char
 {
 	Normal,
 	CenterImage,
-	StretchIamge,
+	StretchImage,
 	Zoom
 };
 
@@ -138,7 +138,7 @@ typedef Event<void(class Control*, MouseEventArgs)> MouseDownEvent;
 typedef Event<void(class Control*, MouseEventArgs)> MouseDoubleClickEvent;
 typedef Event<void(class Control*, MouseEventArgs)> MouseClickEvent;
 typedef Event<void(class Control*, MouseEventArgs)> MouseEnterEvent;
-typedef Event<void(class Control*, MouseEventArgs)> MouseLeavedEvent;
+typedef Event<void(class Control*, MouseEventArgs)> MouseLeaveEvent;
 typedef Event<void(class Control*, KeyEventArgs)> KeyUpEvent;
 typedef Event<void(class Control*, KeyEventArgs)> KeyDownEvent;
 typedef Event<void(class Control*)> PaintEvent;
@@ -174,15 +174,15 @@ protected:
 	SIZE _size = { 120,20 };
 	D2D1_COLOR_F _backcolor = Colors::gray91;
 	D2D1_COLOR_F _forecolor = Colors::Black;
-	D2D1_COLOR_F _boldercolor = Colors::Black;
+	D2D1_COLOR_F _bordercolor = Colors::Black;
 	std::shared_ptr<BitmapSource> _imageSource;
 	Microsoft::WRL::ComPtr<ID2D1Bitmap> _imageCache;
 	ID2D1RenderTarget* _imageCacheTarget = nullptr;
 	std::wstring _text = std::wstring(L"");
 	Font* _font = NULL;
 	bool _ownsFont = false;
-	D2D1_RECT_F _lastPostRenderClientRect{ 0,0,0,0 };
-	bool _hasLastPostRenderClientRect = false;
+	D2D1_RECT_F _lastInvalidatedClientRect{ 0,0,0,0 };
+	bool _hasLastInvalidatedClientRect = false;
 	D2D1_RECT_F _caretBlinkRect{ 0,0,0,0 };
 	bool _caretBlinkRectValid = false;
 	int _caretBlinkSelectionStart = 0;
@@ -245,9 +245,9 @@ protected:
 	virtual bool DefaultRaiseClickOnLeftButtonUp() const { return false; }
 	virtual bool DefaultClearSelectionOnMouseUp() const { return false; }
 	virtual bool DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const { (void)message; (void)wasSelected; return true; }
-	virtual bool DefaultPostRenderOnMouseDown(UINT message) const { (void)message; return true; }
-	virtual bool DefaultPostRenderOnMouseUp(UINT message) const { (void)message; return true; }
-	virtual bool DefaultPostRenderOnMouseDoubleClick(UINT message, bool wasSelected) const { (void)message; (void)wasSelected; return false; }
+	virtual bool DefaultInvalidateVisualOnMouseDown(UINT message) const { (void)message; return true; }
+	virtual bool DefaultInvalidateVisualOnMouseUp(UINT message) const { (void)message; return true; }
+	virtual bool DefaultInvalidateVisualOnMouseDoubleClick(UINT message, bool wasSelected) const { (void)message; (void)wasSelected; return false; }
 	virtual void BeforeDefaultMouseMove(MouseEventArgs& e) { (void)e; }
 	virtual void BeforeDefaultMouseDown(UINT message, MouseEventArgs& e) { (void)message; (void)e; }
 	virtual void BeforeDefaultMouseUp(UINT message, MouseEventArgs& e, bool wasSelected) { (void)message; (void)e; (void)wasSelected; }
@@ -277,7 +277,7 @@ public:
 	/** @brief 鼠标进入控件事件。 */
 	MouseEnterEvent OnMouseEnter = MouseEnterEvent();
 	/** @brief 鼠标离开控件事件。 */
-	MouseLeavedEvent OnMouseLeaved = MouseLeavedEvent();
+	MouseLeaveEvent OnMouseLeave = MouseLeaveEvent();
 	/** @brief 键盘抬起事件。 */
 	KeyUpEvent OnKeyUp = KeyUpEvent();
 	/** @brief 键盘按下事件。 */
@@ -343,8 +343,8 @@ public:
 	void BeginRender(float clipW, float clipH);
 	/** @brief 结束局部坐标渲染，恢复之前的变换状态。 */
 	void EndRender();
-	/** @brief 渲染完成后的后处理（例如动画/失效区域上报）。 */
-	virtual void PostRender();
+	/** @brief 使控件可视区域失效，并请求窗口在下一次绘制中刷新它。 */
+	virtual void InvalidateVisual();
 	/** @brief 当前控件是否处于活动动画中。 */
 	virtual bool IsAnimationRunning() { return false; }
 	/** @brief 动画帧间隔（毫秒）。 */
@@ -435,9 +435,9 @@ public:
 	PROPERTY(std::wstring, Text);
 	GET(std::wstring, Text);
 	SET(std::wstring, Text);
-	PROPERTY(D2D1_COLOR_F, BolderColor);
-	GET(D2D1_COLOR_F, BolderColor);
-	SET(D2D1_COLOR_F, BolderColor);
+	PROPERTY(D2D1_COLOR_F, BorderColor);
+	GET(D2D1_COLOR_F, BorderColor);
+	SET(D2D1_COLOR_F, BorderColor);
 	PROPERTY(D2D1_COLOR_F, BackColor);
 	GET(D2D1_COLOR_F, BackColor);
 	SET(D2D1_COLOR_F, BackColor);

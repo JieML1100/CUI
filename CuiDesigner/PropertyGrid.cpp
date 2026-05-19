@@ -433,10 +433,10 @@ namespace
 		auto t = TrimWs(s);
 		if (t == L"Normal") { out = ImageSizeMode::Normal; return true; }
 		if (t == L"CenterImage") { out = ImageSizeMode::CenterImage; return true; }
-		if (t == L"Stretch") { out = ImageSizeMode::StretchIamge; return true; }
+		if (t == L"Stretch") { out = ImageSizeMode::StretchImage; return true; }
 		if (t == L"Zoom") { out = ImageSizeMode::Zoom; return true; }
 		// 兼容旧拼写
-		if (t == L"StretchIamge") { out = ImageSizeMode::StretchIamge; return true; }
+		if (t == L"StretchImage") { out = ImageSizeMode::StretchImage; return true; }
 		return false;
 	}
 
@@ -446,7 +446,7 @@ namespace
 		{
 		case ImageSizeMode::Normal: return L"Normal";
 		case ImageSizeMode::CenterImage: return L"CenterImage";
-		case ImageSizeMode::StretchIamge: return L"Stretch";
+		case ImageSizeMode::StretchImage: return L"Stretch";
 		case ImageSizeMode::Zoom: return L"Zoom";
 		default: return L"Zoom";
 		}
@@ -462,7 +462,7 @@ namespace
 			L"OnMouseClick",
 			L"OnMouseDoubleClick",
 			L"OnMouseEnter",
-			L"OnMouseLeaved",
+			L"OnMouseLeave",
 			L"OnKeyDown",
 			L"OnKeyUp",
 			L"OnCharInput",
@@ -515,7 +515,7 @@ namespace
 		out.push_back(L"OnMouseClick");
 		out.push_back(L"OnMouseDoubleClick");
 		out.push_back(L"OnMouseEnter");
-		out.push_back(L"OnMouseLeaved");
+		out.push_back(L"OnMouseLeave");
 		out.push_back(L"OnKeyDown");
 		out.push_back(L"OnKeyUp");
 		out.push_back(L"OnCharInput");
@@ -606,7 +606,7 @@ namespace
 			L"OnMouseClick",
 			L"OnMouseDoubleClick",
 			L"OnMouseEnter",
-			L"OnMouseLeaved",
+			L"OnMouseLeave",
 			L"OnKeyDown",
 			L"OnKeyUp",
 			L"OnCharInput",
@@ -649,7 +649,7 @@ PropertyGrid::PropertyGrid(int x, int y, int width, int height)
 	: Panel(x, y, width, height)
 {
 	this->BackColor = D2D1::ColorF(0.95f, 0.95f, 0.95f, 1.0f);
-	this->Boder = 1.0f;
+	this->BorderThickness = 1.0f;
 
 	// 标题
 	_titleLabel = new Label(L"属性", 10, 10);
@@ -659,13 +659,13 @@ PropertyGrid::PropertyGrid(int x, int y, int width, int height)
 
 	_scrollView = new ScrollView(0, _contentTop, width, std::max(0, height - _contentTop));
 	_scrollView->BackColor = this->BackColor;
-	_scrollView->Boder = 0.0f;
+	_scrollView->BorderThickness = 0.0f;
 	_scrollView->MouseWheelStep = 25;
 	this->AddControl(_scrollView);
 
 	_contentHost = new Panel(0, 0, width, std::max(0, height - _contentTop));
 	_contentHost->BackColor = D2D1::ColorF(0, 0, 0, 0);
-	_contentHost->Boder = 0.0f;
+	_contentHost->BorderThickness = 0.0f;
 	UpdateContentHostLayout();
 	_scrollView->AddControl(_contentHost);
 }
@@ -831,7 +831,7 @@ void PropertyGrid::CreateColorPropertyItem(std::wstring propertyName, const D2D1
 	// 容器：带背景色的按钮 + 文本
 	auto panel = new Panel(valueX, yOffset, valueW, 20);
 	panel->BackColor = D2D1::ColorF(0, 0);
-	panel->Boder = 0.0f;
+	panel->BorderThickness = 0.0f;
 	panel->ParentForm = this->ParentForm;
 
 	const int btnW = 28;
@@ -841,13 +841,13 @@ void PropertyGrid::CreateColorPropertyItem(std::wstring propertyName, const D2D1
 
 	auto btn = new Button(L"...", 0, -1, btnW, 22);
 	btn->ParentForm = this->ParentForm;
-	btn->Boder = 1.0f;
-	btn->BolderColor = Colors::DimGrey;
+	btn->BorderThickness = 1.0f;
+	btn->BorderColor = Colors::DimGrey;
 	auto refreshButtonColor = [btn](const D2D1_COLOR_F& c) {
 		btn->BackColor = c;
 		float luminance = c.r * 0.299f + c.g * 0.587f + c.b * 0.114f;
 		btn->ForeColor = (luminance < 0.5f || c.a < 0.5f) ? Colors::White : Colors::Black;
-		btn->PostRender();
+		btn->InvalidateVisual();
 	};
 	refreshButtonColor(value);
 
@@ -909,7 +909,7 @@ void PropertyGrid::CreateThicknessPropertyItem(std::wstring propertyName, const 
 
 	auto panel = new Panel(valueX, yOffset, valueW, panelH);
 	panel->BackColor = D2D1::ColorF(0, 0);
-	panel->Boder = 0.0f;
+	panel->BorderThickness = 0.0f;
 	panel->ParentForm = this->ParentForm;
 
 	int boxW = (valueW - gapX) / 2;
@@ -1011,7 +1011,7 @@ void PropertyGrid::CreateAnchorPropertyItem(std::wstring propertyName, uint8_t a
 	// 使用一个容器承载 4 个方向开关
 	auto panel = new Panel(valueX, yOffset, valueW, panelH);
 	panel->BackColor = D2D1::ColorF(0, 0);
-	panel->Boder = 0.0f;
+	panel->BorderThickness = 0.0f;
 	panel->ParentForm = this->ParentForm;
 
 	const int topY = 0;
@@ -1490,10 +1490,10 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 			D2D1_COLOR_F c;
 			if (TryParseColor(value, c)) ctrl->ForeColor = c;
 		}
-		else if (propertyName == L"BolderColor")
+		else if (propertyName == L"BorderColor")
 		{
 			D2D1_COLOR_F c;
-			if (TryParseColor(value, c)) ctrl->BolderColor = c;
+			if (TryParseColor(value, c)) ctrl->BorderColor = c;
 		}
 		else if (propertyName == L"Margin")
 		{
@@ -1546,7 +1546,7 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 			{
 				auto* tc = (TabControl*)ctrl;
 				tc->SelectedIndex = std::stoi(value);
-				tc->PostRender();
+				tc->InvalidateVisual();
 			}
 			else if (ctrl->Type() == UIClass::UI_ComboBox)
 			{
@@ -1577,7 +1577,7 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 				{
 					pg->SelectedIndex = -1;
 				}
-				pg->PostRender();
+				pg->InvalidateVisual();
 			}
 		}
 		else if (propertyName == L"ExpandCount")
@@ -1586,7 +1586,7 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 			{
 				auto* cb = (ComboBox*)ctrl;
 				cb->ExpandCount = std::max(1, std::stoi(value));
-				cb->PostRender();
+				cb->InvalidateVisual();
 			}
 		}
 		else if (propertyName == L"AnimationMode")
@@ -1597,7 +1597,7 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 				auto v = TrimWs(value);
 				if (v == L"SlideHorizontal") tc->AnimationMode = TabControlAnimationMode::SlideHorizontal;
 				else tc->AnimationMode = TabControlAnimationMode::DirectReplace;
-				tc->PostRender();
+				tc->InvalidateVisual();
 			}
 		}
 		else if (propertyName == L"TitlePosition")
@@ -1610,7 +1610,7 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 				else if (v == L"Left") tc->TitlePosition = TabControlTitlePosition::Left;
 				else if (v == L"Right") tc->TitlePosition = TabControlTitlePosition::Right;
 				else tc->TitlePosition = TabControlTitlePosition::Top;
-				tc->PostRender();
+				tc->InvalidateVisual();
 			}
 		}
 		else if (propertyName == L"Mode")
@@ -2273,7 +2273,7 @@ void PropertyGrid::CommitPendingEdits()
 	}
 
 	selected->OnLostFocus(selected);
-	selected->PostRender();
+	selected->InvalidateVisual();
 	this->ParentForm->Selected = nullptr;
 }
 
@@ -2374,7 +2374,7 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 	// 常用外观/布局
 	CreateColorPropertyItem(L"BackColor", ctrl->BackColor, yOffset);
 	CreateColorPropertyItem(L"ForeColor", ctrl->ForeColor, yOffset);
-	CreateColorPropertyItem(L"BolderColor", ctrl->BolderColor, yOffset);
+	CreateColorPropertyItem(L"BorderColor", ctrl->BorderColor, yOffset);
 	CreateThicknessPropertyItem(L"Margin", ctrl->Margin, yOffset);
 	// ToolBar/StatusBar 的 Padding 是 int（会隐藏 Control::Padding(Thickness)），这里对齐其实际语义
 	if (control->Type == UIClass::UI_ToolBar)
@@ -2624,7 +2624,7 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 			if (!cb) return;
 			ComboBoxItemsEditorDialog dlg(cb);
 			dlg.ShowDialog(this->ParentForm->Handle);
-			cb->PostRender();
+			cb->InvalidateVisual();
 			};
 		container->AddControl(editBtn);
 		_extraControls.push_back(editBtn);
@@ -2643,7 +2643,7 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 			if (!gv) return;
 			GridViewColumnsEditorDialog dlg(gv);
 			dlg.ShowDialog(this->ParentForm->Handle);
-			gv->PostRender();
+			gv->InvalidateVisual();
 			};
 		container->AddControl(editBtn);
 		_extraControls.push_back(editBtn);
@@ -2666,7 +2666,7 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 				if (page) _binding.RemoveDesignerControlsInSubtree(page);
 				};
 			dlg.ShowDialog(this->ParentForm->Handle);
-			tc->PostRender();
+			tc->InvalidateVisual();
 			};
 		container->AddControl(editBtn);
 		_extraControls.push_back(editBtn);
@@ -2689,7 +2689,7 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 				if (btn) _binding.RemoveDesignerControlsInSubtree(btn);
 				};
 			dlg.ShowDialog(this->ParentForm->Handle);
-			tb->PostRender();
+			tb->InvalidateVisual();
 			};
 		container->AddControl(editBtn);
 		_extraControls.push_back(editBtn);
@@ -2708,7 +2708,7 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 			if (!tv) return;
 			TreeViewNodesEditorDialog dlg(tv);
 			dlg.ShowDialog(this->ParentForm->Handle);
-			tv->PostRender();
+			tv->InvalidateVisual();
 			};
 		container->AddControl(editBtn);
 		_extraControls.push_back(editBtn);
@@ -2727,7 +2727,7 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 			if (!gp) return;
 			GridPanelDefinitionsEditorDialog dlg(gp);
 			dlg.ShowDialog(this->ParentForm->Handle);
-			gp->PostRender();
+			gp->InvalidateVisual();
 			};
 		container->AddControl(editBtn);
 		_extraControls.push_back(editBtn);
@@ -2746,7 +2746,7 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 			if (!m) return;
 			MenuItemsEditorDialog dlg(m);
 			dlg.ShowDialog(this->ParentForm->Handle);
-			m->PostRender();
+			m->InvalidateVisual();
 		};
 		container->AddControl(editBtn);
 		_extraControls.push_back(editBtn);
@@ -2765,7 +2765,7 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 			if (!sb) return;
 			StatusBarPartsEditorDialog dlg(sb);
 			dlg.ShowDialog(this->ParentForm->Handle);
-			sb->PostRender();
+			sb->InvalidateVisual();
 		};
 		container->AddControl(editBtn);
 		_extraControls.push_back(editBtn);

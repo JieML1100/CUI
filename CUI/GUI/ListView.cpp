@@ -98,7 +98,7 @@ ListView::ListView(int x, int y, int width, int height)
 	this->Location = { x, y };
 	this->Size = { width, height };
 	this->BackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.0f };
-	this->BolderColor = D2D1_COLOR_F{ 0.45f, 0.48f, 0.55f, 0.72f };
+	this->BorderColor = D2D1_COLOR_F{ 0.45f, 0.48f, 0.55f, 0.72f };
 }
 
 void ListView::Clear()
@@ -116,26 +116,26 @@ void ListView::ClearItems()
 	this->_anchorIndex = -1;
 	this->ScrollYOffset = 0.0f;
 	this->SelectionChanged(this);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void ListView::ClearColumns()
 {
 	this->Columns.clear();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 int ListView::AddItem(const ListViewItem& item)
 {
 	this->Items.push_back(item);
-	this->PostRender();
+	this->InvalidateVisual();
 	return (int)this->Items.size() - 1;
 }
 
 void ListView::AddColumn(const ListViewColumn& column)
 {
 	this->Columns.push_back(column);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 bool ListView::RemoveItemAt(int index)
@@ -150,7 +150,7 @@ bool ListView::RemoveItemAt(int index)
 	else if (_anchorIndex > index) _anchorIndex--;
 	SyncSelectedIndexFromItems();
 	this->SelectionChanged(this);
-	this->PostRender();
+	this->InvalidateVisual();
 	return true;
 }
 
@@ -160,7 +160,7 @@ bool ListView::SwapItems(int indexA, int indexB)
 	if (indexA == indexB) return true;
 	std::swap(this->Items[indexA], this->Items[indexB]);
 	SyncSelectedIndexFromItems();
-	this->PostRender();
+	this->InvalidateVisual();
 	return true;
 }
 
@@ -245,7 +245,7 @@ bool ListView::SelectItem(int index, bool additive, bool range)
 		this->FocusedIndex = index;
 		EnsureVisible(index);
 		this->SelectionChanged(this);
-		this->PostRender();
+		this->InvalidateVisual();
 		return true;
 	}
 
@@ -269,7 +269,7 @@ void ListView::ClearSelection()
 	if (changed)
 	{
 		this->SelectionChanged(this);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -308,7 +308,7 @@ void ListView::SetScrollOffset(float offsetY)
 	if (std::fabs(old - this->ScrollYOffset) > 0.5f)
 	{
 		this->ScrollChanged(this);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -754,7 +754,7 @@ void ListView::UpdateHover(int xof, int yof)
 	int old = this->HoveredIndex;
 	this->HoveredIndex = HitTestItem(xof, yof);
 	if (old != this->HoveredIndex)
-		this->PostRender();
+		this->InvalidateVisual();
 }
 
 void ListView::UpdateScrollByThumb(float yof)
@@ -778,7 +778,7 @@ void ListView::ToggleCheckAt(int index)
 	if (!item.Enabled) return;
 	item.Checked = !item.Checked;
 	this->OnItemCheckChanged(this, index, item.Checked);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void ListView::MoveSelectionBy(int delta)
@@ -831,7 +831,7 @@ void ListView::Update()
 		DrawItems(d2d, layout);
 		DrawScrollBar(d2d, layout);
 		if (Border > 0.0f)
-			d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, std::max(0.0f, width - Border), std::max(0.0f, height - Border), this->BolderColor, Border, this->CornerRadius);
+			d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, std::max(0.0f, width - Border), std::max(0.0f, height - Border), this->BorderColor, Border, this->CornerRadius);
 		if (!this->Enable)
 			d2d->FillRoundRect(0.0f, 0.0f, width, height, D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.48f }, this->CornerRadius);
 	}

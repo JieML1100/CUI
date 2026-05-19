@@ -410,7 +410,7 @@ void GridView::ClearRows()
 	this->ScrollYOffset = 0.0f;
 	this->ScrollRowPosition = 0;
 	AdjustScrollPosition();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void GridView::ClearColumns()
@@ -422,21 +422,21 @@ void GridView::ClearColumns()
 	this->SortedColumnIndex = -1;
 	this->ScrollXOffset = 0.0f;
 	AdjustScrollPosition();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void GridView::AddRow(const GridViewRow& row)
 {
 	this->Rows.push_back(row);
 	AdjustScrollPosition();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void GridView::AddColumn(const GridViewColumn& column)
 {
 	this->Columns.push_back(column);
 	AdjustScrollPosition();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 size_t GridView::RowCount() const
@@ -470,7 +470,7 @@ void GridView::SwapRows(int indexA, int indexB)
 		this->SelectedRowIndex = indexB;
 	else if (this->SelectedRowIndex == indexB)
 		this->SelectedRowIndex = indexA;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void GridView::RemoveRowAt(int index)
@@ -487,7 +487,7 @@ void GridView::RemoveRowAt(int index)
 	else if (this->UnderMouseRowIndex > index)
 		this->UnderMouseRowIndex--;
 	AdjustScrollPosition();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GridViewRow& GridView::SelectedRow()
@@ -575,7 +575,7 @@ void GridView::SortByColumn(int col, bool ascending)
 
 	this->SortedColumnIndex = col;
 	this->SortAscending = ascending;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 #pragma region _GridView_
 POINT GridView::GetGridViewUnderMouseItem(int x, int y, GridView* ct)
@@ -1374,19 +1374,19 @@ void GridView::Update()
 			{
 				if (this->ParentForm->UnderMouse == this)
 				{
-					d2d->DrawRoundRect(1.0f, 1.0f, actualWidth - 2.0f, actualHeight - 2.0f, this->BolderColor, 1.5f, this->CellCornerRadius);
+					d2d->DrawRoundRect(1.0f, 1.0f, actualWidth - 2.0f, actualHeight - 2.0f, this->BorderColor, 1.5f, this->CellCornerRadius);
 				}
 				else
 				{
-					d2d->DrawRoundRect(1.0f, 1.0f, actualWidth - 2.0f, actualHeight - 2.0f, this->BolderColor, 1.0f, this->CellCornerRadius);
+					d2d->DrawRoundRect(1.0f, 1.0f, actualWidth - 2.0f, actualHeight - 2.0f, this->BorderColor, 1.0f, this->CellCornerRadius);
 				}
 			}
 			d2d->PopDrawRect();
 			this->DrawScroll();
 		}
-		d2d->DrawRoundRect(this->Boder * 0.5f, this->Boder * 0.5f,
-			actualWidth - this->Boder, actualHeight - this->Boder,
-			this->BolderColor, this->Boder, this->CellCornerRadius);
+		d2d->DrawRoundRect(this->BorderThickness * 0.5f, this->BorderThickness * 0.5f,
+			actualWidth - this->BorderThickness, actualHeight - this->BorderThickness,
+			this->BorderColor, this->BorderThickness, this->CellCornerRadius);
 	}
 	if (!this->Enable)
 	{
@@ -1491,7 +1491,7 @@ void GridView::AddNewRow()
 		StartEditingCell(0, newRowIndex);
 	}
 
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void GridView::ReSizeRows(int count)
@@ -1622,7 +1622,7 @@ void GridView::ToggleDropDownEditor(int col, int row)
 	{
 		CloseDropDownEditor();
 		this->ParentForm->Invalidate(true);
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -1700,7 +1700,7 @@ void GridView::ToggleDropDownEditor(int col, int row)
 			cell2.Tag = (__int64)idx;
 			cell2.Text = column2.ComboBoxItems[static_cast<size_t>(idx)];
 			this->OnGridViewComboBoxSelectionChanged(this, col, row, idx, cell2.Text);
-			this->PostRender();
+			this->InvalidateVisual();
 		};
 	this->_dropDownPopup->Closed.Clear();
 	this->_dropDownPopup->Closed += [this](DropDownPopup* sender)
@@ -1708,7 +1708,7 @@ void GridView::ToggleDropDownEditor(int col, int row)
 			(void)sender;
 			this->_dropDownPopupColumnIndex = -1;
 			this->_dropDownPopupRowIndex = -1;
-			this->PostRender();
+			this->InvalidateVisual();
 		};
 
 	this->_dropDownPopupColumnIndex = col;
@@ -1717,7 +1717,7 @@ void GridView::ToggleDropDownEditor(int col, int row)
 		D2D1::RectF((float)x, (float)y, (float)(x + (w > 0 ? w : 1)), (float)(y + (h > 0 ? h : 1))),
 		column.ComboBoxItems, selectedIndex, (float)(w > 0 ? w : 1), (float)(h > 0 ? h : 24), 4);
 	this->ParentForm->Invalidate(true);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 void GridView::StartEditingCell(int col, int row)
 {
@@ -1886,7 +1886,7 @@ void GridView::HandleMouseWheel(WPARAM wParam, int xof, int yof)
 		UpdateUnderMouseIndices(xof, yof);
 		MouseEventArgs event_obj(MouseButtons::None, 0, xof, yof, delta);
 		this->OnMouseWheel(this, event_obj);
-		if (needUpdate) this->PostRender();
+		if (needUpdate) this->InvalidateVisual();
 		return;
 	}
 
@@ -1921,7 +1921,7 @@ void GridView::HandleMouseWheel(WPARAM wParam, int xof, int yof)
 
 	if (needUpdate)
 	{
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 void GridView::HandleMouseMove(int xof, int yof)
@@ -1944,7 +1944,7 @@ void GridView::HandleMouseMove(int xof, int yof)
 		}
 		MouseEventArgs event_obj(MouseButtons::None, 0, xof, yof, 0);
 		this->OnMouseMove(this, event_obj);
-		if (needUpdate) this->PostRender();
+		if (needUpdate) this->InvalidateVisual();
 		return;
 	}
 
@@ -2003,7 +2003,7 @@ void GridView::HandleMouseMove(int xof, int yof)
 
 	if (needUpdate)
 	{
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 void GridView::HandleLeftButtonDown(int xof, int yof)
@@ -2013,7 +2013,7 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 
 	if (lastSelected && lastSelected != this)
 	{
-		lastSelected->PostRender();
+		lastSelected->InvalidateVisual();
 	}
 
 	auto l = this->CalcScrollLayout();
@@ -2048,7 +2048,7 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 		SetCapture(this->ParentForm->Handle);
 		MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
 		this->OnMouseDown(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -2079,7 +2079,7 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 		SetCapture(this->ParentForm->Handle);
 		MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
 		this->OnMouseDown(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -2138,7 +2138,7 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 
 				MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
 				this->OnMouseDown(this, event_obj);
-				this->PostRender();
+				this->InvalidateVisual();
 				return;
 			}
 
@@ -2159,7 +2159,7 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 
 				MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
 				this->OnMouseDown(this, event_obj);
-				this->PostRender();
+				this->InvalidateVisual();
 				return;
 			}
 
@@ -2197,7 +2197,7 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 
 	MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
 	this->OnMouseDown(this, event_obj);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 void GridView::HandleLeftButtonUp(int xof, int yof)
 {
@@ -2208,7 +2208,7 @@ void GridView::HandleLeftButtonUp(int xof, int yof)
 		ReleaseCapture();
 		MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
 		this->OnMouseUp(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -2234,7 +2234,7 @@ void GridView::HandleLeftButtonUp(int xof, int yof)
 		{
 			this->OnGridViewButtonClick(this, undermouseIndex.x, undermouseIndex.y);
 		}
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -2260,7 +2260,7 @@ void GridView::HandleLeftButtonUp(int xof, int yof)
 		{
 			RaiseLinkedTextClick(undermouseIndex.x, undermouseIndex.y);
 		}
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -2269,7 +2269,7 @@ void GridView::HandleLeftButtonUp(int xof, int yof)
 	ReleaseCapture();
 	MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
 	this->OnMouseUp(this, event_obj);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 void GridView::HandleLeftButtonDoubleClick(WPARAM wParam, int xof, int yof)
 {
@@ -2290,7 +2290,7 @@ void GridView::HandleLeftButtonDoubleClick(WPARAM wParam, int xof, int yof)
 			if (this->ParentForm)
 				this->ParentForm->Selected = this;
 			EditSetImeCompositionWindow();
-			this->PostRender();
+			this->InvalidateVisual();
 		}
 	}
 
@@ -2307,7 +2307,7 @@ void GridView::HandleKeyDown(WPARAM wParam)
 		if (wParam == VK_ESCAPE)
 		{
 			CancelEditing(true);
-			this->PostRender();
+			this->InvalidateVisual();
 			return;
 		}
 		if (wParam == VK_RETURN)
@@ -2327,14 +2327,14 @@ void GridView::HandleKeyDown(WPARAM wParam)
 				this->EditingColumnIndex = -1;
 				this->EditingRowIndex = -1;
 			}
-			this->PostRender();
+			this->InvalidateVisual();
 			return;
 		}
 
 		if (wParam == VK_DELETE)
 		{
 			EditInputDelete();
-			this->PostRender();
+			this->InvalidateVisual();
 			return;
 		}
 		if (wParam == VK_RIGHT)
@@ -2345,7 +2345,7 @@ void GridView::HandleKeyDown(WPARAM wParam)
 				if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 					this->EditSelectionStart = this->EditSelectionEnd;
 			}
-			this->PostRender();
+			this->InvalidateVisual();
 			return;
 		}
 		if (wParam == VK_LEFT)
@@ -2356,7 +2356,7 @@ void GridView::HandleKeyDown(WPARAM wParam)
 				if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 					this->EditSelectionStart = this->EditSelectionEnd;
 			}
-			this->PostRender();
+			this->InvalidateVisual();
 			return;
 		}
 		if (wParam == VK_HOME)
@@ -2364,7 +2364,7 @@ void GridView::HandleKeyDown(WPARAM wParam)
 			this->EditSelectionEnd = 0;
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 				this->EditSelectionStart = this->EditSelectionEnd;
-			this->PostRender();
+			this->InvalidateVisual();
 			return;
 		}
 		if (wParam == VK_END)
@@ -2372,13 +2372,13 @@ void GridView::HandleKeyDown(WPARAM wParam)
 			this->EditSelectionEnd = (int)this->EditingText.size();
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 				this->EditSelectionStart = this->EditSelectionEnd;
-			this->PostRender();
+			this->InvalidateVisual();
 			return;
 		}
 
 		KeyEventArgs event_obj(static_cast<Keys>(wParam));
 		this->OnKeyDown(this, event_obj);
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -2403,7 +2403,7 @@ void GridView::HandleKeyDown(WPARAM wParam)
 	AdjustScrollPosition();
 	KeyEventArgs event_obj(static_cast<Keys>(wParam));
 	this->OnKeyDown(this, event_obj);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 void GridView::HandleKeyUp(WPARAM wParam)
 {
@@ -2484,7 +2484,7 @@ void GridView::HandleCharInput(WPARAM wParam)
 		}
 	}
 
-	this->PostRender();
+	this->InvalidateVisual();
 }
 void GridView::HandleImeComposition(LPARAM lParam)
 {
@@ -2516,7 +2516,7 @@ void GridView::HandleImeComposition(LPARAM lParam)
 			}
 			ImmReleaseContext(this->ParentForm->Handle, hIMC);
 		}
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 void GridView::HandleCellClick(int col, int row)

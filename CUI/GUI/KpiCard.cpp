@@ -26,7 +26,7 @@ KpiCard::KpiCard(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0.60f, 0.66f, 0.76f, 0.42f };
+	this->BorderColor = D2D1_COLOR_F{ 0.60f, 0.66f, 0.76f, 0.42f };
 	this->ForeColor = D2D1_COLOR_F{ 0.90f, 0.92f, 0.96f, 1.0f };
 	this->Cursor = CursorKind::Hand;
 }
@@ -41,7 +41,7 @@ CursorKind KpiCard::QueryCursor(int xof, int yof)
 void KpiCard::SetSparkline(const std::vector<double>& values)
 {
 	SparklineValues = values;
-	PostRender();
+	InvalidateVisual();
 }
 
 D2D1_COLOR_F KpiCard::GetTrendColor() const
@@ -114,7 +114,7 @@ void KpiCard::Update()
 	d2d->FillRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, base, CornerRadius);
 	if (hot)
 		d2d->FillRoundRect(0, 0, width, height, HoverColor, CornerRadius);
-	d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, Active ? AccentColor : BolderColor, Active ? 1.6f : Border, CornerRadius);
+	d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, Active ? AccentColor : BorderColor, Active ? 1.6f : Border, CornerRadius);
 
 	const float pad = 14.0f;
 	d2d->DrawString(Title, pad, 10.0f, (std::max)(1.0f, width - pad * 2.0f), 18.0f, MutedTextColor, Font);
@@ -167,7 +167,7 @@ bool KpiCard::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 		if (ParentForm) ParentForm->SetSelectedControl(this, false);
 		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
 		OnMouseDown(this, e);
-		PostRender();
+		InvalidateVisual();
 		break;
 	}
 	case WM_LBUTTONUP:
@@ -186,7 +186,7 @@ bool KpiCard::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 		OnMouseUp(this, e);
 		if (ParentForm && ParentForm->Selected == this)
 			ParentForm->SetSelectedControl(NULL, false);
-		PostRender();
+		InvalidateVisual();
 		break;
 	}
 	case WM_LBUTTONDBLCLK:

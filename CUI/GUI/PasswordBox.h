@@ -39,7 +39,7 @@ public:
 	/** @brief 选择结束索引（基于字符）。 */
 	int SelectionEnd = 0;
 	/** @brief 边框宽度（像素）。 */
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	/** @brief 圆角半径。 */
 	float CornerRadius = 6.0f;
 	/** @brief 聚焦时边框宽度。 */

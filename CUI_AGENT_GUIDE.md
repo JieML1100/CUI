@@ -327,7 +327,7 @@ button->OnMouseClick += [this](Control* sender, MouseEventArgs e)
 对 Agent 来说最重要的是：
 
 - CUI 没有强制统一主题系统
-- 很多控件外观就是直接改 `BackColor`、`ForeColor`、`BolderColor`
+- 很多控件外观就是直接改 `BackColor`、`ForeColor`、`BorderColor`
 - 项目内若已有主题约定，应优先复用现有模式，而不是另起一套皮肤框架
 
 ## 10. 拖放、IME、Web、媒体与系统能力

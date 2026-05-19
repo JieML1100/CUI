@@ -137,7 +137,7 @@ ColorPickerPopup::ColorPickerPopup(int width, int height)
 	this->Location = POINT{ 0,0 };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->BolderColor = D2D1_COLOR_F{ 0,0,0,0 };
+	this->BorderColor = D2D1_COLOR_F{ 0,0,0,0 };
 	this->Visible = false;
 	this->Cursor = CursorKind::Arrow;
 }
@@ -287,7 +287,7 @@ void ColorPickerPopup::UpdateColorFromHsv()
 {
 	this->SelectedColor = HsvToRgb(_hue, _saturation, _value, _alpha);
 	this->OnColorChanged(this, this->SelectedColor, CurrentValueText());
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 float ColorPickerPopup::CurrentDropProgress()
@@ -338,7 +338,7 @@ void ColorPickerPopup::SetExpanded(bool expanded)
 	}
 	if (this->ParentForm)
 		this->ParentForm->Invalidate(true);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void ColorPickerPopup::FinishCollapsed()
@@ -702,7 +702,7 @@ void ColorPickerPopup::Update()
 	this->EndRender();
 
 	if (IsAnimationRunning())
-		this->PostRender();
+		this->InvalidateVisual();
 }
 
 bool ColorPickerPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
@@ -772,7 +772,7 @@ bool ColorPickerPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 				{
 					SetFromColor(color);
 					OnColorChanged(this, this->SelectedColor, CurrentValueText());
-					PostRender();
+					InvalidateVisual();
 				}
 			}
 		}
@@ -786,7 +786,7 @@ bool ColorPickerPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 				{
 					SetFromColor(color);
 					OnColorChanged(this, this->SelectedColor, CurrentValueText());
-					PostRender();
+					InvalidateVisual();
 				}
 			}
 		}

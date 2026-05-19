@@ -19,7 +19,7 @@ public:
 
 	D2D1_COLOR_F ScrollBackColor = Colors::LightGray;
 	D2D1_COLOR_F ScrollForeColor = Colors::DimGrey;
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	bool AlwaysShowVScroll = false;
 	bool AlwaysShowHScroll = false;
 	bool AutoContentSize = true;

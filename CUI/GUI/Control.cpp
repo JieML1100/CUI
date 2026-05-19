@@ -85,7 +85,7 @@ void Control::EndRender()
 	this->ParentForm->Render->PopLocalTransform();
 }
 
-void Control::PostRender()
+void Control::InvalidateVisual()
 {
 	if (!this->IsVisual || !this->ParentForm) return;
 	const float top = (this->ParentForm->VisibleHead ? (float)this->ParentForm->HeadHeight : 0.0f);
@@ -93,13 +93,13 @@ void Control::PostRender()
 	r.top += top;
 	r.bottom += top;
 
-	if (_hasLastPostRenderClientRect)
+	if (_hasLastInvalidatedClientRect)
 	{
 		D2D1_RECT_F u{};
-		u.left = (std::min)(_lastPostRenderClientRect.left, r.left);
-		u.top = (std::min)(_lastPostRenderClientRect.top, r.top);
-		u.right = (std::max)(_lastPostRenderClientRect.right, r.right);
-		u.bottom = (std::max)(_lastPostRenderClientRect.bottom, r.bottom);
+		u.left = (std::min)(_lastInvalidatedClientRect.left, r.left);
+		u.top = (std::min)(_lastInvalidatedClientRect.top, r.top);
+		u.right = (std::max)(_lastInvalidatedClientRect.right, r.right);
+		u.bottom = (std::max)(_lastInvalidatedClientRect.bottom, r.bottom);
 		this->ParentForm->Invalidate(u, false);
 	}
 	else
@@ -107,8 +107,8 @@ void Control::PostRender()
 		this->ParentForm->Invalidate(r, false);
 	}
 
-	_lastPostRenderClientRect = r;
-	_hasLastPostRenderClientRect = true;
+	_lastInvalidatedClientRect = r;
+	_hasLastInvalidatedClientRect = true;
 }
 
 void Control::UpdateCaretBlinkState(bool focused, int selectionStart, int selectionEnd, bool caretRectValid, const D2D1_RECT_F* caretRect)
@@ -212,7 +212,7 @@ void Control::SetFontEx(class Font* value, bool takeOwnership)
 	}
 	this->_font = value;
 	this->_ownsFont = takeOwnership;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(Control, BindingCollection&, DataBindings)
@@ -349,7 +349,7 @@ SET_CPP(Control, POINT, Location)
 	{
 		this->OnMoved(this);
 	}
-	this->PostRender();
+	this->InvalidateVisual();
 }
 GET_CPP(Control, SIZE, Size)
 {
@@ -361,7 +361,7 @@ SET_CPP(Control, SIZE, Size)
 	_size = value;
 	this->UpdateLayoutBaseSize(value);
 	this->RequestLayout();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 GET_CPP(Control, int, Left)
 {
@@ -389,7 +389,7 @@ SET_CPP(Control, int, Width)
 	this->_size.cx = value;
 	this->UpdateLayoutBaseSize(this->_size);
 	this->RequestLayout();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 GET_CPP(Control, int, Height)
 {
@@ -401,7 +401,7 @@ SET_CPP(Control, int, Height)
 	_size.cy = value;
 	this->UpdateLayoutBaseSize(this->_size);
 	this->RequestLayout();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 GET_CPP(Control, float, Right)
 {
@@ -421,18 +421,18 @@ SET_CPP(Control, std::wstring, Text)
 	{
 		this->TextChanged = true;
 		this->OnTextChanged(this, _text, value);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	_text = value;
 }
-GET_CPP(Control, D2D1_COLOR_F, BolderColor)
+GET_CPP(Control, D2D1_COLOR_F, BorderColor)
 {
-	return _boldercolor;
+	return _bordercolor;
 }
-SET_CPP(Control, D2D1_COLOR_F, BolderColor)
+SET_CPP(Control, D2D1_COLOR_F, BorderColor)
 {
-	_boldercolor = value;
-	this->PostRender();
+	_bordercolor = value;
+	this->InvalidateVisual();
 }
 GET_CPP(Control, D2D1_COLOR_F, BackColor)
 {
@@ -441,7 +441,7 @@ GET_CPP(Control, D2D1_COLOR_F, BackColor)
 SET_CPP(Control, D2D1_COLOR_F, BackColor)
 {
 	_backcolor = value;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 GET_CPP(Control, D2D1_COLOR_F, ForeColor)
 {
@@ -450,7 +450,7 @@ GET_CPP(Control, D2D1_COLOR_F, ForeColor)
 SET_CPP(Control, D2D1_COLOR_F, ForeColor)
 {
 	_forecolor = value;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 GET_CPP(Control, std::shared_ptr<BitmapSource>, Image)
 {
@@ -468,7 +468,7 @@ void Control::SetImageEx(std::shared_ptr<BitmapSource> value)
 	this->_imageSource = std::move(value);
 	this->_imageCache.Reset();
 	this->_imageCacheTarget = nullptr;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 ID2D1Bitmap* Control::EnsureImageCache()
@@ -512,7 +512,7 @@ void Control::RenderImage(float cornerRadius)
 				this->ParentForm->Render->DrawBitmap(bmp, (asize.cx - size.width) / 2.0f, (asize.cy - size.height) / 2.0f, size.width, size.height);
 			}
 			break;
-			case ImageSizeMode::StretchIamge:
+			case ImageSizeMode::StretchImage:
 			{
 				this->ParentForm->Render->DrawBitmap(bmp, 0.0f, 0.0f, (float)asize.cx, (float)asize.cy);
 			}
@@ -592,8 +592,8 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
 		this->BeforeDefaultMouseDown(message, event_obj);
 		this->OnMouseDown(this, event_obj);
-		if (this->DefaultPostRenderOnMouseDown(message))
-			this->PostRender();
+		if (this->DefaultInvalidateVisualOnMouseDown(message))
+			this->InvalidateVisual();
 	}
 	break;
 	case WM_LBUTTONUP:
@@ -613,8 +613,8 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 			this->ParentForm->SetSelectedControl(NULL, false);
 		}
 		this->OnMouseUp(this, event_obj);
-		if (this->DefaultPostRenderOnMouseUp(message))
-			this->PostRender();
+		if (this->DefaultInvalidateVisualOnMouseUp(message))
+			this->InvalidateVisual();
 	}
 	break;
 	case WM_LBUTTONDBLCLK:
@@ -628,8 +628,8 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 		this->BeforeDefaultMouseDoubleClick(message, event_obj, wasSelected);
 		if (this->DefaultRaiseMouseDoubleClick(message, wasSelected))
 			this->OnMouseDoubleClick(this, event_obj);
-		if (this->DefaultPostRenderOnMouseDoubleClick(message, wasSelected))
-			this->PostRender();
+		if (this->DefaultInvalidateVisualOnMouseDoubleClick(message, wasSelected))
+			this->InvalidateVisual();
 	}
 	break;
 	case WM_KEYDOWN:
@@ -659,7 +659,7 @@ SET_CPP(Control, Thickness, Margin)
 	{
 		_margin = value;
 		this->RequestLayout();
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -673,7 +673,7 @@ SET_CPP(Control, Thickness, Padding)
 	{
 		_padding = value;
 		this->RequestLayout();
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -685,7 +685,7 @@ SET_CPP(Control, HorizontalAlignment, HAlign)
 {
 	_horizontalAlignment = value;
 	this->RequestLayout();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(Control, VerticalAlignment, VAlign)
@@ -696,7 +696,7 @@ SET_CPP(Control, VerticalAlignment, VAlign)
 {
 	_verticalAlignment = value;
 	this->RequestLayout();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(Control, uint8_t, AnchorStyles)
@@ -707,7 +707,7 @@ SET_CPP(Control, uint8_t, AnchorStyles)
 {
 	_anchorStyles = value;
 	this->RequestLayout();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(Control, int, GridRow)
@@ -718,7 +718,7 @@ SET_CPP(Control, int, GridRow)
 {
 	_gridRow = value;
 	this->RequestLayout();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(Control, int, GridColumn)
@@ -729,7 +729,7 @@ SET_CPP(Control, int, GridColumn)
 {
 	_gridColumn = value;
 	this->RequestLayout();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(Control, int, GridRowSpan)
@@ -740,7 +740,7 @@ SET_CPP(Control, int, GridRowSpan)
 {
 	_gridRowSpan = value;
 	this->RequestLayout();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(Control, int, GridColumnSpan)
@@ -751,7 +751,7 @@ SET_CPP(Control, int, GridColumnSpan)
 {
 	_gridColumnSpan = value;
 	this->RequestLayout();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(Control, Dock, DockPosition)
@@ -762,7 +762,7 @@ SET_CPP(Control, Dock, DockPosition)
 {
 	_dock = value;
 	this->RequestLayout();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(Control, SIZE, MinSize)
@@ -773,7 +773,7 @@ SET_CPP(Control, SIZE, MinSize)
 {
 	_minSize = value;
 	this->RequestLayout();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(Control, SIZE, MaxSize)
@@ -784,7 +784,7 @@ SET_CPP(Control, SIZE, MaxSize)
 {
 	_maxSize = value;
 	this->RequestLayout();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 // 测量控件期望尺寸
@@ -823,7 +823,7 @@ void Control::ApplyLayout(POINT location, SIZE size)
 
 	if (locationChanged || sizeChanged)
 	{
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -836,5 +836,5 @@ void Control::SetRuntimeLocation(POINT value)
 
 	_runtimeLocation = value;
 	this->OnMoved(this);
-	this->PostRender();
+	this->InvalidateVisual();
 }

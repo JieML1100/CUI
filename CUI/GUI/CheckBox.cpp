@@ -151,7 +151,7 @@ bool CheckBox::DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) cons
 	return wasSelected;
 }
 
-bool CheckBox::DefaultPostRenderOnMouseDoubleClick(UINT message, bool wasSelected) const
+bool CheckBox::DefaultInvalidateVisualOnMouseDoubleClick(UINT message, bool wasSelected) const
 {
 	(void)message;
 	return wasSelected;

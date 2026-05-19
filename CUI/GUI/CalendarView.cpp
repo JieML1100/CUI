@@ -263,7 +263,7 @@ CalendarView::CalendarView(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.48f };
+	this->BorderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.48f };
 	this->ForeColor = Colors::Black;
 	this->SelectedDate = TodayDate();
 	this->DisplayYear = (int)this->SelectedDate.wYear;
@@ -277,7 +277,7 @@ void CalendarView::SetSelectedDate(const SYSTEMTIME& date, bool fireEvent)
 	SyncDisplayFromDate(this->SelectedDate);
 	if (changed && fireEvent)
 		NotifySelectionChanged();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void CalendarView::SetRange(const SYSTEMTIME& start, const SYSTEMTIME& end, bool fireEvent)
@@ -295,7 +295,7 @@ void CalendarView::SetRange(const SYSTEMTIME& start, const SYSTEMTIME& end, bool
 	SyncDisplayFromDate(RangeStart);
 	if (changed && fireEvent)
 		NotifySelectionChanged();
-	PostRender();
+	InvalidateVisual();
 }
 
 void CalendarView::ClearRange(bool fireEvent)
@@ -306,7 +306,7 @@ void CalendarView::ClearRange(bool fireEvent)
 	_rangeAnchorSet = false;
 	if (changed && fireEvent)
 		NotifySelectionChanged();
-	PostRender();
+	InvalidateVisual();
 }
 
 CalendarDateRange CalendarView::GetRange() const
@@ -326,7 +326,7 @@ void CalendarView::SetDisplayMonth(int year, int month)
 		return;
 	DisplayYear = year;
 	DisplayMonth = month;
-	PostRender();
+	InvalidateVisual();
 }
 
 void CalendarView::AddMonths(int delta)
@@ -508,7 +508,7 @@ void CalendarView::SelectDateFromInput(const SYSTEMTIME& date, bool inDisplayMon
 		_rangeAnchor = date;
 		_rangeAnchorSet = true;
 		NotifySelectionChanged();
-		PostRender();
+		InvalidateVisual();
 		return;
 	}
 
@@ -522,7 +522,7 @@ void CalendarView::SelectDateFromInput(const SYSTEMTIME& date, bool inDisplayMon
 	HasRangeEnd = true;
 	_rangeAnchorSet = false;
 	NotifySelectionChanged();
-	PostRender();
+	InvalidateVisual();
 }
 
 void CalendarView::MoveSelectedDate(int days)
@@ -555,10 +555,10 @@ void CalendarView::Update()
 			this->RenderImage(CornerRadius);
 		DrawHeader(d2d, layout);
 		DrawCalendarGrid(d2d, layout);
-		if (Border > 0.0f && BolderColor.a > 0.0f)
+		if (Border > 0.0f && BorderColor.a > 0.0f)
 			d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f,
 				(std::max)(0.0f, width - Border), (std::max)(0.0f, height - Border),
-				BolderColor, Border, CornerRadius);
+				BorderColor, Border, CornerRadius);
 		if (!Enable)
 			d2d->FillRoundRect(0.0f, 0.0f, width, height, D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.48f }, CornerRadius);
 	}
@@ -595,7 +595,7 @@ bool CalendarView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, in
 		{
 			HoverDay = newHover;
 			HoverDayInMonth = newHoverInMonth;
-			PostRender();
+			InvalidateVisual();
 		}
 		OnMouseMove(this, MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam)));
 		return true;
@@ -659,7 +659,7 @@ DateRangePicker::DateRangePicker(std::wstring text, int x, int y, int width, int
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = Colors::LightGray;
-	this->BolderColor = Colors::DimGrey;
+	this->BorderColor = Colors::DimGrey;
 	this->ForeColor = Colors::Black;
 	this->Cursor = CursorKind::Hand;
 	SYSTEMTIME today = TodayDate();
@@ -790,7 +790,7 @@ void DateRangePicker::SetExpanded(bool value)
 		_hoverPart = HitPart::None;
 		_hoverDay = -1;
 	}
-	PostRender();
+	InvalidateVisual();
 }
 
 void DateRangePicker::SetRange(const SYSTEMTIME& start, const SYSTEMTIME& end, bool fireEvent)
@@ -809,7 +809,7 @@ void DateRangePicker::SetRange(const SYSTEMTIME& start, const SYSTEMTIME& end, b
 	UpdateDisplayText();
 	if (changed && fireEvent)
 		NotifyRangeChanged();
-	PostRender();
+	InvalidateVisual();
 }
 
 void DateRangePicker::ClearRange(bool fireEvent)
@@ -821,7 +821,7 @@ void DateRangePicker::ClearRange(bool fireEvent)
 	UpdateDisplayText();
 	if (changed && fireEvent)
 		NotifyRangeChanged();
-	PostRender();
+	InvalidateVisual();
 }
 
 CalendarDateRange DateRangePicker::GetRange() const
@@ -868,7 +868,7 @@ void DateRangePicker::NotifyRangeChanged()
 void DateRangePicker::AddMonths(int delta)
 {
 	AddMonthsTo(_viewYear, _viewMonth, delta);
-	PostRender();
+	InvalidateVisual();
 }
 
 DateRangePicker::HitPart DateRangePicker::HitTestPart(const Layout& layout, int xof, int yof, SYSTEMTIME& outDate, bool& inDisplayMonth) const
@@ -911,7 +911,7 @@ void DateRangePicker::UpdateHoverState(int xof, int yof)
 		_hoverPart = part;
 		_hoverDay = day;
 		_hoverInMonth = inMonth;
-		PostRender();
+		InvalidateVisual();
 	}
 }
 
@@ -933,7 +933,7 @@ void DateRangePicker::SelectDateFromInput(const SYSTEMTIME& date, bool inDisplay
 		_rangeAnchorSet = true;
 		UpdateDisplayText();
 		NotifyRangeChanged();
-		PostRender();
+		InvalidateVisual();
 		return;
 	}
 
@@ -950,7 +950,7 @@ void DateRangePicker::SelectDateFromInput(const SYSTEMTIME& date, bool inDisplay
 	NotifyRangeChanged();
 	if (AutoCloseOnComplete)
 		SetExpanded(false);
-	PostRender();
+	InvalidateVisual();
 }
 
 CursorKind DateRangePicker::QueryCursor(int xof, int yof)
@@ -1047,7 +1047,7 @@ void DateRangePicker::Update()
 		d2d->PopDrawRect();
 		DrawDropChevron(d2d, (float)this->Width - 16.0f, (float)this->Height * 0.5f, ChevronSize, dropProgress, ForeColor);
 		d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, (float)this->Width - Border, (float)this->Height - Border,
-			(selected || IsDropDownVisible()) ? FocusBorderColor : BolderColor, Border, round - Border);
+			(selected || IsDropDownVisible()) ? FocusBorderColor : BorderColor, Border, round - Border);
 
 		if (IsDropDownVisible() && dropProgress > 0.001f)
 		{

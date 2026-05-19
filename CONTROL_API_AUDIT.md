@@ -83,6 +83,6 @@ This note tracks the "production-useful" control APIs that should exist beyond t
 
 - Public setters clamp invalid input instead of leaving controls in inconsistent states.
 - Programmatic changes fire changed events only when the observable value actually changes.
-- Programmatic changes call `PostRender()` when the visual result changes.
+- Programmatic changes call `InvalidateVisual()` when the visual result changes.
 - Text editing APIs preserve undo/redo behavior where the user would expect it.
 - Container/list mutation updates selected indices and scroll offsets after removing or inserting items.

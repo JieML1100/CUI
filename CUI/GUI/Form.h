@@ -98,9 +98,9 @@ class Form
 {
 private:
 	friend class FormDropTarget;
-	POINT _Location_INIT;
+	POINT _initialLocation;
 	bool _autoCenterOnCreate = false;
-	SIZE _Size_INTI;
+	SIZE _initialSize;
 	std::wstring _text;
 	Font* _font = NULL;
 	bool _ownsFont = false;
@@ -225,7 +225,7 @@ public:
 	MouseDoubleClickEvent OnMouseDoubleClick = MouseDoubleClickEvent();
 	FormMouseClickEvent OnMouseClick = FormMouseClickEvent();
 	MouseEnterEvent OnMouseEnter = MouseEnterEvent();
-	MouseLeavedEvent OnMouseLeaved = MouseLeavedEvent();
+	MouseLeaveEvent OnMouseLeave = MouseLeaveEvent();
 	/** @brief 键盘抬起事件（窗口级）。 */
 	FormKeyUpEvent OnKeyUp = FormKeyUpEvent();
 	/** @brief 键盘按下事件（窗口级）。 */
@@ -338,7 +338,7 @@ public:
 	FormThemeFrame GetThemeFrame() const;
 	void ApplyThemeFrame(const FormThemeFrame& theme, const std::wstring& themeName = L"");
 	// 统一设置键盘焦点控件（Selected），并触发控件 Got/LostFocus。
-	void SetSelectedControl(class Control* value, bool postRender = true);
+	void SetSelectedControl(class Control* value, bool invalidateVisual = true);
 	/** @brief 以非模态方式显示窗口。 */
 	void Show();
 	/** @brief 以模态方式显示窗口。 */
@@ -431,6 +431,6 @@ public:
 	void CommitComposition();
 
 	static bool DoEvent();
-	static bool WaiteEvent();
+	static bool WaitEvent();
 	static LRESULT CALLBACK WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 };

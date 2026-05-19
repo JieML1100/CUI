@@ -28,7 +28,7 @@ protected:
 	bool DefaultClearSelectionOnMouseUp() const override { return true; }
 	bool DefaultSelectOnLeftButtonDoubleClick() const override { return true; }
 	bool DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const override;
-	bool DefaultPostRenderOnMouseDoubleClick(UINT message, bool wasSelected) const override;
+	bool DefaultInvalidateVisualOnMouseDoubleClick(UINT message, bool wasSelected) const override;
 	void BeforeDefaultMouseUp(UINT message, MouseEventArgs& e, bool wasSelected) override;
 	void BeforeDefaultMouseDoubleClick(UINT message, MouseEventArgs& e, bool wasSelected) override;
 public:
@@ -50,7 +50,7 @@ public:
 	/** @brief 轨道内边距，影响拇指大小。 */
 	float TrackPadding = 3.0f;
 	/** @brief 边框宽度（像素）。 */
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	/** @brief 创建开关。 */
 	Switch(int x = 0, int y = 0, int width = 60, int height = 22);
 	bool IsAnimationRunning() override;

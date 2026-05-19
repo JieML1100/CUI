@@ -29,7 +29,7 @@ UIClass ContextMenu::Type() { return UIClass::UI_ContextMenu; }
 ContextMenu::ContextMenu()
 {
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	this->BorderColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
 	this->ForeColor = PopupTextColor;
 	this->Location = POINT{ 0, 0 };
 	this->Size = SIZE{ 0, 0 };

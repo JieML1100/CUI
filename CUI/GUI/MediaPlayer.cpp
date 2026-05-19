@@ -1132,21 +1132,21 @@ STDMETHODIMP MediaPlayerCallback::Invoke(IMFAsyncResult* pResult)
 	{
 		player->_playState = MediaPlayer::PlayState::Playing;
 		player->UpdatePositionFromClock(true);
-		player->PostRender();
+		player->InvalidateVisual();
 		break;
 	}
 	case MESessionPaused:
 	{
 		player->_playState = MediaPlayer::PlayState::Paused;
 		player->UpdatePositionFromClock(true);
-		player->PostRender();
+		player->InvalidateVisual();
 		break;
 	}
 	case MESessionStopped:
 	{
 		player->_playState = MediaPlayer::PlayState::Stopped;
 		player->UpdatePositionFromClock(true);
-		player->PostRender();
+		player->InvalidateVisual();
 		break;
 	}
 	case MESessionEnded:
@@ -1171,7 +1171,7 @@ STDMETHODIMP MediaPlayerCallback::Invoke(IMFAsyncResult* pResult)
 		player->_lastMfError = statusHr;
 		DebugOutputHr(L"MEError", statusHr);
 		player->OnMediaFailed(player);
-		player->PostRender();
+		player->InvalidateVisual();
 		break;
 	}
 	}
@@ -1260,7 +1260,7 @@ MediaPlayer::MediaPlayer(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 1.0f };
-	this->BolderColor = D2D1_COLOR_F{ 0.3f, 0.3f, 0.3f, 1.0f };
+	this->BorderColor = D2D1_COLOR_F{ 0.3f, 0.3f, 0.3f, 1.0f };
 
 	HRESULT hr = InitializeMF();
 	if (FAILED(hr))
@@ -2286,7 +2286,7 @@ void MediaPlayer::PlaybackThreadMain()
 						const UINT64 vConvTicks = (UINT64)(tVid1.QuadPart - tVid0.QuadPart);
 						_statVideoConvertQpcTicks.fetch_add(vConvTicks, std::memory_order_relaxed);
 						_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
-						this->PostRender();
+						this->InvalidateVisual();
 					}
 					else
 					{
@@ -2348,7 +2348,7 @@ void MediaPlayer::PlaybackThreadMain()
 					const UINT64 vConvTicks = (UINT64)(tVid1.QuadPart - tVid0.QuadPart);
 					_statVideoConvertQpcTicks.fetch_add(vConvTicks, std::memory_order_relaxed);
 					_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
-					this->PostRender();
+					this->InvalidateVisual();
 				}
 				else
 				{
@@ -2900,7 +2900,7 @@ void MediaPlayer::OnVideoFrame(const BYTE* data, DWORD size)
 		_videoFrameReady = true;
 	}
 	// CUI 是完全自渲染框架：需要主动 Invalidate 才会刷新画面。
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void MediaPlayer::RefreshVideoFormatFromSource()
@@ -3037,7 +3037,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 			_mediaLoaded = true;
 			_playState = PlayState::Stopped;
 			OnMediaOpened(this);
-			this->PostRender();
+			this->InvalidateVisual();
 
 			if (_autoPlay)
 				Play();
@@ -3048,7 +3048,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 		_mediaLoaded = true;
 		_playState = PlayState::Stopped;
 		OnMediaOpened(this);
-		this->PostRender();
+		this->InvalidateVisual();
 
 		// AutoPlay
 		if (_autoPlay)
@@ -3136,7 +3136,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 		{
 			_pendingStart = true;
 			_playState = PlayState::Playing;
-			this->PostRender();
+			this->InvalidateVisual();
 		}
 		else
 		{
@@ -3144,7 +3144,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 			if (SUCCEEDED(startHr))
 			{
 				_playState = PlayState::Playing;
-				this->PostRender();
+				this->InvalidateVisual();
 			}
 			else
 			{
@@ -3248,7 +3248,7 @@ bool MediaPlayer::Load(const void* data, size_t size, const std::wstring& nameHi
 	_mediaLoaded = true;
 	_playState = PlayState::Stopped;
 	OnMediaOpened(this);
-	this->PostRender();
+	this->InvalidateVisual();
 
 	if (_autoPlay)
 		Play();
@@ -3281,7 +3281,7 @@ void MediaPlayer::Play()
 				(void)StartPlayback();
 			}
 		}
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 	if (!_topologyReady)
@@ -3289,14 +3289,14 @@ void MediaPlayer::Play()
 		_pendingStart = true;
 		_hasPendingStartPosition = false;
 		_playState = PlayState::Playing;
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 	HRESULT hr = StartPlayback();
 	if (SUCCEEDED(hr))
 	{
 		_playState = PlayState::Playing;
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	else
 	{
@@ -3315,7 +3315,7 @@ void MediaPlayer::Pause()
 		if (_audioClient) (void)_audioClient->Stop();
 		if (_useMediaSessionAudioCompanion && _mediaSession)
 			(void)PausePlayback();
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -3323,7 +3323,7 @@ void MediaPlayer::Pause()
 	if (SUCCEEDED(hr))
 	{
 		_playState = PlayState::Paused;
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -3348,7 +3348,7 @@ void MediaPlayer::Stop()
 			(void)_sourceReader->SetCurrentPosition(GUID_NULL, var);
 			PropVariantClear(&var);
 		}
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -3357,7 +3357,7 @@ void MediaPlayer::Stop()
 	{
 		_playState = PlayState::Stopped;
 		_position = 0.0;
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -3401,7 +3401,7 @@ void MediaPlayer::Seek(double seconds)
 		_position = seconds;
 		_needSyncReset = true;
 		OnPositionChanged(this, _position);
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 	if (!_topologyReady)
@@ -3417,7 +3417,7 @@ void MediaPlayer::Seek(double seconds)
 	{
 		_position = std::max(0.0, std::min(seconds, _duration));
 		OnPositionChanged(this, _position);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	else
 	{
@@ -3986,6 +3986,6 @@ SET_CPP(MediaPlayer, MediaPlayer::VideoRenderMode, RenderMode)
 	if (_renderMode != value)
 	{
 		_renderMode = value;
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }

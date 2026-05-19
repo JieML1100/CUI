@@ -15,7 +15,7 @@ class PictureBox : public Control
 public:
 	virtual UIClass Type();
 	/** @brief 边框宽度（像素）。 */
-	float Boder = 1.0f;
+	float BorderThickness = 1.0f;
 	/** @brief 圆角半径（像素）。 */
 	float CornerRadius = 0.0f;
 	/** @brief 创建图片控件。 */

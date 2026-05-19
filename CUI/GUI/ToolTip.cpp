@@ -24,7 +24,7 @@ ToolTip::ToolTip(std::wstring text)
 {
 	this->Text = text;
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	this->BorderColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
 	this->ForeColor = PopupTextColor;
 	this->Enable = false;
 	this->Visible = true;
@@ -166,7 +166,7 @@ void ToolTip::Bind(class Control* target)
 			(void)e;
 			this->Show();
 		};
-	_target->OnMouseLeaved += [this](class Control* sender, MouseEventArgs e)
+	_target->OnMouseLeave += [this](class Control* sender, MouseEventArgs e)
 		{
 			(void)sender;
 			(void)e;

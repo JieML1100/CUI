@@ -139,7 +139,7 @@ PropertyGridView::PropertyGridView(int x, int y, int width, int height)
 	this->Location = { x, y };
 	this->Size = { width, height };
 	this->BackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.0f };
-	this->BolderColor = D2D1_COLOR_F{ 0.45f, 0.48f, 0.55f, 0.72f };
+	this->BorderColor = D2D1_COLOR_F{ 0.45f, 0.48f, 0.55f, 0.72f };
 }
 
 PropertyGridView::~PropertyGridView()
@@ -173,13 +173,13 @@ void PropertyGridView::Clear()
 	CloseDropDownEditor();
 	CancelEdit();
 	this->SelectionChanged(this, -1);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 int PropertyGridView::AddItem(const PropertyGridItem& item)
 {
 	this->Items.push_back(item);
-	this->PostRender();
+	this->InvalidateVisual();
 	return (int)this->Items.size() - 1;
 }
 
@@ -207,7 +207,7 @@ bool PropertyGridView::RemoveItemAt(int index)
 	}
 	else if (_colorPickerIndex > index) _colorPickerIndex--;
 	this->SelectionChanged(this, this->SelectedIndex);
-	this->PostRender();
+	this->InvalidateVisual();
 	return true;
 }
 
@@ -234,7 +234,7 @@ bool PropertyGridView::SetValue(int index, const std::wstring& value)
 	auto oldValue = item.Value;
 	item.Value = value;
 	this->OnValueChanged(this, index, oldValue, value);
-	this->PostRender();
+	this->InvalidateVisual();
 	return true;
 }
 
@@ -256,7 +256,7 @@ void PropertyGridView::CollapseCategory(const std::wstring& category, bool colla
 		_collapsedCategories.erase(it);
 	}
 	SetScrollOffset(this->ScrollYOffset);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 bool PropertyGridView::IsCategoryCollapsed(const std::wstring& category) const
@@ -276,7 +276,7 @@ void PropertyGridView::ExpandAll()
 	for (const auto& category : _collapsedCategories)
 		StartCategoryAnimation(category, false);
 	_collapsedCategories.clear();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void PropertyGridView::CollapseAll()
@@ -301,7 +301,7 @@ void PropertyGridView::CollapseAll()
 			_collapsedCategories.push_back(item.Category);
 	}
 	SetScrollOffset(this->ScrollYOffset);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 std::vector<PropertyGridView::RowInfo> PropertyGridView::BuildRows() const
@@ -442,7 +442,7 @@ void PropertyGridView::SetScrollOffset(float offsetY)
 	{
 		this->ScrollYOffset = clamped;
 		this->ScrollChanged(this);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -908,7 +908,7 @@ void PropertyGridView::UpdateHover(int xof, int yof)
 	if (index != this->HoveredIndex)
 	{
 		this->HoveredIndex = index;
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -931,7 +931,7 @@ void PropertyGridView::SelectItem(int index)
 	this->SelectedIndex = index;
 	EnsureVisible(index);
 	this->SelectionChanged(this, index);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 bool PropertyGridView::IsEditableItem(int index) const
@@ -950,7 +950,7 @@ void PropertyGridView::BeginEdit(int index)
 		if (this->ParentForm)
 			this->ParentForm->Selected = this;
 		EditSetImeCompositionWindow();
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 	auto& item = this->Items[index];
@@ -972,7 +972,7 @@ void PropertyGridView::BeginEdit(int index)
 	if (this->ParentForm)
 		this->ParentForm->Selected = this;
 	EditSetImeCompositionWindow();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void PropertyGridView::CommitEdit()
@@ -991,7 +991,7 @@ void PropertyGridView::CommitEdit()
 	_imeCommittedTextToSuppress.clear();
 	_imeCommitSuppressTick = 0;
 	SetValue(index, value);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void PropertyGridView::CancelEdit()
@@ -1007,7 +1007,7 @@ void PropertyGridView::CancelEdit()
 	_editOffsetX = 0.0f;
 	_imeCommittedTextToSuppress.clear();
 	_imeCommitSuppressTick = 0;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void PropertyGridView::InsertEditChar(wchar_t ch)
@@ -1037,7 +1037,7 @@ void PropertyGridView::InsertEditChar(wchar_t ch)
 	_editingText.insert((size_t)sels, s);
 	_editSelectionStart = _editSelectionEnd = sels + 1;
 	_editCaret = _editSelectionEnd;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void PropertyGridView::BackspaceEdit()
@@ -1055,7 +1055,7 @@ void PropertyGridView::BackspaceEdit()
 	}
 	_editSelectionStart = _editSelectionEnd = sels;
 	_editCaret = _editSelectionEnd;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void PropertyGridView::DeleteEdit()
@@ -1070,7 +1070,7 @@ void PropertyGridView::DeleteEdit()
 		_editingText.erase((size_t)sels, 1);
 	_editSelectionStart = _editSelectionEnd = sels;
 	_editCaret = _editSelectionEnd;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void PropertyGridView::MoveEditCaret(int delta)
@@ -1081,7 +1081,7 @@ void PropertyGridView::MoveEditCaret(int delta)
 	if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 		_editSelectionStart = _editSelectionEnd;
 	_editCaret = _editSelectionEnd;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void PropertyGridView::EditEnsureSelectionInRange()
@@ -1132,7 +1132,7 @@ bool PropertyGridView::SetEditingCaretFromMousePoint(int xof, int yof, const D2D
 	_editSelectionStart = _editSelectionEnd = std::clamp(pos, 0, (int)_editingText.size());
 	_editCaret = _editSelectionEnd;
 	EditUpdateScroll(cellWidth);
-	this->PostRender();
+	this->InvalidateVisual();
 	return true;
 }
 
@@ -1148,7 +1148,7 @@ bool PropertyGridView::UpdateEditingSelectionFromMousePoint(int xof, int yof, co
 	_editSelectionEnd = std::clamp(pos, 0, (int)_editingText.size());
 	_editCaret = _editSelectionEnd;
 	EditUpdateScroll(cellWidth);
-	this->PostRender();
+	this->InvalidateVisual();
 	return true;
 }
 
@@ -1212,7 +1212,7 @@ void PropertyGridView::HandleImeComposition(LPARAM lParam)
 			}
 			ImmReleaseContext(this->ParentForm->Handle, hIMC);
 		}
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -1276,7 +1276,7 @@ void PropertyGridView::OpenColorPickerEditor(int index, const D2D1_RECT_F& value
 	{
 		CloseColorPickerEditor();
 		this->ParentForm->Invalidate(true);
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -1318,7 +1318,7 @@ void PropertyGridView::OpenColorPickerEditor(int index, const D2D1_RECT_F& value
 	this->_colorPickerIndex = index;
 	this->SelectedIndex = index;
 	this->_colorPicker->ShowAt(this, valueRect, initial);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void PropertyGridView::ToggleDropDownEditor(int index, const D2D1_RECT_F& valueRect)
@@ -1333,7 +1333,7 @@ void PropertyGridView::ToggleDropDownEditor(int index, const D2D1_RECT_F& valueR
 	{
 		CloseDropDownEditor();
 		this->ParentForm->Invalidate(true);
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -1390,7 +1390,7 @@ void PropertyGridView::ToggleDropDownEditor(int index, const D2D1_RECT_F& valueR
 		{
 			(void)sender;
 			this->_dropDownPopupIndex = -1;
-			this->PostRender();
+			this->InvalidateVisual();
 		};
 
 	this->_dropDownPopupIndex = index;
@@ -1399,7 +1399,7 @@ void PropertyGridView::ToggleDropDownEditor(int index, const D2D1_RECT_F& valueR
 		D2D1::RectF(x, y, x + w, y + h),
 		item.Options, selected, w, h, 4);
 	this->ParentForm->Invalidate(true);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void PropertyGridView::Update()
@@ -1423,14 +1423,14 @@ void PropertyGridView::Update()
 		DrawRows(d2d, rows, layout);
 		DrawScrollBar(d2d, layout);
 		if (Border > 0.0f)
-			d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, std::max(0.0f, width - Border), std::max(0.0f, height - Border), this->BolderColor, Border, this->CornerRadius);
+			d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, std::max(0.0f, width - Border), std::max(0.0f, height - Border), this->BorderColor, Border, this->CornerRadius);
 		if (!this->Enable)
 			d2d->FillRoundRect(0.0f, 0.0f, width, height, D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.48f }, this->CornerRadius);
 	}
 	this->EndRender();
 
 	if (!_categoryAnimations.empty())
-		this->PostRender();
+		this->InvalidateVisual();
 }
 
 bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
@@ -1474,7 +1474,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 			auto rows = BuildRows();
 			auto layout = CalcLayout(rows);
 			this->NameColumnWidth = std::clamp((float)xof, 48.0f, std::max(48.0f, RectWidth(layout.ContentRect) - 48.0f));
-			this->PostRender();
+			this->InvalidateVisual();
 		}
 		else
 			UpdateHover(xof, yof);
@@ -1615,7 +1615,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 				_editSelectionEnd = (int)_editingText.size();
 				_editCaret = _editSelectionEnd;
 				_dragEditSelection = false;
-				this->PostRender();
+				this->InvalidateVisual();
 			}
 			else
 			if (GetValueRectForItem(index, rows, layout, valueRect) && IsEditableItem(index) &&
@@ -1652,14 +1652,14 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 				if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 					_editSelectionStart = _editSelectionEnd;
 				_editCaret = _editSelectionEnd;
-				this->PostRender();
+				this->InvalidateVisual();
 				break;
 			case VK_END:
 				_editSelectionEnd = (int)_editingText.size();
 				if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 					_editSelectionStart = _editSelectionEnd;
 				_editCaret = _editSelectionEnd;
-				this->PostRender();
+				this->InvalidateVisual();
 				break;
 			default: break;
 			}
@@ -1774,7 +1774,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 			_imeCommitSuppressTick = 0;
 			_editSelectionStart = 0;
 			_editSelectionEnd = (int)_editingText.size();
-			PostRender();
+			InvalidateVisual();
 		}
 		else if (_editing && wParam == 8)
 		{

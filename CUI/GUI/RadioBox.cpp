@@ -117,8 +117,8 @@ void RadioBox::Update()
 		d2d->FillEllipse(cx, cy, radius, radius, backColor);
 		if (isUnderMouse && UnderMouseColor.a > 0.0f)
 			d2d->FillEllipse(cx, cy, radius, radius, UnderMouseColor);
-		if (Boder > 0.0f && borderColor.a > 0.0f)
-			d2d->DrawEllipse(cx, cy, radius, radius, borderColor, Boder);
+		if (BorderThickness > 0.0f && borderColor.a > 0.0f)
+			d2d->DrawEllipse(cx, cy, radius, radius, borderColor, BorderThickness);
 
 		if (progress > 0.001f)
 		{
@@ -145,7 +145,7 @@ bool RadioBox::DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) cons
 	return wasSelected;
 }
 
-bool RadioBox::DefaultPostRenderOnMouseDoubleClick(UINT message, bool wasSelected) const
+bool RadioBox::DefaultInvalidateVisualOnMouseDoubleClick(UINT message, bool wasSelected) const
 {
 	(void)message;
 	return wasSelected;

@@ -175,11 +175,11 @@ DesignerCanvas::DesignerCanvas(int x, int y, int width, int height)
 
 	// 画布（外围）与设计面板（内部）区分：设计面板负责裁剪/承载被设计控件
 	this->BackColor = Colors::WhiteSmoke;
-	this->Boder = 2.0f;
+	this->BorderThickness = 2.0f;
 
 	_designSurface = new Panel(_designSurfaceOrigin.x, _designSurfaceOrigin.y, _designedFormSize.cx, _designedFormSize.cy);
 	_designSurface->BackColor = Colors::WhiteSmoke;
-	_designSurface->Boder = 0.0f; // 边框由画布统一绘制
+	_designSurface->BorderThickness = 0.0f; // 边框由画布统一绘制
 	this->AddControl(_designSurface);
 
 	{
@@ -189,7 +189,7 @@ DesignerCanvas::DesignerCanvas(int x, int y, int width, int height)
 		_clientSurface = new Panel(0, top, _designedFormSize.cx, h);
 	}
 	_clientSurface->BackColor = _designedFormBackColor;
-	_clientSurface->Boder = 0.0f;
+	_clientSurface->BorderThickness = 0.0f;
 	_designSurface->AddControl(_clientSurface);
 
 	// 确保 clientSurface 使用窗体默认字体（初始为默认，不创建共享对象）
@@ -214,7 +214,7 @@ void DesignerCanvas::SetDesignedFormFontName(const std::wstring& name)
 {
 	_designedFormFontName = name;
 	RebuildDesignedFormSharedFont();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void DesignerCanvas::SetDesignedFormFontSize(float size)
@@ -224,7 +224,7 @@ void DesignerCanvas::SetDesignedFormFontSize(float size)
 	if (size > 200.0f) size = 200.0f;
 	_designedFormFontSize = size;
 	RebuildDesignedFormSharedFont();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void DesignerCanvas::RebuildDesignedFormSharedFont()
@@ -566,7 +566,7 @@ void DesignerCanvas::Update()
 			d2d->PopDrawRect();
 		}
 
-		d2d->DrawRect(abslocation.x, abslocation.y, (float)size.cx, (float)size.cy, this->BolderColor, this->Boder);
+		d2d->DrawRect(abslocation.x, abslocation.y, (float)size.cx, (float)size.cy, this->BorderColor, this->BorderThickness);
 	}
 	if (!this->Enable)
 	{
@@ -921,7 +921,7 @@ void DesignerCanvas::RestoreSelectionByNames(const std::vector<std::wstring>& se
 		{
 			OnControlSelected(nullptr);
 		}
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -929,7 +929,7 @@ void DesignerCanvas::RestoreSelectionByNames(const std::vector<std::wstring>& se
 	{
 		OnControlSelected(_selectedControl);
 	}
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void DesignerCanvas::NotifySelectionChangedThrottled()
@@ -1320,7 +1320,7 @@ bool DesignerCanvas::TryHandleTabHeaderClick(POINT ptCanvas)
 	if (scrollButton != 0)
 	{
 		bestTc->ScrollTitleBy(scrollButton * (std::max)(1, bestTc->TitleScrollMouseWheelStep));
-		bestTc->PostRender();
+		bestTc->InvalidateVisual();
 		ClearSelection();
 		AddToSelection(bestDc, true, true);
 		return true;
@@ -1331,7 +1331,7 @@ bool DesignerCanvas::TryHandleTabHeaderClick(POINT ptCanvas)
 
 	bestTc->SelectedIndex = idx;
 	bestTc->EnsureTitleVisible(idx);
-	bestTc->PostRender();
+	bestTc->InvalidateVisual();
 
 	// 切页后：清除之前页上选中的控件，避免选框残留；并把 TabControl 设为当前选中。
 	// 即使 idx 未变化，点击标题栏也视为在操作 TabControl。
@@ -1360,7 +1360,7 @@ void DesignerCanvas::SetDesignedFormSize(SIZE s)
 		if (dc && dc->ControlInstance)
 			ClampControlToDesignSurface(dc->ControlInstance);
 	}
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void DesignerCanvas::ClampControlToDesignSurface(Control* c)
@@ -1654,7 +1654,7 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 		_selectedControl->DesignerParent = nullptr;
 		RECT clamped = ClampRectToBounds(r, GetClientSurfaceRectInCanvas(), true);
 		ApplyRectToControl(moving, clamped);
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -1696,7 +1696,7 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 		ApplyRectToControl(moving, rectInCanvas);
 	});
 	LayoutBridge::RefreshContainerLayout(runtimeHost);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 CursorKind DesignerCanvas::GetResizeCursor(DesignerControl::ResizeHandle handle)
@@ -1772,7 +1772,7 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		if (wParam == VK_DELETE || wParam == VK_BACK)
 		{
 			DeleteSelectedControl();
-			this->PostRender();
+			this->InvalidateVisual();
 			return true;
 		}
 
@@ -1795,7 +1795,7 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 				else AddToSelection(dc, false, false);
 			}
 			OnControlSelected(_selectedControl);
-			this->PostRender();
+			this->InvalidateVisual();
 			return true;
 		}
 
@@ -1840,7 +1840,7 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			_dragLiftedToRoot = false;
 			_dragStartItems.clear();
 			ClearAlignmentGuides();
-			this->PostRender();
+			this->InvalidateVisual();
 			return true;
 		}
 		break;
@@ -2012,7 +2012,7 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			r.bottom = (std::max)(_boxSelectStart.y, mousePos.y);
 			_boxSelectRect = r;
 			this->Cursor = CursorKind::Arrow;
-			this->PostRender();
+			this->InvalidateVisual();
 			return true;
 		}
 
@@ -2193,7 +2193,7 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			}
 			_boxSelectAddToSelection = false;
 			OnControlSelected(_selectedControl);
-			this->PostRender();
+			this->InvalidateVisual();
 			return true;
 		}
 
@@ -2485,7 +2485,7 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 			UpdateDefaultNameCounterFromName(type, name);
 			ClearSelection();
 			AddToSelection(dc, true, true);
-			this->PostRender();
+			this->InvalidateVisual();
 			return;
 		}
 
@@ -2538,7 +2538,7 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 		// 自动选中新添加的控件
 		ClearSelection();
 		AddToSelection(dc, true, true);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -2577,7 +2577,7 @@ void DesignerCanvas::DeleteSelectedControlCore()
 			inst->Parent->RemoveControl(inst);
 		DeleteControlRecursive(inst);
 	}
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void DesignerCanvas::ClearCanvas()
@@ -3524,7 +3524,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			props["visible"] = c->Visible;
 			props["backColor"] = ColorToValue(c->BackColor);
 			props["foreColor"] = ColorToValue(c->ForeColor);
-			props["bolderColor"] = ColorToValue(c->BolderColor);
+			props["borderColor"] = ColorToValue(c->BorderColor);
 			props["margin"] = ThicknessToValue(c->Margin);
 			props["padding"] = ThicknessToValue(c->Padding);
 			props["anchor"] = (int)c->AnchorStyles;
@@ -4065,7 +4065,10 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				c->Visible = it.props.value("visible", true);
 				c->BackColor = ColorFromValue(it.props.contains("backColor") ? it.props["backColor"] : DesignValue(), c->BackColor);
 				c->ForeColor = ColorFromValue(it.props.contains("foreColor") ? it.props["foreColor"] : DesignValue(), c->ForeColor);
-				c->BolderColor = ColorFromValue(it.props.contains("bolderColor") ? it.props["bolderColor"] : DesignValue(), c->BolderColor);
+				DesignValue borderColorValue = it.props.contains("borderColor")
+					? it.props["borderColor"]
+					: (it.props.contains("bolderColor") ? it.props["bolderColor"] : DesignValue());
+				c->BorderColor = ColorFromValue(borderColorValue, c->BorderColor);
 				c->Margin = ThicknessFromValue(it.props.contains("margin") ? it.props["margin"] : DesignValue(), c->Margin);
 				c->Padding = ThicknessFromValue(it.props.contains("padding") ? it.props["padding"] : DesignValue(), c->Padding);
 				c->AnchorStyles = (uint8_t)it.props.value("anchor", (int)c->AnchorStyles);
@@ -4581,7 +4584,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 
 		ClearSelection();
 		OnControlSelected(nullptr);
-		this->PostRender();
+		this->InvalidateVisual();
 		return true;
 	}
 	catch (const std::exception& ex)

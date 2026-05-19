@@ -8,12 +8,12 @@ namespace
 	{
 		if (!button) return;
 		button->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-		button->BolderColor = D2D1_COLOR_F{ 0,0,0,0 };
+		button->BorderColor = D2D1_COLOR_F{ 0,0,0,0 };
 		button->ForeColor = Colors::WhiteSmoke;
 		button->UnderMouseColor = D2D1_COLOR_F{ 0.28f,0.58f,0.96f,0.26f };
 		button->CheckedColor = D2D1_COLOR_F{ 0.28f,0.58f,0.96f,0.34f };
 		button->Round = 0.28f;
-		button->Boder = 0.0f;
+		button->BorderThickness = 0.0f;
 	}
 }
 
@@ -25,7 +25,7 @@ ToolBarSeparator::ToolBarSeparator(int width, int height)
 	if (height < 1) height = 20;
 	this->Size = SIZE{ width,height };
 	this->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->BolderColor = D2D1_COLOR_F{ 0,0,0,0 };
+	this->BorderColor = D2D1_COLOR_F{ 0,0,0,0 };
 	this->LineColor = D2D1_COLOR_F{ 1,1,1,0.18f };
 	this->Enable = false;
 }
@@ -57,7 +57,7 @@ ToolBarSpacer::ToolBarSpacer(int width)
 	if (width < 0) width = 0;
 	this->Size = SIZE{ width,1 };
 	this->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->BolderColor = D2D1_COLOR_F{ 0,0,0,0 };
+	this->BorderColor = D2D1_COLOR_F{ 0,0,0,0 };
 	this->Enable = false;
 }
 
@@ -72,8 +72,8 @@ ToolBar::ToolBar(int x, int y, int width, int height)
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
 	this->BackColor = D2D1_COLOR_F{ 1,1,1,0.12f };
-	this->BolderColor = D2D1_COLOR_F{ 1,1,1,0.12f };
-	this->Boder = 1.0f;
+	this->BorderColor = D2D1_COLOR_F{ 1,1,1,0.12f };
+	this->BorderThickness = 1.0f;
 	ItemHeight = static_cast<int>(height * 0.75f);
 	if (ItemHeight < 1) ItemHeight = 1;
 }
@@ -170,7 +170,7 @@ ComboBox* ToolBar::AddToolComboBox(std::wstring text, int width)
 {
 	ComboBox* combo = new ComboBox(text, 0, 0, width, ItemHeight);
 	combo->BackColor = D2D1_COLOR_F{ 1,1,1,0.10f };
-	combo->BolderColor = D2D1_COLOR_F{ 1,1,1,0.18f };
+	combo->BorderColor = D2D1_COLOR_F{ 1,1,1,0.18f };
 	combo->ForeColor = Colors::WhiteSmoke;
 	combo->ButtonBackColor = D2D1_COLOR_F{ 1,1,1,0.12f };
 	combo->HeaderHoverBackColor = D2D1_COLOR_F{ 1,1,1,0.10f };
@@ -183,7 +183,7 @@ ComboBox* ToolBar::AddToolComboBox(std::wstring text, int width)
 	combo->CornerRadius = 6.0f;
 	combo->DropCornerRadius = 8.0f;
 	combo->DropGap = 5.0f;
-	combo->Boder = 1.0f;
+	combo->BorderThickness = 1.0f;
 	return (ComboBox*)AddToolItem(combo, width, ItemHeight);
 }
 
@@ -244,7 +244,7 @@ void ToolBar::Update()
 	const float actualHeight = static_cast<float>(size.cy);
 	this->BeginRender();
 	{
-		const float border = (std::max)(0.0f, this->Boder);
+		const float border = (std::max)(0.0f, this->BorderThickness);
 		const D2D1_RECT_F surface = D2D1::RectF(border * 0.5f, border * 0.5f,
 			(std::max)(border * 0.5f, actualWidth - border * 0.5f),
 			(std::max)(border * 0.5f, actualHeight - border * 0.5f));
@@ -267,9 +267,9 @@ void ToolBar::Update()
 		}
 		if (this->ShowBottomLine && this->BottomLineColor.a > 0.0f && actualHeight > 0.0f)
 			d2d->DrawLine(0.0f, actualHeight - 0.5f, actualWidth, actualHeight - 0.5f, this->BottomLineColor, 1.0f);
-		if (border > 0.0f && this->BolderColor.a > 0.0f)
+		if (border > 0.0f && this->BorderColor.a > 0.0f)
 		{
-			d2d->DrawRoundRect(surface, this->BolderColor, border, this->CornerRadius);
+			d2d->DrawRoundRect(surface, this->BorderColor, border, this->CornerRadius);
 		}
 	}
 	if (!this->Enable)

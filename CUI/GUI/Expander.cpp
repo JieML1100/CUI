@@ -66,7 +66,7 @@ Expander::Expander()
 {
 	this->Text = L"Expander";
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.58f };
+	this->BorderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.58f };
 	this->ForeColor = Colors::Black;
 	this->Cursor = CursorKind::Arrow;
 	this->OnTextChanged += [this](Control* sender, std::wstring oldText, std::wstring newText)
@@ -74,7 +74,7 @@ Expander::Expander()
 			(void)sender;
 			(void)oldText;
 			(void)newText;
-			PostRender();
+			InvalidateVisual();
 		};
 }
 
@@ -156,7 +156,7 @@ void Expander::SetExpandedInternal(bool value, bool fireEvent)
 		ParentForm->SetSelectedControl(nullptr, false);
 	if (ParentForm)
 		ParentForm->Invalidate(true);
-	PostRender();
+	InvalidateVisual();
 	if (fireEvent)
 		OnExpandedChanged(this, _isExpanded);
 }
@@ -286,11 +286,11 @@ void Expander::Update()
 		}
 
 		if (header < height)
-			d2d->DrawLine(HeaderPaddingX, header, (std::max)(HeaderPaddingX, width - HeaderPaddingX), header, ScaleAlpha(BolderColor, 0.62f), 1.0f);
-		if (border > 0.0f && BolderColor.a > 0.0f)
+			d2d->DrawLine(HeaderPaddingX, header, (std::max)(HeaderPaddingX, width - HeaderPaddingX), header, ScaleAlpha(BorderColor, 0.62f), 1.0f);
+		if (border > 0.0f && BorderColor.a > 0.0f)
 			d2d->DrawRoundRect(border * 0.5f, border * 0.5f,
 				(std::max)(0.0f, width - border), (std::max)(0.0f, height - border),
-				BolderColor, border, radius);
+				BorderColor, border, radius);
 		if (AccentColor.a > 0.0f)
 		{
 			float stripeH = (std::max)(6.0f, header - 14.0f);
@@ -315,7 +315,7 @@ bool Expander::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		if (_hoverHeader != inHeader)
 		{
 			_hoverHeader = inHeader;
-			PostRender();
+			InvalidateVisual();
 		}
 		break;
 	case WM_LBUTTONDOWN:
@@ -324,7 +324,7 @@ bool Expander::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		if (inHeader)
 		{
 			OnMouseDown(this, MouseEventArgs(MouseButtons::Left, 0, xof, yof, HIWORD(wParam)));
-			PostRender();
+			InvalidateVisual();
 			return true;
 		}
 		break;
