@@ -211,6 +211,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="GUI\Application.h" />
+    <ClInclude Include="GUI\Binding.h" />
     <ClInclude Include="GUI\Button.h" />
     <ClInclude Include="GUI\CalendarView.h" />
     <ClInclude Include="GUI\ChartView.h" />
@@ -275,6 +276,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="GUI\Application.cpp" />
+    <ClCompile Include="GUI\Binding.cpp" />
     <ClCompile Include="GUI\Button.cpp" />
     <ClCompile Include="GUI\CalendarView.cpp" />
     <ClCompile Include="GUI\ChartView.cpp" />

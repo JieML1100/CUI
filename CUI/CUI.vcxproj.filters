@@ -18,6 +18,9 @@
     <ClInclude Include="GUI\Application.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\Binding.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\Button.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -204,6 +207,9 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Application.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="GUI\Binding.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="GUI\Button.cpp">

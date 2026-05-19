@@ -1,6 +1,7 @@
 ﻿#pragma once
 #define NOMINMAX
 #include "Event.h"
+#include "Binding.h"
 #include <Colors.h>
 #include <Font.h>
 #include <Factory.h>
@@ -219,6 +220,7 @@ protected:
 	// 这里仅保留尺寸基准，避免重复布局时尺寸累计漂移。
 	SIZE _layoutBaseSize = { 120,20 };
 	bool _layoutBaseInitialized = false;
+	std::unique_ptr<BindingCollection> _dataBindings;
 
 	void EnsureLayoutBase()
 	{
@@ -356,6 +358,8 @@ public:
 	PROPERTY(class Font*, Font);
 	GET(class Font*, Font);
 	SET(class Font*, Font);
+	READONLY_PROPERTY(BindingCollection&, DataBindings);
+	GET(BindingCollection&, DataBindings);
 	// 显式设置是否由 Control 释放 Font（默认：通过属性 Font 设置时视为“拥有”）
 	void SetFontEx(class Font* value, bool takeOwnership);
 	READONLY_PROPERTY(int, Count);

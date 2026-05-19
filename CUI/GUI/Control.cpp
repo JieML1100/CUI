@@ -1,4 +1,5 @@
 ﻿#include "Control.h"
+#include "Binding.h"
 #include "Form.h"
 #include "Panel.h"
 #include <algorithm>
@@ -212,6 +213,13 @@ void Control::SetFontEx(class Font* value, bool takeOwnership)
 	this->_font = value;
 	this->_ownsFont = takeOwnership;
 	this->PostRender();
+}
+
+GET_CPP(Control, BindingCollection&, DataBindings)
+{
+	if (!this->_dataBindings)
+		this->_dataBindings = std::make_unique<BindingCollection>(this);
+	return *this->_dataBindings;
 }
 
 GET_CPP(Control, int, Count)
