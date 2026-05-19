@@ -1658,13 +1658,19 @@ void DemoWindow::BuildTab_Data(TabPage* page)
 	_pagedGrid->AddColumn(GridViewColumn(L"Check", 80, ColumnType::Check));
 	GridViewColumn textColumn = GridViewColumn(L"Text", 160, ColumnType::Text, true);
 	_pagedGrid->AddColumn(textColumn);
+	_pagedGrid->AddColumn(GridViewColumn(L"Linked", 120, ColumnType::LinkedText));
 	GridViewColumn buttonColumn = GridViewColumn(L"Button", 80, ColumnType::Button);
 	buttonColumn.ButtonText = L"OK";
 	_pagedGrid->AddColumn(buttonColumn);
+	_grid->OnGridViewLinkedTextClick += [this](class GridView* sender, int c, int r, std::wstring text)
+		{
+			(void)sender;
+			Ui_UpdateStatus(StringHelper::Format(L"GridView: linked text [%d,%d] %s", c, r, text.c_str()));
+		};
 	for (int i = 0; i < 500; i++)
 	{
 		GridViewRow row;
-		row.Cells = { _bmps[i % 10], L"Item 1", i % 2 == 0, std::to_wstring(Random::Next()), L"" };
+		row.Cells = { _bmps[i % 10], L"Item 1", i % 2 == 0, std::to_wstring(Random::Next()), L"Open", L"" };
 		_pagedGrid->AddRow(row);
 	}
 	_pagedGrid->RefreshPage();

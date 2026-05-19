@@ -233,6 +233,13 @@ namespace
 			outParamList = "GridView* sender, int c, int r, bool v";
 			return true;
 		}
+		if (n == L"OnGridViewLinkedTextClick")
+		{
+			if (controlType != UIClass::UI_GridView) return false;
+			outEventField = "OnGridViewLinkedTextClick";
+			outParamList = "GridView* sender, int c, int r, std::wstring text";
+			return true;
+		}
 		if (n == L"OnItemClick")
 		{
 			if (controlType == UIClass::UI_PropertyGrid)
@@ -1234,6 +1241,7 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 				switch (col.Type)
 				{
 				case ColumnType::Text: typeStr = "ColumnType::Text"; break;
+				case ColumnType::LinkedText: typeStr = "ColumnType::LinkedText"; break;
 				case ColumnType::Image: typeStr = "ColumnType::Image"; break;
 				case ColumnType::Check: typeStr = "ColumnType::Check"; break;
 				case ColumnType::Button: typeStr = "ColumnType::Button"; break;

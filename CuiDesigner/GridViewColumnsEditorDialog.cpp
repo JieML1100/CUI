@@ -17,6 +17,7 @@ namespace
 	{
 		std::vector<std::wstring> items;
 		items.push_back(L"text");
+		items.push_back(L"linkedtext");
 		items.push_back(L"image");
 		items.push_back(L"check");
 		items.push_back(L"button");
@@ -28,10 +29,11 @@ namespace
 	{
 		switch (t)
 		{
-		case ColumnType::Image: return 1;
-		case ColumnType::Check: return 2;
-		case ColumnType::Button: return 3;
-		case ColumnType::ComboBox: return 4;
+		case ColumnType::LinkedText: return 1;
+		case ColumnType::Image: return 2;
+		case ColumnType::Check: return 3;
+		case ColumnType::Button: return 4;
+		case ColumnType::ComboBox: return 5;
 		default: return 0;
 		}
 	}
@@ -71,6 +73,7 @@ bool GridViewColumnsEditorDialog::TryParseColumnType(const std::wstring& s, Colu
 	auto t = Trim(s);
 	for (auto& ch : t) ch = (wchar_t)towlower(ch);
 	if (t == L"text") { out = ColumnType::Text; return true; }
+	if (t == L"linkedtext" || t == L"linked" || t == L"linktext" || t == L"link") { out = ColumnType::LinkedText; return true; }
 	if (t == L"image") { out = ColumnType::Image; return true; }
 	if (t == L"check") { out = ColumnType::Check; return true; }
 	if (t == L"button") { out = ColumnType::Button; return true; }

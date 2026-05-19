@@ -477,12 +477,24 @@ void NavigationView::DrawRows(D2DGraphics* d2d, const std::vector<RowInfo>& rows
 				auto badgeSize = Font->GetTextSize(item.BadgeText);
 				float badgeW = (std::max)(22.0f, badgeSize.width + 12.0f);
 				float badgeH = 20.0f;
-				D2D1_RECT_F badgeRect{ itemRect.right - badgeW - 8.0f, itemRect.top + (RectHeight(itemRect) - badgeH) * 0.5f,
-					itemRect.right - 8.0f, itemRect.top + (RectHeight(itemRect) - badgeH) * 0.5f + badgeH };
-				d2d->FillRoundRect(badgeRect, BadgeBackColor, badgeH * 0.5f);
-				d2d->DrawStringCentered(item.BadgeText, badgeRect.left + RectWidth(badgeRect) * 0.5f,
-					badgeRect.top + RectHeight(badgeRect) * 0.5f, BadgeForeColor, Font);
-				textRight = badgeRect.left - 8.0f;
+				const float badgeGap = 8.0f;
+				const float badgeRightPadding = 8.0f;
+				const float minTextVisibleWidth = 36.0f;
+				const float minBadgeLeft = textLeft + minTextVisibleWidth + badgeGap;
+				const float badgeRight = itemRect.right - badgeRightPadding;
+				if (badgeRight - minBadgeLeft >= 12.0f)
+				{
+					float badgeLeft = (std::max)(badgeRight - badgeW, minBadgeLeft);
+					D2D1_RECT_F badgeRect{ badgeLeft, itemRect.top + (RectHeight(itemRect) - badgeH) * 0.5f,
+						badgeLeft + badgeW, itemRect.top + (RectHeight(itemRect) - badgeH) * 0.5f + badgeH };
+					const float clipRight = (std::min)(badgeRect.right, badgeRight);
+					d2d->PushDrawRect(badgeRect.left, badgeRect.top, (std::max)(1.0f, clipRight - badgeRect.left), RectHeight(badgeRect));
+					d2d->FillRoundRect(badgeRect, BadgeBackColor, badgeH * 0.5f);
+					d2d->DrawStringCentered(item.BadgeText, badgeRect.left + RectWidth(badgeRect) * 0.5f,
+						badgeRect.top + RectHeight(badgeRect) * 0.5f, BadgeForeColor, Font);
+					d2d->PopDrawRect();
+					textRight = badgeRect.left - badgeGap;
+				}
 			}
 			D2D1_RECT_F textRect{ textLeft, itemRect.top, (std::max)(textLeft + 1.0f, textRight), itemRect.bottom };
 			d2d->PushDrawRect(textRect.left, textRect.top, RectWidth(textRect), RectHeight(textRect));

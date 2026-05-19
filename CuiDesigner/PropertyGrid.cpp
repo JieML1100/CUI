@@ -485,6 +485,7 @@ namespace
 			L"ScrollChanged",
 			L"SelectionChanged",
 			L"OnGridViewCheckStateChanged",
+			L"OnGridViewLinkedTextClick",
 			L"OnItemClick",
 			L"OnItemDoubleClick",
 			L"OnItemCheckChanged",
@@ -551,6 +552,7 @@ namespace
 			out.push_back(L"ScrollChanged");
 			out.push_back(L"SelectionChanged");
 			out.push_back(L"OnGridViewCheckStateChanged");
+			out.push_back(L"OnGridViewLinkedTextClick");
 			out.push_back(L"OnUserAddingRow");
 			out.push_back(L"OnUserAddedRow");
 			break;

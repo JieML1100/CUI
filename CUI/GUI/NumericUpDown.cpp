@@ -301,14 +301,13 @@ void NumericUpDown::StartHoverAnimation(float target)
 		_hoverProgress = target;
 		_targetHoverProgress = target;
 		_animating = false;
+		PostRender();
 		return;
 	}
 	_animStartProgress = _hoverProgress;
 	_targetHoverProgress = target;
 	_animStartTick = ::GetTickCount64();
 	_animating = true;
-	if (ParentForm)
-		ParentForm->Invalidate(true);
 	PostRender();
 }
 

@@ -158,6 +158,23 @@ static void DrawGridCellState(GridView* grid, D2DGraphics* d2d, float x, float y
 	}
 }
 
+static void DrawGridLinkedText(GridView* grid, D2DGraphics* d2d, Font* font,
+	const std::wstring& text, float x, float y, float w, float h, float textTop, bool hovered)
+{
+	if (!grid || !d2d || !font || text.empty() || w <= 0.0f || h <= 0.0f) return;
+	const float textX = x + grid->CellHorizontalPadding;
+	const float maxTextWidth = (std::max)(1.0f, w - grid->CellHorizontalPadding * 2.0f);
+	const auto color = hovered ? grid->LinkedTextHoverColor : grid->LinkedTextColor;
+	d2d->DrawString(text, textX, y + textTop, maxTextWidth, font->FontHeight + 2.0f, color, font);
+
+	auto textSize = font->GetTextSize(text);
+	const float underlineWidth = (std::min)(maxTextWidth, textSize.width);
+	if (underlineWidth <= 0.0f) return;
+	float underlineY = y + textTop + textSize.height - 1.0f;
+	underlineY = (std::min)(underlineY, y + h - 3.0f);
+	d2d->DrawLine(textX, underlineY, textX + underlineWidth, underlineY, color, 1.0f);
+}
+
 static D2D1_POINT_2F RotateGridPoint(const D2D1_POINT_2F& point, float cx, float cy, float angle)
 {
 	const float dx = point.x - cx;
@@ -347,7 +364,7 @@ CursorKind GridView::QueryCursor(int xof, int yof)
 			undermouseIndex.y < static_cast<LONG>(this->Rows.size()) && undermouseIndex.x < static_cast<LONG>(this->Columns.size()))
 		{
 			auto type = this->Columns[static_cast<size_t>(undermouseIndex.x)].Type;
-			if (type == ColumnType::Button || type == ColumnType::Check || type == ColumnType::ComboBox)
+			if (type == ColumnType::Button || type == ColumnType::Check || type == ColumnType::ComboBox || type == ColumnType::LinkedText)
 				return CursorKind::Hand;
 			if (IsEditableTextCell(undermouseIndex.x, undermouseIndex.y))
 				return CursorKind::IBeam;
@@ -1092,6 +1109,20 @@ void GridView::Update()
 							}
 						}
 						break;
+						case ColumnType::LinkedText:
+						{
+							const bool selectedCell = (c == this->SelectedColumnIndex && r == this->SelectedRowIndex);
+							const bool hoverCell = (c == this->UnderMouseColumnIndex && r == this->UnderMouseRowIndex);
+							if (selectedCell || hoverCell)
+								DrawGridCellState(this, d2d, drawX, yf, c_width, _r_height, selectedCell, hoverCell);
+							DrawGridCellLines(d2d, drawX, yf, c_width, _r_height, this->GridLineColor);
+							if (row.Cells.size() > static_cast<size_t>(c))
+							{
+								DrawGridLinkedText(this, d2d, font, row.Cells[static_cast<size_t>(c)].Text,
+									drawX, yf, c_width, _r_height, text_top, hoverCell);
+							}
+						}
+						break;
 						case ColumnType::Button:
 						{
 							// Button：独立样式（WinForms-like），不使用普通单元格的"选中底色"
@@ -1487,6 +1518,7 @@ void GridView::AutoSizeColumn(int col)
 			if (r.Cells.size() > static_cast<size_t>(col))
 			{
 				if (this->Columns[static_cast<size_t>(col)].Type == ColumnType::Text ||
+					this->Columns[static_cast<size_t>(col)].Type == ColumnType::LinkedText ||
 					this->Columns[static_cast<size_t>(col)].Type == ColumnType::Button ||
 					this->Columns[static_cast<size_t>(col)].Type == ColumnType::ComboBox)
 				{
@@ -1519,6 +1551,19 @@ void GridView::ToggleCheckState(int col, int row)
 	auto& cell = this->Rows[row].Cells[col];
 	cell.Tag = __int64(!cell.Tag);
 	this->OnGridViewCheckStateChanged(this, col, row, cell.Tag != 0);
+}
+
+void GridView::RaiseLinkedTextClick(int col, int row)
+{
+	if (col < 0 || row < 0) return;
+	if (col >= static_cast<int>(this->Columns.size()) || row >= static_cast<int>(this->Rows.size())) return;
+	if (this->Columns[static_cast<size_t>(col)].Type != ColumnType::LinkedText) return;
+
+	std::wstring text;
+	auto& rowObj = this->Rows[static_cast<size_t>(row)];
+	if (rowObj.Cells.size() > static_cast<size_t>(col))
+		text = rowObj.Cells[static_cast<size_t>(col)].Text;
+	this->OnGridViewLinkedTextClick(this, col, row, text);
 }
 
 void GridView::EnsureComboBoxCellDefaultSelection(int col, int row)
@@ -2097,6 +2142,27 @@ void GridView::HandleLeftButtonDown(int xof, int yof)
 				return;
 			}
 
+			if (this->Columns[static_cast<size_t>(undermouseIndex.x)].Type == ColumnType::LinkedText)
+			{
+				if (this->Editing)
+					SaveCurrentEditingCell(true);
+				CloseDropDownEditor();
+
+				this->SelectedColumnIndex = undermouseIndex.x;
+				this->SelectedRowIndex = undermouseIndex.y;
+				this->SelectionChanged(this);
+
+				this->_linkedTextMouseDown = true;
+				this->_linkedTextDownColumnIndex = undermouseIndex.x;
+				this->_linkedTextDownRowIndex = undermouseIndex.y;
+				SetCapture(this->ParentForm->Handle);
+
+				MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
+				this->OnMouseDown(this, event_obj);
+				this->PostRender();
+				return;
+			}
+
 			if (this->Editing && undermouseIndex.x == this->EditingColumnIndex && undermouseIndex.y == this->EditingRowIndex)
 			{
 				SetEditingCaretFromMousePoint(xof, yof);
@@ -2167,6 +2233,32 @@ void GridView::HandleLeftButtonUp(int xof, int yof)
 		if (hitSameCell && isButtonCell)
 		{
 			this->OnGridViewButtonClick(this, undermouseIndex.x, undermouseIndex.y);
+		}
+		this->PostRender();
+		return;
+	}
+
+	if (this->_linkedTextMouseDown)
+	{
+		POINT undermouseIndex = GetGridViewUnderMouseItem(xof, yof, this);
+		const bool hitSameCell = (undermouseIndex.x == this->_linkedTextDownColumnIndex && undermouseIndex.y == this->_linkedTextDownRowIndex);
+		const bool validCell = (undermouseIndex.x >= 0 && undermouseIndex.y >= 0 &&
+			undermouseIndex.x < static_cast<LONG>(this->Columns.size()) && undermouseIndex.y < static_cast<LONG>(this->Rows.size()));
+		const bool isLinkedTextCell = validCell && (this->Columns[static_cast<size_t>(undermouseIndex.x)].Type == ColumnType::LinkedText);
+
+		this->_linkedTextMouseDown = false;
+		this->_linkedTextDownColumnIndex = -1;
+		this->_linkedTextDownRowIndex = -1;
+
+		this->InScroll = false;
+		this->InHScroll = false;
+		ReleaseCapture();
+		MouseEventArgs event_obj(MouseButtons::Left, 0, xof, yof, 0);
+		this->OnMouseUp(this, event_obj);
+
+		if (hitSameCell && isLinkedTextCell)
+		{
+			RaiseLinkedTextClick(undermouseIndex.x, undermouseIndex.y);
 		}
 		this->PostRender();
 		return;

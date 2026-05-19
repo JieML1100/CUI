@@ -4,6 +4,7 @@
 #pragma comment(lib, "Imm32.lib")
 typedef Event<void(class GridView*, int c, int r, bool v) > OnGridViewCheckStateChangedEvent;
 typedef Event<void(class GridView*, int c, int r)> OnGridViewButtonClickEvent;
+typedef Event<void(class GridView*, int c, int r, std::wstring text)> OnGridViewLinkedTextClickEvent;
 typedef Event<void(class GridView*, int c, int r, int selectedIndex, std::wstring selectedText)> OnGridViewComboBoxSelectionChangedEvent;
 typedef Event<void(class GridView*, int newRowIndex)> OnGridViewUserAddedRowEvent;
 enum class ColumnType
@@ -13,6 +14,7 @@ enum class ColumnType
 	Check,
 	Button,
 	ComboBox,
+	LinkedText,
 };
 
 /**
@@ -20,7 +22,7 @@ enum class ColumnType
  * @brief GridView：表格控件（列定义 + 行数据 + 编辑/排序/滚动）。
  *
  * 特性概览：
- * - 多列类型：Text/Image/Check/Button/ComboBox
+ * - 多列类型：Text/Image/Check/Button/ComboBox/LinkedText
  * - 支持单元格编辑（文本/组合框）与按钮点击事件
  * - 支持列头点击排序（可为列配置 SortFunc）
  * - 支持平滑滚动（ScrollYOffset）与行级滚动（ScrollRowPosition）
@@ -142,6 +144,8 @@ public:
 	D2D1_COLOR_F SelectedItemForeColor = Colors::Black;
 	D2D1_COLOR_F UnderMouseItemBackColor = { 0.3882f, 0.4000f, 0.9451f, 0.08f };
 	D2D1_COLOR_F UnderMouseItemForeColor = Colors::Black;
+	D2D1_COLOR_F LinkedTextColor = Colors::DeepSkyBlue;
+	D2D1_COLOR_F LinkedTextHoverColor = Colors::SlateBlue;
 	D2D1_COLOR_F ScrollBackColor = Colors::LightGray;
 	D2D1_COLOR_F ScrollForeColor = Colors::DimGrey;
 	D2D1_COLOR_F EditBackColor = Colors::White;
@@ -159,6 +163,7 @@ public:
 	D2D1_COLOR_F NewRowIndicatorColor = Colors::RoyalBlue;           // 新行指示符颜色
 	OnGridViewCheckStateChangedEvent OnGridViewCheckStateChanged;
 	OnGridViewButtonClickEvent OnGridViewButtonClick;
+	OnGridViewLinkedTextClickEvent OnGridViewLinkedTextClick;
 	OnGridViewComboBoxSelectionChangedEvent OnGridViewComboBoxSelectionChanged;
 	OnGridViewUserAddedRowEvent OnUserAddedRow;
 	SelectionChangedEvent SelectionChanged;
@@ -236,6 +241,7 @@ private:
 	void HandleImeComposition(LPARAM lParam);
 	void HandleCellClick(int col, int row);
 	void ToggleCheckState(int col, int row);
+	void RaiseLinkedTextClick(int col, int row);
 	void StartEditingCell(int col, int row);
 	void EnsureComboBoxCellDefaultSelection(int col, int row);
 	void ToggleDropDownEditor(int col, int row);
@@ -268,6 +274,10 @@ private:
 	bool _buttonMouseDown = false;
 	int _buttonDownColumnIndex = -1;
 	int _buttonDownRowIndex = -1;
+
+	bool _linkedTextMouseDown = false;
+	int _linkedTextDownColumnIndex = -1;
+	int _linkedTextDownRowIndex = -1;
 
 	// 新行相关成员变量
 	bool _isUnderNewRow = false;   // 鼠标是否在新行区域
