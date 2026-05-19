@@ -1293,7 +1293,8 @@ void DemoWindow::BuildTabs()
 	auto pSystem = _tabs->AddPage(L"系统集成");
 	auto pWeb = _tabs->AddPage(L"WebBrowser");
 	auto pMedia = _tabs->AddPage(L"MediaPlayer");
-
+	for (int i = 0; i < 32; ++i)
+		_tabs->AddPage(L"占位页");
 	BuildTab_Basic(pBasic);
 	BuildTab_Containers(pContainers);
 	BuildTab_Data(pData);

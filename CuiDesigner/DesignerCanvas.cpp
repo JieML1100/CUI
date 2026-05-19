@@ -1316,10 +1316,21 @@ bool DesignerCanvas::TryHandleTabHeaderClick(POINT ptCanvas)
 	auto r = GetControlRectInCanvas(bestTc);
 	int localX = ptCanvas.x - r.left;
 	int localY = ptCanvas.y - r.top;
+	int scrollButton = bestTc->HitTestTitleScrollButton(localX, localY);
+	if (scrollButton != 0)
+	{
+		bestTc->ScrollTitleBy(scrollButton * (std::max)(1, bestTc->TitleScrollMouseWheelStep));
+		bestTc->PostRender();
+		ClearSelection();
+		AddToSelection(bestDc, true, true);
+		return true;
+	}
+
 	int idx = -1;
 	if (!bestTc->TryGetTitleIndexAt(localX, localY, idx)) return false;
 
 	bestTc->SelectedIndex = idx;
+	bestTc->EnsureTitleVisible(idx);
 	bestTc->PostRender();
 
 	// 切页后：清除之前页上选中的控件，避免选框残留；并把 TabControl 设为当前选中。

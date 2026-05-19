@@ -64,6 +64,14 @@ public:
 	float TitleGap = 3.0f;
 	float TitleInset = 2.0f;
 	float SelectedAccentSize = 3.0f;
+	bool EnableTitleScroll = true;
+	int TitleScrollOffset = 0;
+	int TitleScrollMouseWheelStep = 64;
+	float TitleScrollButtonSize = 24.0f;
+	D2D1_COLOR_F TitleScrollTrackColor = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.12f };
+	D2D1_COLOR_F TitleScrollThumbColor = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.58f };
+	D2D1_COLOR_F TitleScrollButtonBackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.76f };
+	D2D1_COLOR_F TitleScrollButtonHoverBackColor = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.18f };
 	TabControlAnimationMode AnimationMode = TabControlAnimationMode::DirectReplace;
 	TabControlTitlePosition TitlePosition = TabControlTitlePosition::Top;
 	/** @brief 当前选中页索引（0-based）。 */
@@ -76,6 +84,10 @@ public:
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
+	CursorKind QueryCursor(int xof, int yof) override;
+	bool HandlesMouseWheel() const override { return true; }
+	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool HandlesNavigationKey(WPARAM key) const override;
 	READONLY_PROPERTY(int, PageCount);
 	GET(int, PageCount);
 	READONLY_PROPERTY(std::vector<Control*>&, Pages);
@@ -90,6 +102,12 @@ public:
 	 */
 	TabPage* AddPage(std::wstring name);
 	bool TryGetTitleIndexAt(int xof, int yof, int& outIndex);
+	D2D1_RECT_F GetTitleViewportRect();
+	bool IsTitleOverflowing();
+	void SetTitleScrollOffset(int value);
+	void ScrollTitleBy(int delta);
+	void EnsureTitleVisible(int index);
+	int HitTestTitleScrollButton(int xof, int yof);
 	D2D1_RECT_F GetContentRect();
 	std::vector<Control*> GetVisibleScenePages();
 	bool ClipsChildren() override { return true; }
@@ -105,6 +123,17 @@ public:
 	int _lastSelectIndex = -1;
 	int _displayIndex = -1;
 	int _hoverTitleIndex = -1;
+	int _hoverTitleScrollButton = 0;
+	int _pressedTitleScrollButton = 0;
+	int _pressedTitleIndex = -1;
+	bool _dragTitleStrip = false;
+	bool _titleStripDragMoved = false;
+	int _titleDragStartPos = 0;
+	int _titleDragStartOffset = 0;
+	int _lastTitleEnsureIndex = -1;
+	int _lastTitleEnsureCount = -1;
+	float _lastTitleEnsureViewportLength = -1.0f;
+	TabControlTitlePosition _lastTitleEnsurePosition = TabControlTitlePosition::Top;
 	int _animFromIndex = -1;
 	int _animToIndex = -1;
 	ULONGLONG _animStartTick = 0;
@@ -113,6 +142,7 @@ public:
 	bool _animating = false;
 	D2D1_RECT_F GetTitleRect(int index);
 	void ClampSelectedIndex();
+	void ClampTitleScrollOffset();
 	void LayoutPage(TabPage* page, int offsetX, int offsetY = 0);
 	void SyncPageVisibility();
 	void FinishTransition();
