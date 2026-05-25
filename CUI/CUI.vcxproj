@@ -262,6 +262,7 @@
     <ClInclude Include="GUI\StatusBar.h" />
     <ClInclude Include="GUI\SplitContainer.h" />
     <ClInclude Include="GUI\WebBrowser.h" />
+    <ClInclude Include="GUI\TextEditCore.h" />
     <ClInclude Include="GUI\TextBox.h" />
     <ClInclude Include="GUI\TreeView.h" />
     <ClInclude Include="GUI\MediaPlayer.h" />

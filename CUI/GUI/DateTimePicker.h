@@ -91,6 +91,7 @@ private:
 	UINT _animDurationMs = 180;
 	bool _animating = false;
 	bool _collapseCleanupPending = false;
+	bool _renderingForeground = false;
 
 	void EnsureShowFlags();
 	void SyncViewFromValue();
@@ -170,6 +171,9 @@ public:
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
+	bool ContainsForegroundPoint(int localX, int localY) override;
+	bool RenderNormalWhenForeground() const override { return true; }
+	void InvalidateVisual() override;
 
 	PROPERTY(SYSTEMTIME, Value);
 	GET(SYSTEMTIME, Value);
@@ -191,5 +195,6 @@ public:
 	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
 	void Update() override;
+	void UpdateForeground() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

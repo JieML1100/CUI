@@ -2,15 +2,78 @@
 #define NOMINMAX
 #include "RichTextBox.h"
 #include "Form.h"
+#include "TextEditCore.h"
 #include <algorithm>
+#include <cstring>
 #pragma comment(lib, "Imm32.lib")
 
 namespace
 {
+	CuiTextEdit::EditOptions RichEditOptions(bool allowMultiLine)
+	{
+		CuiTextEdit::EditOptions options;
+		options.allowMultiLine = allowMultiLine;
+		return options;
+	}
+
 	void ApplyRichTextWrapping(IDWriteTextLayout* layout)
 	{
 		if (layout)
 			layout->SetWordWrapping(DWRITE_WORD_WRAPPING_CHARACTER);
+	}
+
+	bool TryReadClipboardText(HWND owner, std::wstring& text)
+	{
+		text.clear();
+		if (!OpenClipboard(owner))
+			return false;
+
+		bool success = false;
+		if (IsClipboardFormatAvailable(CF_UNICODETEXT))
+		{
+			HANDLE hClip = GetClipboardData(CF_UNICODETEXT);
+			const wchar_t* clipboardText = hClip ? static_cast<const wchar_t*>(GlobalLock(hClip)) : nullptr;
+			if (clipboardText)
+			{
+				text = clipboardText;
+				GlobalUnlock(hClip);
+				success = true;
+			}
+		}
+		CloseClipboard();
+		return success;
+	}
+
+	bool WriteClipboardText(HWND owner, const std::wstring& text)
+	{
+		if (text.empty() || !OpenClipboard(owner))
+			return false;
+
+		bool success = false;
+		if (EmptyClipboard())
+		{
+			const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+			HGLOBAL hData = GlobalAlloc(GMEM_MOVEABLE, bytes);
+			if (hData)
+			{
+				wchar_t* pData = static_cast<wchar_t*>(GlobalLock(hData));
+				if (pData)
+				{
+					memcpy(pData, text.c_str(), bytes);
+					GlobalUnlock(hData);
+					if (SetClipboardData(CF_UNICODETEXT, hData))
+					{
+						success = true;
+						hData = nullptr;
+					}
+				}
+				if (hData)
+					GlobalFree(hData);
+			}
+		}
+
+		CloseClipboard();
+		return success;
 	}
 }
 
@@ -82,129 +145,48 @@ void RichTextBox::SyncBufferFromControlIfNeeded()
 
 std::wstring RichTextBox::NormalizeLineBreaks(const std::wstring& text) const
 {
-	if (!this->AllowMultiLine || text.empty()) return text;
-
-	std::wstring normalized;
-	normalized.reserve(text.size());
-	for (size_t i = 0; i < text.size(); i++)
-	{
-		wchar_t ch = text[i];
-		if (ch == L'\r')
-		{
-			normalized.append(L"\r\n");
-			if (i + 1 < text.size() && text[i + 1] == L'\n')
-			{
-				i++;
-			}
-		}
-		else if (ch == L'\n')
-		{
-			normalized.append(L"\r\n");
-		}
-		else
-		{
-			normalized.push_back(ch);
-		}
-	}
-	return normalized;
+	return CuiTextEdit::NormalizeInput(text, RichEditOptions(this->AllowMultiLine));
 }
 
 bool RichTextBox::HasCrLfAt(int index) const
 {
-	return index >= 0
-		&& index + 1 < (int)this->buffer.size()
-		&& this->buffer[(size_t)index] == L'\r'
-		&& this->buffer[(size_t)index + 1] == L'\n';
+	return CuiTextEdit::HasCrLfAt(this->buffer, index);
 }
 
 bool RichTextBox::IsCaretBetweenCrLf(int index) const
 {
-	return index > 0
-		&& index < (int)this->buffer.size()
-		&& this->buffer[(size_t)index - 1] == L'\r'
-		&& this->buffer[(size_t)index] == L'\n';
+	return CuiTextEdit::IsBetweenCrLf(this->buffer, index);
 }
 
 int RichTextBox::GetNextCaretIndex(int index) const
 {
-	index = std::clamp(index, 0, (int)this->buffer.size());
-	if (index >= (int)this->buffer.size()) return (int)this->buffer.size();
-	if (HasCrLfAt(index)) return std::min(index + 2, (int)this->buffer.size());
-	if (IsCaretBetweenCrLf(index)) return std::min(index + 1, (int)this->buffer.size());
-	return index + 1;
+	return CuiTextEdit::GetNextCaretIndex(this->buffer, index, this->AllowMultiLine);
 }
 
 int RichTextBox::GetPreviousCaretIndex(int index) const
 {
-	index = std::clamp(index, 0, (int)this->buffer.size());
-	if (index <= 0) return 0;
-	if (index >= 2
-		&& this->buffer[(size_t)index - 2] == L'\r'
-		&& this->buffer[(size_t)index - 1] == L'\n')
-	{
-		return index - 2;
-	}
-	if (IsCaretBetweenCrLf(index)) return index - 1;
-	return index - 1;
+	return CuiTextEdit::GetPreviousCaretIndex(this->buffer, index, this->AllowMultiLine);
 }
 
 void RichTextBox::NormalizeSelectionRangeForErase(int& start, int& end) const
 {
-	start = std::clamp(start, 0, (int)this->buffer.size());
-	end = std::clamp(end, 0, (int)this->buffer.size());
-	if (start > end) std::swap(start, end);
-	if (IsCaretBetweenCrLf(start)) start--;
-	if (IsCaretBetweenCrLf(end)) end++;
-	start = std::clamp(start, 0, (int)this->buffer.size());
-	end = std::clamp(end, 0, (int)this->buffer.size());
+	CuiTextEdit::NormalizeSelectionForTextElements(this->buffer, start, end, this->AllowMultiLine);
 }
 
 bool RichTextBox::GetBackspaceEraseRange(int caretIndex, int& eraseStart, int& eraseLength) const
 {
-	caretIndex = std::clamp(caretIndex, 0, (int)this->buffer.size());
-	if (caretIndex <= 0) return false;
-	if (IsCaretBetweenCrLf(caretIndex))
-	{
-		eraseStart = caretIndex - 1;
-		eraseLength = 2;
-		return true;
-	}
-	if (caretIndex >= 2
-		&& this->buffer[(size_t)caretIndex - 2] == L'\r'
-		&& this->buffer[(size_t)caretIndex - 1] == L'\n')
-	{
-		eraseStart = caretIndex - 2;
-		eraseLength = 2;
-		return true;
-	}
-	eraseStart = caretIndex - 1;
-	eraseLength = 1;
-	return true;
+	return CuiTextEdit::GetBackspaceEraseRange(this->buffer, caretIndex, this->AllowMultiLine, eraseStart, eraseLength);
 }
 
 bool RichTextBox::GetDeleteEraseRange(int caretIndex, int& eraseStart, int& eraseLength) const
 {
-	caretIndex = std::clamp(caretIndex, 0, (int)this->buffer.size());
-	if (caretIndex >= (int)this->buffer.size()) return false;
-	if (IsCaretBetweenCrLf(caretIndex))
-	{
-		eraseStart = caretIndex - 1;
-		eraseLength = 2;
-		return true;
-	}
-	if (HasCrLfAt(caretIndex))
-	{
-		eraseStart = caretIndex;
-		eraseLength = 2;
-		return true;
-	}
-	eraseStart = caretIndex;
-	eraseLength = 1;
-	return true;
+	return CuiTextEdit::GetDeleteEraseRange(this->buffer, caretIndex, this->AllowMultiLine, eraseStart, eraseLength);
 }
 
 void RichTextBox::SyncControlTextFromBuffer(const std::wstring& oldText)
 {
+	if (oldText == this->buffer)
+		return;
 	this->SetTextInternal(this->buffer);
 	this->TextChanged = true;
 	this->OnTextChanged(this, oldText, this->buffer);
@@ -581,53 +563,24 @@ void RichTextBox::SetScrollByPos(float localY)
 void RichTextBox::InputText(std::wstring input)
 {
 	SyncBufferFromControlIfNeeded();
-	input = NormalizeLineBreaks(input);
 	TrimToMaxLength();
-	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
-	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
-
 	std::wstring oldText = this->buffer;
+	const int selStartBefore = this->SelectionStart;
+	const int selEndBefore = this->SelectionEnd;
+	auto result = CuiTextEdit::ReplaceSelection(this->buffer, this->SelectionStart, this->SelectionEnd, input, RichEditOptions(this->AllowMultiLine));
 	UndoRecord rec;
-	bool shouldRecord = false;
-	sels = std::clamp(sels, 0, (int)this->buffer.size());
-	sele = std::clamp(sele, 0, (int)this->buffer.size());
-
-	if (!this->isApplyingUndoRedo && (!input.empty() || sele > sels))
+	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
-		rec.pos = sels;
-		rec.removedText = (sele > sels) ? this->buffer.substr((size_t)sels, (size_t)(sele - sels)) : L"";
-		rec.insertedText = input;
-		rec.selStartBefore = this->SelectionStart;
-		rec.selEndBefore = this->SelectionEnd;
-		shouldRecord = true;
-	}
-	if (sels == sele && sels == (int)this->buffer.size())
-	{
-		this->buffer.append(input);
-		SelectionEnd = SelectionStart = (int)this->buffer.size();
-	}
-	else
-	{
-		if (sele > sels)
-			this->buffer.erase((size_t)sels, (size_t)(sele - sels));
-		this->buffer.insert((size_t)sels, input);
-		SelectionEnd = SelectionStart = sels + (int)input.size();
-	}
-
-	if (!this->AllowMultiLine)
-	{
-		for (auto& ch : this->buffer)
-		{
-			if (ch == L'\r' || ch == L'\n')
-			{
-				ch = L' ';
-			}
-		}
+		rec.pos = result.replaceStart;
+		rec.removedText = result.removedText;
+		rec.insertedText = result.insertedText;
+		rec.selStartBefore = selStartBefore;
+		rec.selEndBefore = selEndBefore;
 	}
 	TrimToMaxLength();
 	this->selRangeDirty = true;
 	this->blocksDirty = true;
-	if (shouldRecord)
+	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
 		rec.selStartAfter = this->SelectionStart;
 		rec.selEndAfter = this->SelectionEnd;
@@ -639,55 +592,22 @@ void RichTextBox::InputText(std::wstring input)
 void RichTextBox::InputBack()
 {
 	SyncBufferFromControlIfNeeded();
-	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
-	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
-	int selLen = sele - sels;
 	std::wstring oldText = this->buffer;
+	const int selStartBefore = this->SelectionStart;
+	const int selEndBefore = this->SelectionEnd;
+	auto result = CuiTextEdit::Backspace(this->buffer, this->SelectionStart, this->SelectionEnd, RichEditOptions(this->AllowMultiLine));
 	UndoRecord rec;
-	bool shouldRecord = false;
-	sels = std::clamp(sels, 0, (int)this->buffer.size());
-	sele = std::clamp(sele, 0, (int)this->buffer.size());
-	NormalizeSelectionRangeForErase(sels, sele);
-	selLen = sele - sels;
-
-	if (selLen > 0)
+	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
-		if (!this->isApplyingUndoRedo)
-		{
-			rec.pos = sels;
-			rec.removedText = this->buffer.substr((size_t)sels, (size_t)selLen);
-			rec.insertedText = L"";
-			rec.selStartBefore = this->SelectionStart;
-			rec.selEndBefore = this->SelectionEnd;
-			shouldRecord = true;
-		}
-		this->SelectionStart = this->SelectionEnd = sels;
-		this->buffer.erase((size_t)sels, (size_t)selLen);
-	}
-	else if (sels > 0)
-	{
-		int eraseStart = 0;
-		int eraseLength = 0;
-		if (!GetBackspaceEraseRange(sels, eraseStart, eraseLength))
-		{
-			SyncControlTextFromBuffer(oldText);
-			return;
-		}
-		if (!this->isApplyingUndoRedo)
-		{
-			rec.pos = eraseStart;
-			rec.removedText = this->buffer.substr((size_t)eraseStart, (size_t)eraseLength);
-			rec.insertedText = L"";
-			rec.selStartBefore = this->SelectionStart;
-			rec.selEndBefore = this->SelectionEnd;
-			shouldRecord = true;
-		}
-		this->buffer.erase((size_t)eraseStart, (size_t)eraseLength);
-		this->SelectionStart = this->SelectionEnd = eraseStart;
+		rec.pos = result.replaceStart;
+		rec.removedText = result.removedText;
+		rec.insertedText = L"";
+		rec.selStartBefore = selStartBefore;
+		rec.selEndBefore = selEndBefore;
 	}
 	this->selRangeDirty = true;
 	this->blocksDirty = true;
-	if (shouldRecord)
+	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
 		rec.selStartAfter = this->SelectionStart;
 		rec.selEndAfter = this->SelectionEnd;
@@ -699,55 +619,22 @@ void RichTextBox::InputBack()
 void RichTextBox::InputDelete()
 {
 	SyncBufferFromControlIfNeeded();
-	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
-	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
-	int selLen = sele - sels;
 	std::wstring oldText = this->buffer;
+	const int selStartBefore = this->SelectionStart;
+	const int selEndBefore = this->SelectionEnd;
+	auto result = CuiTextEdit::DeleteForward(this->buffer, this->SelectionStart, this->SelectionEnd, RichEditOptions(this->AllowMultiLine));
 	UndoRecord rec;
-	bool shouldRecord = false;
-	sels = std::clamp(sels, 0, (int)this->buffer.size());
-	sele = std::clamp(sele, 0, (int)this->buffer.size());
-	NormalizeSelectionRangeForErase(sels, sele);
-	selLen = sele - sels;
-
-	if (selLen > 0)
+	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
-		if (!this->isApplyingUndoRedo)
-		{
-			rec.pos = sels;
-			rec.removedText = this->buffer.substr((size_t)sels, (size_t)selLen);
-			rec.insertedText = L"";
-			rec.selStartBefore = this->SelectionStart;
-			rec.selEndBefore = this->SelectionEnd;
-			shouldRecord = true;
-		}
-		this->SelectionStart = this->SelectionEnd = sels;
-		this->buffer.erase((size_t)sels, (size_t)selLen);
-	}
-	else if (sels < (int)this->buffer.size())
-	{
-		int eraseStart = 0;
-		int eraseLength = 0;
-		if (!GetDeleteEraseRange(sels, eraseStart, eraseLength))
-		{
-			SyncControlTextFromBuffer(oldText);
-			return;
-		}
-		if (!this->isApplyingUndoRedo)
-		{
-			rec.pos = eraseStart;
-			rec.removedText = this->buffer.substr((size_t)eraseStart, (size_t)eraseLength);
-			rec.insertedText = L"";
-			rec.selStartBefore = this->SelectionStart;
-			rec.selEndBefore = this->SelectionEnd;
-			shouldRecord = true;
-		}
-		this->buffer.erase((size_t)eraseStart, (size_t)eraseLength);
-		this->SelectionStart = this->SelectionEnd = eraseStart;
+		rec.pos = result.replaceStart;
+		rec.removedText = result.removedText;
+		rec.insertedText = L"";
+		rec.selStartBefore = selStartBefore;
+		rec.selEndBefore = selEndBefore;
 	}
 	this->selRangeDirty = true;
 	this->blocksDirty = true;
-	if (shouldRecord)
+	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
 		rec.selStartAfter = this->SelectionStart;
 		rec.selEndAfter = this->SelectionEnd;
@@ -879,15 +766,10 @@ void RichTextBox::AppendLine(std::wstring str)
 std::wstring RichTextBox::GetSelectedString()
 {
 	SyncBufferFromControlIfNeeded();
-	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
-	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
-	if (sele > sels)
-	{
-		sels = std::clamp(sels, 0, (int)this->buffer.size());
-		sele = std::clamp(sele, 0, (int)this->buffer.size());
-		return this->buffer.substr((size_t)sels, (size_t)(sele - sels));
-	}
-	return L"";
+	auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->buffer.size());
+	if (!span.HasSelection())
+		return L"";
+	return this->buffer.substr(static_cast<size_t>(span.start), static_cast<size_t>(span.Length()));
 }
 void RichTextBox::Update()
 {
@@ -1170,7 +1052,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			if (this->ParentForm->Selected != this)
 			{
 				auto previousSelection = this->ParentForm->Selected;
-				this->ParentForm->Selected = this;
+				this->ParentForm->SetSelectedControl(this, false);
 				if (previousSelection) previousSelection->InvalidateVisual();
 			}
 			if (localX >= Width - 8 && localX <= Width)
@@ -1237,7 +1119,21 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	break;
 	case WM_LBUTTONDBLCLK:
 	{
-		this->ParentForm->Selected = this;
+		this->ParentForm->SetSelectedControl(this, false);
+		SyncBufferFromControlIfNeeded();
+		UpdateLayout();
+		int hitIndex = 0;
+		if (this->_isVirtualized)
+			hitIndex = HitTestGlobalIndex((float)localX, (float)localY);
+		else
+			hitIndex = this->Font->HitTestTextPosition(this->_textLayoutCache, localX - TextMargin, (localY + this->VerticalScrollOffset) - TextMargin);
+		hitIndex = std::clamp(hitIndex, 0, (int)this->buffer.size());
+		this->SelectionStart = CuiTextEdit::GetLineStartIndex(this->buffer, hitIndex);
+		this->SelectionEnd = CuiTextEdit::GetLineEndIndex(this->buffer, hitIndex);
+		if (this->SelectionStart == this->SelectionEnd && this->SelectionEnd < (int)this->buffer.size())
+			this->SelectionEnd = GetNextCaretIndex(this->SelectionEnd);
+		this->selRangeDirty = true;
+		UpdateScroll();
 		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
 		this->OnMouseDoubleClick(this, eventArgs);
 		this->InvalidateVisual();
@@ -1290,34 +1186,38 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 		else if (wParam == VK_RIGHT)
 		{
-			if (this->SelectionEnd < (int)this->buffer.size())
+			const bool extendSelection = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+			auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->buffer.size());
+			if (!extendSelection && span.HasSelection())
+			{
+				this->SelectionStart = this->SelectionEnd = span.end;
+				this->selRangeDirty = true;
+				UpdateScroll();
+			}
+			else if (this->SelectionEnd < (int)this->buffer.size())
 			{
 				this->SelectionEnd = GetNextCaretIndex(this->SelectionEnd);
-				if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-				{
+				if (!extendSelection)
 					this->SelectionStart = this->SelectionEnd;
-				}
-				if (this->SelectionEnd > (int)this->buffer.size())
-				{
-					this->SelectionEnd = (int)this->buffer.size();
-				}
 				this->selRangeDirty = true;
 				UpdateScroll();
 			}
 		}
 		else if (wParam == VK_LEFT)
 		{
-			if (this->SelectionEnd > 0)
+			const bool extendSelection = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+			auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->buffer.size());
+			if (!extendSelection && span.HasSelection())
+			{
+				this->SelectionStart = this->SelectionEnd = span.start;
+				this->selRangeDirty = true;
+				UpdateScroll();
+			}
+			else if (this->SelectionEnd > 0)
 			{
 				this->SelectionEnd = GetPreviousCaretIndex(this->SelectionEnd);
-				if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-				{
+				if (!extendSelection)
 					this->SelectionStart = this->SelectionEnd;
-				}
-				if (this->SelectionEnd < 0)
-				{
-					this->SelectionEnd = 0;
-				}
 				this->selRangeDirty = true;
 				UpdateScroll();
 			}
@@ -1374,29 +1274,19 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 		else if (wParam == VK_HOME)
 		{
-			this->SelectionEnd = 0;
+			const bool controlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+			this->SelectionEnd = controlDown ? 0 : CuiTextEdit::GetLineStartIndex(this->buffer, this->SelectionEnd);
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-			{
 				this->SelectionStart = this->SelectionEnd;
-			}
-			if (this->SelectionEnd < 0)
-			{
-				this->SelectionEnd = 0;
-			}
 			this->selRangeDirty = true;
 			UpdateScroll();
 		}
 		else if (wParam == VK_END)
 		{
-			this->SelectionEnd = (int)this->buffer.size();
-			if (this->SelectionEnd > (int)this->buffer.size())
-			{
-				this->SelectionEnd = (int)this->buffer.size();
-			}
+			const bool controlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+			this->SelectionEnd = controlDown ? (int)this->buffer.size() : CuiTextEdit::GetLineEndIndex(this->buffer, this->SelectionEnd);
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-			{
 				this->SelectionStart = this->SelectionEnd;
-			}
 			this->selRangeDirty = true;
 			UpdateScroll();
 		}
@@ -1458,7 +1348,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	case WM_CHAR:
 	{
 		wchar_t ch = (wchar_t)(wParam);
-		if (ch >= 32 && ch <= 126)
+		if (CuiTextEdit::IsTextInputChar(ch))
 		{
 			if (!this->ReadOnly)
 			{
@@ -1493,53 +1383,27 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 		else if (ch == 22)
 		{
-			if (!this->ReadOnly && OpenClipboard(this->ParentForm->Handle))
+			std::wstring clipboardText;
+			if (!this->ReadOnly && TryReadClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, clipboardText))
 			{
-				if (IsClipboardFormatAvailable(CF_UNICODETEXT))
-				{
-					HANDLE hClip = GetClipboardData(CF_UNICODETEXT);
-					const wchar_t* clipboardText = hClip ? (const wchar_t*)GlobalLock(hClip) : nullptr;
-					if (clipboardText)
-					{
-						this->InputText(std::wstring(clipboardText));
-						GlobalUnlock(hClip);
-					}
-					UpdateScroll();
-					CloseClipboard();
-				}
+				this->InputText(clipboardText);
+				UpdateScroll();
 			}
 		}
 		else if (ch == 3)
 		{
 			std::wstring s = this->GetSelectedString();
-			if (s.size() > 0 && OpenClipboard(this->ParentForm->Handle))
-			{
-				EmptyClipboard();
-				const size_t bytes = (s.size() + 1) * sizeof(wchar_t);
-				HANDLE hData = GlobalAlloc(GMEM_MOVEABLE, bytes);
-				wchar_t* pData = (wchar_t*)GlobalLock(hData);
-				memcpy(pData, s.c_str(), bytes);
-				GlobalUnlock(hData);
-				SetClipboardData(CF_UNICODETEXT, hData);
-				CloseClipboard();
-			}
+			WriteClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, s);
 		}
 		else if (ch == 24)
 		{
 			std::wstring s = this->GetSelectedString();
-			if (s.size() > 0 && OpenClipboard(this->ParentForm->Handle))
-			{
-				EmptyClipboard();
-				const size_t bytes = (s.size() + 1) * sizeof(wchar_t);
-				HANDLE hData = GlobalAlloc(GMEM_MOVEABLE, bytes);
-				wchar_t* pData = (wchar_t*)GlobalLock(hData);
-				memcpy(pData, s.c_str(), bytes);
-				GlobalUnlock(hData);
-				SetClipboardData(CF_UNICODETEXT, hData);
-				CloseClipboard();
-			}
+			WriteClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, s);
 			if (!this->ReadOnly)
+			{
 				this->InputBack();
+				UpdateScroll();
+			}
 		}
 		this->InvalidateVisual();
 	}
@@ -1550,29 +1414,8 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			return true;
 		if (lParam & GCS_RESULTSTR)
 		{
-			HIMC imeContext = ImmGetContext(this->ParentForm->Handle);
-			if (imeContext)
-			{
-				DWORD byteCount = ImmGetCompositionStringW(imeContext, GCS_RESULTSTR, nullptr, 0);
-				if (byteCount > 0)
-				{
-					std::wstring buffer;
-					buffer.resize(byteCount / sizeof(wchar_t));
-					ImmGetCompositionStringW(imeContext, GCS_RESULTSTR, buffer.data(), byteCount);
-					std::wstring filteredText;
-					filteredText.reserve(buffer.size());
-					for (wchar_t character : buffer)
-					{
-						if (character > 255) filteredText.push_back(character);
-					}
-					if (!filteredText.empty())
-					{
-						this->InputText(filteredText);
-					}
-				}
-				ImmReleaseContext(this->ParentForm->Handle, imeContext);
-			}
-			UpdateScroll();
+			// Unicode windows receive committed IME text through WM_CHAR as well.
+			// Keep the edit mutation in one path to avoid duplicate characters.
 			this->InvalidateVisual();
 		}
 	}

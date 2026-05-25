@@ -198,7 +198,7 @@ bool DateTimePicker::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 
 SIZE DateTimePicker::ActualSize()
 {
-	if (!IsDropDownVisible())
+	if (!_renderingForeground || !IsDropDownVisible())
 		return this->Size;
 
 	LayoutMetrics layout{};
@@ -208,6 +208,51 @@ SIZE DateTimePicker::ActualSize()
 	SIZE sz = this->Size;
 	sz.cy += (LONG)std::ceil(std::max(0.0f, this->DropGap) + layout.dropHeight * CurrentDropProgress());
 	return sz;
+}
+
+bool DateTimePicker::ContainsForegroundPoint(int localX, int localY)
+{
+	if (IsInlineTimeMode() || !IsDropDownVisible())
+		return false;
+	LayoutMetrics layout{};
+	if (!GetLayoutMetrics(layout))
+		return false;
+	const float dropTop = DropdownTop();
+	const float visibleDropH = layout.dropHeight * CurrentDropProgress();
+	return localX >= 0 && localX <= this->Width &&
+		(float)localY >= dropTop && (float)localY <= dropTop + visibleDropH;
+}
+
+void DateTimePicker::InvalidateVisual()
+{
+	if (!this->IsVisual || !this->ParentForm) return;
+	const float titleBarOffset = (this->ParentForm->VisibleHead ? (float)this->ParentForm->HeadHeight : 0.0f);
+	auto currentRect = this->AbsRect;
+	if ((IsDropDownVisible() || _collapseCleanupPending) && !IsInlineTimeMode())
+	{
+		LayoutMetrics layout{};
+		if (GetLayoutMetrics(layout))
+			currentRect.bottom += std::max(0.0f, this->DropGap) + layout.dropHeight;
+	}
+	currentRect.top += titleBarOffset;
+	currentRect.bottom += titleBarOffset;
+
+	if (_hasLastInvalidatedClientRect)
+	{
+		D2D1_RECT_F unionRect{};
+		unionRect.left = (std::min)(_lastInvalidatedClientRect.left, currentRect.left);
+		unionRect.top = (std::min)(_lastInvalidatedClientRect.top, currentRect.top);
+		unionRect.right = (std::max)(_lastInvalidatedClientRect.right, currentRect.right);
+		unionRect.bottom = (std::max)(_lastInvalidatedClientRect.bottom, currentRect.bottom);
+		this->ParentForm->Invalidate(unionRect, false);
+	}
+	else
+	{
+		this->ParentForm->Invalidate(currentRect, false);
+	}
+
+	_lastInvalidatedClientRect = currentRect;
+	_hasLastInvalidatedClientRect = true;
 }
 
 CursorKind DateTimePicker::QueryCursor(int localX, int localY)
@@ -540,6 +585,33 @@ void DateTimePicker::Update()
 	this->EndRender();
 	if (!_animating && _dropProgress <= 0.001f)
 		_collapseCleanupPending = false;
+}
+
+void DateTimePicker::UpdateForeground()
+{
+	if (!this->IsVisual || IsInlineTimeMode()) return;
+	auto d2d = this->ParentForm ? this->ParentForm->Render : nullptr;
+	if (!d2d) return;
+
+	LayoutMetrics layout{};
+	const float dropProgress = CurrentDropProgress();
+	if (!GetLayoutMetrics(layout) || dropProgress <= 0.001f)
+	{
+		if (!_animating && _dropProgress <= 0.001f)
+			_collapseCleanupPending = false;
+		return;
+	}
+
+	auto abs = this->AbsLocation;
+	d2d->PushDrawRect(
+		static_cast<float>(abs.x),
+		static_cast<float>(abs.y) + DropdownTop(),
+		static_cast<float>(this->Width),
+		layout.dropHeight * dropProgress);
+	_renderingForeground = true;
+	this->Update();
+	_renderingForeground = false;
+	d2d->PopDrawRect();
 }
 
 bool DateTimePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)

@@ -724,12 +724,54 @@ bool DateRangePicker::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 SIZE DateRangePicker::ActualSize()
 {
 	SIZE sz = this->_size;
-	if (!IsDropDownVisible())
+	if (!_renderingForeground || !IsDropDownVisible())
 		return sz;
 	auto layout = CalcLayout();
 	sz.cx = (LONG)(std::max)((float)sz.cx, RectWidth(layout.DropRect));
 	sz.cy += (LONG)std::ceil((std::max)(0.0f, this->DropGap) + layout.DropHeight * CurrentDropProgress());
 	return sz;
+}
+
+bool DateRangePicker::ContainsForegroundPoint(int localX, int localY)
+{
+	if (!IsDropDownVisible())
+		return false;
+	auto layout = CalcLayout();
+	D2D1_RECT_F visibleDrop = layout.DropRect;
+	visibleDrop.bottom = visibleDrop.top + layout.DropHeight * CurrentDropProgress();
+	return PtInRectF(visibleDrop, (float)localX, (float)localY);
+}
+
+void DateRangePicker::InvalidateVisual()
+{
+	if (!this->IsVisual || !this->ParentForm) return;
+	const float titleBarOffset = (this->ParentForm->VisibleHead ? (float)this->ParentForm->HeadHeight : 0.0f);
+	auto currentRect = this->AbsRect;
+	if (IsDropDownVisible() || _collapseCleanupPending)
+	{
+		auto layout = CalcLayout();
+		currentRect.right = currentRect.left + (std::max)((float)this->_size.cx, RectWidth(layout.DropRect));
+		currentRect.bottom += (std::max)(0.0f, this->DropGap) + layout.DropHeight;
+	}
+	currentRect.top += titleBarOffset;
+	currentRect.bottom += titleBarOffset;
+
+	if (_hasLastInvalidatedClientRect)
+	{
+		D2D1_RECT_F unionRect{};
+		unionRect.left = (std::min)(_lastInvalidatedClientRect.left, currentRect.left);
+		unionRect.top = (std::min)(_lastInvalidatedClientRect.top, currentRect.top);
+		unionRect.right = (std::max)(_lastInvalidatedClientRect.right, currentRect.right);
+		unionRect.bottom = (std::max)(_lastInvalidatedClientRect.bottom, currentRect.bottom);
+		this->ParentForm->Invalidate(unionRect, false);
+	}
+	else
+	{
+		this->ParentForm->Invalidate(currentRect, false);
+	}
+
+	_lastInvalidatedClientRect = currentRect;
+	_hasLastInvalidatedClientRect = true;
 }
 
 DateRangePicker::Layout DateRangePicker::CalcLayout() const
@@ -1083,6 +1125,33 @@ void DateRangePicker::Update()
 	this->EndRender();
 	if (!_animating && _dropProgress <= 0.001f)
 		_collapseCleanupPending = false;
+}
+
+void DateRangePicker::UpdateForeground()
+{
+	if (!this->IsVisual) return;
+	auto d2d = this->ParentForm ? this->ParentForm->Render : nullptr;
+	if (!d2d) return;
+
+	auto layout = CalcLayout();
+	const float dropProgress = CurrentDropProgress();
+	if (dropProgress <= 0.001f || layout.DropHeight <= 0.0f)
+	{
+		if (!_animating && _dropProgress <= 0.001f)
+			_collapseCleanupPending = false;
+		return;
+	}
+
+	auto abs = this->AbsLocation;
+	d2d->PushDrawRect(
+		static_cast<float>(abs.x) + layout.DropRect.left,
+		static_cast<float>(abs.y) + layout.DropRect.top,
+		RectWidth(layout.DropRect),
+		layout.DropHeight * dropProgress);
+	_renderingForeground = true;
+	this->Update();
+	_renderingForeground = false;
+	d2d->PopDrawRect();
 }
 
 bool DateRangePicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)

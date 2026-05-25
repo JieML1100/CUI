@@ -3,7 +3,7 @@
 
 /**
  * @file NumericUpDown.h
- * @brief NumericUpDown：带步进按钮的数值输入控件。
+ * @brief NumericUpDown：TextBox + Up/Down 步进按钮形态的数值输入控件。
  */
 
 typedef Event<void(class NumericUpDown*, double oldValue, double newValue)> NumericUpDownValueChangedEvent;
@@ -14,31 +14,60 @@ private:
 	double _min = 0.0;
 	double _max = 100.0;
 	double _value = 0.0;
-	std::wstring _editText;
 	bool _editing = false;
+	bool _dragText = false;
 	bool _dragUp = false;
 	bool _dragDown = false;
 	int _hoverButton = 0;
 	float _hoverProgress = 0.0f;
 	float _targetHoverProgress = 0.0f;
-	bool _selectAllPending = false;
 	ULONGLONG _animStartTick = 0;
 	float _animStartProgress = 0.0f;
 	bool _animating = false;
 	UINT _animDurationMs = 120;
+	D2D1_RECT_F _caretRectCache = { 0,0,0,0 };
+	bool _caretRectCacheValid = false;
+
+	struct UndoRecord
+	{
+		int pos = 0;
+		std::wstring removedText;
+		std::wstring insertedText;
+		int selStartBefore = 0;
+		int selEndBefore = 0;
+		int selStartAfter = 0;
+		int selEndAfter = 0;
+	};
+
+	std::vector<UndoRecord> undoStack;
+	std::vector<UndoRecord> redoStack;
+	bool isApplyingUndoRedo = false;
 
 	double ClampValue(double value) const;
 	double SnapValue(double value) const;
 	void SetValueInternal(double value, bool fireEvent);
 	void SyncTextFromValue();
+	bool TryParseEditText(const std::wstring& text, double& value) const;
+	bool IsEditTextAllowed(const std::wstring& text) const;
 	bool CommitEdit();
 	void CancelEdit();
-	void BeginEdit();
+	void BeginEdit(bool selectAll);
+	void SelectAllText();
+	void InputText(std::wstring input);
+	void InputBack();
+	void InputDelete();
+	void UpdateScroll(bool arrival = false);
+	void ApplyUndoRecord(const UndoRecord& rec, bool isUndo);
+	void Undo();
+	void Redo();
+	std::wstring GetSelectedString();
+	void UpdateImeCompositionWindow();
 	D2D1_RECT_F ButtonPanelRect() const;
 	D2D1_RECT_F UpButtonRect() const;
 	D2D1_RECT_F DownButtonRect() const;
 	D2D1_RECT_F TextRect() const;
 	int HitTestButton(int localX, int localY) const;
+	int HitTestTextPosition(int localX, int localY);
 	void StepBy(int direction);
 	void StartHoverAnimation(float target);
 	float CurrentHoverProgress();
@@ -60,6 +89,10 @@ public:
 	bool SnapToStep = true;
 	bool SelectAllOnFocus = true;
 	bool UseMouseWheel = true;
+	int SelectionStart = 0;
+	int SelectionEnd = 0;
+	float HorizontalScrollOffset = 0.0f;
+	D2D1_SIZE_F textSize = { 0,0 };
 
 	D2D1_COLOR_F PanelBackColor = Colors::WhiteSmoke;
 	D2D1_COLOR_F ButtonBackColor = D2D1_COLOR_F{ 0.92f, 0.94f, 0.98f, 0.95f };
@@ -67,6 +100,8 @@ public:
 	D2D1_COLOR_F ButtonPressedColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.20f };
 	D2D1_COLOR_F AccentColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.95f };
 	D2D1_COLOR_F FocusBorderColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.80f };
+	D2D1_COLOR_F SelectedBackColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.34f };
+	D2D1_COLOR_F SelectedForeColor = Colors::White;
 	D2D1_COLOR_F MutedTextColor = Colors::DimGrey;
 	D2D1_COLOR_F DisabledOverlayColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f };
 

@@ -238,37 +238,52 @@ ColorPickerPopup::Layout ColorPickerPopup::CalcLayout() const
 	Layout layout{};
 	const float w = (float)this->_size.cx;
 	const float h = (float)this->_size.cy;
-	const float pad = 16.0f;
+	const float pad = 14.0f;
 	const float hueW = 18.0f;
-	layout.SvRect = D2D1::RectF(pad, pad, std::max(pad + 40.0f, w - pad - hueW - 14.0f), std::max(pad + 80.0f, h - 140.0f));
-	layout.HueRect = D2D1::RectF(layout.SvRect.right + 12.0f, layout.SvRect.top, layout.SvRect.right + 12.0f + hueW, layout.SvRect.bottom);
-	layout.AlphaRect = D2D1::RectF(pad, layout.SvRect.bottom + 12.0f, layout.HueRect.right, layout.SvRect.bottom + 30.0f);
-	float swatchY = layout.AlphaRect.bottom + 12.0f;
+	const float hueGap = 10.0f;
+	const float alphaH = 16.0f;
+	const float buttonH = 32.0f;
+	const float swatchSize = 28.0f;
+	const float swatchStep = 38.0f;
+	const float bottomY = std::max(pad, h - pad - buttonH);
+
 	auto common = CommonColorValues();
-	int swatchCols = std::max(1, (int)std::floor((w - pad * 2.0f + 12.0f) / 42.0f));
+	const int historyCount = std::min(10, (int)g_colorHistory.size());
+	const float swatchAvailable = std::max(1.0f, w - pad * 2.0f);
+	int swatchCols = std::max(1, (int)std::floor((swatchAvailable - swatchSize) / swatchStep) + 1);
+	const int commonRows = common.empty() ? 0 : ((int)common.size() + swatchCols - 1) / swatchCols;
+	const int historyRows = historyCount <= 0 ? 0 : (historyCount + swatchCols - 1) / swatchCols;
+	const int paletteRows = commonRows + historyRows;
+	const float paletteHeight = paletteRows <= 0 ? 0.0f : swatchSize + (paletteRows - 1) * swatchStep;
+	const float swatchY = std::max(pad + 120.0f, bottomY - 10.0f - paletteHeight);
+	const float alphaTop = std::max(pad + 100.0f, swatchY - 10.0f - alphaH);
+	const float svBottom = std::max(pad + 80.0f, alphaTop - 10.0f);
+	const float svRight = std::max(pad + 80.0f, w - pad - hueW - hueGap);
+
+	layout.SvRect = D2D1::RectF(pad, pad, svRight, svBottom);
+	layout.HueRect = D2D1::RectF(layout.SvRect.right + hueGap, layout.SvRect.top, layout.SvRect.right + hueGap + hueW, layout.SvRect.bottom);
+	layout.AlphaRect = D2D1::RectF(pad, alphaTop, layout.HueRect.right, alphaTop + alphaH);
 	for (int i = 0; i < (int)common.size(); i++)
 	{
 		int row = i / swatchCols;
 		int col = i % swatchCols;
-		float x = pad + col * 42.0f;
-		float y = swatchY + row * 40.0f;
-		layout.CommonRects.push_back(D2D1::RectF(x, y, x + 30.0f, y + 30.0f));
+		float x = pad + col * swatchStep;
+		float y = swatchY + row * swatchStep;
+		layout.CommonRects.push_back(D2D1::RectF(x, y, x + swatchSize, y + swatchSize));
 	}
-	float historyY = swatchY + ((int)common.size() + swatchCols - 1) / swatchCols * 40.0f;
-	int historyCount = std::min(10, (int)g_colorHistory.size());
+	float historyY = swatchY + commonRows * swatchStep;
 	for (int i = 0; i < historyCount; i++)
 	{
 		int row = i / swatchCols;
 		int col = i % swatchCols;
-		float x = pad + col * 42.0f;
-		float y = historyY + row * 40.0f;
-		layout.HistoryRects.push_back(D2D1::RectF(x, y, x + 30.0f, y + 30.0f));
+		float x = pad + col * swatchStep;
+		float y = historyY + row * swatchStep;
+		layout.HistoryRects.push_back(D2D1::RectF(x, y, x + swatchSize, y + swatchSize));
 	}
-	float bottomY = h - 48.0f;
-	layout.OkRect = D2D1::RectF(std::max(pad, w - 70.0f), bottomY, std::max(pad + 54.0f, w - 16.0f), bottomY + 34.0f);
-	layout.ClearRect = D2D1::RectF(std::max(pad, layout.OkRect.left - 72.0f), bottomY, std::max(pad + 60.0f, layout.OkRect.left - 12.0f), bottomY + 34.0f);
-	float inputRight = std::min(pad + 240.0f, layout.ClearRect.left - 16.0f);
-	layout.InputRect = D2D1::RectF(pad, bottomY, std::max(pad + 80.0f, inputRight), bottomY + 34.0f);
+	layout.OkRect = D2D1::RectF(std::max(pad, w - pad - 56.0f), bottomY, std::max(pad + 54.0f, w - pad), bottomY + buttonH);
+	layout.ClearRect = D2D1::RectF(std::max(pad, layout.OkRect.left - 74.0f), bottomY, std::max(pad + 60.0f, layout.OkRect.left - 12.0f), bottomY + buttonH);
+	float inputRight = std::min(pad + 220.0f, layout.ClearRect.left - 14.0f);
+	layout.InputRect = D2D1::RectF(pad, bottomY, std::max(pad + 80.0f, inputRight), bottomY + buttonH);
 	return layout;
 }
 

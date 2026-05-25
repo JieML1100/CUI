@@ -2,17 +2,48 @@
 #define NOMINMAX
 #include "PasswordBox.h"
 #include "Form.h"
+#include "TextEditCore.h"
+#include <cstring>
 #pragma comment(lib, "Imm32.lib")
 
 namespace
 {
-	std::wstring BuildTextFromBuffer(std::vector<wchar_t>& buffer)
+	CuiTextEdit::EditOptions PasswordEditOptions()
 	{
-		if (buffer.empty() || buffer.back() != L'\0')
+		CuiTextEdit::EditOptions options;
+		options.allowMultiLine = false;
+		return options;
+	}
+
+	void CommitTextChange(Control* control, const std::wstring& oldText, const std::wstring& newText)
+	{
+		if (!control || oldText == newText)
+			return;
+		control->SetTextInternal(newText);
+		control->TextChanged = true;
+		control->OnTextChanged(control, oldText, newText);
+	}
+
+	bool TryReadClipboardText(HWND owner, std::wstring& text)
+	{
+		text.clear();
+		if (!OpenClipboard(owner))
+			return false;
+
+		bool success = false;
+		if (IsClipboardFormatAvailable(CF_UNICODETEXT))
 		{
-			buffer.push_back(L'\0');
+			HANDLE hClip = GetClipboardData(CF_UNICODETEXT);
+			const wchar_t* clipboardText = hClip ? static_cast<const wchar_t*>(GlobalLock(hClip)) : nullptr;
+			if (clipboardText)
+			{
+				text = clipboardText;
+				GlobalUnlock(hClip);
+				success = true;
+			}
 		}
-		return std::wstring(buffer.data());
+		CloseClipboard();
+		return success;
 	}
 }
 
@@ -39,112 +70,24 @@ PasswordBox::PasswordBox(std::wstring text, int x, int y, int width, int height)
 }
 void PasswordBox::InputText(std::wstring input)
 {
-	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
-	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
-	int textLength = static_cast<int>(this->Text.size());
-	int inputLength = static_cast<int>(input.size());
-	if (sele >= textLength && sels >= textLength)
-	{
-		this->Text += input;
-		SelectionEnd = SelectionStart = static_cast<int>(this->Text.size());
-	}
-	else
-	{
-		std::vector<wchar_t> editBuffer = std::vector<wchar_t>();
-		editBuffer.insert(editBuffer.end(), this->_text.begin(), this->_text.end());
-		if (sele > sels)
-		{
-			int removeLength = sele - sels;
-			for (int i = 0; i < removeLength; i++)
-			{
-				editBuffer.erase(editBuffer.begin() + sels);
-			}
-			for (int i = 0; i < inputLength; i++)
-			{
-				editBuffer.insert(editBuffer.begin() + sels + i, input[i]);
-			}
-			SelectionEnd = SelectionStart = sels + inputLength;
-			this->Text = BuildTextFromBuffer(editBuffer);
-		}
-		else if (sele == sels && sele >= 0)
-		{
-			for (int i = 0; i < inputLength; i++)
-			{
-				editBuffer.insert(editBuffer.begin() + sels + i, input[i]);
-			}
-			SelectionEnd += inputLength;
-			SelectionStart += inputLength;
-			this->Text = BuildTextFromBuffer(editBuffer);
-		}
-		else
-		{
-			this->Text += input;
-			SelectionEnd = SelectionStart = static_cast<int>(this->Text.size());
-		}
-	}
-	std::vector<wchar_t> editBuffer = std::vector<wchar_t>();
-	editBuffer.insert(editBuffer.end(), this->_text.begin(), this->_text.end());
-	editBuffer.push_back(L'\0');
-	for (size_t i = 0; i < editBuffer.size(); i++)
-	{
-		if (editBuffer[i] == L'\r' || editBuffer[i] == L'\n')
-		{
-			editBuffer[i] = L' ';
-		}
-	}
-	this->Text = BuildTextFromBuffer(editBuffer);
+	std::wstring oldText = this->Text;
+	std::wstring newText = this->Text;
+	CuiTextEdit::ReplaceSelection(newText, this->SelectionStart, this->SelectionEnd, input, PasswordEditOptions());
+	CommitTextChange(this, oldText, newText);
 }
 void PasswordBox::InputBack()
 {
-	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
-	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
-	int selLen = sele - sels;
-	if (selLen > 0)
-	{
-		std::vector<wchar_t> editBuffer = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
-		for (int i = 0; i < selLen; i++)
-		{
-			editBuffer.erase(editBuffer.begin() + sels);
-		}
-		this->SelectionStart = this->SelectionEnd = sels;
-		this->Text = BuildTextFromBuffer(editBuffer);
-	}
-	else
-	{
-		if (sels > 0)
-		{
-			std::vector<wchar_t> editBuffer = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
-			editBuffer.erase(editBuffer.begin() + sels - 1);
-			this->SelectionStart = this->SelectionEnd = sels - 1;
-			this->Text = BuildTextFromBuffer(editBuffer);
-		}
-	}
+	std::wstring oldText = this->Text;
+	std::wstring newText = this->Text;
+	CuiTextEdit::Backspace(newText, this->SelectionStart, this->SelectionEnd, PasswordEditOptions());
+	CommitTextChange(this, oldText, newText);
 }
 void PasswordBox::InputDelete()
 {
-	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
-	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
-	int selLen = sele - sels;
-	if (selLen > 0)
-	{
-		std::vector<wchar_t> editBuffer = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
-		for (int i = 0; i < selLen; i++)
-		{
-			editBuffer.erase(editBuffer.begin() + sels);
-		}
-		this->SelectionStart = this->SelectionEnd = sels;
-		this->Text = BuildTextFromBuffer(editBuffer);
-	}
-	else
-	{
-		if (sels < static_cast<int>(this->Text.size()))
-		{
-			std::vector<wchar_t> editBuffer = std::vector<wchar_t>(this->_text.begin(), this->_text.end());
-			editBuffer.erase(editBuffer.begin() + sels);
-			this->SelectionStart = this->SelectionEnd = sels;
-			this->Text = BuildTextFromBuffer(editBuffer);
-		}
-	}
+	std::wstring oldText = this->Text;
+	std::wstring newText = this->Text;
+	CuiTextEdit::DeleteForward(newText, this->SelectionStart, this->SelectionEnd, PasswordEditOptions());
+	CommitTextChange(this, oldText, newText);
 }
 void PasswordBox::UpdateScroll(bool arrival)
 {
@@ -163,18 +106,10 @@ void PasswordBox::UpdateScroll(bool arrival)
 }
 std::wstring PasswordBox::GetSelectedString()
 {
-	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
-	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
-	if (sele > sels)
-	{
-		std::wstring s = L"";
-		for (int i = sels; i < sele; i++)
-		{
-			s += this->Text[i];
-		}
-		return s;
-	}
-	return L"";
+	auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->Text.size());
+	if (!span.HasSelection())
+		return L"";
+	return this->Text.substr(static_cast<size_t>(span.start), static_cast<size_t>(span.Length()));
 }
 void PasswordBox::Update()
 {
@@ -352,7 +287,7 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			if (this->ParentForm->Selected != this)
 			{
 				auto previousSelection = this->ParentForm->Selected;
-				this->ParentForm->Selected = this;
+				this->ParentForm->SetSelectedControl(this, false);
 				if (previousSelection) previousSelection->InvalidateVisual();
 			}
 			auto font = this->Font;
@@ -383,7 +318,10 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	break;
 	case WM_LBUTTONDBLCLK:
 	{
-		this->ParentForm->Selected = this;
+		this->ParentForm->SetSelectedControl(this, false);
+		this->SelectionStart = 0;
+		this->SelectionEnd = static_cast<int>(this->Text.size());
+		this->HorizontalScrollOffset = 0.0f;
 		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
 		this->OnMouseDoubleClick(this, eventArgs);
 		this->InvalidateVisual();
@@ -416,100 +354,64 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		else if (wParam == VK_RIGHT)
 		{
 			int textLength = static_cast<int>(this->Text.size());
-			if (this->SelectionEnd < textLength)
+			const bool extendSelection = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+			auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->Text.size());
+			if (!extendSelection && span.HasSelection())
 			{
-				this->SelectionEnd = this->SelectionEnd + 1;
-				if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-				{
+				this->SelectionStart = this->SelectionEnd = span.end;
+				UpdateScroll();
+			}
+			else if (this->SelectionEnd < textLength)
+			{
+				this->SelectionEnd = CuiTextEdit::GetNextCaretIndex(this->Text, this->SelectionEnd, false);
+				if (!extendSelection)
 					this->SelectionStart = this->SelectionEnd;
-				}
-				if (this->SelectionEnd > textLength)
-				{
-					this->SelectionEnd = textLength;
-				}
 				UpdateScroll();
 			}
 		}
 		else if (wParam == VK_LEFT)
 		{
-			if (this->SelectionEnd > 0)
+			const bool extendSelection = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+			auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->Text.size());
+			if (!extendSelection && span.HasSelection())
 			{
-				this->SelectionEnd = this->SelectionEnd - 1;
-				if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-				{
+				this->SelectionStart = this->SelectionEnd = span.start;
+				UpdateScroll();
+			}
+			else if (this->SelectionEnd > 0)
+			{
+				this->SelectionEnd = CuiTextEdit::GetPreviousCaretIndex(this->Text, this->SelectionEnd, false);
+				if (!extendSelection)
 					this->SelectionStart = this->SelectionEnd;
-				}
-				if (this->SelectionEnd < 0)
-				{
-					this->SelectionEnd = 0;
-				}
 				UpdateScroll();
 			}
 		}
 		else if (wParam == VK_HOME)
 		{
-			auto font = this->Font;
-			std::wstring maskedText(this->Text.size(), L'*');
-			auto hit = font->HitTestTextRange(maskedText, (UINT32)this->SelectionEnd, (UINT32)0);
-			this->SelectionEnd = font->HitTestTextPosition(maskedText, 0, hit[0].top + (font->FontHeight * 0.5f));
+			this->SelectionEnd = 0;
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-			{
 				this->SelectionStart = this->SelectionEnd;
-			}
-			if (this->SelectionEnd < 0)
-			{
-				this->SelectionEnd = 0;
-			}
 			UpdateScroll();
 		}
 		else if (wParam == VK_END)
 		{
-			std::wstring maskedText(this->Text.size(), L'*');
-			auto font = this->Font;
-			auto hit = font->HitTestTextRange(maskedText, (UINT32)this->SelectionEnd, (UINT32)0);
-			this->SelectionEnd = font->HitTestTextPosition(maskedText, FLT_MAX, hit[0].top + (font->FontHeight * 0.5f));
+			this->SelectionEnd = static_cast<int>(this->Text.size());
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-			{
 				this->SelectionStart = this->SelectionEnd;
-			}
-			int textLength = static_cast<int>(this->Text.size());
-			if (this->SelectionEnd > textLength)
-			{
-				this->SelectionEnd = textLength;
-			}
 			UpdateScroll();
 		}
 		else if (wParam == VK_PRIOR)
 		{
-			auto font = this->Font;
-			std::wstring maskedText(this->Text.size(), L'*');
-			auto hit = font->HitTestTextRange(maskedText, (UINT32)this->SelectionEnd, (UINT32)0);
-			this->SelectionEnd = font->HitTestTextPosition(maskedText, hit[0].left, hit[0].top - this->Height);
+			this->SelectionEnd = 0;
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-			{
 				this->SelectionStart = this->SelectionEnd;
-			}
-			if (this->SelectionEnd < 0)
-			{
-				this->SelectionEnd = 0;
-			}
 			UpdateScroll(true);
 		}
 		else if (wParam == VK_NEXT)
 		{
-			auto font = this->Font;
-			std::wstring maskedText(this->Text.size(), L'*');
-			auto hit = font->HitTestTextRange(maskedText, (UINT32)this->SelectionEnd, (UINT32)0);
-			this->SelectionEnd = font->HitTestTextPosition(maskedText, hit[0].left, hit[0].top + this->Height);
+			this->SelectionEnd = static_cast<int>(this->Text.size());
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-			{
 				this->SelectionStart = this->SelectionEnd;
-			}
-			int textLength = static_cast<int>(this->Text.size());
-			if (this->SelectionEnd > textLength)
-			{
-				this->SelectionEnd = textLength;
-			}
 			UpdateScroll(true);
 		}
 		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
@@ -520,7 +422,7 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	case WM_CHAR:
 	{
 		wchar_t ch = (wchar_t)(wParam);
-		if (ch >= 32 && ch != 127)
+		if (CuiTextEdit::IsTextInputChar(ch))
 		{
 			const wchar_t c[] = { ch,L'\0' };
 			this->InputText(c);
@@ -542,20 +444,11 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 		else if (ch == 22)
 		{
-			if (OpenClipboard(this->ParentForm->Handle))
+			std::wstring clipboardText;
+			if (TryReadClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, clipboardText))
 			{
-				if (IsClipboardFormatAvailable(CF_UNICODETEXT))
-				{
-					HANDLE hClip = GetClipboardData(CF_UNICODETEXT);
-					const wchar_t* clipboardText = hClip ? (const wchar_t*)GlobalLock(hClip) : nullptr;
-					if (clipboardText)
-					{
-						this->InputText(clipboardText);
-						UpdateScroll();
-						GlobalUnlock(hClip);
-					}
-				}
-				CloseClipboard();
+				this->InputText(clipboardText);
+				UpdateScroll();
 			}
 		}
 		this->InvalidateVisual();
@@ -565,21 +458,8 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	{
 		if (lParam & GCS_RESULTSTR)
 		{
-			HIMC imeContext = ImmGetContext(this->ParentForm->Handle);
-			if (imeContext)
-			{
-				LONG byteCount = ImmGetCompositionStringW(imeContext, GCS_RESULTSTR, nullptr, 0);
-				if (byteCount > 0)
-				{
-					int wcharCount = byteCount / (int)sizeof(wchar_t);
-					std::wstring buffer;
-					buffer.resize(wcharCount);
-					ImmGetCompositionStringW(imeContext, GCS_RESULTSTR, buffer.data(), byteCount);
-					this->InputText(buffer);
-				}
-				ImmReleaseContext(this->ParentForm->Handle, imeContext);
-			}
-			UpdateScroll();
+			// Unicode windows receive committed IME text through WM_CHAR as well.
+			// Keep the edit mutation in one path to avoid duplicate characters.
 			this->InvalidateVisual();
 		}
 	}

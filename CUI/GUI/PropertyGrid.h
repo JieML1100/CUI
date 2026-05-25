@@ -158,12 +158,9 @@ private:
 	bool _dragEditSelection = false;
 	std::wstring _editingText;
 	std::wstring _editingOriginalText;
-	int _editCaret = 0;
 	int _editSelectionStart = 0;
 	int _editSelectionEnd = 0;
 	float _editOffsetX = 0.0f;
-	std::wstring _imeCommittedTextToSuppress;
-	UINT64 _imeCommitSuppressTick = 0;
 	class DropDownPopup* _dropDownPopup = nullptr;
 	int _dropDownPopupIndex = -1;
 	class ColorPickerPopup* _colorPicker = nullptr;
@@ -188,10 +185,11 @@ private:
 	void BeginEdit(int index);
 	void CommitEdit();
 	void CancelEdit();
-	void InsertEditChar(wchar_t ch);
+	void InputEditText(std::wstring input);
 	void BackspaceEdit();
 	void DeleteEdit();
 	void MoveEditCaret(int delta);
+	bool IsEditingTextAllowed(const std::wstring& text) const;
 	void EditEnsureSelectionInRange();
 	void EditUpdateScroll(float cellWidth);
 	int EditHitTestTextPosition(float cellWidth, float cellHeight, float x, float y);
@@ -199,7 +197,6 @@ private:
 	bool UpdateEditingSelectionFromMousePoint(int localX, int localY, const D2D1_RECT_F& valueRect);
 	std::wstring EditGetSelectedString() const;
 	void EditSetImeCompositionWindow();
-	void HandleImeComposition(LPARAM lParam);
 	void ToggleBool(int index);
 	void CycleEnum(int index, int direction = 1);
 	void ToggleDropDownEditor(int index, const D2D1_RECT_F& valueRect);

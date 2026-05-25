@@ -300,7 +300,6 @@ private:
 	// 新行相关方法
 	bool IsNewRowArea(int x, int y);
 	int HitTestNewRow(int x, int y, int& outColumnIndex);
-	void DrawNewRowIndicator();
 	void AddNewRow();
 public:
 	void Update() override;

@@ -276,6 +276,24 @@ static bool PointInControlRect(Control* control, POINT contentMouse)
 	return control->ContainsPoint(contentMouse.x - location.x, contentMouse.y - location.y);
 }
 
+static bool PointInForegroundControlRect(Control* control, POINT contentMouse)
+{
+	if (!control) return false;
+	if (!control->Visible || !control->Enable) return false;
+	auto location = control->AbsLocation;
+	return control->ContainsForegroundPoint(contentMouse.x - location.x, contentMouse.y - location.y);
+}
+
+static bool IsControlOrDescendantOf(Control* control, Control* ancestor)
+{
+	for (auto current = control; current; current = current->Parent)
+	{
+		if (current == ancestor)
+			return true;
+	}
+	return false;
+}
+
 static void SyncFormWindowStyles(HWND hWnd, bool showInTaskBar, bool minBox, bool maxBox, bool closeBox, bool allowResize)
 {
 	if (!hWnd)
@@ -340,7 +358,7 @@ Control* Form::HitTestControlAt(POINT contentMouse)
 	if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl->Enable)
 	{
 		auto* foregroundControl = this->ForegroundControl;
-		if (PointInControlRect(foregroundControl, contentMouse))
+		if (PointInForegroundControlRect(foregroundControl, contentMouse))
 		{
 			return HitTestDeepestChild(foregroundControl, contentMouse);
 		}
@@ -370,7 +388,7 @@ Control* Form::HitTestControlAt(POINT contentMouse)
 	for (auto control : GetRootControlsInReverseZOrder(this))
 	{
 		if (!control || !control->Visible || !control->Enable) continue;
-		if (control == this->ForegroundControl) continue;
+		if (control == this->ForegroundControl && !control->RenderNormalWhenForeground()) continue;
 		if (control == this->MainMenu) continue;
 		if (this->MainStatusBar && this->MainStatusBar->TopMost && control == this->MainStatusBar) continue;
 		if (!PointInControlRect(control, contentMouse)) continue;
@@ -637,7 +655,7 @@ static Control* HitTestRootControlAt(Form* form, POINT contentMouse)
 	if (form->ForegroundControl && form->ForegroundControl->Visible && form->ForegroundControl->Enable)
 	{
 		auto* foregroundControl = form->ForegroundControl;
-		if (PointInControlRect(foregroundControl, contentMouse))
+		if (PointInForegroundControlRect(foregroundControl, contentMouse))
 			return foregroundControl;
 	}
 
@@ -661,7 +679,7 @@ static Control* HitTestRootControlAt(Form* form, POINT contentMouse)
 	for (auto control : GetRootControlsInReverseZOrder(form))
 	{
 		if (!control || !control->Visible || !control->Enable) continue;
-		if (control == form->ForegroundControl) continue;
+		if (control == form->ForegroundControl && !control->RenderNormalWhenForeground()) continue;
 		if (control == form->MainMenu) continue;
 		if (form->MainStatusBar && form->MainStatusBar->TopMost && control == form->MainStatusBar) continue;
 		if (!PointInControlRect(control, contentMouse)) continue;
@@ -670,14 +688,14 @@ static Control* HitTestRootControlAt(Form* form, POINT contentMouse)
 	return nullptr;
 }
 
-static void DismissForegroundOnOutsideMouseDown(Form* form, POINT contentMouse, UINT message)
+static void DismissForegroundOnOutsideMouseDown(Form* form, Control* hitControl, POINT contentMouse, UINT message)
 {
 	if (!form) return;
 	if (message != WM_LBUTTONDOWN && message != WM_RBUTTONDOWN && message != WM_MBUTTONDOWN) return;
 	bool wasDismissed = false;
 	if (form->ForegroundControl && form->ForegroundControl->Visible && form->ForegroundControl->Enable)
 	{
-		if (!PointInControlRect(form->ForegroundControl, contentMouse) && form->ForegroundControl->AutoCloseOnOutsideClick())
+		if (!IsControlOrDescendantOf(hitControl, form->ForegroundControl) && form->ForegroundControl->AutoCloseOnOutsideClick())
 		{
 			form->ForegroundControl->ClosePopup();
 			wasDismissed = true;
@@ -1676,7 +1694,7 @@ bool Form::ShouldSkipRootDCompSceneControl(Control* control) const
 {
 	if (!control || !control->Visible)
 		return true;
-	if (control == this->ForegroundControl)
+	if (control == this->ForegroundControl && !control->RenderNormalWhenForeground())
 		return true;
 	if (control == this->MainMenu)
 		return true;
@@ -2610,7 +2628,7 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 			for (auto c : GetRootControlsInZOrder(this))
 			{
 				if (!c || !c->Visible) continue;
-				if (c == this->ForegroundControl) continue;
+				if (c == this->ForegroundControl && !c->RenderNormalWhenForeground()) continue;
 				if (c == this->MainMenu) continue;
 				if (this->MainStatusBar && this->MainStatusBar->TopMost && c == this->MainStatusBar)
 					continue;
@@ -2634,7 +2652,7 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 				}
 				if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl != (Control*)this->MainMenu)
 				{
-					this->ForegroundControl->Update();
+					this->ForegroundControl->UpdateForeground();
 				}
 			}
 			this->Render->PopDrawRect();
@@ -2686,7 +2704,7 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 			}
 			if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl != (Control*)this->MainMenu)
 			{
-				this->ForegroundControl->Update();
+				this->ForegroundControl->UpdateForeground();
 			}
 			this->Render = oldRender;
 
@@ -2911,7 +2929,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 		this->_hoverControl = pointerHover;
 		this->UnderMouse = pointerHover;
 
-		DismissForegroundOnOutsideMouseDown(this, contentMouse, message);
+		DismissForegroundOnOutsideMouseDown(this, pointerHover, contentMouse, message);
 
 		if (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN)
 		{

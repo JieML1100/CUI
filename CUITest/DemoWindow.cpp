@@ -1232,6 +1232,17 @@ void DemoWindow::BuildMenuToolStatus()
 			}
 			Ui_UpdateStatus(check->Checked ? L"ToolBar/CheckBox: 紧凑布局" : L"ToolBar/CheckBox: 标准布局");
 		};
+	auto leftTab = _toolbar->AddToolCheckBox(L"Tab靠左");
+	leftTab->OnChecked += [this](class Control* sender)
+		{
+			auto* check = (CheckBox*)sender;
+			if (_toolbar)
+			{
+				this->_tabs->TitlePosition = check->Checked ? TabControlTitlePosition::Left : TabControlTitlePosition::Top;
+				this->_tabs->InvalidateVisual();
+			}
+			Ui_UpdateStatus(check->Checked ? L"TabControl : Left" : L"TabControl : Top");
+		};
 
 	_statusbar = this->AddControl(new StatusBar(0, 0, this->Size.cx, 26));
 	_statusbar->AddPart(L"Ready", -1);
@@ -1371,7 +1382,7 @@ void DemoWindow::BuildTab_Basic(TabPage* page)
 	numeric->Min = 0;
 	numeric->Max = 100;
 	numeric->Step = 5;
-	numeric->Value = 25;
+	numeric->Value = 105;
 	numeric->OnValueChanged += [this](class NumericUpDown* sender, double oldValue, double newValue)
 		{
 			(void)sender;
@@ -1551,7 +1562,7 @@ void DemoWindow::BuildTab_Containers(TabPage* page)
 			groupName->InvalidateVisual();
 		};
 
-	auto expander = page->AddControl(new Expander(L"Expander", 540, 342, 330, 150));
+	auto expander = page->AddControl(new Expander(L"10", 540, 342, 330, 150));
 	expander->Padding = Thickness(12);
 	expander->AddControl(new Label(L"标题栏点击展开 / 折叠，内容区带裁剪动画。", 0, 0));
 	auto expNumber = expander->AddControl(new NumericUpDown(0, 36, 130, 28));
@@ -1962,6 +1973,16 @@ void DemoWindow::BuildTab_Layout(TabPage* page)
 			card->BackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.05f };
 			card->BorderColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.10f };
 			card->AddControl(new Label(StringHelper::Format(L"Card %d", row * 4 + col + 1), 10, 10));
+			auto pageCombo = card->AddControl(new ComboBox(L"测试下拉框", 100,10,120,24));
+			pageCombo->ExpandCount = 8;
+			pageCombo->Items.push_back(L"测试下拉框");
+			pageCombo->Items.push_back(L"测试下拉框");
+			pageCombo->Items.push_back(L"测试下拉框");
+			pageCombo->Items.push_back(L"测试下拉框");
+			pageCombo->Items.push_back(L"测试下拉框");
+			pageCombo->Items.push_back(L"测试下拉框");
+			pageCombo->Items.push_back(L"测试下拉框");
+			pageCombo->Items.push_back(L"测试下拉框");
 			auto btn = card->AddControl(new Button(L"点击", 10, 36, 70, 26));
 			btn->Tag = row * 4 + col + 1;
 			btn->OnMouseClick += [this](class Control* sender, MouseEventArgs e)
@@ -1970,6 +1991,7 @@ void DemoWindow::BuildTab_Layout(TabPage* page)
 					Ui_UpdateStatus(StringHelper::Format(L"ScrollView Button: card=%d", (int)sender->Tag));
 				};
 			card->AddControl(new Label(StringHelper::Format(L"位置 %d,%d", col + 1, row + 1), 96, 40));
+
 		}
 	}
 

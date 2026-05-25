@@ -332,6 +332,8 @@ public:
 	virtual UIClass Type();
 	/** @brief 更新控件状态（逻辑更新）。 */
 	virtual void Update();
+	/** @brief 当前控件作为 ForegroundControl 时的前景层绘制；默认沿用完整控件绘制。 */
+	virtual void UpdateForeground() { Update(); }
 	/** @brief 同步控件持有的原生渲染/窗口资源；普通控件无需处理。 */
 	virtual void SyncNativeSurface() {}
 	/**
@@ -518,6 +520,8 @@ public:
 		auto actualSize = this->ActualSize();
 		return localX >= 0 && localY >= 0 && localX <= actualSize.cx && localY <= actualSize.cy;
 	}
+	virtual bool ContainsForegroundPoint(int localX, int localY) { return ContainsPoint(localX, localY); }
+	virtual bool RenderNormalWhenForeground() const { return false; }
 	virtual bool HitTestChildren() const { return true; }
 	virtual bool ShouldHitTestChildrenAt(int localX, int localY) const { (void)localX; (void)localY; return this->HitTestChildren(); }
 	virtual POINT GetChildrenRenderOffset() const { return POINT{ 0, 0 }; }

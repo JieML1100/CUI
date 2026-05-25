@@ -259,7 +259,7 @@ void ToolBar::Update()
 			{
 				auto control = this->operator[](itemIndex);
 				if (!control || !control->Visible) continue;
-				if (this->ParentForm && this->ParentForm->ForegroundControl == control) continue;
+				if (this->ParentForm && this->ParentForm->ForegroundControl == control && !control->RenderNormalWhenForeground()) continue;
 				if (auto* separator = dynamic_cast<ToolBarSeparator*>(control))
 					separator->LineColor = this->SeparatorColor;
 				control->Update();

@@ -50,6 +50,9 @@ public:
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
+	bool ContainsForegroundPoint(int localX, int localY) override;
+	bool RenderNormalWhenForeground() const override { return true; }
+	void InvalidateVisual() override;
 	float CornerRadius = 6.0f;
 	float DropCornerRadius = 7.0f;
 	float DropGap = 4.0f;
@@ -88,5 +91,6 @@ public:
 	SIZE ActualSize() override;
 	void DrawScroll();
 	void Update() override;
+	void UpdateForeground() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

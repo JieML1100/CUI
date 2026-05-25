@@ -120,6 +120,9 @@
     <ClInclude Include="GUI\TextBox.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="GUI\TextEditCore.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="GUI\TreeView.h">
       <Filter>GUI</Filter>
     </ClInclude>

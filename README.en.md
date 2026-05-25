@@ -52,9 +52,13 @@ The following screenshots correspond to different pages selected in the TabContr
 | --- | --- |
 | ![Tab 3](imgs/Tab3.png) | ![Tab 4](imgs/Tab4.png) |
 
+| Tab 5 | Tab6 |
+| --- | --- |
+| ![Tab 5](imgs/Tab5.png) | ![Tab 6](imgs/Tab6.png) |
+
 | Tab 5 | WebBrowser |
 | --- | --- |
-| ![Tab 5](imgs/Tab5.png) | ![WebBrowser](imgs/WebBrowser.png) |
+| ![WebBrowser](imgs/WebBrowser.png) |
 
 ### Media Page
 
