@@ -4,10 +4,10 @@ namespace
 {
 	static UINT GetSystemDpiFallback()
 	{
-		HDC hdc = GetDC(NULL);
+		HDC hdc = GetDC(nullptr);
 		if (!hdc) return 96;
 		const int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
-		ReleaseDC(NULL, hdc);
+		ReleaseDC(nullptr, hdc);
 		return (dpiX > 0) ? (UINT)dpiX : 96;
 	}
 
@@ -38,9 +38,9 @@ namespace
 
 	static void EnableDpiAwarenessOnce()
 	{
-		static bool done = false;
-		if (done) return;
-		done = true;
+		static bool dpiAwarenessConfigured = false;
+		if (dpiAwarenessConfigured) return;
+		dpiAwarenessConfigured = true;
 
 		// 1) Win10+ Per-Monitor V2
 		if (auto user32 = GetModuleHandleW(L"user32.dll"))
@@ -91,7 +91,7 @@ std::unordered_map<HWND, class Form*>  Application::Forms = std::unordered_map<H
 std::string Application::ExecutablePath()
 {
 	char path[MAX_PATH];
-	GetModuleFileNameA(NULL, path, MAX_PATH);
+	GetModuleFileNameA(nullptr, path, MAX_PATH);
 	return std::string(path);
 }
 std::string Application::StartupPath()
@@ -108,13 +108,13 @@ std::string Application::ApplicationName()
 std::string Application::LocalUserAppDataPath()
 {
 	char path[MAX_PATH];
-	SHGetSpecialFolderPathA(NULL, path, CSIDL_LOCAL_APPDATA, FALSE);
+	SHGetSpecialFolderPathA(nullptr, path, CSIDL_LOCAL_APPDATA, FALSE);
 	return std::string(path);
 }
 std::string Application::UserAppDataPath()
 {
 	char path[MAX_PATH];
-	SHGetSpecialFolderPathA(NULL, path, CSIDL_APPDATA, FALSE);
+	SHGetSpecialFolderPathA(nullptr, path, CSIDL_APPDATA, FALSE);
 	return std::string(path);
 }
 
@@ -125,7 +125,7 @@ void Application::EnsureDpiAwareness()
 
 UINT Application::GetSystemDpi()
 {
-	return QueryDpiForWindow(NULL);
+	return QueryDpiForWindow(nullptr);
 }
 
 UINT Application::GetDpiForWindow(HWND hwnd)

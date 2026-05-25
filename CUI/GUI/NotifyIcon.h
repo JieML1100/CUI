@@ -33,7 +33,7 @@ public:
     std::vector<NotifyIconMenuItem> SubItems;
 
     NotifyIconMenuItem(const std::string& text, int id, bool enabled = true)
-        : Text(text), ID(id), Enabled(enabled), Separator(false), HasSubMenu(false), SubMenu(NULL) {
+        : Text(text), ID(id), Enabled(enabled), Separator(false), HasSubMenu(false), SubMenu(nullptr) {
     }
 
     static NotifyIconMenuItem CreateSeparator();

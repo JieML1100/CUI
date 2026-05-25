@@ -98,7 +98,7 @@ ListView::ListView(int x, int y, int width, int height)
 	this->Location = { x, y };
 	this->Size = { width, height };
 	this->BackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.0f };
-	this->BolderColor = D2D1_COLOR_F{ 0.45f, 0.48f, 0.55f, 0.72f };
+	this->BorderColor = D2D1_COLOR_F{ 0.45f, 0.48f, 0.55f, 0.72f };
 }
 
 void ListView::Clear()
@@ -116,26 +116,26 @@ void ListView::ClearItems()
 	this->_anchorIndex = -1;
 	this->ScrollYOffset = 0.0f;
 	this->SelectionChanged(this);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void ListView::ClearColumns()
 {
 	this->Columns.clear();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 int ListView::AddItem(const ListViewItem& item)
 {
 	this->Items.push_back(item);
-	this->PostRender();
+	this->InvalidateVisual();
 	return (int)this->Items.size() - 1;
 }
 
 void ListView::AddColumn(const ListViewColumn& column)
 {
 	this->Columns.push_back(column);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 bool ListView::RemoveItemAt(int index)
@@ -150,7 +150,7 @@ bool ListView::RemoveItemAt(int index)
 	else if (_anchorIndex > index) _anchorIndex--;
 	SyncSelectedIndexFromItems();
 	this->SelectionChanged(this);
-	this->PostRender();
+	this->InvalidateVisual();
 	return true;
 }
 
@@ -160,7 +160,7 @@ bool ListView::SwapItems(int indexA, int indexB)
 	if (indexA == indexB) return true;
 	std::swap(this->Items[indexA], this->Items[indexB]);
 	SyncSelectedIndexFromItems();
-	this->PostRender();
+	this->InvalidateVisual();
 	return true;
 }
 
@@ -245,7 +245,7 @@ bool ListView::SelectItem(int index, bool additive, bool range)
 		this->FocusedIndex = index;
 		EnsureVisible(index);
 		this->SelectionChanged(this);
-		this->PostRender();
+		this->InvalidateVisual();
 		return true;
 	}
 
@@ -269,7 +269,7 @@ void ListView::ClearSelection()
 	if (changed)
 	{
 		this->SelectionChanged(this);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -308,21 +308,21 @@ void ListView::SetScrollOffset(float offsetY)
 	if (std::fabs(old - this->ScrollYOffset) > 0.5f)
 	{
 		this->ScrollChanged(this);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
-int ListView::HitTestItem(int xof, int yof) const
+int ListView::HitTestItem(int localX, int localY) const
 {
 	auto layout = CalcLayout();
-	if (!PtInRectF(layout.ContentRect, (float)xof, (float)yof)) return -1;
+	if (!PtInRectF(layout.ContentRect, (float)localX, (float)localY)) return -1;
 
 	if (this->ViewMode == ListViewViewMode::Icon)
 	{
 		for (int i = 0; i < (int)this->Items.size(); i++)
 		{
 			auto rect = GetItemRect(i, layout);
-			if (PtInRectF(rect, (float)xof, (float)yof))
+			if (PtInRectF(rect, (float)localX, (float)localY))
 				return i;
 		}
 		return -1;
@@ -330,27 +330,27 @@ int ListView::HitTestItem(int xof, int yof) const
 
 	const float itemH = GetItemSecondaryExtent();
 	if (itemH <= 0.0f) return -1;
-	int index = (int)std::floor(((float)yof - layout.ContentRect.top + this->ScrollYOffset) / itemH);
+	int index = (int)std::floor(((float)localY - layout.ContentRect.top + this->ScrollYOffset) / itemH);
 	return index >= 0 && index < (int)this->Items.size() ? index : -1;
 }
 
-CursorKind ListView::QueryCursor(int xof, int yof)
+CursorKind ListView::QueryCursor(int localX, int localY)
 {
-	(void)yof;
+	(void)localY;
 	if (!this->Enable) return CursorKind::Arrow;
 	auto layout = CalcLayout();
-	if (layout.NeedVScroll && xof >= (int)layout.ScrollTrackRect.left && xof <= (int)layout.ScrollTrackRect.right)
+	if (layout.NeedVScroll && localX >= (int)layout.ScrollTrackRect.left && localX <= (int)layout.ScrollTrackRect.right)
 		return CursorKind::SizeNS;
-	int index = HitTestItem(xof, yof);
+	int index = HitTestItem(localX, localY);
 	if (index >= 0)
 		return CursorKind::Hand;
 	return CursorKind::Arrow;
 }
 
-bool ListView::CanHandleMouseWheel(int delta, int xof, int yof)
+bool ListView::CanHandleMouseWheel(int delta, int localX, int localY)
 {
-	(void)xof;
-	(void)yof;
+	(void)localX;
+	(void)localY;
 	if (delta == 0) return false;
 	auto layout = CalcLayout();
 	if (!layout.NeedVScroll || layout.MaxScrollY <= 0.0f) return false;
@@ -749,15 +749,15 @@ void ListView::DrawScrollBar(D2DGraphics* d2d, const Layout& layout)
 	d2d->FillRoundRect(layout.ScrollThumbRect, this->ScrollForeColor, RectWidth(layout.ScrollThumbRect) * 0.5f);
 }
 
-void ListView::UpdateHover(int xof, int yof)
+void ListView::UpdateHover(int localX, int localY)
 {
 	int old = this->HoveredIndex;
-	this->HoveredIndex = HitTestItem(xof, yof);
+	this->HoveredIndex = HitTestItem(localX, localY);
 	if (old != this->HoveredIndex)
-		this->PostRender();
+		this->InvalidateVisual();
 }
 
-void ListView::UpdateScrollByThumb(float yof)
+void ListView::UpdateScrollByThumb(float localY)
 {
 	auto layout = CalcLayout();
 	if (!layout.NeedVScroll) return;
@@ -765,7 +765,7 @@ void ListView::UpdateScrollByThumb(float yof)
 	const float thumbH = RectHeight(layout.ScrollThumbRect);
 	const float range = trackH - thumbH;
 	if (range <= 0.0f || layout.MaxScrollY <= 0.0f) return;
-	float targetTop = yof - _scrollThumbGrabOffsetY;
+	float targetTop = localY - _scrollThumbGrabOffsetY;
 	float t = (targetTop - layout.ScrollTrackRect.top) / range;
 	t = std::clamp(t, 0.0f, 1.0f);
 	SetScrollOffset(t * layout.MaxScrollY);
@@ -778,7 +778,7 @@ void ListView::ToggleCheckAt(int index)
 	if (!item.Enabled) return;
 	item.Checked = !item.Checked;
 	this->OnItemCheckChanged(this, index, item.Checked);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void ListView::MoveSelectionBy(int delta)
@@ -831,14 +831,14 @@ void ListView::Update()
 		DrawItems(d2d, layout);
 		DrawScrollBar(d2d, layout);
 		if (Border > 0.0f)
-			d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, std::max(0.0f, width - Border), std::max(0.0f, height - Border), this->BolderColor, Border, this->CornerRadius);
+			d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, std::max(0.0f, width - Border), std::max(0.0f, height - Border), this->BorderColor, Border, this->CornerRadius);
 		if (!this->Enable)
 			d2d->FillRoundRect(0.0f, 0.0f, width, height, D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.48f }, this->CornerRadius);
 	}
 	this->EndRender();
 }
 
-bool ListView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool ListView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 
@@ -852,7 +852,7 @@ bool ListView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 			const float step = (float)std::max(8, this->MouseWheelStep);
 			SetScrollOffset(this->ScrollYOffset + (delta < 0 ? step : -step));
 		}
-		MouseEventArgs e(MouseButtons::None, 0, xof, yof, delta);
+		MouseEventArgs e(MouseButtons::None, 0, localX, localY, delta);
 		this->OnMouseWheel(this, e);
 		return true;
 	}
@@ -861,10 +861,10 @@ bool ListView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		if (this->ParentForm)
 			this->ParentForm->UnderMouse = this;
 		if (_dragVScroll)
-			UpdateScrollByThumb((float)yof);
+			UpdateScrollByThumb((float)localY);
 		else
-			UpdateHover(xof, yof);
-		MouseEventArgs e(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
+			UpdateHover(localX, localY);
+		MouseEventArgs e(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseMove(this, e);
 		return true;
 	}
@@ -873,34 +873,34 @@ bool ListView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		if (this->ParentForm)
 			this->ParentForm->SetSelectedControl(this, false);
 		auto layout = CalcLayout();
-		if (layout.NeedVScroll && PtInRectF(layout.ScrollThumbRect, (float)xof, (float)yof))
+		if (layout.NeedVScroll && PtInRectF(layout.ScrollThumbRect, (float)localX, (float)localY))
 		{
 			_dragVScroll = true;
-			_scrollThumbGrabOffsetY = (float)yof - layout.ScrollThumbRect.top;
+			_scrollThumbGrabOffsetY = (float)localY - layout.ScrollThumbRect.top;
 			return true;
 		}
-		if (layout.NeedVScroll && PtInRectF(layout.ScrollTrackRect, (float)xof, (float)yof))
+		if (layout.NeedVScroll && PtInRectF(layout.ScrollTrackRect, (float)localX, (float)localY))
 		{
-			SetScrollOffset(this->ScrollYOffset + ((float)yof < layout.ScrollThumbRect.top ? -RectHeight(layout.ContentRect) : RectHeight(layout.ContentRect)));
+			SetScrollOffset(this->ScrollYOffset + ((float)localY < layout.ScrollThumbRect.top ? -RectHeight(layout.ContentRect) : RectHeight(layout.ContentRect)));
 			return true;
 		}
 
-		int index = HitTestItem(xof, yof);
+		int index = HitTestItem(localX, localY);
 		if (index >= 0)
 		{
 			auto rect = GetItemRect(index, layout);
-			if (this->ShowCheckBoxes && PtInRectF(GetCheckRect(rect), (float)xof, (float)yof))
+			if (this->ShowCheckBoxes && PtInRectF(GetCheckRect(rect), (float)localX, (float)localY))
 				ToggleCheckAt(index);
 
-			bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+			bool isControlKeyDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 			bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-			SelectItem(index, ctrl, shift);
+			SelectItem(index, isControlKeyDown, shift);
 		}
 		else if (this->SelectionMode == ListViewSelectionMode::Single)
 		{
 			ClearSelection();
 		}
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseDown(this, e);
 		return true;
 	}
@@ -908,11 +908,11 @@ bool ListView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 	{
 		bool wasDragging = _dragVScroll;
 		_dragVScroll = false;
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseUp(this, e);
 		if (!wasDragging)
 		{
-			int index = HitTestItem(xof, yof);
+			int index = HitTestItem(localX, localY);
 			if (index >= 0)
 			{
 				this->OnItemClick(this, index);
@@ -923,8 +923,8 @@ bool ListView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 	}
 	case WM_LBUTTONDBLCLK:
 	{
-		int index = HitTestItem(xof, yof);
-		MouseEventArgs e(MouseButtons::Left, 2, xof, yof, HIWORD(wParam));
+		int index = HitTestItem(localX, localY);
+		MouseEventArgs e(MouseButtons::Left, 2, localX, localY, HIWORD(wParam));
 		this->OnMouseDoubleClick(this, e);
 		if (index >= 0)
 			this->OnItemDoubleClick(this, index);
@@ -973,7 +973,7 @@ bool ListView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		break;
 	}
 
-	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 }
 
 UIClass ListBox::Type()

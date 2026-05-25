@@ -1,4 +1,4 @@
-#include "FilterBar.h"
+﻿#include "FilterBar.h"
 #include "Form.h"
 #include <algorithm>
 #include <utility>
@@ -36,7 +36,7 @@ FilterBar::FilterBar(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0.60f, 0.66f, 0.76f, 0.42f };
+	this->BorderColor = D2D1_COLOR_F{ 0.60f, 0.66f, 0.76f, 0.42f };
 	this->ForeColor = D2D1_COLOR_F{ 0.90f, 0.92f, 0.96f, 1.0f };
 	this->Cursor = CursorKind::Arrow;
 }
@@ -44,21 +44,21 @@ FilterBar::FilterBar(int x, int y, int width, int height)
 int FilterBar::AddItem(const FilterBarItem& item)
 {
 	Items.push_back(item);
-	PostRender();
+	InvalidateVisual();
 	return (int)Items.size() - 1;
 }
 
 void FilterBar::ClearItems()
 {
 	Items.clear();
-	PostRender();
+	InvalidateVisual();
 }
 
 void FilterBar::ClearSelection()
 {
 	for (auto& item : Items)
 		item.Selected = false;
-	PostRender();
+	InvalidateVisual();
 }
 
 std::vector<std::wstring> FilterBar::GetSelectedValues() const
@@ -78,15 +78,15 @@ void FilterBar::SetQueryText(const std::wstring& text)
 	std::wstring old = QueryText;
 	QueryText = text;
 	NotifyQueryChanged(old);
-	PostRender();
+	InvalidateVisual();
 }
 
-CursorKind FilterBar::QueryCursor(int xof, int yof)
+CursorKind FilterBar::QueryCursor(int localX, int localY)
 {
 	if (!Enable) return CursorKind::Arrow;
 	auto size = ActualSize();
 	BuildLayout((float)size.cx, (float)size.cy);
-	auto hit = HitTest(xof, yof);
+	auto hit = HitTest(localX, localY);
 	if (hit.Kind == HitKind::Search)
 		return CursorKind::IBeam;
 	if (hit.Kind == HitKind::Chip || hit.Kind == HitKind::Apply || hit.Kind == HitKind::Reset)
@@ -140,10 +140,10 @@ void FilterBar::BuildLayout(float width, float height)
 	}
 }
 
-FilterBar::HitRegion FilterBar::HitTest(int xof, int yof)
+FilterBar::HitRegion FilterBar::HitTest(int localX, int localY)
 {
-	float x = (float)xof;
-	float y = (float)yof;
+	float x = (float)localX;
+	float y = (float)localY;
 	for (auto it = _regions.rbegin(); it != _regions.rend(); ++it)
 	{
 		if (PointInRect(x, y, it->Rect))
@@ -167,7 +167,7 @@ void FilterBar::ResetFilters()
 	if (old != QueryText)
 		NotifyQueryChanged(old);
 	OnReset(this);
-	PostRender();
+	InvalidateVisual();
 }
 
 void FilterBar::Update()
@@ -181,14 +181,14 @@ void FilterBar::Update()
 
 	BeginRender();
 	d2d->FillRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, SurfaceColor, CornerRadius);
-	d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, BolderColor, Border, CornerRadius);
+	d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, BorderColor, Border, CornerRadius);
 
 	for (const auto& region : _regions)
 	{
 		if (region.Kind == HitKind::Search)
 		{
 			d2d->FillRoundRect(region.Rect, InputBackColor, 6.0f);
-			d2d->DrawRoundRect(region.Rect, _searchFocused ? AccentColor : BolderColor, _searchFocused ? 1.4f : 1.0f, 6.0f);
+			d2d->DrawRoundRect(region.Rect, _searchFocused ? AccentColor : BorderColor, _searchFocused ? 1.4f : 1.0f, 6.0f);
 			std::wstring text = QueryText.empty() ? Placeholder : QueryText;
 			D2D1_COLOR_F color = QueryText.empty() ? MutedTextColor : ForeColor;
 			d2d->PushDrawRect(region.Rect.left + 10.0f, region.Rect.top, RectWidth(region.Rect) - 20.0f, RectHeight(region.Rect));
@@ -210,7 +210,7 @@ void FilterBar::Update()
 			d2d->FillRoundRect(region.Rect, back, RectHeight(region.Rect) * 0.5f);
 			if (_hoverKind == HitKind::Chip && _hoverIndex == region.Index)
 				d2d->FillRoundRect(region.Rect, HoverColor, RectHeight(region.Rect) * 0.5f);
-			d2d->DrawRoundRect(region.Rect, item.Selected ? AccentColor : BolderColor, item.Selected ? 1.2f : 1.0f, RectHeight(region.Rect) * 0.5f);
+			d2d->DrawRoundRect(region.Rect, item.Selected ? AccentColor : BorderColor, item.Selected ? 1.2f : 1.0f, RectHeight(region.Rect) * 0.5f);
 			d2d->DrawString(item.Text, region.Rect.left + 11.0f, region.Rect.top + 5.0f, item.Selected ? ForeColor : MutedTextColor, Font);
 			continue;
 		}
@@ -223,7 +223,7 @@ void FilterBar::Update()
 			d2d->FillRoundRect(region.Rect, back, 6.0f);
 			if (_hoverKind == region.Kind)
 				d2d->FillRoundRect(region.Rect, HoverColor, 6.0f);
-			d2d->DrawRoundRect(region.Rect, apply ? AccentColor : BolderColor, 1.0f, 6.0f);
+			d2d->DrawRoundRect(region.Rect, apply ? AccentColor : BorderColor, 1.0f, 6.0f);
 			d2d->DrawStringCentered(apply ? L"Apply" : L"Reset", region.Rect.left + RectWidth(region.Rect) * 0.5f, region.Rect.top + RectHeight(region.Rect) * 0.5f, text, Font);
 		}
 	}
@@ -233,7 +233,7 @@ void FilterBar::Update()
 	EndRender();
 }
 
-bool FilterBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool FilterBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!Enable || !Visible) return true;
 	(void)lParam;
@@ -245,20 +245,20 @@ bool FilterBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 	case WM_MOUSEMOVE:
 	{
 		if (ParentForm) ParentForm->UnderMouse = this;
-		auto hit = HitTest(xof, yof);
+		auto hit = HitTest(localX, localY);
 		int oldIndex = _hoverIndex;
 		HitKind oldKind = _hoverKind;
 		_hoverKind = hit.Kind;
 		_hoverIndex = hit.Index;
 		if (oldIndex != _hoverIndex || oldKind != _hoverKind)
-			PostRender();
-		MouseEventArgs e(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
+			InvalidateVisual();
+		MouseEventArgs e(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
 		OnMouseMove(this, e);
 		break;
 	}
 	case WM_LBUTTONDOWN:
 	{
-		auto hit = HitTest(xof, yof);
+		auto hit = HitTest(localX, localY);
 		_searchFocused = hit.Kind == HitKind::Search;
 		if (ParentForm) ParentForm->SetSelectedControl(this, false);
 		if (hit.Kind == HitKind::Chip && hit.Index >= 0 && hit.Index < (int)Items.size())
@@ -276,15 +276,15 @@ bool FilterBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 		{
 			ResetFilters();
 		}
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseDown(this, e);
 		if (hit.Kind != HitKind::Reset)
-			PostRender();
+			InvalidateVisual();
 		break;
 	}
 	case WM_LBUTTONUP:
 	{
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseUp(this, e);
 		break;
 	}
@@ -310,7 +310,7 @@ bool FilterBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 			if (old != QueryText)
 			{
 				NotifyQueryChanged(old);
-				PostRender();
+				InvalidateVisual();
 			}
 		}
 		break;
@@ -323,15 +323,15 @@ bool FilterBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 		{
 			_searchFocused = false;
 			if (ParentForm && ParentForm->Selected == this)
-				ParentForm->SetSelectedControl(NULL, false);
-			PostRender();
+				ParentForm->SetSelectedControl(nullptr, false);
+			InvalidateVisual();
 		}
 		KeyEventArgs e((Keys)(wParam | 0));
 		OnKeyDown(this, e);
 		break;
 	}
 	default:
-		return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 	}
 	return true;
 }

@@ -130,7 +130,7 @@ ComboBoxItemsEditorDialog::ComboBoxItemsEditorDialog(ComboBox* target)
 			_grid->SwapRows(r, r - 1);
 			_grid->SelectedRowIndex = r - 1;
 			_grid->SelectedColumnIndex = COL_TEXT;
-			_grid->PostRender();
+			_grid->InvalidateVisual();
 		}
 		else if (c == COL_DOWN)
 		{
@@ -138,7 +138,7 @@ ComboBoxItemsEditorDialog::ComboBoxItemsEditorDialog(ComboBox* target)
 			_grid->SwapRows(r, r + 1);
 			_grid->SelectedRowIndex = r + 1;
 			_grid->SelectedColumnIndex = COL_TEXT;
-			_grid->PostRender();
+			_grid->InvalidateVisual();
 		}
 		else if (c == COL_DELETE)
 		{
@@ -156,7 +156,7 @@ ComboBoxItemsEditorDialog::ComboBoxItemsEditorDialog(ComboBox* target)
 				_grid->SelectedColumnIndex = COL_TEXT;
 			}
 			EnsureOneDefaultChecked();
-			_grid->PostRender();
+			_grid->InvalidateVisual();
 		}
 	};
 
@@ -167,7 +167,7 @@ ComboBoxItemsEditorDialog::ComboBoxItemsEditorDialog(ComboBox* target)
 		if (r < 0 || static_cast<size_t>(r) >= _grid->RowCount()) return;
 		(void)v;
 		EnsureOneDefaultChecked();
-		_grid->PostRender();
+		_grid->InvalidateVisual();
 	};
 
 	_ok = this->AddControl(new Button(L"确定", 12, 366, 110, 34));
@@ -205,7 +205,7 @@ ComboBoxItemsEditorDialog::ComboBoxItemsEditorDialog(ComboBox* target)
 		}
 
 		Applied = true;
-		_target->PostRender();
+		_target->InvalidateVisual();
 		this->Close();
 	};
 

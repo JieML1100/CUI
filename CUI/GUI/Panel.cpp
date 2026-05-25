@@ -210,7 +210,7 @@ void Panel::Update()
 	auto size = this->ActualSize();
 	const float actualWidth = static_cast<float>(size.cx);
 	const float actualHeight = static_cast<float>(size.cy);
-	const float border = (std::max)(0.0f, this->Boder);
+	const float border = (std::max)(0.0f, this->BorderThickness);
 	const float radius = (std::clamp)(this->CornerRadius, 0.0f, (std::min)(actualWidth, actualHeight) * 0.5f);
 	this->BeginRender();
 	{
@@ -224,20 +224,20 @@ void Panel::Update()
 		}
 		if (!this->ParentForm || !this->ParentForm->IsDCompSceneRenderActive())
 		{
-			for (auto c : this->GetChildrenInZOrder())
+			for (auto child : this->GetChildrenInZOrder())
 			{
-				if (!c || !c->Visible) continue;
-				c->Update();
+				if (!child || !child->Visible) continue;
+				child->Update();
 			}
 		}
-		if (border > 0.0f && this->BolderColor.a > 0.0f)
+		if (border > 0.0f && this->BorderColor.a > 0.0f)
 		{
 			const float drawW = (std::max)(0.0f, actualWidth - border);
 			const float drawH = (std::max)(0.0f, actualHeight - border);
 			if (radius > 0.0f)
-				d2d->DrawRoundRect(border * 0.5f, border * 0.5f, drawW, drawH, this->BolderColor, border, radius);
+				d2d->DrawRoundRect(border * 0.5f, border * 0.5f, drawW, drawH, this->BorderColor, border, radius);
 			else
-				d2d->DrawRect(border * 0.5f, border * 0.5f, drawW, drawH, this->BolderColor, border);
+				d2d->DrawRect(border * 0.5f, border * 0.5f, drawW, drawH, this->BorderColor, border);
 		}
 	}
 	if (!this->Enable)
@@ -250,22 +250,22 @@ void Panel::Update()
 	this->EndRender();
 }
 
-bool Panel::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool Panel::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
-	for (auto c : this->GetChildrenInReverseZOrder())
+	for (auto child : this->GetChildrenInReverseZOrder())
 	{
-		if (!c || !c->Visible || !c->Enable) continue;
-		auto location = c->ActualLocation;
-		auto size = c->ActualSize();
+		if (!child || !child->Visible || !child->Enable) continue;
+		auto childLocation = child->ActualLocation;
+		auto childSize = child->ActualSize();
 		if (
-			xof >= location.x &&
-			yof >= location.y &&
-			xof <= (location.x + size.cx) &&
-			yof <= (location.y + size.cy)
+			localX >= childLocation.x &&
+			localY >= childLocation.y &&
+			localX <= (childLocation.x + childSize.cx) &&
+			localY <= (childLocation.y + childSize.cy)
 			)
 		{
-			c->ProcessMessage(message, wParam, lParam, xof - location.x, yof - location.y);
+			child->ProcessMessage(message, wParam, lParam, localX - childLocation.x, localY - childLocation.y);
 		}
 	}
 	switch (message)
@@ -273,13 +273,13 @@ bool Panel::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, 
 	case WM_DROPFILES:
 	{
 		HDROP hDropInfo = HDROP(wParam);
-		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
-		TCHAR strFileName[MAX_PATH];
+		UINT fileCount = DragQueryFile(hDropInfo, 0xffffffff, nullptr, 0);
+		TCHAR fileName[MAX_PATH];
 		std::vector<std::wstring> files;
-		for (UINT i = 0; i < uFileNum; i++)
+		for (UINT fileIndex = 0; fileIndex < fileCount; fileIndex++)
 		{
-			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.push_back(strFileName);
+			DragQueryFile(hDropInfo, fileIndex, fileName, MAX_PATH);
+			files.push_back(fileName);
 		}
 		DragFinish(hDropInfo);
 		if (!files.empty())
@@ -290,48 +290,48 @@ bool Panel::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, 
 	break;
 	case WM_MOUSEWHEEL:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
-		this->OnMouseWheel(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam));
+		this->OnMouseWheel(this, eventArgs);
 	}
 	break;
 	case WM_MOUSEMOVE:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
-		this->OnMouseMove(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
+		this->OnMouseMove(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONDOWN:
 	case WM_RBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDown(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDown(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONUP:
 	case WM_RBUTTONUP:
 	case WM_MBUTTONUP:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseUp(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseUp(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONDBLCLK:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDoubleClick(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDoubleClick(this, eventArgs);
 	}
 	break;
 	case WM_KEYDOWN:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyDown(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyDown(this, eventArgs);
 	}
 	break;
 	case WM_KEYUP:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyUp(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyUp(this, eventArgs);
 	}
 	break;
 	}

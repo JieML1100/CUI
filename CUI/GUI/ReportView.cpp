@@ -1,4 +1,4 @@
-#include "ReportView.h"
+﻿#include "ReportView.h"
 #include "Form.h"
 #include <algorithm>
 #include <cmath>
@@ -169,7 +169,7 @@ ReportView::ReportView(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0.60f, 0.66f, 0.76f, 0.52f };
+	this->BorderColor = D2D1_COLOR_F{ 0.60f, 0.66f, 0.76f, 0.52f };
 	this->ForeColor = D2D1_COLOR_F{ 0.90f, 0.92f, 0.96f, 1.0f };
 	this->Cursor = CursorKind::Arrow;
 }
@@ -188,13 +188,13 @@ void ReportView::Clear()
 void ReportView::AddColumn(const ReportColumn& column)
 {
 	Columns.push_back(column);
-	PostRender();
+	InvalidateVisual();
 }
 
 int ReportView::AddRow(const ReportRow& row)
 {
 	Rows.push_back(row);
-	PostRender();
+	InvalidateVisual();
 	return (int)Rows.size() - 1;
 }
 
@@ -220,10 +220,10 @@ void ReportView::SortByColumn(int column, bool ascending)
 		if (last - first <= 1) return;
 		std::stable_sort(Rows.begin() + first, Rows.begin() + last, [&](const ReportRow& lhs, const ReportRow& rhs)
 		{
-			std::wstring lv = column < (int)lhs.Cells.size() ? lhs.Cells[column] : L"";
-			std::wstring rv = column < (int)rhs.Cells.size() ? rhs.Cells[column] : L"";
-			int c = CompareCellText(lv, rv);
-			return ascending ? c < 0 : c > 0;
+			std::wstring leftValue = column < (int)lhs.Cells.size() ? lhs.Cells[column] : L"";
+			std::wstring rightValue = column < (int)rhs.Cells.size() ? rhs.Cells[column] : L"";
+			int compareResult = CompareCellText(leftValue, rightValue);
+			return ascending ? compareResult < 0 : compareResult > 0;
 		});
 	};
 
@@ -242,14 +242,14 @@ void ReportView::SortByColumn(int column, bool ascending)
 
 	SortedColumnIndex = column;
 	SortAscending = ascending;
-	PostRender();
+	InvalidateVisual();
 }
 
 void ReportView::ResetScroll()
 {
 	_scrollYOffset = 0.0f;
 	ScrollChanged(this);
-	PostRender();
+	InvalidateVisual();
 }
 
 bool ReportView::SetGroupExpanded(int rowIndex, bool expanded, bool animate)
@@ -263,11 +263,11 @@ bool ReportView::SetGroupExpanded(int rowIndex, bool expanded, bool animate)
 	RebuildVisibleRows();
 	auto size = ActualSize();
 	ClampScroll((float)size.cx, (float)size.cy);
-	PostRender();
+	InvalidateVisual();
 	return true;
 }
 
-CursorKind ReportView::QueryCursor(int xof, int yof)
+CursorKind ReportView::QueryCursor(int localX, int localY)
 {
 	if (!Enable) return CursorKind::Arrow;
 
@@ -277,24 +277,24 @@ CursorKind ReportView::QueryCursor(int xof, int yof)
 	float height = (float)size.cy;
 	if (_inScroll)
 		return CursorKind::SizeNS;
-	if (GetMaxScrollY(width, height) > 0.0f && PointInRect((float)xof, (float)yof, GetScrollThumbRect(width, height)))
+	if (GetMaxScrollY(width, height) > 0.0f && PointInRect((float)localX, (float)localY, GetScrollThumbRect(width, height)))
 		return CursorKind::SizeNS;
-	int col = HitTestHeaderColumn(xof, yof);
+	int col = HitTestHeaderColumn(localX, localY);
 	if (col >= 0 && AllowSorting && Columns[col].Sortable)
 		return CursorKind::Hand;
-	int row = HitTestVisibleRow(xof, yof);
+	int row = HitTestVisibleRow(localX, localY);
 	if (row >= 0)
 		return CursorKind::Hand;
 	return Cursor;
 }
 
-bool ReportView::CanHandleMouseWheel(int delta, int xof, int yof)
+bool ReportView::CanHandleMouseWheel(int delta, int localX, int localY)
 {
 	(void)delta;
 	auto size = ActualSize();
 	float width = (float)size.cx;
 	float height = (float)size.cy;
-	return PointInRect((float)xof, (float)yof, GetRowsRect(width, height)) && GetMaxScrollY(width, height) > 0.0f;
+	return PointInRect((float)localX, (float)localY, GetRowsRect(width, height)) && GetMaxScrollY(width, height) > 0.0f;
 }
 
 bool ReportView::IsAnimationRunning()
@@ -335,7 +335,7 @@ void ReportView::Update()
 	EndRender();
 }
 
-bool ReportView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool ReportView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!Enable || !Visible) return true;
 	(void)lParam;
@@ -351,7 +351,7 @@ bool ReportView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		int delta = GET_WHEEL_DELTA_WPARAM(wParam);
 		float steps = (float)delta / (float)WHEEL_DELTA;
 		SetScrollYOffset(_scrollYOffset - steps * RowHeight * 3.0f, width, height);
-		MouseEventArgs eventObj(MouseButtons::None, 0, xof, yof, delta);
+		MouseEventArgs eventObj(MouseButtons::None, 0, localX, localY, delta);
 		OnMouseWheel(this, eventObj);
 		break;
 	}
@@ -364,14 +364,14 @@ bool ReportView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 			auto thumb = GetScrollThumbRect(width, height);
 			float maxScroll = GetMaxScrollY(width, height);
 			float travel = (std::max)(1.0f, RectHeight(track) - RectHeight(thumb));
-			float y = (float)yof - _scrollGrabOffsetY;
+			float y = (float)localY - _scrollGrabOffsetY;
 			float t = (y - track.top) / travel;
 			SetScrollYOffset(maxScroll * std::clamp(t, 0.0f, 1.0f), width, height);
 		}
 		int old = UnderMouseRowIndex;
-		UnderMouseRowIndex = HitTestVisibleRow(xof, yof);
-		if (old != UnderMouseRowIndex) PostRender();
-		MouseEventArgs eventObj(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
+		UnderMouseRowIndex = HitTestVisibleRow(localX, localY);
+		if (old != UnderMouseRowIndex) InvalidateVisual();
+		MouseEventArgs eventObj(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
 		OnMouseMove(this, eventObj);
 		break;
 	}
@@ -380,22 +380,22 @@ bool ReportView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 		if (ParentForm) ParentForm->SetSelectedControl(this, false);
 		auto thumb = GetScrollThumbRect(width, height);
 		auto track = GetScrollTrackRect(width, height);
-		if (PointInRect((float)xof, (float)yof, thumb))
+		if (PointInRect((float)localX, (float)localY, thumb))
 		{
 			_inScroll = true;
-			_scrollGrabOffsetY = (float)yof - thumb.top;
+			_scrollGrabOffsetY = (float)localY - thumb.top;
 		}
-		else if (PointInRect((float)xof, (float)yof, track))
+		else if (PointInRect((float)localX, (float)localY, track))
 		{
 			float maxScroll = GetMaxScrollY(width, height);
-			float t = ((float)yof - track.top) / (std::max)(1.0f, RectHeight(track));
+			float t = ((float)localY - track.top) / (std::max)(1.0f, RectHeight(track));
 			SetScrollYOffset(maxScroll * std::clamp(t, 0.0f, 1.0f), width, height);
 			_inScroll = true;
 			_scrollGrabOffsetY = RectHeight(GetScrollThumbRect(width, height)) * 0.5f;
 		}
 		else
 		{
-			int col = HitTestHeaderColumn(xof, yof);
+			int col = HitTestHeaderColumn(localX, localY);
 			if (col >= 0 && AllowSorting && Columns[col].Sortable)
 			{
 				bool ascending = SortedColumnIndex == col ? !SortAscending : true;
@@ -403,7 +403,7 @@ bool ReportView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 			}
 			else
 			{
-				int row = HitTestVisibleRow(xof, yof);
+				int row = HitTestVisibleRow(localX, localY);
 				if (row >= 0)
 				{
 					if (Rows[row].Kind == ReportRowKind::Group)
@@ -417,32 +417,32 @@ bool ReportView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 						SelectionChanged(this);
 						OnRowClick(this, row);
 					}
-					PostRender();
+					InvalidateVisual();
 				}
 			}
 		}
-		MouseEventArgs eventObj(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs eventObj(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseDown(this, eventObj);
 		break;
 	}
 	case WM_LBUTTONUP:
 	{
 		_inScroll = false;
-		MouseEventArgs eventObj(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs eventObj(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseUp(this, eventObj);
 		if (ParentForm && ParentForm->Selected == this)
-			ParentForm->SetSelectedControl(NULL, false);
-		PostRender();
+			ParentForm->SetSelectedControl(nullptr, false);
+		InvalidateVisual();
 		break;
 	}
 	case WM_LBUTTONDBLCLK:
 	{
-		MouseEventArgs eventObj(MouseButtons::Left, 2, xof, yof, HIWORD(wParam));
+		MouseEventArgs eventObj(MouseButtons::Left, 2, localX, localY, HIWORD(wParam));
 		OnMouseDoubleClick(this, eventObj);
 		break;
 	}
 	default:
-		return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 	}
 	return true;
 }
@@ -596,32 +596,32 @@ void ReportView::SetScrollYOffset(float value, float width, float height)
 	if (std::fabs(old - _scrollYOffset) > 0.1f)
 	{
 		ScrollChanged(this);
-		PostRender();
+		InvalidateVisual();
 	}
 }
 
-int ReportView::HitTestHeaderColumn(int xof, int yof)
+int ReportView::HitTestHeaderColumn(int localX, int localY)
 {
 	auto size = ActualSize();
 	auto header = GetHeaderRect((float)size.cx, (float)size.cy);
-	if (!PointInRect((float)xof, (float)yof, header))
+	if (!PointInRect((float)localX, (float)localY, header))
 		return -1;
 	float x = header.left;
 	for (int i = 0; i < (int)Columns.size(); ++i)
 	{
 		float colWidth = (std::max)(24.0f, Columns[i].Width);
-		if ((float)xof >= x && (float)xof <= x + colWidth)
+		if ((float)localX >= x && (float)localX <= x + colWidth)
 			return i;
 		x += colWidth;
 	}
 	return -1;
 }
 
-int ReportView::HitTestVisibleRow(int xof, int yof)
+int ReportView::HitTestVisibleRow(int localX, int localY)
 {
 	auto size = ActualSize();
 	auto rows = GetRowsRect((float)size.cx, (float)size.cy);
-	if (!PointInRect((float)xof, (float)yof, rows))
+	if (!PointInRect((float)localX, (float)localY, rows))
 		return -1;
 	float y = rows.top - _scrollYOffset;
 	for (int i = 0; i < (int)Rows.size();)
@@ -629,7 +629,7 @@ int ReportView::HitTestVisibleRow(int xof, int yof)
 		if (Rows[i].Kind == ReportRowKind::Group)
 		{
 			float rh = GetRowHeight(Rows[i]);
-			if ((float)yof >= y && (float)yof <= y + rh)
+			if ((float)localY >= y && (float)localY <= y + rh)
 				return i;
 			y += rh;
 
@@ -639,13 +639,13 @@ int ReportView::HitTestVisibleRow(int xof, int yof)
 			if (visibleHeight > 0.001f)
 			{
 				const float clipBottom = y + visibleHeight;
-				if ((float)yof >= y && (float)yof <= clipBottom)
+				if ((float)localY >= y && (float)localY <= clipBottom)
 				{
 					float childY = y;
 					for (int child = i + 1; child < end; ++child)
 					{
 						float childH = GetRowHeight(Rows[child]);
-						if ((float)yof >= childY && (float)yof <= (std::min)(childY + childH, clipBottom))
+						if ((float)localY >= childY && (float)localY <= (std::min)(childY + childH, clipBottom))
 							return child;
 						childY += childH;
 					}
@@ -658,7 +658,7 @@ int ReportView::HitTestVisibleRow(int xof, int yof)
 		}
 
 		float rh = GetRowHeight(Rows[i]);
-		if ((float)yof >= y && (float)yof <= y + rh)
+		if ((float)localY >= y && (float)localY <= y + rh)
 			return i;
 		y += rh;
 		++i;
@@ -669,7 +669,7 @@ int ReportView::HitTestVisibleRow(int xof, int yof)
 void ReportView::DrawFrame(D2DGraphics* d2d, float width, float height)
 {
 	d2d->FillRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, BackColor, CornerRadius);
-	d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, BolderColor, Border, CornerRadius);
+	d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, BorderColor, Border, CornerRadius);
 
 	if (ShowTitle)
 	{

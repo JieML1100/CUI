@@ -39,8 +39,8 @@ public:
         Invalidate(); 
     }
     
-    void AddColumn(const ColumnDefinition& col) { 
-        _columnDefinitions.push_back(col); 
+    void AddColumn(const ColumnDefinition& column) {
+        _columnDefinitions.push_back(column);
         Invalidate(); 
     }
     
@@ -55,17 +55,17 @@ public:
     }
 
 	// 根据当前容器尺寸与行列定义，将点映射到单元格索引。
-	// x/y 为容器本地坐标（0,0 在 GridPanel 左上角）。
+	// localX/localY 为容器本地坐标（0,0 在 GridPanel 左上角）。
     /**
      * @brief 将容器本地坐标映射为 Grid 单元格索引。
      * @param container GridPanel 容器。
-     * @param x 容器本地 X（像素）。
-     * @param y 容器本地 Y（像素）。
+     * @param localX 容器本地 X（像素）。
+     * @param localY 容器本地 Y（像素）。
      * @param outRow 输出行索引。
      * @param outCol 输出列索引。
      * @return true 表示命中有效单元格。
      */
-	bool TryGetCellAtPoint(Control* container, float x, float y, int& outRow, int& outCol);
+	bool TryGetCellAtPoint(Control* container, float localX, float localY, int& outRow, int& outCol);
     
     SIZE Measure(Control* container, SIZE availableSize) override;
     void Arrange(Control* container, D2D1_RECT_F finalRect) override;
@@ -96,8 +96,8 @@ public:
     
     /** @brief 添加一列定义。 */
     void AddColumn(GridLength width, float minWidth = 0.0f, float maxWidth = FLT_MAX) {
-        ColumnDefinition col(width, minWidth, maxWidth);
-        _gridEngine->AddColumn(col);
+        ColumnDefinition column(width, minWidth, maxWidth);
+        _gridEngine->AddColumn(column);
     }
     
     /** @brief 清空所有行定义。 */

@@ -190,9 +190,9 @@ std::vector<void*> FindAllPattern(void* _begin, std::string sPattern, int search
 }
 void PrintHex(void* ptr, int count, int splitLine) {
 	const char keys[] = "0123456789ABCDEF";
-	uint8_t* tmp = (uint8_t*)ptr;
-	for (uint8_t* b = tmp; b < tmp + count; b += splitLine) {
-		for (int j = 0; j < splitLine && b + j < tmp + count; j++) {
+	uint8_t* bytes = (uint8_t*)ptr;
+	for (uint8_t* b = bytes; b < bytes + count; b += splitLine) {
+		for (int j = 0; j < splitLine && b + j < bytes + count; j++) {
 			printf("%c%c ", keys[b[j] / 0x10], keys[b[j] % 0x10]);
 		}
 		printf("\n");
@@ -200,8 +200,8 @@ void PrintHex(void* ptr, int count, int splitLine) {
 }
 void PrintHex(void* ptr, int count) {
 	const char keys[] = "0123456789ABCDEF";
-	uint8_t* tmp = (uint8_t*)ptr;
-	for (uint8_t* b = tmp; b < tmp + count; b++) {
+	uint8_t* bytes = (uint8_t*)ptr;
+	for (uint8_t* b = bytes; b < bytes + count; b++) {
 		printf("%c%c ", keys[*b / 0x10], keys[*b % 0x10]);
 	}
 }

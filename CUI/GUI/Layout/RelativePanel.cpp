@@ -17,17 +17,17 @@ bool RelativeLayoutEngine::HasCycle(Control* start, Control* current, std::map<C
 	auto it = _constraints.find(current);
 	if (it != _constraints.end())
 	{
-		const RelativeConstraints& c = it->second;
+		const RelativeConstraints& constraints = it->second;
 		
 		// 检查所有依赖的控件
-		if (c.AlignLeftWith && HasCycle(start, c.AlignLeftWith, visited)) return true;
-		if (c.AlignRightWith && HasCycle(start, c.AlignRightWith, visited)) return true;
-		if (c.AlignTopWith && HasCycle(start, c.AlignTopWith, visited)) return true;
-		if (c.AlignBottomWith && HasCycle(start, c.AlignBottomWith, visited)) return true;
-		if (c.LeftOf && HasCycle(start, c.LeftOf, visited)) return true;
-		if (c.RightOf && HasCycle(start, c.RightOf, visited)) return true;
-		if (c.Above && HasCycle(start, c.Above, visited)) return true;
-		if (c.Below && HasCycle(start, c.Below, visited)) return true;
+		if (constraints.AlignLeftWith && HasCycle(start, constraints.AlignLeftWith, visited)) return true;
+		if (constraints.AlignRightWith && HasCycle(start, constraints.AlignRightWith, visited)) return true;
+		if (constraints.AlignTopWith && HasCycle(start, constraints.AlignTopWith, visited)) return true;
+		if (constraints.AlignBottomWith && HasCycle(start, constraints.AlignBottomWith, visited)) return true;
+		if (constraints.LeftOf && HasCycle(start, constraints.LeftOf, visited)) return true;
+		if (constraints.RightOf && HasCycle(start, constraints.RightOf, visited)) return true;
+		if (constraints.Above && HasCycle(start, constraints.Above, visited)) return true;
+		if (constraints.Below && HasCycle(start, constraints.Below, visited)) return true;
 	}
 	
 	visited[current] = 2; // 标记为已访问完成
@@ -43,9 +43,9 @@ std::vector<Control*> RelativeLayoutEngine::TopologicalSort(Control* container)
 	std::map<Control*, int> visited; // 0=未访问, 1=正在访问, 2=已完成
 	
 	// 初始化
-	for (int i = 0; i < container->Count; i++)
+	for (int childIndex = 0; childIndex < container->Count; childIndex++)
 	{
-		auto child = container->operator[](i);
+		auto child = container->operator[](childIndex);
 		if (child && child->Visible)
 			visited[child] = 0;
 	}
@@ -55,9 +55,9 @@ std::vector<Control*> RelativeLayoutEngine::TopologicalSort(Control* container)
 	std::vector<Control*> noDeps;
 	std::vector<Control*> hasDeps;
 	
-	for (int i = 0; i < container->Count; i++)
+	for (int childIndex = 0; childIndex < container->Count; childIndex++)
 	{
-		auto child = container->operator[](i);
+		auto child = container->operator[](childIndex);
 		if (!child || !child->Visible) continue;
 		
 		auto it = _constraints.find(child);
@@ -65,9 +65,9 @@ std::vector<Control*> RelativeLayoutEngine::TopologicalSort(Control* container)
 		
 		if (it != _constraints.end())
 		{
-			const RelativeConstraints& c = it->second;
-			if (c.AlignLeftWith || c.AlignRightWith || c.AlignTopWith || c.AlignBottomWith ||
-				c.LeftOf || c.RightOf || c.Above || c.Below)
+			const RelativeConstraints& constraints = it->second;
+			if (constraints.AlignLeftWith || constraints.AlignRightWith || constraints.AlignTopWith || constraints.AlignBottomWith ||
+				constraints.LeftOf || constraints.RightOf || constraints.Above || constraints.Below)
 			{
 				hasDependency = true;
 			}
@@ -80,12 +80,12 @@ std::vector<Control*> RelativeLayoutEngine::TopologicalSort(Control* container)
 	}
 	
 	// 先添加没有依赖的
-	for (auto c : noDeps)
-		result.push_back(c);
+	for (auto child : noDeps)
+		result.push_back(child);
 	
 	// 再添加有依赖的
-	for (auto c : hasDeps)
-		result.push_back(c);
+	for (auto child : hasDeps)
+		result.push_back(child);
 	
 	return result;
 }
@@ -97,9 +97,9 @@ SIZE RelativeLayoutEngine::Measure(Control* container, SIZE availableSize)
 	// 简单测量：返回容器期望的最大尺寸
 	SIZE desiredSize = {0, 0};
 	
-	for (int i = 0; i < container->Count; i++)
+	for (int childIndex = 0; childIndex < container->Count; childIndex++)
 	{
-		auto child = container->operator[](i);
+		auto child = container->operator[](childIndex);
 		if (!child || !child->Visible) continue;
 		
 		SIZE childSize = child->MeasureCore(availableSize);
@@ -147,83 +147,83 @@ void RelativeLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 		auto it = _constraints.find(child);
 		if (it != _constraints.end())
 		{
-			const RelativeConstraints& c = it->second;
+			const RelativeConstraints& constraints = it->second;
 			
 			// 相对于面板对齐
-			if (c.AlignLeftWithPanel)
+			if (constraints.AlignLeftWithPanel)
 			{
 				left = originX + margin.Left;
 				leftSet = true;
 			}
-			if (c.AlignRightWithPanel)
+			if (constraints.AlignRightWithPanel)
 			{
 				right = originX + containerWidth - margin.Right;
 				rightSet = true;
 			}
-			if (c.AlignTopWithPanel)
+			if (constraints.AlignTopWithPanel)
 			{
 				top = originY + margin.Top;
 				topSet = true;
 			}
-			if (c.AlignBottomWithPanel)
+			if (constraints.AlignBottomWithPanel)
 			{
 				bottom = originY + containerHeight - margin.Bottom;
 				bottomSet = true;
 			}
 			
 			// 相对于其他控件对齐
-			if (c.AlignLeftWith && positions.find(c.AlignLeftWith) != positions.end())
+			if (constraints.AlignLeftWith && positions.find(constraints.AlignLeftWith) != positions.end())
 			{
-				left = positions[c.AlignLeftWith].left + margin.Left;
+				left = positions[constraints.AlignLeftWith].left + margin.Left;
 				leftSet = true;
 			}
-			if (c.AlignRightWith && positions.find(c.AlignRightWith) != positions.end())
+			if (constraints.AlignRightWith && positions.find(constraints.AlignRightWith) != positions.end())
 			{
-				right = positions[c.AlignRightWith].right - margin.Right;
+				right = positions[constraints.AlignRightWith].right - margin.Right;
 				rightSet = true;
 			}
-			if (c.AlignTopWith && positions.find(c.AlignTopWith) != positions.end())
+			if (constraints.AlignTopWith && positions.find(constraints.AlignTopWith) != positions.end())
 			{
-				top = positions[c.AlignTopWith].top + margin.Top;
+				top = positions[constraints.AlignTopWith].top + margin.Top;
 				topSet = true;
 			}
-			if (c.AlignBottomWith && positions.find(c.AlignBottomWith) != positions.end())
+			if (constraints.AlignBottomWith && positions.find(constraints.AlignBottomWith) != positions.end())
 			{
-				bottom = positions[c.AlignBottomWith].bottom - margin.Bottom;
+				bottom = positions[constraints.AlignBottomWith].bottom - margin.Bottom;
 				bottomSet = true;
 			}
 			
 			// 相对位置关系
-			if (c.LeftOf && positions.find(c.LeftOf) != positions.end())
+			if (constraints.LeftOf && positions.find(constraints.LeftOf) != positions.end())
 			{
-				right = positions[c.LeftOf].left - margin.Right;
+				right = positions[constraints.LeftOf].left - margin.Right;
 				rightSet = true;
 			}
-			if (c.RightOf && positions.find(c.RightOf) != positions.end())
+			if (constraints.RightOf && positions.find(constraints.RightOf) != positions.end())
 			{
-				left = positions[c.RightOf].right + margin.Left;
+				left = positions[constraints.RightOf].right + margin.Left;
 				leftSet = true;
 			}
-			if (c.Above && positions.find(c.Above) != positions.end())
+			if (constraints.Above && positions.find(constraints.Above) != positions.end())
 			{
-				bottom = positions[c.Above].top - margin.Bottom;
+				bottom = positions[constraints.Above].top - margin.Bottom;
 				bottomSet = true;
 			}
-			if (c.Below && positions.find(c.Below) != positions.end())
+			if (constraints.Below && positions.find(constraints.Below) != positions.end())
 			{
-				top = positions[c.Below].bottom + margin.Top;
+				top = positions[constraints.Below].bottom + margin.Top;
 				topSet = true;
 			}
 			
 			// 居中
-			if (c.CenterHorizontal && !leftSet && !rightSet)
+			if (constraints.CenterHorizontal && !leftSet && !rightSet)
 			{
 				float availableWidth = containerWidth - margin.Left - margin.Right;
 				if (availableWidth < 0) availableWidth = 0;
 				left = originX + margin.Left + (availableWidth - childSize.cx) / 2.0f;
 				leftSet = true;
 			}
-			if (c.CenterVertical && !topSet && !bottomSet)
+			if (constraints.CenterVertical && !topSet && !bottomSet)
 			{
 				float availableHeight = containerHeight - margin.Top - margin.Bottom;
 				if (availableHeight < 0) availableHeight = 0;
@@ -281,9 +281,9 @@ void RelativeLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 		positions[child] = rect;
 		
 		// 应用布局
-		POINT loc = { (LONG)finalLeft, (LONG)finalTop };
-		SIZE size = { (LONG)finalWidth, (LONG)finalHeight };
-		child->ApplyLayout(loc, size);
+		POINT finalLocation = { (LONG)finalLeft, (LONG)finalTop };
+		SIZE finalSize = { (LONG)finalWidth, (LONG)finalHeight };
+		child->ApplyLayout(finalLocation, finalSize);
 	}
 	
 	_needsLayout = false;

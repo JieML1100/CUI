@@ -29,5 +29,5 @@ private:
 	static int CountIndentTabs(const std::wstring& s);
 	static std::wstring StripIndentTabs(const std::wstring& s);
 	static void SerializeNodes(std::wstringstream& ss, std::vector<TreeNode*>& nodes, int depth);
-	static std::wstring NodesToText(TreeView* tv);
+	static std::wstring NodesToText(TreeView* treeView);
 };

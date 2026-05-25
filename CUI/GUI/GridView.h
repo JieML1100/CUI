@@ -4,6 +4,7 @@
 #pragma comment(lib, "Imm32.lib")
 typedef Event<void(class GridView*, int c, int r, bool v) > OnGridViewCheckStateChangedEvent;
 typedef Event<void(class GridView*, int c, int r)> OnGridViewButtonClickEvent;
+typedef Event<void(class GridView*, int c, int r, std::wstring text)> OnGridViewLinkedTextClickEvent;
 typedef Event<void(class GridView*, int c, int r, int selectedIndex, std::wstring selectedText)> OnGridViewComboBoxSelectionChangedEvent;
 typedef Event<void(class GridView*, int newRowIndex)> OnGridViewUserAddedRowEvent;
 enum class ColumnType
@@ -13,6 +14,7 @@ enum class ColumnType
 	Check,
 	Button,
 	ComboBox,
+	LinkedText,
 };
 
 /**
@@ -20,7 +22,7 @@ enum class ColumnType
  * @brief GridView：表格控件（列定义 + 行数据 + 编辑/排序/滚动）。
  *
  * 特性概览：
- * - 多列类型：Text/Image/Check/Button/ComboBox
+ * - 多列类型：Text/Image/Check/Button/ComboBox/LinkedText
  * - 支持单元格编辑（文本/组合框）与按钮点击事件
  * - 支持列头点击排序（可为列配置 SortFunc）
  * - 支持平滑滚动（ScrollYOffset）与行级滚动（ScrollRowPosition）
@@ -88,31 +90,31 @@ class GridViewRow
 {
 public:
 	std::vector<CellValue> Cells = std::vector<CellValue>();
-	CellValue& operator[](int idx);
+	CellValue& operator[](int index);
 };
 class GridView : public Control
 {
 public:
 	UIClass Type();
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool HandlesNavigationKey(WPARAM key) const override;
 	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override { return GetCaretBlinkInvalidRect(outRect); }
 	GridView(int x = 0, int y = 0, int width = 120, int height = 20);
 	~GridView() override;
 	/** @brief 表头字体（为空则使用默认字体/继承字体）。 */
-	class Font* HeadFont = NULL;
+	class Font* HeadFont = nullptr;
 	bool InScroll = false;
 	bool InHScroll = false;
 	ScrollChangedEvent ScrollChanged;
 	std::vector<GridViewColumn> Columns = std::vector<GridViewColumn>();
 	std::vector<GridViewRow> Rows = std::vector<GridViewRow>();
-	GridViewRow& operator[](int idx);
+	GridViewRow& operator[](int index);
 	float HeadHeight = 0.0f;
 	float RowHeight = 0.0f;
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	D2D1_COLOR_F HeadBackColor = Colors::Snow3;
 	D2D1_COLOR_F HeadForeColor = Colors::Black;
 	D2D1_COLOR_F HeadHoverBackColor = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.08f };
@@ -142,6 +144,8 @@ public:
 	D2D1_COLOR_F SelectedItemForeColor = Colors::Black;
 	D2D1_COLOR_F UnderMouseItemBackColor = { 0.3882f, 0.4000f, 0.9451f, 0.08f };
 	D2D1_COLOR_F UnderMouseItemForeColor = Colors::Black;
+	D2D1_COLOR_F LinkedTextColor = Colors::DeepSkyBlue;
+	D2D1_COLOR_F LinkedTextHoverColor = Colors::SlateBlue;
 	D2D1_COLOR_F ScrollBackColor = Colors::LightGray;
 	D2D1_COLOR_F ScrollForeColor = Colors::DimGrey;
 	D2D1_COLOR_F EditBackColor = Colors::White;
@@ -159,6 +163,7 @@ public:
 	D2D1_COLOR_F NewRowIndicatorColor = Colors::RoyalBlue;           // 新行指示符颜色
 	OnGridViewCheckStateChangedEvent OnGridViewCheckStateChanged;
 	OnGridViewButtonClickEvent OnGridViewButtonClick;
+	OnGridViewLinkedTextClickEvent OnGridViewLinkedTextClick;
 	OnGridViewComboBoxSelectionChangedEvent OnGridViewComboBoxSelectionChanged;
 	OnGridViewUserAddedRowEvent OnUserAddedRow;
 	SelectionChangedEvent SelectionChanged;
@@ -222,20 +227,21 @@ private:
 	void DrawScroll();
 	void DrawHScroll(const ScrollLayout& l);
 	void DrawCorner(const ScrollLayout& l);
-	void SetScrollByPos(float yof);
-	void SetHScrollByPos(float xof);
+	void SetScrollByPos(float localY);
+	void SetHScrollByPos(float localX);
 	void HandleDropFiles(WPARAM wParam);
-	void HandleMouseWheel(WPARAM wParam, int xof, int yof);
-	void HandleMouseMove(int xof, int yof);
-	void HandleLeftButtonDown(int xof, int yof);
-	void HandleLeftButtonUp(int xof, int yof);
-	void HandleLeftButtonDoubleClick(WPARAM wParam, int xof, int yof);
+	void HandleMouseWheel(WPARAM wParam, int localX, int localY);
+	void HandleMouseMove(int localX, int localY);
+	void HandleLeftButtonDown(int localX, int localY);
+	void HandleLeftButtonUp(int localX, int localY);
+	void HandleLeftButtonDoubleClick(WPARAM wParam, int localX, int localY);
 	void HandleKeyDown(WPARAM wParam);
 	void HandleKeyUp(WPARAM wParam);
 	void HandleCharInput(WPARAM wParam);
 	void HandleImeComposition(LPARAM lParam);
 	void HandleCellClick(int col, int row);
 	void ToggleCheckState(int col, int row);
+	void RaiseLinkedTextClick(int col, int row);
 	void StartEditingCell(int col, int row);
 	void EnsureComboBoxCellDefaultSelection(int col, int row);
 	void ToggleDropDownEditor(int col, int row);
@@ -244,7 +250,7 @@ private:
 	void SaveCurrentEditingCell(bool commit = true);
 	void AdjustScrollPosition();
 	bool CanScrollDown();
-	void UpdateUnderMouseIndices(int xof, int yof);
+	void UpdateUnderMouseIndices(int localX, int localY);
 
 	bool _resizingColumn = false;
 	int _resizeColumnIndex = -1;
@@ -261,13 +267,17 @@ private:
 	int EditSelectionEnd = 0;
 	float EditOffsetX = 0.0f;
 
-	class DropDownPopup* _dropDownPopup = NULL;
+	class DropDownPopup* _dropDownPopup = nullptr;
 	int _dropDownPopupColumnIndex = -1;
 	int _dropDownPopupRowIndex = -1;
 
 	bool _buttonMouseDown = false;
 	int _buttonDownColumnIndex = -1;
 	int _buttonDownRowIndex = -1;
+
+	bool _linkedTextMouseDown = false;
+	int _linkedTextDownColumnIndex = -1;
+	int _linkedTextDownRowIndex = -1;
 
 	// 新行相关成员变量
 	bool _isUnderNewRow = false;   // 鼠标是否在新行区域
@@ -277,7 +287,7 @@ private:
 	float GetHeadHeightPx();
 	bool TryGetCellRectLocal(int col, int row, D2D1_RECT_F& outRect);
 	bool IsEditableTextCell(int col, int row);
-	bool SetEditingCaretFromMousePoint(int xof, int yof);
+	bool SetEditingCaretFromMousePoint(int localX, int localY);
 	void EditInputText(const std::wstring& input);
 	void EditInputBack();
 	void EditInputDelete();
@@ -290,11 +300,10 @@ private:
 	// 新行相关方法
 	bool IsNewRowArea(int x, int y);
 	int HitTestNewRow(int x, int y, int& outColumnIndex);
-	void DrawNewRowIndicator();
 	void AddNewRow();
 public:
 	void Update() override;
 	/** @brief 根据内容自动调整某列宽度。 */
 	void AutoSizeColumn(int col);
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

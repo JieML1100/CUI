@@ -112,14 +112,14 @@ public:
 	void ResetScroll();
 	bool SetGroupExpanded(int rowIndex, bool expanded, bool animate = true);
 
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 private:
 	float _scrollYOffset = 0.0f;
@@ -142,8 +142,8 @@ private:
 	void RebuildVisibleRows();
 	void ClampScroll(float width, float height);
 	void SetScrollYOffset(float value, float width, float height);
-	int HitTestHeaderColumn(int xof, int yof);
-	int HitTestVisibleRow(int xof, int yof);
+	int HitTestHeaderColumn(int localX, int localY);
+	int HitTestVisibleRow(int localX, int localY);
 	void DrawFrame(D2DGraphics* d2d, float width, float height);
 	void DrawHeader(D2DGraphics* d2d, float width, float height);
 	void DrawRows(D2DGraphics* d2d, float width, float height);

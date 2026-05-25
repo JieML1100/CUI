@@ -53,9 +53,6 @@
     <ClInclude Include="include\XmlWriter.h" />
     <ClInclude Include="include\XmlXPath.h" />
   </ItemGroup>
-  <ItemGroup>
-    <None Include="ClassDiagram.cd" />
-  </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>

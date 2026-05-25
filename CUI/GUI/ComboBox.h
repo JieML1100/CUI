@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "Control.h"
 #pragma comment(lib, "Imm32.lib")
 
@@ -33,23 +33,26 @@ private:
 	float CurrentDropdownHeight();
 	bool IsDropDownVisible();
 	bool IsDropDownInteractive();
-	bool IsHeaderHit(int xof, int yof);
-	bool IsDropdownHit(int xof, int yof, float dropdownHeight);
+	bool IsHeaderHit(int localX, int localY);
+	bool IsDropdownHit(int localX, int localY, float dropdownHeight);
 	float DropdownTop();
 	void EnsureSelectionInRange();
 	void EnsureScrollInRange();
 	std::vector<std::wstring> values;
 public:
 	virtual UIClass Type();
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool AutoCloseOnOutsideClick() const override { return true; }
 	bool AutoCloseOnFormFocusLoss() const override { return true; }
 	void ClosePopup() override { SetExpanded(false); }
 	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
+	bool ContainsForegroundPoint(int localX, int localY) override;
+	bool RenderNormalWhenForeground() const override { return true; }
+	void InvalidateVisual() override;
 	float CornerRadius = 6.0f;
 	float DropCornerRadius = 7.0f;
 	float DropGap = 4.0f;
@@ -81,12 +84,13 @@ public:
 	PROPERTY(std::vector<std::wstring>&, Items);
 	GET(std::vector<std::wstring>&, Items);
 	SET(std::vector<std::wstring>&, Items);
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	/** @brief 创建 ComboBox。 */
 	ComboBox(std::wstring text, int x, int y, int width = 120, int height = 24);
 	void SetExpanded(bool expanded);
 	SIZE ActualSize() override;
 	void DrawScroll();
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	void UpdateForeground() override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

@@ -779,11 +779,11 @@ private:
 					const float* b2 = FramePtrAbs(startAbs + i);
 					for (UINT32 c = 0; c < chs; c++)
 					{
-						const double ca = ((double)a2[c] - (double)a1[c]) - ((double)a1[c] - (double)a0[c]);
-						const double cb = ((double)b2[c] - (double)b1[c]) - ((double)b1[c] - (double)b0[c]);
-						const double diff = ca - cb;
+						const double tailCurvature = ((double)a2[c] - (double)a1[c]) - ((double)a1[c] - (double)a0[c]);
+						const double headCurvature = ((double)b2[c] - (double)b1[c]) - ((double)b1[c] - (double)b0[c]);
+						const double diff = tailCurvature - headCurvature;
 						transientError += diff * diff;
-						transientScale += ca * ca + cb * cb;
+						transientScale += tailCurvature * tailCurvature + headCurvature * headCurvature;
 					}
 				}
 			}
@@ -1006,14 +1006,14 @@ static void ApplyVolume(void* data, size_t bytes, UINT32 bitsPerSample, float vo
 static bool TryGetVideoAperture(IMFMediaType* mt, MFVideoArea& area)
 {
 	if (!mt) return false;
-	UINT32 cb = sizeof(MFVideoArea);
-	if (SUCCEEDED(mt->GetBlob(MF_MT_MINIMUM_DISPLAY_APERTURE, (UINT8*)&area, cb, &cb)) && cb == sizeof(MFVideoArea))
+	UINT32 blobSize = sizeof(MFVideoArea);
+	if (SUCCEEDED(mt->GetBlob(MF_MT_MINIMUM_DISPLAY_APERTURE, (UINT8*)&area, blobSize, &blobSize)) && blobSize == sizeof(MFVideoArea))
 		return true;
-	cb = sizeof(MFVideoArea);
-	if (SUCCEEDED(mt->GetBlob(MF_MT_GEOMETRIC_APERTURE, (UINT8*)&area, cb, &cb)) && cb == sizeof(MFVideoArea))
+	blobSize = sizeof(MFVideoArea);
+	if (SUCCEEDED(mt->GetBlob(MF_MT_GEOMETRIC_APERTURE, (UINT8*)&area, blobSize, &blobSize)) && blobSize == sizeof(MFVideoArea))
 		return true;
-	cb = sizeof(MFVideoArea);
-	if (SUCCEEDED(mt->GetBlob(MF_MT_PAN_SCAN_APERTURE, (UINT8*)&area, cb, &cb)) && cb == sizeof(MFVideoArea))
+	blobSize = sizeof(MFVideoArea);
+	if (SUCCEEDED(mt->GetBlob(MF_MT_PAN_SCAN_APERTURE, (UINT8*)&area, blobSize, &blobSize)) && blobSize == sizeof(MFVideoArea))
 		return true;
 	return false;
 }
@@ -1132,21 +1132,21 @@ STDMETHODIMP MediaPlayerCallback::Invoke(IMFAsyncResult* pResult)
 	{
 		player->_playState = MediaPlayer::PlayState::Playing;
 		player->UpdatePositionFromClock(true);
-		player->PostRender();
+		player->InvalidateVisual();
 		break;
 	}
 	case MESessionPaused:
 	{
 		player->_playState = MediaPlayer::PlayState::Paused;
 		player->UpdatePositionFromClock(true);
-		player->PostRender();
+		player->InvalidateVisual();
 		break;
 	}
 	case MESessionStopped:
 	{
 		player->_playState = MediaPlayer::PlayState::Stopped;
 		player->UpdatePositionFromClock(true);
-		player->PostRender();
+		player->InvalidateVisual();
 		break;
 	}
 	case MESessionEnded:
@@ -1171,7 +1171,7 @@ STDMETHODIMP MediaPlayerCallback::Invoke(IMFAsyncResult* pResult)
 		player->_lastMfError = statusHr;
 		DebugOutputHr(L"MEError", statusHr);
 		player->OnMediaFailed(player);
-		player->PostRender();
+		player->InvalidateVisual();
 		break;
 	}
 	}
@@ -1260,7 +1260,7 @@ MediaPlayer::MediaPlayer(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 1.0f };
-	this->BolderColor = D2D1_COLOR_F{ 0.3f, 0.3f, 0.3f, 1.0f };
+	this->BorderColor = D2D1_COLOR_F{ 0.3f, 0.3f, 0.3f, 1.0f };
 
 	HRESULT hr = InitializeMF();
 	if (FAILED(hr))
@@ -2286,7 +2286,7 @@ void MediaPlayer::PlaybackThreadMain()
 						const UINT64 vConvTicks = (UINT64)(tVid1.QuadPart - tVid0.QuadPart);
 						_statVideoConvertQpcTicks.fetch_add(vConvTicks, std::memory_order_relaxed);
 						_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
-						this->PostRender();
+						this->InvalidateVisual();
 					}
 					else
 					{
@@ -2348,7 +2348,7 @@ void MediaPlayer::PlaybackThreadMain()
 					const UINT64 vConvTicks = (UINT64)(tVid1.QuadPart - tVid0.QuadPart);
 					_statVideoConvertQpcTicks.fetch_add(vConvTicks, std::memory_order_relaxed);
 					_statVideoConvertBytes.fetch_add((UINT64)w * (UINT64)h * 4ULL, std::memory_order_relaxed);
-					this->PostRender();
+					this->InvalidateVisual();
 				}
 				else
 				{
@@ -2900,7 +2900,7 @@ void MediaPlayer::OnVideoFrame(const BYTE* data, DWORD size)
 		_videoFrameReady = true;
 	}
 	// CUI 是完全自渲染框架：需要主动 Invalidate 才会刷新画面。
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void MediaPlayer::RefreshVideoFormatFromSource()
@@ -3037,7 +3037,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 			_mediaLoaded = true;
 			_playState = PlayState::Stopped;
 			OnMediaOpened(this);
-			this->PostRender();
+			this->InvalidateVisual();
 
 			if (_autoPlay)
 				Play();
@@ -3048,7 +3048,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 		_mediaLoaded = true;
 		_playState = PlayState::Stopped;
 		OnMediaOpened(this);
-		this->PostRender();
+		this->InvalidateVisual();
 
 		// AutoPlay
 		if (_autoPlay)
@@ -3136,7 +3136,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 		{
 			_pendingStart = true;
 			_playState = PlayState::Playing;
-			this->PostRender();
+			this->InvalidateVisual();
 		}
 		else
 		{
@@ -3144,7 +3144,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 			if (SUCCEEDED(startHr))
 			{
 				_playState = PlayState::Playing;
-				this->PostRender();
+				this->InvalidateVisual();
 			}
 			else
 			{
@@ -3248,7 +3248,7 @@ bool MediaPlayer::Load(const void* data, size_t size, const std::wstring& nameHi
 	_mediaLoaded = true;
 	_playState = PlayState::Stopped;
 	OnMediaOpened(this);
-	this->PostRender();
+	this->InvalidateVisual();
 
 	if (_autoPlay)
 		Play();
@@ -3281,7 +3281,7 @@ void MediaPlayer::Play()
 				(void)StartPlayback();
 			}
 		}
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 	if (!_topologyReady)
@@ -3289,14 +3289,14 @@ void MediaPlayer::Play()
 		_pendingStart = true;
 		_hasPendingStartPosition = false;
 		_playState = PlayState::Playing;
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 	HRESULT hr = StartPlayback();
 	if (SUCCEEDED(hr))
 	{
 		_playState = PlayState::Playing;
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	else
 	{
@@ -3315,7 +3315,7 @@ void MediaPlayer::Pause()
 		if (_audioClient) (void)_audioClient->Stop();
 		if (_useMediaSessionAudioCompanion && _mediaSession)
 			(void)PausePlayback();
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -3323,7 +3323,7 @@ void MediaPlayer::Pause()
 	if (SUCCEEDED(hr))
 	{
 		_playState = PlayState::Paused;
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -3348,7 +3348,7 @@ void MediaPlayer::Stop()
 			(void)_sourceReader->SetCurrentPosition(GUID_NULL, var);
 			PropVariantClear(&var);
 		}
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 
@@ -3357,7 +3357,7 @@ void MediaPlayer::Stop()
 	{
 		_playState = PlayState::Stopped;
 		_position = 0.0;
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }
 
@@ -3401,7 +3401,7 @@ void MediaPlayer::Seek(double seconds)
 		_position = seconds;
 		_needSyncReset = true;
 		OnPositionChanged(this, _position);
-		this->PostRender();
+		this->InvalidateVisual();
 		return;
 	}
 	if (!_topologyReady)
@@ -3417,7 +3417,7 @@ void MediaPlayer::Seek(double seconds)
 	{
 		_position = std::max(0.0, std::min(seconds, _duration));
 		OnPositionChanged(this, _position);
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	else
 	{
@@ -3765,7 +3765,7 @@ void MediaPlayer::ReportPerfStatsIfDue()
 	return;
 }
 
-bool MediaPlayer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool MediaPlayer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 
@@ -3774,15 +3774,15 @@ bool MediaPlayer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	case WM_DROPFILES:
 	{
 		HDROP hDropInfo = HDROP(wParam);
-		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
-		if (uFileNum > 0)
+		UINT fileCount = DragQueryFile(hDropInfo, 0xffffffff, nullptr, 0);
+		if (fileCount > 0)
 		{
-			TCHAR strFileName[MAX_PATH];
-			DragQueryFile(hDropInfo, 0, strFileName, MAX_PATH);
+			TCHAR fileName[MAX_PATH];
+			DragQueryFile(hDropInfo, 0, fileName, MAX_PATH);
 			DragFinish(hDropInfo);
 
 			// 加载第一个文件
-			Load(strFileName);
+			Load(fileName);
 		}
 	}
 	return true;
@@ -3803,7 +3803,7 @@ bool MediaPlayer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	}
 	break;
 	default:
-		return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 	}
 
 	return true;
@@ -3986,6 +3986,6 @@ SET_CPP(MediaPlayer, MediaPlayer::VideoRenderMode, RenderMode)
 	if (_renderMode != value)
 	{
 		_renderMode = value;
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 }

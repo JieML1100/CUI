@@ -84,7 +84,7 @@ ColorPicker::ColorPicker(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.75f };
+	this->BorderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.75f };
 	this->ForeColor = Colors::Black;
 	this->Cursor = CursorKind::Hand;
 }
@@ -142,21 +142,21 @@ ColorPickerPopup* ColorPicker::EnsurePopup()
 			if (UpdateOnPreview)
 				SetSelectedColorInternal(color, true);
 			else
-				PostRender();
+				InvalidateVisual();
 		};
 	_popup->OnColorConfirmed += [this](ColorPickerPopup*, D2D1_COLOR_F color, std::wstring)
 		{
 			SetSelectedColorInternal(color, true);
 			_popupOpen = false;
 			OnDropDownClosed(this);
-			PostRender();
+			InvalidateVisual();
 		};
 	_popup->OnCleared += [this](ColorPickerPopup*)
 		{
 			SetSelectedColorInternal(D2D1_COLOR_F{ 0, 0, 0, 0 }, true);
 			_popupOpen = false;
 			OnDropDownClosed(this);
-			PostRender();
+			InvalidateVisual();
 		};
 	_popup->OnCancelled += [this](ColorPickerPopup*)
 		{
@@ -164,7 +164,7 @@ ColorPickerPopup* ColorPicker::EnsurePopup()
 				SetSelectedColorInternal(_popupStartColor, true);
 			_popupOpen = false;
 			OnDropDownClosed(this);
-			PostRender();
+			InvalidateVisual();
 		};
 	return _popup;
 }
@@ -187,7 +187,7 @@ void ColorPicker::OpenPopup()
 	D2D1_RECT_F anchor = D2D1::RectF(0.0f, 0.0f, (float)Width, (float)Height);
 	popup->ShowAt(this, anchor, _selectedColor);
 	OnDropDownOpened(this);
-	PostRender();
+	InvalidateVisual();
 }
 
 void ColorPicker::ClosePopup(bool confirm)
@@ -209,7 +209,7 @@ void ColorPicker::SetSelectedColorInternal(D2D1_COLOR_F color, bool fireEvent)
 	this->Text = ColorPickerPopup::ColorToString(_selectedColor);
 	if (fireEvent)
 		OnColorChanged(this, old, _selectedColor, this->Text);
-	PostRender();
+	InvalidateVisual();
 }
 
 float ColorPicker::CurrentHoverProgress()
@@ -244,7 +244,7 @@ void ColorPicker::StartHoverAnimation(float target)
 	_hoverTargetProgress = target;
 	_hoverAnimStartTick = ::GetTickCount64();
 	_hoverAnimating = true;
-	PostRender();
+	InvalidateVisual();
 }
 
 D2D1_RECT_F ColorPicker::SwatchRect() const
@@ -264,10 +264,10 @@ D2D1_RECT_F ColorPicker::ArrowRect() const
 	return D2D1::RectF(width - bw, 0.0f, width, height);
 }
 
-CursorKind ColorPicker::QueryCursor(int xof, int yof)
+CursorKind ColorPicker::QueryCursor(int localX, int localY)
 {
-	(void)xof;
-	(void)yof;
+	(void)localX;
+	(void)localY;
 	return Enable ? CursorKind::Hand : CursorKind::Arrow;
 }
 
@@ -311,7 +311,7 @@ void ColorPicker::Update()
 		d2d->FillRoundRect(0.0f, 0.0f, width, height, panel, radius);
 		auto arrow = ArrowRect();
 		d2d->FillRoundRect(arrow.left, arrow.top, RectWidth(arrow), RectHeight(arrow), ButtonBackColor, radius);
-		d2d->DrawLine(arrow.left, 6.0f, arrow.left, std::max(6.0f, height - 6.0f), BolderColor, 1.0f);
+		d2d->DrawLine(arrow.left, 6.0f, arrow.left, std::max(6.0f, height - 6.0f), BorderColor, 1.0f);
 
 		auto swatch = SwatchRect();
 		DrawCheckerBoard(d2d, swatch, 5.0f);
@@ -331,7 +331,7 @@ void ColorPicker::Update()
 
 		if (border > 0.0f)
 		{
-			D2D1_COLOR_F borderColor = focused ? FocusBorderColor : BolderColor;
+			D2D1_COLOR_F borderColor = focused ? FocusBorderColor : BorderColor;
 			float borderWidth = focused ? FocusBorder : border;
 			d2d->DrawRoundRect(borderWidth * 0.5f, borderWidth * 0.5f,
 				std::max(0.0f, width - borderWidth), std::max(0.0f, height - borderWidth),
@@ -343,13 +343,13 @@ void ColorPicker::Update()
 	this->EndRender();
 
 	if (IsAnimationRunning())
-		this->PostRender();
+		this->InvalidateVisual();
 }
 
-bool ColorPicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool ColorPicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!Enable)
-		return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 
 	switch (message)
 	{
@@ -372,7 +372,7 @@ bool ColorPicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			ClosePopup(false);
 		else
 			OpenPopup();
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseDown(this, e);
 		return true;
 	}
@@ -397,5 +397,5 @@ bool ColorPicker::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		break;
 	}
 
-	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 }

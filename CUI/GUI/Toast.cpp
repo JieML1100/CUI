@@ -51,7 +51,7 @@ ToastHost::ToastHost(int x, int y, int width, int height)
 	this->Location = { x, y };
 	this->Size = { width, height };
 	this->BackColor = D2D1_COLOR_F{ 1, 1, 1, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 1, 1, 1, 0 };
+	this->BorderColor = D2D1_COLOR_F{ 1, 1, 1, 0 };
 }
 
 D2D1_COLOR_F ToastHost::KindColor(ToastKind kind) const
@@ -76,7 +76,7 @@ int ToastHost::ShowToast(const std::wstring& title, const std::wstring& message,
 		while ((int)this->Toasts.size() > std::max(this->MaxVisible, 1) * 3)
 			this->Toasts.erase(this->Toasts.begin());
 	}
-	this->PostRender();
+	this->InvalidateVisual();
 	return (int)this->Toasts.size() - 1;
 }
 
@@ -88,7 +88,7 @@ bool ToastHost::DismissToast(int index)
 	this->Toasts[index].DismissStartTick = GetTickCount64();
 	this->HoveredIndex = -1;
 	this->PressedCloseIndex = -1;
-	this->PostRender();
+	this->InvalidateVisual();
 	return true;
 }
 
@@ -97,7 +97,7 @@ void ToastHost::ClearToasts()
 	this->Toasts.clear();
 	this->HoveredIndex = -1;
 	this->PressedCloseIndex = -1;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 size_t ToastHost::ToastCount() const
@@ -173,20 +173,20 @@ D2D1_RECT_F ToastHost::GetCloseRect(const D2D1_RECT_F& toastRect) const
 	return D2D1::RectF(toastRect.right - size - 8.0f, toastRect.top + 8.0f, toastRect.right - 8.0f, toastRect.top + 8.0f + size);
 }
 
-int ToastHost::HitTestToast(int xof, int yof) const
+int ToastHost::HitTestToast(int localX, int localY) const
 {
 	auto indices = VisibleIndices();
 	for (int i = 0; i < (int)indices.size(); i++)
 	{
 		if (indices[i] < 0 || indices[i] >= (int)this->Toasts.size() || this->Toasts[indices[i]].Dismissing)
 			continue;
-		if (PtInRectF(GetToastRect(i), (float)xof, (float)yof))
+		if (PtInRectF(GetToastRect(i), (float)localX, (float)localY))
 			return indices[i];
 	}
 	return -1;
 }
 
-int ToastHost::HitTestClose(int xof, int yof) const
+int ToastHost::HitTestClose(int localX, int localY) const
 {
 	if (!this->ShowCloseButton) return -1;
 	auto indices = VisibleIndices();
@@ -195,15 +195,15 @@ int ToastHost::HitTestClose(int xof, int yof) const
 		if (indices[i] < 0 || indices[i] >= (int)this->Toasts.size() || this->Toasts[indices[i]].Dismissing)
 			continue;
 		auto rect = GetToastRect(i);
-		if (PtInRectF(GetCloseRect(rect), (float)xof, (float)yof))
+		if (PtInRectF(GetCloseRect(rect), (float)localX, (float)localY))
 			return indices[i];
 	}
 	return -1;
 }
 
-CursorKind ToastHost::QueryCursor(int xof, int yof)
+CursorKind ToastHost::QueryCursor(int localX, int localY)
 {
-	return HitTestToast(xof, yof) >= 0 ? CursorKind::Hand : CursorKind::Arrow;
+	return HitTestToast(localX, localY) >= 0 ? CursorKind::Hand : CursorKind::Arrow;
 }
 
 bool ToastHost::IsAnimationRunning()
@@ -301,10 +301,10 @@ void ToastHost::Update()
 	this->EndRender();
 
 	if (changed)
-		this->PostRender();
+		this->InvalidateVisual();
 }
 
-bool ToastHost::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool ToastHost::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 
@@ -314,13 +314,13 @@ bool ToastHost::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 	{
 		if (this->ParentForm)
 			this->ParentForm->UnderMouse = this;
-		int hit = HitTestToast(xof, yof);
+		int hit = HitTestToast(localX, localY);
 		if (hit != this->HoveredIndex)
 		{
 			this->HoveredIndex = hit;
-			this->PostRender();
+			this->InvalidateVisual();
 		}
-		MouseEventArgs e(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseMove(this, e);
 		return true;
 	}
@@ -328,28 +328,28 @@ bool ToastHost::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 	{
 		if (this->ParentForm)
 			this->ParentForm->SetSelectedControl(this, false);
-		this->PressedCloseIndex = HitTestClose(xof, yof);
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		this->PressedCloseIndex = HitTestClose(localX, localY);
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseDown(this, e);
 		return true;
 	}
 	case WM_LBUTTONUP:
 	{
-		int closeHit = HitTestClose(xof, yof);
+		int closeHit = HitTestClose(localX, localY);
 		if (closeHit >= 0 && closeHit == this->PressedCloseIndex)
 			DismissToast(closeHit);
 		else
 		{
-			int hit = HitTestToast(xof, yof);
+			int hit = HitTestToast(localX, localY);
 			if (hit >= 0)
 			{
 				this->OnToastClick(this, hit);
-				MouseEventArgs click(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+				MouseEventArgs click(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 				this->OnMouseClick(this, click);
 			}
 		}
 		this->PressedCloseIndex = -1;
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseUp(this, e);
 		return true;
 	}
@@ -357,5 +357,5 @@ bool ToastHost::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int x
 		break;
 	}
 
-	return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 }

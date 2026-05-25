@@ -419,11 +419,11 @@ std::wstring Convert::Utf8ToUnicode(const std::string utf8Str) {
 std::string Convert::UnicodeToUtf8(const std::wstring unicodeStr) {
 	return WideToMultiByte(unicodeStr, CP_UTF8);
 }
-std::string Convert::wstring_to_string(const std::wstring wstr) {
-	return WideToMultiByte(wstr, CP_ACP);
+std::string Convert::WStringToString(const std::wstring wideString) {
+	return WideToMultiByte(wideString, CP_ACP);
 }
-std::wstring Convert::string_to_wstring(const std::string str) {
-	return MultiByteToWide(str, CP_ACP);
+std::wstring Convert::StringToWString(const std::string narrowString) {
+	return MultiByteToWide(narrowString, CP_ACP);
 }
 std::string Convert::ToBase64(const void* data, size_t size) {
 	static const char base64_chars[] =
@@ -512,8 +512,8 @@ std::string Convert::FromBase64(const std::string input) {
 	return output;
 }
 std::vector<uint8_t> Convert::FromBase64ToBytes(const std::string input) {
-	auto tmp = FromBase64(input);
-	return std::vector<uint8_t>((uint8_t*)&tmp[0], (uint8_t*)&tmp[0] + tmp.size());
+	auto decodedText = FromBase64(input);
+	return std::vector<uint8_t>((uint8_t*)&decodedText[0], (uint8_t*)&decodedText[0] + decodedText.size());
 }
 std::string Convert::ToBase85(const std::string input) {
 	static const char base85_chars[] =
@@ -633,8 +633,8 @@ std::string Convert::ToBase85(const std::vector<uint8_t>& input) {
 	return ToBase85(std::string((char*)input.data(), input.size()));
 }
 std::vector<uint8_t> Convert::FromBase85ToBytes(const std::string input) {
-	auto tmp = FromBase85(input);
-	return std::vector<uint8_t>((uint8_t*)&tmp[0], (uint8_t*)&tmp[0] + tmp.size());
+	auto decodedText = FromBase85(input);
+	return std::vector<uint8_t>((uint8_t*)&decodedText[0], (uint8_t*)&decodedText[0] + decodedText.size());
 }
 std::string Convert::CalcMD5(const void* data, size_t size) {
 	MD5 md5;

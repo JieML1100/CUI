@@ -58,7 +58,7 @@ void MessageDialog::BuildContent()
 		auto badge = this->AddControl(new Button(iconText, 24, 54, 46, 46));
 		badge->BackColor = D2D1_COLOR_F{ accent.r, accent.g, accent.b, 0.16f };
 		badge->ForeColor = accent;
-		badge->BolderColor = D2D1_COLOR_F{ accent.r, accent.g, accent.b, 0.32f };
+		badge->BorderColor = D2D1_COLOR_F{ accent.r, accent.g, accent.b, 0.32f };
 		badge->Round = 23.0f;
 	}
 
@@ -69,7 +69,7 @@ void MessageDialog::BuildContent()
 	auto message = this->AddControl(new RichTextBox(this->Message, 88, 82, 340, 70));
 	message->ReadOnly = true;
 	message->BackColor = D2D1_COLOR_F{ 1, 1, 1, 0 };
-	message->BolderColor = D2D1_COLOR_F{ 1, 1, 1, 0 };
+	message->BorderColor = D2D1_COLOR_F{ 1, 1, 1, 0 };
 	message->ForeColor = D2D1_COLOR_F{ 0.20f, 0.23f, 0.30f, 1.0f };
 
 	std::vector<std::pair<std::wstring, MessageDialogResult>> specs;
@@ -102,7 +102,7 @@ void MessageDialog::BuildContent()
 		{
 			btn->BackColor = accent;
 			btn->ForeColor = Colors::White;
-			btn->BolderColor = accent;
+			btn->BorderColor = accent;
 		}
 		MessageDialogResult result = specs[i].second;
 		btn->OnMouseClick += [this, result](Control*, MouseEventArgs) { Finish(result); };

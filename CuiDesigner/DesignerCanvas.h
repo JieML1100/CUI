@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 /**
  * @file DesignerCanvas.h
@@ -164,11 +164,11 @@ public:
 	std::wstring GetDesignedFormName() const { return _designedFormName; }
 	void SetDesignedFormName(const std::wstring& n) { _designedFormName = n; }
 	std::wstring GetDesignedFormText() const { return _designedFormText; }
-	void SetDesignedFormText(const std::wstring& t) { _designedFormText = t; this->PostRender(); }
+	void SetDesignedFormText(const std::wstring& t) { _designedFormText = t; this->InvalidateVisual(); }
 	D2D1_COLOR_F GetDesignedFormBackColor() const { return _designedFormBackColor; }
-	void SetDesignedFormBackColor(D2D1_COLOR_F c) { _designedFormBackColor = c; if (_clientSurface) _clientSurface->BackColor = c; this->PostRender(); }
+	void SetDesignedFormBackColor(D2D1_COLOR_F c) { _designedFormBackColor = c; if (_clientSurface) _clientSurface->BackColor = c; this->InvalidateVisual(); }
 	D2D1_COLOR_F GetDesignedFormForeColor() const { return _designedFormForeColor; }
-	void SetDesignedFormForeColor(D2D1_COLOR_F c) { _designedFormForeColor = c; this->PostRender(); }
+	void SetDesignedFormForeColor(D2D1_COLOR_F c) { _designedFormForeColor = c; this->InvalidateVisual(); }
 	std::wstring GetDesignedFormFontName() const { return _designedFormFontName; }
 	float GetDesignedFormFontSize() const { return _designedFormFontSize; }
 	::Font* GetDesignedFormSharedFont() const { return _designedFormSharedFont; }
@@ -194,19 +194,19 @@ public:
 	POINT GetDesignedFormLocation() const { return _designedFormLocation; }
 	void SetDesignedFormLocation(POINT p) { _designedFormLocation = p; }
 	bool GetDesignedFormVisibleHead() const { return _designedFormVisibleHead; }
-	void SetDesignedFormVisibleHead(bool v) { _designedFormVisibleHead = v; UpdateClientSurfaceLayout(); this->PostRender(); }
+	void SetDesignedFormVisibleHead(bool v) { _designedFormVisibleHead = v; UpdateClientSurfaceLayout(); this->InvalidateVisual(); }
 	int GetDesignedFormHeadHeight() const { return _designedFormHeadHeight; }
-	void SetDesignedFormHeadHeight(int h) { _designedFormHeadHeight = h; if (_designedFormHeadHeight < 0) _designedFormHeadHeight = 0; UpdateClientSurfaceLayout(); this->PostRender(); }
+	void SetDesignedFormHeadHeight(int h) { _designedFormHeadHeight = h; if (_designedFormHeadHeight < 0) _designedFormHeadHeight = 0; UpdateClientSurfaceLayout(); this->InvalidateVisual(); }
 	bool GetDesignedFormMinBox() const { return _designedFormMinBox; }
-	void SetDesignedFormMinBox(bool v) { _designedFormMinBox = v; this->PostRender(); }
+	void SetDesignedFormMinBox(bool v) { _designedFormMinBox = v; this->InvalidateVisual(); }
 	bool GetDesignedFormMaxBox() const { return _designedFormMaxBox; }
-	void SetDesignedFormMaxBox(bool v) { _designedFormMaxBox = v; this->PostRender(); }
+	void SetDesignedFormMaxBox(bool v) { _designedFormMaxBox = v; this->InvalidateVisual(); }
 	bool GetDesignedFormCloseBox() const { return _designedFormCloseBox; }
-	void SetDesignedFormCloseBox(bool v) { _designedFormCloseBox = v; this->PostRender(); }
+	void SetDesignedFormCloseBox(bool v) { _designedFormCloseBox = v; this->InvalidateVisual(); }
 	bool GetDesignedFormCenterTitle() const { return _designedFormCenterTitle; }
-	void SetDesignedFormCenterTitle(bool v) { _designedFormCenterTitle = v; this->PostRender(); }
+	void SetDesignedFormCenterTitle(bool v) { _designedFormCenterTitle = v; this->InvalidateVisual(); }
 	bool GetDesignedFormAllowResize() const { return _designedFormAllowResize; }
-	void SetDesignedFormAllowResize(bool v) { _designedFormAllowResize = v; this->PostRender(); }
+	void SetDesignedFormAllowResize(bool v) { _designedFormAllowResize = v; this->InvalidateVisual(); }
 	void ClampControlToDesignSurface(Control* c);
 	// 设计器专用：切换 Anchor 时保持控件当前视觉矩形不变，并同步换算 Margin
 	void ApplyAnchorStylesKeepingBounds(Control* c, uint8_t newAnchorStyles);
@@ -218,7 +218,7 @@ public:
 	bool LoadDesignFile(const std::wstring& filePath, std::wstring* outError = nullptr);
 	
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 	
 	// 控件管理
 	void AddControlToCanvas(UIClass type, POINT canvasPos);

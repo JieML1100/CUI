@@ -24,7 +24,7 @@ ToolTip::ToolTip(std::wstring text)
 {
 	this->Text = text;
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	this->BorderColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
 	this->ForeColor = PopupTextColor;
 	this->Enable = false;
 	this->Visible = true;
@@ -50,8 +50,8 @@ POINT ToolTip::CalcPopupOrigin()
 	auto textSize = font->GetTextSize(this->Text);
 	float popupW = textSize.width + PaddingX * 2.0f;
 	float popupH = textSize.height + PaddingY * 2.0f;
-	float x = targetRect.left + (float)OffsetX;
-	float y = targetRect.bottom + (float)OffsetY;
+	float x = targetRect.left + (float)PopupOffsetX;
+	float y = targetRect.bottom + (float)PopupOffsetY;
 	float maxW = (float)this->ParentForm->ClientSize.cx;
 	float maxH = (float)this->ParentForm->ClientSize.cy;
 	if (x + popupW > maxW)
@@ -166,7 +166,7 @@ void ToolTip::Bind(class Control* target)
 			(void)e;
 			this->Show();
 		};
-	_target->OnMouseLeaved += [this](class Control* sender, MouseEventArgs e)
+	_target->OnMouseLeave += [this](class Control* sender, MouseEventArgs e)
 		{
 			(void)sender;
 			(void)e;

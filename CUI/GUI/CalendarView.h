@@ -72,13 +72,13 @@ public:
 	CalendarDateRange GetRange() const;
 	void SetDisplayMonth(int year, int month);
 	void AddMonths(int delta);
-	int HitTestDate(int xof, int yof, SYSTEMTIME& outDate, bool& inDisplayMonth) const;
+	int HitTestDate(int localX, int localY, SYSTEMTIME& outDate, bool& inDisplayMonth) const;
 
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
 	bool HandlesNavigationKey(WPARAM key) const override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 private:
 	struct Layout
@@ -158,11 +158,15 @@ public:
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
+	bool ContainsForegroundPoint(int localX, int localY) override;
+	bool RenderNormalWhenForeground() const override { return true; }
+	void InvalidateVisual() override;
 	SIZE ActualSize() override;
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	void UpdateForeground() override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 private:
 	enum class HitPart
@@ -206,6 +210,7 @@ private:
 	UINT _animDurationMs = 180;
 	bool _animating = false;
 	bool _collapseCleanupPending = false;
+	bool _renderingForeground = false;
 
 	float DropdownTop() const;
 	float CurrentDropProgress();
@@ -215,8 +220,8 @@ private:
 	void UpdateDisplayText();
 	void NotifyRangeChanged();
 	void AddMonths(int delta);
-	HitPart HitTestPart(const Layout& layout, int xof, int yof, SYSTEMTIME& outDate, bool& inDisplayMonth) const;
-	void UpdateHoverState(int xof, int yof);
+	HitPart HitTestPart(const Layout& layout, int localX, int localY, SYSTEMTIME& outDate, bool& inDisplayMonth) const;
+	void UpdateHoverState(int localX, int localY);
 	void SelectDateFromInput(const SYSTEMTIME& date, bool inDisplayMonth);
 	void DrawHeader(D2DGraphics* d2d, const Layout& layout);
 	void DrawCalendarGrid(D2DGraphics* d2d, const Layout& layout);

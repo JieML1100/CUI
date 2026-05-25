@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #define NOMINMAX
 #include "RoundTextBox.h"
 #include "TextBox.h"
@@ -15,9 +15,9 @@ void RoundTextBox::Update()
 	bool isUnderMouse = this->ParentForm->UnderMouse == this;
 	auto d2d = this->ParentForm->Render;
 	auto font = this->Font;
-	float render_height = Height - (TextMargin * 2.0f);
-	textSize = font->GetTextSize(Text, FLT_MAX, render_height);
-	float OffsetY = std::max((Height - textSize.height) * 0.5f, 0.0f);
+	float renderHeight = Height - (TextMargin * 2.0f);
+	textSize = font->GetTextSize(Text, FLT_MAX, renderHeight);
+	float textOffsetY = std::max((Height - textSize.height) * 0.5f, 0.0f);
 
 	auto size = ActualSize();
 	const float actualWidth = static_cast<float>(size.cx);
@@ -53,55 +53,55 @@ void RoundTextBox::Update()
 				auto selRange = font->HitTestTextRange(this->Text, (UINT32)sels, (UINT32)selLen);
 				for (auto sr : selRange)
 				{
-					d2d->FillRect(sr.left + TextMargin - OffsetX, sr.top + OffsetY, sr.width, sr.height, this->SelectedBackColor);
+					d2d->FillRect(sr.left + TextMargin - HorizontalScrollOffset, sr.top + textOffsetY, sr.width, sr.height, this->SelectedBackColor);
 				}
 				if (selLen == 0 && !selRange.empty())
 				{
 					const auto caret = selRange[0];
-					const float cx = caret.left + TextMargin - OffsetX;
-					const float cy = caret.top + OffsetY;
+					const float cx = caret.left + TextMargin - HorizontalScrollOffset;
+					const float cy = caret.top + textOffsetY;
 					const float ch = caret.height > 0 ? caret.height : font->FontHeight;
-					auto abs = this->AbsLocation;
-					this->_caretRectCache = { static_cast<float>(abs.x) + cx - 2.0f, static_cast<float>(abs.y) + cy - 2.0f, static_cast<float>(abs.x) + cx + 2.0f, static_cast<float>(abs.y) + cy + ch + 2.0f };
+					auto absoluteLocation = this->AbsLocation;
+					this->_caretRectCache = { static_cast<float>(absoluteLocation.x) + cx - 2.0f, static_cast<float>(absoluteLocation.y) + cy - 2.0f, static_cast<float>(absoluteLocation.x) + cx + 2.0f, static_cast<float>(absoluteLocation.y) + cy + ch + 2.0f };
 					this->_caretRectCacheValid = true;
 					shouldDrawCaret = true;
-					caretStart = { selRange[0].left + TextMargin - OffsetX, selRange[0].top + OffsetY };
-					caretEnd = { selRange[0].left + TextMargin - OffsetX, selRange[0].top + selRange[0].height + OffsetY };
+					caretStart = { selRange[0].left + TextMargin - HorizontalScrollOffset, selRange[0].top + textOffsetY };
+					caretEnd = { selRange[0].left + TextMargin - HorizontalScrollOffset, selRange[0].top + selRange[0].height + textOffsetY };
 				}
-				auto lot = Factory::CreateStringLayout(this->Text, FLT_MAX, render_height, font->FontObject);
-				if (lot) {
-					d2d->DrawStringLayoutEffect(lot,
-						TextMargin - OffsetX,
-						OffsetY,
+				auto textLayout = Factory::CreateStringLayout(this->Text, FLT_MAX, renderHeight, font->FontObject);
+				if (textLayout) {
+					d2d->DrawStringLayoutEffect(textLayout,
+						TextMargin - HorizontalScrollOffset,
+						textOffsetY,
 						this->ForeColor,
 						DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
 						this->SelectedForeColor,
 						font);
-					lot->Release();
+					textLayout->Release();
 				}
 			}
 			else
 			{
-				auto lot = Factory::CreateStringLayout(this->Text, FLT_MAX, render_height, font->FontObject);
-				if (lot) {
-					d2d->DrawStringLayout(lot,
-						TextMargin - OffsetX, OffsetY,
+				auto textLayout = Factory::CreateStringLayout(this->Text, FLT_MAX, renderHeight, font->FontObject);
+				if (textLayout) {
+					d2d->DrawStringLayout(textLayout,
+						TextMargin - HorizontalScrollOffset, textOffsetY,
 						this->ForeColor);
-					lot->Release();
+					textLayout->Release();
 				}
 			}
 		}
 		else if (isSelected)
 		{
-			const float cx = (float)TextMargin - OffsetX;
-			const float cy = OffsetY;
+			const float cx = (float)TextMargin - HorizontalScrollOffset;
+			const float cy = textOffsetY;
 			const float ch = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
-			auto abs = this->AbsLocation;
-			this->_caretRectCache = { static_cast<float>(abs.x) + cx - 2.0f, static_cast<float>(abs.y) + cy - 2.0f, static_cast<float>(abs.x) + cx + 2.0f, static_cast<float>(abs.y) + cy + ch + 2.0f };
+			auto absoluteLocation = this->AbsLocation;
+			this->_caretRectCache = { static_cast<float>(absoluteLocation.x) + cx - 2.0f, static_cast<float>(absoluteLocation.y) + cy - 2.0f, static_cast<float>(absoluteLocation.x) + cx + 2.0f, static_cast<float>(absoluteLocation.y) + cy + ch + 2.0f };
 			this->_caretRectCacheValid = true;
 			shouldDrawCaret = true;
-			caretStart = { (float)TextMargin - OffsetX, OffsetY };
-			caretEnd = { (float)TextMargin - OffsetX, OffsetY + 16.0f };
+			caretStart = { (float)TextMargin - HorizontalScrollOffset, textOffsetY };
+			caretEnd = { (float)TextMargin - HorizontalScrollOffset, textOffsetY + 16.0f };
 		}
 		UpdateCaretBlinkState(isSelected, this->SelectionStart, this->SelectionEnd, this->_caretRectCacheValid, this->_caretRectCacheValid ? &this->_caretRectCache : nullptr);
 		if (shouldDrawCaret && IsCaretBlinkVisible())

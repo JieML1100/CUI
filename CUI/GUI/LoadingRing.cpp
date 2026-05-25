@@ -31,7 +31,7 @@ SET_CPP(LoadingRing, bool, Active)
 		return;
 	this->_active = value;
 	this->_animStartTick = ::GetTickCount64();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 LoadingRing::LoadingRing(int x, int y, int width, int height)
@@ -40,7 +40,7 @@ LoadingRing::LoadingRing(int x, int y, int width, int height)
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1::ColorF(0.0f, 0.48f, 0.85f, 0.12f);
 	this->ForeColor = D2D1::ColorF(0.0f, 0.48f, 0.85f, 1.0f);
-	this->BolderColor = D2D1::ColorF(0, 0, 0, 0);
+	this->BorderColor = D2D1::ColorF(0, 0, 0, 0);
 	this->_animStartTick = ::GetTickCount64();
 }
 

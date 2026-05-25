@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 /**
  * @file PropertyGrid.h
@@ -104,7 +104,7 @@ private:
 	bool BeginGroupedFloatSliderEdit(const std::wstring& propertyName);
 	void CommitGroupedFloatSliderEdit();
 	void CancelGroupedFloatSliderEdit();
-	void ApplyFloatPropertyValue(Control* ctrl, const std::wstring& propertyName, float value);
+	void ApplyFloatPropertyValue(Control* targetControl, const std::wstring& propertyName, float value);
 	void UpdateFloatPropertyPreview(const std::wstring& propertyName, float value);
 	void ExecutePropertyCommand(const std::wstring& propertyName, const std::function<void()>& applyChange);
 	void UpdatePropertyFromTextBox(std::wstring propertyName, std::wstring value);
@@ -116,7 +116,7 @@ public:
 	PropertyGrid(int x, int y, int width, int height);
 	virtual ~PropertyGrid();
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 	
 	void SetDesignerCanvas(DesignerCanvas* canvas) { _binding.SetCanvas(canvas); }
 	void CommitPendingEdits();

@@ -11,7 +11,7 @@
  */
 class CheckBox : public Control
 {
-	float last_width = 0.0f;
+	float lastMeasuredWidth = 0.0f;
 	float _checkProgress = 0.0f;
 	float _animStartProgress = 0.0f;
 	float _animTargetProgress = 0.0f;
@@ -26,7 +26,7 @@ protected:
 	bool DefaultClearSelectionOnMouseUp() const override { return true; }
 	bool DefaultSelectOnLeftButtonDoubleClick() const override { return true; }
 	bool DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const override;
-	bool DefaultPostRenderOnMouseDoubleClick(UINT message, bool wasSelected) const override;
+	bool DefaultInvalidateVisualOnMouseDoubleClick(UINT message, bool wasSelected) const override;
 	void BeforeDefaultMouseUp(UINT message, MouseEventArgs& e, bool wasSelected) override;
 	void BeforeDefaultMouseDoubleClick(UINT message, MouseEventArgs& e, bool wasSelected) override;
 public:

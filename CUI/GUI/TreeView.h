@@ -14,7 +14,7 @@
 class TreeNode
 {
 public:
-	ULONG64 Tag = NULL;
+	ULONG64 Tag = 0;
 	std::shared_ptr<BitmapSource> Image;
 	Microsoft::WRL::ComPtr<ID2D1Bitmap> ImageCache;
 	ID2D1RenderTarget* ImageCacheTarget = nullptr;
@@ -56,18 +56,18 @@ private:
 	void DrawScroll();
 public:
 	virtual UIClass Type();
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	/** @brief 根节点（所有权由 TreeView 管理，见实现）。 */
-	TreeNode* Root = NULL;
+	TreeNode* Root = nullptr;
 	/** @brief 当前选中节点。 */
-	TreeNode* SelectedNode = NULL;
+	TreeNode* SelectedNode = nullptr;
 	/** @brief 当前悬停节点。 */
-	TreeNode* HoveredNode = NULL;
+	TreeNode* HoveredNode = nullptr;
 	int MaxRenderItems = 0;
 	int ScrollIndex = 0;
 	float ItemHeight = 28.0f;
@@ -89,5 +89,5 @@ public:
 	TreeView(int x, int y, int width = 120, int height = 24);
 	~TreeView();
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

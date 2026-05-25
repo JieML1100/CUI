@@ -66,7 +66,7 @@ Expander::Expander()
 {
 	this->Text = L"Expander";
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.58f };
+	this->BorderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.58f };
 	this->ForeColor = Colors::Black;
 	this->Cursor = CursorKind::Arrow;
 	this->OnTextChanged += [this](Control* sender, std::wstring oldText, std::wstring newText)
@@ -74,7 +74,7 @@ Expander::Expander()
 			(void)sender;
 			(void)oldText;
 			(void)newText;
-			PostRender();
+			InvalidateVisual();
 		};
 }
 
@@ -104,18 +104,18 @@ float Expander::CurrentExpandProgress()
 		return _expandProgress;
 	}
 
-	ULONGLONG now = ::GetTickCount64();
-	ULONGLONG elapsed = now >= _animStartTick ? now - _animStartTick : 0;
-	float t = AnimationDurationMs > 0 ? (float)elapsed / (float)AnimationDurationMs : 1.0f;
-	if (t >= 1.0f)
+	ULONGLONG currentTick = ::GetTickCount64();
+	ULONGLONG elapsedMs = currentTick >= _animStartTick ? currentTick - _animStartTick : 0;
+	float normalizedTime = AnimationDurationMs > 0 ? (float)elapsedMs / (float)AnimationDurationMs : 1.0f;
+	if (normalizedTime >= 1.0f)
 	{
 		_expandProgress = _animTargetProgress;
 		_animating = false;
 		return _expandProgress;
 	}
 
-	t = 1.0f - std::pow(1.0f - (std::clamp)(t, 0.0f, 1.0f), 3.0f);
-	_expandProgress = _animStartProgress + (_animTargetProgress - _animStartProgress) * t;
+	normalizedTime = 1.0f - std::pow(1.0f - (std::clamp)(normalizedTime, 0.0f, 1.0f), 3.0f);
+	_expandProgress = _animStartProgress + (_animTargetProgress - _animStartProgress) * normalizedTime;
 	return _expandProgress;
 }
 
@@ -129,9 +129,9 @@ void Expander::PerformExpanderLayoutIfNeeded()
 	_padding = originalPadding;
 }
 
-bool Expander::HeaderHitTest(int xof, int yof) const
+bool Expander::HeaderHitTest(int localX, int localY) const
 {
-	return xof >= 0 && yof >= 0 && xof <= _size.cx && yof <= HeaderHeight;
+	return localX >= 0 && localY >= 0 && localX <= _size.cx && localY <= HeaderHeight;
 }
 
 void Expander::SetExpandedInternal(bool value, bool fireEvent)
@@ -156,7 +156,7 @@ void Expander::SetExpandedInternal(bool value, bool fireEvent)
 		ParentForm->SetSelectedControl(nullptr, false);
 	if (ParentForm)
 		ParentForm->Invalidate(true);
-	PostRender();
+	InvalidateVisual();
 	if (fireEvent)
 		OnExpandedChanged(this, _isExpanded);
 }
@@ -174,38 +174,38 @@ void Expander::Toggle()
 SIZE Expander::ActualSize()
 {
 	SIZE size = this->_size;
-	float header = (std::clamp)(HeaderHeight, 0.0f, (float)size.cy);
-	float contentH = (std::max)(0.0f, (float)size.cy - header);
-	size.cy = (LONG)std::ceil(header + contentH * CurrentExpandProgress());
+	float headerHeight = (std::clamp)(HeaderHeight, 0.0f, (float)size.cy);
+	float contentHeight = (std::max)(0.0f, (float)size.cy - headerHeight);
+	size.cy = (LONG)std::ceil(headerHeight + contentHeight * CurrentExpandProgress());
 	return size;
 }
 
-CursorKind Expander::QueryCursor(int xof, int yof)
+CursorKind Expander::QueryCursor(int localX, int localY)
 {
 	if (!Enable) return CursorKind::Arrow;
-	if (HeaderHitTest(xof, yof))
+	if (HeaderHitTest(localX, localY))
 		return CursorKind::Hand;
 	return this->Cursor;
 }
 
-bool Expander::ShouldHitTestChildrenAt(int xof, int yof) const
+bool Expander::ShouldHitTestChildrenAt(int localX, int localY) const
 {
 	if (!HitTestChildren())
 		return false;
-	if (xof < 0 || xof > _size.cx)
+	if (localX < 0 || localX > _size.cx)
 		return false;
 	const float progress = const_cast<Expander*>(this)->CurrentExpandProgress();
-	const float header = (std::clamp)(HeaderHeight, 0.0f, (float)_size.cy);
-	const float visibleContentH = (std::max)(0.0f, ((float)_size.cy - header) * progress);
-	return yof >= (int)std::floor(header) && yof <= (int)std::ceil(header + visibleContentH);
+	const float headerHeight = (std::clamp)(HeaderHeight, 0.0f, (float)_size.cy);
+	const float visibleContentHeight = (std::max)(0.0f, ((float)_size.cy - headerHeight) * progress);
+	return localY >= (int)std::floor(headerHeight) && localY <= (int)std::ceil(headerHeight + visibleContentHeight);
 }
 
 D2D1_RECT_F Expander::GetChildrenClipRect()
 {
 	const float progress = CurrentExpandProgress();
-	const float header = (std::clamp)(HeaderHeight, 0.0f, (float)_size.cy);
-	const float visibleContentH = (std::max)(0.0f, ((float)_size.cy - header) * progress);
-	return D2D1::RectF(0.0f, header, (float)_size.cx, header + visibleContentH);
+	const float headerHeight = (std::clamp)(HeaderHeight, 0.0f, (float)_size.cy);
+	const float visibleContentHeight = (std::max)(0.0f, ((float)_size.cy - headerHeight) * progress);
+	return D2D1::RectF(0.0f, headerHeight, (float)_size.cx, headerHeight + visibleContentHeight);
 }
 
 bool Expander::HandlesNavigationKey(WPARAM key) const
@@ -240,61 +240,61 @@ void Expander::Update()
 	const float width = (float)size.cx;
 	const float height = (float)size.cy;
 	const float fullHeight = (float)this->_size.cy;
-	const float header = (std::clamp)(HeaderHeight, 0.0f, fullHeight);
+	const float headerHeight = (std::clamp)(HeaderHeight, 0.0f, fullHeight);
 	const float border = (std::max)(0.0f, Border);
-	const float radius = (std::clamp)(CornerRadius, 0.0f, (std::min)(width, (std::max)(header, height)) * 0.5f);
+	const float radius = (std::clamp)(CornerRadius, 0.0f, (std::min)(width, (std::max)(headerHeight, height)) * 0.5f);
 
 	this->BeginRender(width, height);
 	{
 		D2D1_COLOR_F surface = SurfaceColor.a > 0.0f ? SurfaceColor : this->BackColor;
 		d2d->FillRoundRect(0.0f, 0.0f, width, height, surface, radius);
-		if (ContentBackColor.a > 0.0f && height > header)
-			d2d->FillRect(0.0f, header, width, height - header, ContentBackColor);
-		d2d->FillRoundRect(0.0f, 0.0f, width, (std::min)(header, height), HeaderBackColor, radius);
+		if (ContentBackColor.a > 0.0f && height > headerHeight)
+			d2d->FillRect(0.0f, headerHeight, width, height - headerHeight, ContentBackColor);
+		d2d->FillRoundRect(0.0f, 0.0f, width, (std::min)(headerHeight, height), HeaderBackColor, radius);
 		if (_hoverHeader)
-			d2d->FillRoundRect(1.0f, 1.0f, (std::max)(0.0f, width - 2.0f), (std::max)(0.0f, header - 2.0f),
+			d2d->FillRoundRect(1.0f, 1.0f, (std::max)(0.0f, width - 2.0f), (std::max)(0.0f, headerHeight - 2.0f),
 				HeaderHoverBackColor, (std::max)(0.0f, radius - 1.0f));
 
 		const float chevronCenterX = HeaderPaddingX + ChevronSize * 0.5f;
-		const float chevronCenterY = header * 0.5f;
+		const float chevronCenterY = headerHeight * 0.5f;
 		DrawExpanderChevron(d2d, chevronCenterX, chevronCenterY, ChevronSize, progress, ForeColor);
 
 		D2D1_RECT_F textRect{
 			HeaderPaddingX + ChevronSize + 9.0f,
 			0.0f,
 			(std::max)(HeaderPaddingX + ChevronSize + 9.0f, width - HeaderPaddingX),
-			header
+			headerHeight
 		};
 		d2d->PushDrawRect(textRect.left, textRect.top, (std::max)(1.0f, RectWidth(textRect)), RectHeight(textRect));
 		d2d->DrawString(this->Text, textRect.left, TextTop(Font, textRect),
 			(std::max)(1.0f, RectWidth(textRect)), RectHeight(textRect), ForeColor, Font);
 		d2d->PopDrawRect();
 
-		if (progress > 0.001f && height > header)
+		if (progress > 0.001f && height > headerHeight)
 		{
 			D2D1_RECT_F clip = GetChildrenClipRect();
 			d2d->PushDrawRect(clip.left, clip.top, RectWidth(clip), RectHeight(clip));
 			if (!this->ParentForm || !this->ParentForm->IsDCompSceneRenderActive())
 			{
-				for (auto c : this->GetChildrenInZOrder())
+				for (auto child : this->GetChildrenInZOrder())
 				{
-					if (!c || !c->Visible) continue;
-					c->Update();
+					if (!child || !child->Visible) continue;
+					child->Update();
 				}
 			}
 			d2d->PopDrawRect();
 		}
 
-		if (header < height)
-			d2d->DrawLine(HeaderPaddingX, header, (std::max)(HeaderPaddingX, width - HeaderPaddingX), header, ScaleAlpha(BolderColor, 0.62f), 1.0f);
-		if (border > 0.0f && BolderColor.a > 0.0f)
+		if (headerHeight < height)
+			d2d->DrawLine(HeaderPaddingX, headerHeight, (std::max)(HeaderPaddingX, width - HeaderPaddingX), headerHeight, ScaleAlpha(BorderColor, 0.62f), 1.0f);
+		if (border > 0.0f && BorderColor.a > 0.0f)
 			d2d->DrawRoundRect(border * 0.5f, border * 0.5f,
 				(std::max)(0.0f, width - border), (std::max)(0.0f, height - border),
-				BolderColor, border, radius);
+				BorderColor, border, radius);
 		if (AccentColor.a > 0.0f)
 		{
-			float stripeH = (std::max)(6.0f, header - 14.0f);
-			d2d->FillRoundRect(2.0f, (header - stripeH) * 0.5f, 3.0f, stripeH, AccentColor, 1.5f);
+			float accentHeight = (std::max)(6.0f, headerHeight - 14.0f);
+			d2d->FillRoundRect(2.0f, (headerHeight - accentHeight) * 0.5f, 3.0f, accentHeight, AccentColor, 1.5f);
 		}
 		if (!Enable)
 			d2d->FillRoundRect(0.0f, 0.0f, width, height, DisabledOverlayColor, radius);
@@ -302,39 +302,39 @@ void Expander::Update()
 	this->EndRender();
 }
 
-bool Expander::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool Expander::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	PerformExpanderLayoutIfNeeded();
 
-	const bool inHeader = HeaderHitTest(xof, yof);
+	const bool isHeaderHit = HeaderHitTest(localX, localY);
 	switch (message)
 	{
 	case WM_MOUSEMOVE:
 		if (ParentForm) ParentForm->UnderMouse = this;
-		if (_hoverHeader != inHeader)
+		if (_hoverHeader != isHeaderHit)
 		{
-			_hoverHeader = inHeader;
-			PostRender();
+			_hoverHeader = isHeaderHit;
+			InvalidateVisual();
 		}
 		break;
 	case WM_LBUTTONDOWN:
 		if (ParentForm)
 			ParentForm->SetSelectedControl(this, false);
-		if (inHeader)
+		if (isHeaderHit)
 		{
-			OnMouseDown(this, MouseEventArgs(MouseButtons::Left, 0, xof, yof, HIWORD(wParam)));
-			PostRender();
+			OnMouseDown(this, MouseEventArgs(MouseButtons::Left, 0, localX, localY, HIWORD(wParam)));
+			InvalidateVisual();
 			return true;
 		}
 		break;
 	case WM_LBUTTONUP:
-		if (inHeader)
+		if (isHeaderHit)
 		{
 			Toggle();
-			MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
-			OnMouseUp(this, e);
-			OnMouseClick(this, e);
+			MouseEventArgs eventArgs(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
+			OnMouseUp(this, eventArgs);
+			OnMouseClick(this, eventArgs);
 			return true;
 		}
 		break;
@@ -350,5 +350,5 @@ bool Expander::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		break;
 	}
 
-	return Panel::ProcessMessage(message, wParam, lParam, xof, yof);
+	return Panel::ProcessMessage(message, wParam, lParam, localX, localY);
 }

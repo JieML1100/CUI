@@ -16,7 +16,7 @@ protected:
 	bool DefaultRaiseClickOnLeftButtonUp() const override { return true; }
 	bool DefaultClearSelectionOnMouseUp() const override { return true; }
 	bool DefaultSelectOnLeftButtonDoubleClick() const override { return true; }
-	bool DefaultPostRenderOnMouseDoubleClick(UINT message, bool wasSelected) const override { (void)message; (void)wasSelected; return true; }
+	bool DefaultInvalidateVisualOnMouseDoubleClick(UINT message, bool wasSelected) const override { (void)message; (void)wasSelected; return true; }
 public:
 	virtual UIClass Type();
 	/** @brief 鼠标悬停时背景色。 */
@@ -31,7 +31,7 @@ public:
 	D2D1_COLOR_F DisabledOverlayColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f };
 	/** @brief 是否启用轻微立体效果（高光、阴影、按下位移）。false 为扁平按钮。 */
 	bool Raised = false;
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	/** @brief 圆角半径（像素）。设置为 0 可得到直角按钮。 */
 	float Round = 7.0f;
 	/** @brief 创建按钮。 */

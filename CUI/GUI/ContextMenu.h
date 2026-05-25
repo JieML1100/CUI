@@ -56,7 +56,7 @@ public:
 
 	virtual UIClass Type() override;
 	bool HitTestChildren() const override { return false; }
-	bool ContainsPoint(int xof, int yof) override;
+	bool ContainsPoint(int localX, int localY) override;
 	bool AutoCloseOnOutsideClick() const override { return true; }
 	bool AutoCloseOnFormFocusLoss() const override { return true; }
 	void ClosePopup() override { Hide(); }
@@ -65,7 +65,7 @@ public:
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	SIZE ActualSize() override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 	MenuItem* AddItem(std::wstring text, int id = 0);
 	MenuItem* AddSeparator();

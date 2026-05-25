@@ -33,10 +33,10 @@ static void DrawComboChevron(D2DGraphics* d2d, float cx, float cy, float size, f
 	d2d->DrawLine(p2, p3, color, 1.8f);
 }
 
-bool ComboBox::CanHandleMouseWheel(int delta, int xof, int yof)
+bool ComboBox::CanHandleMouseWheel(int delta, int localX, int localY)
 {
-	(void)xof;
-	(void)yof;
+	(void)localX;
+	(void)localY;
 	if (delta == 0 || !this->Expand) return false;
 	const int visibleCount = VisibleItemCount();
 	const int maxScroll = std::max(0, static_cast<int>(this->values.size()) - visibleCount);
@@ -90,7 +90,7 @@ float ComboBox::CurrentDropProgress()
 		if (wasCollapsing)
 			_collapseCleanupPending = true;
 		if (_dropProgress <= 0.0f && this->ParentForm && this->ParentForm->ForegroundControl == this)
-			this->ParentForm->ForegroundControl = NULL;
+			this->ParentForm->ForegroundControl = nullptr;
 		return _dropProgress;
 	}
 	t = 1.0f - std::pow(1.0f - (std::clamp)(t, 0.0f, 1.0f), 3.0f);
@@ -118,17 +118,17 @@ bool ComboBox::IsDropDownInteractive()
 	return this->Expand && CurrentDropdownHeight() > 0.5f;
 }
 
-bool ComboBox::IsHeaderHit(int xof, int yof)
+bool ComboBox::IsHeaderHit(int localX, int localY)
 {
-	return xof >= 0 && xof <= this->Width && yof >= 0 && yof < this->Height;
+	return localX >= 0 && localX <= this->Width && localY >= 0 && localY < this->Height;
 }
 
-bool ComboBox::IsDropdownHit(int xof, int yof, float dropdownHeight)
+bool ComboBox::IsDropdownHit(int localX, int localY, float dropdownHeight)
 {
 	const float top = DropdownTop();
-	return xof >= 0 && xof <= this->Width &&
-		(float)yof >= top &&
-		(float)yof < (top + dropdownHeight);
+	return localX >= 0 && localX <= this->Width &&
+		(float)localY >= top &&
+		(float)localY < (top + dropdownHeight);
 }
 
 void ComboBox::EnsureSelectionInRange()
@@ -153,14 +153,14 @@ void ComboBox::EnsureScrollInRange()
 	if (this->ExpandScroll > maxScroll) this->ExpandScroll = maxScroll;
 	if (_underMouseIndex >= static_cast<int>(this->values.size())) _underMouseIndex = -1;
 }
-CursorKind ComboBox::QueryCursor(int xof, int yof)
+CursorKind ComboBox::QueryCursor(int localX, int localY)
 {
 	if (!this->Enable) return CursorKind::Arrow;
 
 	const bool hasVScroll = (IsDropDownVisible() && static_cast<int>(this->values.size()) > VisibleItemCount());
 	const float dropHeight = CurrentDropdownHeight();
 	const float dropTop = DropdownTop();
-	if (hasVScroll && xof >= (this->Width - 12) && yof >= dropTop && (float)yof <= (dropTop + dropHeight))
+	if (hasVScroll && localX >= (this->Width - 12) && localY >= dropTop && (float)localY <= (dropTop + dropHeight))
 		return CursorKind::SizeNS;
 
 	return this->Cursor;
@@ -209,7 +209,7 @@ void ComboBox::SetExpanded(bool expanded)
 		_dropProgress = _animTargetProgress;
 		_animating = false;
 		if (!wantExpand && this->ParentForm && this->ParentForm->ForegroundControl == this)
-			this->ParentForm->ForegroundControl = NULL;
+			this->ParentForm->ForegroundControl = nullptr;
 	}
 	else
 	{
@@ -221,54 +221,84 @@ void ComboBox::SetExpanded(bool expanded)
 }
 SIZE ComboBox::ActualSize()
 {
-	auto size = this->Size;
-	const float dropHeight = CurrentDropdownHeight();
-	if (dropHeight > 0.0f)
-	{
-		size.cy += (LONG)std::ceil((std::max)(0.0f, this->DropGap) + dropHeight);
-	}
-	return size;
+	return this->Size;
 }
+
+bool ComboBox::ContainsForegroundPoint(int localX, int localY)
+{
+	return IsDropDownVisible() && IsDropdownHit(localX, localY, CurrentDropdownHeight());
+}
+
+void ComboBox::InvalidateVisual()
+{
+	if (!this->IsVisual || !this->ParentForm) return;
+	const float titleBarOffset = (this->ParentForm->VisibleHead ? (float)this->ParentForm->HeadHeight : 0.0f);
+	auto currentRect = this->AbsRect;
+	if (IsDropDownVisible() || _collapseCleanupPending)
+	{
+		currentRect.bottom += (LONG)std::ceil((std::max)(0.0f, this->DropGap) + FullDropdownHeight());
+	}
+	currentRect.top += titleBarOffset;
+	currentRect.bottom += titleBarOffset;
+
+	if (_hasLastInvalidatedClientRect)
+	{
+		D2D1_RECT_F unionRect{};
+		unionRect.left = (std::min)(_lastInvalidatedClientRect.left, currentRect.left);
+		unionRect.top = (std::min)(_lastInvalidatedClientRect.top, currentRect.top);
+		unionRect.right = (std::max)(_lastInvalidatedClientRect.right, currentRect.right);
+		unionRect.bottom = (std::max)(_lastInvalidatedClientRect.bottom, currentRect.bottom);
+		this->ParentForm->Invalidate(unionRect, false);
+	}
+	else
+	{
+		this->ParentForm->Invalidate(currentRect, false);
+	}
+
+	_lastInvalidatedClientRect = currentRect;
+	_hasLastInvalidatedClientRect = true;
+}
+
 void ComboBox::DrawScroll()
 {
 	auto d2d = this->ParentForm->Render;
-	const int render_count = VisibleItemCount();
+	const int visibleItemCount = VisibleItemCount();
 	const float renderHeight = CurrentDropdownHeight();
-	if (this->values.size() > 0 && render_count > 0 && renderHeight > 0.0f)
+	if (this->values.size() > 0 && visibleItemCount > 0 && renderHeight > 0.0f)
 	{
 		const int itemCount = static_cast<int>(this->values.size());
-		if (render_count < itemCount)
+		if (visibleItemCount < itemCount)
 		{
-			int max_scroll = itemCount - render_count;
-			float scroll_block_height = ((float)render_count / (float)this->values.size()) * renderHeight;
-			if (scroll_block_height < COMBO_MIN_SCROLL_BLOCK)scroll_block_height = COMBO_MIN_SCROLL_BLOCK;
-			if (scroll_block_height > renderHeight) scroll_block_height = renderHeight;
-			float scroll_block_move_space = renderHeight - scroll_block_height;
-			float per = (float)this->ExpandScroll / (float)max_scroll;
-			float scroll_block_top = per * scroll_block_move_space;
+			int maxScroll = itemCount - visibleItemCount;
+			float scrollThumbHeight = ((float)visibleItemCount / (float)this->values.size()) * renderHeight;
+			if (scrollThumbHeight < COMBO_MIN_SCROLL_BLOCK)scrollThumbHeight = COMBO_MIN_SCROLL_BLOCK;
+			if (scrollThumbHeight > renderHeight) scrollThumbHeight = renderHeight;
+			float scrollThumbMoveSpace = renderHeight - scrollThumbHeight;
+			float scrollRatio = (float)this->ExpandScroll / (float)maxScroll;
+			float scrollThumbTop = scrollRatio * scrollThumbMoveSpace;
 			const float barW = (std::max)(4.0f, this->ScrollBarWidth);
 			const float barX = (float)this->Width - barW - 5.0f;
 			const float barY = DropdownTop() + 5.0f;
 			const float barH = (std::max)(0.0f, renderHeight - 10.0f);
 			if (barH <= 0.0f) return;
-			if (scroll_block_height > barH) scroll_block_height = barH;
-			const float moveSpace = (std::max)(0.0f, barH - scroll_block_height);
-			scroll_block_top = per * moveSpace;
+			if (scrollThumbHeight > barH) scrollThumbHeight = barH;
+			const float moveSpace = (std::max)(0.0f, barH - scrollThumbHeight);
+			scrollThumbTop = scrollRatio * moveSpace;
 			d2d->FillRoundRect(barX, barY, barW, barH, this->ScrollBackColor, barW * 0.5f);
-			d2d->FillRoundRect(barX, barY + scroll_block_top, barW, scroll_block_height, this->ScrollForeColor, barW * 0.5f);
+			d2d->FillRoundRect(barX, barY + scrollThumbTop, barW, scrollThumbHeight, this->ScrollForeColor, barW * 0.5f);
 		}
 	}
 }
 void ComboBox::UpdateScrollDrag(float posY) {
 	if (!isDraggingScroll) return;
-	int render_count = VisibleItemCount();
-	float _render_height = CurrentDropdownHeight();
-	if (render_count <= 0 || _render_height <= 0.0f) return;
-	int maxScroll = static_cast<int>(this->values.size()) - render_count;
+	int visibleItemCount = VisibleItemCount();
+	float renderHeight = CurrentDropdownHeight();
+	if (visibleItemCount <= 0 || renderHeight <= 0.0f) return;
+	int maxScroll = static_cast<int>(this->values.size()) - visibleItemCount;
 	const float barInset = 5.0f;
-	const float barHeight = (std::max)(0.0f, _render_height - barInset * 2.0f);
+	const float barHeight = (std::max)(0.0f, renderHeight - barInset * 2.0f);
 	if (barHeight <= 0.0f) return;
-	float scrollBlockHeight = ((float)render_count / (float)this->values.size()) * barHeight;
+	float scrollBlockHeight = ((float)visibleItemCount / (float)this->values.size()) * barHeight;
 	if (scrollBlockHeight < COMBO_MIN_SCROLL_BLOCK)scrollBlockHeight = COMBO_MIN_SCROLL_BLOCK;
 	if (scrollBlockHeight > barHeight) scrollBlockHeight = barHeight;
 	float scrollHeight = barHeight - scrollBlockHeight;
@@ -288,7 +318,7 @@ void ComboBox::UpdateScrollDrag(float posY) {
 		{
 			ExpandScroll = maxScroll;
 		}
-		PostRender();
+		InvalidateVisual();
 	}
 }
 void ComboBox::Update()
@@ -297,16 +327,15 @@ void ComboBox::Update()
 	auto d2d = this->ParentForm->Render;
 	EnsureSelectionInRange();
 	EnsureScrollInRange();
-	auto size = this->ActualSize();
-	const float actualWidth = static_cast<float>(size.cx);
-	const float actualHeight = static_cast<float>(size.cy);
+	const float actualWidth = static_cast<float>(this->Width);
+	const float actualHeight = static_cast<float>(this->Height);
 	const float controlWidth = static_cast<float>(this->Width);
 	const float controlHeight = static_cast<float>(this->Height);
-	const float dropHeight = CurrentDropdownHeight();
+	CurrentDropProgress();
 	this->BeginRender(actualWidth, actualHeight);
 	{
 		d2d->FillRect(0, 0, actualWidth, actualHeight, D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.0f });
-		const float border = (std::max)(1.0f, this->Boder);
+		const float border = (std::max)(1.0f, this->BorderThickness);
 		const D2D1_RECT_F headerRect = D2D1::RectF(border * 0.5f, border * 0.5f, controlWidth - border * 0.5f, controlHeight - border * 0.5f);
 		d2d->FillRoundRect(headerRect, this->BackColor, this->CornerRadius);
 		if ((this->ParentForm && this->ParentForm->UnderMouse == this) || IsDropDownVisible())
@@ -329,55 +358,7 @@ void ComboBox::Update()
 			const float cy = controlHeight * 0.5f;
 			DrawComboChevron(d2d, cx, cy, iconSize, _dropProgress, this->ForeColor);
 		}
-		const int visibleCount = VisibleItemCount();
-		if (dropHeight > 0.0f && visibleCount > 0)
-		{
-			const float dropTop = DropdownTop();
-			const bool hasScroll = static_cast<int>(this->values.size()) > visibleCount;
-			const float itemRight = hasScroll ? controlWidth - (std::max)(4.0f, this->ScrollBarWidth) - 11.0f : controlWidth;
-			const D2D1_RECT_F dropRect = D2D1::RectF(0.0f, dropTop, controlWidth, dropTop + dropHeight);
-			d2d->PushDrawRect(0.0f, dropTop, controlWidth, dropHeight);
-			d2d->FillRoundRect(dropRect, this->DropBackColor, this->DropCornerRadius);
-			d2d->DrawRoundRect(dropRect.left + border * 0.5f, dropRect.top + border * 0.5f,
-				(dropRect.right - dropRect.left) - border, (dropRect.bottom - dropRect.top) - border,
-				this->DropBorderColor, border, this->DropCornerRadius);
-			const int itemCount = static_cast<int>(this->values.size());
-			for (int i = this->ExpandScroll; i < this->ExpandScroll + visibleCount && i < itemCount; i++)
-			{
-				const int viewIndex = i - this->ExpandScroll;
-				const float itemTop = dropTop + static_cast<float>(viewIndex) * controlHeight;
-				const float itemBottom = itemTop + controlHeight;
-				const D2D1_RECT_F itemRect = D2D1::RectF(6.0f, itemTop + this->ItemVerticalPadding,
-					(std::max)(7.0f, itemRight - 6.0f), itemBottom - this->ItemVerticalPadding);
-				const bool isSelected = i == this->SelectedIndex;
-				const bool isHovered = i == this->_underMouseIndex;
-				if (isSelected)
-				{
-					d2d->FillRoundRect(itemRect, this->SelectedItemBackColor, this->CornerRadius);
-					const float accentW = 3.0f;
-					const float accentTop = itemRect.top + 5.0f;
-					const float accentH = (std::max)(5.0f, (itemRect.bottom - itemRect.top) - 10.0f);
-					d2d->FillRoundRect(itemRect.left, accentTop, accentW, accentH, this->AccentColor, accentW * 0.5f);
-				}
-				if (isHovered)
-				{
-					d2d->FillRoundRect(itemRect, this->UnderMouseBackColor, this->CornerRadius);
-				}
-				auto itemTextSize = font->GetTextSize(this->values[static_cast<size_t>(i)]);
-				const float itemTextY = itemTop + (std::max)(0.0f, (controlHeight - itemTextSize.height) * 0.5f);
-				const auto itemTextColor = isHovered ? this->UnderMouseForeColor : (isSelected ? this->SelectedItemForeColor : this->ForeColor);
-				d2d->DrawString(
-					this->values[static_cast<size_t>(i)],
-					drawLeft,
-					itemTextY,
-					(std::max)(1.0f, itemRight - drawLeft - 8.0f),
-					itemTextSize.height + 2.0f,
-					itemTextColor, font);
-			}
-			d2d->PopDrawRect();
-			this->DrawScroll();
-		}
-		const auto borderColor = IsDropDownVisible() ? this->AccentColor : this->BolderColor;
+		const auto borderColor = IsDropDownVisible() ? this->AccentColor : this->BorderColor;
 		d2d->DrawRoundRect(headerRect.left, headerRect.top, headerRect.right - headerRect.left,
 			headerRect.bottom - headerRect.top, borderColor, border, this->CornerRadius);
 	}
@@ -389,7 +370,80 @@ void ComboBox::Update()
 	if (!_animating && _dropProgress <= 0.001f)
 		_collapseCleanupPending = false;
 }
-bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+
+void ComboBox::UpdateForeground()
+{
+	if (this->IsVisual == false)return;
+	auto d2d = this->ParentForm->Render;
+	EnsureSelectionInRange();
+	EnsureScrollInRange();
+
+	const float controlWidth = static_cast<float>(this->Width);
+	const float controlHeight = static_cast<float>(this->Height);
+	const float dropHeight = CurrentDropdownHeight();
+	const int visibleCount = VisibleItemCount();
+	if (dropHeight <= 0.0f || visibleCount <= 0)
+	{
+		if (!_animating && _dropProgress <= 0.001f)
+			_collapseCleanupPending = false;
+		return;
+	}
+
+	const float dropTop = DropdownTop();
+	this->BeginRender(controlWidth, dropTop + dropHeight);
+	{
+		const float border = (std::max)(1.0f, this->BorderThickness);
+		const bool hasScroll = static_cast<int>(this->values.size()) > visibleCount;
+		const float itemRight = hasScroll ? controlWidth - (std::max)(4.0f, this->ScrollBarWidth) - 11.0f : controlWidth;
+		const D2D1_RECT_F dropRect = D2D1::RectF(0.0f, dropTop, controlWidth, dropTop + dropHeight);
+		const float drawLeft = (std::max)(4.0f, this->ItemHorizontalPadding);
+		auto font = this->Font;
+
+		d2d->PushDrawRect(0.0f, dropTop, controlWidth, dropHeight);
+		d2d->FillRoundRect(dropRect, this->DropBackColor, this->DropCornerRadius);
+		d2d->DrawRoundRect(dropRect.left + border * 0.5f, dropRect.top + border * 0.5f,
+			(dropRect.right - dropRect.left) - border, (dropRect.bottom - dropRect.top) - border,
+			this->DropBorderColor, border, this->DropCornerRadius);
+		const int itemCount = static_cast<int>(this->values.size());
+		for (int i = this->ExpandScroll; i < this->ExpandScroll + visibleCount && i < itemCount; i++)
+		{
+			const int viewIndex = i - this->ExpandScroll;
+			const float itemTop = dropTop + static_cast<float>(viewIndex) * controlHeight;
+			const float itemBottom = itemTop + controlHeight;
+			const D2D1_RECT_F itemRect = D2D1::RectF(6.0f, itemTop + this->ItemVerticalPadding,
+				(std::max)(7.0f, itemRight - 6.0f), itemBottom - this->ItemVerticalPadding);
+			const bool isSelected = i == this->SelectedIndex;
+			const bool isHovered = i == this->_underMouseIndex;
+			if (isSelected)
+			{
+				d2d->FillRoundRect(itemRect, this->SelectedItemBackColor, this->CornerRadius);
+				const float accentW = 3.0f;
+				const float accentTop = itemRect.top + 5.0f;
+				const float accentH = (std::max)(5.0f, (itemRect.bottom - itemRect.top) - 10.0f);
+				d2d->FillRoundRect(itemRect.left, accentTop, accentW, accentH, this->AccentColor, accentW * 0.5f);
+			}
+			if (isHovered)
+			{
+				d2d->FillRoundRect(itemRect, this->UnderMouseBackColor, this->CornerRadius);
+			}
+			auto itemTextSize = font->GetTextSize(this->values[static_cast<size_t>(i)]);
+			const float itemTextY = itemTop + (std::max)(0.0f, (controlHeight - itemTextSize.height) * 0.5f);
+			const auto itemTextColor = isHovered ? this->UnderMouseForeColor : (isSelected ? this->SelectedItemForeColor : this->ForeColor);
+			d2d->DrawString(
+				this->values[static_cast<size_t>(i)],
+				drawLeft,
+				itemTextY,
+				(std::max)(1.0f, itemRight - drawLeft - 8.0f),
+				itemTextSize.height + 2.0f,
+				itemTextColor, font);
+		}
+		d2d->PopDrawRect();
+		this->DrawScroll();
+	}
+	this->EndRender();
+}
+
+bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	EnsureSelectionInRange();
@@ -402,7 +456,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		{
 			auto se = this->ParentForm->Selected;
 			this->ParentForm->Selected = this;
-			se->PostRender();
+			se->InvalidateVisual();
 		}
 	}
 	switch (message)
@@ -410,13 +464,13 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 	case WM_DROPFILES:
 	{
 		HDROP hDropInfo = HDROP(wParam);
-		UINT uFileNum = DragQueryFile(hDropInfo, 0xFFFFFFFF, NULL, 0);
-		TCHAR strFileName[MAX_PATH];
+		UINT fileCount = DragQueryFile(hDropInfo, 0xFFFFFFFF, nullptr, 0);
+		TCHAR fileName[MAX_PATH];
 		std::vector<std::wstring> files;
-		for (UINT i = 0; i < uFileNum; i++)
+		for (UINT i = 0; i < fileCount; i++)
 		{
-			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.push_back(strFileName);
+			DragQueryFile(hDropInfo, i, fileName, MAX_PATH);
+			files.push_back(fileName);
 		}
 		DragFinish(hDropInfo);
 		if (files.size() > 0)
@@ -434,7 +488,7 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 				if (this->ExpandScroll > 0)
 				{
 					this->ExpandScroll -= 1;
-					this->PostRender();
+					this->InvalidateVisual();
 				}
 			}
 			else
@@ -442,12 +496,12 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 				if (this->ExpandScroll < static_cast<int>(this->values.size()) - visibleCount)
 				{
 					this->ExpandScroll += 1;
-					this->PostRender();
+					this->InvalidateVisual();
 				}
 			}
 		}
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
-		this->OnMouseWheel(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam));
+		this->OnMouseWheel(this, eventArgs);
 	}
 	break;
 	case WM_MOUSEMOVE:
@@ -455,40 +509,40 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		this->ParentForm->UnderMouse = this;
 		if (IsDropDownVisible())
 		{
-			bool need_update = false;
+			bool needsUpdate = false;
 			if (isDraggingScroll)
 			{
-				UpdateScrollDrag(static_cast<float>(yof) - DropdownTop());
-				need_update = true;
+				UpdateScrollDrag(static_cast<float>(localY) - DropdownTop());
+				needsUpdate = true;
 			}
 			else
 			{
-				if (IsDropdownHit(xof, yof, dropdownHeight))
+				if (IsDropdownHit(localX, localY, dropdownHeight))
 				{
-					int _yof = int(((float)yof - DropdownTop()) / (float)this->Height);
-					if (_yof < visibleCount)
+					int visibleItemIndex = int(((float)localY - DropdownTop()) / (float)this->Height);
+					if (visibleItemIndex < visibleCount)
 					{
-						int idx = _yof + this->ExpandScroll;
-						if (idx < static_cast<int>(this->values.size()))
+						int itemIndex = visibleItemIndex + this->ExpandScroll;
+						if (itemIndex < static_cast<int>(this->values.size()))
 						{
-							if (idx != this->_underMouseIndex)
+							if (itemIndex != this->_underMouseIndex)
 							{
-								need_update = true;
+								needsUpdate = true;
 							}
-							this->_underMouseIndex = idx;
+							this->_underMouseIndex = itemIndex;
 						}
 					}
 				}
 				else if (this->_underMouseIndex != -1)
 				{
 					this->_underMouseIndex = -1;
-					need_update = true;
+					needsUpdate = true;
 				}
 			}
-			if (need_update)this->PostRender();
+			if (needsUpdate)this->InvalidateVisual();
 		}
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
-		this->OnMouseMove(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
+		this->OnMouseMove(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONDOWN:
@@ -498,33 +552,33 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 		if (WM_LBUTTONDOWN == message)
 		{
 			const float dropTop = DropdownTop();
-			if (this->Expand && xof >= (Width - 12) && xof <= Width && (float)yof >= dropTop && (float)yof <= (dropTop + dropdownHeight))
+			if (this->Expand && localX >= (Width - 12) && localX <= Width && (float)localY >= dropTop && (float)localY <= (dropTop + dropdownHeight))
 			{
-				const int render_count = visibleCount;
-				if (render_count > 0 && static_cast<int>(this->values.size()) > render_count)
+				const int visibleItemCount = visibleCount;
+				if (visibleItemCount > 0 && static_cast<int>(this->values.size()) > visibleItemCount)
 				{
-					const int max_scroll = static_cast<int>(this->values.size()) - render_count;
+					const int maxScroll = static_cast<int>(this->values.size()) - visibleItemCount;
 					const float barInset = 5.0f;
 					const float renderH = (std::max)(0.0f, dropdownHeight - barInset * 2.0f);
-					float thumbH = ((float)render_count / (float)this->values.size()) * renderH;
+					float thumbH = ((float)visibleItemCount / (float)this->values.size()) * renderH;
 					if (thumbH < COMBO_MIN_SCROLL_BLOCK) thumbH = COMBO_MIN_SCROLL_BLOCK;
 					if (thumbH > renderH) thumbH = renderH;
 					const float moveSpace = std::max(0.0f, renderH - thumbH);
 					float per = 0.0f;
-					if (max_scroll > 0) per = std::clamp((float)this->ExpandScroll / (float)max_scroll, 0.0f, 1.0f);
+					if (maxScroll > 0) per = std::clamp((float)this->ExpandScroll / (float)maxScroll, 0.0f, 1.0f);
 					const float thumbTop = per * moveSpace;
-					const float localY = (float)yof - dropTop;
-					const float barLocalY = localY - barInset;
+					const float dropdownLocalY = (float)localY - dropTop;
+					const float barLocalY = dropdownLocalY - barInset;
 					const bool hitThumb = (barLocalY >= thumbTop && barLocalY <= (thumbTop + thumbH));
 					_scrollThumbGrabOffsetY = hitThumb ? (barLocalY - thumbTop) : (thumbH * 0.5f);
 					isDraggingScroll = true;
-					UpdateScrollDrag(localY);
+					UpdateScrollDrag(dropdownLocalY);
 				}
 			}
 			this->ParentForm->Selected = this;
 		}
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDown(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDown(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONUP:
@@ -538,61 +592,61 @@ bool ComboBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xo
 			}
 			else
 			{
-				if (IsHeaderHit(xof, yof))
+				if (IsHeaderHit(localX, localY))
 				{
 					SetExpanded(!this->Expand);
 					if (this->ParentForm)
 						this->ParentForm->Invalidate(true);
-					this->PostRender();
-					this->ParentForm->Selected = NULL;
-					MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-					this->OnMouseUp(this, event_obj);
+					this->InvalidateVisual();
+					this->ParentForm->Selected = nullptr;
+					MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+					this->OnMouseUp(this, eventArgs);
 					break;
 				}
-				else if (this->Expand && IsDropdownHit(xof, yof, dropdownHeight))
+				else if (this->Expand && IsDropdownHit(localX, localY, dropdownHeight))
 				{
-					int _yof = int(((float)yof - DropdownTop()) / (float)this->Height);
-					if (_yof < visibleCount)
+					int visibleItemIndex = int(((float)localY - DropdownTop()) / (float)this->Height);
+					if (visibleItemIndex < visibleCount)
 					{
-						int idx = _yof + this->ExpandScroll;
-						if (idx < static_cast<int>(this->values.size()))
+						int itemIndex = visibleItemIndex + this->ExpandScroll;
+						if (itemIndex < static_cast<int>(this->values.size()))
 						{
-							this->_underMouseIndex = idx;
+							this->_underMouseIndex = itemIndex;
 							this->SelectedIndex = this->_underMouseIndex;
 							this->Text = this->values[static_cast<size_t>(this->SelectedIndex)];
 							this->OnSelectionChanged(this);
-							this->PostRender();
+							this->InvalidateVisual();
 							SetExpanded(false);
 							if (this->ParentForm)
 								this->ParentForm->Invalidate(true);
-							this->PostRender();
+							this->InvalidateVisual();
 						}
 					}
 				}
 			}
 		}
-		this->ParentForm->Selected = NULL;
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseUp(this, event_obj);
-		this->PostRender();
+		this->ParentForm->Selected = nullptr;
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseUp(this, eventArgs);
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_LBUTTONDBLCLK:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDoubleClick(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDoubleClick(this, eventArgs);
 	}
 	break;
 	case WM_KEYDOWN:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyDown(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyDown(this, eventArgs);
 	}
 	break;
 	case WM_KEYUP:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyUp(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyUp(this, eventArgs);
 	}
 	break;
 	}

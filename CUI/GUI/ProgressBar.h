@@ -18,7 +18,7 @@ private:
 public:
 	virtual UIClass Type();
 	/** @brief 边框宽度（像素）。 */
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	/** @brief 轨道边框色。 */
 	D2D1_COLOR_F TrackBorderColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.18f };
 	/** @brief 进度填充的顶部高光。 */

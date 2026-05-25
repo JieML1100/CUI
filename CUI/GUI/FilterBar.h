@@ -58,9 +58,9 @@ public:
 	std::vector<std::wstring> GetSelectedValues() const;
 	void SetQueryText(const std::wstring& text);
 
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 private:
 	enum class HitKind
@@ -86,7 +86,7 @@ private:
 	HitKind _hoverKind = HitKind::None;
 
 	void BuildLayout(float width, float height);
-	HitRegion HitTest(int xof, int yof);
+	HitRegion HitTest(int localX, int localY);
 	void NotifyQueryChanged(const std::wstring& oldText);
 	void ResetFilters();
 };

@@ -1,36 +1,99 @@
-﻿#pragma once
+#pragma once
 #define NOMINMAX
 #include "RichTextBox.h"
 #include "Form.h"
+#include "TextEditCore.h"
 #include <algorithm>
+#include <cstring>
 #pragma comment(lib, "Imm32.lib")
 
 namespace
 {
+	CuiTextEdit::EditOptions RichEditOptions(bool allowMultiLine)
+	{
+		CuiTextEdit::EditOptions options;
+		options.allowMultiLine = allowMultiLine;
+		return options;
+	}
+
 	void ApplyRichTextWrapping(IDWriteTextLayout* layout)
 	{
 		if (layout)
 			layout->SetWordWrapping(DWRITE_WORD_WRAPPING_CHARACTER);
 	}
+
+	bool TryReadClipboardText(HWND owner, std::wstring& text)
+	{
+		text.clear();
+		if (!OpenClipboard(owner))
+			return false;
+
+		bool success = false;
+		if (IsClipboardFormatAvailable(CF_UNICODETEXT))
+		{
+			HANDLE hClip = GetClipboardData(CF_UNICODETEXT);
+			const wchar_t* clipboardText = hClip ? static_cast<const wchar_t*>(GlobalLock(hClip)) : nullptr;
+			if (clipboardText)
+			{
+				text = clipboardText;
+				GlobalUnlock(hClip);
+				success = true;
+			}
+		}
+		CloseClipboard();
+		return success;
+	}
+
+	bool WriteClipboardText(HWND owner, const std::wstring& text)
+	{
+		if (text.empty() || !OpenClipboard(owner))
+			return false;
+
+		bool success = false;
+		if (EmptyClipboard())
+		{
+			const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+			HGLOBAL hData = GlobalAlloc(GMEM_MOVEABLE, bytes);
+			if (hData)
+			{
+				wchar_t* pData = static_cast<wchar_t*>(GlobalLock(hData));
+				if (pData)
+				{
+					memcpy(pData, text.c_str(), bytes);
+					GlobalUnlock(hData);
+					if (SetClipboardData(CF_UNICODETEXT, hData))
+					{
+						success = true;
+						hData = nullptr;
+					}
+				}
+				if (hData)
+					GlobalFree(hData);
+			}
+		}
+
+		CloseClipboard();
+		return success;
+	}
 }
 
 UIClass RichTextBox::Type() { return UIClass::UI_RichTextBox; }
 
-bool RichTextBox::CanHandleMouseWheel(int delta, int xof, int yof)
+bool RichTextBox::CanHandleMouseWheel(int delta, int localX, int localY)
 {
-	(void)xof;
-	(void)yof;
+	(void)localX;
+	(void)localY;
 	if (delta == 0) return false;
 	UpdateLayout();
 	const float renderHeight = this->Height - (TextMargin * 2.0f);
 	const float maxScroll = std::max(0.0f, textSize.height - renderHeight);
 	if (renderHeight <= 0.0f || maxScroll <= 0.0f)
 		return false;
-	if (this->OffsetY < 0.0f) this->OffsetY = 0.0f;
-	if (this->OffsetY > maxScroll) this->OffsetY = maxScroll;
+	if (this->VerticalScrollOffset < 0.0f) this->VerticalScrollOffset = 0.0f;
+	if (this->VerticalScrollOffset > maxScroll) this->VerticalScrollOffset = maxScroll;
 	return delta > 0
-		? this->OffsetY > 0.0f
-		: this->OffsetY < maxScroll;
+		? this->VerticalScrollOffset > 0.0f
+		: this->VerticalScrollOffset < maxScroll;
 }
 
 bool RichTextBox::HandlesNavigationKey(WPARAM key) const
@@ -47,14 +110,14 @@ bool RichTextBox::HandlesNavigationKey(WPARAM key) const
 	}
 }
 
-CursorKind RichTextBox::QueryCursor(int xof, int yof)
+CursorKind RichTextBox::QueryCursor(int localX, int localY)
 {
-	(void)yof;
+	(void)localY;
 	if (!this->Enable) return CursorKind::Arrow;
 
 	const float renderHeight = (float)this->Height - (this->TextMargin * 2.0f);
 	const bool hasVScroll = (renderHeight > 0.0f) && (this->textSize.height > renderHeight);
-	if (hasVScroll && xof >= (this->Width - 8))
+	if (hasVScroll && localX >= (this->Width - 8))
 		return CursorKind::SizeNS;
 
 	return CursorKind::IBeam;
@@ -82,130 +145,49 @@ void RichTextBox::SyncBufferFromControlIfNeeded()
 
 std::wstring RichTextBox::NormalizeLineBreaks(const std::wstring& text) const
 {
-	if (!this->AllowMultiLine || text.empty()) return text;
-
-	std::wstring normalized;
-	normalized.reserve(text.size());
-	for (size_t i = 0; i < text.size(); i++)
-	{
-		wchar_t ch = text[i];
-		if (ch == L'\r')
-		{
-			normalized.append(L"\r\n");
-			if (i + 1 < text.size() && text[i + 1] == L'\n')
-			{
-				i++;
-			}
-		}
-		else if (ch == L'\n')
-		{
-			normalized.append(L"\r\n");
-		}
-		else
-		{
-			normalized.push_back(ch);
-		}
-	}
-	return normalized;
+	return CuiTextEdit::NormalizeInput(text, RichEditOptions(this->AllowMultiLine));
 }
 
 bool RichTextBox::HasCrLfAt(int index) const
 {
-	return index >= 0
-		&& index + 1 < (int)this->buffer.size()
-		&& this->buffer[(size_t)index] == L'\r'
-		&& this->buffer[(size_t)index + 1] == L'\n';
+	return CuiTextEdit::HasCrLfAt(this->buffer, index);
 }
 
 bool RichTextBox::IsCaretBetweenCrLf(int index) const
 {
-	return index > 0
-		&& index < (int)this->buffer.size()
-		&& this->buffer[(size_t)index - 1] == L'\r'
-		&& this->buffer[(size_t)index] == L'\n';
+	return CuiTextEdit::IsBetweenCrLf(this->buffer, index);
 }
 
 int RichTextBox::GetNextCaretIndex(int index) const
 {
-	index = std::clamp(index, 0, (int)this->buffer.size());
-	if (index >= (int)this->buffer.size()) return (int)this->buffer.size();
-	if (HasCrLfAt(index)) return std::min(index + 2, (int)this->buffer.size());
-	if (IsCaretBetweenCrLf(index)) return std::min(index + 1, (int)this->buffer.size());
-	return index + 1;
+	return CuiTextEdit::GetNextCaretIndex(this->buffer, index, this->AllowMultiLine);
 }
 
 int RichTextBox::GetPreviousCaretIndex(int index) const
 {
-	index = std::clamp(index, 0, (int)this->buffer.size());
-	if (index <= 0) return 0;
-	if (index >= 2
-		&& this->buffer[(size_t)index - 2] == L'\r'
-		&& this->buffer[(size_t)index - 1] == L'\n')
-	{
-		return index - 2;
-	}
-	if (IsCaretBetweenCrLf(index)) return index - 1;
-	return index - 1;
+	return CuiTextEdit::GetPreviousCaretIndex(this->buffer, index, this->AllowMultiLine);
 }
 
 void RichTextBox::NormalizeSelectionRangeForErase(int& start, int& end) const
 {
-	start = std::clamp(start, 0, (int)this->buffer.size());
-	end = std::clamp(end, 0, (int)this->buffer.size());
-	if (start > end) std::swap(start, end);
-	if (IsCaretBetweenCrLf(start)) start--;
-	if (IsCaretBetweenCrLf(end)) end++;
-	start = std::clamp(start, 0, (int)this->buffer.size());
-	end = std::clamp(end, 0, (int)this->buffer.size());
+	CuiTextEdit::NormalizeSelectionForTextElements(this->buffer, start, end, this->AllowMultiLine);
 }
 
 bool RichTextBox::GetBackspaceEraseRange(int caretIndex, int& eraseStart, int& eraseLength) const
 {
-	caretIndex = std::clamp(caretIndex, 0, (int)this->buffer.size());
-	if (caretIndex <= 0) return false;
-	if (IsCaretBetweenCrLf(caretIndex))
-	{
-		eraseStart = caretIndex - 1;
-		eraseLength = 2;
-		return true;
-	}
-	if (caretIndex >= 2
-		&& this->buffer[(size_t)caretIndex - 2] == L'\r'
-		&& this->buffer[(size_t)caretIndex - 1] == L'\n')
-	{
-		eraseStart = caretIndex - 2;
-		eraseLength = 2;
-		return true;
-	}
-	eraseStart = caretIndex - 1;
-	eraseLength = 1;
-	return true;
+	return CuiTextEdit::GetBackspaceEraseRange(this->buffer, caretIndex, this->AllowMultiLine, eraseStart, eraseLength);
 }
 
 bool RichTextBox::GetDeleteEraseRange(int caretIndex, int& eraseStart, int& eraseLength) const
 {
-	caretIndex = std::clamp(caretIndex, 0, (int)this->buffer.size());
-	if (caretIndex >= (int)this->buffer.size()) return false;
-	if (IsCaretBetweenCrLf(caretIndex))
-	{
-		eraseStart = caretIndex - 1;
-		eraseLength = 2;
-		return true;
-	}
-	if (HasCrLfAt(caretIndex))
-	{
-		eraseStart = caretIndex;
-		eraseLength = 2;
-		return true;
-	}
-	eraseStart = caretIndex;
-	eraseLength = 1;
-	return true;
+	return CuiTextEdit::GetDeleteEraseRange(this->buffer, caretIndex, this->AllowMultiLine, eraseStart, eraseLength);
 }
 
 void RichTextBox::SyncControlTextFromBuffer(const std::wstring& oldText)
 {
-	this->setTextPrivate(this->buffer);
+	if (oldText == this->buffer)
+		return;
+	this->SetTextInternal(this->buffer);
 	this->TextChanged = true;
 	this->OnTextChanged(this, oldText, this->buffer);
 }
@@ -228,17 +210,17 @@ void RichTextBox::TrimToMaxLength()
 
 void RichTextBox::UpdateSelRange()
 {
-	if (!this->layOutCache)
+	if (!this->_textLayoutCache)
 		return;
 	auto d2d = this->ParentForm->Render;
 	auto font = this->Font;
 	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
 	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
 	int selLen = sele - sels;
-	selRange = font->HitTestTextRange(this->layOutCache, (UINT32)sels, (UINT32)selLen);
+	selRange = font->HitTestTextRange(this->_textLayoutCache, (UINT32)sels, (UINT32)selLen);
 
-	this->layOutCache->SetDrawingEffect(NULL, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
-	this->layOutCache->SetDrawingEffect(d2d->GetBackColorBrush(this->SelectedForeColor), DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen });
+	this->_textLayoutCache->SetDrawingEffect(nullptr, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
+	this->_textLayoutCache->SetDrawingEffect(d2d->GetBackColorBrush(this->SelectedForeColor), DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen });
 	this->selRangeDirty = false;
 }
 void RichTextBox::UpdateLayout()
@@ -252,10 +234,10 @@ void RichTextBox::UpdateLayout()
 		this->blocksDirty = true;
 		this->blockMetricsDirty = true;
 		this->_caretRectCacheValid = false;
-		if (this->layOutCache)
+		if (this->_textLayoutCache)
 		{
-			this->layOutCache->Release();
-			this->layOutCache = NULL;
+			this->_textLayoutCache->Release();
+			this->_textLayoutCache = nullptr;
 		}
 		ReleaseBlocks();
 	}
@@ -264,13 +246,13 @@ void RichTextBox::UpdateLayout()
 		return;
 	SyncBufferFromControlIfNeeded();
 
-	this->virtualMode = (this->EnableVirtualization && this->AllowMultiLine && this->buffer.size() >= this->VirtualizeThreshold);
-	if (this->virtualMode)
+	this->_isVirtualized = (this->EnableVirtualization && this->AllowMultiLine && this->buffer.size() >= this->VirtualizeThreshold);
+	if (this->_isVirtualized)
 	{
-		if (this->layOutCache)
+		if (this->_textLayoutCache)
 		{
-			this->layOutCache->Release();
-			this->layOutCache = NULL;
+			this->_textLayoutCache->Release();
+			this->_textLayoutCache = nullptr;
 		}
 
 		float renderWidth = this->Width - (TextMargin * 2.0f);
@@ -294,25 +276,25 @@ void RichTextBox::UpdateLayout()
 
 	if ((this->TextChanged || this->lastLayoutSize.cx != this->Width || this->lastLayoutSize.cy != this->Height) && this->ParentForm)
 	{
-		if (this->layOutCache)this->layOutCache->Release();
+		if (this->_textLayoutCache)this->_textLayoutCache->Release();
 		auto d2d = this->ParentForm->Render;
 		if (d2d)
 		{
 			auto font = this->Font;
-			float render_width = this->Width - (TextMargin * 2.0f);
-			float render_height = this->Height - (TextMargin * 2.0f);
+			float renderWidth = this->Width - (TextMargin * 2.0f);
+			float renderHeight = this->Height - (TextMargin * 2.0f);
 
-			this->layOutCache = d2d->CreateStringLayout(this->buffer, render_width, render_height, font);
-			ApplyRichTextWrapping(this->layOutCache);
-			textSize = font->GetTextSize(layOutCache);
-			if (textSize.height > render_height)
+			this->_textLayoutCache = d2d->CreateStringLayout(this->buffer, renderWidth, renderHeight, font);
+			ApplyRichTextWrapping(this->_textLayoutCache);
+			textSize = font->GetTextSize(_textLayoutCache);
+			if (textSize.height > renderHeight)
 			{
-				if (this->layOutCache) this->layOutCache->Release();
-				this->layOutCache = d2d->CreateStringLayout(this->buffer, render_width - 8.0f, render_height, font);
-				ApplyRichTextWrapping(this->layOutCache);
-				textSize = font->GetTextSize(layOutCache);
+				if (this->_textLayoutCache) this->_textLayoutCache->Release();
+				this->_textLayoutCache = d2d->CreateStringLayout(this->buffer, renderWidth - 8.0f, renderHeight, font);
+				ApplyRichTextWrapping(this->_textLayoutCache);
+				textSize = font->GetTextSize(_textLayoutCache);
 			}
-			if (this->layOutCache)
+			if (this->_textLayoutCache)
 			{
 				TextChanged = false;
 				this->lastLayoutSize = SIZE{ this->Width, this->Height };
@@ -329,7 +311,7 @@ void RichTextBox::ReleaseBlocks()
 		if (b.layout)
 		{
 			b.layout->Release();
-			b.layout = NULL;
+			b.layout = nullptr;
 		}
 	}
 	this->blocks.clear();
@@ -338,7 +320,7 @@ void RichTextBox::ReleaseBlocks()
 	this->blockMetricsDirty = true;
 	this->virtualTotalHeight = 0.0f;
 	this->layoutWidthHasScrollBar = false;
-	this->cachedRenderWidth = 0.0f;
+	this->_cachedRenderWidth = 0.0f;
 }
 
 void RichTextBox::RebuildBlocks()
@@ -347,228 +329,219 @@ void RichTextBox::RebuildBlocks()
 	this->blocksDirty = false;
 	this->blockMetricsDirty = true;
 
-	const size_t n = this->buffer.size();
-	if (n == 0) return;
+	const size_t bufferLength = this->buffer.size();
+	if (bufferLength == 0) return;
 
 	const size_t blockSize = (std::max)((size_t)256, this->BlockCharCount);
-	size_t i = 0;
-	while (i < n)
+	size_t blockStart = 0;
+	while (blockStart < bufferLength)
 	{
-		size_t len = (std::min)(blockSize, n - i);
-		if (i + len < n)
+		size_t blockLength = (std::min)(blockSize, bufferLength - blockStart);
+		if (blockStart + blockLength < bufferLength)
 		{
-			wchar_t last = this->buffer[i + len - 1];
-			wchar_t next = this->buffer[i + len];
+			wchar_t last = this->buffer[blockStart + blockLength - 1];
+			wchar_t next = this->buffer[blockStart + blockLength];
 			bool lastHigh = (last >= 0xD800 && last <= 0xDBFF);
 			bool nextLow = (next >= 0xDC00 && next <= 0xDFFF);
 			if (lastHigh && nextLow)
 			{
-				len += 1;
+				blockLength += 1;
 			}
 		}
-		TextBlock b;
-		b.start = i;
-		b.len = len;
-		this->blocks.push_back(b);
-		i += len;
+		TextBlock block;
+		block.start = blockStart;
+		block.len = blockLength;
+		this->blocks.push_back(block);
+		blockStart += blockLength;
 	}
 }
 
-void RichTextBox::EnsureBlockLayout(int idx, float renderWidth, float renderHeight)
+void RichTextBox::EnsureBlockLayout(int blockIndex, float renderWidth, float renderHeight)
 {
-	if (idx < 0 || idx >= (int)this->blocks.size()) return;
-	auto& b = this->blocks[idx];
-	if (b.layout && b.height >= 0.0f) return;
+	if (blockIndex < 0 || blockIndex >= (int)this->blocks.size()) return;
+	auto& block = this->blocks[blockIndex];
+	if (block.layout && block.height >= 0.0f) return;
 
 	auto d2d = this->ParentForm->Render;
 	auto font = this->Font;
 
-	std::wstring s = this->buffer.substr(b.start, b.len);
-	b.layout = d2d->CreateStringLayout(s, renderWidth, FLT_MAX, font);
-	ApplyRichTextWrapping(b.layout);
-	auto sz = font->GetTextSize(b.layout);
-	b.height = sz.height;
-	if (b.height < font->FontHeight) b.height = font->FontHeight;
+	std::wstring blockText = this->buffer.substr(block.start, block.len);
+	block.layout = d2d->CreateStringLayout(blockText, renderWidth, FLT_MAX, font);
+	ApplyRichTextWrapping(block.layout);
+	auto blockSize = font->GetTextSize(block.layout);
+	block.height = blockSize.height;
+	if (block.height < font->FontHeight) block.height = font->FontHeight;
 }
 
 void RichTextBox::EnsureAllBlockMetrics(float renderWidth, float renderHeight)
 {
-	if (!this->blockMetricsDirty && this->cachedRenderWidth == renderWidth)
+	if (!this->blockMetricsDirty && this->_cachedRenderWidth == renderWidth)
 		return;
 
-	this->cachedRenderWidth = renderWidth;
+	this->_cachedRenderWidth = renderWidth;
 	this->virtualTotalHeight = 0.0f;
 	this->blockTops.resize(this->blocks.size());
 
-	auto compute = [&](float w) {
-		for (auto& b : this->blocks)
+	auto computeTotalHeight = [&](float layoutWidth) {
+		for (auto& block : this->blocks)
 		{
-			if (b.layout)
+			if (block.layout)
 			{
-				b.layout->Release();
-				b.layout = NULL;
+				block.layout->Release();
+				block.layout = nullptr;
 			}
-			b.height = -1.0f;
+			block.height = -1.0f;
 		}
-		float y = 0.0f;
+		float blockTop = 0.0f;
 		for (int i = 0; i < (int)this->blocks.size(); i++)
 		{
-			this->blockTops[i] = y;
-			EnsureBlockLayout(i, w, renderHeight);
-			y += this->blocks[i].height;
+			this->blockTops[i] = blockTop;
+			EnsureBlockLayout(i, layoutWidth, renderHeight);
+			blockTop += this->blocks[i].height;
 		}
-		return y;
+		return blockTop;
 		};
 
-	float total = compute(renderWidth);
-	bool needScrollBar = total > renderHeight;
-	if (needScrollBar)
+	float totalHeight = computeTotalHeight(renderWidth);
+	bool needsScrollBar = totalHeight > renderHeight;
+	if (needsScrollBar)
 	{
-		total = compute(std::max(0.0f, renderWidth - 8.0f));
+		totalHeight = computeTotalHeight(std::max(0.0f, renderWidth - 8.0f));
 		this->layoutWidthHasScrollBar = true;
 	}
 	else
 	{
 		this->layoutWidthHasScrollBar = false;
 	}
-	this->virtualTotalHeight = total;
+	this->virtualTotalHeight = totalHeight;
 	this->blockMetricsDirty = false;
 }
 
 int RichTextBox::HitTestGlobalIndex(float x, float y)
 {
-	if (!this->virtualMode || this->blocks.empty()) return 0;
+	if (!this->_isVirtualized || this->blocks.empty()) return 0;
 	float renderHeight = this->Height - (TextMargin * 2.0f);
 	float renderWidth = this->Width - (TextMargin * 2.0f);
 	if (this->layoutWidthHasScrollBar) renderWidth -= 8.0f;
 
-	float contentY = (y + this->OffsetY) - this->TextMargin;
+	float contentY = (y + this->VerticalScrollOffset) - this->TextMargin;
 	if (contentY < 0) contentY = 0;
 
-	int idx = 0;
+	int blockIndex = 0;
 	for (int i = 0; i < (int)this->blockTops.size(); i++)
 	{
 		if (contentY >= this->blockTops[i])
-			idx = i;
+			blockIndex = i;
 		else
 			break;
 	}
-	EnsureBlockLayout(idx, renderWidth, renderHeight);
-	float yInBlock = contentY - this->blockTops[idx];
+	EnsureBlockLayout(blockIndex, renderWidth, renderHeight);
+	float yInBlock = contentY - this->blockTops[blockIndex];
 	float xInBlock = x - this->TextMargin;
 	if (xInBlock < 0) xInBlock = 0;
 
-	int local = this->Font->HitTestTextPosition(this->blocks[idx].layout, xInBlock, yInBlock);
-	int global = (int)this->blocks[idx].start + local;
-	global = std::clamp(global, 0, (int)this->buffer.size());
-	return global;
+	int localIndex = this->Font->HitTestTextPosition(this->blocks[blockIndex].layout, xInBlock, yInBlock);
+	int globalIndex = (int)this->blocks[blockIndex].start + localIndex;
+	globalIndex = std::clamp(globalIndex, 0, (int)this->buffer.size());
+	return globalIndex;
 }
 
 bool RichTextBox::GetCaretMetrics(int caretIndex, float& outX, float& outY, float& outH)
 {
 	outX = outY = outH = 0.0f;
-	if (!this->virtualMode || this->blocks.empty()) return false;
+	if (!this->_isVirtualized || this->blocks.empty()) return false;
 
 	float renderHeight = this->Height - (TextMargin * 2.0f);
 	float renderWidth = this->Width - (TextMargin * 2.0f);
 	if (this->layoutWidthHasScrollBar) renderWidth -= 8.0f;
 
 	caretIndex = std::clamp(caretIndex, 0, (int)this->buffer.size());
-	int blockIdx = 0;
+	int blockIndex = 0;
 	for (int i = 0; i < (int)this->blocks.size(); i++)
 	{
 		if (caretIndex >= (int)this->blocks[i].start && caretIndex <= (int)(this->blocks[i].start + this->blocks[i].len))
 		{
-			blockIdx = i;
+			blockIndex = i;
 			break;
 		}
 	}
-	EnsureBlockLayout(blockIdx, renderWidth, renderHeight);
-	int local = caretIndex - (int)this->blocks[blockIdx].start;
-	auto hit = this->Font->HitTestTextRange(this->blocks[blockIdx].layout, (UINT32)local, (UINT32)0);
+	EnsureBlockLayout(blockIndex, renderWidth, renderHeight);
+	int localIndex = caretIndex - (int)this->blocks[blockIndex].start;
+	auto hit = this->Font->HitTestTextRange(this->blocks[blockIndex].layout, (UINT32)localIndex, (UINT32)0);
 	if (hit.empty()) return false;
 	outX = hit[0].left + this->TextMargin;
-	outY = (this->blockTops[blockIdx] + hit[0].top) - this->OffsetY + this->TextMargin;
+	outY = (this->blockTops[blockIndex] + hit[0].top) - this->VerticalScrollOffset + this->TextMargin;
 	outH = hit[0].height;
 	return true;
 }
 void RichTextBox::DrawScroll()
 {
 	auto d2d = this->ParentForm->Render;
-	auto font = this->Font;
-	auto size = this->ActualSize();
-	float _render_width = this->Width - (TextMargin * 2.0f);
-	float _render_height = this->Height - (TextMargin * 2.0f);
-	float max_scroll = textSize.height - _render_height;
-	if (this->OffsetY > max_scroll)
+	float renderHeight = this->Height - (TextMargin * 2.0f);
+	float maxScroll = textSize.height - renderHeight;
+	if (this->VerticalScrollOffset > maxScroll)
 	{
-		this->OffsetY = max_scroll;
-		if (this->OffsetY < 0)this->OffsetY = 0;
+		this->VerticalScrollOffset = maxScroll;
+		if (this->VerticalScrollOffset < 0)this->VerticalScrollOffset = 0;
 	}
-	if (textSize.height > _render_height)
+	if (textSize.height > renderHeight)
 	{
-		float scroll_block_height = (_render_height / textSize.height) * _render_height;
-		if (scroll_block_height < this->Height * 0.1f)scroll_block_height = this->Height * 0.1f;
-		float scroll_block_move_space = this->Height - scroll_block_height;
-		float yt = scroll_block_height * 0.5f;
-		float yb = this->Height - (scroll_block_height * 0.5f);
-		float per = (float)this->OffsetY / (float)max_scroll;
-		float scroll_tmp_y = per * scroll_block_move_space;
-		float scroll_block_top = scroll_tmp_y;
+		float scrollThumbHeight = (renderHeight / textSize.height) * renderHeight;
+		if (scrollThumbHeight < this->Height * 0.1f)scrollThumbHeight = this->Height * 0.1f;
+		float scrollThumbMoveSpace = this->Height - scrollThumbHeight;
+		float scrollRatio = (float)this->VerticalScrollOffset / (float)maxScroll;
+		float scrollThumbTop = scrollRatio * scrollThumbMoveSpace;
 		// 局部坐标：滚动条 X = Width - 8，Y = 0
 		d2d->FillRoundRect(this->Width - 8.0f, 0, 8.0f, static_cast<float>(this->Height), this->ScrollBackColor, 4.0f);
-		d2d->FillRoundRect(this->Width - 8.0f, scroll_block_top, 8.0f, scroll_block_height, this->ScrollForeColor, 4.0f);
+		d2d->FillRoundRect(this->Width - 8.0f, scrollThumbTop, 8.0f, scrollThumbHeight, this->ScrollForeColor, 4.0f);
 	}
 }
 
 void RichTextBox::ScrollToEnd()
 {
 	this->UpdateLayout();
-	float _render_height = this->Height - (TextMargin * 2.0f);
-	float max_scroll = textSize.height - _render_height;
-	this->OffsetY = max_scroll;
-	if (this->OffsetY < 0)this->OffsetY = 0;
+	float renderHeight = this->Height - (TextMargin * 2.0f);
+	float maxScroll = textSize.height - renderHeight;
+	this->VerticalScrollOffset = maxScroll;
+	if (this->VerticalScrollOffset < 0)this->VerticalScrollOffset = 0;
 	this->SelectionEnd = this->SelectionStart = (int)this->buffer.size();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 void RichTextBox::UpdateScrollDrag(float posY) {
 	if (!isDraggingScroll) return;
 
-	float _render_height = this->Height - (TextMargin * 2.0f);
-	float maxScroll = textSize.height - _render_height;
+	float renderHeight = this->Height - (TextMargin * 2.0f);
+	float maxScroll = textSize.height - renderHeight;
 
-	float scrollBlockHeight = (_render_height / textSize.height) * _render_height;
+	float scrollBlockHeight = (renderHeight / textSize.height) * renderHeight;
 	if (scrollBlockHeight < this->Height * 0.1f)scrollBlockHeight = this->Height * 0.1f;
-
-	float fontHeight = this->Font->FontHeight;
-	float renderItemCount = this->Height / fontHeight;
 
 	float scrollHeight = this->Height - scrollBlockHeight;
 	if (scrollHeight <= 0.0f) return;
-	float grab = std::clamp(_scrollThumbGrabOffsetY, 0.0f, scrollBlockHeight);
-	float targetTop = posY - grab;
-	float per = targetTop / scrollHeight;
-	per = std::clamp(per, 0.0f, 1.0f);
-	float newScroll = per * maxScroll;
+	float thumbGrabOffset = std::clamp(_verticalScrollThumbGrabOffset, 0.0f, scrollBlockHeight);
+	float targetTop = posY - thumbGrabOffset;
+	float scrollRatio = targetTop / scrollHeight;
+	scrollRatio = std::clamp(scrollRatio, 0.0f, 1.0f);
+	float newScroll = scrollRatio * maxScroll;
 	{
-		this->OffsetY = newScroll;
-		if (this->OffsetY < 0) this->OffsetY = 0;
-		if (this->OffsetY > maxScroll + 1) this->OffsetY = maxScroll + 1;
-		PostRender();
+		this->VerticalScrollOffset = newScroll;
+		if (this->VerticalScrollOffset < 0) this->VerticalScrollOffset = 0;
+		if (this->VerticalScrollOffset > maxScroll + 1) this->VerticalScrollOffset = maxScroll + 1;
+		InvalidateVisual();
 	}
 }
-void RichTextBox::SetScrollByPos(float yof)
+void RichTextBox::SetScrollByPos(float localY)
 {
 	const float renderHeight = this->Height - (TextMargin * 2.0f);
 	if (renderHeight <= 0.0f || textSize.height <= 0.0f)
 	{
-		this->OffsetY = 0.0f;
+		this->VerticalScrollOffset = 0.0f;
 		return;
 	}
 
 	if (textSize.height <= renderHeight)
 	{
-		this->OffsetY = 0.0f;
+		this->VerticalScrollOffset = 0.0f;
 		return;
 	}
 
@@ -582,61 +555,32 @@ void RichTextBox::SetScrollByPos(float yof)
 	const float bottomPosition = this->Height - topPosition;
 	if (bottomPosition > topPosition)
 	{
-		const float percent = std::clamp((yof - topPosition) / (bottomPosition - topPosition), 0.0f, 1.0f);
-		this->OffsetY = maxScroll * percent;
+		const float percent = std::clamp((localY - topPosition) / (bottomPosition - topPosition), 0.0f, 1.0f);
+		this->VerticalScrollOffset = maxScroll * percent;
 	}
-	this->OffsetY = std::clamp(this->OffsetY, 0.0f, maxScroll);
+	this->VerticalScrollOffset = std::clamp(this->VerticalScrollOffset, 0.0f, maxScroll);
 }
 void RichTextBox::InputText(std::wstring input)
 {
 	SyncBufferFromControlIfNeeded();
-	input = NormalizeLineBreaks(input);
 	TrimToMaxLength();
-	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
-	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
-
 	std::wstring oldText = this->buffer;
+	const int selStartBefore = this->SelectionStart;
+	const int selEndBefore = this->SelectionEnd;
+	auto result = CuiTextEdit::ReplaceSelection(this->buffer, this->SelectionStart, this->SelectionEnd, input, RichEditOptions(this->AllowMultiLine));
 	UndoRecord rec;
-	bool shouldRecord = false;
-	sels = std::clamp(sels, 0, (int)this->buffer.size());
-	sele = std::clamp(sele, 0, (int)this->buffer.size());
-
-	if (!this->isApplyingUndoRedo && (!input.empty() || sele > sels))
+	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
-		rec.pos = sels;
-		rec.removedText = (sele > sels) ? this->buffer.substr((size_t)sels, (size_t)(sele - sels)) : L"";
-		rec.insertedText = input;
-		rec.selStartBefore = this->SelectionStart;
-		rec.selEndBefore = this->SelectionEnd;
-		shouldRecord = true;
-	}
-	if (sels == sele && sels == (int)this->buffer.size())
-	{
-		this->buffer.append(input);
-		SelectionEnd = SelectionStart = (int)this->buffer.size();
-	}
-	else
-	{
-		if (sele > sels)
-			this->buffer.erase((size_t)sels, (size_t)(sele - sels));
-		this->buffer.insert((size_t)sels, input);
-		SelectionEnd = SelectionStart = sels + (int)input.size();
-	}
-
-	if (!this->AllowMultiLine)
-	{
-		for (auto& ch : this->buffer)
-		{
-			if (ch == L'\r' || ch == L'\n')
-			{
-				ch = L' ';
-			}
-		}
+		rec.pos = result.replaceStart;
+		rec.removedText = result.removedText;
+		rec.insertedText = result.insertedText;
+		rec.selStartBefore = selStartBefore;
+		rec.selEndBefore = selEndBefore;
 	}
 	TrimToMaxLength();
 	this->selRangeDirty = true;
 	this->blocksDirty = true;
-	if (shouldRecord)
+	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
 		rec.selStartAfter = this->SelectionStart;
 		rec.selEndAfter = this->SelectionEnd;
@@ -648,55 +592,22 @@ void RichTextBox::InputText(std::wstring input)
 void RichTextBox::InputBack()
 {
 	SyncBufferFromControlIfNeeded();
-	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
-	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
-	int selLen = sele - sels;
 	std::wstring oldText = this->buffer;
+	const int selStartBefore = this->SelectionStart;
+	const int selEndBefore = this->SelectionEnd;
+	auto result = CuiTextEdit::Backspace(this->buffer, this->SelectionStart, this->SelectionEnd, RichEditOptions(this->AllowMultiLine));
 	UndoRecord rec;
-	bool shouldRecord = false;
-	sels = std::clamp(sels, 0, (int)this->buffer.size());
-	sele = std::clamp(sele, 0, (int)this->buffer.size());
-	NormalizeSelectionRangeForErase(sels, sele);
-	selLen = sele - sels;
-
-	if (selLen > 0)
+	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
-		if (!this->isApplyingUndoRedo)
-		{
-			rec.pos = sels;
-			rec.removedText = this->buffer.substr((size_t)sels, (size_t)selLen);
-			rec.insertedText = L"";
-			rec.selStartBefore = this->SelectionStart;
-			rec.selEndBefore = this->SelectionEnd;
-			shouldRecord = true;
-		}
-		this->SelectionStart = this->SelectionEnd = sels;
-		this->buffer.erase((size_t)sels, (size_t)selLen);
-	}
-	else if (sels > 0)
-	{
-		int eraseStart = 0;
-		int eraseLength = 0;
-		if (!GetBackspaceEraseRange(sels, eraseStart, eraseLength))
-		{
-			SyncControlTextFromBuffer(oldText);
-			return;
-		}
-		if (!this->isApplyingUndoRedo)
-		{
-			rec.pos = eraseStart;
-			rec.removedText = this->buffer.substr((size_t)eraseStart, (size_t)eraseLength);
-			rec.insertedText = L"";
-			rec.selStartBefore = this->SelectionStart;
-			rec.selEndBefore = this->SelectionEnd;
-			shouldRecord = true;
-		}
-		this->buffer.erase((size_t)eraseStart, (size_t)eraseLength);
-		this->SelectionStart = this->SelectionEnd = eraseStart;
+		rec.pos = result.replaceStart;
+		rec.removedText = result.removedText;
+		rec.insertedText = L"";
+		rec.selStartBefore = selStartBefore;
+		rec.selEndBefore = selEndBefore;
 	}
 	this->selRangeDirty = true;
 	this->blocksDirty = true;
-	if (shouldRecord)
+	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
 		rec.selStartAfter = this->SelectionStart;
 		rec.selEndAfter = this->SelectionEnd;
@@ -708,55 +619,22 @@ void RichTextBox::InputBack()
 void RichTextBox::InputDelete()
 {
 	SyncBufferFromControlIfNeeded();
-	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
-	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
-	int selLen = sele - sels;
 	std::wstring oldText = this->buffer;
+	const int selStartBefore = this->SelectionStart;
+	const int selEndBefore = this->SelectionEnd;
+	auto result = CuiTextEdit::DeleteForward(this->buffer, this->SelectionStart, this->SelectionEnd, RichEditOptions(this->AllowMultiLine));
 	UndoRecord rec;
-	bool shouldRecord = false;
-	sels = std::clamp(sels, 0, (int)this->buffer.size());
-	sele = std::clamp(sele, 0, (int)this->buffer.size());
-	NormalizeSelectionRangeForErase(sels, sele);
-	selLen = sele - sels;
-
-	if (selLen > 0)
+	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
-		if (!this->isApplyingUndoRedo)
-		{
-			rec.pos = sels;
-			rec.removedText = this->buffer.substr((size_t)sels, (size_t)selLen);
-			rec.insertedText = L"";
-			rec.selStartBefore = this->SelectionStart;
-			rec.selEndBefore = this->SelectionEnd;
-			shouldRecord = true;
-		}
-		this->SelectionStart = this->SelectionEnd = sels;
-		this->buffer.erase((size_t)sels, (size_t)selLen);
-	}
-	else if (sels < (int)this->buffer.size())
-	{
-		int eraseStart = 0;
-		int eraseLength = 0;
-		if (!GetDeleteEraseRange(sels, eraseStart, eraseLength))
-		{
-			SyncControlTextFromBuffer(oldText);
-			return;
-		}
-		if (!this->isApplyingUndoRedo)
-		{
-			rec.pos = eraseStart;
-			rec.removedText = this->buffer.substr((size_t)eraseStart, (size_t)eraseLength);
-			rec.insertedText = L"";
-			rec.selStartBefore = this->SelectionStart;
-			rec.selEndBefore = this->SelectionEnd;
-			shouldRecord = true;
-		}
-		this->buffer.erase((size_t)eraseStart, (size_t)eraseLength);
-		this->SelectionStart = this->SelectionEnd = eraseStart;
+		rec.pos = result.replaceStart;
+		rec.removedText = result.removedText;
+		rec.insertedText = L"";
+		rec.selStartBefore = selStartBefore;
+		rec.selEndBefore = selEndBefore;
 	}
 	this->selRangeDirty = true;
 	this->blocksDirty = true;
-	if (shouldRecord)
+	if (result.textChanged && !this->isApplyingUndoRedo)
 	{
 		rec.selStartAfter = this->SelectionStart;
 		rec.selEndAfter = this->SelectionEnd;
@@ -822,55 +700,52 @@ void RichTextBox::Redo()
 }
 void RichTextBox::UpdateScroll(bool arrival)
 {
-	if (this->TextChanged || (this->virtualMode && (this->blocksDirty || this->blockMetricsDirty)) || (!this->virtualMode && this->layOutCache == NULL))
+	if (this->TextChanged || (this->_isVirtualized && (this->blocksDirty || this->blockMetricsDirty)) || (!this->_isVirtualized && this->_textLayoutCache == nullptr))
 	{
 		this->UpdateLayout();
 	}
 
-	if (this->virtualMode)
+	if (this->_isVirtualized)
 	{
 		float cx, cy, ch;
 		if (GetCaretMetrics(this->SelectionEnd, cx, cy, ch))
 		{
-			float render_height = this->Height - (TextMargin * 2.0f);
-			float caretTopContent = (cy - this->TextMargin) + this->OffsetY;
+			float renderHeight = this->Height - (TextMargin * 2.0f);
+			float caretTopContent = (cy - this->TextMargin) + this->VerticalScrollOffset;
 			float caretBottomContent = caretTopContent + ch;
 			if (arrival && this->SelectionEnd >= (int)this->buffer.size())
 			{
-				const float maxScroll = std::max(0.0f, this->textSize.height - render_height);
-				this->OffsetY = maxScroll;
+				const float maxScroll = std::max(0.0f, this->textSize.height - renderHeight);
+				this->VerticalScrollOffset = maxScroll;
 			}
-			else if (caretBottomContent - this->OffsetY > render_height)
+			else if (caretBottomContent - this->VerticalScrollOffset > renderHeight)
 			{
-				this->OffsetY = caretBottomContent - render_height;
+				this->VerticalScrollOffset = caretBottomContent - renderHeight;
 			}
-			if (caretTopContent - this->OffsetY < 0.0f)
-				this->OffsetY = caretTopContent;
-			if (this->OffsetY < 0) this->OffsetY = 0;
+			if (caretTopContent - this->VerticalScrollOffset < 0.0f)
+				this->VerticalScrollOffset = caretTopContent;
+			if (this->VerticalScrollOffset < 0) this->VerticalScrollOffset = 0;
 		}
 		return;
 	}
-	float render_width = this->Width - (TextMargin * 2.0f);
-	float render_height = this->Height - (TextMargin * 2.0f);
-	if (textSize.height > render_height)
-		render_width -= 8.0f;
+	float renderHeight = this->Height - (TextMargin * 2.0f);
 	auto font = this->Font;
-	auto selected = font->HitTestTextRange(this->layOutCache, (UINT32)SelectionEnd, (UINT32)0);
+	auto selected = font->HitTestTextRange(this->_textLayoutCache, (UINT32)SelectionEnd, (UINT32)0);
 	if (selected.size() > 0)
 	{
 		auto lastSelect = selected[0];
 		if (arrival && this->SelectionEnd >= (int)this->buffer.size())
 		{
-			const float maxScroll = std::max(0.0f, this->textSize.height - render_height);
-			OffsetY = maxScroll;
+			const float maxScroll = std::max(0.0f, this->textSize.height - renderHeight);
+			VerticalScrollOffset = maxScroll;
 		}
-		else if ((lastSelect.top + lastSelect.height) - OffsetY > render_height)
+		else if ((lastSelect.top + lastSelect.height) - VerticalScrollOffset > renderHeight)
 		{
-			OffsetY = (lastSelect.top + lastSelect.height) - render_height;
+			VerticalScrollOffset = (lastSelect.top + lastSelect.height) - renderHeight;
 		}
-		if (lastSelect.top - OffsetY < 0.0f)
+		if (lastSelect.top - VerticalScrollOffset < 0.0f)
 		{
-			OffsetY = lastSelect.top;
+			VerticalScrollOffset = lastSelect.top;
 		}
 	}
 }
@@ -891,15 +766,10 @@ void RichTextBox::AppendLine(std::wstring str)
 std::wstring RichTextBox::GetSelectedString()
 {
 	SyncBufferFromControlIfNeeded();
-	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
-	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
-	if (sele > sels)
-	{
-		sels = std::clamp(sels, 0, (int)this->buffer.size());
-		sele = std::clamp(sele, 0, (int)this->buffer.size());
-		return this->buffer.substr((size_t)sels, (size_t)(sele - sels));
-	}
-	return L"";
+	auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->buffer.size());
+	if (!span.HasSelection())
+		return L"";
+	return this->buffer.substr(static_cast<size_t>(span.start), static_cast<size_t>(span.Length()));
 }
 void RichTextBox::Update()
 {
@@ -930,8 +800,7 @@ void RichTextBox::Update()
 		}
 		if (this->buffer.size() > 0)
 		{
-			auto font = this->Font;
-			if (this->virtualMode)
+			if (this->_isVirtualized)
 			{
 				float renderWidth = this->Width - (TextMargin * 2.0f);
 				float renderHeight = this->Height - (TextMargin * 2.0f);
@@ -947,8 +816,8 @@ void RichTextBox::Update()
 					selectedPos = { (int)(cx), (int)(cy) };
 					{
 						const float ah = (ch > 0.0f) ? ch : font->FontHeight;
-						auto abs = this->AbsLocation;
-						this->_caretRectCache = { static_cast<float>(abs.x) + cx - 2.0f, static_cast<float>(abs.y) + cy - 2.0f, static_cast<float>(abs.x) + cx + 2.0f, static_cast<float>(abs.y) + cy + ah + 2.0f };
+						auto absoluteLocation = this->AbsLocation;
+						this->_caretRectCache = { static_cast<float>(absoluteLocation.x) + cx - 2.0f, static_cast<float>(absoluteLocation.y) + cy - 2.0f, static_cast<float>(absoluteLocation.x) + cx + 2.0f, static_cast<float>(absoluteLocation.y) + cy + ah + 2.0f };
 						this->_caretRectCacheValid = true;
 					}
 					shouldDrawCaret = true;
@@ -956,8 +825,8 @@ void RichTextBox::Update()
 					caretEnd = { cx, cy + ch };
 				}
 
-				float viewTop = this->OffsetY;
-				float viewBottom = this->OffsetY + renderHeight;
+				float viewTop = this->VerticalScrollOffset;
+				float viewBottom = this->VerticalScrollOffset + renderHeight;
 
 				int first = 0;
 				for (int i = 0; i < (int)this->blockTops.size(); i++)
@@ -976,7 +845,7 @@ void RichTextBox::Update()
 					if (top > viewBottom) break;
 
 					EnsureBlockLayout(i, renderWidth, renderHeight);
-					float drawY = TextMargin + (top - this->OffsetY);
+					float drawY = TextMargin + (top - this->VerticalScrollOffset);
 					float drawX = TextMargin;
 
 					if (isSelected && selLen != 0)
@@ -1020,7 +889,7 @@ void RichTextBox::Update()
 					{
 						d2d->FillRect(
 							sr.left + TextMargin,
-							(sr.top + TextMargin) - this->OffsetY,
+							(sr.top + TextMargin) - this->VerticalScrollOffset,
 							sr.width,
 							sr.height,
 							this->SelectedBackColor);
@@ -1032,34 +901,34 @@ void RichTextBox::Update()
 					{
 						const auto caret = selRange[0];
 						const float lx = caret.left + TextMargin;
-						const float ly = (caret.top + TextMargin) - this->OffsetY;
+						const float ly = (caret.top + TextMargin) - this->VerticalScrollOffset;
 						const float ah = caret.height > 0 ? caret.height : font->FontHeight;
-						auto abs = this->AbsLocation;
-						this->_caretRectCache = { static_cast<float>(abs.x) + lx - 2.0f, static_cast<float>(abs.y) + ly - 2.0f, static_cast<float>(abs.x) + lx + 2.0f, static_cast<float>(abs.y) + ly + ah + 2.0f };
+						auto absoluteLocation = this->AbsLocation;
+						this->_caretRectCache = { static_cast<float>(absoluteLocation.x) + lx - 2.0f, static_cast<float>(absoluteLocation.y) + ly - 2.0f, static_cast<float>(absoluteLocation.x) + lx + 2.0f, static_cast<float>(absoluteLocation.y) + ly + ah + 2.0f };
 						this->_caretRectCacheValid = true;
 					}
 					if (!selRange.empty())
 					{
 						shouldDrawCaret = true;
-						caretStart = { selRange[0].left + TextMargin, (selRange[0].top + TextMargin) - this->OffsetY };
-						caretEnd = { selRange[0].left + TextMargin, (selRange[0].top + selRange[0].height + TextMargin) - this->OffsetY };
+						caretStart = { selRange[0].left + TextMargin, (selRange[0].top + TextMargin) - this->VerticalScrollOffset };
+						caretEnd = { selRange[0].left + TextMargin, (selRange[0].top + selRange[0].height + TextMargin) - this->VerticalScrollOffset };
 					}
 				}
 				if (!selRange.empty())
 				{
 					selectedPos = { (int)selRange[0].left , (int)selRange[0].top };
-					selectedPos.y -= static_cast<LONG>(this->OffsetY);
+					selectedPos.y -= static_cast<LONG>(this->VerticalScrollOffset);
 					selectedPos.y += static_cast<LONG>(this->TextMargin);
 					selectedPos.x += static_cast<LONG>(this->TextMargin);
 				}
-				d2d->DrawStringLayout(this->layOutCache,
-					TextMargin, TextMargin - this->OffsetY,
+				d2d->DrawStringLayout(this->_textLayoutCache,
+					TextMargin, TextMargin - this->VerticalScrollOffset,
 					this->ForeColor);
 			}
 			else
 			{
-				d2d->DrawStringLayout(this->layOutCache,
-					TextMargin, TextMargin - this->OffsetY,
+				d2d->DrawStringLayout(this->_textLayoutCache,
+					TextMargin, TextMargin - this->VerticalScrollOffset,
 					this->ForeColor);
 			}
 		}
@@ -1070,8 +939,8 @@ void RichTextBox::Update()
 				const float lx = (float)TextMargin;
 				const float ly = 0.0f;
 				const float ah = (font->FontHeight > 16.0f) ? font->FontHeight : 16.0f;
-				auto abs = this->AbsLocation;
-				this->_caretRectCache = { static_cast<float>(abs.x) + lx - 2.0f, static_cast<float>(abs.y) + ly - 2.0f, static_cast<float>(abs.x) + lx + 2.0f, static_cast<float>(abs.y) + ly + ah + 2.0f };
+				auto absoluteLocation = this->AbsLocation;
+				this->_caretRectCache = { static_cast<float>(absoluteLocation.x) + lx - 2.0f, static_cast<float>(absoluteLocation.y) + ly - 2.0f, static_cast<float>(absoluteLocation.x) + lx + 2.0f, static_cast<float>(absoluteLocation.y) + ly + ah + 2.0f };
 				this->_caretRectCacheValid = true;
 				shouldDrawCaret = true;
 				caretStart = { lx, ly };
@@ -1084,8 +953,8 @@ void RichTextBox::Update()
 			d2d->DrawLine(caretStart, caretEnd, this->ForeColor);
 		}
 		this->DrawScroll();
-		const auto borderColor = isSelected ? this->FocusedColor : this->BolderColor;
-		const float borderWidth = isSelected ? (std::max)(this->Boder, this->FocusBorder) : this->Boder;
+		const auto borderColor = isSelected ? this->FocusedColor : this->BorderColor;
+		const float borderWidth = isSelected ? (std::max)(this->BorderThickness, this->FocusBorder) : this->BorderThickness;
 		if (borderWidth > 0.0f && borderColor.a > 0.0f)
 			d2d->DrawRoundRect(borderWidth * 0.5f, borderWidth * 0.5f,
 				(std::max)(0.0f, actualWidth - borderWidth), (std::max)(0.0f, actualHeight - borderWidth),
@@ -1102,7 +971,7 @@ bool RichTextBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 {
 	return GetCaretBlinkInvalidRect(outRect);
 }
-bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	switch (message)
@@ -1110,13 +979,13 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	case WM_DROPFILES:
 	{
 		HDROP hDropInfo = HDROP(wParam);
-		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
-		TCHAR strFileName[MAX_PATH];
+		UINT fileCount = DragQueryFile(hDropInfo, 0xffffffff, nullptr, 0);
+		TCHAR fileName[MAX_PATH];
 		std::vector<std::wstring> files;
-		for (UINT i = 0; i < uFileNum; i++)
+		for (UINT fileIndex = 0; fileIndex < fileCount; fileIndex++)
 		{
-			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.push_back(strFileName);
+			DragQueryFile(hDropInfo, fileIndex, fileName, MAX_PATH);
+			files.push_back(fileName);
 		}
 		DragFinish(hDropInfo);
 		if (files.size() > 0)
@@ -1129,49 +998,49 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	{
 		if (GET_WHEEL_DELTA_WPARAM(wParam) > 0)
 		{
-			if (this->OffsetY > 0)
+			if (this->VerticalScrollOffset > 0)
 			{
-				this->OffsetY -= 10;
-				if (this->OffsetY < 0)this->OffsetY = 0;
-				this->PostRender();
+				this->VerticalScrollOffset -= 10;
+				if (this->VerticalScrollOffset < 0)this->VerticalScrollOffset = 0;
+				this->InvalidateVisual();
 			}
 		}
 		else
 		{
 			auto font = this->Font;
-			float render_width = this->Width - (TextMargin * 2.0f);
-			float render_height = this->Height - (TextMargin * 2.0f);
-			if (textSize.height > render_height)render_width -= 8.0f;
-			if (this->OffsetY < textSize.height - render_height)
+			float renderWidth = this->Width - (TextMargin * 2.0f);
+			float renderHeight = this->Height - (TextMargin * 2.0f);
+			if (textSize.height > renderHeight) renderWidth -= 8.0f;
+			if (this->VerticalScrollOffset < textSize.height - renderHeight)
 			{
-				this->OffsetY += 10;
-				if (this->OffsetY > textSize.height - render_height)this->OffsetY = textSize.height - render_height;
-				this->PostRender();
+				this->VerticalScrollOffset += 10;
+				if (this->VerticalScrollOffset > textSize.height - renderHeight) this->VerticalScrollOffset = textSize.height - renderHeight;
+				this->InvalidateVisual();
 			}
 		}
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
-		this->OnMouseWheel(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam));
+		this->OnMouseWheel(this, eventArgs);
 	}
 	break;
 	case WM_MOUSEMOVE:
 	{
 		this->ParentForm->UnderMouse = this;
 		if (isDraggingScroll) {
-			UpdateScrollDrag(static_cast<float>(yof));
+			UpdateScrollDrag(static_cast<float>(localY));
 		}
 		if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) && this->ParentForm->Selected == this && !isDraggingScroll)
 		{
 			auto font = this->Font;
-			if (this->virtualMode)
-				SelectionEnd = HitTestGlobalIndex((float)xof, (float)yof);
+			if (this->_isVirtualized)
+				SelectionEnd = HitTestGlobalIndex((float)localX, (float)localY);
 			else
-				SelectionEnd = font->HitTestTextPosition(this->layOutCache, xof - TextMargin, (yof + this->OffsetY) - TextMargin);
+				SelectionEnd = font->HitTestTextPosition(this->_textLayoutCache, localX - TextMargin, (localY + this->VerticalScrollOffset) - TextMargin);
 			UpdateScroll();
-			this->PostRender();
+			this->InvalidateVisual();
 			this->selRangeDirty = true;
 		}
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
-		this->OnMouseMove(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
+		this->OnMouseMove(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONDOWN:
@@ -1182,49 +1051,49 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		{
 			if (this->ParentForm->Selected != this)
 			{
-				auto lse = this->ParentForm->Selected;
-				this->ParentForm->Selected = this;
-				if (lse) lse->PostRender();
+				auto previousSelection = this->ParentForm->Selected;
+				this->ParentForm->SetSelectedControl(this, false);
+				if (previousSelection) previousSelection->InvalidateVisual();
 			}
-			if (xof >= Width - 8 && xof <= Width)
+			if (localX >= Width - 8 && localX <= Width)
 			{
 				// 竖向滚动条：点在滑块上则用按下点锚定；否则用滑块中心（原行为）
 				const float renderHeight = this->Height - (TextMargin * 2.0f);
 				if (renderHeight > 0.0f && textSize.height > renderHeight)
 				{
 					const float maxScroll = std::max(0.0f, textSize.height - renderHeight);
-					float thumbH = (renderHeight / textSize.height) * renderHeight;
-					if (thumbH < this->Height * 0.1f) thumbH = this->Height * 0.1f;
-					if (thumbH > static_cast<float>(this->Height)) thumbH = static_cast<float>(this->Height);
-					const float moveSpace = std::max(0.0f, (float)this->Height - thumbH);
-					float per = 0.0f;
-					if (maxScroll > 0.0f) per = std::clamp(this->OffsetY / maxScroll, 0.0f, 1.0f);
-					const float thumbTop = per * moveSpace;
-					const float localY = (float)yof;
-					const bool hitThumb = (localY >= thumbTop && localY <= (thumbTop + thumbH));
-					_scrollThumbGrabOffsetY = hitThumb ? (localY - thumbTop) : (thumbH * 0.5f);
+					float thumbHeight = (renderHeight / textSize.height) * renderHeight;
+					if (thumbHeight < this->Height * 0.1f) thumbHeight = this->Height * 0.1f;
+					if (thumbHeight > static_cast<float>(this->Height)) thumbHeight = static_cast<float>(this->Height);
+					const float moveSpace = std::max(0.0f, (float)this->Height - thumbHeight);
+					float scrollRatio = 0.0f;
+					if (maxScroll > 0.0f) scrollRatio = std::clamp(this->VerticalScrollOffset / maxScroll, 0.0f, 1.0f);
+					const float thumbTop = scrollRatio * moveSpace;
+					const float pointerY = (float)localY;
+					const bool hitThumb = (pointerY >= thumbTop && pointerY <= (thumbTop + thumbHeight));
+					_verticalScrollThumbGrabOffset = hitThumb ? (pointerY - thumbTop) : (thumbHeight * 0.5f);
 				}
 				else
 				{
-					_scrollThumbGrabOffsetY = 0.0f;
+					_verticalScrollThumbGrabOffset = 0.0f;
 				}
 				isDraggingScroll = true;
-				UpdateScrollDrag((float)yof);
-				this->PostRender();
+				UpdateScrollDrag((float)localY);
+				this->InvalidateVisual();
 			}
 			else
 			{
 				auto font = this->Font;
-				if (this->virtualMode)
-					this->SelectionStart = this->SelectionEnd = HitTestGlobalIndex((float)xof, (float)yof);
+				if (this->_isVirtualized)
+					this->SelectionStart = this->SelectionEnd = HitTestGlobalIndex((float)localX, (float)localY);
 				else
-					this->SelectionStart = this->SelectionEnd = font->HitTestTextPosition(this->layOutCache, xof - TextMargin, (yof + this->OffsetY) - TextMargin);
+					this->SelectionStart = this->SelectionEnd = font->HitTestTextPosition(this->_textLayoutCache, localX - TextMargin, (localY + this->VerticalScrollOffset) - TextMargin);
 				this->selRangeDirty = true;
 			}
 		}
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDown(this, event_obj);
-		this->PostRender();
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDown(this, eventArgs);
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_LBUTTONUP:
@@ -1237,23 +1106,37 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		else if (this->ParentForm->Selected == this)
 		{
 			auto font = this->Font;
-			if (this->virtualMode)
-				SelectionEnd = HitTestGlobalIndex((float)xof, (float)yof);
+			if (this->_isVirtualized)
+				SelectionEnd = HitTestGlobalIndex((float)localX, (float)localY);
 			else
-				SelectionEnd = font->HitTestTextPosition(this->layOutCache, xof - TextMargin, (yof + this->OffsetY) - TextMargin);
+				SelectionEnd = font->HitTestTextPosition(this->_textLayoutCache, localX - TextMargin, (localY + this->VerticalScrollOffset) - TextMargin);
 			this->selRangeDirty = true;
 		}
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseUp(this, event_obj);
-		this->PostRender();
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseUp(this, eventArgs);
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_LBUTTONDBLCLK:
 	{
-		this->ParentForm->Selected = this;
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDoubleClick(this, event_obj);
-		this->PostRender();
+		this->ParentForm->SetSelectedControl(this, false);
+		SyncBufferFromControlIfNeeded();
+		UpdateLayout();
+		int hitIndex = 0;
+		if (this->_isVirtualized)
+			hitIndex = HitTestGlobalIndex((float)localX, (float)localY);
+		else
+			hitIndex = this->Font->HitTestTextPosition(this->_textLayoutCache, localX - TextMargin, (localY + this->VerticalScrollOffset) - TextMargin);
+		hitIndex = std::clamp(hitIndex, 0, (int)this->buffer.size());
+		this->SelectionStart = CuiTextEdit::GetLineStartIndex(this->buffer, hitIndex);
+		this->SelectionEnd = CuiTextEdit::GetLineEndIndex(this->buffer, hitIndex);
+		if (this->SelectionStart == this->SelectionEnd && this->SelectionEnd < (int)this->buffer.size())
+			this->SelectionEnd = GetNextCaretIndex(this->SelectionEnd);
+		this->selRangeDirty = true;
+		UpdateScroll();
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDoubleClick(this, eventArgs);
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_KEYDOWN:
@@ -1263,7 +1146,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			this->InputText(L"\t");
 			this->selRangeDirty = true;
 			UpdateScroll();
-			this->PostRender();
+			this->InvalidateVisual();
 			return true;
 		}
 		if (!this->ReadOnly && (GetAsyncKeyState(VK_CONTROL) & 0x8000))
@@ -1272,14 +1155,14 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			{
 				this->Undo();
 				UpdateScroll();
-				this->PostRender();
+				this->InvalidateVisual();
 				return true;
 			}
 			if (wParam == 'Y')
 			{
 				this->Redo();
 				UpdateScroll();
-				this->PostRender();
+				this->InvalidateVisual();
 				return true;
 			}
 		}
@@ -1303,34 +1186,38 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 		else if (wParam == VK_RIGHT)
 		{
-			if (this->SelectionEnd < (int)this->buffer.size())
+			const bool extendSelection = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+			auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->buffer.size());
+			if (!extendSelection && span.HasSelection())
+			{
+				this->SelectionStart = this->SelectionEnd = span.end;
+				this->selRangeDirty = true;
+				UpdateScroll();
+			}
+			else if (this->SelectionEnd < (int)this->buffer.size())
 			{
 				this->SelectionEnd = GetNextCaretIndex(this->SelectionEnd);
-				if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-				{
+				if (!extendSelection)
 					this->SelectionStart = this->SelectionEnd;
-				}
-				if (this->SelectionEnd > (int)this->buffer.size())
-				{
-					this->SelectionEnd = (int)this->buffer.size();
-				}
 				this->selRangeDirty = true;
 				UpdateScroll();
 			}
 		}
 		else if (wParam == VK_LEFT)
 		{
-			if (this->SelectionEnd > 0)
+			const bool extendSelection = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+			auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->buffer.size());
+			if (!extendSelection && span.HasSelection())
+			{
+				this->SelectionStart = this->SelectionEnd = span.start;
+				this->selRangeDirty = true;
+				UpdateScroll();
+			}
+			else if (this->SelectionEnd > 0)
 			{
 				this->SelectionEnd = GetPreviousCaretIndex(this->SelectionEnd);
-				if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-				{
+				if (!extendSelection)
 					this->SelectionStart = this->SelectionEnd;
-				}
-				if (this->SelectionEnd < 0)
-				{
-					this->SelectionEnd = 0;
-				}
 				this->selRangeDirty = true;
 				UpdateScroll();
 			}
@@ -1338,7 +1225,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		else if (wParam == VK_UP)
 		{
 			auto font = this->Font;
-			if (this->virtualMode)
+			if (this->_isVirtualized)
 			{
 				float cx, cy, ch;
 				if (GetCaretMetrics(this->SelectionEnd, cx, cy, ch))
@@ -1346,8 +1233,8 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			}
 			else
 			{
-				auto hit = font->HitTestTextRange(this->layOutCache, (UINT32)this->SelectionEnd, (UINT32)0);
-				this->SelectionEnd = font->HitTestTextPosition(this->layOutCache, hit[0].left, hit[0].top - (font->FontHeight * 0.5f));
+				auto hit = font->HitTestTextRange(this->_textLayoutCache, (UINT32)this->SelectionEnd, (UINT32)0);
+				this->SelectionEnd = font->HitTestTextPosition(this->_textLayoutCache, hit[0].left, hit[0].top - (font->FontHeight * 0.5f));
 			}
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 			{
@@ -1363,7 +1250,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		else if (wParam == VK_DOWN)
 		{
 			auto font = this->Font;
-			if (this->virtualMode)
+			if (this->_isVirtualized)
 			{
 				float cx, cy, ch;
 				if (GetCaretMetrics(this->SelectionEnd, cx, cy, ch))
@@ -1371,8 +1258,8 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			}
 			else
 			{
-				auto hit = font->HitTestTextRange(this->layOutCache, (UINT32)this->SelectionEnd, (UINT32)0);
-				this->SelectionEnd = font->HitTestTextPosition(this->layOutCache, hit[0].left, hit[0].top + (font->FontHeight * 1.5f));
+				auto hit = font->HitTestTextRange(this->_textLayoutCache, (UINT32)this->SelectionEnd, (UINT32)0);
+				this->SelectionEnd = font->HitTestTextPosition(this->_textLayoutCache, hit[0].left, hit[0].top + (font->FontHeight * 1.5f));
 			}
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 			{
@@ -1387,36 +1274,26 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 		else if (wParam == VK_HOME)
 		{
-			this->SelectionEnd = 0;
+			const bool controlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+			this->SelectionEnd = controlDown ? 0 : CuiTextEdit::GetLineStartIndex(this->buffer, this->SelectionEnd);
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-			{
 				this->SelectionStart = this->SelectionEnd;
-			}
-			if (this->SelectionEnd < 0)
-			{
-				this->SelectionEnd = 0;
-			}
 			this->selRangeDirty = true;
 			UpdateScroll();
 		}
 		else if (wParam == VK_END)
 		{
-			this->SelectionEnd = (int)this->buffer.size();
-			if (this->SelectionEnd > (int)this->buffer.size())
-			{
-				this->SelectionEnd = (int)this->buffer.size();
-			}
+			const bool controlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+			this->SelectionEnd = controlDown ? (int)this->buffer.size() : CuiTextEdit::GetLineEndIndex(this->buffer, this->SelectionEnd);
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
-			{
 				this->SelectionStart = this->SelectionEnd;
-			}
 			this->selRangeDirty = true;
 			UpdateScroll();
 		}
 		else if (wParam == VK_PRIOR)
 		{
 			auto font = this->Font;
-			if (this->virtualMode)
+			if (this->_isVirtualized)
 			{
 				float cx, cy, ch;
 				if (GetCaretMetrics(this->SelectionEnd, cx, cy, ch))
@@ -1424,8 +1301,8 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			}
 			else
 			{
-				auto hit = font->HitTestTextRange(this->layOutCache, (UINT32)this->SelectionEnd, (UINT32)0);
-				this->SelectionEnd = font->HitTestTextPosition(this->layOutCache, hit[0].left, hit[0].top - this->Height);
+				auto hit = font->HitTestTextRange(this->_textLayoutCache, (UINT32)this->SelectionEnd, (UINT32)0);
+				this->SelectionEnd = font->HitTestTextPosition(this->_textLayoutCache, hit[0].left, hit[0].top - this->Height);
 			}
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 			{
@@ -1441,7 +1318,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		else if (wParam == VK_NEXT)
 		{
 			auto font = this->Font;
-			if (this->virtualMode)
+			if (this->_isVirtualized)
 			{
 				float cx, cy, ch;
 				if (GetCaretMetrics(this->SelectionEnd, cx, cy, ch))
@@ -1449,8 +1326,8 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			}
 			else
 			{
-				auto hit = font->HitTestTextRange(this->layOutCache, (UINT32)this->SelectionEnd, (UINT32)0);
-				this->SelectionEnd = font->HitTestTextPosition(this->layOutCache, hit[0].left, hit[0].top + this->Height);
+				auto hit = font->HitTestTextRange(this->_textLayoutCache, (UINT32)this->SelectionEnd, (UINT32)0);
+				this->SelectionEnd = font->HitTestTextPosition(this->_textLayoutCache, hit[0].left, hit[0].top + this->Height);
 			}
 			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
 			{
@@ -1463,15 +1340,15 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			this->selRangeDirty = true;
 			UpdateScroll(true);
 		}
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyDown(this, event_obj);
-		this->PostRender();
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyDown(this, eventArgs);
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_CHAR:
 	{
 		wchar_t ch = (wchar_t)(wParam);
-		if (ch >= 32 && ch <= 126)
+		if (CuiTextEdit::IsTextInputChar(ch))
 		{
 			if (!this->ReadOnly)
 			{
@@ -1506,55 +1383,29 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 		else if (ch == 22)
 		{
-			if (!this->ReadOnly && OpenClipboard(this->ParentForm->Handle))
+			std::wstring clipboardText;
+			if (!this->ReadOnly && TryReadClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, clipboardText))
 			{
-				if (IsClipboardFormatAvailable(CF_UNICODETEXT))
-				{
-					HANDLE hClip = GetClipboardData(CF_UNICODETEXT);
-					const wchar_t* pBuf = (const wchar_t*)GlobalLock(hClip);
-					if (pBuf)
-					{
-						this->InputText(std::wstring(pBuf));
-						GlobalUnlock(hClip);
-					}
-					UpdateScroll();
-					CloseClipboard();
-				}
+				this->InputText(clipboardText);
+				UpdateScroll();
 			}
 		}
 		else if (ch == 3)
 		{
 			std::wstring s = this->GetSelectedString();
-			if (s.size() > 0 && OpenClipboard(this->ParentForm->Handle))
-			{
-				EmptyClipboard();
-				const size_t bytes = (s.size() + 1) * sizeof(wchar_t);
-				HANDLE hData = GlobalAlloc(GMEM_MOVEABLE, bytes);
-				wchar_t* pData = (wchar_t*)GlobalLock(hData);
-				memcpy(pData, s.c_str(), bytes);
-				GlobalUnlock(hData);
-				SetClipboardData(CF_UNICODETEXT, hData);
-				CloseClipboard();
-			}
+			WriteClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, s);
 		}
 		else if (ch == 24)
 		{
 			std::wstring s = this->GetSelectedString();
-			if (s.size() > 0 && OpenClipboard(this->ParentForm->Handle))
-			{
-				EmptyClipboard();
-				const size_t bytes = (s.size() + 1) * sizeof(wchar_t);
-				HANDLE hData = GlobalAlloc(GMEM_MOVEABLE, bytes);
-				wchar_t* pData = (wchar_t*)GlobalLock(hData);
-				memcpy(pData, s.c_str(), bytes);
-				GlobalUnlock(hData);
-				SetClipboardData(CF_UNICODETEXT, hData);
-				CloseClipboard();
-			}
+			WriteClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, s);
 			if (!this->ReadOnly)
+			{
 				this->InputBack();
+				UpdateScroll();
+			}
 		}
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_IME_COMPOSITION:
@@ -1563,35 +1414,17 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			return true;
 		if (lParam & GCS_RESULTSTR)
 		{
-			HIMC hIMC = ImmGetContext(this->ParentForm->Handle);
-			DWORD bytes = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, NULL, 0);
-			if (bytes > 0)
-			{
-				std::wstring buffer;
-				buffer.resize(bytes / sizeof(wchar_t));
-				ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, buffer.data(), bytes);
-				std::wstring filtered;
-				filtered.reserve(buffer.size());
-				for (wchar_t c : buffer)
-				{
-					if (c > 255) filtered.push_back(c);
-				}
-				if (!filtered.empty())
-				{
-					this->InputText(filtered);
-				}
-			}
-			ImmReleaseContext(this->ParentForm->Handle, hIMC);
-			UpdateScroll();
-			this->PostRender();
+			// Unicode windows receive committed IME text through WM_CHAR as well.
+			// Keep the edit mutation in one path to avoid duplicate characters.
+			this->InvalidateVisual();
 		}
 	}
 	break;
 	case WM_KEYUP:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyUp(this, event_obj);
-		this->PostRender();
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyUp(this, eventArgs);
+		this->InvalidateVisual();
 	}
 	break;
 	}

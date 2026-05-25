@@ -96,7 +96,7 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 			_grid->SwapRows(r, r - 1);
 			_grid->SelectedRowIndex = r - 1;
 			_grid->SelectedColumnIndex = COL_TITLE;
-			_grid->PostRender();
+			_grid->InvalidateVisual();
 		}
 		else if (c == COL_DOWN)
 		{
@@ -104,7 +104,7 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 			_grid->SwapRows(r, r + 1);
 			_grid->SelectedRowIndex = r + 1;
 			_grid->SelectedColumnIndex = COL_TITLE;
-			_grid->PostRender();
+			_grid->InvalidateVisual();
 		}
 		else if (c == COL_DELETE)
 		{
@@ -121,7 +121,7 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 				_grid->SelectedRowIndex = sel;
 				_grid->SelectedColumnIndex = COL_TITLE;
 			}
-			_grid->PostRender();
+			_grid->InvalidateVisual();
 		}
 	};
 
@@ -199,7 +199,7 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 		if (_target->SelectedIndex >= _target->Count) _target->SelectedIndex = _target->Count - 1;
 
 		Applied = true;
-		_target->PostRender();
+		_target->InvalidateVisual();
 		this->Close();
 		};
 

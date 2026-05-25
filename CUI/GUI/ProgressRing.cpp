@@ -36,7 +36,7 @@ SET_CPP(ProgressRing, float, PercentageValue)
 	if (std::fabs(this->_percentageValue - clamped) < 0.0001f)
 		return;
 	this->_percentageValue = clamped;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(ProgressRing, bool, ShowPercentage)
@@ -49,7 +49,7 @@ SET_CPP(ProgressRing, bool, ShowPercentage)
 	if (this->_showPercentage == value)
 		return;
 	this->_showPercentage = value;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 ProgressRing::ProgressRing(int x, int y, int width, int height)
@@ -58,7 +58,7 @@ ProgressRing::ProgressRing(int x, int y, int width, int height)
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1::ColorF(0.0f, 0.48f, 0.85f, 0.16f);
 	this->ForeColor = D2D1::ColorF(0.0f, 0.48f, 0.85f, 1.0f);
-	this->BolderColor = D2D1::ColorF(0, 0, 0, 0);
+	this->BorderColor = D2D1::ColorF(0, 0, 0, 0);
 	this->Font = new ::Font(L"Segoe UI", 16.0f);
 }
 

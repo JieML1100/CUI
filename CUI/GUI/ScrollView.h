@@ -6,9 +6,9 @@ class ScrollView : public Panel
 public:
 	struct ScrollLayout
 	{
-		bool NeedV = false;
-		bool NeedH = false;
-		float ScrollBarSize = 8.0f;
+		bool HasVerticalScroll = false;
+		bool HasHorizontalScroll = false;
+		float ScrollBarThickness = 8.0f;
 		float ViewportWidth = 0.0f;
 		float ViewportHeight = 0.0f;
 		float ContentWidth = 0.0f;
@@ -19,7 +19,7 @@ public:
 
 	D2D1_COLOR_F ScrollBackColor = Colors::LightGray;
 	D2D1_COLOR_F ScrollForeColor = Colors::DimGrey;
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	bool AlwaysShowVScroll = false;
 	bool AlwaysShowHScroll = false;
 	bool AutoContentSize = true;
@@ -32,34 +32,34 @@ public:
 	ScrollView(int x, int y, int width, int height);
 
 	UIClass Type() override;
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool HandlesNavigationKey(WPARAM key) const override;
-	bool ShouldHitTestChildrenAt(int xof, int yof) const override;
+	bool ShouldHitTestChildrenAt(int localX, int localY) const override;
 	POINT GetChildrenRenderOffset() const override;
 	bool ClipsChildren() override { return true; }
 	D2D1_RECT_F GetChildrenClipRect() override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
-	void ScrollBy(int dx, int dy);
-	void SetScrollOffset(int x, int y);
+	void ScrollBy(int deltaX, int deltaY);
+	void SetScrollOffset(int offsetX, int offsetY);
 
 private:
-	bool _dragVScroll = false;
-	bool _dragHScroll = false;
-	float _vScrollThumbGrabOffset = 0.0f;
-	float _hScrollThumbGrabOffset = 0.0f;
+	bool _draggingVerticalScrollBar = false;
+	bool _draggingHorizontalScrollBar = false;
+	float _verticalScrollThumbGrabOffset = 0.0f;
+	float _horizontalScrollThumbGrabOffset = 0.0f;
 
 	void PerformScrollContentLayout();
 	ScrollLayout CalcScrollLayout();
 	SIZE MeasureContentSize();
 	void ClampScrollOffsets(const ScrollLayout& layout);
 	void DrawScrollBars(const ScrollLayout& layout);
-	void UpdateScrollByThumbY(float localY, const ScrollLayout& layout);
-	void UpdateScrollByThumbX(float localX, const ScrollLayout& layout);
-	bool HitChild(Control* child, int xof, int yof, int& childX, int& childY) const;
-	bool HitVScrollBar(int xof, int yof, const ScrollLayout& layout) const;
-	bool HitHScrollBar(int xof, int yof, const ScrollLayout& layout) const;
+	void UpdateVerticalScrollByThumb(float localY, const ScrollLayout& layout);
+	void UpdateHorizontalScrollByThumb(float localX, const ScrollLayout& layout);
+	bool HitChild(Control* child, int localX, int localY, int& childX, int& childY) const;
+	bool HitVerticalScrollBar(int localX, int localY, const ScrollLayout& layout) const;
+	bool HitHorizontalScrollBar(int localX, int localY, const ScrollLayout& layout) const;
 };

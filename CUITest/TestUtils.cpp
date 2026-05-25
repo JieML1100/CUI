@@ -67,7 +67,7 @@ bool StringHelper::Contains(const std::wstring& str, const std::wstring& substr)
     return str.find(substr) != std::wstring::npos;
 }
 
-std::wstring Convert::string_to_wstring(const std::string& str)
+std::wstring Convert::StringToWString(const std::string& str)
 {
     if (str.empty()) {
         return {};
@@ -79,7 +79,7 @@ std::wstring Convert::string_to_wstring(const std::string& str)
     return result;
 }
 
-std::string Convert::wstring_to_string(const std::wstring& str)
+std::string Convert::WStringToString(const std::wstring& str)
 {
     if (str.empty()) {
         return {};

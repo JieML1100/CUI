@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "Control.h"
 #include <algorithm>
 
@@ -91,6 +91,7 @@ private:
 	UINT _animDurationMs = 180;
 	bool _animating = false;
 	bool _collapseCleanupPending = false;
+	bool _renderingForeground = false;
 
 	void EnsureShowFlags();
 	void SyncViewFromValue();
@@ -112,15 +113,15 @@ private:
 	float DropdownTop();
 	float CurrentDropProgress();
 	bool IsDropDownVisible();
-	bool HitTestDayCell(const LayoutMetrics& layout, int xof, int yof, int& outDay) const;
-	void UpdateHoverState(int xof, int yof);
-	HitPart HitTestPart(const LayoutMetrics& layout, int xof, int yof, int& outDay) const;
+	bool HitTestDayCell(const LayoutMetrics& layout, int localX, int localY, int& outDay) const;
+	void UpdateHoverState(int localX, int localY);
+	HitPart HitTestPart(const LayoutMetrics& layout, int localX, int localY, int& outDay) const;
 	void ToggleDateSection();
 	void ToggleTimeSection();
 
 public:
 	/** @brief 控件边框宽度。 */
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	/** @brief 圆角半径。 */
 	float Round = 6.0f;
 	/** @brief 下拉面板圆角半径。 */
@@ -170,6 +171,9 @@ public:
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
+	bool ContainsForegroundPoint(int localX, int localY) override;
+	bool RenderNormalWhenForeground() const override { return true; }
+	void InvalidateVisual() override;
 
 	PROPERTY(SYSTEMTIME, Value);
 	GET(SYSTEMTIME, Value);
@@ -188,8 +192,9 @@ public:
 	SET(bool, AllowTimeSelection);
 
 	SIZE ActualSize() override;
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	void UpdateForeground() override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

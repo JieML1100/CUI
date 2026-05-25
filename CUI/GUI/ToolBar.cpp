@@ -8,12 +8,12 @@ namespace
 	{
 		if (!button) return;
 		button->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-		button->BolderColor = D2D1_COLOR_F{ 0,0,0,0 };
+		button->BorderColor = D2D1_COLOR_F{ 0,0,0,0 };
 		button->ForeColor = Colors::WhiteSmoke;
 		button->UnderMouseColor = D2D1_COLOR_F{ 0.28f,0.58f,0.96f,0.26f };
 		button->CheckedColor = D2D1_COLOR_F{ 0.28f,0.58f,0.96f,0.34f };
 		button->Round = 0.28f;
-		button->Boder = 0.0f;
+		button->BorderThickness = 0.0f;
 	}
 }
 
@@ -25,7 +25,7 @@ ToolBarSeparator::ToolBarSeparator(int width, int height)
 	if (height < 1) height = 20;
 	this->Size = SIZE{ width,height };
 	this->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->BolderColor = D2D1_COLOR_F{ 0,0,0,0 };
+	this->BorderColor = D2D1_COLOR_F{ 0,0,0,0 };
 	this->LineColor = D2D1_COLOR_F{ 1,1,1,0.18f };
 	this->Enable = false;
 }
@@ -57,7 +57,7 @@ ToolBarSpacer::ToolBarSpacer(int width)
 	if (width < 0) width = 0;
 	this->Size = SIZE{ width,1 };
 	this->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->BolderColor = D2D1_COLOR_F{ 0,0,0,0 };
+	this->BorderColor = D2D1_COLOR_F{ 0,0,0,0 };
 	this->Enable = false;
 }
 
@@ -72,8 +72,8 @@ ToolBar::ToolBar(int x, int y, int width, int height)
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
 	this->BackColor = D2D1_COLOR_F{ 1,1,1,0.12f };
-	this->BolderColor = D2D1_COLOR_F{ 1,1,1,0.12f };
-	this->Boder = 1.0f;
+	this->BorderColor = D2D1_COLOR_F{ 1,1,1,0.12f };
+	this->BorderThickness = 1.0f;
 	ItemHeight = static_cast<int>(height * 0.75f);
 	if (ItemHeight < 1) ItemHeight = 1;
 }
@@ -125,13 +125,13 @@ SIZE ToolBar::GetToolItemLayoutSize(Control* item)
 
 Control* ToolBar::AddToolItem(Control* item, int width, int height)
 {
-	if (!item) return NULL;
-	Control* c = Panel::AddControl(item);
-	_toolItemSizeOverrides[c] = SIZE{ width,height };
-	if (width > 0) c->Width = width;
-	if (height > 0) c->Height = height;
+	if (!item) return nullptr;
+	Control* control = Panel::AddControl(item);
+	_toolItemSizeOverrides[control] = SIZE{ width,height };
+	if (width > 0) control->Width = width;
+	if (height > 0) control->Height = height;
 	LayoutItems();
-	return c;
+	return control;
 }
 
 Button* ToolBar::AddTextButton(std::wstring text, int width)
@@ -149,7 +149,7 @@ Button* ToolBar::AddToolButton(std::wstring text, int width)
 
 Button* ToolBar::AddToolButton(Button* button)
 {
-	if (!button) return NULL;
+	if (!button) return nullptr;
 	if (button->Width <= 0) button->Width = ItemHeight;
 	button->Height = ItemHeight;
 	return (Button*)AddToolItem(button);
@@ -170,7 +170,7 @@ ComboBox* ToolBar::AddToolComboBox(std::wstring text, int width)
 {
 	ComboBox* combo = new ComboBox(text, 0, 0, width, ItemHeight);
 	combo->BackColor = D2D1_COLOR_F{ 1,1,1,0.10f };
-	combo->BolderColor = D2D1_COLOR_F{ 1,1,1,0.18f };
+	combo->BorderColor = D2D1_COLOR_F{ 1,1,1,0.18f };
 	combo->ForeColor = Colors::WhiteSmoke;
 	combo->ButtonBackColor = D2D1_COLOR_F{ 1,1,1,0.12f };
 	combo->HeaderHoverBackColor = D2D1_COLOR_F{ 1,1,1,0.10f };
@@ -183,7 +183,7 @@ ComboBox* ToolBar::AddToolComboBox(std::wstring text, int width)
 	combo->CornerRadius = 6.0f;
 	combo->DropCornerRadius = 8.0f;
 	combo->DropGap = 5.0f;
-	combo->Boder = 1.0f;
+	combo->BorderThickness = 1.0f;
 	return (ComboBox*)AddToolItem(combo, width, ItemHeight);
 }
 
@@ -214,23 +214,23 @@ ToolBarSpacer* ToolBar::AddSpacer(int width)
 
 void ToolBar::LayoutItems()
 {
-	int x = Padding;
-	for (int i = 0; i < this->Count; i++)
+	int nextItemX = Padding;
+	for (int itemIndex = 0; itemIndex < this->Count; itemIndex++)
 	{
-		auto c = this->operator[](i);
-		if (!c || !c->Visible) continue;
+		auto control = this->operator[](itemIndex);
+		if (!control || !control->Visible) continue;
 
-		SIZE itemSize = GetToolItemLayoutSize(c);
-		int y = (this->Height - itemSize.cy) / 2;
-		if (y < 0) y = 0;
-		c->SetRuntimeLocation(POINT{ x, y });
-		x += itemSize.cx + Gap;
+		SIZE itemSize = GetToolItemLayoutSize(control);
+		int itemY = (this->Height - itemSize.cy) / 2;
+		if (itemY < 0) itemY = 0;
+		control->SetRuntimeLocation(POINT{ nextItemX, itemY });
+		nextItemX += itemSize.cx + Gap;
 	}
 }
 
 void ToolBar::Update()
 {
-	if (this->ParentForm && this->Parent == NULL)
+	if (this->ParentForm && this->Parent == nullptr)
 	{
 		this->ParentForm->MainToolBar = this;
 	}
@@ -244,7 +244,7 @@ void ToolBar::Update()
 	const float actualHeight = static_cast<float>(size.cy);
 	this->BeginRender();
 	{
-		const float border = (std::max)(0.0f, this->Boder);
+		const float border = (std::max)(0.0f, this->BorderThickness);
 		const D2D1_RECT_F surface = D2D1::RectF(border * 0.5f, border * 0.5f,
 			(std::max)(border * 0.5f, actualWidth - border * 0.5f),
 			(std::max)(border * 0.5f, actualHeight - border * 0.5f));
@@ -255,21 +255,21 @@ void ToolBar::Update()
 		}
 		if (!this->ParentForm || !this->ParentForm->IsDCompSceneRenderActive())
 		{
-			for (int i = 0; i < this->Count; i++)
+			for (int itemIndex = 0; itemIndex < this->Count; itemIndex++)
 			{
-				auto c = this->operator[](i);
-				if (!c || !c->Visible) continue;
-				if (this->ParentForm && this->ParentForm->ForegroundControl == c) continue;
-				if (auto* separator = dynamic_cast<ToolBarSeparator*>(c))
+				auto control = this->operator[](itemIndex);
+				if (!control || !control->Visible) continue;
+				if (this->ParentForm && this->ParentForm->ForegroundControl == control && !control->RenderNormalWhenForeground()) continue;
+				if (auto* separator = dynamic_cast<ToolBarSeparator*>(control))
 					separator->LineColor = this->SeparatorColor;
-				c->Update();
+				control->Update();
 			}
 		}
 		if (this->ShowBottomLine && this->BottomLineColor.a > 0.0f && actualHeight > 0.0f)
 			d2d->DrawLine(0.0f, actualHeight - 0.5f, actualWidth, actualHeight - 0.5f, this->BottomLineColor, 1.0f);
-		if (border > 0.0f && this->BolderColor.a > 0.0f)
+		if (border > 0.0f && this->BorderColor.a > 0.0f)
 		{
-			d2d->DrawRoundRect(surface, this->BolderColor, border, this->CornerRadius);
+			d2d->DrawRoundRect(surface, this->BorderColor, border, this->CornerRadius);
 		}
 	}
 	if (!this->Enable)
@@ -279,24 +279,24 @@ void ToolBar::Update()
 	this->EndRender();
 }
 
-bool ToolBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool ToolBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 
 	LayoutItems();
-	for (auto c : this->GetChildrenInReverseZOrder())
+	for (auto control : this->GetChildrenInReverseZOrder())
 	{
-		if (!c || !c->Visible || !c->Enable) continue;
-		auto location = c->ActualLocation;
-		auto size = GetToolItemLayoutSize(c);
+		if (!control || !control->Visible || !control->Enable) continue;
+		auto itemLocation = control->ActualLocation;
+		auto itemSize = GetToolItemLayoutSize(control);
 		if (
-			xof >= location.x &&
-			yof >= location.y &&
-			xof <= (location.x + size.cx) &&
-			yof <= (location.y + size.cy)
+			localX >= itemLocation.x &&
+			localY >= itemLocation.y &&
+			localX <= (itemLocation.x + itemSize.cx) &&
+			localY <= (itemLocation.y + itemSize.cy)
 			)
 		{
-			c->ProcessMessage(message, wParam, lParam, xof - location.x, yof - location.y);
+			control->ProcessMessage(message, wParam, lParam, localX - itemLocation.x, localY - itemLocation.y);
 			break;
 		}
 	}
@@ -306,13 +306,13 @@ bool ToolBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 	case WM_DROPFILES:
 	{
 		HDROP hDropInfo = HDROP(wParam);
-		UINT uFileNum = DragQueryFile(hDropInfo, 0xFFFFFFFF, NULL, 0);
-		TCHAR strFileName[MAX_PATH];
+		UINT fileCount = DragQueryFile(hDropInfo, 0xFFFFFFFF, nullptr, 0);
+		TCHAR fileName[MAX_PATH];
 		std::vector<std::wstring> files;
-		for (UINT i = 0; i < uFileNum; i++)
+		for (UINT fileIndex = 0; fileIndex < fileCount; fileIndex++)
 		{
-			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.push_back(strFileName);
+			DragQueryFile(hDropInfo, fileIndex, fileName, MAX_PATH);
+			files.push_back(fileName);
 		}
 		DragFinish(hDropInfo);
 		if (!files.empty())
@@ -323,48 +323,48 @@ bool ToolBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 	break;
 	case WM_MOUSEWHEEL:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
-		this->OnMouseWheel(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam));
+		this->OnMouseWheel(this, eventArgs);
 	}
 	break;
 	case WM_MOUSEMOVE:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
-		this->OnMouseMove(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
+		this->OnMouseMove(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONDOWN:
 	case WM_RBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDown(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDown(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONUP:
 	case WM_RBUTTONUP:
 	case WM_MBUTTONUP:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseUp(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseUp(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONDBLCLK:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDoubleClick(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDoubleClick(this, eventArgs);
 	}
 	break;
 	case WM_KEYDOWN:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyDown(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyDown(this, eventArgs);
 	}
 	break;
 	case WM_KEYUP:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyUp(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyUp(this, eventArgs);
 	}
 	break;
 	}

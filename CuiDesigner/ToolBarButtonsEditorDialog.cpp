@@ -99,7 +99,7 @@ ToolBarButtonsEditorDialog::ToolBarButtonsEditorDialog(ToolBar* target)
 			_grid->SwapRows(r, r - 1);
 			_grid->SelectedRowIndex = r - 1;
 			_grid->SelectedColumnIndex = COL_TEXT;
-			_grid->PostRender();
+			_grid->InvalidateVisual();
 		}
 		else if (c == COL_DOWN)
 		{
@@ -107,7 +107,7 @@ ToolBarButtonsEditorDialog::ToolBarButtonsEditorDialog(ToolBar* target)
 			_grid->SwapRows(r, r + 1);
 			_grid->SelectedRowIndex = r + 1;
 			_grid->SelectedColumnIndex = COL_TEXT;
-			_grid->PostRender();
+			_grid->InvalidateVisual();
 		}
 		else if (c == COL_DELETE)
 		{
@@ -124,7 +124,7 @@ ToolBarButtonsEditorDialog::ToolBarButtonsEditorDialog(ToolBar* target)
 				_grid->SelectedRowIndex = sel;
 				_grid->SelectedColumnIndex = COL_TEXT;
 			}
-			_grid->PostRender();
+			_grid->InvalidateVisual();
 		}
 	};
 
@@ -165,7 +165,7 @@ ToolBarButtonsEditorDialog::ToolBarButtonsEditorDialog(ToolBar* target)
 
 		_target->LayoutItems();
 		Applied = true;
-		_target->PostRender();
+		_target->InvalidateVisual();
 		this->Close();
 	};
 

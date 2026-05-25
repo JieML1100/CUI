@@ -8,7 +8,7 @@ Button::Button(std::wstring text, int x, int y, int width, int height)
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
 	this->BackColor = D2D1_COLOR_F{ 0.97f, 0.98f, 0.99f, 1.0f };
-	this->BolderColor = D2D1_COLOR_F{ 0.70f, 0.76f, 0.86f, 1.0f };
+	this->BorderColor = D2D1_COLOR_F{ 0.70f, 0.76f, 0.86f, 1.0f };
 	this->ForeColor = D2D1_COLOR_F{ 0.12f, 0.16f, 0.22f, 1.0f };
 	this->Cursor = CursorKind::Hand;
 }
@@ -23,7 +23,7 @@ void Button::Update()
 	const float actualHeight = static_cast<float>(size.cy);
 	this->BeginRender();
 	{
-		const float border = (std::max)(0.0f, this->Boder);
+		const float border = (std::max)(0.0f, this->BorderThickness);
 		const bool hasSurface = this->BackColor.a > 0.0f || this->Checked;
 		const bool raised = this->Raised;
 		const float pressOffset = (raised && isSelected) ? 1.0f : 0.0f;
@@ -55,11 +55,11 @@ void Button::Update()
 		if (drawLeft < horizontalPad) drawLeft = horizontalPad;
 		float drawTop = actualHeight > textSize.height ? (actualHeight - textSize.height) / 2.0f + pressOffset * 0.5f : 0.0f;
 		d2d->DrawString(this->Text, drawLeft, drawTop, textWidth, textSize.height + 2.0f, this->ForeColor, this->Font);
-		if (border > 0.0f && this->BolderColor.a > 0.0f)
+		if (border > 0.0f && this->BorderColor.a > 0.0f)
 		{
 			d2d->DrawRoundRect(surfaceX, surfaceY,
 				surfaceW, surfaceH,
-				this->BolderColor, border, roundVal);
+				this->BorderColor, border, roundVal);
 		}
 	}
 

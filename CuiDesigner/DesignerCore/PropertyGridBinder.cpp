@@ -165,7 +165,7 @@ void PropertyGridBinder::NotifyControlChanged(Control* control) const
 	{
 		_canvas->ClampControlToDesignSurface(control);
 	}
-	control->PostRender();
+	control->InvalidateVisual();
 }
 
 void PropertyGridBinder::ApplyAnchorStylesKeepingBounds(Control* control, uint8_t anchorStyles) const

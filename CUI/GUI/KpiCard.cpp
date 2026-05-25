@@ -1,4 +1,4 @@
-#include "KpiCard.h"
+﻿#include "KpiCard.h"
 #include "Form.h"
 #include <algorithm>
 #include <cmath>
@@ -26,22 +26,22 @@ KpiCard::KpiCard(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0.60f, 0.66f, 0.76f, 0.42f };
+	this->BorderColor = D2D1_COLOR_F{ 0.60f, 0.66f, 0.76f, 0.42f };
 	this->ForeColor = D2D1_COLOR_F{ 0.90f, 0.92f, 0.96f, 1.0f };
 	this->Cursor = CursorKind::Hand;
 }
 
-CursorKind KpiCard::QueryCursor(int xof, int yof)
+CursorKind KpiCard::QueryCursor(int localX, int localY)
 {
-	(void)xof;
-	(void)yof;
+	(void)localX;
+	(void)localY;
 	return (Enable && Clickable) ? CursorKind::Hand : CursorKind::Arrow;
 }
 
 void KpiCard::SetSparkline(const std::vector<double>& values)
 {
 	SparklineValues = values;
-	PostRender();
+	InvalidateVisual();
 }
 
 D2D1_COLOR_F KpiCard::GetTrendColor() const
@@ -114,7 +114,7 @@ void KpiCard::Update()
 	d2d->FillRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, base, CornerRadius);
 	if (hot)
 		d2d->FillRoundRect(0, 0, width, height, HoverColor, CornerRadius);
-	d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, Active ? AccentColor : BolderColor, Active ? 1.6f : Border, CornerRadius);
+	d2d->DrawRoundRect(Border * 0.5f, Border * 0.5f, width - Border, height - Border, Active ? AccentColor : BorderColor, Active ? 1.6f : Border, CornerRadius);
 
 	const float pad = 14.0f;
 	d2d->DrawString(Title, pad, 10.0f, (std::max)(1.0f, width - pad * 2.0f), 18.0f, MutedTextColor, Font);
@@ -148,7 +148,7 @@ void KpiCard::Update()
 	EndRender();
 }
 
-bool KpiCard::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool KpiCard::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!Enable || !Visible) return true;
 	(void)lParam;
@@ -157,7 +157,7 @@ bool KpiCard::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 	case WM_MOUSEMOVE:
 	{
 		if (ParentForm) ParentForm->UnderMouse = this;
-		MouseEventArgs e(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
 		OnMouseMove(this, e);
 		break;
 	}
@@ -165,38 +165,38 @@ bool KpiCard::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof
 	{
 		_pressed = true;
 		if (ParentForm) ParentForm->SetSelectedControl(this, false);
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseDown(this, e);
-		PostRender();
+		InvalidateVisual();
 		break;
 	}
 	case WM_LBUTTONUP:
 	{
-		bool clicked = _pressed && xof >= 0 && yof >= 0 && xof <= Width && yof <= Height;
+		bool clicked = _pressed && localX >= 0 && localY >= 0 && localX <= Width && localY <= Height;
 		_pressed = false;
 		if (clicked && Clickable)
 		{
 			if (ToggleActiveOnClick)
 				Active = !Active;
 			OnCardClick(this);
-			MouseEventArgs click(MouseButtons::Left, 1, xof, yof, HIWORD(wParam));
+			MouseEventArgs click(MouseButtons::Left, 1, localX, localY, HIWORD(wParam));
 			OnMouseClick(this, click);
 		}
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		OnMouseUp(this, e);
 		if (ParentForm && ParentForm->Selected == this)
-			ParentForm->SetSelectedControl(NULL, false);
-		PostRender();
+			ParentForm->SetSelectedControl(nullptr, false);
+		InvalidateVisual();
 		break;
 	}
 	case WM_LBUTTONDBLCLK:
 	{
-		MouseEventArgs e(MouseButtons::Left, 2, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 2, localX, localY, HIWORD(wParam));
 		OnMouseDoubleClick(this, e);
 		break;
 	}
 	default:
-		return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 	}
 	return true;
 }

@@ -19,9 +19,9 @@ SIZE WrapLayoutEngine::Measure(Control* container, SIZE availableSize)
 		float totalHeight = 0.0f;
 		float maxLineWidth = 0.0f;
 		
-		for (int i = 0; i < container->Count; i++)
+		for (int childIndex = 0; childIndex < container->Count; childIndex++)
 		{
-			auto child = container->operator[](i);
+			auto child = container->operator[](childIndex);
 			if (!child || !child->Visible) continue;
 			
 			SIZE childSize = child->MeasureCore(availableSize);
@@ -66,9 +66,9 @@ SIZE WrapLayoutEngine::Measure(Control* container, SIZE availableSize)
 		float totalWidth = 0.0f;
 		float maxColumnHeight = 0.0f;
 		
-		for (int i = 0; i < container->Count; i++)
+		for (int childIndex = 0; childIndex < container->Count; childIndex++)
 		{
-			auto child = container->operator[](i);
+			auto child = container->operator[](childIndex);
 			if (!child || !child->Visible) continue;
 			
 			SIZE childSize = child->MeasureCore(availableSize);
@@ -122,13 +122,13 @@ void WrapLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 	if (_orientation == Orientation::Horizontal)
 	{
 		// 水平布局：从左到右，自动换行
-		float x = 0.0f;
-		float y = 0.0f;
+		float currentX = 0.0f;
+		float currentY = 0.0f;
 		float lineHeight = 0.0f;
 		
-		for (int i = 0; i < container->Count; i++)
+		for (int childIndex = 0; childIndex < container->Count; childIndex++)
 		{
-			auto child = container->operator[](i);
+			auto child = container->operator[](childIndex);
 			if (!child || !child->Visible) continue;
 			
 			SIZE childSize = child->MeasureCore({ (LONG)containerWidth, (LONG)containerHeight });
@@ -140,19 +140,19 @@ void WrapLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 			float totalItemHeight = itemHeight + margin.Top + margin.Bottom;
 			
 			// 检查是否需要换行
-			if (x + totalItemWidth > containerWidth && x > 0)
+			if (currentX + totalItemWidth > containerWidth && currentX > 0)
 			{
-				x = 0.0f;
-				y += lineHeight;
+				currentX = 0.0f;
+				currentY += lineHeight;
 				lineHeight = 0.0f;
 			}
 			
 			// 设置子控件位置
-			POINT loc = { (LONG)(originX + x + margin.Left), (LONG)(originY + y + margin.Top) };
-			SIZE size = { (LONG)itemWidth, (LONG)itemHeight };
-			child->ApplyLayout(loc, size);
+			POINT childLocation = { (LONG)(originX + currentX + margin.Left), (LONG)(originY + currentY + margin.Top) };
+			SIZE arrangedSize = { (LONG)itemWidth, (LONG)itemHeight };
+			child->ApplyLayout(childLocation, arrangedSize);
 			
-			x += totalItemWidth;
+			currentX += totalItemWidth;
 			if (totalItemHeight > lineHeight)
 				lineHeight = totalItemHeight;
 		}
@@ -160,13 +160,13 @@ void WrapLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 	else // Vertical
 	{
 		// 垂直布局：从上到下，自动换列
-		float x = 0.0f;
-		float y = 0.0f;
+		float currentX = 0.0f;
+		float currentY = 0.0f;
 		float columnWidth = 0.0f;
 		
-		for (int i = 0; i < container->Count; i++)
+		for (int childIndex = 0; childIndex < container->Count; childIndex++)
 		{
-			auto child = container->operator[](i);
+			auto child = container->operator[](childIndex);
 			if (!child || !child->Visible) continue;
 			
 			SIZE childSize = child->MeasureCore({ (LONG)containerWidth, (LONG)containerHeight });
@@ -178,19 +178,19 @@ void WrapLayoutEngine::Arrange(Control* container, D2D1_RECT_F finalRect)
 			float totalItemHeight = itemHeight + margin.Top + margin.Bottom;
 			
 			// 检查是否需要换列
-			if (y + totalItemHeight > containerHeight && y > 0)
+			if (currentY + totalItemHeight > containerHeight && currentY > 0)
 			{
-				y = 0.0f;
-				x += columnWidth;
+				currentY = 0.0f;
+				currentX += columnWidth;
 				columnWidth = 0.0f;
 			}
 			
 			// 设置子控件位置
-			POINT loc = { (LONG)(originX + x + margin.Left), (LONG)(originY + y + margin.Top) };
-			SIZE size = { (LONG)itemWidth, (LONG)itemHeight };
-			child->ApplyLayout(loc, size);
+			POINT childLocation = { (LONG)(originX + currentX + margin.Left), (LONG)(originY + currentY + margin.Top) };
+			SIZE arrangedSize = { (LONG)itemWidth, (LONG)itemHeight };
+			child->ApplyLayout(childLocation, arrangedSize);
 			
-			y += totalItemHeight;
+			currentY += totalItemHeight;
 			if (totalItemWidth > columnWidth)
 				columnWidth = totalItemWidth;
 		}

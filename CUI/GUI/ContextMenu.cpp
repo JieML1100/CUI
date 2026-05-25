@@ -1,4 +1,4 @@
-#include "ContextMenu.h"
+﻿#include "ContextMenu.h"
 #include "Form.h"
 #include <algorithm>
 
@@ -29,7 +29,7 @@ UIClass ContextMenu::Type() { return UIClass::UI_ContextMenu; }
 ContextMenu::ContextMenu()
 {
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BolderColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
+	this->BorderColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
 	this->ForeColor = PopupTextColor;
 	this->Location = POINT{ 0, 0 };
 	this->Size = SIZE{ 0, 0 };
@@ -197,14 +197,14 @@ SIZE ContextMenu::ActualSize()
 	return this->ParentForm->ClientSize;
 }
 
-bool ContextMenu::ContainsPoint(int xof, int yof)
+bool ContextMenu::ContainsPoint(int localX, int localY)
 {
 	if (!_popupVisible)
 		return false;
 	auto panels = BuildPanels();
 	for (const auto& pn : panels)
 	{
-		if (xof >= pn.X && xof <= pn.X + pn.W && yof >= pn.Y && yof <= pn.Y + pn.H)
+		if (localX >= pn.X && localX <= pn.X + pn.W && localY >= pn.Y && localY <= pn.Y + pn.H)
 			return true;
 	}
 	return false;
@@ -287,7 +287,7 @@ void ContextMenu::Update()
 	this->EndRender();
 }
 
-bool ContextMenu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool ContextMenu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible || !_popupVisible)
 		return true;
@@ -316,7 +316,7 @@ bool ContextMenu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	int hitLevel = -1;
 	for (int i = (int)panels.size() - 1; i >= 0; i--)
 	{
-		if (pointInRect((float)xof, (float)yof, panels[i]))
+		if (pointInRect((float)localX, (float)localY, panels[i]))
 		{
 			hitLevel = i;
 			break;
@@ -332,7 +332,7 @@ bool ContextMenu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		float bridgeR = (std::max)(a.X + a.W - 2.0f, b.X + 2.0f);
 		float bridgeT = b.Y;
 		float bridgeB = b.Y + b.H;
-		if ((float)xof >= bridgeL && (float)xof <= bridgeR && (float)yof >= bridgeT && (float)yof <= bridgeB)
+		if ((float)localX >= bridgeL && (float)localX <= bridgeR && (float)localY >= bridgeT && (float)localY <= bridgeB)
 		{
 			inBridge = true;
 			break;
@@ -345,10 +345,10 @@ bool ContextMenu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		if (hitLevel >= 0)
 		{
 			const auto& pn = panels[hitLevel];
-			int idx = (int)(((float)yof - (pn.Y + DropPaddingY)) / (float)ItemHeight);
-			int cnt = pn.Items ? (int)pn.Items->size() : 0;
-			if (idx < 0 || idx >= cnt) idx = -1;
-			bool need = false;
+			int itemIndex = (int)(((float)localY - (pn.Y + DropPaddingY)) / (float)ItemHeight);
+			int itemCount = pn.Items ? (int)pn.Items->size() : 0;
+			if (itemIndex < 0 || itemIndex >= itemCount) itemIndex = -1;
+			bool needsUpdate = false;
 
 			ensureSize(_hoverPath, (size_t)hitLevel + 1);
 			ensureSize(_openPath, (size_t)hitLevel + 1);
@@ -357,25 +357,25 @@ bool ContextMenu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			if (_openPath.size() > (size_t)hitLevel + 1)
 				_openPath.resize((size_t)hitLevel + 1, -1);
 
-			if (_hoverPath[hitLevel] != idx)
+			if (_hoverPath[hitLevel] != itemIndex)
 			{
-				_hoverPath[hitLevel] = idx;
-				need = true;
+				_hoverPath[hitLevel] = itemIndex;
+				needsUpdate = true;
 			}
 
 			int newOpen = -1;
 			MenuItem* hovered = nullptr;
-			if (idx >= 0 && pn.Items && idx < (int)pn.Items->size())
-				hovered = (*pn.Items)[idx];
+			if (itemIndex >= 0 && pn.Items && itemIndex < (int)pn.Items->size())
+				hovered = (*pn.Items)[itemIndex];
 			if (hovered && !hovered->Separator && !hovered->SubItems.empty())
-				newOpen = idx;
+				newOpen = itemIndex;
 
 			if (_openPath[hitLevel] != newOpen)
 			{
 				_openPath[hitLevel] = newOpen;
-				need = true;
+				needsUpdate = true;
 			}
-			if (need) this->ParentForm->Invalidate(false);
+			if (needsUpdate) this->ParentForm->Invalidate(false);
 		}
 		else if (!inBridge)
 		{
@@ -393,22 +393,22 @@ bool ContextMenu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		if (hitLevel >= 0)
 		{
 			const auto& pn = panels[hitLevel];
-			int idx = (int)(((float)yof - (pn.Y + DropPaddingY)) / (float)ItemHeight);
-			int cnt = pn.Items ? (int)pn.Items->size() : 0;
-			if (idx >= 0 && idx < cnt)
+			int itemIndex = (int)(((float)localY - (pn.Y + DropPaddingY)) / (float)ItemHeight);
+			int itemCount = pn.Items ? (int)pn.Items->size() : 0;
+			if (itemIndex >= 0 && itemIndex < itemCount)
 			{
-				auto* it = (*pn.Items)[idx];
-				if (it && !it->Separator)
+				auto* item = (*pn.Items)[itemIndex];
+				if (item && !item->Separator)
 				{
-					if (!it->SubItems.empty())
+					if (!item->SubItems.empty())
 					{
 						ensureSize(_openPath, (size_t)hitLevel + 1);
-						_openPath[hitLevel] = idx;
+						_openPath[hitLevel] = itemIndex;
 						this->ParentForm->Invalidate(false);
 					}
 					else
 					{
-						OnMenuCommand(this, it->Id);
+						OnMenuCommand(this, item->Id);
 						Hide();
 					}
 				}
@@ -481,7 +481,7 @@ void ContextMenu::Hide()
 	_popupProgress = 0.0f;
 	ClearHoverState();
 	if (this->ParentForm && this->ParentForm->ForegroundControl == this)
-		this->ParentForm->ForegroundControl = NULL;
+		this->ParentForm->ForegroundControl = nullptr;
 	if (this->ParentForm)
 		this->ParentForm->Invalidate(true);
 }

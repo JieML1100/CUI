@@ -10,7 +10,7 @@ class ColorPickerPopup : public Control
 {
 public:
 	UIClass Type() override { return UIClass::UI_CUSTOM; }
-	ColorPickerPopup(int width = 450, int height = 430);
+	ColorPickerPopup(int width = 420, int height = 380);
 
 	D2D1_COLOR_F SelectedColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 1.0f };
 	D2D1_COLOR_F PanelBackColor = D2D1_COLOR_F{ 0.12f, 0.12f, 0.13f, 0.98f };
@@ -33,10 +33,10 @@ public:
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
-	bool ContainsPoint(int xof, int yof) override;
-	CursorKind QueryCursor(int xof, int yof) override;
+	bool ContainsPoint(int localX, int localY) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 	void ShowAt(Form* form, int x, int y, D2D1_COLOR_F initialColor);
 	void ShowAt(Control* relativeTo, const D2D1_RECT_F& anchorRect, D2D1_COLOR_F initialColor);
@@ -74,7 +74,7 @@ private:
 	int _hoverHistory = -1;
 	bool _hoverClear = false;
 	bool _hoverOk = false;
-	SIZE _preferredSize{ 450, 430 };
+	SIZE _preferredSize{ 420, 380 };
 	bool _expanded = false;
 	float _dropProgress = 0.0f;
 	float _animStartProgress = 0.0f;
@@ -92,10 +92,10 @@ private:
 	void FinishCollapsed();
 	void SetFromColor(D2D1_COLOR_F color);
 	void UpdateColorFromHsv();
-	void SetSVFromPoint(int xof, int yof);
-	void SetHueFromPoint(int xof, int yof);
-	void SetAlphaFromPoint(int xof, int yof);
-	void UpdateHover(int xof, int yof);
+	void SetSVFromPoint(int localX, int localY);
+	void SetHueFromPoint(int localX, int localY);
+	void SetAlphaFromPoint(int localX, int localY);
+	void UpdateHover(int localX, int localY);
 	void Confirm();
 	void ClearValue();
 	void AddHistory(const std::wstring& value);

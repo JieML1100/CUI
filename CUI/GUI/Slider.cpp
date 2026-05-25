@@ -29,7 +29,7 @@ Slider::Slider(int x, int y, int width, int height)
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
 	this->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->BolderColor = D2D1_COLOR_F{ 0,0,0,0 };
+	this->BorderColor = D2D1_COLOR_F{ 0,0,0,0 };
 	this->Cursor = CursorKind::SizeWE;
 }
 
@@ -41,7 +41,7 @@ SET_CPP(Slider, float, Min)
 {
 	this->_min = value;
 	this->SetValueInternal(this->_value, false);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(Slider, float, Max)
@@ -52,7 +52,7 @@ SET_CPP(Slider, float, Max)
 {
 	this->_max = value;
 	this->SetValueInternal(this->_value, false);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 GET_CPP(Slider, float, Value)
@@ -64,13 +64,13 @@ SET_CPP(Slider, float, Value)
 	this->SetValueInternal(value, true);
 }
 
-CursorKind Slider::QueryCursor(int xof, int yof)
+CursorKind Slider::QueryCursor(int localX, int localY)
 {
-	(void)yof;
+	(void)localY;
 	if (!this->Enable) return CursorKind::Arrow;
-	const float l = TrackLeftLocal();
-	const float r = TrackRightLocal();
-	if ((float)xof >= l && (float)xof <= r) return CursorKind::SizeWE;
+	const float trackLeft = TrackLeftLocal();
+	const float trackRight = TrackRightLocal();
+	if ((float)localX >= trackLeft && (float)localX <= trackRight) return CursorKind::SizeWE;
 	return this->Cursor;
 }
 
@@ -86,32 +86,32 @@ void Slider::Update()
 		const bool hover = this->ParentForm && this->ParentForm->UnderMouse == this;
 		const bool active = _dragging || (this->ParentForm && this->ParentForm->Selected == this);
 		const float state = active ? 1.0f : (hover ? 0.55f : 0.0f);
-		float l = TrackLeftLocal();
-		float r = TrackRightLocal();
-		if (r < l) r = l;
-		float cy = TrackYLocal();
-		float th = TrackHeight + (active ? 1.0f : 0.0f);
-		float top = cy - th * 0.5f;
-		float w = (r - l);
-		if (w < 0) w = 0;
+		float trackLeft = TrackLeftLocal();
+		float trackRight = TrackRightLocal();
+		if (trackRight < trackLeft) trackRight = trackLeft;
+		float trackCenterY = TrackYLocal();
+		float trackHeight = TrackHeight + (active ? 1.0f : 0.0f);
+		float trackTop = trackCenterY - trackHeight * 0.5f;
+		float trackWidth = (trackRight - trackLeft);
+		if (trackWidth < 0) trackWidth = 0;
 
-		d2d->FillRoundRect(l, top, w, th, TrackBackColor, th * 0.5f);
+		d2d->FillRoundRect(trackLeft, trackTop, trackWidth, trackHeight, TrackBackColor, trackHeight * 0.5f);
 		if (state > 0.0f && TrackHoverColor.a > 0.0f)
-			d2d->FillRoundRect(l, top - 1.0f, w, th + 2.0f, WithAlpha(TrackHoverColor, state), (th + 2.0f) * 0.5f);
+			d2d->FillRoundRect(trackLeft, trackTop - 1.0f, trackWidth, trackHeight + 2.0f, WithAlpha(TrackHoverColor, state), (trackHeight + 2.0f) * 0.5f);
 		if (TrackBorderColor.a > 0.0f)
-			d2d->DrawRoundRect(l, top, w, th, TrackBorderColor, 1.0f, th * 0.5f);
+			d2d->DrawRoundRect(trackLeft, trackTop, trackWidth, trackHeight, TrackBorderColor, 1.0f, trackHeight * 0.5f);
 
-		float t = std::clamp(ValueToT(), 0.0f, 1.0f);
-		float fw = w * t;
-		if (fw > 0.0f)
-			d2d->FillRoundRect(l, top, fw, th, TrackForeColor, th * 0.5f);
+		float valueRatio = std::clamp(ValueToT(), 0.0f, 1.0f);
+		float filledWidth = trackWidth * valueRatio;
+		if (filledWidth > 0.0f)
+			d2d->FillRoundRect(trackLeft, trackTop, filledWidth, trackHeight, TrackForeColor, trackHeight * 0.5f);
 
-		float cx = l + w * t;
-		float rad = ThumbRadius + (active ? ThumbDragRadiusDelta : (hover ? ThumbHoverRadiusDelta : 0.0f));
+		float thumbCenterX = trackLeft + trackWidth * valueRatio;
+		float thumbRadius = ThumbRadius + (active ? ThumbDragRadiusDelta : (hover ? ThumbHoverRadiusDelta : 0.0f));
 		if (ThumbShadowColor.a > 0.0f)
-			d2d->FillEllipse(cx, cy + 1.5f, rad + 0.8f, rad + 0.8f, WithAlpha(ThumbShadowColor, active ? 0.38f : 0.22f));
-		d2d->FillEllipse(cx, cy, rad, rad, LerpColor(ThumbColor, ThumbHoverColor, state));
-		d2d->DrawEllipse(cx, cy, rad, rad, ThumbBorderColor, active ? 1.5f : 1.0f);
+			d2d->FillEllipse(thumbCenterX, trackCenterY + 1.5f, thumbRadius + 0.8f, thumbRadius + 0.8f, WithAlpha(ThumbShadowColor, active ? 0.38f : 0.22f));
+		d2d->FillEllipse(thumbCenterX, trackCenterY, thumbRadius, thumbRadius, LerpColor(ThumbColor, ThumbHoverColor, state));
+		d2d->DrawEllipse(thumbCenterX, trackCenterY, thumbRadius, thumbRadius, ThumbBorderColor, active ? 1.5f : 1.0f);
 
 		(void)size;
 	}
@@ -120,7 +120,7 @@ void Slider::Update()
 	this->EndRender();
 }
 
-bool Slider::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool Slider::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	switch (message)
@@ -130,20 +130,20 @@ bool Slider::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof,
 		this->ParentForm->UnderMouse = this;
 		if (_dragging)
 		{
-			SetValueInternal(XToValue(xof), true);
+			SetValueInternal(XToValue(localX), true);
 		}
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
-		this->OnMouseMove(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
+		this->OnMouseMove(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONDOWN:
 	{
 		this->ParentForm->Selected = this;
 		_dragging = true;
-		SetValueInternal(XToValue(xof), true);
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDown(this, event_obj);
-		this->PostRender();
+		SetValueInternal(XToValue(localX), true);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDown(this, eventArgs);
+		this->InvalidateVisual();
 	}
 	break;
 	case WM_LBUTTONUP:
@@ -151,15 +151,15 @@ bool Slider::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof,
 		_dragging = false;
 		if (this->ParentForm->Selected == this)
 		{
-			MouseEventArgs event_obj = MouseEventArgs(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
-			this->OnMouseUp(this, event_obj);
+			MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
+			this->OnMouseUp(this, eventArgs);
 		}
-		this->ParentForm->Selected = NULL;
-		this->PostRender();
+		this->ParentForm->Selected = nullptr;
+		this->InvalidateVisual();
 	}
 	break;
 	default:
-		return Control::ProcessMessage(message, wParam, lParam, xof, yof);
+		return Control::ProcessMessage(message, wParam, lParam, localX, localY);
 	}
 	return true;
 }

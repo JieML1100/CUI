@@ -40,7 +40,7 @@ enum class ImageSizeMode : char
 {
 	Normal,
 	CenterImage,
-	StretchIamge,
+	StretchImage,
 	Zoom
 };
 
@@ -138,7 +138,7 @@ typedef Event<void(class Control*, MouseEventArgs)> MouseDownEvent;
 typedef Event<void(class Control*, MouseEventArgs)> MouseDoubleClickEvent;
 typedef Event<void(class Control*, MouseEventArgs)> MouseClickEvent;
 typedef Event<void(class Control*, MouseEventArgs)> MouseEnterEvent;
-typedef Event<void(class Control*, MouseEventArgs)> MouseLeavedEvent;
+typedef Event<void(class Control*, MouseEventArgs)> MouseLeaveEvent;
 typedef Event<void(class Control*, KeyEventArgs)> KeyUpEvent;
 typedef Event<void(class Control*, KeyEventArgs)> KeyDownEvent;
 typedef Event<void(class Control*)> PaintEvent;
@@ -174,15 +174,15 @@ protected:
 	SIZE _size = { 120,20 };
 	D2D1_COLOR_F _backcolor = Colors::gray91;
 	D2D1_COLOR_F _forecolor = Colors::Black;
-	D2D1_COLOR_F _boldercolor = Colors::Black;
+	D2D1_COLOR_F _bordercolor = Colors::Black;
 	std::shared_ptr<BitmapSource> _imageSource;
 	Microsoft::WRL::ComPtr<ID2D1Bitmap> _imageCache;
 	ID2D1RenderTarget* _imageCacheTarget = nullptr;
 	std::wstring _text = std::wstring(L"");
-	Font* _font = NULL;
+	Font* _font = nullptr;
 	bool _ownsFont = false;
-	D2D1_RECT_F _lastPostRenderClientRect{ 0,0,0,0 };
-	bool _hasLastPostRenderClientRect = false;
+	D2D1_RECT_F _lastInvalidatedClientRect{ 0,0,0,0 };
+	bool _hasLastInvalidatedClientRect = false;
 	D2D1_RECT_F _caretBlinkRect{ 0,0,0,0 };
 	bool _caretBlinkRectValid = false;
 	int _caretBlinkSelectionStart = 0;
@@ -245,9 +245,9 @@ protected:
 	virtual bool DefaultRaiseClickOnLeftButtonUp() const { return false; }
 	virtual bool DefaultClearSelectionOnMouseUp() const { return false; }
 	virtual bool DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const { (void)message; (void)wasSelected; return true; }
-	virtual bool DefaultPostRenderOnMouseDown(UINT message) const { (void)message; return true; }
-	virtual bool DefaultPostRenderOnMouseUp(UINT message) const { (void)message; return true; }
-	virtual bool DefaultPostRenderOnMouseDoubleClick(UINT message, bool wasSelected) const { (void)message; (void)wasSelected; return false; }
+	virtual bool DefaultInvalidateVisualOnMouseDown(UINT message) const { (void)message; return true; }
+	virtual bool DefaultInvalidateVisualOnMouseUp(UINT message) const { (void)message; return true; }
+	virtual bool DefaultInvalidateVisualOnMouseDoubleClick(UINT message, bool wasSelected) const { (void)message; (void)wasSelected; return false; }
 	virtual void BeforeDefaultMouseMove(MouseEventArgs& e) { (void)e; }
 	virtual void BeforeDefaultMouseDown(UINT message, MouseEventArgs& e) { (void)message; (void)e; }
 	virtual void BeforeDefaultMouseUp(UINT message, MouseEventArgs& e, bool wasSelected) { (void)message; (void)e; (void)wasSelected; }
@@ -277,7 +277,7 @@ public:
 	/** @brief 鼠标进入控件事件。 */
 	MouseEnterEvent OnMouseEnter = MouseEnterEvent();
 	/** @brief 鼠标离开控件事件。 */
-	MouseLeavedEvent OnMouseLeaved = MouseLeavedEvent();
+	MouseLeaveEvent OnMouseLeave = MouseLeaveEvent();
 	/** @brief 键盘抬起事件。 */
 	KeyUpEvent OnKeyUp = KeyUpEvent();
 	/** @brief 键盘按下事件。 */
@@ -332,6 +332,8 @@ public:
 	virtual UIClass Type();
 	/** @brief 更新控件状态（逻辑更新）。 */
 	virtual void Update();
+	/** @brief 当前控件作为 ForegroundControl 时的前景层绘制；默认沿用完整控件绘制。 */
+	virtual void UpdateForeground() { Update(); }
 	/** @brief 同步控件持有的原生渲染/窗口资源；普通控件无需处理。 */
 	virtual void SyncNativeSurface() {}
 	/**
@@ -343,8 +345,8 @@ public:
 	void BeginRender(float clipW, float clipH);
 	/** @brief 结束局部坐标渲染，恢复之前的变换状态。 */
 	void EndRender();
-	/** @brief 渲染完成后的后处理（例如动画/失效区域上报）。 */
-	virtual void PostRender();
+	/** @brief 使控件可视区域失效，并请求窗口在下一次绘制中刷新它。 */
+	virtual void InvalidateVisual();
 	/** @brief 当前控件是否处于活动动画中。 */
 	virtual bool IsAnimationRunning() { return false; }
 	/** @brief 动画帧间隔（毫秒）。 */
@@ -365,43 +367,43 @@ public:
 	READONLY_PROPERTY(int, Count);
 	GET(int, Count);
 	Control* operator[](int index);
-	Control* get(int index);
+	Control* GetChild(int index);
 	std::vector<Control*> GetChildrenInZOrder() const;
 	std::vector<Control*> GetChildrenInReverseZOrder() const;
 
 	template<typename T>
-	T AddControl(T c) {
-		if (c->Parent) {
+	T AddControl(T control) {
+		if (control->Parent) {
 			throw std::exception("该控件已属于其他容器!");
-			return NULL;
+			return nullptr;
 		}
 		for(auto& child : this->Children) {
-			if (child == c) {
-				return c;
+			if (child == control) {
+				return control;
 			}
 		}
-		c->Parent = this;
-		c->ParentForm = this->ParentForm;
-		this->Children.push_back(c);
+		control->Parent = this;
+		control->ParentForm = this->ParentForm;
+		this->Children.push_back(control);
 		
 		// 递归设置所有子控件的ParentForm
-		SetChildrenParentForm(c, this->ParentForm);
-		return c;
+		SetChildrenParentForm(control, this->ParentForm);
+		return control;
 	}
 	
 	// 递归设置所有子控件的ParentForm
-	static void SetChildrenParentForm(Control* c, Form* form) {
-		if (!c) return;
-		c->ParentForm = form;
-		for (size_t i = 0; i < c->Children.size(); i++) {
-			SetChildrenParentForm(c->Children[i], form);
+	static void SetChildrenParentForm(Control* control, Form* form) {
+		if (!control) return;
+		control->ParentForm = form;
+		for (size_t i = 0; i < control->Children.size(); i++) {
+			SetChildrenParentForm(control->Children[i], form);
 		}
 	}
 	/**
 	 * @brief 从子控件列表移除一个控件。
-	 * @param c 需要移除的控件。
+	 * @param child 需要移除的控件。
 	 */
-	void RemoveControl(Control* c);
+	void RemoveControl(Control* child);
 	READONLY_PROPERTY(POINT, AbsLocation);
 	GET(POINT, AbsLocation);
 	READONLY_PROPERTY(POINT, ActualLocation);
@@ -435,9 +437,9 @@ public:
 	PROPERTY(std::wstring, Text);
 	GET(std::wstring, Text);
 	SET(std::wstring, Text);
-	PROPERTY(D2D1_COLOR_F, BolderColor);
-	GET(D2D1_COLOR_F, BolderColor);
-	SET(D2D1_COLOR_F, BolderColor);
+	PROPERTY(D2D1_COLOR_F, BorderColor);
+	GET(D2D1_COLOR_F, BorderColor);
+	SET(D2D1_COLOR_F, BorderColor);
 	PROPERTY(D2D1_COLOR_F, BackColor);
 	GET(D2D1_COLOR_F, BackColor);
 	SET(D2D1_COLOR_F, BackColor);
@@ -508,27 +510,29 @@ public:
 	CursorKind Cursor = CursorKind::Arrow;
 	/**
 	 * @brief 根据命中区域返回光标类型。
-	 * @param xof 相对于控件客户区的 X。
-	 * @param yof 相对于控件客户区的 Y。
+	 * @param localX 相对于控件客户区的 X。
+	 * @param localY 相对于控件客户区的 Y。
 	 */
-	virtual CursorKind QueryCursor(int xof, int yof) { (void)xof; (void)yof; return this->Cursor; }
+	virtual CursorKind QueryCursor(int localX, int localY) { (void)localX; (void)localY; return this->Cursor; }
 	virtual bool TryGetSystemCursorId(UINT32& outId) const { (void)outId; return false; }
-	virtual bool ContainsPoint(int xof, int yof)
+	virtual bool ContainsPoint(int localX, int localY)
 	{
-		auto size = this->ActualSize();
-		return xof >= 0 && yof >= 0 && xof <= size.cx && yof <= size.cy;
+		auto actualSize = this->ActualSize();
+		return localX >= 0 && localY >= 0 && localX <= actualSize.cx && localY <= actualSize.cy;
 	}
+	virtual bool ContainsForegroundPoint(int localX, int localY) { return ContainsPoint(localX, localY); }
+	virtual bool RenderNormalWhenForeground() const { return false; }
 	virtual bool HitTestChildren() const { return true; }
-	virtual bool ShouldHitTestChildrenAt(int xof, int yof) const { (void)xof; (void)yof; return this->HitTestChildren(); }
+	virtual bool ShouldHitTestChildrenAt(int localX, int localY) const { (void)localX; (void)localY; return this->HitTestChildren(); }
 	virtual POINT GetChildrenRenderOffset() const { return POINT{ 0, 0 }; }
-		virtual bool ClipsChildren() { return false; }
-		virtual D2D1_RECT_F GetChildrenClipRect()
+	virtual bool ClipsChildren() { return false; }
+	virtual D2D1_RECT_F GetChildrenClipRect()
 	{
-			auto size = this->ActualSize();
-		return D2D1_RECT_F{ 0.0f, 0.0f, (float)size.cx, (float)size.cy };
+		auto actualSize = this->ActualSize();
+		return D2D1_RECT_F{ 0.0f, 0.0f, (float)actualSize.cx, (float)actualSize.cy };
 	}
 	virtual bool HandlesMouseWheel() const { return false; }
-	virtual bool CanHandleMouseWheel(int delta, int xof, int yof) { (void)delta; (void)xof; (void)yof; return false; }
+	virtual bool CanHandleMouseWheel(int delta, int localX, int localY) { (void)delta; (void)localX; (void)localY; return false; }
 	virtual bool HandlesNavigationKey(WPARAM key) const { (void)key; return false; }
 	virtual bool AutoCloseOnOutsideClick() const { return false; }
 	virtual bool AutoCloseOnFormFocusLoss() const { return false; }
@@ -538,11 +542,11 @@ public:
 	bool TryGetDCompSceneOrderOverride(int& order) const { if (!_hasDCompSceneOrderOverride) return false; order = _dcompSceneOrderOverride; return true; }
 	virtual void RenderImage(float cornerRadius = 0.0f);
 	virtual SIZE ActualSize();
-	void setTextPrivate(std::wstring);
+	void SetTextInternal(std::wstring text);
 	bool IsSelected();
 	/**
 	 * @brief 处理窗口消息并分发到控件。
 	 * @return true 表示已处理。
 	 */
-	virtual bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof);
+	virtual bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY);
 };

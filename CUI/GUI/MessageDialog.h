@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "Form.h"
 
 enum class MessageDialogButtons
@@ -41,12 +41,12 @@ public:
 	MessageDialogButtons Buttons = MessageDialogButtons::OK;
 	MessageDialogIcon Icon = MessageDialogIcon::Info;
 
-	MessageDialogResult ShowModal(HWND parent = NULL);
+	MessageDialogResult ShowModal(HWND parent = nullptr);
 
 	static MessageDialogResult Show(const std::wstring& title, const std::wstring& message,
 		MessageDialogButtons buttons = MessageDialogButtons::OK,
 		MessageDialogIcon icon = MessageDialogIcon::Info,
-		HWND parent = NULL);
+		HWND parent = nullptr);
 
 private:
 	void BuildContent();

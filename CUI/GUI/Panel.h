@@ -22,7 +22,7 @@ protected:
 	
 public:
 	virtual UIClass Type();
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	float CornerRadius = 0.0f;
 	D2D1_COLOR_F DisabledOverlayColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.5f };
 	Panel();
@@ -30,8 +30,8 @@ public:
 	virtual ~Panel();
 	
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
-		bool ClipsChildren() override { return true; }
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
+	bool ClipsChildren() override { return true; }
 	
 	// 布局引擎管理
 	/**
@@ -56,9 +56,9 @@ public:
 	
 	// 重写 AddControl 以支持布局触发
 	template<typename T>
-	T AddControl(T c) {
-		Control::AddControl(c);
+	T AddControl(T control) {
+		Control::AddControl(control);
 		InvalidateLayout();
-		return c;
+		return control;
 	}
 };

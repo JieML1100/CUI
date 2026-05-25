@@ -118,16 +118,16 @@ namespace
 
 	HICON LoadProcessIcon(bool wantSmall)
 	{
-		static HICON largeIcon = NULL;
-		static HICON smallIcon = NULL;
+		static HICON largeIcon = nullptr;
+		static HICON smallIcon = nullptr;
 		HICON& cached = wantSmall ? smallIcon : largeIcon;
 		if (cached) return cached;
 
 		wchar_t exePath[MAX_PATH]{};
-		if (GetModuleFileNameW(NULL, exePath, MAX_PATH) > 0)
+		if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) > 0)
 		{
-			HICON large = NULL;
-			HICON smallHandle = NULL;
+			HICON large = nullptr;
+			HICON smallHandle = nullptr;
 			if (ExtractIconExW(exePath, 0, &large, &smallHandle, 1) > 0)
 			{
 				if (wantSmall)
@@ -146,7 +146,7 @@ namespace
 		if (!cached)
 		{
 			cached = (HICON)LoadImageW(
-				NULL,
+				nullptr,
 				IDI_APPLICATION,
 				IMAGE_ICON,
 				wantSmall ? GetSystemMetrics(SM_CXSMICON) : GetSystemMetrics(SM_CXICON),
@@ -179,7 +179,7 @@ HCURSOR Form::GetSystemCursor(CursorKind kind)
 	case CursorKind::No: id = IDC_NO; break;
 	default: id = IDC_ARROW; break;
 	}
-	HCURSOR h = LoadCursorW(NULL, id);
+	HCURSOR h = LoadCursorW(nullptr, id);
 	cache.emplace(kind, h);
 	return h;
 }
@@ -237,7 +237,7 @@ void Form::ApplyCursor(CursorKind kind)
 bool Form::ApplySystemCursorId(UINT32 cursorId)
 {
 	if (cursorId == 0) return false;
-	HCURSOR cursor = LoadCursorW(NULL, MAKEINTRESOURCEW((ULONG_PTR)cursorId));
+	HCURSOR cursor = LoadCursorW(nullptr, MAKEINTRESOURCEW((ULONG_PTR)cursorId));
 	if (!cursor) return false;
 	::SetCursor(cursor);
 	return true;
@@ -245,35 +245,53 @@ bool Form::ApplySystemCursorId(UINT32 cursorId)
 
 static Control* HitTestDeepestChild(Control* root, POINT contentMouse)
 {
-	if (!root) return NULL;
-	if (!root->Visible || !root->Enable) return NULL;
+	if (!root) return nullptr;
+	if (!root->Visible || !root->Enable) return nullptr;
 	auto rootAbs = root->AbsLocation;
 	int localX = contentMouse.x - rootAbs.x;
 	int localY = contentMouse.y - rootAbs.y;
 	if (!root->ShouldHitTestChildrenAt(localX, localY))
 		return root;
 
-	for (auto c : root->GetChildrenInReverseZOrder())
+	for (auto child : root->GetChildrenInReverseZOrder())
 	{
-		if (!c || !c->Visible || !c->Enable) continue;
-		auto abs = c->AbsLocation;
-		auto sz = c->ActualSize();
-		if (contentMouse.x >= abs.x && contentMouse.y >= abs.y &&
-			contentMouse.x <= abs.x + sz.cx && contentMouse.y <= abs.y + sz.cy)
+		if (!child || !child->Visible || !child->Enable) continue;
+		auto childLocation = child->AbsLocation;
+		auto childSize = child->ActualSize();
+		if (contentMouse.x >= childLocation.x && contentMouse.y >= childLocation.y &&
+			contentMouse.x <= childLocation.x + childSize.cx && contentMouse.y <= childLocation.y + childSize.cy)
 		{
-			auto deeper = HitTestDeepestChild(c, contentMouse);
-			return deeper ? deeper : c;
+			auto deeperChild = HitTestDeepestChild(child, contentMouse);
+			return deeperChild ? deeperChild : child;
 		}
 	}
 	return root;
 }
 
-static bool PointInControlRect(Control* c, POINT contentMouse)
+static bool PointInControlRect(Control* control, POINT contentMouse)
 {
-	if (!c) return false;
-	if (!c->Visible || !c->Enable) return false;
-	auto loc = c->AbsLocation;
-	return c->ContainsPoint(contentMouse.x - loc.x, contentMouse.y - loc.y);
+	if (!control) return false;
+	if (!control->Visible || !control->Enable) return false;
+	auto location = control->AbsLocation;
+	return control->ContainsPoint(contentMouse.x - location.x, contentMouse.y - location.y);
+}
+
+static bool PointInForegroundControlRect(Control* control, POINT contentMouse)
+{
+	if (!control) return false;
+	if (!control->Visible || !control->Enable) return false;
+	auto location = control->AbsLocation;
+	return control->ContainsForegroundPoint(contentMouse.x - location.x, contentMouse.y - location.y);
+}
+
+static bool IsControlOrDescendantOf(Control* control, Control* ancestor)
+{
+	for (auto current = control; current; current = current->Parent)
+	{
+		if (current == ancestor)
+			return true;
+	}
+	return false;
 }
 
 static void SyncFormWindowStyles(HWND hWnd, bool showInTaskBar, bool minBox, bool maxBox, bool closeBox, bool allowResize)
@@ -302,7 +320,7 @@ static void SyncFormWindowStyles(HWND hWnd, bool showInTaskBar, bool minBox, boo
 	}
 	SetWindowLongPtrW(hWnd, GWL_EXSTYLE, exStyle);
 
-	SetWindowPos(hWnd, NULL, 0, 0, 0, 0,
+	SetWindowPos(hWnd, nullptr, 0, 0, 0, 0,
 		SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
 	const int cornerPreference = 1;
@@ -319,10 +337,10 @@ static std::vector<Control*> GetRootControlsInZOrder(Form* form)
 	std::vector<Control*> result;
 	if (!form) return result;
 	result = form->Controls;
-	std::stable_sort(result.begin(), result.end(), [](Control* a, Control* b)
+	std::stable_sort(result.begin(), result.end(), [](Control* left, Control* right)
 		{
-			if (!a || !b) return a != nullptr;
-			return a->ZIndex < b->ZIndex;
+			if (!left || !right) return left != nullptr;
+			return left->ZIndex < right->ZIndex;
 		});
 	return result;
 }
@@ -339,44 +357,44 @@ Control* Form::HitTestControlAt(POINT contentMouse)
 	// 1) 置顶控件优先命中（ComboBox 下拉等）
 	if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl->Enable)
 	{
-		auto* fc = this->ForegroundControl;
-		if (PointInControlRect(fc, contentMouse))
+		auto* foregroundControl = this->ForegroundControl;
+		if (PointInForegroundControlRect(foregroundControl, contentMouse))
 		{
-			return HitTestDeepestChild(fc, contentMouse);
+			return HitTestDeepestChild(foregroundControl, contentMouse);
 		}
 	}
 
 	// 2) 主菜单单独优先命中（包含下拉区域）
 	if (this->MainMenu && this->MainMenu->Visible && this->MainMenu->Enable)
 	{
-		auto* m = this->MainMenu;
-		if (PointInControlRect(m, contentMouse))
+		auto* mainMenu = this->MainMenu;
+		if (PointInControlRect(mainMenu, contentMouse))
 		{
-			return HitTestDeepestChild(m, contentMouse);
+			return HitTestDeepestChild(mainMenu, contentMouse);
 		}
 	}
 
 	// 3) 状态栏：置顶于普通控件（但优先级低于主菜单与前景控件）
 	if (this->MainStatusBar && this->MainStatusBar->TopMost && this->MainStatusBar->Visible && this->MainStatusBar->Enable)
 	{
-		auto* sb = this->MainStatusBar;
-		if (PointInControlRect(sb, contentMouse))
+		auto* statusBar = this->MainStatusBar;
+		if (PointInControlRect(statusBar, contentMouse))
 		{
-			return HitTestDeepestChild(sb, contentMouse);
+			return HitTestDeepestChild(statusBar, contentMouse);
 		}
 	}
 
 	// 4) 普通控件：按绘制顺序倒序命中（后绘制者优先）
-	for (auto c : GetRootControlsInReverseZOrder(this))
+	for (auto control : GetRootControlsInReverseZOrder(this))
 	{
-		if (!c || !c->Visible || !c->Enable) continue;
-		if (c == this->ForegroundControl) continue;
-		if (c == this->MainMenu) continue;
-		if (this->MainStatusBar && this->MainStatusBar->TopMost && c == this->MainStatusBar) continue;
-		if (!PointInControlRect(c, contentMouse)) continue;
-		return HitTestDeepestChild(c, contentMouse);
+		if (!control || !control->Visible || !control->Enable) continue;
+		if (control == this->ForegroundControl && !control->RenderNormalWhenForeground()) continue;
+		if (control == this->MainMenu) continue;
+		if (this->MainStatusBar && this->MainStatusBar->TopMost && control == this->MainStatusBar) continue;
+		if (!PointInControlRect(control, contentMouse)) continue;
+		return HitTestDeepestChild(control, contentMouse);
 	}
-	return NULL;
+	return nullptr;
 }
 
 static bool IsScrollViewFallbackKey(WPARAM key)
@@ -395,21 +413,21 @@ static bool IsScrollViewFallbackKey(WPARAM key)
 
 static Control* FindAncestorScrollViewForFallback(Control* start, WPARAM key)
 {
-	if (!start) return NULL;
+	if (!start) return nullptr;
 	for (Control* parent = start->Parent; parent; parent = parent->Parent)
 	{
 		if (parent->Type() == UIClass::UI_ScrollView && parent->HandlesNavigationKey(key))
 			return parent;
 	}
-	return NULL;
+	return nullptr;
 }
 
 static Control* GetScrollViewFallbackTarget(Control* selected, WPARAM key)
 {
-	if (!selected) return NULL;
-	if (!selected->IsVisual) return NULL;
-	if (!IsScrollViewFallbackKey(key)) return NULL;
-	if (selected->HandlesNavigationKey(key)) return NULL;
+	if (!selected) return nullptr;
+	if (!selected->IsVisual) return nullptr;
+	if (!IsScrollViewFallbackKey(key)) return nullptr;
+	if (selected->HandlesNavigationKey(key)) return nullptr;
 	return FindAncestorScrollViewForFallback(selected, key);
 }
 
@@ -439,7 +457,7 @@ static std::optional<std::vector<std::wstring>> TryExtractDroppedFiles(IDataObje
 	HDROP hDrop = (HDROP)GlobalLock(stg.hGlobal);
 	if (hDrop)
 	{
-		UINT count = DragQueryFile(hDrop, 0xFFFFFFFF, NULL, 0);
+		UINT count = DragQueryFile(hDrop, 0xFFFFFFFF, nullptr, 0);
 		WCHAR buf[MAX_PATH];
 		for (UINT i = 0; i < count; i++)
 		{
@@ -486,7 +504,7 @@ static std::optional<std::wstring> TryExtractDroppedText(IDataObject* pDataObj)
 			// ANSI -> UTF-16
 			const char* s = (const char*)p;
 			int len = (int)strlen(s);
-			int wlen = MultiByteToWideChar(CP_ACP, 0, s, len, NULL, 0);
+			int wlen = MultiByteToWideChar(CP_ACP, 0, s, len, nullptr, 0);
 			std::wstring ws;
 			ws.resize(wlen);
 			if (wlen > 0)
@@ -629,118 +647,118 @@ private:
 	IDataObject* _lastDataObj = nullptr;
 };
 
-static Control* HitTestRootControlAt(Form* f, POINT contentMouse)
+static Control* HitTestRootControlAt(Form* form, POINT contentMouse)
 {
-	if (!f) return NULL;
+	if (!form) return nullptr;
 
 	// 1) ForegroundControl 顶层优先
-	if (f->ForegroundControl && f->ForegroundControl->Visible && f->ForegroundControl->Enable)
+	if (form->ForegroundControl && form->ForegroundControl->Visible && form->ForegroundControl->Enable)
 	{
-		auto* fc = f->ForegroundControl;
-		if (PointInControlRect(fc, contentMouse))
-			return fc;
+		auto* foregroundControl = form->ForegroundControl;
+		if (PointInForegroundControlRect(foregroundControl, contentMouse))
+			return foregroundControl;
 	}
 
 	// 2) 主菜单次优先
-	if (f->MainMenu && f->MainMenu->Visible && f->MainMenu->Enable)
+	if (form->MainMenu && form->MainMenu->Visible && form->MainMenu->Enable)
 	{
-		auto* m = f->MainMenu;
-		if (PointInControlRect(m, contentMouse))
-			return (Control*)m;
+		auto* mainMenu = form->MainMenu;
+		if (PointInControlRect(mainMenu, contentMouse))
+			return mainMenu;
 	}
 
 	// 3) 状态栏（TopMost=true）
-	if (f->MainStatusBar && f->MainStatusBar->TopMost && f->MainStatusBar->Visible && f->MainStatusBar->Enable)
+	if (form->MainStatusBar && form->MainStatusBar->TopMost && form->MainStatusBar->Visible && form->MainStatusBar->Enable)
 	{
-		auto* sb = f->MainStatusBar;
-		if (PointInControlRect(sb, contentMouse))
-			return (Control*)sb;
+		auto* statusBar = form->MainStatusBar;
+		if (PointInControlRect(statusBar, contentMouse))
+			return statusBar;
 	}
 
 	// 4) 普通控件按绘制顺序倒序命中
-	for (auto c : GetRootControlsInReverseZOrder(f))
+	for (auto control : GetRootControlsInReverseZOrder(form))
 	{
-		if (!c || !c->Visible || !c->Enable) continue;
-		if (c == f->ForegroundControl) continue;
-		if (c == f->MainMenu) continue;
-		if (f->MainStatusBar && f->MainStatusBar->TopMost && c == f->MainStatusBar) continue;
-		if (!PointInControlRect(c, contentMouse)) continue;
-		return c;
+		if (!control || !control->Visible || !control->Enable) continue;
+		if (control == form->ForegroundControl && !control->RenderNormalWhenForeground()) continue;
+		if (control == form->MainMenu) continue;
+		if (form->MainStatusBar && form->MainStatusBar->TopMost && control == form->MainStatusBar) continue;
+		if (!PointInControlRect(control, contentMouse)) continue;
+		return control;
 	}
-	return NULL;
+	return nullptr;
 }
 
-static void DismissForegroundOnOutsideMouseDown(Form* f, POINT contentMouse, UINT message)
+static void DismissForegroundOnOutsideMouseDown(Form* form, Control* hitControl, POINT contentMouse, UINT message)
 {
-	if (!f) return;
+	if (!form) return;
 	if (message != WM_LBUTTONDOWN && message != WM_RBUTTONDOWN && message != WM_MBUTTONDOWN) return;
-	bool dismissed = false;
-	if (f->ForegroundControl && f->ForegroundControl->Visible && f->ForegroundControl->Enable)
+	bool wasDismissed = false;
+	if (form->ForegroundControl && form->ForegroundControl->Visible && form->ForegroundControl->Enable)
 	{
-		if (!PointInControlRect(f->ForegroundControl, contentMouse) && f->ForegroundControl->AutoCloseOnOutsideClick())
+		if (!IsControlOrDescendantOf(hitControl, form->ForegroundControl) && form->ForegroundControl->AutoCloseOnOutsideClick())
 		{
-			f->ForegroundControl->ClosePopup();
-			dismissed = true;
+			form->ForegroundControl->ClosePopup();
+			wasDismissed = true;
 		}
 	}
-	if (f->MainMenu && f->MainMenu->Visible && f->MainMenu->Enable)
+	if (form->MainMenu && form->MainMenu->Visible && form->MainMenu->Enable)
 	{
-		if (!PointInControlRect(f->MainMenu, contentMouse) && f->MainMenu->AutoCloseOnOutsideClick())
+		if (!PointInControlRect(form->MainMenu, contentMouse) && form->MainMenu->AutoCloseOnOutsideClick())
 		{
-			f->MainMenu->ClosePopup();
-			dismissed = true;
+			form->MainMenu->ClosePopup();
+			wasDismissed = true;
 		}
 	}
-	if (dismissed)
-		f->Invalidate(true);
+	if (wasDismissed)
+		form->Invalidate(true);
 }
 
 CursorKind Form::QueryCursorAt(POINT mouseClient, POINT contentMouse)
 {
-	const int top = ClientTop();
-	if (this->VisibleHead && mouseClient.y < top)
+	const int titleBarHeight = ClientTop();
+	if (this->VisibleHead && mouseClient.y < titleBarHeight)
 	{
 		return CursorKind::Arrow;
 	}
 
-	auto hit = HitTestControlAt(contentMouse);
+	auto hitControl = HitTestControlAt(contentMouse);
 
 	if (this->Selected && this->Selected->IsVisual && (GetAsyncKeyState(VK_LBUTTON) & 0x8000))
 	{
 		bool keepSelectedCursor = (::GetCapture() == this->Handle);
 		if (!keepSelectedCursor)
 		{
-			keepSelectedCursor = (hit == this->Selected) || PointInControlRect(this->Selected, contentMouse);
+			keepSelectedCursor = (hitControl == this->Selected) || PointInControlRect(this->Selected, contentMouse);
 		}
 		if (keepSelectedCursor)
 		{
-			auto abs = this->Selected->AbsLocation;
-			int xof = contentMouse.x - abs.x;
-			int yof = contentMouse.y - abs.y;
-			return this->Selected->QueryCursor(xof, yof);
+			auto selectedLocation = this->Selected->AbsLocation;
+			int localX = contentMouse.x - selectedLocation.x;
+			int localY = contentMouse.y - selectedLocation.y;
+			return this->Selected->QueryCursor(localX, localY);
 		}
 	}
 
-	if (!hit) return CursorKind::Arrow;
-	auto abs = hit->AbsLocation;
-	int xof = contentMouse.x - abs.x;
-	int yof = contentMouse.y - abs.y;
-	return hit->QueryCursor(xof, yof);
+	if (!hitControl) return CursorKind::Arrow;
+	auto hitLocation = hitControl->AbsLocation;
+	int localX = contentMouse.x - hitLocation.x;
+	int localY = contentMouse.y - hitLocation.y;
+	return hitControl->QueryCursor(localX, localY);
 }
 
 void Form::UpdateCursor(POINT mouseClient, POINT contentMouse)
 {
-	const int top = ClientTop();
-	if (!(this->VisibleHead && mouseClient.y < top))
+	const int titleBarHeight = ClientTop();
+	if (!(this->VisibleHead && mouseClient.y < titleBarHeight))
 	{
-		auto hit = HitTestControlAt(contentMouse);
+		auto hitControl = HitTestControlAt(contentMouse);
 
 		if (this->Selected && this->Selected->IsVisual && (GetAsyncKeyState(VK_LBUTTON) & 0x8000))
 		{
 			bool keepSelectedCursor = (::GetCapture() == this->Handle);
 			if (!keepSelectedCursor)
 			{
-				keepSelectedCursor = (hit == this->Selected) || PointInControlRect(this->Selected, contentMouse);
+				keepSelectedCursor = (hitControl == this->Selected) || PointInControlRect(this->Selected, contentMouse);
 			}
 			if (keepSelectedCursor)
 			{
@@ -750,7 +768,7 @@ void Form::UpdateCursor(POINT mouseClient, POINT contentMouse)
 			}
 		}
 
-		for (Control* target = hit; target; target = target->Parent)
+		for (Control* target = hitControl; target; target = target->Parent)
 		{
 			UINT32 cursorId = 0;
 			if (target->TryGetSystemCursorId(cursorId) && ApplySystemCursorId(cursorId))
@@ -767,52 +785,52 @@ void Form::UpdateCursorFromCurrentMouse()
 	POINT mouse{};
 	GetCursorPos(&mouse);
 	ScreenToClient(this->Handle, &mouse);
-	const float sc = GetDpiScale();
-	POINT contentMouse{ (LONG)(mouse.x / sc), (LONG)((mouse.y - ClientTop()) / sc) };
-		UpdateCursor(mouse, contentMouse);
+	const float dpiScale = GetDpiScale();
+	POINT contentMouse{ (LONG)(mouse.x / dpiScale), (LONG)((mouse.y - ClientTop()) / dpiScale) };
+	UpdateCursor(mouse, contentMouse);
 }
 
-void Form::SetSelectedControl(Control* value, bool postRender)
+void Form::SetSelectedControl(Control* value, bool invalidateVisual)
 {
-	auto* old = this->Selected;
-	if (old == value) return;
+	auto* previousSelection = this->Selected;
+	if (previousSelection == value) return;
 	this->Selected = value;
-	if (old)
+	if (previousSelection)
 	{
-		old->OnLostFocus(old);
-		if (postRender) old->PostRender();
+		previousSelection->OnLostFocus(previousSelection);
+		if (invalidateVisual) previousSelection->InvalidateVisual();
 	}
 	if (value)
 	{
 		value->OnGotFocus(value);
-		if (postRender) value->PostRender();
+		if (invalidateVisual) value->InvalidateVisual();
 	}
 	this->_focusNotifiedSelected = this->Selected;
 }
 
-static void RaiseControlMouseEnterLeave(Form* f, Control* oldHover, Control* newHover, POINT contentMouse)
+static void RaiseControlMouseEnterLeave(Form* form, Control* previousHover, Control* newHover, POINT contentMouse)
 {
-	if (!f) return;
-	if (oldHover == newHover) return;
+	if (!form) return;
+	if (previousHover == newHover) return;
 
-	auto makeArgs = [&](Control* c) -> MouseEventArgs
+	auto makeArgs = [&](Control* control) -> MouseEventArgs
 		{
-			if (!c) return MouseEventArgs(MouseButtons::None, 0, 0, 0, 0);
-			auto abs = c->AbsLocation;
-			return MouseEventArgs(MouseButtons::None, 0, contentMouse.x - abs.x, contentMouse.y - abs.y, 0);
+			if (!control) return MouseEventArgs(MouseButtons::None, 0, 0, 0, 0);
+			auto controlLocation = control->AbsLocation;
+			return MouseEventArgs(MouseButtons::None, 0, contentMouse.x - controlLocation.x, contentMouse.y - controlLocation.y, 0);
 		};
 
-	if (oldHover)
+	if (previousHover)
 	{
-		auto args = makeArgs(oldHover);
-		oldHover->OnMouseLeaved(oldHover, args);
-		oldHover->PostRender();
+		auto args = makeArgs(previousHover);
+		previousHover->OnMouseLeave(previousHover, args);
+		previousHover->InvalidateVisual();
 	}
 	if (newHover)
 	{
 		auto args = makeArgs(newHover);
 		newHover->OnMouseEnter(newHover, args);
-		newHover->PostRender();
+		newHover->InvalidateVisual();
 	}
 }
 
@@ -820,17 +838,17 @@ bool Form::TryGetCaptionButtonRect(CaptionButtonKind kind, RECT& out)
 {
 	if (!this->VisibleHead || this->HeadHeight <= 0) return false;
 
-	const float sc = GetDpiScale();
-	int xRight = (int)(this->Size.cx / sc);  // logical width
-	int h = (int)(this->HeadHeight / sc);    // logical = _headHeightBase96
-	int w = h;
+	const float dpiScale = GetDpiScale();
+	int rightEdge = (int)(this->Size.cx / dpiScale);  // logical width
+	int buttonHeight = (int)(this->HeadHeight / dpiScale);    // logical = _headHeightBase96
+	int buttonWidth = buttonHeight;
 
 	auto place = [&](CaptionButtonKind k, bool enabled) -> std::optional<RECT>
 		{
 			if (!enabled) return std::nullopt;
-			RECT r{ xRight - w, 0, xRight, h };
-			xRight -= w;
-			return r;
+			RECT rect{ rightEdge - buttonWidth, 0, rightEdge, buttonHeight };
+			rightEdge -= buttonWidth;
+			return rect;
 		};
 
 	auto closeR = place(CaptionButtonKind::Close, this->CloseBox);
@@ -844,29 +862,29 @@ bool Form::TryGetCaptionButtonRect(CaptionButtonKind kind, RECT& out)
 			return minR;
 		};
 
-	auto r = pick(kind);
-	if (!r.has_value()) return false;
-	out = r.value();
+	auto rect = pick(kind);
+	if (!rect.has_value()) return false;
+	out = rect.value();
 	return true;
 }
 
-bool Form::HitTestCaptionButtons(POINT ptClient, CaptionButtonKind& outKind)
+bool Form::HitTestCaptionButtons(POINT clientPoint, CaptionButtonKind& outKind)
 {
-	// ptClient is in physical pixels (from OS); TryGetCaptionButtonRect returns logical rects
-	const float sc = GetDpiScale();
-	POINT logPt{ (LONG)(ptClient.x / sc), (LONG)(ptClient.y / sc) };
-	RECT r{};
-	if (TryGetCaptionButtonRect(CaptionButtonKind::Close, r) && PtInRect(&r, logPt))
+	// clientPoint is in physical pixels (from OS); TryGetCaptionButtonRect returns logical rects.
+	const float dpiScale = GetDpiScale();
+	POINT logicalPoint{ (LONG)(clientPoint.x / dpiScale), (LONG)(clientPoint.y / dpiScale) };
+	RECT rect{};
+	if (TryGetCaptionButtonRect(CaptionButtonKind::Close, rect) && PtInRect(&rect, logicalPoint))
 	{
 		outKind = CaptionButtonKind::Close;
 		return true;
 	}
-	if (TryGetCaptionButtonRect(CaptionButtonKind::Maximize, r) && PtInRect(&r, logPt))
+	if (TryGetCaptionButtonRect(CaptionButtonKind::Maximize, rect) && PtInRect(&rect, logicalPoint))
 	{
 		outKind = CaptionButtonKind::Maximize;
 		return true;
 	}
-	if (TryGetCaptionButtonRect(CaptionButtonKind::Minimize, r) && PtInRect(&r, logPt))
+	if (TryGetCaptionButtonRect(CaptionButtonKind::Minimize, rect) && PtInRect(&rect, logicalPoint))
 	{
 		outKind = CaptionButtonKind::Minimize;
 		return true;
@@ -874,38 +892,38 @@ bool Form::HitTestCaptionButtons(POINT ptClient, CaptionButtonKind& outKind)
 	return false;
 }
 
-bool Form::HitTestCaptionButtonResizeExclusion(POINT ptClient)
+bool Form::HitTestCaptionButtonResizeExclusion(POINT clientPoint)
 {
 	if (!this->VisibleHead || this->HeadHeight <= 0) return false;
 
-	const float sc = GetDpiScale();
-	POINT logPt{ (LONG)(ptClient.x / sc), (LONG)(ptClient.y / sc) };
-	const int pad = (std::max)(2, (int)std::ceil((float)GetCustomFrameInset() / sc));
+	const float dpiScale = GetDpiScale();
+	POINT logicalPoint{ (LONG)(clientPoint.x / dpiScale), (LONG)(clientPoint.y / dpiScale) };
+	const int padding = (std::max)(2, (int)std::ceil((float)GetCustomFrameInset() / dpiScale));
 
 	RECT unionRect{};
 	bool hasRect = false;
 	const CaptionButtonKind kinds[] = { CaptionButtonKind::Close, CaptionButtonKind::Maximize, CaptionButtonKind::Minimize };
 	for (auto kind : kinds)
 	{
-		RECT r{};
-		if (!TryGetCaptionButtonRect(kind, r)) continue;
+		RECT rect{};
+		if (!TryGetCaptionButtonRect(kind, rect)) continue;
 		if (!hasRect)
 		{
-			unionRect = r;
+			unionRect = rect;
 			hasRect = true;
 		}
 		else
 		{
-			unionRect.left = (std::min)(unionRect.left, r.left);
-			unionRect.top = (std::min)(unionRect.top, r.top);
-			unionRect.right = (std::max)(unionRect.right, r.right);
-			unionRect.bottom = (std::max)(unionRect.bottom, r.bottom);
+			unionRect.left = (std::min)(unionRect.left, rect.left);
+			unionRect.top = (std::min)(unionRect.top, rect.top);
+			unionRect.right = (std::max)(unionRect.right, rect.right);
+			unionRect.bottom = (std::max)(unionRect.bottom, rect.bottom);
 		}
 	}
 	if (!hasRect) return false;
 
-	InflateRect(&unionRect, pad, pad);
-	return PtInRect(&unionRect, logPt) != FALSE;
+	InflateRect(&unionRect, padding, padding);
+	return PtInRect(&unionRect, logicalPoint) != FALSE;
 }
 
 void Form::ClearCaptionStates()
@@ -917,19 +935,19 @@ void Form::ClearCaptionStates()
 	_capTracking = false;
 }
 
-void Form::UpdateCaptionHover(POINT ptClient)
+void Form::UpdateCaptionHover(POINT clientPoint)
 {
 	if (!this->VisibleHead) return;
 	CaptionButtonKind hit{};
-	bool onBtn = HitTestCaptionButtons(ptClient, hit);
+	bool isButtonHovered = HitTestCaptionButtons(clientPoint, hit);
 
-	auto oldMin = _capMinState;
-	auto oldMax = _capMaxState;
-	auto oldClose = _capCloseState;
+	auto previousMinState = _capMinState;
+	auto previousMaxState = _capMaxState;
+	auto previousCloseState = _capCloseState;
 
-	_capMinState = (onBtn && hit == CaptionButtonKind::Minimize) ? CaptionButtonState::Hover : CaptionButtonState::None;
-	_capMaxState = (onBtn && hit == CaptionButtonKind::Maximize) ? CaptionButtonState::Hover : CaptionButtonState::None;
-	_capCloseState = (onBtn && hit == CaptionButtonKind::Close) ? CaptionButtonState::Hover : CaptionButtonState::None;
+	_capMinState = (isButtonHovered && hit == CaptionButtonKind::Minimize) ? CaptionButtonState::Hover : CaptionButtonState::None;
+	_capMaxState = (isButtonHovered && hit == CaptionButtonKind::Maximize) ? CaptionButtonState::Hover : CaptionButtonState::None;
+	_capCloseState = (isButtonHovered && hit == CaptionButtonKind::Close) ? CaptionButtonState::Hover : CaptionButtonState::None;
 
 	if (_capPressed)
 	{
@@ -938,10 +956,10 @@ void Form::UpdateCaptionHover(POINT ptClient)
 		if (_capPressedKind == CaptionButtonKind::Close) _capCloseState = CaptionButtonState::Pressed;
 	}
 
-	if (oldMin != _capMinState || oldMax != _capMaxState || oldClose != _capCloseState)
+	if (previousMinState != _capMinState || previousMaxState != _capMaxState || previousCloseState != _capCloseState)
 	{
-		RECT tr = TitleBarRectClient();
-		Invalidate(tr, false);
+		RECT titleBarRect = TitleBarRectClient();
+		Invalidate(titleBarRect, false);
 	}
 }
 
@@ -972,26 +990,26 @@ void Form::Invalidate(bool immediate)
 {
 	if (!this->Handle) return;
 	this->ControlChanged = true;
-	::InvalidateRect(this->Handle, NULL, FALSE);
+	::InvalidateRect(this->Handle, nullptr, FALSE);
 	// When the window is disabled/hidden (e.g. during a modal dialog), forcing
 	// UpdateWindow can create excessive WM_PAINT churn. Let the system schedule paint.
 	if (immediate && ::IsWindowVisible(this->Handle) && ::IsWindowEnabled(this->Handle))
 		::UpdateWindow(this->Handle);
 }
 
-void Form::Invalidate(const RECT& rc, bool immediate)
+void Form::Invalidate(const RECT& rect, bool immediate)
 {
 	if (!this->Handle) return;
 	this->ControlChanged = true;
-	::InvalidateRect(this->Handle, &rc, FALSE);
+	::InvalidateRect(this->Handle, &rect, FALSE);
 	if (immediate && ::IsWindowVisible(this->Handle) && ::IsWindowEnabled(this->Handle))
 		::UpdateWindow(this->Handle);
 }
 
-void Form::Invalidate(D2D1_RECT_F rc, bool immediate)
+void Form::Invalidate(D2D1_RECT_F rect, bool immediate)
 {
-	RECT r = ToRECT(rc, 2);
-	Invalidate(r, immediate);
+	RECT clientRect = ToRECT(rect, 2);
+	Invalidate(clientRect, immediate);
 }
 
 bool Form::RectIntersects(const RECT& a, const RECT& b)
@@ -1000,29 +1018,29 @@ bool Form::RectIntersects(const RECT& a, const RECT& b)
 	return ::IntersectRect(&out, &a, &b) != 0;
 }
 
-RECT Form::ToRECT(D2D1_RECT_F r, int inflatePx)
+RECT Form::ToRECT(D2D1_RECT_F rect, int inflatePx)
 {
-	RECT rc{};
-	rc.left = (LONG)std::floor(r.left) - inflatePx;
-	rc.top = (LONG)std::floor(r.top) - inflatePx;
-	rc.right = (LONG)std::ceil(r.right) + inflatePx;
-	rc.bottom = (LONG)std::ceil(r.bottom) + inflatePx;
-	return rc;
+	RECT result{};
+	result.left = (LONG)std::floor(rect.left) - inflatePx;
+	result.top = (LONG)std::floor(rect.top) - inflatePx;
+	result.right = (LONG)std::ceil(rect.right) + inflatePx;
+	result.bottom = (LONG)std::ceil(rect.bottom) + inflatePx;
+	return result;
 }
 
-void Form::InvalidateControl(Control* c, int inflatePx, bool immediate)
+void Form::InvalidateControl(Control* control, int inflatePx, bool immediate)
 {
-	if (!c || !this->Handle) return;
-	if (!c->IsVisual) return;
+	if (!control || !this->Handle) return;
+	if (!control->IsVisual) return;
 	// AbsRect is in logical (96-DPI) coords; convert to physical client pixels for InvalidateRect
-	RECT rc = ToRECT(c->AbsRect, inflatePx);
-	const float sc = GetDpiScale();
-	RECT physRc;
-	physRc.left   = (LONG)std::floor(rc.left   * sc);
-	physRc.top    = (LONG)std::floor(rc.top    * sc) + ClientTop();  // ClientTop is physical
-	physRc.right  = (LONG)std::ceil (rc.right  * sc);
-	physRc.bottom = (LONG)std::ceil (rc.bottom * sc) + ClientTop();
-	Invalidate(physRc, immediate);
+	RECT logicalRect = ToRECT(control->AbsRect, inflatePx);
+	const float dpiScale = GetDpiScale();
+	RECT physicalRect;
+	physicalRect.left = (LONG)std::floor(logicalRect.left * dpiScale);
+	physicalRect.top = (LONG)std::floor(logicalRect.top * dpiScale) + ClientTop();  // ClientTop is physical
+	physicalRect.right = (LONG)std::ceil(logicalRect.right * dpiScale);
+	physicalRect.bottom = (LONG)std::ceil(logicalRect.bottom * dpiScale) + ClientTop();
+	Invalidate(physicalRect, immediate);
 }
 
 void Form::RefreshAnimationTimer()
@@ -1033,24 +1051,24 @@ void Form::RefreshAnimationTimer()
 	UINT desiredIntervalMs = 0;
 
 	std::function<void(Control*)> consider;
-	consider = [&](Control* c)
+	consider = [&](Control* control)
 		{
-			if (!c || !c->Visible || !c->IsVisual) return;
-			if (c->IsAnimationRunning())
+			if (!control || !control->Visible || !control->IsVisual) return;
+			if (control->IsAnimationRunning())
 			{
 				hasActiveAnimation = true;
-				UINT interval = c->GetAnimationIntervalMs();
+				UINT interval = control->GetAnimationIntervalMs();
 				if (interval == 0) interval = 16;
 				desiredIntervalMs = desiredIntervalMs == 0 ? interval : (std::min)(desiredIntervalMs, interval);
 			}
-			for (int i = 0; i < c->Count; i++)
-				consider(c->operator[](i));
+			for (int i = 0; i < control->Count; i++)
+				consider(control->operator[](i));
 		};
 
-	for (auto c : this->Controls) consider(c);
+	for (auto control : this->Controls) consider(control);
 	if (this->ForegroundControl) consider(this->ForegroundControl);
-	if (this->MainMenu) consider((Control*)this->MainMenu);
-	if (this->MainStatusBar) consider((Control*)this->MainStatusBar);
+	if (this->MainMenu) consider(this->MainMenu);
+	if (this->MainStatusBar) consider(this->MainStatusBar);
 
 	if (!hasActiveAnimation)
 	{
@@ -1067,44 +1085,44 @@ void Form::RefreshAnimationTimer()
 		if (_animIntervalMs != 0)
 			::KillTimer(this->Handle, _animTimerId);
 		_animIntervalMs = desiredIntervalMs;
-		::SetTimer(this->Handle, _animTimerId, _animIntervalMs, NULL);
+		::SetTimer(this->Handle, _animTimerId, _animIntervalMs, nullptr);
 	}
 }
 
 void Form::InvalidateAnimatedControls(bool immediate)
 {
 	std::function<void(Control*)> consider;
-	consider = [&](Control* c)
+	consider = [&](Control* control)
 		{
-			if (!c) return;
-			if (!c->Visible || !c->IsVisual) return;
-			if (c->IsAnimationRunning())
+			if (!control) return;
+			if (!control->Visible || !control->IsVisual) return;
+			if (control->IsAnimationRunning())
 			{
 				D2D1_RECT_F rect{};
-				if (c->GetAnimatedInvalidRect(rect))
+				if (control->GetAnimatedInvalidRect(rect))
 				{
-					RECT rc = ToRECT(rect, 2);
-					const float sc = GetDpiScale();
-					RECT physRc;
-					physRc.left = (LONG)std::floor(rc.left * sc);
-					physRc.top = (LONG)std::floor(rc.top * sc) + ClientTop();
-					physRc.right = (LONG)std::ceil(rc.right * sc);
-					physRc.bottom = (LONG)std::ceil(rc.bottom * sc) + ClientTop();
-					Invalidate(physRc, false);
+					RECT logicalRect = ToRECT(rect, 2);
+					const float dpiScale = GetDpiScale();
+					RECT physicalRect;
+					physicalRect.left = (LONG)std::floor(logicalRect.left * dpiScale);
+					physicalRect.top = (LONG)std::floor(logicalRect.top * dpiScale) + ClientTop();
+					physicalRect.right = (LONG)std::ceil(logicalRect.right * dpiScale);
+					physicalRect.bottom = (LONG)std::ceil(logicalRect.bottom * dpiScale) + ClientTop();
+					Invalidate(physicalRect, false);
 				}
 				else
 				{
-					InvalidateControl(c, 2, false);
+					InvalidateControl(control, 2, false);
 				}
 			}
-			for (int i = 0; i < c->Count; i++)
-				consider(c->operator[](i));
+			for (int i = 0; i < control->Count; i++)
+				consider(control->operator[](i));
 		};
-	for (auto c : this->Controls) consider(c);
+	for (auto control : this->Controls) consider(control);
 	// 单一置顶控件 / 主菜单（有可能不在 Controls 容器里，保险起见单独考虑）
 	if (this->ForegroundControl) consider(this->ForegroundControl);
-	if (this->MainMenu) consider((Control*)this->MainMenu);
-	if (this->MainStatusBar) consider((Control*)this->MainStatusBar);
+	if (this->MainMenu) consider(this->MainMenu);
+	if (this->MainStatusBar) consider(this->MainStatusBar);
 	RefreshAnimationTimer();
 	if (immediate)
 		::UpdateWindow(this->Handle);
@@ -1120,16 +1138,16 @@ GET_CPP(Form, POINT, Location)
 	}
 	else
 	{
-		return this->_Location_INIT;
+		return this->_initialLocation;
 	}
 }
 SET_CPP(Form, POINT, Location)
 {
 	if (this->Handle)
 	{
-		SetWindowPos(this->Handle, NULL, value.x, value.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+		SetWindowPos(this->Handle, nullptr, value.x, value.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
 	}
-	this->_Location_INIT = value;
+	this->_initialLocation = value;
 }
 GET_CPP(Form, SIZE, Size)
 {
@@ -1142,16 +1160,16 @@ GET_CPP(Form, SIZE, Size)
 	}
 	else
 	{
-		return this->_Size_INTI;
+		return this->_initialSize;
 	}
 }
 SET_CPP(Form, SIZE, Size)
 {
 	if (this->Handle)
 	{
-		SetWindowPos(this->Handle, NULL, 0, 0, value.cx, value.cy, SWP_NOMOVE | SWP_NOZORDER);
+		SetWindowPos(this->Handle, nullptr, 0, 0, value.cx, value.cy, SWP_NOMOVE | SWP_NOZORDER);
 	}
-	this->_Size_INTI = value;
+	this->_initialSize = value;
 	this->ControlChanged = true;
 	// 触发布局
 	_needsLayout = true;
@@ -1159,9 +1177,9 @@ SET_CPP(Form, SIZE, Size)
 
 GET_CPP(Form, SIZE, ClientSize)
 {
-	auto siz = this->Size;
-	siz.cy -= this->HeadHeight;
-	return siz;
+	auto clientSize = this->Size;
+	clientSize.cy -= this->HeadHeight;
+	return clientSize;
 }
 GET_CPP(Form, std::wstring, Text) {
 	return _text;
@@ -1352,10 +1370,10 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 		wndclass.cbClsExtra = 0;
 		wndclass.cbWndExtra = 0;
 		wndclass.lpfnWndProc = WINMSG_PROCESS;
-		wndclass.hInstance = GetModuleHandleA(NULL);
+		wndclass.hInstance = GetModuleHandleA(nullptr);
 		wndclass.hIcon = LoadProcessIcon(false);
-		wndclass.hCursor = LoadCursorW(GetModuleHandle(NULL), IDC_ARROW);
-		wndclass.lpszMenuName = NULL;
+		wndclass.hCursor = LoadCursorW(GetModuleHandle(nullptr), IDC_ARROW);
+		wndclass.lpszMenuName = nullptr;
 		wndclass.lpszClassName = L"CoreNativeWindow";
 		if (!RegisterClassW(&wndclass))
 		{
@@ -1363,7 +1381,7 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 		}
 		ClassInited = true;
 	}
-	RECT workArea = GetWindowWorkArea(NULL, _location);
+	RECT workArea = GetWindowWorkArea(nullptr, _location);
 	POINT initialOrigin = _location;
 	if (this->_autoCenterOnCreate)
 	{
@@ -1380,8 +1398,8 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 		initialOrigin.y,
 		this->Size.cx,
 		this->Size.cy,
-		NULL,
-		NULL,
+		nullptr,
+		nullptr,
 		GetModuleHandleW(0),
 		0);
 	SyncFormWindowStyles(this->Handle, this->_showInTaskBar, this->MinBox, this->MaxBox, this->CloseBox, this->AllowResize);
@@ -1630,17 +1648,17 @@ void Form::ClearUnusedDCompD2DLayers(size_t usedCount, float logW, float logH)
 #endif
 }
 
-void Form::RenderDCompRootLayers(const RECT& contentDirty, int top, float dpiSc)
+void Form::RenderDCompRootLayers(const RECT& contentDirty, int titleBarOffset, float dpiScale)
 {
 #ifdef CUI_ENABLE_WEBVIEW2
-	(void)top;
+	(void)titleBarOffset;
 	if (!_dcompHost || contentDirty.right <= contentDirty.left || contentDirty.bottom <= contentDirty.top)
 		return;
 
 	RECT fullClient{};
 	::GetClientRect(this->Handle, &fullClient);
-	const float logW = (fullClient.right - fullClient.left) / dpiSc;
-	const float logH = (fullClient.bottom - fullClient.top) / dpiSc;
+	const float logW = (fullClient.right - fullClient.left) / dpiScale;
+	const float logH = (fullClient.bottom - fullClient.top) / dpiScale;
 	const auto roots = GetRootControlsInZOrder(this);
 	DCompSceneBuildState state{};
 	state.ContentDirty = contentDirty;
@@ -1650,11 +1668,11 @@ void Form::RenderDCompRootLayers(const RECT& contentDirty, int top, float dpiSc)
 	_dcompSceneOrderCounter = 0;
 	_dcompSceneRenderActive = true;
 
-	for (auto c : roots)
+	for (auto control : roots)
 	{
-		if (ShouldSkipRootDCompSceneControl(c))
+		if (ShouldSkipRootDCompSceneControl(control))
 			continue;
-		RenderDCompControlTree(c, state);
+		RenderDCompControlTree(control, state);
 	}
 
 	EndDCompD2DSegment(state);
@@ -1662,8 +1680,8 @@ void Form::RenderDCompRootLayers(const RECT& contentDirty, int top, float dpiSc)
 	ClearUnusedDCompD2DLayers(state.LayerIndex, logW, logH);
 #else
 	(void)contentDirty;
-	(void)top;
-	(void)dpiSc;
+	(void)titleBarOffset;
+	(void)dpiScale;
 #endif
 }
 
@@ -1676,7 +1694,7 @@ bool Form::ShouldSkipRootDCompSceneControl(Control* control) const
 {
 	if (!control || !control->Visible)
 		return true;
-	if (control == this->ForegroundControl)
+	if (control == this->ForegroundControl && !control->RenderNormalWhenForeground())
 		return true;
 	if (control == this->MainMenu)
 		return true;
@@ -1997,8 +2015,8 @@ void Form::EnsureInitialDpiApplied()
 	{
 		RECT wr{};
 		GetWindowRect(this->Handle, &wr);
-		const int newW = Application::ScaleInt(this->_Size_INTI.cx, 96, dpi);
-		const int newH = Application::ScaleInt(this->_Size_INTI.cy, 96, dpi);
+		const int newW = Application::ScaleInt(this->_initialSize.cx, 96, dpi);
+		const int newH = Application::ScaleInt(this->_initialSize.cy, 96, dpi);
 		RECT workArea = GetWindowWorkArea(this->Handle, POINT{ wr.left, wr.top });
 		POINT origin{};
 		if (this->_autoCenterOnCreate)
@@ -2012,7 +2030,7 @@ void Form::EnsureInitialDpiApplied()
 			origin.y = wr.top;
 		}
 		origin = ClampWindowOriginToWorkArea(origin, SIZE{ newW, newH }, workArea);
-		SetWindowPos(this->Handle, NULL, origin.x, origin.y, newW, newH, SWP_NOZORDER | SWP_NOACTIVATE);
+		SetWindowPos(this->Handle, nullptr, origin.x, origin.y, newW, newH, SWP_NOZORDER | SWP_NOACTIVATE);
 		SyncRenderSizeToClient();
 		this->_hasRenderedOnce = false;
 		this->Invalidate(false);
@@ -2027,7 +2045,7 @@ void Form::EnsureOleInitialized()
 	static bool inited = false;
 	if (inited) return;
 	inited = true;
-	OleInitialize(NULL);
+	OleInitialize(nullptr);
 }
 
 void Form::EnsureDropTargetRegistered()
@@ -2314,7 +2332,7 @@ void Form::Show()
 	this->OnSizeChanged(this);
 	this->Invalidate(true);
 }
-static HWND GetBestOwnerWindowInCurrentProcess(HWND exclude = NULL)
+static HWND GetBestOwnerWindowInCurrentProcess(HWND exclude = nullptr)
 {
 	HWND fg = GetForegroundWindow();
 	if (fg && fg != exclude)
@@ -2341,7 +2359,7 @@ static HWND GetBestOwnerWindowInCurrentProcess(HWND exclude = NULL)
 			return h;
 	}
 
-	return NULL;
+	return nullptr;
 }
 
 void Form::ShowDialog(HWND parent)
@@ -2369,13 +2387,13 @@ void Form::ShowDialog(HWND parent)
 	SetForegroundWindow(this->Handle);
 	SetActiveWindow(this->Handle);
 
-	MSG msg;
+	MSG messageRecord;
 	while (IsWindow(this->Handle))
 	{
-		BOOL r = GetMessageW(&msg, NULL, 0, 0);
+		BOOL r = GetMessageW(&messageRecord, nullptr, 0, 0);
 		if (r <= 0) break;
-		TranslateMessage(&msg);
-		DispatchMessageW(&msg);
+		TranslateMessage(&messageRecord);
+		DispatchMessageW(&messageRecord);
 	}
 
 	if (owner && IsWindow(owner))
@@ -2396,11 +2414,11 @@ void Form::Close()
 bool Form::DoEvent()
 {
 	bool hasMessage = false;
-	MSG msg;
-	while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
+	MSG messageRecord;
+	while (PeekMessage(&messageRecord, nullptr, 0, 0, PM_REMOVE))
 	{
-		TranslateMessage(&msg);
-		DispatchMessage(&msg);
+		TranslateMessage(&messageRecord);
+		DispatchMessage(&messageRecord);
 		hasMessage = true;
 	}
 	if (!hasMessage && Application::Forms.size() > 0)
@@ -2409,13 +2427,13 @@ bool Form::DoEvent()
 	}
 	return hasMessage;
 }
-bool Form::WaiteEvent()
+bool Form::WaitEvent()
 {
-	MSG msg;
-	if (GetMessageW(&msg, NULL, 0, 0))
+	MSG messageRecord;
+	if (GetMessageW(&messageRecord, nullptr, 0, 0))
 	{
-		TranslateMessage(&msg);
-		DispatchMessageW(&msg);
+		TranslateMessage(&messageRecord);
+		DispatchMessageW(&messageRecord);
 		return true;
 	}
 	return false;
@@ -2610,13 +2628,13 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 			for (auto c : GetRootControlsInZOrder(this))
 			{
 				if (!c || !c->Visible) continue;
-				if (c == this->ForegroundControl) continue;
+				if (c == this->ForegroundControl && !c->RenderNormalWhenForeground()) continue;
 				if (c == this->MainMenu) continue;
 				if (this->MainStatusBar && this->MainStatusBar->TopMost && c == this->MainStatusBar)
 					continue;
 				RECT crc = ToRECT(c->AbsRect, 2);
 				if (!RectIntersects(contentDirty, crc)) continue;
-				if (c->ParentForm->Render == NULL)
+				if (c->ParentForm->Render == nullptr)
 					c->ParentForm->Render = this->Render;
 				c->Update();
 			}
@@ -2634,7 +2652,7 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 				}
 				if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl != (Control*)this->MainMenu)
 				{
-					this->ForegroundControl->Update();
+					this->ForegroundControl->UpdateForeground();
 				}
 			}
 			this->Render->PopDrawRect();
@@ -2686,7 +2704,7 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 			}
 			if (this->ForegroundControl && this->ForegroundControl->Visible && this->ForegroundControl != (Control*)this->MainMenu)
 			{
-				this->ForegroundControl->Update();
+				this->ForegroundControl->UpdateForeground();
 			}
 			this->Render = oldRender;
 
@@ -2710,67 +2728,67 @@ bool Form::ForceUpdate()
 	return true;
 }
 
-bool Form::RemoveControl(Control* c)
+bool Form::RemoveControl(Control* control)
 {
-	if (std::find(this->Controls.begin(), this->Controls.end(), c) == this->Controls.end())
+	if (std::find(this->Controls.begin(), this->Controls.end(), control) == this->Controls.end())
 		return false;
 	this->Controls.erase(
-		std::remove(this->Controls.begin(), this->Controls.end(), c),
+		std::remove(this->Controls.begin(), this->Controls.end(), control),
 		this->Controls.end());
-	if (this->ForegroundControl == c)
-		this->ForegroundControl = NULL;
-	if (this->MainMenu == c)
-		this->MainMenu = NULL;
-	if (this->MainToolBar == c)
-		this->MainToolBar = NULL;
-	if (this->MainStatusBar == c)
-		this->MainStatusBar = NULL;
-	if (this->UnderMouse == c)
-		this->UnderMouse = NULL;
-	if (this->Selected == c)
-		this->SetSelectedControl(NULL, true);
-	if (this->_hoverControl == c)
-		this->_hoverControl = NULL;
-	if (this->_mouseCaptureControl == c)
+	if (this->ForegroundControl == control)
+		this->ForegroundControl = nullptr;
+	if (this->MainMenu == control)
+		this->MainMenu = nullptr;
+	if (this->MainToolBar == control)
+		this->MainToolBar = nullptr;
+	if (this->MainStatusBar == control)
+		this->MainStatusBar = nullptr;
+	if (this->UnderMouse == control)
+		this->UnderMouse = nullptr;
+	if (this->Selected == control)
+		this->SetSelectedControl(nullptr, true);
+	if (this->_hoverControl == control)
+		this->_hoverControl = nullptr;
+	if (this->_mouseCaptureControl == control)
 	{
-		this->_mouseCaptureControl = NULL;
+		this->_mouseCaptureControl = nullptr;
 		if (this->Handle && GetCapture() == this->Handle)
 			ReleaseCapture();
 	}
-	c->Parent = NULL;
-	c->ParentForm = NULL;
+	control->Parent = nullptr;
+	control->ParentForm = nullptr;
 	return true;
 }
-bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	POINT mouse;
 	GetCursorPos(&mouse);
 	ScreenToClient(this->Handle, &mouse);
-	const int top = ClientTop();  // physical HeadHeight, for title bar (OS-level) comparisons
-	const float sc = GetDpiScale();
-	POINT contentMouse{ (LONG)(mouse.x / sc), (LONG)((mouse.y - top) / sc) };
-	Control* HitControl = NULL;
+	const int titleBarHeight = ClientTop();  // physical HeadHeight, for title bar (OS-level) comparisons
+	const float dpiScale = GetDpiScale();
+	POINT contentMouse{ (LONG)(mouse.x / dpiScale), (LONG)((mouse.y - titleBarHeight) / dpiScale) };
+	Control* hitControl = nullptr;
 	auto anyMouseButtonDown = []() -> bool
 		{
 			return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) ||
 				(GetAsyncKeyState(VK_RBUTTON) & 0x8000) ||
 				(GetAsyncKeyState(VK_MBUTTON) & 0x8000);
 		};
-	auto forwardToCapturedControl = [&](UINT msg, WPARAM wp, LPARAM lp) -> bool
+	auto forwardToCapturedControl = [&](UINT messageId, WPARAM wParamValue, LPARAM lParamValue) -> bool
 		{
 			if (!this->_mouseCaptureControl || !this->_mouseCaptureControl->IsVisual)
 				return false;
-			HitControl = this->_mouseCaptureControl;
+			hitControl = this->_mouseCaptureControl;
 			auto location = this->_mouseCaptureControl->AbsLocation;
-			this->_mouseCaptureControl->ProcessMessage(msg, wp, lp, contentMouse.x - location.x, contentMouse.y - location.y);
+			this->_mouseCaptureControl->ProcessMessage(messageId, wParamValue, lParamValue, contentMouse.x - location.x, contentMouse.y - location.y);
 			return true;
 		};
 	auto releaseCapturedControlIfIdle = [&]()
 		{
 			if (this->_mouseCaptureControl && !anyMouseButtonDown())
 			{
-				this->_mouseCaptureControl = NULL;
+				this->_mouseCaptureControl = nullptr;
 				if (this->Handle && GetCapture() == this->Handle)
 					ReleaseCapture();
 			}
@@ -2780,13 +2798,13 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	case WM_DROPFILES:
 	{
 		HDROP hDropInfo = HDROP(wParam);
-		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
-		TCHAR strFileName[MAX_PATH];
+		UINT fileCount = DragQueryFile(hDropInfo, 0xffffffff, nullptr, 0);
+		TCHAR fileName[MAX_PATH];
 		std::vector<std::wstring> files;
-		for (int i = 0; i < (int)uFileNum; i++)
+		for (UINT fileIndex = 0; fileIndex < fileCount; fileIndex++)
 		{
-			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.push_back(strFileName);
+			DragQueryFile(hDropInfo, fileIndex, fileName, MAX_PATH);
+			files.push_back(fileName);
 		}
 		DragFinish(hDropInfo);
 		if (files.size() > 0)
@@ -2825,16 +2843,16 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			}
 		}
 
-		if (this->VisibleHead && mouse.y < top)
+		if (this->VisibleHead && mouse.y < titleBarHeight)
 		{
 			if (this->_mouseCaptureControl && forwardToCapturedControl(message, wParam, lParam))
 			{
 				UpdateCursor(mouse, contentMouse);
 				break;
 			}
-			RaiseControlMouseEnterLeave(this, this->_hoverControl, NULL, contentMouse);
-			this->_hoverControl = NULL;
-			this->UnderMouse = NULL;
+			RaiseControlMouseEnterLeave(this, this->_hoverControl, nullptr, contentMouse);
+			this->_hoverControl = nullptr;
+			this->UnderMouse = nullptr;
 			this->OnMouseMove(this, MouseEventArgs(MouseButtons::None, 0, contentMouse.x, contentMouse.y, 0));
 			ApplyCursor(CursorKind::Arrow);
 			break;
@@ -2853,7 +2871,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 				RaiseControlMouseEnterLeave(this, this->_hoverControl, this->Selected, contentMouse);
 				this->_hoverControl = this->Selected;
 				this->UnderMouse = this->Selected;
-				HitControl = this->Selected;
+				hitControl = this->Selected;
 				auto location = this->Selected->AbsLocation;
 				this->Selected->ProcessMessage(message, wParam, lParam, contentMouse.x - location.x, contentMouse.y - location.y);
 				UpdateCursor(mouse, contentMouse);
@@ -2869,9 +2887,9 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		auto hit = HitTestRootControlAt(this, contentMouse);
 		if (hit)
 		{
-			HitControl = hit;
-			auto abs = hit->AbsLocation;
-			hit->ProcessMessage(message, wParam, lParam, contentMouse.x - abs.x, contentMouse.y - abs.y);
+			hitControl = hit;
+			auto hitLocation = hit->AbsLocation;
+			hit->ProcessMessage(message, wParam, lParam, contentMouse.x - hitLocation.x, contentMouse.y - hitLocation.y);
 		}
 		this->UnderMouse = this->_hoverControl;
 		UpdateCursor(mouse, contentMouse);
@@ -2886,9 +2904,9 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			UpdateCursorFromCurrentMouse();
 			break;
 		}
-		RaiseControlMouseEnterLeave(this, this->_hoverControl, NULL, contentMouse);
-		this->_hoverControl = NULL;
-		this->UnderMouse = NULL;
+		RaiseControlMouseEnterLeave(this, this->_hoverControl, nullptr, contentMouse);
+		this->_hoverControl = nullptr;
+		this->UnderMouse = nullptr;
 		UpdateCursorFromCurrentMouse();
 	}
 	break;
@@ -2901,9 +2919,9 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	case WM_RBUTTONUP:
 	case WM_LBUTTONDBLCLK:
 	{
-		Control* selectedBeforeLeftDown = (message == WM_LBUTTONDOWN) ? this->Selected : NULL;
-		Control* pointerHover = NULL;
-		if (!(this->VisibleHead && mouse.y < top))
+		Control* selectedBeforeLeftDown = (message == WM_LBUTTONDOWN) ? this->Selected : nullptr;
+		Control* pointerHover = nullptr;
+		if (!(this->VisibleHead && mouse.y < titleBarHeight))
 		{
 			pointerHover = HitTestControlAt(contentMouse);
 		}
@@ -2911,11 +2929,11 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		this->_hoverControl = pointerHover;
 		this->UnderMouse = pointerHover;
 
-		DismissForegroundOnOutsideMouseDown(this, contentMouse, message);
+		DismissForegroundOnOutsideMouseDown(this, pointerHover, contentMouse, message);
 
 		if (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN)
 		{
-			if (!(this->VisibleHead && mouse.y < top))
+			if (!(this->VisibleHead && mouse.y < titleBarHeight))
 			{
 				Control* hit = HitTestControlAt(contentMouse);
 				if (::GetFocus() != this->Handle)
@@ -2938,7 +2956,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 					break;
 				}
 
-				if (mouse.y < top)
+				if (mouse.y < titleBarHeight)
 				{
 					ReleaseCapture();
 					PostMessage(this->Handle, WM_SYSCOMMAND, SC_MOVE | HTCAPTION, 0);
@@ -2972,7 +2990,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 			{
 				if (this->Selected->IsVisual)
 				{
-					HitControl = this->Selected;
+					hitControl = this->Selected;
 					auto location = this->Selected->AbsLocation;
 					this->Selected->ProcessMessage(message, wParam, lParam, contentMouse.x - location.x, contentMouse.y - location.y);
 					UpdateCursor(mouse, contentMouse);
@@ -2992,7 +3010,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 				}
 			}
 		}
-		if (this->VisibleHead && mouse.y < top)
+		if (this->VisibleHead && mouse.y < titleBarHeight)
 		{
 			if ((message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP) &&
 				this->_mouseCaptureControl && forwardToCapturedControl(message, wParam, lParam))
@@ -3026,7 +3044,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 				if (!target->CanHandleMouseWheel(delta, targetX, targetY)) continue;
 				if (target->ProcessMessage(message, wParam, lParam, targetX, targetY))
 				{
-					HitControl = target;
+					hitControl = target;
 					break;
 				}
 			}
@@ -3037,21 +3055,21 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		auto hit = HitTestRootControlAt(this, contentMouse);
 		if (hit)
 		{
-			HitControl = hit;
-			auto abs = hit->AbsLocation;
+			hitControl = hit;
+			auto hitLocation = hit->AbsLocation;
 			if (message == WM_MOUSEWHEEL)
 			{
-				const int localX = contentMouse.x - abs.x;
-				const int localY = contentMouse.y - abs.y;
+				const int controlLocalX = contentMouse.x - hitLocation.x;
+				const int controlLocalY = contentMouse.y - hitLocation.y;
 				const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-				if (!hit->CanHandleMouseWheel(delta, localX, localY))
-					HitControl = NULL;
-				else if (!hit->ProcessMessage(message, wParam, lParam, localX, localY))
-					HitControl = NULL;
+				if (!hit->CanHandleMouseWheel(delta, controlLocalX, controlLocalY))
+					hitControl = nullptr;
+				else if (!hit->ProcessMessage(message, wParam, lParam, controlLocalX, controlLocalY))
+					hitControl = nullptr;
 			}
 			else
 			{
-				hit->ProcessMessage(message, wParam, lParam, contentMouse.x - abs.x, contentMouse.y - abs.y);
+				hit->ProcessMessage(message, wParam, lParam, contentMouse.x - hitLocation.x, contentMouse.y - hitLocation.y);
 			}
 			if (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN)
 			{
@@ -3075,7 +3093,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 
 		if (message == WM_LBUTTONDOWN && selectedBeforeLeftDown && this->Selected == selectedBeforeLeftDown && pointerHover != selectedBeforeLeftDown)
 		{
-			this->SetSelectedControl(NULL, true);
+			this->SetSelectedControl(nullptr, true);
 		}
 
 		if (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP)
@@ -3088,37 +3106,37 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	case WM_CAPTURECHANGED:
 	{
 		if ((HWND)lParam != this->Handle)
-			this->_mouseCaptureControl = NULL;
+			this->_mouseCaptureControl = nullptr;
 	}
 	break;
 	case WM_KEYDOWN:
 	{
 		if (this->Selected)
 		{
-			if (this->Selected->ProcessMessage(message, wParam, lParam, xof, yof))
+			if (this->Selected->ProcessMessage(message, wParam, lParam, localX, localY))
 			{
 				if (this->Selected->IsVisual)
 				{
-					HitControl = this->Selected;
-					KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-					this->OnKeyDown(this, event_obj);
+					hitControl = this->Selected;
+					KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+					this->OnKeyDown(this, eventArgs);
 				}
 			}
 			else
 			{
 				auto fallbackTarget = GetScrollViewFallbackTarget(this->Selected, wParam);
-				if (fallbackTarget && fallbackTarget->ProcessMessage(message, wParam, lParam, xof, yof))
+				if (fallbackTarget && fallbackTarget->ProcessMessage(message, wParam, lParam, localX, localY))
 				{
-					HitControl = fallbackTarget;
-					KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-					this->OnKeyDown(this, event_obj);
+					hitControl = fallbackTarget;
+					KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+					this->OnKeyDown(this, eventArgs);
 				}
 			}
 		}
 		else
 		{
-			KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-			this->OnKeyDown(this, event_obj);
+			KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+			this->OnKeyDown(this, eventArgs);
 		}
 	}
 	break;
@@ -3146,17 +3164,17 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	{
 		if (this->Selected)
 		{
-			if (this->Selected->ProcessMessage(message, wParam, lParam, xof, yof))
+			if (this->Selected->ProcessMessage(message, wParam, lParam, localX, localY))
 			{
-				HitControl = this->Selected;
-				KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-				this->OnKeyUp(this, event_obj);
+				hitControl = this->Selected;
+				KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+				this->OnKeyUp(this, eventArgs);
 			}
 		}
 		else
 		{
-			KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-			this->OnKeyUp(this, event_obj);
+			KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+			this->OnKeyUp(this, eventArgs);
 		}
 	}
 	break;
@@ -3197,15 +3215,15 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	{
 		if (this->Selected)
 		{
-			if (this->Selected->ProcessMessage(message, wParam, lParam, xof, yof))
+			if (this->Selected->ProcessMessage(message, wParam, lParam, localX, localY))
 			{
-				HitControl = this->Selected;
+				hitControl = this->Selected;
 				this->OnCharInput(this, (wchar_t)(wParam));
 			}
 		}
 		else
 		{
-			HitControl = NULL;
+			hitControl = nullptr;
 			this->OnCharInput(this, (wchar_t)(wParam));
 		}
 	}
@@ -3214,8 +3232,8 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	{
 		if (this->Selected)
 		{
-			HitControl = this->Selected;
-			this->Selected->ProcessMessage(message, wParam, lParam, xof, yof);
+			hitControl = this->Selected;
+			this->Selected->ProcessMessage(message, wParam, lParam, localX, localY);
 		}
 	}
 	break;
@@ -3223,7 +3241,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 	{
 		this->OnFormClosing(this);
 		delete this->Render;
-		this->Render = NULL;
+		this->Render = nullptr;
 		return true;
 	}
 	break;
@@ -3244,17 +3262,17 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, i
 		if (old)
 		{
 			old->OnLostFocus(old);
-			old->PostRender();
+			old->InvalidateVisual();
 		}
 		if (now)
 		{
 			now->OnGotFocus(now);
-			now->PostRender();
+			now->InvalidateVisual();
 		}
 	}
-	if (WM_LBUTTONDOWN == message && HitControl == NULL && this->Selected && HitControl != this->Selected)
+	if (WM_LBUTTONDOWN == message && hitControl == nullptr && this->Selected && hitControl != this->Selected)
 	{
-		this->SetSelectedControl(NULL, true);
+		this->SetSelectedControl(nullptr, true);
 		UpdateCursor(mouse, contentMouse);
 	}
 	return true;
@@ -3284,7 +3302,7 @@ void Form::RenderImage()
 				this->Render->DrawBitmap(bmp, xf, yf, size.width, size.height);
 			}
 			break;
-			case ImageSizeMode::StretchIamge:
+			case ImageSizeMode::StretchImage:
 			{
 				this->Render->DrawBitmap(bmp, 0, 0, (float)asize.cx, (float)asize.cy);
 			}
@@ -3310,7 +3328,7 @@ Control* Form::LastChild()
 	{
 		return this->Controls.back();
 	}
-	return NULL;
+	return nullptr;
 }
 D2D1_RECT_F Form::ChildRect()
 {
@@ -3322,16 +3340,16 @@ D2D1_RECT_F Form::ChildRect()
 	float bottom = FLT_MIN;
 	if (this->Controls.size())
 	{
-		for (auto c : this->Controls)
+		for (auto control : this->Controls)
 		{
-			auto loc = c->ActualLocation;
-			auto siz = c->ActualSize();
-			auto tmp = D2D1_POINT_2F{ (float)loc.x + siz.cx,(float)loc.y + siz.cy };
-			if (tmp.x < left)left = tmp.x;
-			if (tmp.x > right)right = tmp.x;
+			auto location = control->ActualLocation;
+			auto size = control->ActualSize();
+			auto bottomRight = D2D1_POINT_2F{ (float)location.x + size.cx,(float)location.y + size.cy };
+			if (bottomRight.x < left)left = bottomRight.x;
+			if (bottomRight.x > right)right = bottomRight.x;
 
-			if (tmp.y < top)top = tmp.y;
-			if (tmp.y > bottom)bottom = tmp.y;
+			if (bottomRight.y < top)top = bottomRight.y;
+			if (bottomRight.y > bottom)bottom = bottomRight.y;
 		}
 	}
 	return D2D1_RECT_F{ left,top,right,bottom };
@@ -3401,7 +3419,7 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 			RECT* suggested = (RECT*)lParam;
 			if (suggested)
 			{
-				SetWindowPos(hWnd, NULL,
+				SetWindowPos(hWnd, nullptr,
 					suggested->left,
 					suggested->top,
 					suggested->right - suggested->left,
@@ -3505,16 +3523,16 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 		break;
 		case WM_NCHITTEST:
 		{
-			LRESULT lr;
-			if (!DwmDefWindowProc(hWnd, message, wParam, lParam, &lr))
+			LRESULT hitTestResult;
+			if (!DwmDefWindowProc(hWnd, message, wParam, lParam, &hitTestResult))
 			{
 				POINT ptClient{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
 				ScreenToClient(hWnd, &ptClient);
 				if (form->HitTestCaptionButtonResizeExclusion(ptClient))
 					return HTCLIENT;
 
-				lr = CustomFrameHitTest(hWnd, wParam, lParam, form->ClientTop(), form->_dpi);
-				if (lr == HTCAPTION)
+				hitTestResult = CustomFrameHitTest(hWnd, wParam, lParam, form->ClientTop(), form->_dpi);
+				if (hitTestResult == HTCAPTION)
 				{
 					CaptionButtonKind k{};
 					if (form->HitTestCaptionButtons(ptClient, k))
@@ -3523,8 +3541,8 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 				if (IsZoomed(hWnd))
 				{
 					// 最大化状态下禁止鼠标拖拽边缘/角落调整窗口大小
-					if (lr == HTLEFT || lr == HTRIGHT || lr == HTTOP || lr == HTBOTTOM ||
-						lr == HTTOPLEFT || lr == HTTOPRIGHT || lr == HTBOTTOMLEFT || lr == HTBOTTOMRIGHT)
+					if (hitTestResult == HTLEFT || hitTestResult == HTRIGHT || hitTestResult == HTTOP || hitTestResult == HTBOTTOM ||
+						hitTestResult == HTTOPLEFT || hitTestResult == HTTOPRIGHT || hitTestResult == HTBOTTOMLEFT || hitTestResult == HTBOTTOMRIGHT)
 					{
 						return HTCLIENT;
 					}
@@ -3532,15 +3550,15 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 				if (!form->AllowResize)
 				{
 					// 禁用边缘/角落 resize，只保留标题栏拖动与正常客户区
-					if (lr == HTLEFT || lr == HTRIGHT || lr == HTTOP || lr == HTBOTTOM ||
-						lr == HTTOPLEFT || lr == HTTOPRIGHT || lr == HTBOTTOMLEFT || lr == HTBOTTOMRIGHT)
+					if (hitTestResult == HTLEFT || hitTestResult == HTRIGHT || hitTestResult == HTTOP || hitTestResult == HTBOTTOM ||
+						hitTestResult == HTTOPLEFT || hitTestResult == HTTOPRIGHT || hitTestResult == HTBOTTOMLEFT || hitTestResult == HTBOTTOMRIGHT)
 					{
 						return HTCLIENT;
 					}
 				}
-				if (lr != HTCAPTION)
+				if (hitTestResult != HTCAPTION)
 				{
-					return lr;
+					return hitTestResult;
 				}
 			}
 		}

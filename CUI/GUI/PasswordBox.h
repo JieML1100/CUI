@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "Control.h"
 #pragma comment(lib, "Imm32.lib")
 
@@ -14,7 +14,7 @@ class PasswordBox : public Control
 {
 public:
 	virtual UIClass Type();
-	CursorKind QueryCursor(int xof, int yof) override { (void)xof; (void)yof; return this->Enable ? CursorKind::IBeam : CursorKind::Arrow; }
+	CursorKind QueryCursor(int localX, int localY) override { (void)localX; (void)localY; return this->Enable ? CursorKind::IBeam : CursorKind::Arrow; }
 	bool HandlesMouseWheel() const override { return true; }
 	bool HandlesNavigationKey(WPARAM key) const override;
 	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
@@ -39,17 +39,17 @@ public:
 	/** @brief 选择结束索引（基于字符）。 */
 	int SelectionEnd = 0;
 	/** @brief 边框宽度（像素）。 */
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	/** @brief 圆角半径。 */
 	float CornerRadius = 6.0f;
 	/** @brief 聚焦时边框宽度。 */
 	float FocusBorder = 1.6f;
 	/** @brief 水平滚动偏移（像素）。 */
-	float OffsetX = 0.0f;
+	float HorizontalScrollOffset = 0.0f;
 	/** @brief 文本内边距（像素）。 */
 	float TextMargin = 5.0f;
 protected:
-		D2D1_RECT_F _caretRectCache = { 0,0,0,0 };
+	D2D1_RECT_F _caretRectCache = { 0,0,0,0 };
 	bool _caretRectCacheValid = false;
 public:
 	/** @brief 创建密码输入框。 */
@@ -63,5 +63,5 @@ public:
 	/** @brief 获取当前选择文本。 */
 	std::wstring GetSelectedString();
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "Control.h"
 #include <vector>
 
@@ -49,7 +49,7 @@ public:
 	static MenuItem* CreateSeparator();
 
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 	D2D1_COLOR_F HoverBackColor = D2D1_COLOR_F{ 0.20f,0.46f,0.90f,0.18f };
 	D2D1_COLOR_F ActiveBackColor = D2D1_COLOR_F{ 0.20f,0.46f,0.90f,0.26f };
@@ -103,7 +103,7 @@ public:
 
 	int BarHeight = 28;
 	int DropItemHeight = 26;
-	float Boder = 1.0f;
+	float BorderThickness = 1.0f;
 
 	D2D1_COLOR_F BarBackColor = D2D1_COLOR_F{ 0.98f,0.99f,1.0f,0.78f };
 	D2D1_COLOR_F BarBorderColor = D2D1_COLOR_F{ 0.64f,0.71f,0.82f,0.95f };
@@ -128,7 +128,7 @@ public:
 	 */
 	MenuItem* AddItem(std::wstring text);
 
-	bool ContainsPoint(int xof, int yof) override;
+	bool ContainsPoint(int localX, int localY) override;
 	bool AutoCloseOnOutsideClick() const override { return _expand; }
 	bool AutoCloseOnFormFocusLoss() const override { return _expand; }
 	void ClosePopup() override;
@@ -137,6 +137,6 @@ public:
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	SIZE ActualSize() override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };
 

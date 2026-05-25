@@ -17,6 +17,7 @@ namespace
 	{
 		std::vector<std::wstring> items;
 		items.push_back(L"text");
+		items.push_back(L"linkedtext");
 		items.push_back(L"image");
 		items.push_back(L"check");
 		items.push_back(L"button");
@@ -28,10 +29,11 @@ namespace
 	{
 		switch (t)
 		{
-		case ColumnType::Image: return 1;
-		case ColumnType::Check: return 2;
-		case ColumnType::Button: return 3;
-		case ColumnType::ComboBox: return 4;
+		case ColumnType::LinkedText: return 1;
+		case ColumnType::Image: return 2;
+		case ColumnType::Check: return 3;
+		case ColumnType::Button: return 4;
+		case ColumnType::ComboBox: return 5;
 		default: return 0;
 		}
 	}
@@ -71,6 +73,7 @@ bool GridViewColumnsEditorDialog::TryParseColumnType(const std::wstring& s, Colu
 	auto t = Trim(s);
 	for (auto& ch : t) ch = (wchar_t)towlower(ch);
 	if (t == L"text") { out = ColumnType::Text; return true; }
+	if (t == L"linkedtext" || t == L"linked" || t == L"linktext" || t == L"link") { out = ColumnType::LinkedText; return true; }
 	if (t == L"image") { out = ColumnType::Image; return true; }
 	if (t == L"check") { out = ColumnType::Check; return true; }
 	if (t == L"button") { out = ColumnType::Button; return true; }
@@ -181,7 +184,7 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 				_grid->SwapRows(r, r - 1);
 				_grid->SelectedRowIndex = r - 1;
 				_grid->SelectedColumnIndex = COL_NAME;
-				_grid->PostRender();
+				_grid->InvalidateVisual();
 			}
 			else if (c == COL_DOWN)
 			{
@@ -189,7 +192,7 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 				_grid->SwapRows(r, r + 1);
 				_grid->SelectedRowIndex = r + 1;
 				_grid->SelectedColumnIndex = COL_NAME;
-				_grid->PostRender();
+				_grid->InvalidateVisual();
 			}
 			else if (c == COL_DELETE)
 			{
@@ -206,7 +209,7 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 					_grid->SelectedRowIndex = sel;
 					_grid->SelectedColumnIndex = COL_NAME;
 				}
-				_grid->PostRender();
+				_grid->InvalidateVisual();
 			}
 		};
 
@@ -240,20 +243,20 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 			ColumnType type = ColumnType::Text;
 			if (row.Cells.size() > COL_TYPE)
 			{
-				const __int64 idx = row.Cells[COL_TYPE].GetTag();
-				if (idx >= 0 && static_cast<size_t>(idx) < typeItems.size())
+				const __int64 typeIndex = row.Cells[COL_TYPE].GetTag();
+				if (typeIndex >= 0 && static_cast<size_t>(typeIndex) < typeItems.size())
 				{
 					ColumnType parsed{};
-					if (TryParseColumnType(typeItems[(int)idx], parsed))
+					if (TryParseColumnType(typeItems[(int)typeIndex], parsed))
 						type = parsed;
 				}
 				else
 				{
-					auto t = Trim(row.Cells[COL_TYPE].GetText());
-					if (!t.empty())
+					auto typeText = Trim(row.Cells[COL_TYPE].GetText());
+					if (!typeText.empty())
 					{
 						ColumnType parsed{};
-						if (TryParseColumnType(t, parsed)) type = parsed;
+						if (TryParseColumnType(typeText, parsed)) type = parsed;
 					}
 				}
 			}
@@ -288,7 +291,7 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 		}
 
 		Applied = true;
-		_target->PostRender();
+		_target->InvalidateVisual();
 		this->Close();
 		};
 

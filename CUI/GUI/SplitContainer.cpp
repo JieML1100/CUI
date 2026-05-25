@@ -30,36 +30,36 @@ void SplitContainer::EnsureChildPanels()
 
 RECT SplitContainer::GetSplitterRect()
 {
-	RECT rc{ 0, 0, 0, 0 };
-	auto size = this->ActualSize();
+	RECT splitterRect{ 0, 0, 0, 0 };
+	auto containerSize = this->ActualSize();
 	int distance = ClampSplitterDistance(this->SplitterDistance);
-	int splitter = (std::max)(1, this->SplitterWidth);
+	int splitterWidth = (std::max)(1, this->SplitterWidth);
 	if (SplitOrientation == Orientation::Horizontal)
 	{
-		rc.left = distance;
-		rc.top = 0;
-		rc.right = (distance + splitter) < size.cx ? (distance + splitter) : size.cx;
-		rc.bottom = size.cy;
+		splitterRect.left = distance;
+		splitterRect.top = 0;
+		splitterRect.right = (distance + splitterWidth) < containerSize.cx ? (distance + splitterWidth) : containerSize.cx;
+		splitterRect.bottom = containerSize.cy;
 	}
 	else
 	{
-		rc.left = 0;
-		rc.top = distance;
-		rc.right = size.cx;
-		rc.bottom = (distance + splitter) < size.cy ? (distance + splitter) : size.cy;
+		splitterRect.left = 0;
+		splitterRect.top = distance;
+		splitterRect.right = containerSize.cx;
+		splitterRect.bottom = (distance + splitterWidth) < containerSize.cy ? (distance + splitterWidth) : containerSize.cy;
 	}
-	return rc;
+	return splitterRect;
 }
 
 int SplitContainer::ClampSplitterDistance(int value)
 {
-	auto size = this->ActualSize();
-	int splitter = (std::max)(1, this->SplitterWidth);
-	int total = SplitOrientation == Orientation::Horizontal ? size.cx : size.cy;
-	int maxDistance = total - splitter - Panel2MinSize;
+	auto containerSize = this->ActualSize();
+	int splitterWidth = (std::max)(1, this->SplitterWidth);
+	int availableLength = SplitOrientation == Orientation::Horizontal ? containerSize.cx : containerSize.cy;
+	int maxDistance = availableLength - splitterWidth - Panel2MinSize;
 	if (maxDistance < Panel1MinSize)
 	{
-		maxDistance = (std::max)(0, total - splitter);
+		maxDistance = (std::max)(0, availableLength - splitterWidth);
 	}
 	int minDistance = (std::min)(Panel1MinSize, maxDistance);
 	return (std::clamp)(value, minDistance, maxDistance);
@@ -71,7 +71,7 @@ void SplitContainer::SetSplitterDistanceInternal(int value)
 	if (clamped == this->SplitterDistance) return;
 	this->SplitterDistance = clamped;
 	this->_needsLayout = true;
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void SplitContainer::SetSplitterDistance(int value)
@@ -88,57 +88,57 @@ void SplitContainer::RefreshSplitterLayout()
 {
 	this->_needsLayout = true;
 	ArrangeSplitPanels();
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void SplitContainer::ArrangeSplitPanels()
 {
 	EnsureChildPanels();
 
-	auto size = this->ActualSize();
-	int splitter = (std::max)(1, this->SplitterWidth);
+	auto containerSize = this->ActualSize();
+	int splitterWidth = (std::max)(1, this->SplitterWidth);
 	int distance = ClampSplitterDistance(this->SplitterDistance);
 	this->SplitterDistance = distance;
 
 	if (SplitOrientation == Orientation::Horizontal)
 	{
-		_panel1->ApplyLayout(POINT{ 0, 0 }, SIZE{ distance, size.cy });
-		int panel2Width = size.cx - distance - splitter;
+		_panel1->ApplyLayout(POINT{ 0, 0 }, SIZE{ distance, containerSize.cy });
+		int panel2Width = containerSize.cx - distance - splitterWidth;
 		if (panel2Width < 0) panel2Width = 0;
-		_panel2->ApplyLayout(POINT{ distance + splitter, 0 }, SIZE{ panel2Width, size.cy });
+		_panel2->ApplyLayout(POINT{ distance + splitterWidth, 0 }, SIZE{ panel2Width, containerSize.cy });
 	}
 	else
 	{
-		_panel1->ApplyLayout(POINT{ 0, 0 }, SIZE{ size.cx, distance });
-		int panel2Height = size.cy - distance - splitter;
+		_panel1->ApplyLayout(POINT{ 0, 0 }, SIZE{ containerSize.cx, distance });
+		int panel2Height = containerSize.cy - distance - splitterWidth;
 		if (panel2Height < 0) panel2Height = 0;
-		_panel2->ApplyLayout(POINT{ 0, distance + splitter }, SIZE{ size.cx, panel2Height });
+		_panel2->ApplyLayout(POINT{ 0, distance + splitterWidth }, SIZE{ containerSize.cx, panel2Height });
 	}
 
 	_needsLayout = false;
 }
 
-bool SplitContainer::HitSplitter(int xof, int yof)
+bool SplitContainer::HitSplitter(int localX, int localY)
 {
-	auto rc = GetSplitterRect();
-	return xof >= rc.left && xof < rc.right && yof >= rc.top && yof < rc.bottom;
+	auto splitterRect = GetSplitterRect();
+	return localX >= splitterRect.left && localX < splitterRect.right && localY >= splitterRect.top && localY < splitterRect.bottom;
 }
 
-bool SplitContainer::HitChildPanel(Panel* child, int xof, int yof, int& childX, int& childY)
+bool SplitContainer::HitChildPanel(Panel* child, int localX, int localY, int& childX, int& childY)
 {
 	if (!child || !child->Visible || !child->Enable) return false;
-	auto loc = child->ActualLocation;
-	auto sz = child->ActualSize();
-	if (xof < loc.x || yof < loc.y || xof >= loc.x + sz.cx || yof >= loc.y + sz.cy)
+	auto childLocation = child->ActualLocation;
+	auto childSize = child->ActualSize();
+	if (localX < childLocation.x || localY < childLocation.y || localX >= childLocation.x + childSize.cx || localY >= childLocation.y + childSize.cy)
 		return false;
-	childX = xof - loc.x;
-	childY = yof - loc.y;
+	childX = localX - childLocation.x;
+	childY = localY - childLocation.y;
 	return true;
 }
 
-CursorKind SplitContainer::QueryCursor(int xof, int yof)
+CursorKind SplitContainer::QueryCursor(int localX, int localY)
 {
-	if (HitSplitter(xof, yof) && !IsSplitterFixed)
+	if (HitSplitter(localX, localY) && !IsSplitterFixed)
 	{
 		return SplitOrientation == Orientation::Horizontal ? CursorKind::SizeWE : CursorKind::SizeNS;
 	}
@@ -154,13 +154,13 @@ void SplitContainer::Update()
 	}
 
 	auto d2d = this->ParentForm->Render;
-	auto size = this->ActualSize();
-	const float actualWidth = static_cast<float>(size.cx);
-	const float actualHeight = static_cast<float>(size.cy);
-	const float border = (std::max)(0.0f, this->Boder);
+	auto containerSize = this->ActualSize();
+	const float actualWidth = static_cast<float>(containerSize.cx);
+	const float actualHeight = static_cast<float>(containerSize.cy);
+	const float border = (std::max)(0.0f, this->BorderThickness);
 	const float radius = (std::clamp)(this->CornerRadius, 0.0f, (std::min)(actualWidth, actualHeight) * 0.5f);
 	auto splitterRect = GetSplitterRect();
-	D2D1_COLOR_F splitterColor = _draggingSplitter ? SplitterPressedColor : (_hoverSplitter ? SplitterHotColor : SplitterColor);
+	D2D1_COLOR_F splitterColor = _draggingSplitter ? SplitterPressedColor : (_isSplitterHovered ? SplitterHotColor : SplitterColor);
 
 	this->BeginRender();
 	{
@@ -207,14 +207,14 @@ void SplitContainer::Update()
 				d2d->FillRoundRect(visualX, visualY, visualW, visualH, splitterColor, splitterRadius);
 			}
 		}
-		if (border > 0.0f && this->BolderColor.a > 0.0f)
+		if (border > 0.0f && this->BorderColor.a > 0.0f)
 		{
 			const float drawW = (std::max)(0.0f, actualWidth - border);
 			const float drawH = (std::max)(0.0f, actualHeight - border);
 			if (radius > 0.0f)
-				d2d->DrawRoundRect(border * 0.5f, border * 0.5f, drawW, drawH, this->BolderColor, border, radius);
+				d2d->DrawRoundRect(border * 0.5f, border * 0.5f, drawW, drawH, this->BorderColor, border, radius);
 			else
-				d2d->DrawRect(border * 0.5f, border * 0.5f, drawW, drawH, this->BolderColor, border);
+				d2d->DrawRect(border * 0.5f, border * 0.5f, drawW, drawH, this->BorderColor, border);
 		}
 	}
 	if (!this->Enable)
@@ -227,7 +227,7 @@ void SplitContainer::Update()
 	this->EndRender();
 }
 
-bool SplitContainer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool SplitContainer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	if (_needsLayout)
@@ -235,38 +235,38 @@ bool SplitContainer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		ArrangeSplitPanels();
 	}
 
-	_hoverSplitter = HitSplitter(xof, yof);
+	_isSplitterHovered = HitSplitter(localX, localY);
 
 	if (_draggingSplitter && message == WM_MOUSEMOVE)
 	{
-		int coord = SplitOrientation == Orientation::Horizontal ? xof : yof;
-		SetSplitterDistanceInternal(coord - _dragOffset);
+		int pointerCoordinate = SplitOrientation == Orientation::Horizontal ? localX : localY;
+		SetSplitterDistanceInternal(pointerCoordinate - _splitterDragOffset);
 		return true;
 	}
 	if (_draggingSplitter && (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP))
 	{
 		_draggingSplitter = false;
-		this->PostRender();
+		this->InvalidateVisual();
 	}
 
-	if (message == WM_LBUTTONDOWN && _hoverSplitter && !IsSplitterFixed)
+	if (message == WM_LBUTTONDOWN && _isSplitterHovered && !IsSplitterFixed)
 	{
 		auto splitterRect = GetSplitterRect();
 		_draggingSplitter = true;
-		_dragOffset = SplitOrientation == Orientation::Horizontal ? (xof - splitterRect.left) : (yof - splitterRect.top);
-		this->PostRender();
+		_splitterDragOffset = SplitOrientation == Orientation::Horizontal ? (localX - splitterRect.left) : (localY - splitterRect.top);
+		this->InvalidateVisual();
 		return true;
 	}
 
 	int childX = 0;
 	int childY = 0;
-	if (!_hoverSplitter)
+	if (!_isSplitterHovered)
 	{
-		if (HitChildPanel(_panel2, xof, yof, childX, childY))
+		if (HitChildPanel(_panel2, localX, localY, childX, childY))
 		{
 			_panel2->ProcessMessage(message, wParam, lParam, childX, childY);
 		}
-		else if (HitChildPanel(_panel1, xof, yof, childX, childY))
+		else if (HitChildPanel(_panel1, localX, localY, childX, childY))
 		{
 			_panel1->ProcessMessage(message, wParam, lParam, childX, childY);
 		}
@@ -277,13 +277,13 @@ bool SplitContainer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 	case WM_DROPFILES:
 	{
 		HDROP hDropInfo = HDROP(wParam);
-		UINT uFileNum = DragQueryFile(hDropInfo, 0xffffffff, NULL, 0);
-		TCHAR strFileName[MAX_PATH];
+		UINT fileCount = DragQueryFile(hDropInfo, 0xffffffff, nullptr, 0);
+		TCHAR fileName[MAX_PATH];
 		std::vector<std::wstring> files;
-		for (int i = 0; i < (int)uFileNum; i++)
+		for (int fileIndex = 0; fileIndex < (int)fileCount; fileIndex++)
 		{
-			DragQueryFile(hDropInfo, i, strFileName, MAX_PATH);
-			files.push_back(strFileName);
+			DragQueryFile(hDropInfo, fileIndex, fileName, MAX_PATH);
+			files.push_back(fileName);
 		}
 		DragFinish(hDropInfo);
 		if (files.size() > 0)
@@ -294,48 +294,48 @@ bool SplitContainer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 	break;
 	case WM_MOUSEWHEEL:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, GET_WHEEL_DELTA_WPARAM(wParam));
-		this->OnMouseWheel(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, GET_WHEEL_DELTA_WPARAM(wParam));
+		this->OnMouseWheel(this, eventArgs);
 	}
 	break;
 	case WM_MOUSEMOVE:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
-		this->OnMouseMove(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
+		this->OnMouseMove(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONDOWN:
 	case WM_RBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDown(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDown(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONUP:
 	case WM_RBUTTONUP:
 	case WM_MBUTTONUP:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseUp(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseUp(this, eventArgs);
 	}
 	break;
 	case WM_LBUTTONDBLCLK:
 	{
-		MouseEventArgs event_obj = MouseEventArgs(FromParamToMouseButtons(message), 0, xof, yof, HIWORD(wParam));
-		this->OnMouseDoubleClick(this, event_obj);
+		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
+		this->OnMouseDoubleClick(this, eventArgs);
 	}
 	break;
 	case WM_KEYDOWN:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyDown(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyDown(this, eventArgs);
 	}
 	break;
 	case WM_KEYUP:
 	{
-		KeyEventArgs event_obj = KeyEventArgs((Keys)(wParam | 0));
-		this->OnKeyUp(this, event_obj);
+		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
+		this->OnKeyUp(this, eventArgs);
 	}
 	break;
 	}

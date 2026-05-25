@@ -91,11 +91,11 @@ std::wstring GridPanelDefinitionsEditorDialog::GridLengthToString(const GridLeng
 	}
 }
 
-std::wstring GridPanelDefinitionsEditorDialog::JoinRows(GridPanel* gp)
+std::wstring GridPanelDefinitionsEditorDialog::JoinRows(GridPanel* gridPanel)
 {
-	if (!gp) return L"";
+	if (!gridPanel) return L"";
 	std::wstringstream ss;
-	auto& rows = gp->GetRows();
+	auto& rows = gridPanel->GetRows();
 	for (size_t i = 0; i < rows.size(); i++)
 	{
 		ss << GridLengthToString(rows[i].Height);
@@ -104,15 +104,15 @@ std::wstring GridPanelDefinitionsEditorDialog::JoinRows(GridPanel* gp)
 	return ss.str();
 }
 
-std::wstring GridPanelDefinitionsEditorDialog::JoinCols(GridPanel* gp)
+std::wstring GridPanelDefinitionsEditorDialog::JoinCols(GridPanel* gridPanel)
 {
-	if (!gp) return L"";
+	if (!gridPanel) return L"";
 	std::wstringstream ss;
-	auto& cols = gp->GetColumns();
-	for (size_t i = 0; i < cols.size(); i++)
+	auto& columns = gridPanel->GetColumns();
+	for (size_t i = 0; i < columns.size(); i++)
 	{
-		ss << GridLengthToString(cols[i].Width);
-		if (i + 1 < cols.size()) ss << L"\r\n";
+		ss << GridLengthToString(columns[i].Width);
+		if (i + 1 < columns.size()) ss << L"\r\n";
 	}
 	return ss.str();
 }
@@ -189,7 +189,7 @@ GridPanelDefinitionsEditorDialog::GridPanelDefinitionsEditorDialog(GridPanel* ta
 		if (addedCols <= 0) _target->AddColumn(GridLength::Star(1.0f));
 
 		Applied = true;
-		_target->PostRender();
+		_target->InvalidateVisual();
 		this->Close();
 	};
 

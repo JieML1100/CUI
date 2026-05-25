@@ -28,8 +28,8 @@ StatusBar::StatusBar(int x, int y, int width, int height)
 	this->Size = SIZE{ width, height };
 
 	this->BackColor = D2D1_COLOR_F{ 1, 1, 1, 0.08f };
-	this->BolderColor = D2D1_COLOR_F{ 1, 1, 1, 0.12f };
-	this->Boder = 1.0f;
+	this->BorderColor = D2D1_COLOR_F{ 1, 1, 1, 0.12f };
+	this->BorderThickness = 1.0f;
 	this->ForeColor = Colors::WhiteSmoke;
 }
 
@@ -173,8 +173,8 @@ void StatusBar::LayoutItems()
 		int extra = remaining - each * (int)springIndices.size();
 		for (size_t si = 0; si < springIndices.size(); si++)
 		{
-			int idx = springIndices[si];
-			computedWidths[idx] = each + ((si == springIndices.size() - 1) ? extra : 0);
+			int partIndex = springIndices[si];
+			computedWidths[partIndex] = each + ((si == springIndices.size() - 1) ? extra : 0);
 		}
 	}
 
@@ -232,7 +232,7 @@ void StatusBar::Update()
 	const float actualHeight = static_cast<float>(size.cy);
 	this->BeginRender();
 	{
-		const float border = (std::max)(0.0f, this->Boder);
+		const float border = (std::max)(0.0f, this->BorderThickness);
 		const D2D1_RECT_F surface = D2D1::RectF(border * 0.5f, border * 0.5f,
 			(std::max)(border * 0.5f, actualWidth - border * 0.5f),
 			(std::max)(border * 0.5f, actualHeight - border * 0.5f));
@@ -277,12 +277,12 @@ void StatusBar::Update()
 		{
 			d2d->DrawLine(0.0f, 0.5f, actualWidth, 0.5f, this->TopLineColor, 1.0f);
 		}
-		if (this->ShowBorder && border > 0.0f && this->BolderColor.a > 0.0f)
+		if (this->ShowBorder && border > 0.0f && this->BorderColor.a > 0.0f)
 		{
 			if (this->CornerRadius > 0.0f)
-				d2d->DrawRoundRect(surface, this->BolderColor, border, this->CornerRadius);
+				d2d->DrawRoundRect(surface, this->BorderColor, border, this->CornerRadius);
 			else
-				d2d->DrawRect(surface, this->BolderColor, border);
+				d2d->DrawRect(surface, this->BorderColor, border);
 		}
 	}
 	if (!this->Enable)

@@ -86,29 +86,29 @@ static bool IsContainerType(UIClass t)
 static void SortSplitChildrenByRuntimeOrder(SplitContainer* split, std::vector<std::shared_ptr<DesignerControl>>& list)
 {
 	if (!split || list.size() <= 1) return;
-	std::unordered_map<Control*, int> idx;
+	std::unordered_map<Control*, int> runtimeOrder;
 	int order = 0;
 	Panel* first = split->FirstPanel();
 	Panel* second = split->SecondPanel();
 	if (first)
 	{
 		for (int i = 0; i < first->Count; i++)
-			idx[first->operator[](i)] = order++;
+			runtimeOrder[first->operator[](i)] = order++;
 	}
 	if (second)
 	{
 		for (int i = 0; i < second->Count; i++)
-			idx[second->operator[](i)] = order++;
+			runtimeOrder[second->operator[](i)] = order++;
 	}
 	std::stable_sort(list.begin(), list.end(), [&](const auto& a, const auto& b)
 		{
-			int ia = INT_MAX;
-			int ib = INT_MAX;
-			auto ita = idx.find(a->ControlInstance);
-			if (ita != idx.end()) ia = ita->second;
-			auto itb = idx.find(b->ControlInstance);
-			if (itb != idx.end()) ib = itb->second;
-			return ia < ib;
+			int leftOrder = INT_MAX;
+			int rightOrder = INT_MAX;
+			auto leftOrderIt = runtimeOrder.find(a->ControlInstance);
+			if (leftOrderIt != runtimeOrder.end()) leftOrder = leftOrderIt->second;
+			auto rightOrderIt = runtimeOrder.find(b->ControlInstance);
+			if (rightOrderIt != runtimeOrder.end()) rightOrder = rightOrderIt->second;
+			return leftOrder < rightOrder;
 		});
 }
 
@@ -173,7 +173,7 @@ namespace
 		if (n == L"OnMouseClick") { outEventField = "OnMouseClick"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
 		if (n == L"OnMouseDoubleClick") { outEventField = "OnMouseDoubleClick"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
 		if (n == L"OnMouseEnter") { outEventField = "OnMouseEnter"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
-		if (n == L"OnMouseLeaved") { outEventField = "OnMouseLeaved"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
+		if (n == L"OnMouseLeave") { outEventField = "OnMouseLeave"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
 		if (n == L"OnKeyDown") { outEventField = "OnKeyDown"; outParamList = "Control* sender, KeyEventArgs e"; return true; }
 		if (n == L"OnKeyUp") { outEventField = "OnKeyUp"; outParamList = "Control* sender, KeyEventArgs e"; return true; }
 		if (n == L"OnCharInput") { outEventField = "OnCharInput"; outParamList = "Control* sender, wchar_t ch"; return true; }
@@ -231,6 +231,13 @@ namespace
 			if (controlType != UIClass::UI_GridView) return false;
 			outEventField = "OnGridViewCheckStateChanged";
 			outParamList = "GridView* sender, int c, int r, bool v";
+			return true;
+		}
+		if (n == L"OnGridViewLinkedTextClick")
+		{
+			if (controlType != UIClass::UI_GridView) return false;
+			outEventField = "OnGridViewLinkedTextClick";
+			outParamList = "GridView* sender, int c, int r, std::wstring text";
 			return true;
 		}
 		if (n == L"OnItemClick")
@@ -317,7 +324,7 @@ namespace
 
 		if (n == L"OnMouseDoubleClick") { outEventField = "OnMouseDoubleClick"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
 		if (n == L"OnMouseEnter") { outEventField = "OnMouseEnter"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
-		if (n == L"OnMouseLeaved") { outEventField = "OnMouseLeaved"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
+		if (n == L"OnMouseLeave") { outEventField = "OnMouseLeave"; outParamList = "Control* sender, MouseEventArgs e"; return true; }
 		if (n == L"OnClose") { outEventField = "OnClose"; outParamList = "Control* sender"; return true; }
 		return false;
 	}
@@ -333,10 +340,10 @@ namespace
 		std::string raw;
 		if (!eventName.empty())
 		{
-			int size = WideCharToMultiByte(CP_UTF8, 0, eventName.data(), (int)eventName.size(), NULL, 0, NULL, NULL);
+			int size = WideCharToMultiByte(CP_UTF8, 0, eventName.data(), (int)eventName.size(), nullptr, 0, nullptr, nullptr);
 			raw.resize(std::max(0, size));
 			if (size > 0)
-				WideCharToMultiByte(CP_UTF8, 0, eventName.data(), (int)eventName.size(), raw.data(), size, NULL, NULL);
+				WideCharToMultiByte(CP_UTF8, 0, eventName.data(), (int)eventName.size(), raw.data(), size, nullptr, nullptr);
 		}
 		std::string suffix = EnsureOnPrefix(LocalSanitizeCppIdentifier(raw));
 		return controlVar + "_" + suffix;
@@ -459,11 +466,11 @@ void CodeGenerator::BuildVarNameMap()
 		if (!base.empty() && base[0] >= 'A' && base[0] <= 'Z')
 			base[0] = (char)(base[0] - 'A' + 'a');
 
-		int& cnt = used[base];
-		cnt++;
+		int& nameUseCount = used[base];
+		nameUseCount++;
 		std::string finalName = base;
-		if (cnt > 1)
-			finalName = base + std::to_string(cnt);
+		if (nameUseCount > 1)
+			finalName = base + std::to_string(nameUseCount);
 
 		// 二次防御：仍可能撞上关键字（例如 base="this" 调整后）
 		if (IsCppKeyword(finalName)) finalName += "_";
@@ -483,16 +490,16 @@ std::string CodeGenerator::GetVarName(const std::shared_ptr<DesignerControl>& dc
 std::string CodeGenerator::WStringToString(const std::wstring& wstr) const
 {
 	if (wstr.empty()) return std::string();
-	int size = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+	int size = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), nullptr, 0, nullptr, nullptr);
 	std::string result(size, 0);
-	WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &result[0], size, NULL, NULL);
+	WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &result[0], size, nullptr, nullptr);
 	return result;
 }
 
 std::wstring CodeGenerator::StringToWString(const std::string& str) const
 {
 	if (str.empty()) return std::wstring();
-	int size = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
+	int size = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), nullptr, 0);
 	std::wstring result(size, 0);
 	MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), &result[0], size);
 	return result;
@@ -788,7 +795,7 @@ std::string CodeGenerator::GenerateControlInstantiation(const std::shared_ptr<De
 	if (!dc || !dc->ControlInstance) return "";
 	if (dc->Type == UIClass::UI_TabPage) return ""; // TabPage 通过 TabControl::AddPage 创建
 
-	auto* ctrl = dc->ControlInstance;
+	auto* control = dc->ControlInstance;
 	std::ostringstream code;
 	std::string indentStr(indent, '\t');
 	std::string name = GetVarName(dc);
@@ -803,13 +810,13 @@ std::string CodeGenerator::GenerateControlInstantiation(const std::shared_ptr<De
 	case UIClass::UI_LinkLabel:
 	case UIClass::UI_CheckBox:
 	case UIClass::UI_RadioBox:
-		code << "L\"" << EscapeWStringLiteral(ctrl->Text) << "\", "
-			<< ctrl->Location.x << ", " << ctrl->Location.y;
+		code << "L\"" << EscapeWStringLiteral(control->Text) << "\", "
+			<< control->Location.x << ", " << control->Location.y;
 		break;
 	case UIClass::UI_Button:
-		code << "L\"" << EscapeWStringLiteral(ctrl->Text) << "\", "
-			<< ctrl->Location.x << ", " << ctrl->Location.y << ", "
-			<< ctrl->Size.cx << ", " << ctrl->Size.cy;
+		code << "L\"" << EscapeWStringLiteral(control->Text) << "\", "
+			<< control->Location.x << ", " << control->Location.y << ", "
+			<< control->Size.cx << ", " << control->Size.cy;
 		break;
 	case UIClass::UI_TextBox:
 	case UIClass::UI_RichTextBox:
@@ -818,9 +825,9 @@ std::string CodeGenerator::GenerateControlInstantiation(const std::shared_ptr<De
 	case UIClass::UI_ComboBox:
 	case UIClass::UI_GroupBox:
 	case UIClass::UI_Expander:
-		code << "L\"" << EscapeWStringLiteral(ctrl->Text) << "\", "
-			<< ctrl->Location.x << ", " << ctrl->Location.y << ", "
-			<< ctrl->Size.cx << ", " << ctrl->Size.cy;
+		code << "L\"" << EscapeWStringLiteral(control->Text) << "\", "
+			<< control->Location.x << ", " << control->Location.y << ", "
+			<< control->Size.cx << ", " << control->Size.cy;
 		break;
 	case UIClass::UI_Panel:
 	case UIClass::UI_SplitContainer:
@@ -850,12 +857,12 @@ std::string CodeGenerator::GenerateControlInstantiation(const std::shared_ptr<De
 	case UIClass::UI_ToolBar:
 	case UIClass::UI_ToastHost:
 	case UIClass::UI_WebBrowser:
-		code << ctrl->Location.x << ", " << ctrl->Location.y << ", "
-			<< ctrl->Size.cx << ", " << ctrl->Size.cy;
+		code << control->Location.x << ", " << control->Location.y << ", "
+			<< control->Size.cx << ", " << control->Size.cy;
 		break;
 	default:
-		code << ctrl->Location.x << ", " << ctrl->Location.y << ", "
-			<< ctrl->Size.cx << ", " << ctrl->Size.cy;
+		code << control->Location.x << ", " << control->Location.y << ", "
+			<< control->Size.cx << ", " << control->Size.cy;
 		break;
 	}
 
@@ -869,7 +876,7 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	if (!dc || !dc->ControlInstance) return "";
 	if (dc->Type == UIClass::UI_TabPage) return "";
 
-	auto* ctrl = dc->ControlInstance;
+	auto* control = dc->ControlInstance;
 	std::ostringstream code;
 	std::string indentStr(indent, '\t');
 	std::string name = GetVarName(dc);
@@ -877,7 +884,7 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	// 尺寸：Label/CheckBox/RadioBox 构造函数无 size
 	if (dc->Type == UIClass::UI_Label || dc->Type == UIClass::UI_LinkLabel || dc->Type == UIClass::UI_CheckBox || dc->Type == UIClass::UI_RadioBox)
 	{
-		code << indentStr << name << "->Size = {" << ctrl->Size.cx << ", " << ctrl->Size.cy << "};\n";
+		code << indentStr << name << "->Size = {" << control->Size.cx << ", " << control->Size.cy << "};\n";
 	}
 
 	// 对于不在构造函数中写入 Text 的控件：补齐 Text
@@ -888,14 +895,14 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 		dc->Type != UIClass::UI_ComboBox && dc->Type != UIClass::UI_GroupBox &&
 		dc->Type != UIClass::UI_Expander)
 	{
-		if (!ctrl->Text.empty())
-			code << indentStr << name << "->Text = L\"" << EscapeWStringLiteral(ctrl->Text) << "\";\n";
+		if (!control->Text.empty())
+			code << indentStr << name << "->Text = L\"" << EscapeWStringLiteral(control->Text) << "\";\n";
 	}
 
 
-	if (!ctrl->Enable)
+	if (!control->Enable)
 		code << indentStr << name << "->Enable = false;\n";
-	if (!ctrl->Visible)
+	if (!control->Visible)
 		code << indentStr << name << "->Visible = false;\n";
 
 	// Font：默认字体不输出；若窗体 Font 与框架默认不同，则用共享 __formFont 绑定“默认控件”
@@ -907,8 +914,8 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 		float formSize = _formFontSize;
 		bool formHasShared = !(_formFontName.empty() && formNameW == defName && std::fabs(formSize - defSize) < 1e-6f);
 
-		std::wstring curNameW = ctrl->Font ? ctrl->Font->FontName : defName;
-		float curSize = ctrl->Font ? ctrl->Font->FontSize : defSize;
+		std::wstring curNameW = control->Font ? control->Font->FontName : defName;
+		float curSize = control->Font ? control->Font->FontSize : defSize;
 		auto feq = [](float a, float b) { return std::fabs(a - b) < 1e-3f; };
 
 		if (formHasShared && curNameW == formNameW && feq(curSize, formSize))
@@ -926,19 +933,19 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	}
 
 	// 颜色
-	code << indentStr << name << "->BackColor = " << ColorToString(ctrl->BackColor) << ";\n";
-	code << indentStr << name << "->ForeColor = " << ColorToString(ctrl->ForeColor) << ";\n";
-	code << indentStr << name << "->BolderColor = " << ColorToString(ctrl->BolderColor) << ";\n";
+	code << indentStr << name << "->BackColor = " << ColorToString(control->BackColor) << ";\n";
+	code << indentStr << name << "->ForeColor = " << ColorToString(control->ForeColor) << ";\n";
+	code << indentStr << name << "->BorderColor = " << ColorToString(control->BorderColor) << ";\n";
 
 	// 布局通用属性
-	auto m = ctrl->Margin;
+	auto m = control->Margin;
 	if (m.Left != 0.0f || m.Top != 0.0f || m.Right != 0.0f || m.Bottom != 0.0f)
 		code << indentStr << name << "->Margin = " << ThicknessToString(m) << ";\n";
-	if (ctrl->AnchorStyles != AnchorStyles::None)
-		code << indentStr << name << "->AnchorStyles = " << AnchorStylesToExpr(ctrl->AnchorStyles) << ";\n";
-		if (ctrl->ZIndex != 0)
-			code << indentStr << name << "->ZIndex = " << ctrl->ZIndex << ";\n";
-	auto p = ctrl->Padding;
+	if (control->AnchorStyles != AnchorStyles::None)
+		code << indentStr << name << "->AnchorStyles = " << AnchorStylesToExpr(control->AnchorStyles) << ";\n";
+		if (control->ZIndex != 0)
+			code << indentStr << name << "->ZIndex = " << control->ZIndex << ";\n";
+	auto p = control->Padding;
 	// ToolBar/StatusBar 里有 int Padding，会隐藏 Control::Padding(Thickness)。为避免生成无效赋值，这两类控件不输出 Thickness Padding。
 	if (dc->Type != UIClass::UI_ToolBar && dc->Type != UIClass::UI_StatusBar)
 	{
@@ -947,66 +954,66 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	}
 
 	// Min/MaxSize（只在用户改过时输出；不精确比较，保守输出非默认）
-	if (ctrl->MinSize.cx != 0 || ctrl->MinSize.cy != 0)
-		code << indentStr << name << "->MinSize = {" << ctrl->MinSize.cx << ", " << ctrl->MinSize.cy << "};\n";
-	if (ctrl->MaxSize.cx != INT_MAX || ctrl->MaxSize.cy != INT_MAX)
-		code << indentStr << name << "->MaxSize = {" << ctrl->MaxSize.cx << ", " << ctrl->MaxSize.cy << "};\n";
+	if (control->MinSize.cx != 0 || control->MinSize.cy != 0)
+		code << indentStr << name << "->MinSize = {" << control->MinSize.cx << ", " << control->MinSize.cy << "};\n";
+	if (control->MaxSize.cx != INT_MAX || control->MaxSize.cy != INT_MAX)
+		code << indentStr << name << "->MaxSize = {" << control->MaxSize.cx << ", " << control->MaxSize.cy << "};\n";
 
 	// ComboBox items
 	if (dc->Type == UIClass::UI_ComboBox)
 	{
-		auto* cb = (ComboBox*)ctrl;
-		if (cb->Items.size() > 0)
+		auto* comboBox = (ComboBox*)control;
+		if (comboBox->Items.size() > 0)
 		{
 			code << indentStr << name << "->Items.Clear();\n";
-			for (int i = 0; i < cb->Items.size(); i++)
+			for (int i = 0; i < comboBox->Items.size(); i++)
 			{
-				code << indentStr << name << "->Items.push_back(L\"" << EscapeWStringLiteral(cb->Items[i]) << "\");\n";
+				code << indentStr << name << "->Items.push_back(L\"" << EscapeWStringLiteral(comboBox->Items[i]) << "\");\n";
 			}
-			code << indentStr << name << "->SelectedIndex = " << cb->SelectedIndex << ";\n";
+			code << indentStr << name << "->SelectedIndex = " << comboBox->SelectedIndex << ";\n";
 		}
-		if (cb->ExpandCount != 4)
-			code << indentStr << name << "->ExpandCount = " << cb->ExpandCount << ";\n";
+		if (comboBox->ExpandCount != 4)
+			code << indentStr << name << "->ExpandCount = " << comboBox->ExpandCount << ";\n";
 	}
 
 	// ListView / ListBox
 	if (dc->Type == UIClass::UI_ListView || dc->Type == UIClass::UI_ListBox)
 	{
-		auto* lv = (ListView*)ctrl;
-		if (dc->Type == UIClass::UI_ListView && lv->ViewMode != ListViewViewMode::List)
-			code << indentStr << name << "->ViewMode = static_cast<ListViewViewMode>(" << (int)lv->ViewMode << ");\n";
-		if (lv->SelectionMode != ListViewSelectionMode::Single)
-			code << indentStr << name << "->SelectionMode = static_cast<ListViewSelectionMode>(" << (int)lv->SelectionMode << ");\n";
-		if (lv->ShowCheckBoxes)
+		auto* listView = (ListView*)control;
+		if (dc->Type == UIClass::UI_ListView && listView->ViewMode != ListViewViewMode::List)
+			code << indentStr << name << "->ViewMode = static_cast<ListViewViewMode>(" << (int)listView->ViewMode << ");\n";
+		if (listView->SelectionMode != ListViewSelectionMode::Single)
+			code << indentStr << name << "->SelectionMode = static_cast<ListViewSelectionMode>(" << (int)listView->SelectionMode << ");\n";
+		if (listView->ShowCheckBoxes)
 			code << indentStr << name << "->ShowCheckBoxes = true;\n";
-		if (!lv->ShowColumnHeaders)
+		if (!listView->ShowColumnHeaders)
 			code << indentStr << name << "->ShowColumnHeaders = false;\n";
-		if (lv->AlternatingRows)
+		if (listView->AlternatingRows)
 			code << indentStr << name << "->AlternatingRows = true;\n";
-		if (std::fabs(lv->RowHeight - 30.0f) > 1e-6f)
-			code << indentStr << name << "->RowHeight = " << FloatLiteral(lv->RowHeight) << ";\n";
-		if (std::fabs(lv->TileHeight - 58.0f) > 1e-6f)
-			code << indentStr << name << "->TileHeight = " << FloatLiteral(lv->TileHeight) << ";\n";
-		if (std::fabs(lv->IconSize - 32.0f) > 1e-6f)
-			code << indentStr << name << "->IconSize = " << FloatLiteral(lv->IconSize) << ";\n";
-		code << indentStr << name << "->SelectedItemBackColor = " << ColorToString(lv->SelectedItemBackColor) << ";\n";
-		code << indentStr << name << "->UnderMouseItemBackColor = " << ColorToString(lv->UnderMouseItemBackColor) << ";\n";
-		code << indentStr << name << "->SelectedItemForeColor = " << ColorToString(lv->SelectedItemForeColor) << ";\n";
-		if (!lv->Columns.empty())
+		if (std::fabs(listView->RowHeight - 30.0f) > 1e-6f)
+			code << indentStr << name << "->RowHeight = " << FloatLiteral(listView->RowHeight) << ";\n";
+		if (std::fabs(listView->TileHeight - 58.0f) > 1e-6f)
+			code << indentStr << name << "->TileHeight = " << FloatLiteral(listView->TileHeight) << ";\n";
+		if (std::fabs(listView->IconSize - 32.0f) > 1e-6f)
+			code << indentStr << name << "->IconSize = " << FloatLiteral(listView->IconSize) << ";\n";
+		code << indentStr << name << "->SelectedItemBackColor = " << ColorToString(listView->SelectedItemBackColor) << ";\n";
+		code << indentStr << name << "->UnderMouseItemBackColor = " << ColorToString(listView->UnderMouseItemBackColor) << ";\n";
+		code << indentStr << name << "->SelectedItemForeColor = " << ColorToString(listView->SelectedItemForeColor) << ";\n";
+		if (!listView->Columns.empty())
 		{
 			code << indentStr << name << "->ClearColumns();\n";
-			for (const auto& col : lv->Columns)
+			for (const auto& col : listView->Columns)
 			{
 				code << indentStr << name << "->AddColumn(ListViewColumn(L\"" << EscapeWStringLiteral(col.Header)
 					<< "\", " << FloatLiteral(col.Width) << ", static_cast<ListViewCellAlign>(" << (int)col.Align << ")));\n";
 			}
 		}
-		if (!lv->Items.empty())
+		if (!listView->Items.empty())
 		{
 			code << indentStr << name << "->ClearItems();\n";
-			for (int i = 0; i < (int)lv->Items.size(); i++)
+			for (int i = 0; i < (int)listView->Items.size(); i++)
 			{
-				const auto& item = lv->Items[i];
+				const auto& item = listView->Items[i];
 				std::string itemVar = name + "_item" + std::to_string(i + 1);
 				code << indentStr << "ListViewItem " << itemVar << "(L\"" << EscapeWStringLiteral(item.Text) << "\", L\""
 					<< EscapeWStringLiteral(item.SubText) << "\");\n";
@@ -1027,27 +1034,27 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 
 	if (dc->Type == UIClass::UI_PropertyGrid)
 	{
-		auto* pg = (PropertyGridView*)ctrl;
-		if (!pg->ShowHeader)
+		auto* propertyGrid = (PropertyGridView*)control;
+		if (!propertyGrid->ShowHeader)
 			code << indentStr << name << "->ShowHeader = false;\n";
-		if (!pg->ShowCategories)
+		if (!propertyGrid->ShowCategories)
 			code << indentStr << name << "->ShowCategories = false;\n";
-		if (!pg->AlternatingRows)
+		if (!propertyGrid->AlternatingRows)
 			code << indentStr << name << "->AlternatingRows = false;\n";
-		if (!pg->AllowEditing)
+		if (!propertyGrid->AllowEditing)
 			code << indentStr << name << "->AllowEditing = false;\n";
-		if (std::fabs(pg->RowHeight - 28.0f) > 1e-6f)
-			code << indentStr << name << "->RowHeight = " << FloatLiteral(pg->RowHeight) << ";\n";
-		if (std::fabs(pg->CategoryHeight - 26.0f) > 1e-6f)
-			code << indentStr << name << "->CategoryHeight = " << FloatLiteral(pg->CategoryHeight) << ";\n";
-		if (std::fabs(pg->NameColumnWidth - 130.0f) > 1e-6f)
-			code << indentStr << name << "->NameColumnWidth = " << FloatLiteral(pg->NameColumnWidth) << ";\n";
-		if (!pg->Items.empty())
+		if (std::fabs(propertyGrid->RowHeight - 28.0f) > 1e-6f)
+			code << indentStr << name << "->RowHeight = " << FloatLiteral(propertyGrid->RowHeight) << ";\n";
+		if (std::fabs(propertyGrid->CategoryHeight - 26.0f) > 1e-6f)
+			code << indentStr << name << "->CategoryHeight = " << FloatLiteral(propertyGrid->CategoryHeight) << ";\n";
+		if (std::fabs(propertyGrid->NameColumnWidth - 130.0f) > 1e-6f)
+			code << indentStr << name << "->NameColumnWidth = " << FloatLiteral(propertyGrid->NameColumnWidth) << ";\n";
+		if (!propertyGrid->Items.empty())
 		{
 			code << indentStr << name << "->Clear();\n";
-			for (int i = 0; i < (int)pg->Items.size(); i++)
+			for (int i = 0; i < (int)propertyGrid->Items.size(); i++)
 			{
-				const auto& item = pg->Items[i];
+				const auto& item = propertyGrid->Items[i];
 				std::string itemVar = name + "_item" + std::to_string(i + 1);
 				code << indentStr << "PropertyGridItem " << itemVar << "(L\"" << EscapeWStringLiteral(item.Category) << "\", L\""
 					<< EscapeWStringLiteral(item.Name) << "\", L\"" << EscapeWStringLiteral(item.Value)
@@ -1060,99 +1067,99 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 					code << indentStr << itemVar << ".Options.push_back(L\"" << EscapeWStringLiteral(opt) << "\");\n";
 				code << indentStr << name << "->AddItem(" << itemVar << ");\n";
 			}
-			if (pg->SelectedIndex >= 0)
-				code << indentStr << name << "->SelectedIndex = " << pg->SelectedIndex << ";\n";
+			if (propertyGrid->SelectedIndex >= 0)
+				code << indentStr << name << "->SelectedIndex = " << propertyGrid->SelectedIndex << ";\n";
 		}
 	}
 
 	// ProgressBar
 	if (dc->Type == UIClass::UI_ProgressBar)
 	{
-		auto* pb = (ProgressBar*)ctrl;
+		auto* progressBar = (ProgressBar*)control;
 		// 默认值 0.5f
-		if (std::fabs(pb->PercentageValue - 0.5f) > 1e-6f)
-			code << indentStr << name << "->PercentageValue = " << FloatLiteral(pb->PercentageValue) << ";\n";
+		if (std::fabs(progressBar->PercentageValue - 0.5f) > 1e-6f)
+			code << indentStr << name << "->PercentageValue = " << FloatLiteral(progressBar->PercentageValue) << ";\n";
 	}
 
 	if (dc->Type == UIClass::UI_LoadingRing)
 	{
-		auto* lr = (LoadingRing*)ctrl;
-		if (!lr->Active)
+		auto* loadingRing = (LoadingRing*)control;
+		if (!loadingRing->Active)
 			code << indentStr << name << "->Active = false;\n";
 	}
 
 	if (dc->Type == UIClass::UI_ProgressRing)
 	{
-		auto* pr = (ProgressRing*)ctrl;
-		if (std::fabs(pr->PercentageValue - 0.5f) > 1e-6f)
-			code << indentStr << name << "->PercentageValue = " << FloatLiteral(pr->PercentageValue) << ";\n";
-		if (!pr->ShowPercentage)
+		auto* progressRing = (ProgressRing*)control;
+		if (std::fabs(progressRing->PercentageValue - 0.5f) > 1e-6f)
+			code << indentStr << name << "->PercentageValue = " << FloatLiteral(progressRing->PercentageValue) << ";\n";
+		if (!progressRing->ShowPercentage)
 			code << indentStr << name << "->ShowPercentage = false;\n";
 	}
 
 	// DateTimePicker
 	if (dc->Type == UIClass::UI_DateTimePicker)
 	{
-		auto* dtp = (DateTimePicker*)ctrl;
+		auto* dateTimePicker = (DateTimePicker*)control;
 		code << indentStr << "{\n";
-		code << indentStr << "\tSYSTEMTIME __dtpValue{};\n";
-		code << indentStr << "\t__dtpValue.wYear = " << dtp->Value.wYear << ";\n";
-		code << indentStr << "\t__dtpValue.wMonth = " << dtp->Value.wMonth << ";\n";
-		code << indentStr << "\t__dtpValue.wDay = " << dtp->Value.wDay << ";\n";
-		code << indentStr << "\t__dtpValue.wHour = " << dtp->Value.wHour << ";\n";
-		code << indentStr << "\t__dtpValue.wMinute = " << dtp->Value.wMinute << ";\n";
-		code << indentStr << "\t__dtpValue.wSecond = " << dtp->Value.wSecond << ";\n";
-		code << indentStr << "\t__dtpValue.wMilliseconds = " << dtp->Value.wMilliseconds << ";\n";
-		code << indentStr << "\t" << name << "->Value = __dtpValue;\n";
+		code << indentStr << "\tSYSTEMTIME __dateTimePickerValue{};\n";
+		code << indentStr << "\t__dateTimePickerValue.wYear = " << dateTimePicker->Value.wYear << ";\n";
+		code << indentStr << "\t__dateTimePickerValue.wMonth = " << dateTimePicker->Value.wMonth << ";\n";
+		code << indentStr << "\t__dateTimePickerValue.wDay = " << dateTimePicker->Value.wDay << ";\n";
+		code << indentStr << "\t__dateTimePickerValue.wHour = " << dateTimePicker->Value.wHour << ";\n";
+		code << indentStr << "\t__dateTimePickerValue.wMinute = " << dateTimePicker->Value.wMinute << ";\n";
+		code << indentStr << "\t__dateTimePickerValue.wSecond = " << dateTimePicker->Value.wSecond << ";\n";
+		code << indentStr << "\t__dateTimePickerValue.wMilliseconds = " << dateTimePicker->Value.wMilliseconds << ";\n";
+		code << indentStr << "\t" << name << "->Value = __dateTimePickerValue;\n";
 		code << indentStr << "}\n";
 		const char* mode = "DateTimePickerMode::DateTime";
-		switch (dtp->Mode)
+		switch (dateTimePicker->Mode)
 		{
 		case DateTimePickerMode::DateOnly: mode = "DateTimePickerMode::DateOnly"; break;
 		case DateTimePickerMode::TimeOnly: mode = "DateTimePickerMode::TimeOnly"; break;
 		case DateTimePickerMode::DateTime: default: mode = "DateTimePickerMode::DateTime"; break;
 		}
 		code << indentStr << name << "->Mode = " << mode << ";\n";
-		if (!dtp->AllowDateSelection) code << indentStr << name << "->AllowDateSelection = false;\n";
-		if (!dtp->AllowTimeSelection) code << indentStr << name << "->AllowTimeSelection = false;\n";
-		if (!dtp->AllowModeSwitch) code << indentStr << name << "->AllowModeSwitch = false;\n";
-		if (dtp->Expand) code << indentStr << name << "->SetExpanded(true);\n";
+		if (!dateTimePicker->AllowDateSelection) code << indentStr << name << "->AllowDateSelection = false;\n";
+		if (!dateTimePicker->AllowTimeSelection) code << indentStr << name << "->AllowTimeSelection = false;\n";
+		if (!dateTimePicker->AllowModeSwitch) code << indentStr << name << "->AllowModeSwitch = false;\n";
+		if (dateTimePicker->Expand) code << indentStr << name << "->SetExpanded(true);\n";
 	}
 
 	// NumericUpDown
 	if (dc->Type == UIClass::UI_NumericUpDown)
 	{
-		auto* n = (NumericUpDown*)ctrl;
-		if (std::fabs(n->Min - 0.0) > 1e-9) code << indentStr << name << "->Min = " << DoubleLiteral(n->Min) << ";\n";
-		if (std::fabs(n->Max - 100.0) > 1e-9) code << indentStr << name << "->Max = " << DoubleLiteral(n->Max) << ";\n";
-		if (std::fabs(n->Step - 1.0) > 1e-9) code << indentStr << name << "->Step = " << DoubleLiteral(n->Step) << ";\n";
-		if (!n->SnapToStep) code << indentStr << name << "->SnapToStep = false;\n";
-		if (n->DecimalPlaces != 0) code << indentStr << name << "->DecimalPlaces = " << n->DecimalPlaces << ";\n";
-		if (!n->UseMouseWheel) code << indentStr << name << "->UseMouseWheel = false;\n";
-		if (std::fabs(n->Value - 0.0) > 1e-9) code << indentStr << name << "->Value = " << DoubleLiteral(n->Value) << ";\n";
+		auto* numericUpDown = (NumericUpDown*)control;
+		if (std::fabs(numericUpDown->Min - 0.0) > 1e-9) code << indentStr << name << "->Min = " << DoubleLiteral(numericUpDown->Min) << ";\n";
+		if (std::fabs(numericUpDown->Max - 100.0) > 1e-9) code << indentStr << name << "->Max = " << DoubleLiteral(numericUpDown->Max) << ";\n";
+		if (std::fabs(numericUpDown->Step - 1.0) > 1e-9) code << indentStr << name << "->Step = " << DoubleLiteral(numericUpDown->Step) << ";\n";
+		if (!numericUpDown->SnapToStep) code << indentStr << name << "->SnapToStep = false;\n";
+		if (numericUpDown->DecimalPlaces != 0) code << indentStr << name << "->DecimalPlaces = " << numericUpDown->DecimalPlaces << ";\n";
+		if (!numericUpDown->UseMouseWheel) code << indentStr << name << "->UseMouseWheel = false;\n";
+		if (std::fabs(numericUpDown->Value - 0.0) > 1e-9) code << indentStr << name << "->Value = " << DoubleLiteral(numericUpDown->Value) << ";\n";
 	}
 
 	// Slider
 	if (dc->Type == UIClass::UI_Slider)
 	{
-		auto* s = (Slider*)ctrl;
-		if (std::fabs(s->Min - 0.0f) > 1e-6f) code << indentStr << name << "->Min = " << FloatLiteral(s->Min) << ";\n";
-		if (std::fabs(s->Max - 100.0f) > 1e-6f) code << indentStr << name << "->Max = " << FloatLiteral(s->Max) << ";\n";
-		if (std::fabs(s->Value - 0.0f) > 1e-6f) code << indentStr << name << "->Value = " << FloatLiteral(s->Value) << ";\n";
-		if (std::fabs(s->Step - 1.0f) > 1e-6f) code << indentStr << name << "->Step = " << FloatLiteral(s->Step) << ";\n";
-		if (s->SnapToStep) code << indentStr << name << "->SnapToStep = true;\n";
+		auto* slider = (Slider*)control;
+		if (std::fabs(slider->Min - 0.0f) > 1e-6f) code << indentStr << name << "->Min = " << FloatLiteral(slider->Min) << ";\n";
+		if (std::fabs(slider->Max - 100.0f) > 1e-6f) code << indentStr << name << "->Max = " << FloatLiteral(slider->Max) << ";\n";
+		if (std::fabs(slider->Value - 0.0f) > 1e-6f) code << indentStr << name << "->Value = " << FloatLiteral(slider->Value) << ";\n";
+		if (std::fabs(slider->Step - 1.0f) > 1e-6f) code << indentStr << name << "->Step = " << FloatLiteral(slider->Step) << ";\n";
+		if (slider->SnapToStep) code << indentStr << name << "->SnapToStep = true;\n";
 	}
 
 	// PictureBox (SizeMode is on base Control)
 	if (dc->Type == UIClass::UI_PictureBox)
 	{
-		if (ctrl->SizeMode != ImageSizeMode::Zoom)
+		if (control->SizeMode != ImageSizeMode::Zoom)
 		{
-			switch (ctrl->SizeMode)
+			switch (control->SizeMode)
 			{
 			case ImageSizeMode::Normal: code << indentStr << name << "->SizeMode = ImageSizeMode::Normal;\n"; break;
 			case ImageSizeMode::CenterImage: code << indentStr << name << "->SizeMode = ImageSizeMode::CenterImage;\n"; break;
-			case ImageSizeMode::StretchIamge: code << indentStr << name << "->SizeMode = ImageSizeMode::StretchIamge;\n"; break;
+			case ImageSizeMode::StretchImage: code << indentStr << name << "->SizeMode = ImageSizeMode::StretchImage;\n"; break;
 			case ImageSizeMode::Zoom: code << indentStr << name << "->SizeMode = ImageSizeMode::Zoom;\n"; break;
 			default: break;
 			}
@@ -1162,24 +1169,24 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	// ScrollView
 	if (dc->Type == UIClass::UI_ScrollView)
 	{
-		auto* sv = (ScrollView*)ctrl;
-		code << indentStr << name << "->ScrollBackColor = " << ColorToString(sv->ScrollBackColor) << ";\n";
-		code << indentStr << name << "->ScrollForeColor = " << ColorToString(sv->ScrollForeColor) << ";\n";
-		if (sv->AlwaysShowVScroll) code << indentStr << name << "->AlwaysShowVScroll = true;\n";
-		if (sv->AlwaysShowHScroll) code << indentStr << name << "->AlwaysShowHScroll = true;\n";
-		if (!sv->AutoContentSize) code << indentStr << name << "->AutoContentSize = false;\n";
-		if (sv->ContentSize.cx != 0 || sv->ContentSize.cy != 0)
-			code << indentStr << name << "->ContentSize = {" << sv->ContentSize.cx << ", " << sv->ContentSize.cy << "};\n";
-		if (sv->ScrollXOffset != 0 || sv->ScrollYOffset != 0)
-			code << indentStr << name << "->SetScrollOffset(" << sv->ScrollXOffset << ", " << sv->ScrollYOffset << ");\n";
-		if (sv->MouseWheelStep != 48)
-			code << indentStr << name << "->MouseWheelStep = " << sv->MouseWheelStep << ";\n";
+		auto* scrollView = (ScrollView*)control;
+		code << indentStr << name << "->ScrollBackColor = " << ColorToString(scrollView->ScrollBackColor) << ";\n";
+		code << indentStr << name << "->ScrollForeColor = " << ColorToString(scrollView->ScrollForeColor) << ";\n";
+		if (scrollView->AlwaysShowVScroll) code << indentStr << name << "->AlwaysShowVScroll = true;\n";
+		if (scrollView->AlwaysShowHScroll) code << indentStr << name << "->AlwaysShowHScroll = true;\n";
+		if (!scrollView->AutoContentSize) code << indentStr << name << "->AutoContentSize = false;\n";
+		if (scrollView->ContentSize.cx != 0 || scrollView->ContentSize.cy != 0)
+			code << indentStr << name << "->ContentSize = {" << scrollView->ContentSize.cx << ", " << scrollView->ContentSize.cy << "};\n";
+		if (scrollView->ScrollXOffset != 0 || scrollView->ScrollYOffset != 0)
+			code << indentStr << name << "->SetScrollOffset(" << scrollView->ScrollXOffset << ", " << scrollView->ScrollYOffset << ");\n";
+		if (scrollView->MouseWheelStep != 48)
+			code << indentStr << name << "->MouseWheelStep = " << scrollView->MouseWheelStep << ";\n";
 	}
 
 	// TreeView colors
 	if (dc->Type == UIClass::UI_TreeView)
 	{
-		auto* tv = (TreeView*)ctrl;
+		auto* treeView = (TreeView*)control;
 		// 这些默认值在 TreeView.h 里有初始化，这里做“保守输出”：只要与默认不同就生成
 		const D2D1_COLOR_F defSelBack = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.14f };
 		const D2D1_COLOR_F defUnderBack = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.08f };
@@ -1187,61 +1194,62 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 		auto neq = [](const D2D1_COLOR_F& a, const D2D1_COLOR_F& b) {
 			return std::fabs(a.r - b.r) > 1e-6f || std::fabs(a.g - b.g) > 1e-6f || std::fabs(a.b - b.b) > 1e-6f || std::fabs(a.a - b.a) > 1e-6f;
 		};
-		if (neq(tv->SelectedBackColor, defSelBack))
-			code << indentStr << name << "->SelectedBackColor = " << ColorToString(tv->SelectedBackColor) << ";\n";
-		if (neq(tv->UnderMouseItemBackColor, defUnderBack))
-			code << indentStr << name << "->UnderMouseItemBackColor = " << ColorToString(tv->UnderMouseItemBackColor) << ";\n";
-		if (neq(tv->SelectedForeColor, defSelFore))
-			code << indentStr << name << "->SelectedForeColor = " << ColorToString(tv->SelectedForeColor) << ";\n";
+		if (neq(treeView->SelectedBackColor, defSelBack))
+			code << indentStr << name << "->SelectedBackColor = " << ColorToString(treeView->SelectedBackColor) << ";\n";
+		if (neq(treeView->UnderMouseItemBackColor, defUnderBack))
+			code << indentStr << name << "->UnderMouseItemBackColor = " << ColorToString(treeView->UnderMouseItemBackColor) << ";\n";
+		if (neq(treeView->SelectedForeColor, defSelFore))
+			code << indentStr << name << "->SelectedForeColor = " << ColorToString(treeView->SelectedForeColor) << ";\n";
 
 		// TreeView nodes
-		if (tv->Root && tv->Root->Children.size() > 0)
+		if (treeView->Root && treeView->Root->Children.size() > 0)
 		{
 			code << indentStr << "// TreeView nodes\n";
-			code << indentStr << "for (auto n : " << name << "->Root->Children) delete n;\n";
+			code << indentStr << "for (auto node : " << name << "->Root->Children) delete node;\n";
 			code << indentStr << name << "->Root->Children.Clear();\n";
 
 			int nodeAutoId = 0;
-			auto emit = [&](auto&& self, std::vector<TreeNode*>& nodes, const std::string& parentExpr) -> void
+			auto emitTreeNodes = [&](auto&& self, std::vector<TreeNode*>& nodes, const std::string& parentExpr) -> void
 			{
-				for (auto* n : nodes)
+				for (auto* node : nodes)
 				{
-					if (!n) continue;
-					std::string var = name + "_node" + std::to_string(++nodeAutoId);
-					code << indentStr << "auto* " << var << " = new TreeNode(L\"" << EscapeWStringLiteral(n->Text) << "\");\n";
-					if (n->Expand)
-						code << indentStr << var << "->Expand = true;\n";
-					code << indentStr << parentExpr << "->Children.push_back(" << var << ");\n";
-					if (n->Children.size() > 0)
-						self(self, n->Children, var);
+					if (!node) continue;
+					std::string nodeVar = name + "_node" + std::to_string(++nodeAutoId);
+					code << indentStr << "auto* " << nodeVar << " = new TreeNode(L\"" << EscapeWStringLiteral(node->Text) << "\");\n";
+					if (node->Expand)
+						code << indentStr << nodeVar << "->Expand = true;\n";
+					code << indentStr << parentExpr << "->Children.push_back(" << nodeVar << ");\n";
+					if (node->Children.size() > 0)
+						self(self, node->Children, nodeVar);
 				}
 			};
-			emit(emit, tv->Root->Children, name + "->Root");
+			emitTreeNodes(emitTreeNodes, treeView->Root->Children, name + "->Root");
 		}
 	}
 
 	// GridView columns
 	if (dc->Type == UIClass::UI_GridView)
 	{
-		auto* gv = (GridView*)ctrl;
-		if (gv->ColumnCount() > 0)
+		auto* gridView = (GridView*)control;
+		if (gridView->ColumnCount() > 0)
 		{
 			code << indentStr << name << "->ClearColumns();\n";
-			for (int i = 0; i < gv->ColumnCount(); i++)
+			for (int i = 0; i < gridView->ColumnCount(); i++)
 			{
-				auto& col = gv->ColumnAt(static_cast<int>(i));
-				std::string typeStr = "ColumnType::Text";
-				switch (col.Type)
+				auto& column = gridView->ColumnAt(static_cast<int>(i));
+				std::string columnTypeExpr = "ColumnType::Text";
+				switch (column.Type)
 				{
-				case ColumnType::Text: typeStr = "ColumnType::Text"; break;
-				case ColumnType::Image: typeStr = "ColumnType::Image"; break;
-				case ColumnType::Check: typeStr = "ColumnType::Check"; break;
-				case ColumnType::Button: typeStr = "ColumnType::Button"; break;
-				case ColumnType::ComboBox: typeStr = "ColumnType::ComboBox"; break;
-				default: typeStr = "ColumnType::Text"; break;
+				case ColumnType::Text: columnTypeExpr = "ColumnType::Text"; break;
+				case ColumnType::LinkedText: columnTypeExpr = "ColumnType::LinkedText"; break;
+				case ColumnType::Image: columnTypeExpr = "ColumnType::Image"; break;
+				case ColumnType::Check: columnTypeExpr = "ColumnType::Check"; break;
+				case ColumnType::Button: columnTypeExpr = "ColumnType::Button"; break;
+				case ColumnType::ComboBox: columnTypeExpr = "ColumnType::ComboBox"; break;
+				default: columnTypeExpr = "ColumnType::Text"; break;
 				}
-				code << indentStr << name << "->AddColumn(GridViewColumn(L\"" << EscapeWStringLiteral(col.Name)
-					<< "\", " << FloatLiteral(col.Width) << ", " << typeStr << ", " << (col.CanEdit ? "true" : "false") << "));\n";
+				code << indentStr << name << "->AddColumn(GridViewColumn(L\"" << EscapeWStringLiteral(column.Name)
+					<< "\", " << FloatLiteral(column.Width) << ", " << columnTypeExpr << ", " << (column.CanEdit ? "true" : "false") << "));\n";
 			}
 		}
 	}
@@ -1249,42 +1257,42 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	// TabControl 选择页（页本身在层级阶段创建）
 	if (dc->Type == UIClass::UI_TabControl)
 	{
-		auto* tc = (TabControl*)ctrl;
-		if (tc->AnimationMode != TabControlAnimationMode::DirectReplace)
-			code << indentStr << name << "->AnimationMode = static_cast<TabControlAnimationMode>(" << (int)tc->AnimationMode << ");\n";
-		if (tc->TitlePosition != TabControlTitlePosition::Top)
-			code << indentStr << name << "->TitlePosition = static_cast<TabControlTitlePosition>(" << (int)tc->TitlePosition << ");\n";
-		code << indentStr << name << "->SelectedIndex = " << tc->SelectedIndex << ";\n";
+		auto* tabControl = (TabControl*)control;
+		if (tabControl->AnimationMode != TabControlAnimationMode::DirectReplace)
+			code << indentStr << name << "->AnimationMode = static_cast<TabControlAnimationMode>(" << (int)tabControl->AnimationMode << ");\n";
+		if (tabControl->TitlePosition != TabControlTitlePosition::Top)
+			code << indentStr << name << "->TitlePosition = static_cast<TabControlTitlePosition>(" << (int)tabControl->TitlePosition << ");\n";
+		code << indentStr << name << "->SelectedIndex = " << tabControl->SelectedIndex << ";\n";
 	}
 
 	// ToolBar 基本参数
 	if (dc->Type == UIClass::UI_ToolBar)
 	{
-		auto* tb = (ToolBar*)ctrl;
-		code << indentStr << name << "->Padding = " << tb->Padding << ";\n";
-		code << indentStr << name << "->Gap = " << tb->Gap << ";\n";
-		code << indentStr << name << "->ItemHeight = " << tb->ItemHeight << ";\n";
+		auto* toolBar = (ToolBar*)control;
+		code << indentStr << name << "->Padding = " << toolBar->Padding << ";\n";
+		code << indentStr << name << "->Gap = " << toolBar->Gap << ";\n";
+		code << indentStr << name << "->ItemHeight = " << toolBar->ItemHeight << ";\n";
 	}
 
 	// StatusBar 基本参数 + parts
 	if (dc->Type == UIClass::UI_StatusBar)
 	{
-		auto* sb = (StatusBar*)ctrl;
-		if (!sb->TopMost)
+		auto* statusBar = (StatusBar*)control;
+		if (!statusBar->TopMost)
 			code << indentStr << name << "->TopMost = false;\n";
-		if (sb->Padding != 6)
-			code << indentStr << name << "->Padding = " << sb->Padding << ";\n";
-		if (sb->Gap != 10)
-			code << indentStr << name << "->Gap = " << sb->Gap << ";\n";
+		if (statusBar->Padding != 6)
+			code << indentStr << name << "->Padding = " << statusBar->Padding << ";\n";
+		if (statusBar->Gap != 10)
+			code << indentStr << name << "->Gap = " << statusBar->Gap << ";\n";
 
-		int pc = sb->PartCount();
-		if (pc > 0)
+		int partCount = statusBar->PartCount();
+		if (partCount > 0)
 		{
 			code << indentStr << name << "->ClearParts();\n";
-			for (int i = 0; i < pc; i++)
+			for (int i = 0; i < partCount; i++)
 			{
-				code << indentStr << name << "->AddPart(L\"" << EscapeWStringLiteral(sb->GetPartText(i))
-					<< "\", " << sb->GetPartWidth(i) << ");\n";
+				code << indentStr << name << "->AddPart(L\"" << EscapeWStringLiteral(statusBar->GetPartText(i))
+					<< "\", " << statusBar->GetPartWidth(i) << ");\n";
 			}
 		}
 	}
@@ -1292,13 +1300,13 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	// Menu 基本参数 + items
 	if (dc->Type == UIClass::UI_Menu)
 	{
-		auto* menu = (Menu*)ctrl;
+		auto* menu = (Menu*)control;
 		if (menu->BarHeight != 28)
 			code << indentStr << name << "->BarHeight = " << menu->BarHeight << ";\n";
 		if (menu->DropItemHeight != 26)
 			code << indentStr << name << "->DropItemHeight = " << menu->DropItemHeight << ";\n";
-		if (std::fabs(menu->Boder - 1.0f) > 1e-6f)
-			code << indentStr << name << "->Boder = " << FloatLiteral(menu->Boder) << ";\n";
+		if (std::fabs(menu->BorderThickness - 1.0f) > 1e-6f)
+			code << indentStr << name << "->BorderThickness = " << FloatLiteral(menu->BorderThickness) << ";\n";
 
 		if (menu->Count > 0)
 		{
@@ -1306,55 +1314,55 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 			code << indentStr << "while (" << name << "->Count > 0)\n";
 			code << indentStr << "{\n";
 			std::string innerIndentStr(indent + 1, '\t');
-			code << innerIndentStr << "auto* it = (MenuItem*)" << name << "->operator[](" << name << "->Count - 1);\n";
-			code << innerIndentStr << name << "->RemoveControl(it);\n";
-			code << innerIndentStr << "delete it;\n";
+			code << innerIndentStr << "auto* menuItem = (MenuItem*)" << name << "->operator[](" << name << "->Count - 1);\n";
+			code << innerIndentStr << name << "->RemoveControl(menuItem);\n";
+			code << innerIndentStr << "delete menuItem;\n";
 			code << indentStr << "}\n";
 
 			int menuAutoId = 0;
-			auto emitItemProps = [&](MenuItem* it, const std::string& var)
+			auto emitItemProps = [&](MenuItem* menuItem, const std::string& itemVar)
 			{
-				if (!it) return;
-				if (it->Id != 0)
-					code << indentStr << var << "->Id = " << it->Id << ";\n";
-				if (!it->Enable)
-					code << indentStr << var << "->Enable = false;\n";
-				if (!it->Shortcut.empty())
-					code << indentStr << var << "->Shortcut = L\"" << EscapeWStringLiteral(it->Shortcut) << "\";\n";
-				if (it->Separator)
-					code << indentStr << var << "->Separator = true;\n";
+				if (!menuItem) return;
+				if (menuItem->Id != 0)
+					code << indentStr << itemVar << "->Id = " << menuItem->Id << ";\n";
+				if (!menuItem->Enable)
+					code << indentStr << itemVar << "->Enable = false;\n";
+				if (!menuItem->Shortcut.empty())
+					code << indentStr << itemVar << "->Shortcut = L\"" << EscapeWStringLiteral(menuItem->Shortcut) << "\";\n";
+				if (menuItem->Separator)
+					code << indentStr << itemVar << "->Separator = true;\n";
 			};
 
-			std::function<void(MenuItem* parent, const std::string& parentVar)> emitSub;
-			emitSub = [&](MenuItem* parent, const std::string& parentVar)
+			std::function<void(MenuItem* parentItem, const std::string& parentVar)> emitSubItems;
+			emitSubItems = [&](MenuItem* parentItem, const std::string& parentVar)
 			{
-				if (!parent) return;
-				for (auto* sub : parent->SubItems)
+				if (!parentItem) return;
+				for (auto* subItem : parentItem->SubItems)
 				{
-					if (!sub) continue;
-					if (sub->Separator)
+					if (!subItem) continue;
+					if (subItem->Separator)
 					{
 						code << indentStr << parentVar << "->AddSeparator();\n";
 						continue;
 					}
-					std::string var = name + "_item" + std::to_string(++menuAutoId);
-					code << indentStr << "auto* " << var << " = " << parentVar << "->AddSubItem(L\"" << EscapeWStringLiteral(sub->Text)
-						<< "\", " << sub->Id << ");\n";
-					emitItemProps(sub, var);
-					if (!sub->SubItems.empty())
-						emitSub(sub, var);
+					std::string itemVar = name + "_item" + std::to_string(++menuAutoId);
+					code << indentStr << "auto* " << itemVar << " = " << parentVar << "->AddSubItem(L\"" << EscapeWStringLiteral(subItem->Text)
+						<< "\", " << subItem->Id << ");\n";
+					emitItemProps(subItem, itemVar);
+					if (!subItem->SubItems.empty())
+						emitSubItems(subItem, itemVar);
 				}
 			};
 
 			for (int i = 0; i < menu->Count; i++)
 			{
-				auto* top = (MenuItem*)menu->operator[](i);
-				if (!top) continue;
-				std::string var = name + "_item" + std::to_string(++menuAutoId);
-				code << indentStr << "auto* " << var << " = " << name << "->AddItem(L\"" << EscapeWStringLiteral(top->Text) << "\");\n";
-				emitItemProps(top, var);
-				if (!top->SubItems.empty())
-					emitSub(top, var);
+				auto* topItem = (MenuItem*)menu->operator[](i);
+				if (!topItem) continue;
+				std::string itemVar = name + "_item" + std::to_string(++menuAutoId);
+				code << indentStr << "auto* " << itemVar << " = " << name << "->AddItem(L\"" << EscapeWStringLiteral(topItem->Text) << "\");\n";
+				emitItemProps(topItem, itemVar);
+				if (!topItem->SubItems.empty())
+					emitSubItems(topItem, itemVar);
 			}
 		}
 	}
@@ -1362,57 +1370,57 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	// MediaPlayer
 	if (dc->Type == UIClass::UI_MediaPlayer)
 	{
-		auto* mp = (MediaPlayer*)ctrl;
+		auto* mediaPlayer = (MediaPlayer*)control;
 		// 先生成属性，再 Load（让 AutoPlay 等影响 Load 行为）
-		if (!mp->AutoPlay)
+		if (!mediaPlayer->AutoPlay)
 			code << indentStr << name << "->AutoPlay = false;\n";
-		if (mp->Loop)
+		if (mediaPlayer->Loop)
 			code << indentStr << name << "->Loop = true;\n";
-		if (std::fabs(mp->Volume - 1.0) > 1e-9)
-			code << indentStr << name << "->Volume = " << mp->Volume << ";\n";
-		if (std::fabs(mp->PlaybackRate - 1.0f) > 1e-6f)
-			code << indentStr << name << "->PlaybackRate = " << FloatLiteral(mp->PlaybackRate) << ";\n";
-		if (mp->RenderMode != MediaPlayer::VideoRenderMode::Fit)
+		if (std::fabs(mediaPlayer->Volume - 1.0) > 1e-9)
+			code << indentStr << name << "->Volume = " << mediaPlayer->Volume << ";\n";
+		if (std::fabs(mediaPlayer->PlaybackRate - 1.0f) > 1e-6f)
+			code << indentStr << name << "->PlaybackRate = " << FloatLiteral(mediaPlayer->PlaybackRate) << ";\n";
+		if (mediaPlayer->RenderMode != MediaPlayer::VideoRenderMode::Fit)
 		{
-			const char* rm = "MediaPlayer::VideoRenderMode::Fit";
-			switch (mp->RenderMode)
+			const char* renderModeExpr = "MediaPlayer::VideoRenderMode::Fit";
+			switch (mediaPlayer->RenderMode)
 			{
-			case MediaPlayer::VideoRenderMode::Fit: rm = "MediaPlayer::VideoRenderMode::Fit"; break;
-			case MediaPlayer::VideoRenderMode::Fill: rm = "MediaPlayer::VideoRenderMode::Fill"; break;
-			case MediaPlayer::VideoRenderMode::Stretch: rm = "MediaPlayer::VideoRenderMode::Stretch"; break;
-			case MediaPlayer::VideoRenderMode::Center: rm = "MediaPlayer::VideoRenderMode::Center"; break;
-			case MediaPlayer::VideoRenderMode::UniformToFill: rm = "MediaPlayer::VideoRenderMode::UniformToFill"; break;
-			default: rm = "MediaPlayer::VideoRenderMode::Fit"; break;
+			case MediaPlayer::VideoRenderMode::Fit: renderModeExpr = "MediaPlayer::VideoRenderMode::Fit"; break;
+			case MediaPlayer::VideoRenderMode::Fill: renderModeExpr = "MediaPlayer::VideoRenderMode::Fill"; break;
+			case MediaPlayer::VideoRenderMode::Stretch: renderModeExpr = "MediaPlayer::VideoRenderMode::Stretch"; break;
+			case MediaPlayer::VideoRenderMode::Center: renderModeExpr = "MediaPlayer::VideoRenderMode::Center"; break;
+			case MediaPlayer::VideoRenderMode::UniformToFill: renderModeExpr = "MediaPlayer::VideoRenderMode::UniformToFill"; break;
+			default: renderModeExpr = "MediaPlayer::VideoRenderMode::Fit"; break;
 			}
-			code << indentStr << name << "->RenderMode = " << rm << ";\n";
+			code << indentStr << name << "->RenderMode = " << renderModeExpr << ";\n";
 		}
 
 		// 设计期媒体源路径（不强依赖运行时已加载）
-		auto it = dc->DesignStrings.find(L"mediaFile");
-		std::wstring mf = (it != dc->DesignStrings.end()) ? it->second : mp->MediaFile;
-		if (!mf.empty())
-			code << indentStr << name << "->Load(L\"" << EscapeWStringLiteral(mf) << "\");\n";
+		auto mediaFileIt = dc->DesignStrings.find(L"mediaFile");
+		std::wstring mediaFile = (mediaFileIt != dc->DesignStrings.end()) ? mediaFileIt->second : mediaPlayer->MediaFile;
+		if (!mediaFile.empty())
+			code << indentStr << name << "->Load(L\"" << EscapeWStringLiteral(mediaFile) << "\");\n";
 	}
 
 	if (dc->Type == UIClass::UI_GroupBox)
 	{
-		auto* gb = (GroupBox*)ctrl;
-		if (std::fabs(gb->CaptionMarginLeft - 12.0f) > 1e-6f)
-			code << indentStr << name << "->CaptionMarginLeft = " << FloatLiteral(gb->CaptionMarginLeft) << ";\n";
-		if (std::fabs(gb->CaptionPaddingX - 6.0f) > 1e-6f)
-			code << indentStr << name << "->CaptionPaddingX = " << FloatLiteral(gb->CaptionPaddingX) << ";\n";
-		if (std::fabs(gb->CaptionPaddingY - 2.0f) > 1e-6f)
-			code << indentStr << name << "->CaptionPaddingY = " << FloatLiteral(gb->CaptionPaddingY) << ";\n";
+		auto* groupBox = (GroupBox*)control;
+		if (std::fabs(groupBox->CaptionMarginLeft - 12.0f) > 1e-6f)
+			code << indentStr << name << "->CaptionMarginLeft = " << FloatLiteral(groupBox->CaptionMarginLeft) << ";\n";
+		if (std::fabs(groupBox->CaptionPaddingX - 6.0f) > 1e-6f)
+			code << indentStr << name << "->CaptionPaddingX = " << FloatLiteral(groupBox->CaptionPaddingX) << ";\n";
+		if (std::fabs(groupBox->CaptionPaddingY - 2.0f) > 1e-6f)
+			code << indentStr << name << "->CaptionPaddingY = " << FloatLiteral(groupBox->CaptionPaddingY) << ";\n";
 	}
 
 	if (dc->Type == UIClass::UI_Expander)
 	{
-		auto* ex = (Expander*)ctrl;
-		if (std::fabs(ex->HeaderHeight - 36.0f) > 1e-6f)
-			code << indentStr << name << "->HeaderHeight = " << FloatLiteral(ex->HeaderHeight) << ";\n";
-		if (ex->AnimationDurationMs != 160)
-			code << indentStr << name << "->AnimationDurationMs = " << ex->AnimationDurationMs << ";\n";
-		if (!ex->IsExpanded)
+		auto* expander = (Expander*)control;
+		if (std::fabs(expander->HeaderHeight - 36.0f) > 1e-6f)
+			code << indentStr << name << "->HeaderHeight = " << FloatLiteral(expander->HeaderHeight) << ";\n";
+		if (expander->AnimationDurationMs != 160)
+			code << indentStr << name << "->AnimationDurationMs = " << expander->AnimationDurationMs << ";\n";
+		if (!expander->IsExpanded)
 			code << indentStr << name << "->SetExpanded(false);\n";
 	}
 
@@ -1424,59 +1432,59 @@ std::string CodeGenerator::GenerateContainerProperties(const std::shared_ptr<Des
 	if (!dc || !dc->ControlInstance) return "";
 	if (dc->Type == UIClass::UI_TabPage) return "";
 
-	auto* ctrl = dc->ControlInstance;
+	auto* control = dc->ControlInstance;
 	std::ostringstream code;
 	std::string indentStr(indent, '\t');
 	std::string name = GetVarName(dc);
 
 	if (dc->Type == UIClass::UI_GridPanel)
 	{
-		auto* gp = (GridPanel*)ctrl;
-		const auto& rows = gp->GetRows();
-		const auto& cols = gp->GetColumns();
-		if (!rows.empty() || !cols.empty())
+		auto* gridPanel = (GridPanel*)control;
+		const auto& rows = gridPanel->GetRows();
+		const auto& columns = gridPanel->GetColumns();
+		if (!rows.empty() || !columns.empty())
 		{
 			code << indentStr << name << "->ClearRows();\n";
 			code << indentStr << name << "->ClearColumns();\n";
-			for (auto& r : rows)
+			for (auto& row : rows)
 			{
-				code << indentStr << name << "->AddRow(" << GridLengthToCtorString(r.Height)
-					<< ", " << FloatLiteral(r.MinHeight) << ", " << FloatLiteral(r.MaxHeight) << ");\n";
+				code << indentStr << name << "->AddRow(" << GridLengthToCtorString(row.Height)
+					<< ", " << FloatLiteral(row.MinHeight) << ", " << FloatLiteral(row.MaxHeight) << ");\n";
 			}
-			for (auto& c : cols)
+			for (auto& column : columns)
 			{
-				code << indentStr << name << "->AddColumn(" << GridLengthToCtorString(c.Width)
-					<< ", " << FloatLiteral(c.MinWidth) << ", " << FloatLiteral(c.MaxWidth) << ");\n";
+				code << indentStr << name << "->AddColumn(" << GridLengthToCtorString(column.Width)
+					<< ", " << FloatLiteral(column.MinWidth) << ", " << FloatLiteral(column.MaxWidth) << ");\n";
 			}
 		}
 	}
 	else if (dc->Type == UIClass::UI_StackPanel)
 	{
-		auto* sp = (StackPanel*)ctrl;
-		code << indentStr << name << "->SetOrientation(" << OrientationToString(sp->GetOrientation()) << ");\n";
-		code << indentStr << name << "->SetSpacing(" << FloatLiteral(sp->GetSpacing()) << ");\n";
+		auto* stackPanel = (StackPanel*)control;
+		code << indentStr << name << "->SetOrientation(" << OrientationToString(stackPanel->GetOrientation()) << ");\n";
+		code << indentStr << name << "->SetSpacing(" << FloatLiteral(stackPanel->GetSpacing()) << ");\n";
 	}
 	else if (dc->Type == UIClass::UI_WrapPanel)
 	{
-		auto* wp = (WrapPanel*)ctrl;
-		code << indentStr << name << "->SetOrientation(" << OrientationToString(wp->GetOrientation()) << ");\n";
-		code << indentStr << name << "->SetItemWidth(" << FloatLiteral(wp->GetItemWidth()) << ");\n";
-		code << indentStr << name << "->SetItemHeight(" << FloatLiteral(wp->GetItemHeight()) << ");\n";
+		auto* wrapPanel = (WrapPanel*)control;
+		code << indentStr << name << "->SetOrientation(" << OrientationToString(wrapPanel->GetOrientation()) << ");\n";
+		code << indentStr << name << "->SetItemWidth(" << FloatLiteral(wrapPanel->GetItemWidth()) << ");\n";
+		code << indentStr << name << "->SetItemHeight(" << FloatLiteral(wrapPanel->GetItemHeight()) << ");\n";
 	}
 	else if (dc->Type == UIClass::UI_DockPanel)
 	{
-		auto* dp = (DockPanel*)ctrl;
-		code << indentStr << name << "->SetLastChildFill(" << (dp->GetLastChildFill() ? "true" : "false") << ");\n";
+		auto* dockPanel = (DockPanel*)control;
+		code << indentStr << name << "->SetLastChildFill(" << (dockPanel->GetLastChildFill() ? "true" : "false") << ");\n";
 	}
 	else if (dc->Type == UIClass::UI_SplitContainer)
 	{
-		auto* sc = (SplitContainer*)ctrl;
-		code << indentStr << name << "->SplitOrientation = " << OrientationToString(sc->SplitOrientation) << ";\n";
-		code << indentStr << name << "->SplitterDistance = " << sc->SplitterDistance << ";\n";
-		code << indentStr << name << "->SplitterWidth = " << sc->SplitterWidth << ";\n";
-		code << indentStr << name << "->Panel1MinSize = " << sc->Panel1MinSize << ";\n";
-		code << indentStr << name << "->Panel2MinSize = " << sc->Panel2MinSize << ";\n";
-		if (sc->IsSplitterFixed)
+		auto* splitContainer = (SplitContainer*)control;
+		code << indentStr << name << "->SplitOrientation = " << OrientationToString(splitContainer->SplitOrientation) << ";\n";
+		code << indentStr << name << "->SplitterDistance = " << splitContainer->SplitterDistance << ";\n";
+		code << indentStr << name << "->SplitterWidth = " << splitContainer->SplitterWidth << ";\n";
+		code << indentStr << name << "->Panel1MinSize = " << splitContainer->Panel1MinSize << ";\n";
+		code << indentStr << name << "->Panel2MinSize = " << splitContainer->Panel2MinSize << ";\n";
+		if (splitContainer->IsSplitterFixed)
 			code << indentStr << name << "->IsSplitterFixed = true;\n";
 	}
 
@@ -1716,21 +1724,21 @@ std::string CodeGenerator::GenerateCpp()
 			return;
 		}
 		// 用 parent->Children 的顺序来稳定排序（用于 Stack/Warp 等需要顺序的容器）
-		std::unordered_map<Control*, int> idx;
-		idx.reserve((size_t)parent->Count);
+		std::unordered_map<Control*, int> childRuntimeOrder;
+		childRuntimeOrder.reserve((size_t)parent->Count);
 		for (int i = 0; i < parent->Count; i++)
 		{
-			idx[parent->operator[](i)] = i;
+			childRuntimeOrder[parent->operator[](i)] = i;
 		}
 		std::stable_sort(list.begin(), list.end(), [&](const auto& a, const auto& b)
 			{
-				int ia = INT_MAX;
-				int ib = INT_MAX;
-				auto ita = idx.find(a->ControlInstance);
-				if (ita != idx.end()) ia = ita->second;
-				auto itb = idx.find(b->ControlInstance);
-				if (itb != idx.end()) ib = itb->second;
-				return ia < ib;
+				int leftOrder = INT_MAX;
+				int rightOrder = INT_MAX;
+				auto leftOrderIt = childRuntimeOrder.find(a->ControlInstance);
+				if (leftOrderIt != childRuntimeOrder.end()) leftOrder = leftOrderIt->second;
+				auto rightOrderIt = childRuntimeOrder.find(b->ControlInstance);
+				if (rightOrderIt != childRuntimeOrder.end()) rightOrder = rightOrderIt->second;
+				return leftOrder < rightOrder;
 			});
 	};
 
@@ -1822,10 +1830,10 @@ std::string CodeGenerator::GenerateCpp()
 		if (dc->Type == UIClass::UI_TabControl)
 		{
 			// TabControl：先创建页，再向页内添加子控件
-			auto* tc = (TabControl*)c;
-			for (int i = 0; i < tc->Count; i++)
+			auto* tabControl = (TabControl*)c;
+			for (int i = 0; i < tabControl->Count; i++)
 			{
-				auto* page = tc->operator[](i);
+				auto* page = tabControl->operator[](i);
 				if (!page) continue;
 				std::string pageVar;
 				// 如果页本身有 DesignerControl 包装，则用成员变量接收

@@ -16,7 +16,7 @@ class Taskbar
     static ITaskbarList3* pTaskbarList;
 public:
 	/** @brief 关联窗口句柄。 */
-    HWND Handle = NULL;
+    HWND Handle = nullptr;
 	/** @brief 绑定到指定窗口。 */
     Taskbar(HWND handle);
 	/** @brief 设置进度值与总量。 */

@@ -12,7 +12,7 @@
  */
 class RadioBox : public Control
 {
-	float last_width = 0.0f;
+	float lastMeasuredWidth = 0.0f;
 	float _selectProgress = 0.0f;
 	float _animStartProgress = 0.0f;
 	float _animTargetProgress = 0.0f;
@@ -27,7 +27,7 @@ protected:
 	bool DefaultClearSelectionOnMouseUp() const override { return true; }
 	bool DefaultSelectOnLeftButtonDoubleClick() const override { return true; }
 	bool DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const override;
-	bool DefaultPostRenderOnMouseDoubleClick(UINT message, bool wasSelected) const override;
+	bool DefaultInvalidateVisualOnMouseDoubleClick(UINT message, bool wasSelected) const override;
 	void BeforeDefaultMouseUp(UINT message, MouseEventArgs& e, bool wasSelected) override;
 	void BeforeDefaultMouseDoubleClick(UINT message, MouseEventArgs& e, bool wasSelected) override;
 public:
@@ -47,7 +47,7 @@ public:
 	/** @brief 文本与圆形控件间距。 */
 	float TextGap = 8.0f;
 	/** @brief 边框宽度（像素）。 */
-	float Boder = 1.5f;
+	float BorderThickness = 1.5f;
 	/** @brief 创建单选框。 */
 	RadioBox(std::wstring text, int x, int y);
 	bool IsAnimationRunning() override;

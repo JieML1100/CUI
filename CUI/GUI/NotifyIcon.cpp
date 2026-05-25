@@ -1,5 +1,5 @@
 ﻿#include "NotifyIcon.h"
-NotifyIcon* NotifyIcon::Instance = NULL;
+NotifyIcon* NotifyIcon::Instance = nullptr;
 
 
 NotifyIconMenuItem NotifyIconMenuItem::CreateSeparator()
@@ -18,7 +18,7 @@ void NotifyIconMenuItem::AddSubItem(const NotifyIconMenuItem& item)
 
     if (item.Separator)
     {
-        AppendMenuA(SubMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenuA(SubMenu, MF_SEPARATOR, 0, nullptr);
     }
     else
     {
@@ -77,8 +77,8 @@ NotifyIcon::NotifyIcon()
     NotifyIconData.cbSize = sizeof(NOTIFYICONDATAA);
     NotifyIconData.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     NotifyIconData.uCallbackMessage = WM_USER + 1;
-    NotifyIconData.hIcon = NULL;
-    NotifyIconData.hWnd = NULL;
+    NotifyIconData.hIcon = nullptr;
+    NotifyIconData.hWnd = nullptr;
     NotifyIconData.uID = 0;
     NotifyIconData.uVersion = NOTIFYICON_VERSION;
 
@@ -92,7 +92,7 @@ NotifyIcon::~NotifyIcon()
     if (popupMenu)
     {
         DestroyMenu(popupMenu);
-        popupMenu = NULL;
+        popupMenu = nullptr;
     }
 }
 
@@ -119,7 +119,7 @@ void NotifyIcon::HideNotifyIcon()
 {
     Shell_NotifyIconA(NIM_DELETE, &NotifyIconData);
     if (Instance == this)
-        Instance = NULL;
+        Instance = nullptr;
 }
 
 void NotifyIcon::SetToolTip(const char* text)
@@ -142,7 +142,7 @@ void NotifyIcon::AddMenuItem(const NotifyIconMenuItem& item)
 {
     if (item.Separator)
     {
-        AppendMenuA(popupMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenuA(popupMenu, MF_SEPARATOR, 0, nullptr);
     }
     else
     {
@@ -171,7 +171,7 @@ void NotifyIcon::ShowContextMenu(int x, int y)
 
     
     UINT flags = TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_RETURNCMD;
-    int cmdId = TrackPopupMenu(popupMenu, flags, x, y, 0, hWnd, NULL);
+    int cmdId = TrackPopupMenu(popupMenu, flags, x, y, 0, hWnd, nullptr);
 
     
     if (cmdId > 0)

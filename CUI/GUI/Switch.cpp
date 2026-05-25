@@ -100,7 +100,7 @@ void Switch::Update()
 	auto size = this->ActualSize();
 	const float actualWidth = static_cast<float>(size.cx);
 	const float actualHeight = static_cast<float>(size.cy);
-	float clipW = last_width > actualWidth ? last_width : actualWidth;
+	float clipW = lastMeasuredWidth > actualWidth ? lastMeasuredWidth : actualWidth;
 	this->BeginRender(clipW, actualHeight);
 	{
 		const float progress = CurrentThumbProgress();
@@ -122,8 +122,8 @@ void Switch::Update()
 		d2d->FillRoundRect(0.0f, 0.0f, actualWidth, actualHeight, trackColor, trackRadius);
 		if (hover && UnderMouseColor.a > 0.0f)
 			d2d->FillRoundRect(1.0f, 1.0f, actualWidth - 2.0f, actualHeight - 2.0f, UnderMouseColor, (std::max)(0.0f, trackRadius - 1.0f));
-		if (Boder > 0.0f && TrackBorderColor.a > 0.0f)
-			d2d->DrawRoundRect(0.5f, 0.5f, actualWidth - 1.0f, actualHeight - 1.0f, TrackBorderColor, Boder, trackRadius);
+		if (BorderThickness > 0.0f && TrackBorderColor.a > 0.0f)
+			d2d->DrawRoundRect(0.5f, 0.5f, actualWidth - 1.0f, actualHeight - 1.0f, TrackBorderColor, BorderThickness, trackRadius);
 
 		if (ThumbShadowColor.a > 0.0f)
 			d2d->FillRoundRect(thumbL, thumbT + 1.0f, thumbW, thumbDiameter, WithAlpha(ThumbShadowColor, pressed ? 0.34f : 0.22f), thumbRadius);
@@ -134,7 +134,7 @@ void Switch::Update()
 		d2d->FillRoundRect(0.0f, 0.0f, clipW, actualHeight, DisabledOverlayColor, actualHeight * 0.5f);
 	}
 	this->EndRender();
-	last_width = actualWidth;
+	lastMeasuredWidth = actualWidth;
 }
 
 bool Switch::DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const
@@ -143,7 +143,7 @@ bool Switch::DefaultRaiseMouseDoubleClick(UINT message, bool wasSelected) const
 	return wasSelected;
 }
 
-bool Switch::DefaultPostRenderOnMouseDoubleClick(UINT message, bool wasSelected) const
+bool Switch::DefaultInvalidateVisualOnMouseDoubleClick(UINT message, bool wasSelected) const
 {
 	(void)message;
 	return wasSelected;

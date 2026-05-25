@@ -281,7 +281,7 @@ void DropDownPopup::SetExpanded(bool expanded, bool raiseClosedAfterCollapse)
 
 	if (this->ParentForm)
 		this->ParentForm->Invalidate(true);
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
 void DropDownPopup::FinishCollapsed(bool raiseClosed)
@@ -397,7 +397,7 @@ void DropDownPopup::ScrollBy(int deltaItems)
 	const int old = this->_scrollOffset;
 	this->_scrollOffset = std::clamp(this->_scrollOffset + deltaItems, 0, MaxScrollOffset());
 	if (old != this->_scrollOffset)
-		this->PostRender();
+		this->InvalidateVisual();
 }
 
 D2D1_RECT_F DropDownPopup::GetScrollTrackRect() const
@@ -425,34 +425,34 @@ D2D1_RECT_F DropDownPopup::GetScrollThumbRect() const
 	return D2D1::RectF(track.left, top, track.right, top + thumbH);
 }
 
-bool DropDownPopup::IsOverScrollBar(int xof, int yof) const
+bool DropDownPopup::IsOverScrollBar(int localX, int localY) const
 {
 	if (!HasScrollBar()) return false;
 	auto track = GetScrollTrackRect();
-	return PtInRectF(track, static_cast<float>(xof), static_cast<float>(yof));
+	return PtInRectF(track, static_cast<float>(localX), static_cast<float>(localY));
 }
 
-void DropDownPopup::UpdateScrollByThumb(float yof)
+void DropDownPopup::UpdateScrollByThumb(float localY)
 {
 	if (!this->_dragScroll || !HasScrollBar()) return;
 	auto track = GetScrollTrackRect();
 	auto thumb = GetScrollThumbRect();
 	const float thumbH = RectHeight(thumb);
 	const float movable = std::max(1.0f, RectHeight(track) - thumbH);
-	float top = std::clamp(yof - this->_scrollThumbGrabOffsetY, track.top, track.bottom - thumbH);
+	float top = std::clamp(localY - this->_scrollThumbGrabOffsetY, track.top, track.bottom - thumbH);
 	float per = (top - track.top) / movable;
 	this->_scrollOffset = std::clamp(static_cast<int>(std::round(per * MaxScrollOffset())), 0, MaxScrollOffset());
-	this->PostRender();
+	this->InvalidateVisual();
 }
 
-int DropDownPopup::HitTestItem(int xof, int yof) const
+int DropDownPopup::HitTestItem(int localX, int localY) const
 {
 	if (!IsOpen()) return -1;
 	const float itemRight = static_cast<float>(this->_size.cx) - (HasScrollBar() ? (this->ScrollBarWidth + this->ScrollTrackPadding * 2.0f) : 0.0f);
-	if (xof < 0 || static_cast<float>(xof) > itemRight) return -1;
-	const float localY = static_cast<float>(yof) - this->VerticalPadding;
-	if (localY < 0.0f) return -1;
-	const int viewIndex = static_cast<int>(localY / this->ItemHeight);
+	if (localX < 0 || static_cast<float>(localX) > itemRight) return -1;
+	const float itemLocalY = static_cast<float>(localY) - this->VerticalPadding;
+	if (itemLocalY < 0.0f) return -1;
+	const int viewIndex = static_cast<int>(itemLocalY / this->ItemHeight);
 	if (viewIndex < 0 || viewIndex >= VisibleItemCount()) return -1;
 	const int index = this->_scrollOffset + viewIndex;
 	return index >= 0 && index < ItemCount() ? index : -1;
@@ -468,10 +468,10 @@ bool DropDownPopup::CommitSelection(int selectedIndex)
 	return true;
 }
 
-bool DropDownPopup::CanHandleMouseWheel(int delta, int xof, int yof)
+bool DropDownPopup::CanHandleMouseWheel(int delta, int localX, int localY)
 {
-	(void)xof;
-	(void)yof;
+	(void)localX;
+	(void)localY;
 	if (!IsOpen() || delta == 0 || MaxScrollOffset() <= 0) return false;
 	return delta > 0 ? this->_scrollOffset > 0 : this->_scrollOffset < MaxScrollOffset();
 }
@@ -495,11 +495,11 @@ bool DropDownPopup::HandlesNavigationKey(WPARAM key) const
 	}
 }
 
-CursorKind DropDownPopup::QueryCursor(int xof, int yof)
+CursorKind DropDownPopup::QueryCursor(int localX, int localY)
 {
-	if (IsOverScrollBar(xof, yof))
+	if (IsOverScrollBar(localX, localY))
 		return CursorKind::SizeNS;
-	if (HitTestItem(xof, yof) >= 0)
+	if (HitTestItem(localX, localY) >= 0)
 		return CursorKind::Hand;
 	return CursorKind::Arrow;
 }
@@ -576,10 +576,10 @@ void DropDownPopup::Update()
 	this->EndRender();
 
 	if (IsAnimationRunning())
-		this->PostRender();
+		this->InvalidateVisual();
 }
 
-bool DropDownPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof)
+bool DropDownPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
 	switch (message)
@@ -589,7 +589,7 @@ bool DropDownPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 		const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
 		if (delta != 0)
 			ScrollBy(delta > 0 ? -1 : 1);
-		MouseEventArgs e(MouseButtons::None, 0, xof, yof, delta);
+		MouseEventArgs e(MouseButtons::None, 0, localX, localY, delta);
 		this->OnMouseWheel(this, e);
 		return true;
 	}
@@ -599,18 +599,18 @@ bool DropDownPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 			this->ParentForm->UnderMouse = this;
 		if (this->_dragScroll)
 		{
-			UpdateScrollByThumb(static_cast<float>(yof));
+			UpdateScrollByThumb(static_cast<float>(localY));
 		}
 		else
 		{
-			int hover = HitTestItem(xof, yof);
+			int hover = HitTestItem(localX, localY);
 			if (hover != this->HoveredIndex)
 			{
 				this->HoveredIndex = hover;
-				this->PostRender();
+				this->InvalidateVisual();
 			}
 		}
-		MouseEventArgs e(MouseButtons::None, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseMove(this, e);
 		return true;
 	}
@@ -618,21 +618,21 @@ bool DropDownPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 	{
 		if (this->ParentForm)
 			this->ParentForm->SetSelectedControl(this, false);
-		if (IsOverScrollBar(xof, yof))
+		if (IsOverScrollBar(localX, localY))
 		{
 			auto thumb = GetScrollThumbRect();
-			const float localY = static_cast<float>(yof);
-			const bool hitThumb = PtInRectF(thumb, static_cast<float>(xof), localY);
-			this->_scrollThumbGrabOffsetY = hitThumb ? localY - thumb.top : RectHeight(thumb) * 0.5f;
+			const float pointerY = static_cast<float>(localY);
+			const bool hitThumb = PtInRectF(thumb, static_cast<float>(localX), pointerY);
+			this->_scrollThumbGrabOffsetY = hitThumb ? pointerY - thumb.top : RectHeight(thumb) * 0.5f;
 			this->_dragScroll = true;
-			UpdateScrollByThumb(localY);
+			UpdateScrollByThumb(pointerY);
 		}
 		else
 		{
-			this->HoveredIndex = HitTestItem(xof, yof);
-			this->PostRender();
+			this->HoveredIndex = HitTestItem(localX, localY);
+			this->InvalidateVisual();
 		}
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseDown(this, e);
 		return true;
 	}
@@ -641,15 +641,15 @@ bool DropDownPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 		const bool wasDragging = this->_dragScroll;
 		this->_dragScroll = false;
 		if (!wasDragging)
-			CommitSelection(HitTestItem(xof, yof));
-		MouseEventArgs e(MouseButtons::Left, 0, xof, yof, HIWORD(wParam));
+			CommitSelection(HitTestItem(localX, localY));
+		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseUp(this, e);
 		return true;
 	}
 	case WM_LBUTTONDBLCLK:
 	{
-		CommitSelection(HitTestItem(xof, yof));
-		MouseEventArgs e(MouseButtons::Left, 2, xof, yof, HIWORD(wParam));
+		CommitSelection(HitTestItem(localX, localY));
+		MouseEventArgs e(MouseButtons::Left, 2, localX, localY, HIWORD(wParam));
 		this->OnMouseDoubleClick(this, e);
 		return true;
 	}
@@ -671,38 +671,38 @@ bool DropDownPopup::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, i
 			EnsureSelectionVisible();
 			if (this->HoveredIndex < this->_scrollOffset)
 				this->_scrollOffset = this->HoveredIndex;
-			this->PostRender();
+			this->InvalidateVisual();
 			break;
 		case VK_DOWN:
 			this->HoveredIndex = ItemCount() > 0 ? std::min(ItemCount() - 1, hover + 1) : -1;
 			if (this->HoveredIndex >= this->_scrollOffset + VisibleItemCount())
 				this->_scrollOffset = this->HoveredIndex - VisibleItemCount() + 1;
 			EnsureScrollInRange();
-			this->PostRender();
+			this->InvalidateVisual();
 			break;
 		case VK_HOME:
 			this->HoveredIndex = ItemCount() > 0 ? 0 : -1;
 			this->_scrollOffset = 0;
-			this->PostRender();
+			this->InvalidateVisual();
 			break;
 		case VK_END:
 			this->HoveredIndex = ItemCount() > 0 ? ItemCount() - 1 : -1;
 			this->_scrollOffset = MaxScrollOffset();
-			this->PostRender();
+			this->InvalidateVisual();
 			break;
 		case VK_PRIOR:
 			this->HoveredIndex = ItemCount() > 0 ? std::max(0, hover - VisibleItemCount()) : -1;
 			if (this->HoveredIndex < this->_scrollOffset)
 				this->_scrollOffset = this->HoveredIndex;
 			EnsureScrollInRange();
-			this->PostRender();
+			this->InvalidateVisual();
 			break;
 		case VK_NEXT:
 			this->HoveredIndex = ItemCount() > 0 ? std::min(ItemCount() - 1, hover + VisibleItemCount()) : -1;
 			if (this->HoveredIndex >= this->_scrollOffset + VisibleItemCount())
 				this->_scrollOffset = this->HoveredIndex - VisibleItemCount() + 1;
 			EnsureScrollInRange();
-			this->PostRender();
+			this->InvalidateVisual();
 			break;
 		default:
 			break;

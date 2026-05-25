@@ -48,15 +48,15 @@ public:
 	bool AutoCloseOnOutsideClick() const override { return true; }
 	bool AutoCloseOnFormFocusLoss() const override { return true; }
 	bool HandlesMouseWheel() const override { return true; }
-	bool CanHandleMouseWheel(int delta, int xof, int yof) override;
+	bool CanHandleMouseWheel(int delta, int localX, int localY) override;
 	bool HandlesNavigationKey(WPARAM key) const override;
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	SIZE ActualSize() override;
-	CursorKind QueryCursor(int xof, int yof) override;
+	CursorKind QueryCursor(int localX, int localY) override;
 	void Update() override;
-	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int xof, int yof) override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 private:
 	Control* _owner = nullptr;
@@ -89,10 +89,10 @@ private:
 	void SetExpanded(bool expanded, bool raiseClosedAfterCollapse = true);
 	void FinishCollapsed(bool raiseClosed);
 	void ScrollBy(int deltaItems);
-	void UpdateScrollByThumb(float yof);
-	int HitTestItem(int xof, int yof) const;
+	void UpdateScrollByThumb(float localY);
+	int HitTestItem(int localX, int localY) const;
 	D2D1_RECT_F GetScrollTrackRect() const;
 	D2D1_RECT_F GetScrollThumbRect() const;
-	bool IsOverScrollBar(int xof, int yof) const;
+	bool IsOverScrollBar(int localX, int localY) const;
 	bool CommitSelection(int selectedIndex);
 };
