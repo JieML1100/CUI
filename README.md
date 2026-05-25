@@ -56,7 +56,7 @@
 | --- | --- |
 | ![Tab 5](imgs/Tab5.png) | ![Tab 6](imgs/Tab6.png) |
 
-| Tab 5 | WebBrowser |
+| WebBrowser |
 | --- | --- |
 | ![WebBrowser](imgs/WebBrowser.png) |
 
