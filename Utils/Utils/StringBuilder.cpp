@@ -19,7 +19,7 @@ void StringBuilder::Append(const char* str) {
 	this->buffer << str;
 }
 void StringBuilder::Append(const wchar_t* str) {
-	this->buffer << Convert::wstring_to_string(str);
+	this->buffer << Convert::WStringToString(str);
 }
 void StringBuilder::Append(const char str) {
 	this->buffer << str;
@@ -65,7 +65,7 @@ void StringBuilder::Append(const std::string str) {
 	this->buffer << str;
 }
 void StringBuilder::Append(const std::wstring str) {
-	this->buffer << Convert::wstring_to_string(str);
+	this->buffer << Convert::WStringToString(str);
 }
 void StringBuilder::Append(const StringBuilder str) {
 	this->buffer << str.buffer.str();
@@ -74,7 +74,7 @@ void StringBuilder::AppendLine(const char* str) {
 	this->buffer << str << "\n";
 }
 void StringBuilder::AppendLine(const wchar_t* str) {
-	this->buffer << Convert::wstring_to_string(str) << "\n";
+	this->buffer << Convert::WStringToString(str) << "\n";
 }
 void StringBuilder::AppendLine(const char str) {
 	this->buffer << str << "\n";
@@ -120,7 +120,7 @@ void StringBuilder::AppendLine(const std::string str) {
 	this->buffer << str << "\n";
 }
 void StringBuilder::AppendLine(const std::wstring str) {
-	this->buffer << Convert::wstring_to_string(str) << "\n";
+	this->buffer << Convert::WStringToString(str) << "\n";
 }
 void StringBuilder::AppendLine(const StringBuilder str) {
 	this->buffer << str.buffer.str() << "\n";
@@ -129,7 +129,7 @@ std::string StringBuilder::ToString() {
 	return this->buffer.str();
 }
 std::wstring StringBuilder::ToWString() {
-	return Convert::string_to_wstring(this->buffer.str());
+	return Convert::StringToWString(this->buffer.str());
 }
 void StringBuilder::Clear() {
 	this->buffer.str("");

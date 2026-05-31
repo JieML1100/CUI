@@ -1,5 +1,5 @@
 ﻿#include "DesignDocumentSerializer.h"
-#include "../../LibXML/include/Xml.h"
+#include "../../XmlLite/include/Xml.h"
 #include <algorithm>
 #include <cctype>
 #include <Convert.h>

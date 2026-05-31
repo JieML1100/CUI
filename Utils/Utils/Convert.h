@@ -37,8 +37,8 @@ public:
 	static std::string Utf32ToUtf8(const std::u32string utf32Str);
 	static std::wstring Utf8ToUnicode(const std::string utf8Str);
 	static std::string UnicodeToUtf8(const std::wstring unicodeStr);
-	static std::string wstring_to_string(const std::wstring wstr);
-	static std::wstring string_to_wstring(const std::string str);
+	static std::string WStringToString(const std::wstring wstr);
+	static std::wstring StringToWString(const std::string str);
 	static std::string ToBase64(const void* data,size_t size);
 	static std::string ToBase64(const std::string input);
 	static std::string FromBase64(const std::string input);

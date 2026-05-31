@@ -424,10 +424,10 @@ std::wstring Convert::Utf8ToUnicode(const std::string utf8Str) {
 std::string Convert::UnicodeToUtf8(const std::wstring unicodeStr) {
 	return WideToMultiByte(unicodeStr, CP_UTF8);
 }
-std::string Convert::wstring_to_string(const std::wstring wstr) {
+std::string Convert::WStringToString(const std::wstring wstr) {
 	return WideToMultiByte(wstr, CP_ACP);
 }
-std::wstring Convert::string_to_wstring(const std::string str) {
+std::wstring Convert::StringToWString(const std::string str) {
 	return MultiByteToWide(str, CP_ACP);
 }
 std::string Convert::ToBase64(const void* data, size_t size) {

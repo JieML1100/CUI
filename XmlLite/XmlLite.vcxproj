@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -19,45 +19,27 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\XmlConvert.cpp" />
-    <ClCompile Include="src\XmlDocument.cpp" />
-    <ClCompile Include="src\XmlInternal.cpp" />
-    <ClCompile Include="src\XmlNamespaceManager.cpp" />
-    <ClCompile Include="src\XmlNameTable.cpp" />
-    <ClCompile Include="src\XmlNode.cpp" />
-    <ClCompile Include="src\XmlNodeReader.cpp" />
-    <ClCompile Include="src\XmlReader.cpp" />
-    <ClCompile Include="src\XmlResolver.cpp" />
-    <ClCompile Include="src\XmlSchemaSet.cpp" />
-    <ClCompile Include="src\XmlTypes.cpp" />
-    <ClCompile Include="src\XmlWriter.cpp" />
-    <ClCompile Include="src\XmlXPath.cpp" />
-  </ItemGroup>
-  <ItemGroup>
     <ClInclude Include="include\Xml.h" />
     <ClInclude Include="include\XmlConvert.h" />
     <ClInclude Include="include\XmlDocument.h" />
-    <ClInclude Include="include\XmlDomInternal.h" />
-    <ClInclude Include="include\XmlInternal.h" />
-    <ClInclude Include="include\XmlNamespaceManager.h" />
-    <ClInclude Include="include\XmlNameTable.h" />
     <ClInclude Include="include\XmlNode.h" />
-    <ClInclude Include="include\XmlNodeReader.h" />
     <ClInclude Include="include\XmlReader.h" />
-    <ClInclude Include="include\XmlReaderInternal.h" />
-    <ClInclude Include="include\XmlResolver.h" />
-    <ClInclude Include="include\XmlSchemaInternal.h" />
-    <ClInclude Include="include\XmlSchemaSet.h" />
     <ClInclude Include="include\XmlTypes.h" />
-    <ClInclude Include="include\XmlUtilityInternal.h" />
     <ClInclude Include="include\XmlWriter.h" />
-    <ClInclude Include="include\XmlXPath.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\XmlConvert.cpp" />
+    <ClCompile Include="src\XmlDocument.cpp" />
+    <ClCompile Include="src\XmlNode.cpp" />
+    <ClCompile Include="src\XmlReader.cpp" />
+    <ClCompile Include="src\XmlTypes.cpp" />
+    <ClCompile Include="src\XmlWriter.cpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
-    <ProjectGuid>{4eb8ee5e-bdd7-4744-9651-7d64df66f413}</ProjectGuid>
-    <RootNamespace>LibXML</RootNamespace>
+    <ProjectGuid>{b184b7ea-ea4d-4e1e-abdd-a9a6a91cbbcf}</ProjectGuid>
+    <RootNamespace>XmlLite</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -112,17 +94,11 @@
       <PreprocessorDefinitions>WIN32;_DEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <PrecompiledHeaderFile>
-      </PrecompiledHeaderFile>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
-    <Link>
-      <SubSystem>
-      </SubSystem>
-      <GenerateDebugInformation>true</GenerateDebugInformation>
-    </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -133,18 +109,11 @@
       <PreprocessorDefinitions>WIN32;NDEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <PrecompiledHeaderFile>
-      </PrecompiledHeaderFile>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
-    <Link>
-      <SubSystem>
-      </SubSystem>
-      <GenerateDebugInformation>true</GenerateDebugInformation>
-    </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -153,17 +122,11 @@
       <PreprocessorDefinitions>_DEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <PrecompiledHeaderFile>
-      </PrecompiledHeaderFile>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
-    <Link>
-      <SubSystem>
-      </SubSystem>
-      <GenerateDebugInformation>true</GenerateDebugInformation>
-    </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -174,18 +137,11 @@
       <PreprocessorDefinitions>NDEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <PrecompiledHeaderFile>
-      </PrecompiledHeaderFile>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
-    <Link>
-      <SubSystem>
-      </SubSystem>
-      <GenerateDebugInformation>true</GenerateDebugInformation>
-    </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

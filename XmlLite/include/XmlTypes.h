@@ -1,16 +1,11 @@
 #pragma once
 
 #include <cstddef>
-#include <functional>
-#include <memory>
-#include <optional>
 #include <stdexcept>
 #include <string>
 
 namespace System::Xml {
 
-class XmlSchemaSet;
-class XmlResolver;
 class XmlNode;
 
 enum class XmlNodeType {
@@ -52,12 +47,6 @@ enum class ConformanceLevel {
     Document,
 };
 
-enum class ValidationType {
-    None,
-    Dtd,
-    Schema,
-};
-
 enum class ReadState {
     Initial,
     Interactive,
@@ -92,11 +81,7 @@ struct XmlReaderSettings {
     bool IgnoreProcessingInstructions = false;
     DtdProcessing DtdProcessing = DtdProcessing::Parse;
     ConformanceLevel Conformance = ConformanceLevel::Document;
-    ValidationType Validation = ValidationType::None;
     std::size_t MaxCharactersInDocument = 0;
-    std::size_t MaxCharactersFromEntities = 0;
-    std::shared_ptr<XmlSchemaSet> Schemas;
-    std::shared_ptr<XmlResolver> Resolver;
 };
 
 class XmlException : public std::runtime_error {
@@ -110,22 +95,5 @@ private:
     std::size_t line_;
     std::size_t column_;
 };
-
-enum class XmlNodeChangedAction {
-    Insert,
-    Remove,
-    Change,
-};
-
-struct XmlNodeChangedEventArgs {
-    XmlNodeChangedAction Action;
-    XmlNode* Node;
-    XmlNode* OldParent;
-    XmlNode* NewParent;
-    std::string OldValue;
-    std::string NewValue;
-};
-
-using XmlNodeChangedEventHandler = std::function<void(const XmlNodeChangedEventArgs&)>;
 
 }  // namespace System::Xml

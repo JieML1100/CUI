@@ -1,9 +1,10 @@
 #pragma once
 
-#include "XmlTypes.h"
-#include "XmlNameTable.h"
+#include "XmlDocument.h"
 
 #include <cstddef>
+#include <iosfwd>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -11,11 +12,11 @@
 
 namespace System::Xml {
 
-class XmlNode;
-
-class XmlNodeReader final {
+class XmlReader final {
 public:
-    explicit XmlNodeReader(const XmlNode& node, const XmlReaderSettings& settings = {});
+    static XmlReader Create(const std::string& xml, const XmlReaderSettings& settings = {});
+    static XmlReader Create(std::istream& stream, const XmlReaderSettings& settings = {});
+    static XmlReader CreateFromFile(const std::string& path, const XmlReaderSettings& settings = {});
 
     bool Read();
     bool IsEOF() const noexcept;
@@ -42,7 +43,6 @@ public:
     bool MoveToFirstAttribute();
     bool MoveToNextAttribute();
     bool MoveToElement();
-    std::string LookupNamespace(std::string_view prefix) const;
 
     std::string ReadInnerXml() const;
     std::string ReadOuterXml() const;
@@ -52,7 +52,6 @@ public:
     double ReadContentAsDouble();
     bool ReadContentAsBoolean();
     std::string ReadString();
-    int ReadBase64(std::vector<unsigned char>& buffer);
 
     XmlNodeType MoveToContent();
     bool IsStartElement();
@@ -65,13 +64,9 @@ public:
     std::string ReadElementContentAsString();
     std::string ReadElementContentAsString(std::string_view localName, std::string_view namespaceUri);
     int ReadElementContentAsInt();
-    int ReadElementContentAsInt(std::string_view localName, std::string_view namespaceUri);
     long long ReadElementContentAsLong();
-    long long ReadElementContentAsLong(std::string_view localName, std::string_view namespaceUri);
     double ReadElementContentAsDouble();
-    double ReadElementContentAsDouble(std::string_view localName, std::string_view namespaceUri);
     bool ReadElementContentAsBoolean();
-    bool ReadElementContentAsBoolean(std::string_view localName, std::string_view namespaceUri);
     std::string ReadElementString();
     std::string ReadElementString(std::string_view name);
     std::string ReadElementString(std::string_view localName, std::string_view namespaceUri);
@@ -79,50 +74,36 @@ public:
     bool ReadToFollowing(std::string_view name);
     bool ReadToDescendant(std::string_view name);
     bool ReadToNextSibling(std::string_view name);
-    const XmlNameTable& NameTable() const noexcept;
+    XmlReader ReadSubtree();
+    void Close();
 
 private:
-    struct NodeEvent {
+    struct ReaderNode {
         XmlNodeType nodeType = XmlNodeType::None;
-        const XmlNode* sourceNode = nullptr;
         std::string name;
-        std::string localName;
-        std::string prefix;
         std::string namespaceUri;
         std::string value;
         int depth = 0;
         bool isEmptyElement = false;
-        std::string innerXml;
-        std::string outerXml;
+        std::shared_ptr<XmlNode> node;
         std::vector<std::pair<std::string, std::string>> attributes;
-        std::vector<std::string> attributeLocalNames;
-        std::vector<std::string> attributePrefixes;
-        std::vector<std::string> attributeNamespaceUris;
     };
 
-    void BuildEvents(const XmlNode& node, int depth, bool preserveSpace);
-    void AppendEvent(
-        XmlNodeType nodeType,
-        const XmlNode* sourceNode,
-        std::string name,
-        std::string namespaceUri,
-        std::string value,
-        int depth,
-        bool isEmptyElement,
-        std::string innerXml,
-        std::string outerXml,
-        std::vector<std::pair<std::string, std::string>> attributes = {},
-        std::vector<std::string> attributeNamespaceUris = {});
-    const NodeEvent* CurrentEvent() const noexcept;
-    const std::vector<std::pair<std::string, std::string>>& CurrentAttributes() const noexcept;
+    explicit XmlReader(XmlReaderSettings settings = {});
+
+    const ReaderNode* CurrentNode() const noexcept;
+    const std::pair<std::string, std::string>* CurrentAttribute() const noexcept;
+    std::size_t FindMatchingEndElementIndex(std::size_t elementIndex) const;
+    void AppendFlattenedNode(const std::shared_ptr<XmlNode>& node, int depth);
+    void LoadDocument(const std::shared_ptr<XmlDocument>& document);
 
     XmlReaderSettings settings_;
-    std::vector<NodeEvent> events_;
-    std::size_t currentIndex_ = 0;
-    bool started_ = false;
-    bool eof_ = false;
+    std::shared_ptr<XmlDocument> document_;
+    std::vector<ReaderNode> nodes_;
+    std::size_t currentIndex_ = static_cast<std::size_t>(-1);
     int attributeIndex_ = -1;
-    XmlNameTable nameTable_;
+    ReadState state_ = ReadState::Initial;
+    mutable std::string scratch_;
 };
 
 }  // namespace System::Xml
