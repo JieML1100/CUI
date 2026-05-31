@@ -16,7 +16,7 @@ public:
 	long long Read(void* buffer, size_t size);
 	template <class T>
 	bool Read(T* buffer) {
-		return Read(&buffer, sizeof(T)) == sizeof(T);
+		return buffer != nullptr && Read(buffer, sizeof(T)) == sizeof(T);
 	}
 	bool Write(const void* buffer, size_t size);
 	template <class T>
@@ -27,6 +27,7 @@ public:
 	void Seek(size_t pos);
 	void SeekToEnd();
 	size_t Length();
+	bool IsOpen() const;
 	void Close();
 private:
 	std::fstream file_;

@@ -19,14 +19,14 @@ void StringBuilder::Append(const char* str) {
 	this->buffer << str;
 }
 void StringBuilder::Append(const wchar_t* str) {
-	this->buffer << Convert::WStringToString(str);
+	this->buffer << Convert::wstring_to_string(str);
 }
 void StringBuilder::Append(const char str) {
 	this->buffer << str;
 }
 void StringBuilder::Append(const wchar_t str) {
-	wchar_t charBuffer[2] = { str,0 };
-	this->Append(charBuffer);
+	wchar_t tmp[2] = { str,0 };
+	this->Append(tmp);
 }
 void StringBuilder::Append(const int str) {
 	this->buffer << str;
@@ -65,7 +65,7 @@ void StringBuilder::Append(const std::string str) {
 	this->buffer << str;
 }
 void StringBuilder::Append(const std::wstring str) {
-	this->buffer << Convert::WStringToString(str);
+	this->buffer << Convert::wstring_to_string(str);
 }
 void StringBuilder::Append(const StringBuilder str) {
 	this->buffer << str.buffer.str();
@@ -74,14 +74,14 @@ void StringBuilder::AppendLine(const char* str) {
 	this->buffer << str << "\n";
 }
 void StringBuilder::AppendLine(const wchar_t* str) {
-	this->buffer << Convert::WStringToString(str) << "\n";
+	this->buffer << Convert::wstring_to_string(str) << "\n";
 }
 void StringBuilder::AppendLine(const char str) {
 	this->buffer << str << "\n";
 }
 void StringBuilder::AppendLine(const wchar_t str) {
-	wchar_t charBuffer[2] = { str,0 };
-	this->AppendLine(charBuffer);
+	wchar_t tmp[2] = { str,0 };
+	this->AppendLine(tmp);
 }
 void StringBuilder::AppendLine(const int str) {
 	this->buffer << str << "\n";
@@ -120,7 +120,7 @@ void StringBuilder::AppendLine(const std::string str) {
 	this->buffer << str << "\n";
 }
 void StringBuilder::AppendLine(const std::wstring str) {
-	this->buffer << Convert::WStringToString(str) << "\n";
+	this->buffer << Convert::wstring_to_string(str) << "\n";
 }
 void StringBuilder::AppendLine(const StringBuilder str) {
 	this->buffer << str.buffer.str() << "\n";
@@ -129,8 +129,9 @@ std::string StringBuilder::ToString() {
 	return this->buffer.str();
 }
 std::wstring StringBuilder::ToWString() {
-	return Convert::StringToWString(this->buffer.str());
+	return Convert::string_to_wstring(this->buffer.str());
 }
 void StringBuilder::Clear() {
+	this->buffer.str("");
 	this->buffer.clear();
 }

@@ -1,32 +1,75 @@
-﻿#include "Environment.h"
+#include "Environment.h"
 #include <Psapi.h>
 #include <ShlObj.h>
+#include <vector>
+
+namespace {
+	std::string WideToUtf8(const std::wstring& s) {
+		if (s.empty()) return "";
+		int len = WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()),
+			nullptr, 0, nullptr, nullptr);
+		if (len <= 0) return "";
+		std::string out(static_cast<size_t>(len), '\0');
+		WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()),
+			out.data(), len, nullptr, nullptr);
+		return out;
+	}
+
+	std::wstring Utf8ToWide(const std::string& s) {
+		if (s.empty()) return L"";
+		int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+			s.data(), static_cast<int>(s.size()), nullptr, 0);
+		UINT cp = CP_UTF8;
+		DWORD flags = MB_ERR_INVALID_CHARS;
+		if (len <= 0) {
+			cp = CP_ACP;
+			flags = 0;
+			len = MultiByteToWideChar(cp, flags, s.data(), static_cast<int>(s.size()), nullptr, 0);
+		}
+		if (len <= 0) return L"";
+		std::wstring out(static_cast<size_t>(len), L'\0');
+		MultiByteToWideChar(cp, flags, s.data(), static_cast<int>(s.size()), out.data(), len);
+		return out;
+	}
+}
+
 std::string Environment::CommandLine() {
-	return GetCommandLineA();
+	return WideToUtf8(GetCommandLineW());
 }
 std::string Environment::CurrentDirectory() {
-	char buffer[MAX_PATH];
-	GetCurrentDirectoryA(MAX_PATH, buffer);
-	return std::string(buffer);
+	DWORD len = GetCurrentDirectoryW(0, nullptr);
+	if (len == 0) return "";
+	std::wstring buffer(len, L'\0');
+	DWORD written = GetCurrentDirectoryW(len, buffer.data());
+	buffer.resize(written);
+	return WideToUtf8(buffer);
 }
 void Environment::CurrentDirectory(std::string path) {
-	SetCurrentDirectoryA(path.c_str());
+	SetCurrentDirectoryW(Utf8ToWide(path).c_str());
 }
 std::string Environment::SystemDirectory() {
-	char buffer[MAX_PATH];
-	GetSystemDirectoryA(buffer, MAX_PATH);
-	return std::string(buffer);
+	UINT len = GetSystemDirectoryW(nullptr, 0);
+	if (len == 0) return "";
+	std::wstring buffer(len, L'\0');
+	UINT written = GetSystemDirectoryW(buffer.data(), len);
+	buffer.resize(written);
+	return WideToUtf8(buffer);
 }
 std::string Environment::WindowsDirectory() {
-	char buffer[MAX_PATH];
-	GetWindowsDirectoryA(buffer, MAX_PATH);
-	return std::string(buffer);
+	UINT len = GetWindowsDirectoryW(nullptr, 0);
+	if (len == 0) return "";
+	std::wstring buffer(len, L'\0');
+	UINT written = GetWindowsDirectoryW(buffer.data(), len);
+	buffer.resize(written);
+	return WideToUtf8(buffer);
 }
 std::string Environment::MachineName() {
-	char buffer[MAX_COMPUTERNAME_LENGTH + 1];
-	DWORD size = MAX_COMPUTERNAME_LENGTH + 1;
-	GetComputerNameA(buffer, &size);
-	return std::string(buffer);
+	DWORD size = 0;
+	GetComputerNameW(nullptr, &size);
+	std::wstring buffer(size, L'\0');
+	if (!GetComputerNameW(buffer.data(), &size)) return "";
+	buffer.resize(size);
+	return WideToUtf8(buffer);
 }
 int Environment::ProcessorCount() {
 	SYSTEM_INFO info;
@@ -44,26 +87,34 @@ long long Environment::WorkingSet() {
 	return pmc.WorkingSetSize;
 }
 std::string Environment::UserName() {
-	char buffer[MAX_PATH] = { 0 };
-	DWORD size = MAX_PATH;
-	GetUserNameA(buffer, &size);
-	return std::string(buffer);
+	DWORD size = 0;
+	GetUserNameW(nullptr, &size);
+	std::wstring buffer(size, L'\0');
+	if (!GetUserNameW(buffer.data(), &size)) return "";
+	while (!buffer.empty() && buffer.back() == L'\0') buffer.pop_back();
+	return WideToUtf8(buffer);
 }
 std::vector<std::string> Environment::LogicalDrives() {
+	DWORD len = GetLogicalDriveStringsW(0, nullptr);
 	std::vector<std::string> result;
-	char buffer[MAX_PATH];
-	GetLogicalDriveStringsA(MAX_PATH, buffer);
-	std::string str = std::string(buffer);
-	size_t index = 0;
-	while (index < str.size()) {
-		std::string drive = str.substr(index, 3);
-		result.push_back(drive);
-		index += 4;
+	if (len == 0) return result;
+
+	std::wstring buffer(len, L'\0');
+	DWORD written = GetLogicalDriveStringsW(len, buffer.data());
+	if (written == 0) return result;
+
+	const wchar_t* p = buffer.c_str();
+	while (*p) {
+		std::wstring drive = p;
+		result.push_back(WideToUtf8(drive));
+		p += drive.size() + 1;
 	}
 	return result;
 }
 std::string Environment::GetFolderPath(SpecialFolder folder, SpecialFolderOption option) {
-	char buffer[MAX_PATH] = {};
-	SHGetFolderPathA(NULL, (int)folder | (int)option, NULL, 0, buffer);
-	return std::string(buffer);
+	wchar_t buffer[MAX_PATH] = {};
+	if (SHGetFolderPathW(NULL, (int)folder | (int)option, NULL, 0, buffer) != S_OK) {
+		return "";
+	}
+	return WideToUtf8(buffer);
 }

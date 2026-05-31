@@ -10,6 +10,7 @@
 #include <string>
 #include <cstring>
 #include <cassert>
+#include <stdexcept>
 
 #pragma warning(disable: 4267)
 #pragma warning(disable: 4244)
@@ -326,7 +327,7 @@ std::vector<uint8_t> Convert::FromHex(const std::string hex) {
 	uint8_t _highBits = 0;
 	bool ish = true;
 	for (const char& c : hex) {
-		uint8_t v = hex_table_str[c];
+		uint8_t v = hex_table_str[static_cast<uint8_t>(c)];
 		if (v == 0x10) {
 			if (!ish) {
 				result.push_back(_highBits);
@@ -372,13 +373,17 @@ std::vector<uint8_t> Convert::FromHex(const std::wstring hex) {
 
 }
 std::wstring Convert::MultiByteToWide(const std::string& str, uint32_t codePage) {
+	if (str.empty()) return L"";
 	int len = MultiByteToWideChar(codePage, 0, str.c_str(), static_cast<int>(str.length()), NULL, 0);
+	if (len <= 0) return L"";
 	std::wstring wstr(len, L'\0');
 	MultiByteToWideChar(codePage, 0, str.c_str(), static_cast<int>(str.length()), &wstr[0], len);
 	return wstr;
 }
 std::string Convert::WideToMultiByte(const std::wstring& wstr, uint32_t codePage) {
+	if (wstr.empty()) return "";
 	int len = ::WideCharToMultiByte(codePage, 0, wstr.c_str(), static_cast<int>(wstr.length()), NULL, 0, NULL, NULL);
+	if (len <= 0) return "";
 	std::string str(len, '\0');
 	WideCharToMultiByte(codePage, 0, wstr.c_str(), static_cast<int>(wstr.length()), &str[0], len, NULL, NULL);
 	return str;
@@ -419,11 +424,11 @@ std::wstring Convert::Utf8ToUnicode(const std::string utf8Str) {
 std::string Convert::UnicodeToUtf8(const std::wstring unicodeStr) {
 	return WideToMultiByte(unicodeStr, CP_UTF8);
 }
-std::string Convert::WStringToString(const std::wstring wideString) {
-	return WideToMultiByte(wideString, CP_ACP);
+std::string Convert::wstring_to_string(const std::wstring wstr) {
+	return WideToMultiByte(wstr, CP_ACP);
 }
-std::wstring Convert::StringToWString(const std::string narrowString) {
-	return MultiByteToWide(narrowString, CP_ACP);
+std::wstring Convert::string_to_wstring(const std::string str) {
+	return MultiByteToWide(str, CP_ACP);
 }
 std::string Convert::ToBase64(const void* data, size_t size) {
 	static const char base64_chars[] =
@@ -444,14 +449,15 @@ std::string Convert::ToBase64(const void* data, size_t size) {
 			char_array_4[1] = base64_chars[((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xF0) >> 4)];
 			char_array_4[2] = base64_chars[((char_array_3[1] & 0x0F) << 2) + ((char_array_3[2] & 0xC0) >> 6)];
 			char_array_4[3] = base64_chars[char_array_3[2] & 0x3F];
-			*(uint32_t*)&output[index] = *(uint32_t*)char_array_4;
-			index += 4;
+			for (int i = 0; i < 4; ++i)
+				output[index++] = char_array_4[i];
 			char_count = 0;
 		}
 	}
 
 	if (char_count > 0) {
-		*(uint32_t*)&char_array_3 = 0;
+		for (int i = char_count; i < 3; ++i)
+			char_array_3[i] = 0;
 		char_array_4[0] = base64_chars[(char_array_3[0] & 0xFC) >> 2];
 		char_array_4[1] = base64_chars[((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xF0) >> 4)];
 		char_array_4[2] = base64_chars[((char_array_3[1] & 0x0F) << 2) + ((char_array_3[2] & 0xC0) >> 6)];
@@ -473,11 +479,22 @@ std::string Convert::ToBase64(const std::string input) {
 	return Convert::ToBase64(input.data(), input.size());
 }
 std::string Convert::FromBase64(const std::string input) {
-	size_t input_length = input.size();
+	std::string normalized;
+	normalized.reserve(input.size());
+	for (unsigned char c : input) {
+		if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+		normalized.push_back(static_cast<char>(c));
+	}
+	if (normalized.empty()) return "";
+
+	size_t input_length = normalized.size();
+	if (input_length % 4 != 0) {
+		throw std::invalid_argument("Invalid base64 length");
+	}
 	size_t output_length = (input_length / 4) * 3;
 
-	if (input[input_length - 1] == '=') output_length--;
-	if (input[input_length - 2] == '=') output_length--;
+	if (normalized[input_length - 1] == '=') output_length--;
+	if (normalized[input_length - 2] == '=') output_length--;
 
 	std::string output(output_length, '\0');
 
@@ -485,35 +502,35 @@ std::string Convert::FromBase64(const std::string input) {
 	uint8_t char_array_4[4] = { 0 };
 	uint8_t char_array_3[4] = { 0 };
 	size_t index = 0;
-	for (const char& c : input) {
-		char_array_4[char_count++] = base64_table[c];
+	for (size_t pos = 0; pos < normalized.size(); ++pos) {
+		unsigned char c = static_cast<unsigned char>(normalized[pos]);
+		if (c == '=') {
+			char_array_4[char_count++] = 0;
+		}
+		else {
+			uint8_t v = base64_table[c];
+			if (v == 0 && c != 'A') {
+				throw std::invalid_argument("Invalid base64 character");
+			}
+			char_array_4[char_count++] = v;
+		}
 		if (char_count == 4) {
 			char_array_3[0] = (char_array_4[0] << 2) + ((char_array_4[1] & 0x30) >> 4);
 			char_array_3[1] = ((char_array_4[1] & 0xF) << 4) + ((char_array_4[2] & 0x3C) >> 2);
 			char_array_3[2] = ((char_array_4[2] & 0x3) << 6) + char_array_4[3];
 
-			*(uint32_t*)&output[index] = *(uint32_t*)char_array_3;
-			index += 3;
+			for (int i = 0; i < 3 && index < output.size(); ++i) {
+				output[index++] = static_cast<char>(char_array_3[i]);
+			}
 			char_count = 0;
-		}
-	}
-
-	if (char_count > 0) {
-		*(uint32_t*)&char_array_4 = 0;
-		char_array_3[0] = (char_array_4[0] << 2) + ((char_array_4[1] & 0x30) >> 4);
-		char_array_3[1] = ((char_array_4[1] & 0xF) << 4) + ((char_array_4[2] & 0x3C) >> 2);
-		char_array_3[2] = ((char_array_4[2] & 0x3) << 6) + char_array_4[3];
-
-		for (int i = 0; i < char_count - 1; i++) {
-			output[index++] = char_array_3[i];
 		}
 	}
 
 	return output;
 }
 std::vector<uint8_t> Convert::FromBase64ToBytes(const std::string input) {
-	auto decodedText = FromBase64(input);
-	return std::vector<uint8_t>((uint8_t*)&decodedText[0], (uint8_t*)&decodedText[0] + decodedText.size());
+	auto tmp = FromBase64(input);
+	return std::vector<uint8_t>(tmp.begin(), tmp.end());
 }
 std::string Convert::ToBase85(const std::string input) {
 	static const char base85_chars[] =
@@ -633,8 +650,8 @@ std::string Convert::ToBase85(const std::vector<uint8_t>& input) {
 	return ToBase85(std::string((char*)input.data(), input.size()));
 }
 std::vector<uint8_t> Convert::FromBase85ToBytes(const std::string input) {
-	auto decodedText = FromBase85(input);
-	return std::vector<uint8_t>((uint8_t*)&decodedText[0], (uint8_t*)&decodedText[0] + decodedText.size());
+	auto tmp = FromBase85(input);
+	return std::vector<uint8_t>(tmp.begin(), tmp.end());
 }
 std::string Convert::CalcMD5(const void* data, size_t size) {
 	MD5 md5;

@@ -2,7 +2,6 @@
 #include "defines.h"
 #include <vector>
 #include <string>
-
 #include "TimeSpan.h"
 #include "StopWatch.h"
 #include "StringBuilder.h"
@@ -26,35 +25,35 @@
 #include "Socket.h"
 #include "jsonlite.hpp"
 
-#if defined(_MT) && !defined(_DLL)
-#ifndef _LIB
-#if defined(_M_X64) && defined(_DEBUG)
-#   pragma comment(lib, "CppUtils_x64_MTd.lib")
-#elif defined(_M_X64) && !defined(_DEBUG)
-#   pragma comment(lib, "CppUtils_x64_MT.lib")
-#elif defined(_M_IX86) && defined(_DEBUG)
-#   pragma comment(lib, "CppUtils_x86_MTd.lib")
-#elif defined(_M_IX86) && !defined(_DEBUG)
-#   pragma comment(lib, "CppUtils_x86_MT.lib")
-#else
-#   error "Unsupported architecture or configuration"
-#endif
-#endif
-#else
-#ifndef _LIB
-#if defined(_M_X64) && defined(_DEBUG)
-#   pragma comment(lib, "CppUtils_x64_MDd.lib")
-#elif defined(_M_X64) && !defined(_DEBUG)
-#   pragma comment(lib, "CppUtils_x64_MD.lib")
-#elif defined(_M_IX86) && defined(_DEBUG)
-#   pragma comment(lib, "CppUtils_x86_MDd.lib")
-#elif defined(_M_IX86) && !defined(_DEBUG)
-#   pragma comment(lib, "CppUtils_x86_MD.lib")
-#else
-#   error "Unsupported architecture or configuration"
-#endif
-#endif
-#endif
+//#if defined(_MT) && !defined(_DLL)
+//#ifndef _LIB
+//#if defined(_M_X64) && defined(_DEBUG)
+//#   pragma comment(lib, "CppUtils_x64_MTd.lib")
+//#elif defined(_M_X64) && !defined(_DEBUG)
+//#   pragma comment(lib, "CppUtils_x64_MT.lib")
+//#elif defined(_M_IX86) && defined(_DEBUG)
+//#   pragma comment(lib, "CppUtils_x86_MTd.lib")
+//#elif defined(_M_IX86) && !defined(_DEBUG)
+//#   pragma comment(lib, "CppUtils_x86_MT.lib")
+//#else
+//#   error "Unsupported architecture or configuration"
+//#endif
+//#endif
+//#else
+//#ifndef _LIB
+//#if defined(_M_X64) && defined(_DEBUG)
+//#   pragma comment(lib, "CppUtils_x64_MDd.lib")
+//#elif defined(_M_X64) && !defined(_DEBUG)
+//#   pragma comment(lib, "CppUtils_x64_MD.lib")
+//#elif defined(_M_IX86) && defined(_DEBUG)
+//#   pragma comment(lib, "CppUtils_x86_MDd.lib")
+//#elif defined(_M_IX86) && !defined(_DEBUG)
+//#   pragma comment(lib, "CppUtils_x86_MD.lib")
+//#else
+//#   error "Unsupported architecture or configuration"
+//#endif
+//#endif
+//#endif
 
 
 #define _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS

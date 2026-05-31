@@ -225,6 +225,15 @@ static bool GetTitleScrollButtonRects(TabControl* tabs, D2D1_RECT_F& backward, D
 	return true;
 }
 
+static bool CanScrollTitleInDirection(TabControl* tabs, int direction)
+{
+	if (!tabs || direction == 0 || !tabs->IsTitleOverflowing())
+		return false;
+	const int maxOffset = GetMaxTitleScrollOffset(tabs);
+	const int offset = (std::clamp)(tabs->TitleScrollOffset, 0, maxOffset);
+	return direction < 0 ? offset > 0 : offset < maxOffset;
+}
+
 static void DrawTitleScrollChevron(D2DGraphics* d2d, const D2D1_RECT_F& rect, int direction, bool vertical, D2D1_COLOR_F color)
 {
 	if (!d2d) return;
@@ -277,20 +286,17 @@ static void DrawTitleScrollButton(TabControl* tabs, D2DGraphics* d2d, const D2D1
 {
 	if (!tabs || !d2d || RectWidth(rect) <= 0.0f || RectHeight(rect) <= 0.0f)
 		return;
-	const int maxOffset = GetMaxTitleScrollOffset(tabs);
-	const bool enabled = direction < 0 ? tabs->TitleScrollOffset > 0 : tabs->TitleScrollOffset < maxOffset;
+	if (!CanScrollTitleInDirection(tabs, direction))
+		return;
 	const bool hovered = tabs->_hoverTitleScrollButton == direction;
 	const bool pressed = tabs->_pressedTitleScrollButton == direction;
 	const float radius = (std::min)(RectWidth(rect), RectHeight(rect)) * 0.5f;
 	D2D1_COLOR_F back = hovered || pressed ? tabs->TitleScrollButtonHoverBackColor : tabs->TitleScrollButtonBackColor;
 	if (pressed)
 		back = ScaleAlpha(tabs->AccentColor, 0.24f);
-	if (!enabled)
-		back = ScaleAlpha(back, 0.42f);
 	d2d->FillRoundRect(rect, back, radius);
-	d2d->DrawRoundRect(rect, enabled ? ScaleAlpha(tabs->AccentColor, 0.28f) : ScaleAlpha(tabs->BorderColor, 0.16f), 1.0f, radius);
-	DrawTitleScrollChevron(d2d, rect, direction, IsSideTitle(tabs),
-		enabled ? tabs->AccentColor : ScaleAlpha(tabs->TitleMutedForeColor, 0.55f));
+	d2d->DrawRoundRect(rect, ScaleAlpha(tabs->AccentColor, 0.28f), 1.0f, radius);
+	DrawTitleScrollChevron(d2d, rect, direction, IsSideTitle(tabs), tabs->AccentColor);
 }
 
 static void DrawTitleScrollChrome(TabControl* tabs, D2DGraphics* d2d)
@@ -363,8 +369,10 @@ static void DrawTitleScrollChrome(TabControl* tabs, D2DGraphics* d2d)
 	D2D1_RECT_F backward{}, forward{};
 	if (GetTitleScrollButtonRects(tabs, backward, forward))
 	{
-		DrawTitleScrollButton(tabs, d2d, backward, -1);
-		DrawTitleScrollButton(tabs, d2d, forward, 1);
+		if (canBack)
+			DrawTitleScrollButton(tabs, d2d, backward, -1);
+		if (canForward)
+			DrawTitleScrollButton(tabs, d2d, forward, 1);
 	}
 }
 
@@ -540,9 +548,9 @@ int TabControl::HitTestTitleScrollButton(int localX, int localY)
 	D2D1_RECT_F backward{}, forward{};
 	if (!GetTitleScrollButtonRects(this, backward, forward))
 		return 0;
-	if (PtInRectF(backward, (float)localX, (float)localY))
+	if (CanScrollTitleInDirection(this, -1) && PtInRectF(backward, (float)localX, (float)localY))
 		return -1;
-	if (PtInRectF(forward, (float)localX, (float)localY))
+	if (CanScrollTitleInDirection(this, 1) && PtInRectF(forward, (float)localX, (float)localY))
 		return 1;
 	return 0;
 }

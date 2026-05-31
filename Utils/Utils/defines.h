@@ -5,8 +5,10 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <Windows.h>
-#include <functional>
+
+#pragma once
+#include <windows.h>
+
 #ifndef PROPERTY
 #define PROPERTY(t,n) __declspec( property (put = Set##n, get = Get##n)) t n
 #define READONLY_PROPERTY(t,n) __declspec( property (get = Get##n) ) t n
@@ -61,37 +63,3 @@
 #ifndef M_SQRT1_2  
 #define M_SQRT1_2  0.707106781186547524401  
 #endif
-template <typename T>
-class Property {
-public:
-    template <typename Getter, typename Setter>
-    Property(Getter getter, Setter setter)
-        : getter_(getter), setter_(setter) {}
-    auto get() {
-        return getter_();
-    }
-    operator T() const {
-        return getter_();
-    }
-    void operator=(const T& value) {
-        setter_(value);
-    }
-private:
-    std::function<T()> getter_;
-    std::function<void(T)> setter_;
-};
-template <typename T>
-class ReadOnlyProperty {
-public:
-    template <typename Getter>
-    ReadOnlyProperty(Getter getter)
-        : getter_(getter) {}
-    operator T() const {
-        return getter_();
-    }
-    auto get() {
-        return getter_();
-    }
-private:
-    std::function<T()> getter_;
-};

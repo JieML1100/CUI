@@ -1,26 +1,78 @@
-﻿#include "Registry.h"
+#include "Registry.h"
+#include <stdexcept>
+
+namespace {
+	std::wstring ToWidePath(const std::string& s) {
+		if (s.empty()) return L"";
+		int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+			s.data(), static_cast<int>(s.size()), nullptr, 0);
+		UINT cp = CP_UTF8;
+		DWORD flags = MB_ERR_INVALID_CHARS;
+		if (len <= 0) {
+			cp = CP_ACP;
+			flags = 0;
+			len = MultiByteToWideChar(cp, flags, s.data(), static_cast<int>(s.size()), nullptr, 0);
+		}
+		if (len <= 0) return L"";
+		std::wstring out(static_cast<size_t>(len), L'\0');
+		MultiByteToWideChar(cp, flags, s.data(), static_cast<int>(s.size()), out.data(), len);
+		return out;
+	}
+
+	std::string WideToUtf8(const std::wstring& s) {
+		if (s.empty()) return "";
+		int len = WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()),
+			nullptr, 0, nullptr, nullptr);
+		if (len <= 0) return "";
+		std::string out(static_cast<size_t>(len), '\0');
+		WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()),
+			out.data(), len, nullptr, nullptr);
+		return out;
+	}
+
+	bool IsPredefinedKey(HKEY hKey) {
+		return hKey == HKEY_CLASSES_ROOT ||
+			hKey == HKEY_CURRENT_USER ||
+			hKey == HKEY_LOCAL_MACHINE ||
+			hKey == HKEY_USERS ||
+			hKey == HKEY_PERFORMANCE_DATA ||
+			hKey == HKEY_CURRENT_CONFIG ||
+			hKey == HKEY_DYN_DATA;
+	}
+
+	REGSAM DesiredAccess(bool writable) {
+		return writable ? (KEY_READ | KEY_WRITE) : KEY_READ;
+	}
+
+	void ThrowWin32(const char* message, LSTATUS status) {
+		throw std::runtime_error(std::string(message) + ": " + std::to_string(status));
+	}
+}
+
 RegistryKey::RegistryKey(HKEY _hKey) {
 	hKey = _hKey;
 }
 RegistryKey::RegistryKey(HKEY _hKey, const std::string& subKey) {
 	hKey = _hKey;
-	if (RegOpenKeyExA(hKey, subKey.c_str(), 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
-		throw std::exception("Cannot open registry key");
+	if (RegOpenKeyExW(hKey, ToWidePath(subKey).c_str(), 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
+		throw std::runtime_error("Cannot open registry key");
 	}
 }
 RegistryKey::RegistryKey(HKEY _hKey, const std::string& subKey, bool writable) {
 	hKey = _hKey;
-	if (RegOpenKeyExA(hKey, subKey.c_str(), 0, writable ? KEY_WRITE : KEY_READ, &hKey) != ERROR_SUCCESS) {
-		throw std::exception("Cannot open registry key");
+	if (RegOpenKeyExW(hKey, ToWidePath(subKey).c_str(), 0, DesiredAccess(writable), &hKey) != ERROR_SUCCESS) {
+		throw std::runtime_error("Cannot open registry key");
 	}
 }
 RegistryKey RegistryKey::CreateSubKey(const std::string& subKey) {
 	return CreateSubKey(subKey, false);
 }
 RegistryKey RegistryKey::CreateSubKey(const std::string& subKey, bool writable) {
-	HKEY result;
-	if (RegCreateKeyExA(hKey, subKey.c_str(), 0, NULL, REG_OPTION_NON_VOLATILE, writable ? KEY_WRITE : KEY_READ, NULL, &result, NULL) != ERROR_SUCCESS) {
-		throw std::exception("Cannot create registry key");
+	HKEY result = nullptr;
+	LSTATUS status = RegCreateKeyExW(hKey, ToWidePath(subKey).c_str(), 0, NULL,
+		REG_OPTION_NON_VOLATILE, DesiredAccess(writable), NULL, &result, NULL);
+	if (status != ERROR_SUCCESS) {
+		ThrowWin32("Cannot create registry key", status);
 	}
 	return RegistryKey(result);
 }
@@ -28,88 +80,111 @@ RegistryKey RegistryKey::OpenSubKey(const std::string& subKey) {
 	return OpenSubKey(subKey, false);
 }
 RegistryKey RegistryKey::OpenSubKey(const std::string& subKey, bool writable) {
-	HKEY result;
-	if (RegOpenKeyExA(hKey, subKey.c_str(), 0, writable ? KEY_WRITE : KEY_READ, &result) != ERROR_SUCCESS) {
-		throw std::exception("Cannot open registry key");
+	HKEY result = nullptr;
+	LSTATUS status = RegOpenKeyExW(hKey, ToWidePath(subKey).c_str(), 0, DesiredAccess(writable), &result);
+	if (status != ERROR_SUCCESS) {
+		ThrowWin32("Cannot open registry key", status);
 	}
 	return RegistryKey(result);
 }
 std::string RegistryKey::GetValue(const std::string& name) {
-	DWORD type;
+	DWORD type = 0;
 	DWORD size = 0;
-	if (RegQueryValueExA(hKey, name.c_str(), NULL, &type, NULL, &size) != ERROR_SUCCESS) {
-		throw std::exception("Cannot query registry value");
+	std::wstring wname = ToWidePath(name);
+	LSTATUS status = RegQueryValueExW(hKey, wname.c_str(), NULL, &type, NULL, &size);
+	if (status != ERROR_SUCCESS) {
+		ThrowWin32("Cannot query registry value", status);
 	}
-	if (type != REG_SZ) {
-		throw std::exception("Registry value is not REG_SZ");
+	if (type != REG_SZ && type != REG_EXPAND_SZ) {
+		throw std::runtime_error("Registry value is not a string");
 	}
-	std::string result(size / sizeof(char), '\0');
-	if (RegQueryValueExA(hKey, name.c_str(), NULL, NULL, (LPBYTE)result.data(), &size) != ERROR_SUCCESS) {
-		throw std::exception("Cannot query registry value");
+
+	std::wstring result(size / sizeof(wchar_t), L'\0');
+	status = RegQueryValueExW(hKey, wname.c_str(), NULL, NULL,
+		reinterpret_cast<LPBYTE>(result.data()), &size);
+	if (status != ERROR_SUCCESS) {
+		ThrowWin32("Cannot query registry value", status);
 	}
-	return result;
+	while (!result.empty() && result.back() == L'\0') result.pop_back();
+	return WideToUtf8(result);
 }
 void RegistryKey::SetValue(const std::string& name, const std::string& value) {
-	DWORD valueSize = static_cast<DWORD>(value.size() * sizeof(char));
-	if (RegSetValueExA(hKey, name.c_str(), 0, REG_SZ, (LPBYTE)value.c_str(), valueSize) != ERROR_SUCCESS) {
-		throw std::exception("Cannot set registry value");
+	std::wstring wvalue = ToWidePath(value);
+	DWORD bytes = static_cast<DWORD>((wvalue.size() + 1) * sizeof(wchar_t));
+	LSTATUS status = RegSetValueExW(hKey, ToWidePath(name).c_str(), 0, REG_SZ,
+		reinterpret_cast<const BYTE*>(wvalue.c_str()), bytes);
+	if (status != ERROR_SUCCESS) {
+		ThrowWin32("Cannot set registry value", status);
 	}
 }
 void RegistryKey::DeleteValue(const std::string& name) {
-	if (RegDeleteValueA(hKey, name.c_str()) != ERROR_SUCCESS) {
-		throw std::exception("Cannot delete registry value");
+	LSTATUS status = RegDeleteValueW(hKey, ToWidePath(name).c_str());
+	if (status != ERROR_SUCCESS) {
+		ThrowWin32("Cannot delete registry value", status);
 	}
 }
 void RegistryKey::DeleteSubKey(const std::string& subKey) {
-	if (RegDeleteKeyA(hKey, subKey.c_str()) != ERROR_SUCCESS) {
-		throw std::exception("Cannot delete registry subkey");
+	LSTATUS status = RegDeleteKeyW(hKey, ToWidePath(subKey).c_str());
+	if (status != ERROR_SUCCESS) {
+		ThrowWin32("Cannot delete registry subkey", status);
 	}
 }
 void RegistryKey::DeleteSubKeyTree(const std::string& subKey) {
-	if (RegDeleteTreeA(hKey, subKey.c_str()) != ERROR_SUCCESS) {
-		throw std::exception("Cannot delete registry subkey tree");
+	LSTATUS status = RegDeleteTreeW(hKey, ToWidePath(subKey).c_str());
+	if (status != ERROR_SUCCESS) {
+		ThrowWin32("Cannot delete registry subkey tree", status);
 	}
 }
 std::vector<std::string> RegistryKey::GetSubKeyNames() {
-	DWORD subKeyCount;
-	DWORD maxSubKeyNameLength;
-	if (RegQueryInfoKeyA(hKey, NULL, NULL, NULL, &subKeyCount, &maxSubKeyNameLength, NULL, NULL, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) {
-		throw std::exception("Cannot query registry key info");
+	DWORD subKeyCount = 0;
+	DWORD maxSubKeyNameLength = 0;
+	LSTATUS status = RegQueryInfoKeyW(hKey, NULL, NULL, NULL, &subKeyCount,
+		&maxSubKeyNameLength, NULL, NULL, NULL, NULL, NULL, NULL);
+	if (status != ERROR_SUCCESS) {
+		ThrowWin32("Cannot query registry key info", status);
 	}
+
 	std::vector<std::string> result;
+	result.reserve(subKeyCount);
+	std::wstring subKeyName(static_cast<size_t>(maxSubKeyNameLength) + 1, L'\0');
 	for (DWORD i = 0; i < subKeyCount; i++) {
-		std::string subKeyName(256, '\0');
+		DWORD cbName = static_cast<DWORD>(subKeyName.size());
 		FILETIME lastWriteTime{};
-		DWORD cbName = 256;
-		LSTATUS state = RegEnumKeyExA(hKey, i, (LPSTR)subKeyName.data(), &cbName, NULL, NULL, NULL, &lastWriteTime);
-		if (state != ERROR_SUCCESS) {
-			throw std::exception("Cannot enumerate registry key");
+		status = RegEnumKeyExW(hKey, i, subKeyName.data(), &cbName, NULL, NULL, NULL, &lastWriteTime);
+		if (status != ERROR_SUCCESS) {
+			ThrowWin32("Cannot enumerate registry key", status);
 		}
-		subKeyName.resize(cbName);
-		result.push_back(subKeyName);
+		result.push_back(WideToUtf8(std::wstring(subKeyName.data(), cbName)));
 	}
 	return result;
 }
 std::vector<std::string> RegistryKey::GetValueNames() {
-	DWORD valueCount;
-	DWORD maxValueNameLength;
-	if (RegQueryInfoKeyA(hKey, NULL, NULL, NULL, NULL, NULL, NULL, &valueCount, &maxValueNameLength, NULL, NULL, NULL) != ERROR_SUCCESS) {
-		throw std::exception("Cannot query registry key info");
+	DWORD valueCount = 0;
+	DWORD maxValueNameLength = 0;
+	LSTATUS status = RegQueryInfoKeyW(hKey, NULL, NULL, NULL, NULL, NULL, NULL,
+		&valueCount, &maxValueNameLength, NULL, NULL, NULL);
+	if (status != ERROR_SUCCESS) {
+		ThrowWin32("Cannot query registry key info", status);
 	}
+
 	std::vector<std::string> result;
+	result.reserve(valueCount);
+	std::wstring valueName(static_cast<size_t>(maxValueNameLength) + 1, L'\0');
 	for (DWORD i = 0; i < valueCount; i++) {
-		std::string valueName(256, '\0');
-		DWORD cbName = 256;
-		if (RegEnumValueA(hKey, i, (LPSTR)valueName.data(), &cbName, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) {
-			throw std::exception("Cannot enumerate registry value");
+		DWORD cbName = static_cast<DWORD>(valueName.size());
+		status = RegEnumValueW(hKey, i, valueName.data(), &cbName, NULL, NULL, NULL, NULL);
+		if (status != ERROR_SUCCESS) {
+			ThrowWin32("Cannot enumerate registry value", status);
 		}
-		valueName.resize(cbName);
-		result.push_back(valueName);
+		result.push_back(WideToUtf8(std::wstring(valueName.data(), cbName)));
 	}
 	return result;
 }
 void RegistryKey::Close() {
-	RegCloseKey(hKey);
+	if (hKey && !IsPredefinedKey(hKey)) {
+		RegCloseKey(hKey);
+		hKey = nullptr;
+	}
 }
 
 RegistryKey Registry::OpenBaseKey(HKEY hKey, const std::string& subKey) {
@@ -122,5 +197,16 @@ RegistryKey Registry::OpenRemoteBaseKey(HKEY hKey, const std::string& machineNam
 	return OpenRemoteBaseKey(hKey, machineName, subKey, false);
 }
 RegistryKey Registry::OpenRemoteBaseKey(HKEY hKey, const std::string& machineName, const std::string& subKey, bool writable) {
-	return RegistryKey(hKey, "\\\\" + machineName + "\\" + subKey, writable);
+	HKEY remoteRoot = nullptr;
+	LSTATUS status = RegConnectRegistryW(ToWidePath("\\\\" + machineName).c_str(), hKey, &remoteRoot);
+	if (status != ERROR_SUCCESS) {
+		ThrowWin32("Cannot connect remote registry", status);
+	}
+	HKEY result = nullptr;
+	status = RegOpenKeyExW(remoteRoot, ToWidePath(subKey).c_str(), 0, DesiredAccess(writable), &result);
+	RegCloseKey(remoteRoot);
+	if (status != ERROR_SUCCESS) {
+		ThrowWin32("Cannot open remote registry key", status);
+	}
+	return RegistryKey(result);
 }

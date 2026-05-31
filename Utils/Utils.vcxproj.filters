@@ -7,9 +7,6 @@
     <Filter Include="Utils\zlib">
       <UniqueIdentifier>{ecff695d-2774-426c-8b08-8db5e7083875}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Utils\sqlite">
-      <UniqueIdentifier>{2c43bc27-bc9b-48d5-bb28-93223d024278}</UniqueIdentifier>
-    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Utils\Utils.h">
@@ -81,9 +78,6 @@
     <ClInclude Include="Utils\Socket.h">
       <Filter>Utils</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\SqliteHelper.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
     <ClInclude Include="Utils\StopWatch.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -98,9 +92,6 @@
     </ClInclude>
     <ClInclude Include="Utils\Tuple.h">
       <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\sqlite\sqlite3.h">
-      <Filter>Utils\sqlite</Filter>
     </ClInclude>
     <ClInclude Include="Utils\zlib\crc32.h">
       <Filter>Utils\zlib</Filter>
@@ -191,9 +182,6 @@
     <ClCompile Include="Utils\Socket.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\SqliteHelper.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
     <ClCompile Include="Utils\StopWatch.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -208,9 +196,6 @@
     </ClCompile>
     <ClCompile Include="Utils\Utils.cpp">
       <Filter>Utils</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\sqlite\sqlite3.c">
-      <Filter>Utils\sqlite</Filter>
     </ClCompile>
     <ClCompile Include="Utils\zlib\adler32.c">
       <Filter>Utils\zlib</Filter>

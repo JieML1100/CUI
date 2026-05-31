@@ -35,20 +35,38 @@ bool FileStream::Write(const void* buffer, size_t size) {
 	return file_.write(static_cast<const char*>(buffer), size).good();
 }
 size_t FileStream::Position() {
-	return file_.tellg();
+	auto pos = file_.tellg();
+	if (pos == std::streampos(-1)) {
+		pos = file_.tellp();
+	}
+	return pos == std::streampos(-1) ? 0 : static_cast<size_t>(pos);
 }
 void FileStream::Seek(size_t pos) {
 	file_.seekg(pos);
+	file_.seekp(pos);
 }
 void FileStream::SeekToEnd() {
 	file_.seekg(0, std::ios_base::end);
+	file_.seekp(0, std::ios_base::end);
 }
 size_t FileStream::Length() {
-	auto pos = file_.tellg();
+	auto posG = file_.tellg();
+	auto posP = file_.tellp();
 	file_.seekg(0, std::ios_base::end);
 	auto length = file_.tellg();
-	file_.seekg(pos);
-	return length;
+	if (length == std::streampos(-1)) {
+		file_.clear();
+		file_.seekp(0, std::ios_base::end);
+		length = file_.tellp();
+	}
+	file_.clear();
+	if (posG != std::streampos(-1)) file_.seekg(posG);
+	if (posP != std::streampos(-1)) file_.seekp(posP);
+	return length == std::streampos(-1) ? 0 : static_cast<size_t>(length);
+}
+
+bool FileStream::IsOpen() const {
+	return file_.is_open();
 }
 
 void FileStream::Close() {

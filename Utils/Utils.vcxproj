@@ -43,8 +43,6 @@
     <ClInclude Include="Utils\Registry.h" />
     <ClInclude Include="Utils\SHA256.h" />
     <ClInclude Include="Utils\Socket.h" />
-    <ClInclude Include="Utils\SqliteHelper.h" />
-    <ClInclude Include="Utils\sqlite\sqlite3.h" />
     <ClInclude Include="Utils\StopWatch.h" />
     <ClInclude Include="Utils\StringBuilder.h" />
     <ClInclude Include="Utils\StringHelper.h" />
@@ -80,10 +78,6 @@
     <ClCompile Include="Utils\Registry.cpp" />
     <ClCompile Include="Utils\SHA256.cpp" />
     <ClCompile Include="Utils\Socket.cpp" />
-    <ClCompile Include="Utils\SqliteHelper.cpp" />
-    <ClCompile Include="Utils\sqlite\sqlite3.c">
-      <DisableSpecificWarnings>4028;4113;%(DisableSpecificWarnings)</DisableSpecificWarnings>
-    </ClCompile>
     <ClCompile Include="Utils\StopWatch.cpp" />
     <ClCompile Include="Utils\StringBuilder.cpp" />
     <ClCompile Include="Utils\StringHelper.cpp" />

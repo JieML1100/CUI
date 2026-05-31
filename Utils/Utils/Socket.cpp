@@ -11,7 +11,7 @@
 #pragma warning(disable: 4244)
 #pragma warning(disable: 4018)
 static WSADATA wsaData = { 0 };
-TCPSocket::TCPSocket() :Handle(NULL) {
+TCPSocket::TCPSocket() :Handle(INVALID_SOCKET) {
 	if (wsaData.wVersion == 0) {
 		int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
 		if (result != NO_ERROR) {
@@ -29,10 +29,7 @@ TCPSocket::TCPSocket() :Handle(NULL) {
 }
 TCPSocket::TCPSocket(UINT_PTR h) :Handle(h) {}
 TCPSocket::~TCPSocket() {
-	int result = closesocket(Handle);
-	if (result == SOCKET_ERROR) {
-		std::cerr << "Socket closing failed with error: " << WSAGetLastError() << std::endl;
-	}
+	Close();
 }
 bool TCPSocket::Connect(const char* ip, int port) {
 	sockaddr_in address_;
@@ -109,12 +106,15 @@ int TCPSocket::GetRemotePort() {
 	return -1;
 }
 void TCPSocket::Close() {
+	if (Handle == INVALID_SOCKET) return;
 	int result = closesocket(Handle);
 	if (result == SOCKET_ERROR) {
 		std::cerr << "Socket closing failed with error: " << WSAGetLastError() << std::endl;
 	}
+	Handle = INVALID_SOCKET;
 }
 bool TCPSocket::IsConnected() {
+	if (Handle == INVALID_SOCKET) return false;
 	fd_set writeSet;
 	FD_ZERO(&writeSet);
 	FD_SET(Handle, &writeSet);

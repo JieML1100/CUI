@@ -2,12 +2,18 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <format>
+#include <cctype>
+#include <cwctype>
 
 #pragma warning(disable: 4267)
 #pragma warning(disable: 4244)
 #pragma warning(disable: 4018)
 std::vector<std::string> StringHelper::Split(std::string str, std::string separator) {
 	std::vector<std::string> result = std::vector<std::string>();
+	if (separator.empty()) {
+		result.push_back(str);
+		return result;
+	}
 	int lastIndex = 0;
 	int separatorSize = separator.size();
 
@@ -75,6 +81,10 @@ std::vector<std::string> StringHelper::Split(std::string str, std::initializer_l
 }
 std::vector<std::wstring> StringHelper::Split(std::wstring str, std::wstring separator) {
 	std::vector<std::wstring> result = std::vector<std::wstring>();
+	if (separator.empty()) {
+		result.push_back(str);
+		return result;
+	}
 	int lastIndex = 0;
 	int separatorSize = separator.size();
 
@@ -175,7 +185,7 @@ std::wstring StringHelper::Replace(std::wstring str, std::wstring oldstr, std::w
 std::string StringHelper::ToUpper(std::string str) {
 	std::string result(str.size(), '\0');
 	for (int i = 0; i < str.size(); i++)
-		result[i] = toupper(str[i]);
+		result[i] = static_cast<char>(std::toupper(static_cast<unsigned char>(str[i])));
 	return result;
 }
 std::wstring StringHelper::ToUpper(std::wstring str) {
@@ -187,7 +197,7 @@ std::wstring StringHelper::ToUpper(std::wstring str) {
 std::string StringHelper::ToLower(std::string str) {
 	std::string result(str.size(), '\0');
 	for (int i = 0; i < str.size(); i++)
-		result[i] = tolower(str[i]);
+		result[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(str[i])));
 	return result;
 }
 std::wstring StringHelper::ToLower(std::wstring str) {
@@ -200,8 +210,8 @@ std::string StringHelper::Trim(std::string str) {
 	std::string result;
 	int start = 0;
 	int end = str.size() - 1;
-	while (start < str.size() && str[start] == ' ') start++;
-	while (end >= 0 && str[end] == ' ') end--;
+	while (start < str.size() && std::isspace(static_cast<unsigned char>(str[start]))) start++;
+	while (end >= 0 && std::isspace(static_cast<unsigned char>(str[end]))) end--;
 	if (start <= end) {
 		result = str.substr(start, end - start + 1);
 	}
@@ -211,8 +221,8 @@ std::wstring StringHelper::Trim(std::wstring str) {
 	std::wstring result;
 	int start = 0;
 	int end = str.size() - 1;
-	while (start < str.size() && str[start] == ' ') start++;
-	while (end >= 0 && str[end] == ' ') end--;
+	while (start < str.size() && std::iswspace(str[start])) start++;
+	while (end >= 0 && std::iswspace(str[end])) end--;
 	if (start <= end) {
 		result = str.substr(start, end - start + 1);
 	}
@@ -223,7 +233,7 @@ std::string StringHelper::TrimLeft(std::string str) {
 	std::string result;
 	int start = 0;
 	int end = str.size() - 1;
-	while (start < str.size() && str[start] == ' ') start++;
+	while (start < str.size() && std::isspace(static_cast<unsigned char>(str[start]))) start++;
 	if (start <= end) {
 		result = str.substr(start, end - start + 1);
 	}
@@ -233,7 +243,7 @@ std::wstring StringHelper::TrimLeft(std::wstring str) {
 	std::wstring result;
 	int start = 0;
 	int end = str.size() - 1;
-	while (start < str.size() && str[start] == ' ') start++;
+	while (start < str.size() && std::iswspace(str[start])) start++;
 	if (start <= end) {
 		result = str.substr(start, end - start + 1);
 	}
@@ -243,7 +253,7 @@ std::string StringHelper::TrimRight(std::string str) {
 	std::string result;
 	int start = 0;
 	int end = str.size() - 1;
-	while (end >= 0 && str[end] == ' ') end--;
+	while (end >= 0 && std::isspace(static_cast<unsigned char>(str[end]))) end--;
 	if (start <= end) {
 		result = str.substr(start, end - start + 1);
 	}
@@ -253,7 +263,7 @@ std::wstring StringHelper::TrimRight(std::wstring str) {
 	std::wstring result;
 	int start = 0;
 	int end = str.size() - 1;
-	while (end >= 0 && str[end] == ' ') end--;
+	while (end >= 0 && std::iswspace(str[end])) end--;
 	if (start <= end) {
 		result = str.substr(start, end - start + 1);
 	}
@@ -343,22 +353,41 @@ std::wstring StringHelper::Join(std::vector<std::wstring> strs, std::wstring sep
 	}
 	return result;
 }
-
 std::wstring StringHelper::Format(const wchar_t* fmt, ...) {
 	va_list va;
 	va_start(va, fmt);
+	va_list va2;
+	va_copy(va2, va);
 	int size = __stdio_common_vswprintf(NULL, NULL, 0, fmt, NULL, va);
+	if (size < 0) {
+		va_end(va2);
+		va_end(va);
+		return L"";
+	}
 	std::wstring result(size, L'\0');
-	__stdio_common_vswprintf(NULL, &result[0], size + 1, fmt, NULL, va);
+	std::vector<wchar_t> buffer(static_cast<size_t>(size) + 1, L'\0');
+	__stdio_common_vswprintf(NULL, buffer.data(), buffer.size(), fmt, NULL, va2);
+	result.assign(buffer.data(), static_cast<size_t>(size));
+	va_end(va2);
 	va_end(va);
 	return result;
 }
 std::string StringHelper::Format(const char* fmt, ...) {
 	va_list va;
 	va_start(va, fmt);
+	va_list va2;
+	va_copy(va2, va);
 	int size = __stdio_common_vsprintf(NULL, NULL, 0, fmt, NULL, va);
+	if (size < 0) {
+		va_end(va2);
+		va_end(va);
+		return "";
+	}
 	std::string result(size, '\0');
-	__stdio_common_vsprintf(NULL, &result[0], size + 1, fmt, NULL, va);
+	std::vector<char> buffer(static_cast<size_t>(size) + 1, '\0');
+	__stdio_common_vsprintf(NULL, buffer.data(), buffer.size(), fmt, NULL, va2);
+	result.assign(buffer.data(), static_cast<size_t>(size));
+	va_end(va2);
 	va_end(va);
 	return result;
 }
