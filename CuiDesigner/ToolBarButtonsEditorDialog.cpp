@@ -140,8 +140,7 @@ ToolBarButtonsEditorDialog::ToolBarButtonsEditorDialog(ToolBar* target)
 		{
 			auto c = _target->operator[](_target->Count - 1);
 			if (OnBeforeDeleteButton) OnBeforeDeleteButton(c);
-			_target->RemoveControl(c);
-			delete c;
+			_target->DeleteControl(c);
 		}
 
 		for (size_t i = 0; i < _grid->RowCount(); i++)

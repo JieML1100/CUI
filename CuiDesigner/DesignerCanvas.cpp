@@ -1,5 +1,10 @@
-#include "DesignerCanvas.h"
+﻿#include "DesignerCanvas.h"
 #include "CodeGenInput.h"
+#include "DesignerBindingUtils.h"
+#include "DesignerControlFactory.h"
+#include "DesignerDataContextSchemaUtils.h"
+#include "DesignerPropertyCatalog.h"
+#include "DesignerStyleSheetUtils.h"
 #include "DesignerCore/DesignerCommandCoordinator.h"
 #include "DesignerCore/HitTestService.h"
 #include "DesignerCore/LayoutBridge.h"
@@ -8,48 +13,48 @@
 #include "DesignerModel/DesignDocumentSerializer.h"
 #include <Convert.h>
 #include "FakeWebBrowser.h"
-#include "../CUI/GUI/Label.h"
-#include "../CUI/GUI/LinkLabel.h"
-#include "../CUI/GUI/Button.h"
-#include "../CUI/GUI/TextBox.h"
-#include "../CUI/GUI/CheckBox.h"
-#include "../CUI/GUI/RadioBox.h"
-#include "../CUI/GUI/ComboBox.h"
-#include "../CUI/GUI/LoadingRing.h"
-#include "../CUI/GUI/ProgressBar.h"
-#include "../CUI/GUI/ProgressRing.h"
-#include "../CUI/GUI/Slider.h"
-#include "../CUI/GUI/NumericUpDown.h"
-#include "../CUI/GUI/PictureBox.h"
-#include "../CUI/GUI/DateTimePicker.h"
-#include "../CUI/GUI/GroupBox.h"
-#include "../CUI/GUI/Expander.h"
-#include "../CUI/GUI/Switch.h"
-#include "../CUI/GUI/ScrollView.h"
-#include "../CUI/GUI/RichTextBox.h"
-#include "../CUI/GUI/PasswordBox.h"
-#include "../CUI/GUI/RoundTextBox.h"
-#include "../CUI/GUI/ListView.h"
-#include "../CUI/GUI/GridView.h"
-#include "../CUI/GUI/PropertyGrid.h"
-#include "../CUI/GUI/ChartView.h"
-#include "../CUI/GUI/ReportView.h"
-#include "../CUI/GUI/KpiCard.h"
-#include "../CUI/GUI/FilterBar.h"
-#include "../CUI/GUI/TreeView.h"
-#include "../CUI/GUI/TabControl.h"
-#include "../CUI/GUI/ToolBar.h"
-#include "../CUI/GUI/Menu.h"
-#include "../CUI/GUI/StatusBar.h"
-#include "../CUI/GUI/Toast.h"
-#include "../CUI/GUI/MediaPlayer.h"
-#include "../CUI/GUI/SplitContainer.h"
-#include "../CUI/GUI/Layout/StackPanel.h"
-#include "../CUI/GUI/Layout/GridPanel.h"
-#include "../CUI/GUI/Layout/DockPanel.h"
-#include "../CUI/GUI/Layout/WrapPanel.h"
-#include "../CUI/GUI/Layout/RelativePanel.h"
-#include "../CUI/GUI/Form.h"
+#include "../CUI/include/Label.h"
+#include "../CUI/include/LinkLabel.h"
+#include "../CUI/include/Button.h"
+#include "../CUI/include/TextBox.h"
+#include "../CUI/include/CheckBox.h"
+#include "../CUI/include/RadioBox.h"
+#include "../CUI/include/ComboBox.h"
+#include "../CUI/include/LoadingRing.h"
+#include "../CUI/include/ProgressBar.h"
+#include "../CUI/include/ProgressRing.h"
+#include "../CUI/include/Slider.h"
+#include "../CUI/include/NumericUpDown.h"
+#include "../CUI/include/PictureBox.h"
+#include "../CUI/include/DateTimePicker.h"
+#include "../CUI/include/GroupBox.h"
+#include "../CUI/include/Expander.h"
+#include "../CUI/include/Switch.h"
+#include "../CUI/include/ScrollView.h"
+#include "../CUI/include/RichTextBox.h"
+#include "../CUI/include/PasswordBox.h"
+#include "../CUI/include/RoundTextBox.h"
+#include "../CUI/include/ListView.h"
+#include "../CUI/include/GridView.h"
+#include "../CUI/include/PropertyGrid.h"
+#include "../CUI/include/ChartView.h"
+#include "../CUI/include/ReportView.h"
+#include "../CUI/include/KpiCard.h"
+#include "../CUI/include/FilterBar.h"
+#include "../CUI/include/TreeView.h"
+#include "../CUI/include/TabControl.h"
+#include "../CUI/include/ToolBar.h"
+#include "../CUI/include/Menu.h"
+#include "../CUI/include/StatusBar.h"
+#include "../CUI/include/Toast.h"
+#include "../CUI/include/MediaPlayer.h"
+#include "../CUI/include/SplitContainer.h"
+#include "../CUI/include/Layout/StackPanel.h"
+#include "../CUI/include/Layout/GridPanel.h"
+#include "../CUI/include/Layout/DockPanel.h"
+#include "../CUI/include/Layout/WrapPanel.h"
+#include "../CUI/include/Layout/RelativePanel.h"
+#include "../CUI/include/Form.h"
 #include <windowsx.h>
 #include <algorithm>
 #include <cmath>
@@ -160,6 +165,34 @@ static void RefreshDesignerPanelLayout(Control* control)
 	}
 }
 
+static bool ApplyTrackedMetadataProperty(
+	DesignerControl& designerControl,
+	Control& target,
+	const std::wstring& propertyName,
+	DesignerStyleValue value,
+	bool preserveExisting,
+	std::wstring* outError = nullptr)
+{
+	const auto* metadata = target.FindPropertyMetadata(propertyName);
+	const std::wstring canonicalCandidate = metadata
+		? metadata->Name() : propertyName;
+	if (preserveExisting
+		&& designerControl.MetadataProperties.find(canonicalCandidate)
+			!= designerControl.MetadataProperties.end())
+	{
+		if (outError) outError->clear();
+		return true;
+	}
+
+	std::wstring canonicalName;
+	DesignerStyleValue effective;
+	if (!DesignerPropertyCatalog::ApplyValue(
+		target, propertyName, value,
+		&canonicalName, &effective, outError)) return false;
+	designerControl.MetadataProperties[std::move(canonicalName)] = std::move(effective);
+	return true;
+}
+
 DesignerCanvas::DesignerCanvas(int x, int y, int width, int height)
 	: Panel(x, y, width, height)
 {
@@ -254,7 +287,7 @@ void DesignerCanvas::RebuildDesignedFormSharedFont()
 			::Font* cur = c->Font;
 			if (isDefaultLikeFont(cur, oldShared))
 				rebindFontOf(c, newShared);
-			for (int i = 0; i < c->Children.size(); i++)
+			for (size_t i = 0; i < c->Children.size(); ++i)
 			{
 				stack.push_back(c->Children[i]);
 			}
@@ -272,7 +305,7 @@ void DesignerCanvas::RebuildDesignedFormSharedFont()
 			stack.pop_back();
 			if (!c) continue;
 			if (c->Font == f) return true;
-			for (int i = 0; i < c->Children.size(); i++)
+			for (size_t i = 0; i < c->Children.size(); ++i)
 				stack.push_back(c->Children[i]);
 		}
 		return false;
@@ -380,10 +413,12 @@ void DesignerCanvas::Update()
 	auto absoluteLocation = this->AbsLocation;
 	auto size = this->ActualSize();
 	auto absoluteRect = this->AbsRect;
+	const float absoluteX = static_cast<float>(absoluteLocation.x);
+	const float absoluteY = static_cast<float>(absoluteLocation.y);
 
 	d2d->PushDrawRect(absoluteRect.left, absoluteRect.top, absoluteRect.right - absoluteRect.left, absoluteRect.bottom - absoluteRect.top);
 	{
-		d2d->FillRect(absoluteLocation.x, absoluteLocation.y, (float)size.cx, (float)size.cy, this->BackColor);
+		d2d->FillRect(absoluteX, absoluteY, (float)size.cx, (float)size.cy, this->BackColor);
 		DrawGrid();
 		if (_designSurface)
 		{
@@ -566,11 +601,11 @@ void DesignerCanvas::Update()
 			d2d->PopDrawRect();
 		}
 
-		d2d->DrawRect(absoluteLocation.x, absoluteLocation.y, (float)size.cx, (float)size.cy, this->BorderColor, this->BorderThickness);
+		d2d->DrawRect(absoluteX, absoluteY, (float)size.cx, (float)size.cy, this->BorderColor, this->BorderThickness);
 	}
 	if (!this->Enable)
 	{
-		d2d->FillRect(absoluteLocation.x, absoluteLocation.y, (float)size.cx, (float)size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(absoluteX, absoluteY, (float)size.cx, (float)size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
 	}
 	d2d->PopDrawRect();
 }
@@ -724,8 +759,9 @@ void DesignerCanvas::LiftSelectedToRootForDrag()
 
 	// 从原容器移除，加入根客户区；这样拖动时不再受父容器裁剪限制。
 	// 鼠标释放后再根据落点决定是否重新放回原容器或其他容器。
-	parent->RemoveControl(moving);
-	_clientSurface->AddControl(moving);
+	auto movingOwner = parent->DetachControl(moving);
+	if (!movingOwner) return;
+	_clientSurface->AddOwned(std::move(movingOwner));
 	if (UsesAlignmentManagedPlacement(moving))
 	{
 		ResetAlignmentForManualPlacement(moving);
@@ -1319,7 +1355,7 @@ bool DesignerCanvas::TryHandleTabHeaderClick(POINT ptCanvas)
 	int scrollButton = bestTc->HitTestTitleScrollButton(localX, localY);
 	if (scrollButton != 0)
 	{
-		bestTc->ScrollTitleBy(scrollButton * (std::max)(1, bestTc->TitleScrollMouseWheelStep));
+		bestTc->ScrollTitleBy(scrollButton * (std::max)(1.0f, bestTc->TitleScrollMouseWheelStep));
 		bestTc->InvalidateVisual();
 		ClearSelection();
 		AddToSelection(bestDc, true, true);
@@ -1329,7 +1365,7 @@ bool DesignerCanvas::TryHandleTabHeaderClick(POINT ptCanvas)
 	int titleIndex = -1;
 	if (!bestTc->TryGetTitleIndexAt(localX, localY, titleIndex)) return false;
 
-	bestTc->SelectedIndex = titleIndex;
+	bestTc->SelectPage(titleIndex);
 	bestTc->EnsureTitleVisible(titleIndex);
 	bestTc->InvalidateVisual();
 
@@ -1520,7 +1556,19 @@ void DesignerCanvas::UpdateSplitContainerPreview(SplitContainer* split, int spli
 		return;
 	}
 
-	split->SetSplitterDistance(ClampSplitContainerDistance(split, splitterDistance));
+	const int effectiveDistance = ClampSplitContainerDistance(split, splitterDistance);
+	for (const auto& designerControl : _designerControls)
+	{
+		if (!designerControl || designerControl->ControlInstance != split) continue;
+		if (ApplyTrackedMetadataProperty(
+			*designerControl,
+			*split,
+			L"SplitterDistance",
+			{ DesignerStyleValueKind::Int, std::to_wstring(effectiveDistance) },
+			false)) return;
+		break;
+	}
+	split->SetSplitterDistance(effectiveDistance);
 }
 
 std::vector<RECT> DesignerCanvas::GetHandleRectsFromRect(const RECT& r, int handleSize)
@@ -1623,13 +1671,9 @@ Control* DesignerCanvas::FindBestContainerAtPoint(POINT ptCanvas, Control* ignor
 void DesignerCanvas::DeleteControlRecursive(Control* c)
 {
 	if (!c) return;
-	// 先删子控件
-	while (c->Count > 0)
-	{
-		auto child = c->operator[](c->Count - 1);
-		c->RemoveControl(child);
-		DeleteControlRecursive(child);
-	}
+	// Control 析构会递归释放整棵子树；优先通过父容器完成显式所有权销毁。
+	if (c->Parent && c->Parent->DeleteControl(c))
+		return;
 	delete c;
 }
 
@@ -1649,8 +1693,16 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 	Control* container = NormalizeContainerForDrop(rawContainer);
 	if (!container) {
 		// 落在容器之外：归为根级（客户区），DesignerParent 仍为 nullptr
-		if (moving->Parent) moving->Parent->RemoveControl(moving);
-		_clientSurface->AddControl(moving);
+		if (moving->Parent)
+		{
+			auto movingOwner = moving->Parent->DetachControl(moving);
+			if (!movingOwner) return;
+			_clientSurface->AddOwned(std::move(movingOwner));
+		}
+		else
+		{
+			_clientSurface->AddControl(moving);
+		}
 		_selectedControl->DesignerParent = nullptr;
 		RECT clamped = ClampRectToBounds(r, GetClientSurfaceRectInCanvas(), true);
 		ApplyRectToControl(moving, clamped);
@@ -1682,12 +1734,18 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 
 	if (containerChanged || runtimeHostChanged)
 	{
-		// 从旧父移除
+		std::unique_ptr<Control> movingOwner;
 		if (moving->Parent)
-			moving->Parent->RemoveControl(moving);
+		{
+			movingOwner = moving->Parent->DetachControl(moving);
+			if (!movingOwner) return;
+		}
 
 		// 加入新容器
-		LayoutBridge::AttachChild(runtimeHost, moving);
+		if (movingOwner)
+			LayoutBridge::AttachChild(runtimeHost, std::move(movingOwner));
+		else
+			LayoutBridge::AttachChild(runtimeHost, moving);
 
 		_selectedControl->DesignerParent = container;
 	}
@@ -2324,7 +2382,6 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 		break;
 	case UIClass::UI_SplitContainer:
 		newControl = new SplitContainer(centerX, centerY, 360, 220);
-		((SplitContainer*)newControl)->SplitterDistance = 176;
 		typeName = L"SplitContainer";
 		break;
 	case UIClass::UI_CheckBox:
@@ -2342,7 +2399,6 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 	case UIClass::UI_ListView:
 	{
 		auto* listView = new ListView(centerX, centerY, 320, 220);
-		listView->ViewMode = ListViewViewMode::Details;
 		listView->AddColumn(ListViewColumn(L"名称", 160));
 		listView->AddColumn(ListViewColumn(L"说明", 130));
 		ListViewItem first(L"ListViewItem 1", L"Details row");
@@ -2532,6 +2588,25 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 		
 		// 创建设计器控件包装
 		auto dc = std::make_shared<DesignerControl>(newControl, name, type, designerParent);
+		if (type == UIClass::UI_SplitContainer)
+		{
+			(void)ApplyTrackedMetadataProperty(
+				*dc,
+				*newControl,
+				L"SplitterDistance",
+				{ DesignerStyleValueKind::Int, L"176" },
+				false);
+		}
+		else if (type == UIClass::UI_ListView)
+		{
+			(void)ApplyTrackedMetadataProperty(
+				*dc,
+				*newControl,
+				L"ViewMode",
+				{ DesignerStyleValueKind::Int,
+					std::to_wstring(static_cast<int>(ListViewViewMode::Details)) },
+				false);
+		}
 		_designerControls.push_back(dc);
 		UpdateDefaultNameCounterFromName(type, name);
 		
@@ -2573,8 +2648,6 @@ void DesignerCanvas::DeleteSelectedControlCore()
 		if (!inst) continue;
 		// 删除控件前：先移除该子树下所有 DesignerControl，避免悬挂指针
 		RemoveDesignerControlsInSubtree(inst);
-		if (inst->Parent)
-			inst->Parent->RemoveControl(inst);
 		DeleteControlRecursive(inst);
 	}
 	this->InvalidateVisual();
@@ -2588,7 +2661,6 @@ void DesignerCanvas::ClearCanvas()
 		while (_clientSurface->Count > 0)
 		{
 			auto c = _clientSurface->operator[](_clientSurface->Count - 1);
-			_clientSurface->RemoveControl(c);
 			DeleteControlRecursive(c);
 		}
 	}
@@ -2597,8 +2669,113 @@ void DesignerCanvas::ClearCanvas()
 	_controlTypeCounters.clear();
 	_designedFormName = L"MainForm";
 	_designedFormEventHandlers.clear();
+	_dataContextSchema.clear();
+	_documentStyleSheet = {};
+	_previewStyleSheet.reset();
+	if (_clientSurface) (void)_clientSurface->SetStyleSheet(nullptr, true);
 	
 	OnControlSelected(nullptr);
+}
+
+bool DesignerCanvas::SetDataContextSchema(
+	DesignerDataContextSchema schema,
+	std::wstring* outError)
+{
+	DesignerDataContextSchemaUtils::Canonicalize(schema);
+	if (!DesignerDataContextSchemaUtils::Validate(schema, outError)) return false;
+	for (const auto& control : _designerControls)
+	{
+		if (!control || !control->ControlInstance) continue;
+		for (const auto& [targetProperty, binding] : control->DataBindings)
+		{
+			std::wstring validationError;
+			if (!DesignerBindingUtils::Validate(
+				*control->ControlInstance,
+				targetProperty,
+				binding,
+				nullptr,
+				&validationError,
+				&schema))
+			{
+				if (outError) *outError = L"控件 " + control->Name + L"：" + validationError;
+				return false;
+			}
+		}
+	}
+	_dataContextSchema = std::move(schema);
+	if (outError) outError->clear();
+	return true;
+}
+
+bool DesignerCanvas::SetDocumentStyleSheet(
+	DesignerStyleSheet styleSheet,
+	std::wstring* outError)
+{
+	DesignerStyleSheetUtils::Canonicalize(styleSheet);
+	if (!DesignerStyleSheetUtils::ValidateAgainstPropertyMetadata(
+		styleSheet,
+		[](UIClass type) { return DesignerControlFactory::Create(type); },
+		outError))
+		return false;
+	std::shared_ptr<ControlStyleSheet> runtime;
+	if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(styleSheet, runtime, outError))
+		return false;
+
+	auto describeIssue = [](const ControlStyleResolutionIssue& issue)
+	{
+		switch (issue.Code)
+		{
+		case ControlStyleResolutionIssueCode::MissingResource:
+			return L"缺少资源 " + issue.ResourceKey;
+		case ControlStyleResolutionIssueCode::PropertyNotFound:
+			return L"找不到属性 " + issue.PropertyName;
+		case ControlStyleResolutionIssueCode::PropertyNotWritable:
+			return L"属性不可写 " + issue.PropertyName;
+		case ControlStyleResolutionIssueCode::InvalidValue:
+			return L"属性值无效 " + issue.PropertyName;
+		}
+		return std::wstring(L"未知样式错误");
+	};
+
+	if (_clientSurface)
+	{
+		auto resolution = runtime->Resolve(*_clientSurface);
+		if (!resolution.Success())
+		{
+			if (outError) *outError = L"窗体客户区：" + describeIssue(resolution.Issues.front());
+			return false;
+		}
+	}
+	for (const auto& control : _designerControls)
+	{
+		if (!control || !control->ControlInstance) continue;
+		auto resolution = runtime->Resolve(*control->ControlInstance);
+		if (!resolution.Success())
+		{
+			if (outError) *outError = L"控件 " + control->Name + L"："
+				+ describeIssue(resolution.Issues.front());
+			return false;
+		}
+	}
+
+	if (_clientSurface)
+	{
+		const auto previous = _previewStyleSheet;
+		const bool applied = !styleSheet.Empty()
+			? _clientSurface->SetStyleSheet(runtime, true)
+			: _clientSurface->SetStyleSheet(nullptr, true);
+		if (!applied)
+		{
+			(void)_clientSurface->SetStyleSheet(previous, true);
+			if (outError) *outError = L"样式表无法应用到完整控件树；请检查通配规则的目标属性类型。";
+			return false;
+		}
+	}
+	_documentStyleSheet = std::move(styleSheet);
+	_previewStyleSheet = _documentStyleSheet.Empty() ? nullptr : std::move(runtime);
+	if (outError) outError->clear();
+	this->InvalidateVisual();
+	return true;
 }
 
 static bool IsExportableDesignType(UIClass t)
@@ -2829,6 +3006,7 @@ CodeGenInput DesignerCanvas::BuildCodeGenInput() const
 	input.FormAllowResize = _designedFormAllowResize;
 	input.FormFontName = _designedFormFontName;
 	input.FormFontSize = _designedFormFontSize;
+	input.StyleSheet = _documentStyleSheet;
 	return input;
 }
 
@@ -3013,6 +3191,18 @@ namespace
 			c.a = j.value("a", def.a);
 		}
 		return c;
+	}
+	static std::wstring ColorToMetadataText(const D2D1_COLOR_F& color)
+	{
+		auto byte = [](float value) -> unsigned int
+		{
+			return static_cast<unsigned int>(std::lround(
+				(std::clamp)(value, 0.0f, 1.0f) * 255.0f));
+		};
+		wchar_t text[10]{};
+		swprintf_s(text, L"#%02X%02X%02X%02X",
+			byte(color.a), byte(color.r), byte(color.g), byte(color.b));
+		return text;
 	}
 
 	static DesignValue ThicknessToValue(const Thickness& t)
@@ -3240,6 +3430,7 @@ namespace
 			one["description"] = ToUtf8(item.Description);
 			one["type"] = (int)item.ValueType;
 			one["readOnly"] = item.ReadOnly;
+			one["tag"] = static_cast<unsigned long long>(item.Tag);
 			if (!item.Options.empty())
 			{
 				DesignValue options = DesignValue::array();
@@ -3265,6 +3456,8 @@ namespace
 			item.Description = FromUtf8(it.value("description", std::string()));
 			item.ValueType = (PropertyGridValueType)it.value("type", (int)PropertyGridValueType::Text);
 			item.ReadOnly = it.value("readOnly", false);
+			item.Tag = static_cast<UINT64>(
+				it.value("tag", static_cast<unsigned long long>(0)));
 			if (it.contains("options") && it["options"].is_array())
 			{
 				for (auto& oj : it["options"])
@@ -3423,6 +3616,14 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 		document.Form.CenterTitle = _designedFormCenterTitle;
 		document.Form.AllowResize = _designedFormAllowResize;
 		document.Form.EventHandlers = _designedFormEventHandlers;
+		document.DataContextSchema = _dataContextSchema;
+		DesignerDataContextSchemaUtils::Canonicalize(document.DataContextSchema);
+		if (!DesignerDataContextSchemaUtils::Validate(document.DataContextSchema, outError))
+			return false;
+		document.StyleSheet = _documentStyleSheet;
+		DesignerStyleSheetUtils::Canonicalize(document.StyleSheet);
+		if (!DesignerStyleSheetUtils::Validate(document.StyleSheet, outError))
+			return false;
 
 		// 防御：Name 必须唯一，否则 parent 引用会歧义，文件将无法可靠加载
 		{
@@ -3505,6 +3706,15 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 
 			DesignValue props = DesignValue::object();
 			props["text"] = ToUtf8(c->Text);
+			if (!c->GetStyleId().empty())
+				props["styleId"] = ToUtf8(c->GetStyleId());
+			if (!c->GetStyleClasses().empty())
+			{
+				DesignValue styleClasses = DesignValue::array();
+				for (const auto& styleClass : c->GetStyleClasses())
+					styleClasses.push_back(ToUtf8(styleClass));
+				props["styleClasses"] = std::move(styleClasses);
+			}
 			props["location"] = DesignValue{ {"x", c->Location.x}, {"y", c->Location.y} };
 			props["size"] = DesignValue{ {"w", c->Size.cx}, {"h", c->Size.cy} };
 			// 字体：默认（跟随窗体/框架）不保存，显式字体才保存
@@ -3525,6 +3735,13 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			props["backColor"] = ColorToValue(c->BackColor);
 			props["foreColor"] = ColorToValue(c->ForeColor);
 			props["borderColor"] = ColorToValue(c->BorderColor);
+			props["showValidationBorder"] = c->ShowValidationBorder;
+			props["showValidationToolTip"] = c->ShowValidationToolTip;
+			props["validationBorderThickness"] = c->ValidationBorderThickness;
+			props["validationCornerRadius"] = c->ValidationCornerRadius;
+			props["validationToolTipMaxWidth"] = c->ValidationToolTipMaxWidth;
+			if (!c->AccessibleDescription.empty())
+				props["accessibleDescription"] = ToUtf8(c->AccessibleDescription);
 			props["margin"] = ThicknessToValue(c->Margin);
 			props["padding"] = ThicknessToValue(c->Padding);
 			props["anchor"] = (int)c->AnchorStyles;
@@ -3537,6 +3754,28 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			props["gridRowSpan"] = c->GridRowSpan;
 			props["gridColumnSpan"] = c->GridColumnSpan;
 			props["sizeMode"] = (int)c->SizeMode;
+			if (!dc->MetadataProperties.empty())
+			{
+				DesignValue metadataProperties = DesignValue::object();
+				for (const auto& [propertyName, storedValue] : dc->MetadataProperties)
+				{
+					(void)storedValue;
+					std::wstring canonicalName;
+					DesignerStyleValue currentValue;
+					std::wstring metadataError;
+					if (!DesignerPropertyCatalog::CaptureValue(
+						*c, propertyName, &canonicalName, currentValue, &metadataError))
+					{
+						if (outError) *outError = L"控件 " + dc->Name + L"：" + metadataError;
+						return false;
+					}
+					metadataProperties[ToUtf8(canonicalName)] = DesignValue{
+						{ "kind", ToUtf8(DesignerStyleSheetUtils::ValueKindName(currentValue.Kind)) },
+						{ "value", ToUtf8(currentValue.Text) }
+					};
+				}
+				props["metadata"] = std::move(metadataProperties);
+			}
 			node.Props = std::move(props);
 
 			DesignValue extra = DesignValue::object();
@@ -3544,11 +3783,9 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			{
 				auto* comboBox = (ComboBox*)c;
 				DesignValue items = DesignValue::array();
-				for (int i = 0; i < comboBox->Items.size(); i++)
+				for (size_t i = 0; i < comboBox->Items.size(); ++i)
 					items.push_back(ToUtf8(comboBox->Items[i]));
 				extra["items"] = items;
-				extra["expandCount"] = comboBox->ExpandCount;
-				extra["selectedIndex"] = comboBox->SelectedIndex;
 			}
 			else if (dc->Type == UIClass::UI_ProgressBar)
 			{
@@ -3583,64 +3820,9 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 				extra["allowModeSwitch"] = dateTimePicker->AllowModeSwitch;
 				extra["expand"] = dateTimePicker->Expand;
 			}
-			else if (dc->Type == UIClass::UI_NumericUpDown)
-			{
-				auto* numericUpDown = (NumericUpDown*)c;
-				extra["min"] = numericUpDown->Min;
-				extra["max"] = numericUpDown->Max;
-				extra["value"] = numericUpDown->Value;
-				extra["step"] = numericUpDown->Step;
-				extra["snapToStep"] = numericUpDown->SnapToStep;
-				extra["decimalPlaces"] = numericUpDown->DecimalPlaces;
-				extra["useMouseWheel"] = numericUpDown->UseMouseWheel;
-			}
-			else if (dc->Type == UIClass::UI_GroupBox)
-			{
-				auto* groupBox = (GroupBox*)c;
-				extra["captionMarginLeft"] = groupBox->CaptionMarginLeft;
-				extra["captionPaddingX"] = groupBox->CaptionPaddingX;
-				extra["captionPaddingY"] = groupBox->CaptionPaddingY;
-			}
-			else if (dc->Type == UIClass::UI_Expander)
-			{
-				auto* expander = (Expander*)c;
-				extra["headerHeight"] = expander->HeaderHeight;
-				extra["isExpanded"] = expander->IsExpanded;
-				extra["animationDurationMs"] = (int)expander->AnimationDurationMs;
-			}
-			else if (dc->Type == UIClass::UI_SplitContainer)
-			{
-				auto* split = (SplitContainer*)c;
-				extra["splitOrientation"] = OrientationToString(split->SplitOrientation);
-				extra["splitterDistance"] = split->SplitterDistance;
-				extra["splitterWidth"] = split->SplitterWidth;
-				extra["panel1MinSize"] = split->Panel1MinSize;
-				extra["panel2MinSize"] = split->Panel2MinSize;
-				extra["isSplitterFixed"] = split->IsSplitterFixed;
-			}
-			else if (dc->Type == UIClass::UI_Slider)
-			{
-				auto* slider = (Slider*)c;
-				extra["min"] = slider->Min;
-				extra["max"] = slider->Max;
-				extra["value"] = slider->Value;
-				extra["step"] = slider->Step;
-				extra["snapToStep"] = slider->SnapToStep;
-			}
 			else if (dc->Type == UIClass::UI_ListView || dc->Type == UIClass::UI_ListBox)
 			{
 				auto* listView = (ListView*)c;
-				extra["viewMode"] = (int)listView->ViewMode;
-				extra["selectionMode"] = (int)listView->SelectionMode;
-				extra["showCheckBoxes"] = listView->ShowCheckBoxes;
-				extra["showColumnHeaders"] = listView->ShowColumnHeaders;
-				extra["alternatingRows"] = listView->AlternatingRows;
-				extra["rowHeight"] = listView->RowHeight;
-				extra["tileHeight"] = listView->TileHeight;
-				extra["iconSize"] = listView->IconSize;
-				extra["selectedItemBackColor"] = ColorToValue(listView->SelectedItemBackColor);
-				extra["underMouseItemBackColor"] = ColorToValue(listView->UnderMouseItemBackColor);
-				extra["selectedItemForeColor"] = ColorToValue(listView->SelectedItemForeColor);
 				DesignValue cols = DesignValue::array();
 				for (auto& col : listView->Columns)
 				{
@@ -3657,7 +3839,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			{
 				auto* gridView = (GridView*)c;
 				DesignValue cols = DesignValue::array();
-				for (int i = 0; i < gridView->ColumnCount(); i++)
+				for (size_t i = 0; i < gridView->ColumnCount(); ++i)
 				{
 					auto& col = gridView->ColumnAt(static_cast<int>(i));
 					DesignValue cj = DesignValue::object();
@@ -3665,6 +3847,15 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 					cj["width"] = col.Width;
 					cj["type"] = (int)col.Type;
 					cj["canEdit"] = col.CanEdit;
+					if (!col.ButtonText.empty())
+						cj["buttonText"] = ToUtf8(col.ButtonText);
+					if (!col.ComboBoxItems.empty())
+					{
+						DesignValue items = DesignValue::array();
+						for (const auto& item : col.ComboBoxItems)
+							items.push_back(ToUtf8(item));
+						cj["comboBoxItems"] = std::move(items);
+					}
 					cols.push_back(cj);
 				}
 				extra["columns"] = cols;
@@ -3672,13 +3863,6 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			else if (dc->Type == UIClass::UI_PropertyGrid)
 			{
 				auto* pg = (PropertyGridView*)c;
-				extra["showHeader"] = pg->ShowHeader;
-				extra["showCategories"] = pg->ShowCategories;
-				extra["alternatingRows"] = pg->AlternatingRows;
-				extra["allowEditing"] = pg->AllowEditing;
-				extra["rowHeight"] = pg->RowHeight;
-				extra["categoryHeight"] = pg->CategoryHeight;
-				extra["nameColumnWidth"] = pg->NameColumnWidth;
 				extra["items"] = PropertyGridItemsToValue(pg->Items);
 			}
 			else if (dc->Type == UIClass::UI_TreeView)
@@ -3693,11 +3877,6 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			else if (dc->Type == UIClass::UI_TabControl)
 			{
 				auto* tabControl = (TabControl*)c;
-				extra["selectedIndex"] = tabControl->SelectedIndex;
-				extra["titleHeight"] = tabControl->TitleHeight;
-				extra["titleWidth"] = tabControl->TitleWidth;
-				extra["titlePosition"] = (int)tabControl->TitlePosition;
-				extra["animationMode"] = (int)tabControl->AnimationMode;
 				DesignValue pages = DesignValue::array();
 				for (int i = 0; i < tabControl->Count; i++)
 				{
@@ -3710,26 +3889,6 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 					pages.push_back(pj);
 				}
 				extra["pages"] = pages;
-			}
-			else if (dc->Type == UIClass::UI_ToolBar)
-			{
-				auto* toolBar = (ToolBar*)c;
-				extra["padding"] = toolBar->Padding;
-				extra["gap"] = toolBar->Gap;
-				extra["itemHeight"] = toolBar->ItemHeight;
-			}
-			else if (dc->Type == UIClass::UI_ScrollView)
-			{
-				auto* scrollView = (ScrollView*)c;
-				extra["scrollBackColor"] = ColorToValue(scrollView->ScrollBackColor);
-				extra["scrollForeColor"] = ColorToValue(scrollView->ScrollForeColor);
-				extra["alwaysShowVScroll"] = scrollView->AlwaysShowVScroll;
-				extra["alwaysShowHScroll"] = scrollView->AlwaysShowHScroll;
-				extra["autoContentSize"] = scrollView->AutoContentSize;
-				extra["contentSize"] = DesignValue{{"w", scrollView->ContentSize.cx}, {"h", scrollView->ContentSize.cy}};
-				extra["scrollXOffset"] = scrollView->ScrollXOffset;
-				extra["scrollYOffset"] = scrollView->ScrollYOffset;
-				extra["mouseWheelStep"] = scrollView->MouseWheelStep;
 			}
 			else if (dc->Type == UIClass::UI_GridPanel)
 			{
@@ -3755,28 +3914,9 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 				extra["rows"] = rows;
 				extra["columns"] = cols;
 			}
-			else if (dc->Type == UIClass::UI_StackPanel)
-			{
-				auto* stackPanel = (StackPanel*)c;
-				extra["orientation"] = OrientationToString(stackPanel->GetOrientation());
-				extra["spacing"] = stackPanel->GetSpacing();
-			}
-			else if (dc->Type == UIClass::UI_WrapPanel)
-			{
-				auto* wrapPanel = (WrapPanel*)c;
-				extra["orientation"] = OrientationToString(wrapPanel->GetOrientation());
-				extra["itemWidth"] = wrapPanel->GetItemWidth();
-				extra["itemHeight"] = wrapPanel->GetItemHeight();
-			}
-			else if (dc->Type == UIClass::UI_DockPanel)
-			{
-				auto* dockPanel = (DockPanel*)c;
-				extra["lastChildFill"] = dockPanel->GetLastChildFill();
-			}
 			else if (dc->Type == UIClass::UI_StatusBar)
 			{
 				auto* statusBar = (StatusBar*)c;
-				extra["topMost"] = statusBar->TopMost;
 				DesignValue parts = DesignValue::array();
 				for (int i = 0; i < statusBar->PartCount(); i++)
 				{
@@ -3806,11 +3946,6 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 				auto it = dc->DesignStrings.find(L"mediaFile");
 				std::wstring mediaFile = (it != dc->DesignStrings.end()) ? it->second : mediaPlayer->MediaFile;
 				if (!mediaFile.empty()) extra["mediaFile"] = ToUtf8(mediaFile);
-				extra["autoPlay"] = mediaPlayer->AutoPlay;
-				extra["loop"] = mediaPlayer->Loop;
-				extra["volume"] = mediaPlayer->Volume;
-				extra["playbackRate"] = mediaPlayer->PlaybackRate;
-				extra["renderMode"] = (int)mediaPlayer->RenderMode;
 			}
 
 			if (auto* splitParent = AsSplitContainer(dc->DesignerParent))
@@ -3835,6 +3970,38 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 					ev[ToUtf8(kv.first)] = true;
 				}
 				node.Events = std::move(ev);
+			}
+
+			if (!dc->DataBindings.empty())
+			{
+				DesignValue bindings = DesignValue::object();
+				for (const auto& [targetProperty, binding] : dc->DataBindings)
+				{
+					const BindingPropertyMetadata* metadata = nullptr;
+					std::wstring validationError;
+					if (!DesignerBindingUtils::Validate(
+						*c, targetProperty, binding, &metadata, &validationError,
+						&_dataContextSchema))
+					{
+						if (outError) *outError = L"控件 " + dc->Name + L"：" + validationError;
+						return false;
+					}
+
+					DesignValue bindingDefinition{
+						{ "source", ToUtf8(binding.SourceProperty) },
+						{ "mode", static_cast<int>(binding.Mode) },
+						{ "updateMode", static_cast<int>(binding.UpdateMode) }
+					};
+					const auto converterName = DesignerBindingUtils::Trim(binding.Converter);
+					if (!converterName.empty())
+					{
+						const auto registered = BindingValueConverterRegistry::Find(converterName);
+						bindingDefinition["converter"] = ToUtf8(
+							registered ? registered->Name : converterName);
+					}
+					bindings[ToUtf8(metadata->Name())] = std::move(bindingDefinition);
+				}
+				node.Bindings = std::move(bindings);
 			}
 			document.Nodes.push_back(std::move(node));
 		}
@@ -3867,6 +4034,10 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 {
 	try
 	{
+		if (!DesignerDataContextSchemaUtils::Validate(document.DataContextSchema, outError))
+			return false;
+		if (!DesignerStyleSheetUtils::Validate(document.StyleSheet, outError))
+			return false;
 		ClearCanvas();
 		_controlTypeCounters.clear();
 		_designedFormEventHandlers.clear();
@@ -3896,6 +4067,8 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 		_designedFormBackColor = document.Form.BackColor;
 		_designedFormForeColor = document.Form.ForeColor;
 		_designedFormEventHandlers = document.Form.EventHandlers;
+		_dataContextSchema = document.DataContextSchema;
+		DesignerDataContextSchemaUtils::Canonicalize(_dataContextSchema);
 		if (_clientSurface) _clientSurface->BackColor = _designedFormBackColor;
 		SetDesignedFormSize(document.Form.Size);
 		_designedFormLocation = document.Form.Location;
@@ -3912,6 +4085,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 			DesignValue props;
 			DesignValue extra;
 			DesignValue events;
+			DesignValue bindings;
 		};
 		std::vector<Pending> items;
 		items.reserve(document.Nodes.size());
@@ -3941,6 +4115,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 			p.props = node.Props.is_object() ? node.Props : DesignValue::object();
 			p.extra = node.Extra.is_object() ? node.Extra : DesignValue::object();
 			p.events = node.Events.is_object() ? node.Events : DesignValue::object();
+			p.bindings = node.Bindings.is_object() ? node.Bindings : DesignValue::object();
 			nameById[p.id] = p.name;
 			items.push_back(std::move(p));
 		}
@@ -4046,9 +4221,68 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				}
 			}
 
+			if (it.bindings.is_object())
+			{
+				dc->DataBindings.clear();
+				for (const auto& [targetName, bindingValue] : it.bindings.ObjectItems())
+				{
+					if (!bindingValue.is_object())
+					{
+						if (outError) *outError = L"控件 " + it.name + L" 的数据绑定格式无效。";
+						return false;
+					}
+					const std::wstring targetProperty = FromUtf8(targetName);
+					const std::wstring sourceProperty = FromUtf8(
+						bindingValue.value("source", std::string()));
+					const int modeValue = bindingValue.value(
+						"mode", static_cast<int>(BindingMode::OneWay));
+					const int updateModeValue = bindingValue.value(
+						"updateMode", static_cast<int>(DataSourceUpdateMode::OnPropertyChanged));
+					const std::wstring converter = DesignerBindingUtils::Trim(FromUtf8(
+						bindingValue.value("converter", std::string())));
+					if (modeValue < static_cast<int>(BindingMode::OneWay)
+						|| modeValue > static_cast<int>(BindingMode::OneTime)
+						|| updateModeValue < static_cast<int>(DataSourceUpdateMode::OnPropertyChanged)
+						|| updateModeValue > static_cast<int>(DataSourceUpdateMode::Never))
+					{
+						if (outError) *outError = L"控件 " + it.name + L" 的数据绑定参数无效。";
+						return false;
+					}
+
+					DesignerDataBinding binding{
+						DesignerBindingUtils::Trim(sourceProperty),
+						static_cast<BindingMode>(modeValue),
+						static_cast<DataSourceUpdateMode>(updateModeValue),
+						converter };
+					const BindingPropertyMetadata* metadata = nullptr;
+					std::wstring validationError;
+					if (!DesignerBindingUtils::Validate(
+						*c, targetProperty, binding, &metadata, &validationError,
+						&_dataContextSchema))
+					{
+						if (outError) *outError = L"控件 " + it.name + L"：" + validationError;
+						return false;
+					}
+
+					dc->DataBindings[metadata->Name()] = std::move(binding);
+				}
+			}
+
 			if (it.props.is_object())
 			{
 				c->Text = FromUtf8(it.props.value("text", std::string()));
+				c->SetStyleId(it.props.contains("styleId") && it.props["styleId"].is_string()
+					? FromUtf8(it.props["styleId"].get<std::string>())
+					: std::wstring{});
+				c->ClearStyleClasses();
+				if (it.props.contains("styleClasses") && it.props["styleClasses"].is_array())
+				{
+					for (const auto& styleClass : it.props["styleClasses"])
+					{
+						if (styleClass.is_string())
+							c->AddStyleClass(FromUtf8(styleClass.get<std::string>()));
+					}
+				}
 				if (it.props.contains("location"))
 				{
 					auto& l = it.props["location"];
@@ -4069,6 +4303,18 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 					? it.props["borderColor"]
 					: (it.props.contains("bolderColor") ? it.props["bolderColor"] : DesignValue());
 				c->BorderColor = ColorFromValue(borderColorValue, c->BorderColor);
+				c->ShowValidationBorder = it.props.value("showValidationBorder", c->ShowValidationBorder);
+				c->ShowValidationToolTip = it.props.value("showValidationToolTip", c->ShowValidationToolTip);
+				c->ValidationBorderThickness = (float)it.props.value(
+					"validationBorderThickness", (double)c->ValidationBorderThickness);
+				c->ValidationCornerRadius = (float)it.props.value(
+					"validationCornerRadius", (double)c->ValidationCornerRadius);
+				c->ValidationToolTipMaxWidth = (float)it.props.value(
+					"validationToolTipMaxWidth", (double)c->ValidationToolTipMaxWidth);
+				if (it.props.contains("accessibleDescription")
+					&& it.props["accessibleDescription"].is_string())
+					c->AccessibleDescription = FromUtf8(
+						it.props["accessibleDescription"].get<std::string>());
 				c->Margin = ThicknessFromValue(it.props.contains("margin") ? it.props["margin"] : DesignValue(), c->Margin);
 				c->Padding = ThicknessFromValue(it.props.contains("padding") ? it.props["padding"] : DesignValue(), c->Padding);
 				c->AnchorStyles = (uint8_t)it.props.value("anchor", (int)c->AnchorStyles);
@@ -4107,7 +4353,91 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 					if (_designedFormSharedFont) c->SetFontEx(_designedFormSharedFont, false);
 					else c->SetFontEx(nullptr, false);
 				}
+
+				if (it.props.contains("metadata") && it.props["metadata"].is_object())
+				{
+					using MetadataEntry = std::pair<const std::string*, const DesignValue*>;
+					std::vector<MetadataEntry> metadataEntries;
+					for (const auto& [propertyKey, propertyValue]
+						: it.props["metadata"].ObjectItems())
+					{
+						metadataEntries.emplace_back(&propertyKey, &propertyValue);
+					}
+					std::stable_sort(metadataEntries.begin(), metadataEntries.end(),
+						[c](const MetadataEntry& left, const MetadataEntry& right)
+						{
+							const auto leftName = FromUtf8(*left.first);
+							const auto rightName = FromUtf8(*right.first);
+							const auto* leftMetadata = c->FindPropertyMetadata(leftName);
+							const auto* rightMetadata = c->FindPropertyMetadata(rightName);
+							if (leftMetadata && rightMetadata)
+							{
+								const auto& leftDesign = leftMetadata->Design();
+								const auto& rightDesign = rightMetadata->Design();
+								if (leftDesign.CategoryOrder != rightDesign.CategoryOrder)
+									return leftDesign.CategoryOrder < rightDesign.CategoryOrder;
+								if (leftDesign.Order != rightDesign.Order)
+									return leftDesign.Order < rightDesign.Order;
+							}
+							else if (leftMetadata != rightMetadata)
+							{
+								return leftMetadata != nullptr;
+							}
+							return _wcsicmp(leftName.c_str(), rightName.c_str()) < 0;
+						});
+
+					for (const auto& [propertyKeyPointer, propertyValuePointer]
+						: metadataEntries)
+					{
+						const auto& propertyKey = *propertyKeyPointer;
+						const auto& propertyValue = *propertyValuePointer;
+						if (!propertyValue.is_object()
+							|| !propertyValue.contains("kind")
+							|| !propertyValue["kind"].is_string()
+							|| !propertyValue.contains("value")
+							|| !propertyValue["value"].is_string())
+						{
+							if (outError) *outError = L"控件 " + it.name
+								+ L" 的元数据属性格式无效。";
+							return false;
+						}
+						DesignerStyleValue value;
+						if (!DesignerStyleSheetUtils::TryParseValueKind(
+							FromUtf8(propertyValue["kind"].get<std::string>()), value.Kind))
+						{
+							if (outError) *outError = L"控件 " + it.name
+								+ L" 的元数据属性类型无效。";
+							return false;
+						}
+						value.Text = FromUtf8(propertyValue["value"].get<std::string>());
+						std::wstring canonicalName;
+						DesignerStyleValue effective;
+						std::wstring metadataError;
+						if (!DesignerPropertyCatalog::ApplyValue(
+							*c, FromUtf8(propertyKey), value,
+							&canonicalName, &effective, &metadataError))
+						{
+							if (outError) *outError = L"控件 " + it.name + L"：" + metadataError;
+							return false;
+						}
+						dc->MetadataProperties[canonicalName] = std::move(effective);
+					}
+				}
 			}
+
+			auto migrateLegacyMetadata = [&](const wchar_t* propertyName,
+				DesignerStyleValue value) -> bool
+			{
+				std::wstring metadataError;
+				if (!ApplyTrackedMetadataProperty(
+					*dc, *c, propertyName, std::move(value), true, &metadataError))
+				{
+					if (outError) *outError = L"控件 " + it.name
+						+ L" 的旧格式属性迁移失败：" + metadataError;
+					return false;
+				}
+				return true;
+			};
 
 			if (it.extra.is_object())
 			{
@@ -4142,11 +4472,31 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				else if (it.type == UIClass::UI_TabControl)
 				{
 					auto* tabControl = (TabControl*)c;
-					tabControl->SelectedIndex = it.extra.value("selectedIndex", tabControl->SelectedIndex);
-					tabControl->TitleHeight = it.extra.value("titleHeight", tabControl->TitleHeight);
-					tabControl->TitleWidth = it.extra.value("titleWidth", tabControl->TitleWidth);
-					tabControl->TitlePosition = (TabControlTitlePosition)it.extra.value("titlePosition", (int)tabControl->TitlePosition);
-					tabControl->AnimationMode = (TabControlAnimationMode)it.extra.value("animationMode", (int)tabControl->AnimationMode);
+					if (it.extra.contains("selectedIndex")
+						&& !migrateLegacyMetadata(L"SelectedIndex", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value(
+								"selectedIndex", tabControl->SelectedIndex)) })) return false;
+					if (it.extra.contains("titleHeight")
+						&& !migrateLegacyMetadata(L"TitleHeight", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value(
+								"titleHeight", static_cast<float>(tabControl->TitleHeight))) })) return false;
+					if (it.extra.contains("titleWidth")
+						&& !migrateLegacyMetadata(L"TitleWidth", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value(
+								"titleWidth", static_cast<float>(tabControl->TitleWidth))) })) return false;
+					if (it.extra.contains("titlePosition")
+						&& !migrateLegacyMetadata(L"TitlePosition", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value(
+								"titlePosition", static_cast<int>(tabControl->TitlePosition))) })) return false;
+					if (it.extra.contains("animationMode")
+						&& !migrateLegacyMetadata(L"AnimationMode", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value(
+								"animationMode", static_cast<int>(tabControl->AnimationMode))) })) return false;
 					if (it.extra.contains("pages") && it.extra["pages"].is_array())
 					{
 						for (auto& pj : it.extra["pages"])
@@ -4162,79 +4512,210 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				}
 				else if (it.type == UIClass::UI_StackPanel)
 				{
-					auto* stackPanel = (StackPanel*)c;
 					Orientation o;
 					if (it.extra.contains("orientation") && it.extra["orientation"].is_string() && TryParseOrientation(it.extra["orientation"].get<std::string>(), o))
-						stackPanel->SetOrientation(o);
-					stackPanel->SetSpacing(it.extra.value("spacing", stackPanel->GetSpacing()));
+					{
+						if (!migrateLegacyMetadata(L"Orientation", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(static_cast<int>(o)) })) return false;
+					}
+					if (it.extra.contains("spacing"))
+					{
+						if (!migrateLegacyMetadata(L"Spacing", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value("spacing", 0.0f)) })) return false;
+					}
+					HorizontalAlignment horizontalAlignment = HorizontalAlignment::Stretch;
+					VerticalAlignment verticalAlignment = VerticalAlignment::Stretch;
+					if (it.extra.contains("horizontalContentAlignment")
+						&& it.extra["horizontalContentAlignment"].is_string()
+						&& TryParseHAlign(it.extra["horizontalContentAlignment"].get<std::string>(), horizontalAlignment))
+					{
+						if (!migrateLegacyMetadata(L"HorizontalContentAlignment", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(static_cast<int>(horizontalAlignment)) })) return false;
+					}
+					if (it.extra.contains("verticalContentAlignment")
+						&& it.extra["verticalContentAlignment"].is_string()
+						&& TryParseVAlign(it.extra["verticalContentAlignment"].get<std::string>(), verticalAlignment))
+					{
+						if (!migrateLegacyMetadata(L"VerticalContentAlignment", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(static_cast<int>(verticalAlignment)) })) return false;
+					}
 				}
 				else if (it.type == UIClass::UI_WrapPanel)
 				{
-					auto* wrapPanel = (WrapPanel*)c;
 					Orientation o;
 					if (it.extra.contains("orientation") && it.extra["orientation"].is_string() && TryParseOrientation(it.extra["orientation"].get<std::string>(), o))
-						wrapPanel->SetOrientation(o);
-					wrapPanel->SetItemWidth(it.extra.value("itemWidth", wrapPanel->GetItemWidth()));
-					wrapPanel->SetItemHeight(it.extra.value("itemHeight", wrapPanel->GetItemHeight()));
+					{
+						if (!migrateLegacyMetadata(L"Orientation", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(static_cast<int>(o)) })) return false;
+					}
+					if (it.extra.contains("itemWidth"))
+					{
+						if (!migrateLegacyMetadata(L"ItemWidth", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value("itemWidth", 0.0f)) })) return false;
+					}
+					if (it.extra.contains("itemHeight"))
+					{
+						if (!migrateLegacyMetadata(L"ItemHeight", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value("itemHeight", 0.0f)) })) return false;
+					}
 				}
 				else if (it.type == UIClass::UI_DockPanel)
 				{
-					auto* dockPanel = (DockPanel*)c;
-					dockPanel->SetLastChildFill(it.extra.value("lastChildFill", dockPanel->GetLastChildFill()));
+					if (it.extra.contains("lastChildFill"))
+					{
+						if (!migrateLegacyMetadata(L"LastChildFill", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("lastChildFill", true) ? L"true" : L"false" }))
+							return false;
+					}
 				}
 				else if (it.type == UIClass::UI_ToolBar)
 				{
 					auto* toolBar = (ToolBar*)c;
-					toolBar->Padding = it.extra.value("padding", toolBar->Padding);
-					toolBar->Gap = it.extra.value("gap", toolBar->Gap);
-					toolBar->ItemHeight = it.extra.value("itemHeight", toolBar->ItemHeight);
+					if (it.extra.contains("padding")
+						&& !migrateLegacyMetadata(L"HorizontalPadding", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value(
+								"padding", toolBar->HorizontalPadding)) })) return false;
+					if (it.extra.contains("gap")
+						&& !migrateLegacyMetadata(L"Gap", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value("gap", toolBar->Gap)) })) return false;
+					if (it.extra.contains("itemHeight")
+						&& !migrateLegacyMetadata(L"ItemHeight", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value(
+								"itemHeight", toolBar->ItemHeight)) })) return false;
 				}
 				else if (it.type == UIClass::UI_ScrollView)
 				{
 					auto* scrollView = (ScrollView*)c;
-					scrollView->ScrollBackColor = ColorFromValue(it.extra.contains("scrollBackColor") ? it.extra["scrollBackColor"] : DesignValue(), scrollView->ScrollBackColor);
-					scrollView->ScrollForeColor = ColorFromValue(it.extra.contains("scrollForeColor") ? it.extra["scrollForeColor"] : DesignValue(), scrollView->ScrollForeColor);
-					scrollView->AlwaysShowVScroll = it.extra.value("alwaysShowVScroll", scrollView->AlwaysShowVScroll);
-					scrollView->AlwaysShowHScroll = it.extra.value("alwaysShowHScroll", scrollView->AlwaysShowHScroll);
-					scrollView->AutoContentSize = it.extra.value("autoContentSize", scrollView->AutoContentSize);
+					if (it.extra.contains("scrollBackColor")
+						&& !migrateLegacyMetadata(L"ScrollBackColor", {
+							DesignerStyleValueKind::Color,
+							ColorToMetadataText(ColorFromValue(
+								it.extra["scrollBackColor"], scrollView->ScrollBackColor)) })) return false;
+					if (it.extra.contains("scrollForeColor")
+						&& !migrateLegacyMetadata(L"ScrollForeColor", {
+							DesignerStyleValueKind::Color,
+							ColorToMetadataText(ColorFromValue(
+								it.extra["scrollForeColor"], scrollView->ScrollForeColor)) })) return false;
+					if (it.extra.contains("autoContentSize")
+						&& !migrateLegacyMetadata(L"AutoContentSize", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("autoContentSize", scrollView->AutoContentSize)
+								? L"true" : L"false" })) return false;
 					if (it.extra.contains("contentSize") && it.extra["contentSize"].is_object())
 					{
 						auto& cs = it.extra["contentSize"];
-						scrollView->ContentSize = { cs.value("w", scrollView->ContentSize.cx), cs.value("h", scrollView->ContentSize.cy) };
+						if (!migrateLegacyMetadata(L"ContentSize", {
+							DesignerStyleValueKind::Size,
+							std::to_wstring(cs.value("w", scrollView->ContentSize.cx))
+								+ L", " + std::to_wstring(cs.value("h", scrollView->ContentSize.cy)) })) return false;
 					}
+					if (it.extra.contains("alwaysShowVScroll")
+						&& !migrateLegacyMetadata(L"AlwaysShowVScroll", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("alwaysShowVScroll", scrollView->AlwaysShowVScroll)
+								? L"true" : L"false" })) return false;
+					if (it.extra.contains("alwaysShowHScroll")
+						&& !migrateLegacyMetadata(L"AlwaysShowHScroll", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("alwaysShowHScroll", scrollView->AlwaysShowHScroll)
+								? L"true" : L"false" })) return false;
+					if (it.extra.contains("mouseWheelStep")
+						&& !migrateLegacyMetadata(L"MouseWheelStep", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value("mouseWheelStep", scrollView->MouseWheelStep)) })) return false;
+					// Scroll offsets are observable runtime state, not design configuration.
+					// Old files remain readable, but new saves intentionally omit them.
 					scrollView->ScrollXOffset = it.extra.value("scrollXOffset", scrollView->ScrollXOffset);
 					scrollView->ScrollYOffset = it.extra.value("scrollYOffset", scrollView->ScrollYOffset);
-					scrollView->MouseWheelStep = it.extra.value("mouseWheelStep", scrollView->MouseWheelStep);
 				}
 				else if (it.type == UIClass::UI_ComboBox)
 				{
 					auto* comboBox = (ComboBox*)c;
-					comboBox->Items.clear();
+					std::vector<std::wstring> items;
 					if (it.extra.contains("items") && it.extra["items"].is_array())
 					{
 						for (auto& sj : it.extra["items"])
-							if (sj.is_string()) comboBox->Items.push_back(FromUtf8(sj.get<std::string>()));
+							if (sj.is_string()) items.push_back(FromUtf8(sj.get<std::string>()));
 					}
-					comboBox->ExpandCount = std::max(1, it.extra.value("expandCount", comboBox->ExpandCount));
-					comboBox->SelectedIndex = it.extra.value("selectedIndex", comboBox->SelectedIndex);
-					if (comboBox->Items.size() > 0 && comboBox->SelectedIndex >= 0 && comboBox->SelectedIndex < comboBox->Items.size())
-						comboBox->Text = comboBox->Items[comboBox->SelectedIndex];
+					comboBox->Items = items;
+					if (it.extra.contains("expandCount")
+						&& !migrateLegacyMetadata(L"ExpandCount", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value(
+								"expandCount", comboBox->ExpandCount)) })) return false;
+					if (it.extra.contains("selectedIndex")
+						&& !migrateLegacyMetadata(L"SelectedIndex", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value(
+								"selectedIndex", comboBox->SelectedIndex)) })) return false;
 				}
-				else if (it.type == UIClass::UI_ListView || it.type == UIClass::UI_ListBox)
-				{
-					auto* listView = (ListView*)c;
-					listView->ViewMode = (ListViewViewMode)it.extra.value("viewMode", (int)listView->ViewMode);
-					listView->SelectionMode = (ListViewSelectionMode)it.extra.value("selectionMode", (int)listView->SelectionMode);
-					listView->ShowCheckBoxes = it.extra.value("showCheckBoxes", listView->ShowCheckBoxes);
-					listView->ShowColumnHeaders = it.extra.value("showColumnHeaders", listView->ShowColumnHeaders);
-					listView->AlternatingRows = it.extra.value("alternatingRows", listView->AlternatingRows);
-					listView->RowHeight = it.extra.value("rowHeight", listView->RowHeight);
-					listView->TileHeight = it.extra.value("tileHeight", listView->TileHeight);
-					listView->IconSize = it.extra.value("iconSize", listView->IconSize);
-					listView->SelectedItemBackColor = ColorFromValue(it.extra.contains("selectedItemBackColor") ? it.extra["selectedItemBackColor"] : DesignValue(), listView->SelectedItemBackColor);
-					listView->UnderMouseItemBackColor = ColorFromValue(it.extra.contains("underMouseItemBackColor") ? it.extra["underMouseItemBackColor"] : DesignValue(), listView->UnderMouseItemBackColor);
-					listView->SelectedItemForeColor = ColorFromValue(it.extra.contains("selectedItemForeColor") ? it.extra["selectedItemForeColor"] : DesignValue(), listView->SelectedItemForeColor);
-					listView->ClearColumns();
+			else if (it.type == UIClass::UI_ListView || it.type == UIClass::UI_ListBox)
+			{
+				auto* listView = (ListView*)c;
+				if (it.extra.contains("viewMode")
+					&& !migrateLegacyMetadata(L"ViewMode", {
+						DesignerStyleValueKind::Int,
+						std::to_wstring(it.extra.value(
+							"viewMode", static_cast<int>(listView->ViewMode))) })) return false;
+				if (it.extra.contains("selectionMode")
+					&& !migrateLegacyMetadata(L"SelectionMode", {
+						DesignerStyleValueKind::Int,
+						std::to_wstring(it.extra.value(
+							"selectionMode", static_cast<int>(listView->SelectionMode))) })) return false;
+				if (it.extra.contains("showCheckBoxes")
+					&& !migrateLegacyMetadata(L"ShowCheckBoxes", {
+						DesignerStyleValueKind::Bool,
+						it.extra.value("showCheckBoxes", listView->ShowCheckBoxes)
+							? L"true" : L"false" })) return false;
+				if (it.extra.contains("showColumnHeaders")
+					&& !migrateLegacyMetadata(L"ShowColumnHeaders", {
+						DesignerStyleValueKind::Bool,
+						it.extra.value("showColumnHeaders", listView->ShowColumnHeaders)
+							? L"true" : L"false" })) return false;
+				if (it.extra.contains("alternatingRows")
+					&& !migrateLegacyMetadata(L"AlternatingRows", {
+						DesignerStyleValueKind::Bool,
+						it.extra.value("alternatingRows", listView->AlternatingRows)
+							? L"true" : L"false" })) return false;
+				if (it.extra.contains("rowHeight")
+					&& !migrateLegacyMetadata(L"RowHeight", {
+						DesignerStyleValueKind::Float,
+						std::to_wstring(it.extra.value("rowHeight", listView->RowHeight)) })) return false;
+				if (it.extra.contains("tileHeight")
+					&& !migrateLegacyMetadata(L"TileHeight", {
+						DesignerStyleValueKind::Float,
+						std::to_wstring(it.extra.value("tileHeight", listView->TileHeight)) })) return false;
+				if (it.extra.contains("iconSize")
+					&& !migrateLegacyMetadata(L"IconSize", {
+						DesignerStyleValueKind::Float,
+						std::to_wstring(it.extra.value("iconSize", listView->IconSize)) })) return false;
+				if (it.extra.contains("selectedItemBackColor")
+					&& !migrateLegacyMetadata(L"SelectedItemBackColor", {
+						DesignerStyleValueKind::Color,
+						ColorToMetadataText(ColorFromValue(
+							it.extra["selectedItemBackColor"], listView->SelectedItemBackColor)) })) return false;
+				if (it.extra.contains("underMouseItemBackColor")
+					&& !migrateLegacyMetadata(L"UnderMouseItemBackColor", {
+						DesignerStyleValueKind::Color,
+						ColorToMetadataText(ColorFromValue(
+							it.extra["underMouseItemBackColor"], listView->UnderMouseItemBackColor)) })) return false;
+				if (it.extra.contains("selectedItemForeColor")
+					&& !migrateLegacyMetadata(L"SelectedItemForeColor", {
+						DesignerStyleValueKind::Color,
+						ColorToMetadataText(ColorFromValue(
+							it.extra["selectedItemForeColor"], listView->SelectedItemForeColor)) })) return false;
+				listView->ClearColumns();
 					if (it.extra.contains("columns") && it.extra["columns"].is_array())
 					{
 						for (auto& cj : it.extra["columns"])
@@ -4247,14 +4728,15 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 							listView->Columns.push_back(col);
 						}
 					}
-					listView->Items.clear();
-					if (it.extra.contains("items"))
-						ValueToListViewItems(it.extra["items"], listView->Items);
-					listView->ScrollYOffset = 0.0f;
-				}
+				std::vector<ListViewItem> items;
+				if (it.extra.contains("items"))
+					ValueToListViewItems(it.extra["items"], items);
+				listView->SetItems(std::move(items));
+			}
 				else if (it.type == UIClass::UI_GridView)
 				{
 					auto* gridView = (GridView*)c;
+					auto update = gridView->DeferUpdates();
 					gridView->ClearColumns();
 					if (it.extra.contains("columns") && it.extra["columns"].is_array())
 					{
@@ -4266,6 +4748,15 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 							col.Width = cj.value("width", col.Width);
 							col.Type = (ColumnType)cj.value("type", (int)col.Type);
 							col.CanEdit = cj.value("canEdit", col.CanEdit);
+							col.ButtonText = FromUtf8(cj.value("buttonText", std::string()));
+							if (cj.contains("comboBoxItems") && cj["comboBoxItems"].is_array())
+							{
+								for (const auto& item : cj["comboBoxItems"])
+								{
+									if (item.is_string())
+										col.ComboBoxItems.push_back(FromUtf8(item.get<std::string>()));
+								}
+							}
 							gridView->AddColumn(col);
 						}
 					}
@@ -4273,17 +4764,38 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				else if (it.type == UIClass::UI_PropertyGrid)
 				{
 					auto* pg = (PropertyGridView*)c;
-					pg->ShowHeader = it.extra.value("showHeader", pg->ShowHeader);
-					pg->ShowCategories = it.extra.value("showCategories", pg->ShowCategories);
-					pg->AlternatingRows = it.extra.value("alternatingRows", pg->AlternatingRows);
-					pg->AllowEditing = it.extra.value("allowEditing", pg->AllowEditing);
-					pg->RowHeight = it.extra.value("rowHeight", pg->RowHeight);
-					pg->CategoryHeight = it.extra.value("categoryHeight", pg->CategoryHeight);
-					pg->NameColumnWidth = it.extra.value("nameColumnWidth", pg->NameColumnWidth);
-					pg->Items.clear();
+					if (it.extra.contains("showHeader")
+						&& !migrateLegacyMetadata(L"ShowHeader", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("showHeader", pg->ShowHeader) ? L"true" : L"false" })) return false;
+					if (it.extra.contains("showCategories")
+						&& !migrateLegacyMetadata(L"ShowCategories", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("showCategories", pg->ShowCategories) ? L"true" : L"false" })) return false;
+					if (it.extra.contains("alternatingRows")
+						&& !migrateLegacyMetadata(L"AlternatingRows", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("alternatingRows", pg->AlternatingRows) ? L"true" : L"false" })) return false;
+					if (it.extra.contains("allowEditing")
+						&& !migrateLegacyMetadata(L"AllowEditing", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("allowEditing", pg->AllowEditing) ? L"true" : L"false" })) return false;
+					if (it.extra.contains("rowHeight")
+						&& !migrateLegacyMetadata(L"RowHeight", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value("rowHeight", pg->RowHeight)) })) return false;
+					if (it.extra.contains("categoryHeight")
+						&& !migrateLegacyMetadata(L"CategoryHeight", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value("categoryHeight", pg->CategoryHeight)) })) return false;
+					if (it.extra.contains("nameColumnWidth")
+						&& !migrateLegacyMetadata(L"NameColumnWidth", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value("nameColumnWidth", pg->NameColumnWidth)) })) return false;
+					std::vector<PropertyGridItem> items;
 					if (it.extra.contains("items"))
-						ValueToPropertyGridItems(it.extra["items"], pg->Items);
-					pg->ScrollYOffset = 0.0f;
+						ValueToPropertyGridItems(it.extra["items"], items);
+					pg->SetItems(std::move(items));
 				}
 				else if (it.type == UIClass::UI_TreeView)
 				{
@@ -4338,55 +4850,148 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				else if (it.type == UIClass::UI_NumericUpDown)
 				{
 					auto* numericUpDown = (NumericUpDown*)c;
-					numericUpDown->Min = it.extra.value("min", numericUpDown->Min);
-					numericUpDown->Max = it.extra.value("max", numericUpDown->Max);
-					numericUpDown->Step = it.extra.value("step", numericUpDown->Step);
-					numericUpDown->SnapToStep = it.extra.value("snapToStep", numericUpDown->SnapToStep);
-					numericUpDown->DecimalPlaces = it.extra.value("decimalPlaces", numericUpDown->DecimalPlaces);
-					numericUpDown->UseMouseWheel = it.extra.value("useMouseWheel", numericUpDown->UseMouseWheel);
-					numericUpDown->Value = it.extra.value("value", numericUpDown->Value);
+					if (it.extra.contains("min")
+						&& !migrateLegacyMetadata(L"Min", {
+							DesignerStyleValueKind::Double,
+							std::to_wstring(it.extra.value("min", numericUpDown->Min)) })) return false;
+					if (it.extra.contains("max")
+						&& !migrateLegacyMetadata(L"Max", {
+							DesignerStyleValueKind::Double,
+							std::to_wstring(it.extra.value("max", numericUpDown->Max)) })) return false;
+					if (it.extra.contains("step")
+						&& !migrateLegacyMetadata(L"Step", {
+							DesignerStyleValueKind::Double,
+							std::to_wstring(it.extra.value("step", numericUpDown->Step)) })) return false;
+					if (it.extra.contains("decimalPlaces")
+						&& !migrateLegacyMetadata(L"DecimalPlaces", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value("decimalPlaces", numericUpDown->DecimalPlaces)) })) return false;
+					if (it.extra.contains("snapToStep")
+						&& !migrateLegacyMetadata(L"SnapToStep", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("snapToStep", numericUpDown->SnapToStep)
+								? L"true" : L"false" })) return false;
+					if (it.extra.contains("useMouseWheel")
+						&& !migrateLegacyMetadata(L"UseMouseWheel", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("useMouseWheel", numericUpDown->UseMouseWheel)
+								? L"true" : L"false" })) return false;
+					if (it.extra.contains("value")
+						&& !migrateLegacyMetadata(L"Value", {
+							DesignerStyleValueKind::Double,
+							std::to_wstring(it.extra.value("value", numericUpDown->Value)) })) return false;
 				}
 				else if (it.type == UIClass::UI_GroupBox)
 				{
 					auto* groupBox = (GroupBox*)c;
-					groupBox->CaptionMarginLeft = (float)it.extra.value("captionMarginLeft", (double)groupBox->CaptionMarginLeft);
-					groupBox->CaptionPaddingX = (float)it.extra.value("captionPaddingX", (double)groupBox->CaptionPaddingX);
-					groupBox->CaptionPaddingY = (float)it.extra.value("captionPaddingY", (double)groupBox->CaptionPaddingY);
+					if (it.extra.contains("captionMarginLeft")
+						&& !migrateLegacyMetadata(L"CaptionMarginLeft", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value("captionMarginLeft", (double)groupBox->CaptionMarginLeft)) })) return false;
+					if (it.extra.contains("captionPaddingX")
+						&& !migrateLegacyMetadata(L"CaptionPaddingX", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value("captionPaddingX", (double)groupBox->CaptionPaddingX)) })) return false;
+					if (it.extra.contains("captionPaddingY")
+						&& !migrateLegacyMetadata(L"CaptionPaddingY", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value("captionPaddingY", (double)groupBox->CaptionPaddingY)) })) return false;
 				}
 				else if (it.type == UIClass::UI_Expander)
 				{
 					auto* expander = (Expander*)c;
-					expander->HeaderHeight = (float)it.extra.value("headerHeight", (double)expander->HeaderHeight);
-					expander->AnimationDurationMs = (UINT)it.extra.value("animationDurationMs", (int)expander->AnimationDurationMs);
-					expander->SetExpanded(it.extra.value("isExpanded", expander->IsExpanded));
+					if (it.extra.contains("headerHeight")
+						&& !migrateLegacyMetadata(L"HeaderHeight", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value("headerHeight", (double)expander->HeaderHeight)) })) return false;
+					if (it.extra.contains("animationDurationMs")
+						&& !migrateLegacyMetadata(L"AnimationDurationMs", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value("animationDurationMs", (int)expander->AnimationDurationMs)) })) return false;
+					if (it.extra.contains("isExpanded")
+						&& !migrateLegacyMetadata(L"IsExpanded", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("isExpanded", expander->IsExpanded)
+								? L"true" : L"false" })) return false;
 				}
 				else if (it.type == UIClass::UI_SplitContainer)
 				{
-					auto* split = (SplitContainer*)c;
-					Orientation orientation = split->SplitOrientation;
+					Orientation orientation = Orientation::Horizontal;
 					if (it.extra.contains("splitOrientation") && it.extra["splitOrientation"].is_string())
-						TryParseOrientation(it.extra["splitOrientation"].get<std::string>(), orientation);
-					split->SplitOrientation = orientation;
-					split->SplitterDistance = it.extra.value("splitterDistance", split->SplitterDistance);
-					split->SplitterWidth = it.extra.value("splitterWidth", split->SplitterWidth);
-					split->Panel1MinSize = it.extra.value("panel1MinSize", split->Panel1MinSize);
-					split->Panel2MinSize = it.extra.value("panel2MinSize", split->Panel2MinSize);
-					split->IsSplitterFixed = it.extra.value("isSplitterFixed", split->IsSplitterFixed);
-					split->RefreshSplitterLayout();
+					{
+						if (TryParseOrientation(
+							it.extra["splitOrientation"].get<std::string>(), orientation))
+						{
+							if (!migrateLegacyMetadata(L"SplitOrientation", {
+								DesignerStyleValueKind::Int,
+								std::to_wstring(static_cast<int>(orientation)) })) return false;
+						}
+					}
+					if (it.extra.contains("splitterWidth"))
+					{
+						if (!migrateLegacyMetadata(L"SplitterWidth", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value("splitterWidth", 6)) })) return false;
+					}
+					if (it.extra.contains("panel1MinSize"))
+					{
+						if (!migrateLegacyMetadata(L"Panel1MinSize", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value("panel1MinSize", 48)) })) return false;
+					}
+					if (it.extra.contains("panel2MinSize"))
+					{
+						if (!migrateLegacyMetadata(L"Panel2MinSize", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value("panel2MinSize", 48)) })) return false;
+					}
+					if (it.extra.contains("splitterDistance"))
+					{
+						if (!migrateLegacyMetadata(L"SplitterDistance", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value("splitterDistance", 160)) })) return false;
+					}
+					if (it.extra.contains("isSplitterFixed"))
+					{
+						if (!migrateLegacyMetadata(L"IsSplitterFixed", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("isSplitterFixed", false) ? L"true" : L"false" }))
+							return false;
+					}
 				}
 				else if (it.type == UIClass::UI_Slider)
 				{
 					auto* slider = (Slider*)c;
-					slider->Min = it.extra.value("min", slider->Min);
-					slider->Max = it.extra.value("max", slider->Max);
-					slider->Value = it.extra.value("value", slider->Value);
-					slider->Step = it.extra.value("step", slider->Step);
-					slider->SnapToStep = it.extra.value("snapToStep", slider->SnapToStep);
+					if (it.extra.contains("min")
+						&& !migrateLegacyMetadata(L"Min", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value("min", slider->Min)) })) return false;
+					if (it.extra.contains("max")
+						&& !migrateLegacyMetadata(L"Max", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value("max", slider->Max)) })) return false;
+					if (it.extra.contains("step")
+						&& !migrateLegacyMetadata(L"Step", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value("step", slider->Step)) })) return false;
+					if (it.extra.contains("snapToStep")
+						&& !migrateLegacyMetadata(L"SnapToStep", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("snapToStep", slider->SnapToStep)
+								? L"true" : L"false" })) return false;
+					if (it.extra.contains("value")
+						&& !migrateLegacyMetadata(L"Value", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value("value", slider->Value)) })) return false;
 				}
 				else if (it.type == UIClass::UI_StatusBar)
 				{
 					auto* statusBar = (StatusBar*)c;
-					statusBar->TopMost = it.extra.value("topMost", statusBar->TopMost);
+					if (it.extra.contains("topMost")
+						&& !migrateLegacyMetadata(L"TopMost", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("topMost", statusBar->TopMost)
+								? L"true" : L"false" })) return false;
 					statusBar->ClearParts();
 					if (it.extra.contains("parts") && it.extra["parts"].is_array())
 					{
@@ -4402,12 +5007,31 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				else if (it.type == UIClass::UI_MediaPlayer)
 				{
 					auto* mediaPlayer = (MediaPlayer*)c;
-					// 仅恢复属性与“媒体源路径”字段；不在设计器中自动加载/播放媒体。
-					mediaPlayer->AutoPlay = it.extra.value("autoPlay", mediaPlayer->AutoPlay);
-					mediaPlayer->Loop = it.extra.value("loop", mediaPlayer->Loop);
-					mediaPlayer->Volume = it.extra.value("volume", mediaPlayer->Volume);
-					mediaPlayer->PlaybackRate = (float)it.extra.value("playbackRate", (double)mediaPlayer->PlaybackRate);
-					mediaPlayer->RenderMode = (MediaPlayer::VideoRenderMode)it.extra.value("renderMode", (int)mediaPlayer->RenderMode);
+					// 旧文档标量迁移到统一元数据；新文档只在 extra 保留媒体源路径。
+					if (it.extra.contains("autoPlay")
+						&& !migrateLegacyMetadata(L"AutoPlay", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("autoPlay", mediaPlayer->AutoPlay)
+								? L"true" : L"false" })) return false;
+					if (it.extra.contains("loop")
+						&& !migrateLegacyMetadata(L"Loop", {
+							DesignerStyleValueKind::Bool,
+							it.extra.value("loop", mediaPlayer->Loop)
+								? L"true" : L"false" })) return false;
+					if (it.extra.contains("volume")
+						&& !migrateLegacyMetadata(L"Volume", {
+							DesignerStyleValueKind::Double,
+							std::to_wstring(it.extra.value("volume", mediaPlayer->Volume)) })) return false;
+					if (it.extra.contains("playbackRate")
+						&& !migrateLegacyMetadata(L"PlaybackRate", {
+							DesignerStyleValueKind::Float,
+							std::to_wstring(it.extra.value(
+								"playbackRate", (double)mediaPlayer->PlaybackRate)) })) return false;
+					if (it.extra.contains("renderMode")
+						&& !migrateLegacyMetadata(L"RenderMode", {
+							DesignerStyleValueKind::Int,
+							std::to_wstring(it.extra.value(
+								"renderMode", (int)mediaPlayer->RenderMode)) })) return false;
 					if (it.extra.contains("mediaFile") && it.extra["mediaFile"].is_string())
 						dc->DesignStrings[L"mediaFile"] = FromUtf8(it.extra["mediaFile"].get<std::string>());
 					else
@@ -4420,8 +5044,7 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 					while (m->Count > 0)
 					{
 						auto* cc = m->operator[](m->Count - 1);
-						m->RemoveControl(cc);
-						delete cc;
+						m->DeleteControl(cc);
 					}
 					if (it.extra.contains("items") && it.extra["items"].is_array())
 					{
@@ -4567,6 +5190,9 @@ bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& do
 				}
 			}
 		}
+
+		if (!SetDocumentStyleSheet(document.StyleSheet, outError))
+			return false;
 
 		if (_designSurface)
 		{

@@ -177,7 +177,7 @@ ComboBoxItemsEditorDialog::ComboBoxItemsEditorDialog(ComboBox* target)
 		if (!_target || !_grid) { this->Close(); return; }
 		_grid->ChangeEditionSelected(-1, -1);
 
-		_target->Items.clear();
+		std::vector<std::wstring> items;
 		int selectedIndex = -1;
 		for (size_t i = 0; i < _grid->RowCount(); i++)
 		{
@@ -185,24 +185,17 @@ ComboBoxItemsEditorDialog::ComboBoxItemsEditorDialog(ComboBox* target)
 			if (row.Cells.size() <= COL_TEXT) continue;
 			auto t = Trim(row.Cells[COL_TEXT].GetText());
 			if (t.empty()) continue;
-			const int outIndex = static_cast<int>(_target->Items.size());
-			_target->Items.push_back(t);
+			const int outIndex = static_cast<int>(items.size());
+			items.push_back(t);
 			if (row.Cells.size() > COL_DEFAULT && row.Cells[COL_DEFAULT].GetBool())
 				selectedIndex = outIndex;
 		}
 		// 防御性修正
 		if (selectedIndex < 0) selectedIndex = 0;
-		if (static_cast<size_t>(selectedIndex) >= _target->Items.size()) selectedIndex = std::max(0, static_cast<int>(_target->Items.size()) - 1);
-		_target->SelectedIndex = 0;
-		if (_target->Items.size() > 0)
-		{
-			_target->SelectedIndex = selectedIndex;
-			_target->Text = _target->Items[_target->SelectedIndex];
-		}
-		else
-		{
-			_target->Text = L"";
-		}
+		if (static_cast<size_t>(selectedIndex) >= items.size())
+			selectedIndex = std::max(0, static_cast<int>(items.size()) - 1);
+		_target->Items = items;
+		_target->SelectedIndex = selectedIndex;
 
 		Applied = true;
 		_target->InvalidateVisual();

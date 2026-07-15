@@ -4,11 +4,11 @@
  * @file StatusBarPartsEditorDialog.h
  * @brief StatusBarPartsEditorDialog：编辑 StatusBar 分段的对话框。
  */
-#include "../CUI/GUI/Form.h"
-#include "../CUI/GUI/Label.h"
-#include "../CUI/GUI/Button.h"
-#include "../CUI/GUI/StatusBar.h"
-#include "../CUI/GUI/GridView.h"
+#include "../CUI/include/Form.h"
+#include "../CUI/include/Label.h"
+#include "../CUI/include/Button.h"
+#include "../CUI/include/StatusBar.h"
+#include "../CUI/include/GridView.h"
 
 class StatusBarPartsEditorDialog : public Form
 {

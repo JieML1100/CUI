@@ -13,6 +13,14 @@ This note tracks the "production-useful" control APIs that should exist beyond t
 - ComboBox
   - Added `ItemCount`, `GetSelectedItem`, `SetSelectedIndex`, `FindItem`, `AddItem`, `InsertItem`, `RemoveItemAt`, and `ClearItems`.
   - Item mutation keeps selection, text, scroll, popup state, and `OnSelectionChanged` synchronized.
+  - `Items` is now an observable, vector-compatible collection. Direct insert/remove/move/swap operations publish precise changes, preserve the selected logical item and its virtual accessibility identity, and batching coalesces to one reset notification.
+  - Its virtual UIA container now exposes vertical Scroll Pattern metrics and actions without coupling scrolling to selection.
+- ListView / ListBox
+  - Added atomic `SetItems` so structural loads and generated code preserve multiple selected flags.
+  - Selection, focus, hover, and scrolling now use observable current-value metadata without replacing active bindings.
+  - `FullRowSelect` and `HideSelectionWhenLostFocus` now participate in rendering.
+  - `Items` and `Columns` are observable collections; direct structural mutations immediately reconcile selection/focus/scroll state, stable accessibility IDs, structure notifications, and rendering.
+  - The virtual UIA container exposes Scroll Pattern. Details mode additionally exposes Grid/Table, stable column-header fragments, row fragments, and row/column-addressable cell fragments with TableItem header relationships.
 - TextBox
   - Added selection APIs: `SelectionLength`, `HasSelection`, `Select`, `SelectAll`, `ClearSelection`.
   - Added editing APIs: `Clear`, `InsertText`, `Copy`, `Cut`, `Paste`, public `Undo`, and public `Redo`.
@@ -31,15 +39,47 @@ This note tracks the "production-useful" control APIs that should exist beyond t
 - Switch
   - Added `SetChecked`, `Toggle`, keyboard activation with Space/Enter, and programmatic animation/event synchronization.
 - TabControl
-  - Added page management APIs: `InsertPage`, `RemovePageAt`, `RemovePage`, `ClearPages`, and `FindPage`.
-  - Added selection helpers: `SelectedPage` and `SelectPage`.
+  - Added ownership-safe page management APIs: `AddPage(unique_ptr)`, `InsertPage`, `GetPage`, `IndexOfPage`, `DetachPageAt`, `DetachPage`, `RemovePageAt`, `RemovePage`, and `ClearPages`.
+  - Structural edits preserve the selected page by object identity, update an active TwoWay `SelectedIndex` binding, cancel stale transitions, and resynchronize native child windows.
+  - `Pages` now projects the observable `Control::Children` collection while remaining readable as a vector; `SelectPage` remains the programmatic selection entry point.
 - TreeView
-  - Added node management APIs on `TreeNode`: `AddNode`, `RemoveNode`, `RemoveNodeAt`, `ClearNodes`, and `FindChild`.
-  - Added tree-level helpers: `AddNode`, `RemoveNode`, `ClearNodes`, `FindNode`, `SelectNode`, `SetNodeExpanded`, `ExpandAll`, and `CollapseAll`.
+  - `TreeNode::Children` is observable and propagates nested subtree attachment, selection/hover cleanup, scroll clamping, stable virtual IDs, structure notifications, and rendering to its owning TreeView.
+  - Added ownership-safe `AddChild`, `DetachChildAt`, `RemoveChild`, `RemoveChildAt`, and `ClearChildren`; direct vector-compatible mutation remains available for source compatibility.
+  - Its virtual UIA container now exposes vertical Scroll Pattern metrics and actions over the visible expanded-node sequence.
 - GridView
   - Added `FullRowSelect`, enabled by default, so selected rows render with a full-row selection effect while preserving active-cell editing.
   - Added row/column/cell helpers: `RowCount`, `ColumnCount`, `AddColumn`, `RemoveColumnAt`, `AddRow`, `RemoveRowAt`, `GetCell`, and `SetCellValue`.
   - Added programmatic selection helpers: `SelectCell` and `SelectRow`.
+  - Added nested `BeginUpdate`/`EndUpdate` and RAII `DeferUpdates` batching for structural changes.
+  - `Rows` and `Columns` are observable collections. Direct add/remove/move/swap/sort keeps selected row/column identity stable and moves every row's cells with its logical column; batched row/column notifications observe a fully aligned grid.
+  - Added explicit `BeginEdit`, `SetEditingText`, `CommitEdit`, and `CancelEdit` session APIs that also work without a parent Form.
+  - Moved layout, behavior, appearance, selection, sort, and scroll state onto shared property metadata; interaction state remains transient and binding-safe.
+  - Its virtual UIA container exposes horizontal and vertical Scroll Pattern metrics and actions alongside Grid/Table.
+- PagedGridView
+  - Added atomic `SetRows` / `SetColumns` plus nested `BeginUpdate` / `EndUpdate` and RAII `DeferUpdates` batching.
+  - Added const row/column accessors and safe boolean row/column removal results.
+  - `Rows` and the projected `Columns` are observable. Direct column insert/remove/move/swap and batched resets keep cells aligned across every page, while row identity and page clamping remain stable.
+  - Moved pager layout, behavior, appearance, page size, and transient page index onto shared property metadata.
+  - Paging interactions and page-size clamping now preserve active `PageIndex` bindings.
+- PropertyGridView
+  - Added atomic `SetItems`, public selection helpers, and explicit editing-session APIs that also work without a parent Form.
+  - `Items` is observable; direct insert/remove/move/swap/sort and batched reset preserve logical selection, active editor identity, binding state, category state, and scrolling.
+  - Moved layout, behavior, appearance, selection, hover, and scrolling onto shared property metadata; interaction state remains transient and binding-safe.
+  - Removed Designer-specific scalar branches in favor of generic metadata persistence and code generation.
+  - Structural item persistence/codegen now preserves `Description`, `ReadOnly`, `Options`, and `Tag` and restores through `SetItems`.
+- MediaPlayer
+  - Added boolean-returning `TryPlay`, `TryPause`, `TryStop`, `TryResume`, and `TrySeek` plus `TogglePlayback`, `SeekBy`, normalized `SetProgress`, and explicit `Close`.
+  - Added state/error inspection helpers, `OnStateChanged`, and detailed `OnMediaError(HRESULT)` while retaining the compatibility events.
+  - Synchronized asynchronous Media Foundation callback detachment and made playback state, last error, and decoder-thread position publication atomic.
+  - Moved playback configuration, decode preferences, and render mode onto shared property metadata with coercion and TwoWay Binding support.
+  - Removed Designer-specific scalar persistence/property/codegen branches; legacy scalar fields upgrade to metadata and generated configuration precedes `Load`.
+- WebBrowser
+  - Replaced the macro-dependent public class layouts with one PImpl ABI; public headers no longer expose WebView2, WRL, COM, DirectComposition, or event-token types.
+  - Added explicit initialization state and per-stage HRESULT diagnostics plus boolean-returning `TryNavigate`, `TrySetHtml`, reload/stop/history operations.
+  - Replaced competing pending URL/HTML fields with one last-write-wins pending navigation slot and preserved configuration set before WebView creation.
+  - Added persistent `InitialUrl`, `ZoomFactor`, context-menu, status-bar, and zoom-control metadata with coercion and TwoWay Binding support.
+  - Guarded WebView2 environment/controller/event/script callbacks with a shared lifetime token and made the disabled build report `Unsupported` / `E_NOTIMPL` through the same ABI.
+  - Reused the real metadata contract in the Designer placeholder, so persistence and generated C++ use the generic metadata path.
 - ScrollView
   - Added scroll metrics and range accessors: `GetScrollLayout`, `MaxScrollX`, and `MaxScrollY`.
   - Added programmatic scrolling helpers: `ScrollToStart`, `ScrollToEnd`, `ScrollToTop`, `ScrollToBottom`, `ScrollToLeft`, `ScrollToRight`, and `ScrollIntoView`.
@@ -56,28 +96,52 @@ This note tracks the "production-useful" control APIs that should exist beyond t
 - ToolTip
   - Added `Target`, `IsOpen`, and `SetText`.
 - ContextMenu
-  - Added `FindItemById`, `FindItemByText`, `RemoveItem`, and `RemoveItemById`.
+  - Added `GetItem`, `FindItemById`, `FindItemByText`, ownership-safe insert/detach/remove APIs, recursive removal, and `ClearItems`.
 - DateTimePicker
   - Added `SetNow`, `SetToday`, `SetDate`, `SetTime`, and `GetDisplayText`.
 - Menu/MenuItem
-  - Added top-level and recursive find/remove helpers plus `ClearItems`/`ClearSubItems`.
+  - Added ownership-safe top-level insert/detach/remove/clear APIs.
+  - `MenuItem::SubItems` is observable and has matching `unique_ptr`-based insert/detach/remove/clear helpers. Structural changes invalidate stale hover/open paths in both Menu and ContextMenu.
 - StatusBar
   - Added `InsertPart`, `RemovePartAt`, and `FindPart`.
 - Taskbar
-  - Added progress state helpers: `SetState`, `Clear`, `SetIndeterminate`, `SetPaused`, `SetError`, and `SetNormal`.
-- Panel
-  - Added `ClearControls`, `ContainsControl`, and `IndexOf`.
+  - Replaced the shared raw COM pointer with per-instance PImpl/ComPtr ownership, balanced COM initialization, `HrInit`, and null-safe destruction.
+  - Added `TrySetValue`, `TrySetState`, `TryClear`, indeterminate/paused/error/normal helpers, cached state/value inspection, and initialization/operation HRESULT diagnostics.
+  - Value updates clamp to Total and switch NoProgress/Indeterminate to Normal while legacy void methods remain source-compatible.
+- Control child ownership
+  - `Control::Children` is now an observable, vector-readable owning collection. Direct add/remove/replace/move/swap and batched mutations synchronize Parent/ParentForm, inherited styles, Form interaction references, layout, and accessibility before public notification.
+  - Invalid null, duplicate, cross-parent, cyclic, TabControl non-page, and Menu non-item insertions are rejected with the collection restored.
+  - Added `InsertControl`, `InsertOwned`, `DetachControlAt`, `DeleteControlAt`, `ClearControls`, `ContainsControl`, and `IndexOfControl`; erase/clear remain detach-only compatibility operations.
 - NotifyIcon
-  - Added `IsVisible`, `MenuItemCount`, and `RemoveMenuItem`; Show/Hide now track visibility.
+  - Migrated the complete tray, tooltip, balloon, and menu path from ANSI to Unicode while retaining narrow UTF-8/ACP compatibility overloads.
+  - Added `TryInitialize`, `TryShow`, `TryHide`, tooltip/balloon/menu Try APIs, visible/initialized state, and HRESULT diagnostics.
+  - Replaced shallow copied menu handles with a value-semantic recursive menu model; popup HMENU trees are built on demand and destroyed after use.
+  - Added recursive find/enable/rename/remove, duplicate command rejection, count inspection, automatic right-click popup, and Explorer-restart recovery.
+  - Form dispatch now matches window/message/icon ID and supports multiple visible NotifyIcon instances; `Instance` remains only as a legacy alias.
+- Keyboard focus and accessibility
+  - Added metadata-backed `IsTabStop`, `TabIndex`, `AccessKey`, accessible name/description/help text, AutomationId, role, and focus-visual properties.
+  - Added stable tree-order Tab traversal with TabIndex sorting, Shift+Tab wrapping, access-key routing, default/cancel buttons, and a shared `Focus()` / `Invoke()` contract.
+  - Button, LinkLabel, CheckBox, RadioBox, and Switch now retain logical focus after pointer activation and expose the same primary action to keyboard and assistive technology callers.
+  - Added value-only accessibility snapshots with effective enabled/visible/focus/check/password/read-only state; editable content is separated from accessible names and password text is never exposed.
+  - Form now answers `WM_GETOBJECT` with a lifetime-safe MSAA client object covering names, roles, states, values, shortcuts, focus, location, navigation, hit testing, selection, and default actions, plus WinEvent change notifications.
+  - Added a lifetime-safe native UI Automation fragment provider for the real Control tree, including stable runtime IDs, hierarchy navigation, hit testing, focus, property/event updates, and safe invalidation of retained providers after Form destruction.
+  - Added Invoke, Toggle, Value, RangeValue, ExpandCollapse, SelectionItem, and Selection patterns for core action, edit, range, combo/expander, radio, and tab controls; password values stay private.
+  - Added stable virtual UIA fragments for ListView/ListBox items, ComboBox items, TreeNode objects, and GridView headers, rows, and cells, including hierarchical navigation, virtual hit testing, and safe invalidation after item removal or Form destruction.
+  - Added virtual Selection/SelectionItem, Toggle, ExpandCollapse, Grid/GridItem, Table/TableItem, Value, Invoke, VirtualizedItem, and ScrollItem patterns. ListView/ListBox, ComboBox, TreeView, and GridView containers also expose native Scroll Pattern metrics/actions; ListView Details mode exposes a stable header/row/cell tree with Grid/Table semantics. Provider focus is tracked independently from selection, selection operations are idempotent, and scrolling does not silently change selection.
+  - Native virtual navigation now uses indexed child, sibling, and owner-local hit-test queries instead of copying and recursively scanning complete child lists. The four built-in virtual containers maintain mutation-invalidated ID indexes; ListView Details and GridView create cell identities on demand and prune only materialized identities after row/column changes.
+  - Added Windows high-contrast, client-animation, text-scale, and keyboard-focus-cue snapshots with automatic setting refresh, scalable inherited/explicit fonts, common system-color overrides, and reduced-motion handling across animated controls.
+  - Designer catalogs and code generation persist the new keyboard/accessibility metadata, including AccessibleRole choices.
 
 ## Next High-Value Passes
 
-- GridView
-  - Add batch update guard and clearer public edit commit/cancel APIs.
-- MediaPlayer/WebBrowser
-  - Continue expanding higher-level media/browser APIs as real usage demands; both already have larger specialized surfaces than basic controls.
-- NotifyIcon/Taskbar
-  - Consider Unicode-first overloads in a future pass.
+- Virtual collection depth
+  - Add row-header relationships only to controls that visually present row headers; current ListView Details and GridView surfaces present column headers only.
+  - Extend observable collection migration to remaining designer-owned structural models where direct vector mutation is still public.
+  - Add measured render/UIA latency budgets on dedicated, controlled benchmark machines. Indexed navigation, lazy two-dimensional identity materialization, and mutation invalidation are now stressed with 12k-row Details, 12k-item ComboBox, 5k-node TreeView, and 3k-by-6 GridView datasets; `CUI_TEST_TIMINGS=1` emits informational per-test baselines without making workstation speed a correctness gate.
+  - Add deeper event-listener tests for recycling and bulk updates; direct mutation, stable identity, physical/nested ownership, and batched notification order are now covered for the Control tree, ComboBox, ListView/ListBox, TreeView, GridView, PagedGridView, PropertyGridView, tabs, and menu trees.
+- System-preference depth
+  - Audit specialized selected/hover/accent colors under Windows contrast themes instead of relying only on common surface, foreground, and focus overrides.
+  - Exercise large text through 225% in dense and composite controls, fixing clipping and minimum-size assumptions discovered by visual regression.
 
 ## Verification Checklist
 

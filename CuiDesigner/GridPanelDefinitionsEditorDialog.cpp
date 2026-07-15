@@ -1,4 +1,5 @@
 ﻿#include "GridPanelDefinitionsEditorDialog.h"
+#include <cmath>
 #include <sstream>
 
 std::wstring GridPanelDefinitionsEditorDialog::Trim(const std::wstring& s)
@@ -61,10 +62,28 @@ bool GridPanelDefinitionsEditorDialog::TryParseGridLength(const std::wstring& to
 		out = GridLength::Star(factor);
 		return true;
 	}
+	// percent: "50%"
+	if (lower.back() == L'%')
+	{
+		const std::wstring num = Trim(lower.substr(0, lower.size() - 1));
+		if (num.empty()) return false;
+		try
+		{
+			size_t parsed = 0;
+			const float percent = std::stof(num, &parsed);
+			if (parsed != num.size() || !std::isfinite(percent) || percent < 0.0f)
+				return false;
+			out = GridLength::Percent(percent);
+			return true;
+		}
+		catch (...) { return false; }
+	}
 	// pixel
 	try
 	{
-		float px = (float)std::stof(lower);
+		size_t parsed = 0;
+		float px = (float)std::stof(lower, &parsed);
+		if (parsed != lower.size() || !std::isfinite(px)) return false;
 		if (px < 0.0f) px = 0.0f;
 		out = GridLength::Pixels(px);
 		return true;
@@ -83,6 +102,9 @@ std::wstring GridPanelDefinitionsEditorDialog::GridLengthToString(const GridLeng
 	case SizeUnit::Star:
 		if (gl.Value == 1.0f) return L"*";
 		ss << gl.Value << L"*";
+		return ss.str();
+	case SizeUnit::Percent:
+		ss << gl.Value << L"%";
 		return ss.str();
 	case SizeUnit::Pixel:
 	default:
@@ -126,7 +148,7 @@ GridPanelDefinitionsEditorDialog::GridPanelDefinitionsEditorDialog(GridPanel* ta
 	this->BackColor = Colors::WhiteSmoke;
 	this->AllowResize = false;
 
-	auto tip = this->AddControl(new Label(L"每行一个定义：auto / 数字(像素) / *(星号) / 2*", 12, 12));
+	auto tip = this->AddControl(new Label(L"每行一个定义：auto / 数字(像素) / 50% / *(星号) / 2*", 12, 12));
 	tip->Size = { 690, 20 };
 	tip->Font = new ::Font(L"Microsoft YaHei", 12.0f);
 

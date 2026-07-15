@@ -19,19 +19,19 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="BitmapSource.h" />
-    <ClInclude Include="Colors.h" />
-    <ClInclude Include="Factory.h" />
-    <ClInclude Include="Font.h" />
-    <ClInclude Include="Graphics.h" />
-    <ClInclude Include="SvgParserInternal.h" />
+    <ClInclude Include="include\BitmapSource.h" />
+    <ClInclude Include="include\Colors.h" />
+    <ClInclude Include="include\Factory.h" />
+    <ClInclude Include="include\Font.h" />
+    <ClInclude Include="include\Graphics.h" />
+    <ClInclude Include="include\SvgParserInternal.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="BitmapSource.cpp" />
-    <ClCompile Include="Factory.cpp" />
-    <ClCompile Include="Font.cpp" />
-    <ClCompile Include="Graphics.cpp" />
-    <ClCompile Include="SvgParserInternal.cpp" />
+    <ClCompile Include="src\BitmapSource.cpp" />
+    <ClCompile Include="src\Factory.cpp" />
+    <ClCompile Include="src\Font.cpp" />
+    <ClCompile Include="src\Graphics.cpp" />
+    <ClCompile Include="src\SvgParserInternal.cpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
@@ -99,6 +99,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>
@@ -121,6 +122,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>
@@ -140,6 +142,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>
@@ -162,6 +165,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>

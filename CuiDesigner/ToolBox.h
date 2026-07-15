@@ -1,12 +1,12 @@
-#pragma once
+﻿#pragma once
 
 /**
  * @file ToolBox.h
  * @brief ToolBox：设计器工具箱（控件类型选择）。
  */
-#include "../CUI/GUI/Panel.h"
-#include "../CUI/GUI/Button.h"
-#include "../CUI/GUI/ScrollView.h"
+#include "../CUI/include/Panel.h"
+#include "../CUI/include/Button.h"
+#include "../CUI/include/ScrollView.h"
 #include "DesignerTypes.h"
 #include <functional>
 

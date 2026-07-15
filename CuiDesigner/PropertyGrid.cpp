@@ -1,38 +1,42 @@
-#include "PropertyGrid.h"
-#include "../CUI/GUI/Form.h"
+﻿#include "PropertyGrid.h"
+#include "../CUI/include/Form.h"
 #include "ComboBoxItemsEditorDialog.h"
 #include "GridViewColumnsEditorDialog.h"
 #include "TabControlPagesEditorDialog.h"
 #include "ToolBarButtonsEditorDialog.h"
 #include "TreeViewNodesEditorDialog.h"
 #include "GridPanelDefinitionsEditorDialog.h"
+#include "BindingEditorDialog.h"
+#include "DataContextSchemaEditorDialog.h"
+#include "DesignerPropertyCatalog.h"
+#include "StyleSheetEditorDialog.h"
 #include "MenuItemsEditorDialog.h"
 #include "StatusBarPartsEditorDialog.h"
 #include "DesignerCanvas.h"
 #include "DesignerCore/Commands/UpdatePropertyCommand.h"
-#include "../CUI/GUI/LinkLabel.h"
-#include "../CUI/GUI/ComboBox.h"
-#include "../CUI/GUI/LoadingRing.h"
-#include "../CUI/GUI/Slider.h"
-#include "../CUI/GUI/NumericUpDown.h"
-#include "../CUI/GUI/ProgressBar.h"
-#include "../CUI/GUI/ProgressRing.h"
-#include "../CUI/GUI/PictureBox.h"
-#include "../CUI/GUI/DateTimePicker.h"
-#include "../CUI/GUI/GroupBox.h"
-#include "../CUI/GUI/Expander.h"
-#include "../CUI/GUI/ScrollView.h"
-#include "../CUI/GUI/ListView.h"
-#include "../CUI/GUI/PropertyGrid.h"
-#include "../CUI/GUI/TreeView.h"
-#include "../CUI/GUI/TabControl.h"
-#include "../CUI/GUI/ToolBar.h"
-#include "../CUI/GUI/StatusBar.h"
-#include "../CUI/GUI/MediaPlayer.h"
-#include "../CUI/GUI/SplitContainer.h"
-#include "../CUI/GUI/Layout/StackPanel.h"
-#include "../CUI/GUI/Layout/WrapPanel.h"
-#include "../CUI/GUI/Layout/DockPanel.h"
+#include "../CUI/include/LinkLabel.h"
+#include "../CUI/include/ComboBox.h"
+#include "../CUI/include/LoadingRing.h"
+#include "../CUI/include/Slider.h"
+#include "../CUI/include/NumericUpDown.h"
+#include "../CUI/include/ProgressBar.h"
+#include "../CUI/include/ProgressRing.h"
+#include "../CUI/include/PictureBox.h"
+#include "../CUI/include/DateTimePicker.h"
+#include "../CUI/include/GroupBox.h"
+#include "../CUI/include/Expander.h"
+#include "../CUI/include/ScrollView.h"
+#include "../CUI/include/ListView.h"
+#include "../CUI/include/PropertyGrid.h"
+#include "../CUI/include/TreeView.h"
+#include "../CUI/include/TabControl.h"
+#include "../CUI/include/ToolBar.h"
+#include "../CUI/include/StatusBar.h"
+#include "../CUI/include/MediaPlayer.h"
+#include "../CUI/include/SplitContainer.h"
+#include "../CUI/include/Layout/StackPanel.h"
+#include "../CUI/include/Layout/WrapPanel.h"
+#include "../CUI/include/Layout/DockPanel.h"
 #include <commdlg.h>
 #include <windowsx.h>
 #include <sstream>
@@ -45,6 +49,39 @@
 
 namespace
 {
+	static bool PropertyNamesEqual(const std::wstring& left, const std::wstring& right)
+	{
+		return _wcsicmp(left.c_str(), right.c_str()) == 0;
+	}
+
+	static std::wstring DesignerCategoryCaption(const std::wstring& category)
+	{
+		if (PropertyNamesEqual(category, L"Common")) return L"常用";
+		if (PropertyNamesEqual(category, L"Layout")) return L"布局";
+		if (PropertyNamesEqual(category, L"Appearance")) return L"外观";
+		if (PropertyNamesEqual(category, L"Behavior")) return L"行为";
+		if (PropertyNamesEqual(category, L"Validation")) return L"校验";
+		if (PropertyNamesEqual(category, L"Accessibility")) return L"可访问性";
+		if (PropertyNamesEqual(category, L"Data")) return L"数据";
+		if (PropertyNamesEqual(category, L"Misc")) return L"其他";
+		return category;
+	}
+
+	static void SetTrackedMetadataProperty(
+		DesignerControl& control,
+		std::wstring canonicalName,
+		DesignerStyleValue value)
+	{
+		for (auto it = control.MetadataProperties.begin();
+			it != control.MetadataProperties.end(); ++it)
+		{
+			if (!PropertyNamesEqual(it->first, canonicalName)) continue;
+			control.MetadataProperties.erase(it);
+			break;
+		}
+		control.MetadataProperties[std::move(canonicalName)] = std::move(value);
+	}
+
 	static std::wstring TrimWs(const std::wstring& s);
 
 	static const std::wstring kFontDefaultOption = L"<Default>";
@@ -182,6 +219,18 @@ namespace
 		}
 		out.push_back(TrimWs(cur));
 		return out;
+	}
+
+	static std::wstring JoinStyleClasses(const Control& control)
+	{
+		std::wstring result;
+		for (const auto& styleClass : control.GetStyleClasses())
+		{
+			if (!result.empty())
+				result += L", ";
+			result += styleClass;
+		}
+		return result;
 	}
 
 	static std::wstring ColorToText(const D2D1_COLOR_F& c)
@@ -385,46 +434,6 @@ namespace
 		case Dock::Right: return L"Right";
 		case Dock::Bottom: return L"Bottom";
 		default: return L"Fill";
-		}
-	}
-
-	static bool TryParseOrientation(const std::wstring& s, ::Orientation& out)
-	{
-		auto t = TrimWs(s);
-		if (t == L"Horizontal") { out = Orientation::Horizontal; return true; }
-		if (t == L"Vertical") { out = Orientation::Vertical; return true; }
-		return false;
-	}
-
-	static std::wstring OrientationToText(::Orientation o)
-	{
-		switch (o)
-		{
-		case Orientation::Horizontal: return L"Horizontal";
-		case Orientation::Vertical: return L"Vertical";
-		default: return L"Vertical";
-		}
-	}
-
-	static std::wstring TabAnimationModeToText(TabControlAnimationMode mode)
-	{
-		switch (mode)
-		{
-		case TabControlAnimationMode::SlideHorizontal: return L"SlideHorizontal";
-		case TabControlAnimationMode::DirectReplace:
-		default: return L"DirectReplace";
-		}
-	}
-
-	static std::wstring TabTitlePositionToText(TabControlTitlePosition position)
-	{
-		switch (position)
-		{
-		case TabControlTitlePosition::Bottom: return L"Bottom";
-		case TabControlTitlePosition::Left: return L"Left";
-		case TabControlTitlePosition::Right: return L"Right";
-		case TabControlTitlePosition::Top:
-		default: return L"Top";
 		}
 	}
 
@@ -988,6 +997,122 @@ void PropertyGrid::CreateBoolPropertyItem(std::wstring propertyName, bool value,
 	yOffset += 25;
 }
 
+void PropertyGrid::CreateMetadataPropertyItems(
+	const std::shared_ptr<DesignerControl>& control,
+	int& yOffset)
+{
+	if (!control || !control->ControlInstance) return;
+	auto* target = control->ControlInstance;
+	auto properties = DesignerPropertyCatalog::GetBrowsableProperties(*target);
+
+	auto represented = [this](const std::wstring& name)
+	{
+		for (const auto* item : _items)
+		{
+			if (item && PropertyNamesEqual(item->PropertyName, name)) return true;
+		}
+		return false;
+	};
+
+	properties.erase(std::remove_if(properties.begin(), properties.end(),
+		[&](const DesignerPropertyDescriptor& property)
+		{
+			return represented(property.Name);
+		}), properties.end());
+	if (properties.empty()) return;
+
+	std::wstring currentCategory;
+	for (const auto& property : properties)
+	{
+		if (!PropertyNamesEqual(currentCategory, property.Category))
+		{
+			currentCategory = property.Category;
+			auto* container = GetContentContainer();
+			const int width = GetContentWidthLocal();
+			auto* heading = new Label(
+				L"元数据属性 · " + DesignerCategoryCaption(property.Category),
+				10, yOffset + 4);
+			heading->Size = { width - 20, 20 };
+			heading->Font = new ::Font(L"Microsoft YaHei", 12.0f);
+			heading->ForeColor = Colors::DimGrey;
+			container->AddControl(heading);
+			heading->ParentForm = this->ParentForm;
+			_extraControls.push_back(heading);
+			RegisterScrollable(heading);
+			yOffset += 28;
+		}
+
+		BindingValue current;
+		(void)property.Metadata->TryGet(*target, current);
+		if (property.Editor == ControlPropertyEditorKind::Choice
+			&& !property.Choices.empty())
+		{
+			CreateChoicePropertyItem(property, yOffset);
+			continue;
+		}
+
+		switch (property.Editor)
+		{
+		case ControlPropertyEditorKind::Boolean:
+		{
+			bool value = false;
+			(void)current.TryGet(value);
+			CreateBoolPropertyItem(property.Name, value, yOffset);
+			break;
+		}
+		case ControlPropertyEditorKind::Color:
+		{
+			D2D1_COLOR_F value{};
+			if (current.TryGet(value)) CreateColorPropertyItem(property.Name, value, yOffset);
+			else CreatePropertyItem(property.Name, property.SampleValue, yOffset);
+			break;
+		}
+		case ControlPropertyEditorKind::Thickness:
+		{
+			Thickness value;
+			if (current.TryGet(value)) CreateThicknessPropertyItem(property.Name, value, yOffset);
+			else CreatePropertyItem(property.Name, property.SampleValue, yOffset);
+			break;
+		}
+		default:
+			if (property.Editor == ControlPropertyEditorKind::Number
+				&& property.Minimum && property.Maximum
+				&& *property.Minimum < *property.Maximum
+				&& (property.ValueKind == DesignerStyleValueKind::Float
+					|| property.ValueKind == DesignerStyleValueKind::Double))
+			{
+				double numericValue = 0.0;
+				if (property.ValueKind == DesignerStyleValueKind::Float)
+				{
+					float value = 0.0f;
+					(void)current.TryGet(value);
+					numericValue = value;
+				}
+				else
+				{
+					(void)current.TryGet(numericValue);
+				}
+				const double step = property.Step.value_or(
+					(*property.Maximum - *property.Minimum) / 100.0);
+				CreateFloatSliderPropertyItem(
+					property.Name,
+					static_cast<float>(numericValue),
+					static_cast<float>(*property.Minimum),
+					static_cast<float>(*property.Maximum),
+					static_cast<float>((std::max)(step, 0.000001)),
+					yOffset);
+			}
+			else
+			{
+				CreatePropertyItem(property.Name, property.SampleValue, yOffset);
+			}
+			break;
+		}
+		if (!_items.empty() && _items.back() && _items.back()->NameLabel)
+			_items.back()->NameLabel->Text = property.DisplayName;
+	}
+}
+
 void PropertyGrid::CreateAnchorPropertyItem(std::wstring propertyName, uint8_t anchorStyles, int& yOffset)
 {
 	auto* container = GetContentContainer();
@@ -1082,13 +1207,21 @@ void PropertyGrid::CreateEnumPropertyItem(std::wstring propertyName, const std::
 	for (auto& o : options) valueCombo->Items.push_back(o);
 
 	int selectedOptionIndex = -1;
-	for (int i = 0; i < valueCombo->Items.size(); i++)
+	for (size_t i = 0; i < valueCombo->Items.size(); ++i)
 	{
-		if (EnumOptionMatchesValue(valueCombo->Items[i], value)) { selectedOptionIndex = i; break; }
+		if (EnumOptionMatchesValue(valueCombo->Items[i], value))
+		{
+			selectedOptionIndex = static_cast<int>(i);
+			break;
+		}
 	}
 	valueCombo->SelectedIndex = selectedOptionIndex >= 0 ? selectedOptionIndex : 0;
-	if (valueCombo->Items.size() > 0 && selectedOptionIndex >= 0 && selectedOptionIndex < valueCombo->Items.size())
-		valueCombo->Text = valueCombo->Items[selectedOptionIndex];
+	if (!valueCombo->Items.empty()
+		&& selectedOptionIndex >= 0
+		&& static_cast<size_t>(selectedOptionIndex) < valueCombo->Items.size())
+	{
+		valueCombo->Text = valueCombo->Items[static_cast<size_t>(selectedOptionIndex)];
+	}
 	else
 		valueCombo->Text = value;
 
@@ -1103,6 +1236,55 @@ void PropertyGrid::CreateEnumPropertyItem(std::wstring propertyName, const std::
 	auto item = new PropertyItem(propertyName, nameLabel, (Control*)valueCombo);
 	_items.push_back(item);
 
+	yOffset += 25;
+}
+
+void PropertyGrid::CreateChoicePropertyItem(
+	const DesignerPropertyDescriptor& property,
+	int& yOffset)
+{
+	auto* container = GetContentContainer();
+	const int width = GetContentWidthLocal();
+	auto* nameLabel = new Label(property.DisplayName, 10, yOffset);
+	nameLabel->Size = { (width - 30) / 2, 20 };
+	nameLabel->Font = new ::Font(L"Microsoft YaHei", 12.0f);
+	nameLabel->ParentForm = this->ParentForm;
+	container->AddControl(nameLabel);
+	RegisterScrollable(nameLabel);
+
+	auto* combo = new ComboBox(
+		L"", (width - 30) / 2 + 15, yOffset, (width - 30) / 2, 20);
+	combo->ParentForm = this->ParentForm;
+	for (const auto& choice : property.Choices)
+		combo->Items.push_back(choice.DisplayName);
+	int selectedIndex = -1;
+	for (size_t index = 0; index < property.Choices.size(); ++index)
+	{
+		if (EnumOptionMatchesValue(
+			property.Choices[index].ValueText, property.SampleValue))
+		{
+			selectedIndex = static_cast<int>(index);
+			break;
+		}
+	}
+	combo->SelectedIndex = selectedIndex;
+	combo->Text = selectedIndex >= 0
+		? property.Choices[static_cast<size_t>(selectedIndex)].DisplayName
+		: property.SampleValue;
+	const auto propertyName = property.Name;
+	const auto choices = property.Choices;
+	combo->OnSelectionChanged += [this, propertyName, choices](Control* sender)
+	{
+		auto* selected = dynamic_cast<ComboBox*>(sender);
+		if (!selected) return;
+		const int index = selected->SelectedIndex;
+		if (index >= 0 && static_cast<size_t>(index) < choices.size())
+			UpdatePropertyFromTextBox(
+				propertyName, choices[static_cast<size_t>(index)].ValueText);
+	};
+	container->AddControl(combo);
+	RegisterScrollable(combo);
+	_items.push_back(new PropertyItem(property.Name, nameLabel, (Control*)combo));
 	yOffset += 25;
 }
 
@@ -1286,14 +1468,6 @@ void PropertyGrid::ApplyFloatPropertyValue(Control* targetControl, const std::ws
 			progressRing->PercentageValue = v;
 		}
 	}
-	else if (propertyName == L"Volume")
-	{
-		if (targetControl->Type() == UIClass::UI_MediaPlayer)
-		{
-			float v = std::clamp(value, 0.0f, 1.0f);
-			((MediaPlayer*)targetControl)->Volume = (double)v;
-		}
-	}
 }
 
 void PropertyGrid::UpdateFloatPropertyPreview(const std::wstring& propertyName, float value)
@@ -1418,6 +1592,19 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 			else
 				currentControl->Name = value;
 		}
+		else if (propertyName == L"StyleId")
+		{
+			targetControl->SetStyleId(TrimWs(value));
+		}
+		else if (propertyName == L"StyleClasses")
+		{
+			targetControl->ClearStyleClasses();
+			for (auto& styleClass : Split(value, L','))
+			{
+				if (!styleClass.empty())
+					targetControl->AddStyleClass(std::move(styleClass));
+			}
+		}
 		else if (propertyName == L"Text")
 		{
 			targetControl->Text = value;
@@ -1495,6 +1682,33 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 			D2D1_COLOR_F c;
 			if (TryParseColor(value, c)) targetControl->BorderColor = c;
 		}
+		else if (propertyName == L"ShowValidationBorder")
+		{
+			targetControl->ShowValidationBorder = (value == L"true" || value == L"True" || value == L"1");
+		}
+		else if (propertyName == L"ShowValidationToolTip")
+		{
+			targetControl->ShowValidationToolTip = (value == L"true" || value == L"True" || value == L"1");
+		}
+		else if (propertyName == L"ValidationBorderThickness")
+		{
+			float parsed = 0.0f;
+			if (TryParseFloatWs(TrimWs(value), parsed)) targetControl->ValidationBorderThickness = parsed;
+		}
+		else if (propertyName == L"ValidationCornerRadius")
+		{
+			float parsed = 0.0f;
+			if (TryParseFloatWs(TrimWs(value), parsed)) targetControl->ValidationCornerRadius = parsed;
+		}
+		else if (propertyName == L"ValidationToolTipMaxWidth")
+		{
+			float parsed = 0.0f;
+			if (TryParseFloatWs(TrimWs(value), parsed)) targetControl->ValidationToolTipMaxWidth = parsed;
+		}
+		else if (propertyName == L"AccessibleDescription")
+		{
+			targetControl->AccessibleDescription = value;
+		}
 		else if (propertyName == L"Margin")
 		{
 			Thickness t;
@@ -1540,79 +1754,6 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 		{
 			targetControl->GridColumnSpan = std::stoi(value);
 		}
-		else if (propertyName == L"SelectedIndex")
-		{
-			if (targetControl->Type() == UIClass::UI_TabControl)
-			{
-				auto* tabControl = (TabControl*)targetControl;
-				tabControl->SelectedIndex = std::stoi(value);
-				tabControl->InvalidateVisual();
-			}
-			else if (targetControl->Type() == UIClass::UI_ComboBox)
-			{
-				auto* comboBox = (ComboBox*)targetControl;
-				comboBox->SelectedIndex = std::stoi(value);
-				if (comboBox->Items.size() > 0 && comboBox->SelectedIndex >= 0 && comboBox->SelectedIndex < comboBox->Items.size())
-					comboBox->Text = comboBox->Items[comboBox->SelectedIndex];
-			}
-			else if (targetControl->Type() == UIClass::UI_ListView || targetControl->Type() == UIClass::UI_ListBox)
-			{
-				auto* listView = (ListView*)targetControl;
-				int index = std::stoi(value);
-				if (index >= 0 && index < (int)listView->Items.size())
-					listView->SelectItem(index);
-				else
-					listView->ClearSelection();
-			}
-			else if (targetControl->Type() == UIClass::UI_PropertyGrid)
-			{
-				auto* propertyGridView = (PropertyGridView*)targetControl;
-				int index = std::stoi(value);
-				if (index >= 0 && index < (int)propertyGridView->Items.size())
-				{
-					propertyGridView->SelectedIndex = index;
-					propertyGridView->EnsureVisible(index);
-				}
-				else
-				{
-					propertyGridView->SelectedIndex = -1;
-				}
-				propertyGridView->InvalidateVisual();
-			}
-		}
-		else if (propertyName == L"ExpandCount")
-		{
-			if (targetControl->Type() == UIClass::UI_ComboBox)
-			{
-				auto* comboBox = (ComboBox*)targetControl;
-				comboBox->ExpandCount = std::max(1, std::stoi(value));
-				comboBox->InvalidateVisual();
-			}
-		}
-		else if (propertyName == L"AnimationMode")
-		{
-			if (targetControl->Type() == UIClass::UI_TabControl)
-			{
-				auto* tabControl = (TabControl*)targetControl;
-				auto v = TrimWs(value);
-				if (v == L"SlideHorizontal") tabControl->AnimationMode = TabControlAnimationMode::SlideHorizontal;
-				else tabControl->AnimationMode = TabControlAnimationMode::DirectReplace;
-				tabControl->InvalidateVisual();
-			}
-		}
-		else if (propertyName == L"TitlePosition")
-		{
-			if (targetControl->Type() == UIClass::UI_TabControl)
-			{
-				auto* tabControl = (TabControl*)targetControl;
-				auto v = TrimWs(value);
-				if (v == L"Bottom") tabControl->TitlePosition = TabControlTitlePosition::Bottom;
-				else if (v == L"Left") tabControl->TitlePosition = TabControlTitlePosition::Left;
-				else if (v == L"Right") tabControl->TitlePosition = TabControlTitlePosition::Right;
-				else tabControl->TitlePosition = TabControlTitlePosition::Top;
-				tabControl->InvalidateVisual();
-			}
-		}
 		else if (propertyName == L"Mode")
 		{
 			if (targetControl->Type() == UIClass::UI_DateTimePicker)
@@ -1622,50 +1763,6 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 				if (v == L"DateOnly") dateTimePicker->Mode = DateTimePickerMode::DateOnly;
 				else if (v == L"TimeOnly") dateTimePicker->Mode = DateTimePickerMode::TimeOnly;
 				else dateTimePicker->Mode = DateTimePickerMode::DateTime;
-			}
-		}
-		else if (propertyName == L"TitleHeight")
-		{
-			if (targetControl->Type() == UIClass::UI_TabControl)
-			{
-				auto* tabControl = (TabControl*)targetControl;
-				tabControl->TitleHeight = std::stoi(value);
-			}
-		}
-		else if (propertyName == L"HeaderHeight")
-		{
-			if (targetControl->Type() == UIClass::UI_Expander)
-				((Expander*)targetControl)->HeaderHeight = std::stof(value);
-		}
-		else if (propertyName == L"AnimationDurationMs")
-		{
-			if (targetControl->Type() == UIClass::UI_Expander)
-				((Expander*)targetControl)->AnimationDurationMs = (UINT)std::max(0, std::stoi(value));
-		}
-		else if (propertyName == L"TitleWidth")
-		{
-			if (targetControl->Type() == UIClass::UI_TabControl)
-			{
-				auto* tabControl = (TabControl*)targetControl;
-				tabControl->TitleWidth = std::stoi(value);
-			}
-		}
-		else if (propertyName == L"Orientation")
-		{
-			::Orientation o;
-			if (TryParseOrientation(value, o))
-			{
-				if (targetControl->Type() == UIClass::UI_StackPanel) ((StackPanel*)targetControl)->SetOrientation(o);
-				else if (targetControl->Type() == UIClass::UI_WrapPanel) ((WrapPanel*)targetControl)->SetOrientation(o);
-			}
-		}
-		else if (propertyName == L"SplitOrientation")
-		{
-			if (targetControl->Type() == UIClass::UI_SplitContainer)
-			{
-				::Orientation o;
-				if (TryParseOrientation(value, o))
-					((SplitContainer*)targetControl)->SplitOrientation = o;
 			}
 		}
 		else if (propertyName == L"SizeMode")
@@ -1684,40 +1781,6 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 				currentControl->DesignStrings[L"mediaFile"] = TrimWs(value);
 			}
 		}
-		else if (propertyName == L"RenderMode")
-		{
-			if (targetControl->Type() == UIClass::UI_MediaPlayer)
-			{
-				auto* mediaPlayer = (MediaPlayer*)targetControl;
-				auto v = TrimWs(value);
-				if (v == L"Fit") mediaPlayer->RenderMode = MediaPlayer::VideoRenderMode::Fit;
-				else if (v == L"Fill") mediaPlayer->RenderMode = MediaPlayer::VideoRenderMode::Fill;
-				else if (v == L"Stretch") mediaPlayer->RenderMode = MediaPlayer::VideoRenderMode::Stretch;
-				else if (v == L"Center") mediaPlayer->RenderMode = MediaPlayer::VideoRenderMode::Center;
-				else if (v == L"UniformToFill") mediaPlayer->RenderMode = MediaPlayer::VideoRenderMode::UniformToFill;
-			}
-		}
-		else if (propertyName == L"ViewMode")
-		{
-			if (targetControl->Type() == UIClass::UI_ListView)
-			{
-				auto* listView = (ListView*)targetControl;
-				auto v = TrimWs(value);
-				if (v == L"Details") listView->ViewMode = ListViewViewMode::Details;
-				else if (v == L"Tile") listView->ViewMode = ListViewViewMode::Tile;
-				else if (v == L"Icon") listView->ViewMode = ListViewViewMode::Icon;
-				else listView->ViewMode = ListViewViewMode::List;
-			}
-		}
-		else if (propertyName == L"PlaybackRate")
-		{
-			if (targetControl->Type() == UIClass::UI_MediaPlayer)
-			{
-				float r = 1.0f;
-				if (TryParseFloatWs(TrimWs(value), r))
-					((MediaPlayer*)targetControl)->PlaybackRate = r;
-			}
-		}
 		else if (propertyName == L"SelectedBackColor")
 		{
 			if (targetControl->Type() == UIClass::UI_TreeView)
@@ -1726,25 +1789,12 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 				if (TryParseColor(value, c)) ((TreeView*)targetControl)->SelectedBackColor = c;
 			}
 		}
-		else if (propertyName == L"SelectedItemBackColor")
-		{
-			if (targetControl->Type() == UIClass::UI_ListView || targetControl->Type() == UIClass::UI_ListBox)
-			{
-				D2D1_COLOR_F c;
-				if (TryParseColor(value, c)) ((ListView*)targetControl)->SelectedItemBackColor = c;
-			}
-		}
 		else if (propertyName == L"UnderMouseItemBackColor")
 		{
 			if (targetControl->Type() == UIClass::UI_TreeView)
 			{
 				D2D1_COLOR_F c;
 				if (TryParseColor(value, c)) ((TreeView*)targetControl)->UnderMouseItemBackColor = c;
-			}
-			else if (targetControl->Type() == UIClass::UI_ListView || targetControl->Type() == UIClass::UI_ListBox)
-			{
-				D2D1_COLOR_F c;
-				if (TryParseColor(value, c)) ((ListView*)targetControl)->UnderMouseItemBackColor = c;
 			}
 		}
 		else if (propertyName == L"SelectedForeColor")
@@ -1755,182 +1805,26 @@ void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wst
 				if (TryParseColor(value, c)) ((TreeView*)targetControl)->SelectedForeColor = c;
 			}
 		}
-		else if (propertyName == L"SelectedItemForeColor")
+		else
 		{
-			if (targetControl->Type() == UIClass::UI_ListView || targetControl->Type() == UIClass::UI_ListBox)
+			const auto properties = DesignerPropertyCatalog::GetStyleProperties(*targetControl);
+			const auto* property = DesignerPropertyCatalog::Find(properties, propertyName);
+			if (property)
 			{
-				D2D1_COLOR_F c;
-				if (TryParseColor(value, c)) ((ListView*)targetControl)->SelectedItemForeColor = c;
-			}
-		}
-		else if (propertyName == L"ScrollBackColor")
-		{
-			if (targetControl->Type() == UIClass::UI_ScrollView)
-			{
-				D2D1_COLOR_F c;
-				if (TryParseColor(value, c)) ((ScrollView*)targetControl)->ScrollBackColor = c;
-			}
-		}
-		else if (propertyName == L"ScrollForeColor")
-		{
-			if (targetControl->Type() == UIClass::UI_ScrollView)
-			{
-				D2D1_COLOR_F c;
-				if (TryParseColor(value, c)) ((ScrollView*)targetControl)->ScrollForeColor = c;
-			}
-		}
-		else if (propertyName == L"Spacing")
-		{
-			if (targetControl->Type() == UIClass::UI_StackPanel)
-				((StackPanel*)targetControl)->SetSpacing(std::stof(value));
-		}
-		else if (propertyName == L"CaptionMarginLeft")
-		{
-			if (targetControl->Type() == UIClass::UI_GroupBox)
-				((GroupBox*)targetControl)->CaptionMarginLeft = std::stof(value);
-		}
-		else if (propertyName == L"CaptionPaddingX")
-		{
-			if (targetControl->Type() == UIClass::UI_GroupBox)
-				((GroupBox*)targetControl)->CaptionPaddingX = std::stof(value);
-		}
-		else if (propertyName == L"CaptionPaddingY")
-		{
-			if (targetControl->Type() == UIClass::UI_GroupBox)
-				((GroupBox*)targetControl)->CaptionPaddingY = std::stof(value);
-		}
-		else if (propertyName == L"ItemWidth")
-		{
-			if (targetControl->Type() == UIClass::UI_WrapPanel)
-				((WrapPanel*)targetControl)->SetItemWidth(std::stof(value));
-		}
-		else if (propertyName == L"ItemHeight")
-		{
-			if (targetControl->Type() == UIClass::UI_WrapPanel)
-				((WrapPanel*)targetControl)->SetItemHeight(std::stof(value));
-		}
-		else if (propertyName == L"Gap")
-		{
-			if (targetControl->Type() == UIClass::UI_ToolBar)
-				((ToolBar*)targetControl)->Gap = std::stoi(value);
-			else if (targetControl->Type() == UIClass::UI_StatusBar)
-				((StatusBar*)targetControl)->Gap = std::stoi(value);
-		}
-		else if (propertyName == L"Padding")
-		{
-			if (targetControl->Type() == UIClass::UI_ToolBar)
-				((ToolBar*)targetControl)->Padding = std::stoi(value);
-			else if (targetControl->Type() == UIClass::UI_StatusBar)
-				((StatusBar*)targetControl)->Padding = std::stoi(value);
-		}
-		else if (propertyName == L"ItemHeight")
-		{
-			if (targetControl->Type() == UIClass::UI_ToolBar)
-				((ToolBar*)targetControl)->ItemHeight = std::stoi(value);
-		}
-		else if (propertyName == L"Min")
-		{
-			if (targetControl->Type() == UIClass::UI_Slider)
-				((Slider*)targetControl)->Min = std::stof(value);
-			else if (targetControl->Type() == UIClass::UI_NumericUpDown)
-				((NumericUpDown*)targetControl)->Min = std::stod(value);
-		}
-		else if (propertyName == L"Max")
-		{
-			if (targetControl->Type() == UIClass::UI_Slider)
-				((Slider*)targetControl)->Max = std::stof(value);
-			else if (targetControl->Type() == UIClass::UI_NumericUpDown)
-				((NumericUpDown*)targetControl)->Max = std::stod(value);
-		}
-		else if (propertyName == L"Value")
-		{
-			if (targetControl->Type() == UIClass::UI_Slider)
-				((Slider*)targetControl)->Value = std::stof(value);
-			else if (targetControl->Type() == UIClass::UI_NumericUpDown)
-				((NumericUpDown*)targetControl)->Value = std::stod(value);
-		}
-		else if (propertyName == L"Step")
-		{
-			if (targetControl->Type() == UIClass::UI_Slider)
-				((Slider*)targetControl)->Step = std::stof(value);
-			else if (targetControl->Type() == UIClass::UI_NumericUpDown)
-				((NumericUpDown*)targetControl)->Step = std::stod(value);
-		}
-		else if (propertyName == L"DecimalPlaces")
-		{
-			if (targetControl->Type() == UIClass::UI_NumericUpDown)
-				((NumericUpDown*)targetControl)->DecimalPlaces = std::max(0, std::stoi(value));
-		}
-		else if (propertyName == L"MouseWheelStep")
-		{
-			if (targetControl->Type() == UIClass::UI_ScrollView)
-				((ScrollView*)targetControl)->MouseWheelStep = std::stoi(value);
-		}
-		else if (propertyName == L"RowHeight")
-		{
-			if (targetControl->Type() == UIClass::UI_ListView || targetControl->Type() == UIClass::UI_ListBox)
-				((ListView*)targetControl)->RowHeight = std::stof(value);
-			else if (targetControl->Type() == UIClass::UI_PropertyGrid)
-				((PropertyGridView*)targetControl)->RowHeight = std::stof(value);
-		}
-		else if (propertyName == L"CategoryHeight")
-		{
-			if (targetControl->Type() == UIClass::UI_PropertyGrid)
-				((PropertyGridView*)targetControl)->CategoryHeight = std::stof(value);
-		}
-		else if (propertyName == L"NameColumnWidth")
-		{
-			if (targetControl->Type() == UIClass::UI_PropertyGrid)
-				((PropertyGridView*)targetControl)->NameColumnWidth = std::stof(value);
-		}
-		else if (propertyName == L"TileHeight")
-		{
-			if (targetControl->Type() == UIClass::UI_ListView || targetControl->Type() == UIClass::UI_ListBox)
-				((ListView*)targetControl)->TileHeight = std::stof(value);
-		}
-		else if (propertyName == L"IconSize")
-		{
-			if (targetControl->Type() == UIClass::UI_ListView || targetControl->Type() == UIClass::UI_ListBox)
-				((ListView*)targetControl)->IconSize = std::stof(value);
-		}
-		else if (propertyName == L"SplitterDistance")
-		{
-			if (targetControl->Type() == UIClass::UI_SplitContainer)
-				((SplitContainer*)targetControl)->SetSplitterDistance(std::stoi(value));
-		}
-		else if (propertyName == L"SplitterWidth")
-		{
-			if (targetControl->Type() == UIClass::UI_SplitContainer)
-				((SplitContainer*)targetControl)->SplitterWidth = std::stoi(value);
-		}
-		else if (propertyName == L"Panel1MinSize")
-		{
-			if (targetControl->Type() == UIClass::UI_SplitContainer)
-				((SplitContainer*)targetControl)->Panel1MinSize = std::stoi(value);
-		}
-		else if (propertyName == L"Panel2MinSize")
-		{
-			if (targetControl->Type() == UIClass::UI_SplitContainer)
-				((SplitContainer*)targetControl)->Panel2MinSize = std::stoi(value);
-		}
-		else if (propertyName == L"ContentWidth")
-		{
-			if (targetControl->Type() == UIClass::UI_ScrollView)
-			{
-				auto* scrollView = (ScrollView*)targetControl;
-				auto cs = scrollView->ContentSize;
-				cs.cx = std::stoi(value);
-				scrollView->ContentSize = cs;
-			}
-		}
-		else if (propertyName == L"ContentHeight")
-		{
-			if (targetControl->Type() == UIClass::UI_ScrollView)
-			{
-				auto* scrollView = (ScrollView*)targetControl;
-				auto cs = scrollView->ContentSize;
-				cs.cy = std::stoi(value);
-				scrollView->ContentSize = cs;
+				std::wstring canonicalName;
+				DesignerStyleValue effective;
+				std::wstring metadataError;
+				if (DesignerPropertyCatalog::ApplyValue(
+					*targetControl,
+					property->Name,
+					DesignerStyleValue{ property->ValueKind, value },
+					&canonicalName,
+					&effective,
+					&metadataError))
+				{
+					SetTrackedMetadataProperty(
+						*currentControl, std::move(canonicalName), std::move(effective));
+				}
 			}
 		}
 	}
@@ -1951,7 +1845,28 @@ void PropertyGrid::UpdatePropertyFromFloat(std::wstring propertyName, float valu
 
 	try
 	{
-		ApplyFloatPropertyValue(targetControl, propertyName, value);
+		const auto properties = DesignerPropertyCatalog::GetStyleProperties(*targetControl);
+		const auto* property = DesignerPropertyCatalog::Find(properties, propertyName);
+		if (property && (property->ValueKind == DesignerStyleValueKind::Float
+			|| property->ValueKind == DesignerStyleValueKind::Double))
+		{
+			std::wstring canonicalName;
+			DesignerStyleValue effective;
+			if (DesignerPropertyCatalog::ApplyValue(
+				*targetControl,
+				property->Name,
+				DesignerStyleValue{ property->ValueKind, FloatToText(value) },
+				&canonicalName,
+				&effective))
+			{
+				SetTrackedMetadataProperty(
+					*currentControl, std::move(canonicalName), std::move(effective));
+			}
+		}
+		else
+		{
+			ApplyFloatPropertyValue(targetControl, propertyName, value);
+		}
 	}
 	catch (...) {}
 
@@ -2011,16 +1926,6 @@ void PropertyGrid::UpdatePropertyFromBool(std::wstring propertyName, bool value)
 		}
 		return;
 	}
-	else if (propertyName == L"AutoPlay")
-	{
-		if (targetControl->Type() == UIClass::UI_MediaPlayer)
-			((MediaPlayer*)targetControl)->AutoPlay = value;
-	}
-	else if (propertyName == L"Loop")
-	{
-		if (targetControl->Type() == UIClass::UI_MediaPlayer)
-			((MediaPlayer*)targetControl)->Loop = value;
-	}
 	else if (propertyName == L"AllowDateSelection")
 	{
 		if (targetControl->Type() == UIClass::UI_DateTimePicker)
@@ -2041,89 +1946,10 @@ void PropertyGrid::UpdatePropertyFromBool(std::wstring propertyName, bool value)
 		if (targetControl->Type() == UIClass::UI_DateTimePicker)
 			((DateTimePicker*)targetControl)->SetExpanded(value);
 	}
-	else if (propertyName == L"AlwaysShowVScroll")
-	{
-		if (targetControl->Type() == UIClass::UI_ScrollView)
-			((ScrollView*)targetControl)->AlwaysShowVScroll = value;
-	}
-	else if (propertyName == L"AlwaysShowHScroll")
-	{
-		if (targetControl->Type() == UIClass::UI_ScrollView)
-			((ScrollView*)targetControl)->AlwaysShowHScroll = value;
-	}
-	else if (propertyName == L"AutoContentSize")
-	{
-		if (targetControl->Type() == UIClass::UI_ScrollView)
-			((ScrollView*)targetControl)->AutoContentSize = value;
-	}
-	else if (propertyName == L"MultiSelect")
-	{
-		if (targetControl->Type() == UIClass::UI_ListView || targetControl->Type() == UIClass::UI_ListBox)
-			((ListView*)targetControl)->SelectionMode = value ? ListViewSelectionMode::Multiple : ListViewSelectionMode::Single;
-	}
-	else if (propertyName == L"ShowCheckBoxes")
-	{
-		if (targetControl->Type() == UIClass::UI_ListView || targetControl->Type() == UIClass::UI_ListBox)
-			((ListView*)targetControl)->ShowCheckBoxes = value;
-	}
-	else if (propertyName == L"ShowColumnHeaders")
-	{
-		if (targetControl->Type() == UIClass::UI_ListView || targetControl->Type() == UIClass::UI_ListBox)
-			((ListView*)targetControl)->ShowColumnHeaders = value;
-	}
-	else if (propertyName == L"AlternatingRows")
-	{
-		if (targetControl->Type() == UIClass::UI_ListView || targetControl->Type() == UIClass::UI_ListBox)
-			((ListView*)targetControl)->AlternatingRows = value;
-		else if (targetControl->Type() == UIClass::UI_PropertyGrid)
-			((PropertyGridView*)targetControl)->AlternatingRows = value;
-	}
-	else if (propertyName == L"ShowHeader")
-	{
-		if (targetControl->Type() == UIClass::UI_PropertyGrid)
-			((PropertyGridView*)targetControl)->ShowHeader = value;
-	}
-	else if (propertyName == L"ShowCategories")
-	{
-		if (targetControl->Type() == UIClass::UI_PropertyGrid)
-			((PropertyGridView*)targetControl)->ShowCategories = value;
-	}
-	else if (propertyName == L"AllowEditing")
-	{
-		if (targetControl->Type() == UIClass::UI_PropertyGrid)
-			((PropertyGridView*)targetControl)->AllowEditing = value;
-	}
-	else if (propertyName == L"SnapToStep")
-	{
-		if (targetControl->Type() == UIClass::UI_Slider)
-			((Slider*)targetControl)->SnapToStep = value;
-		else if (targetControl->Type() == UIClass::UI_NumericUpDown)
-			((NumericUpDown*)targetControl)->SnapToStep = value;
-	}
-	else if (propertyName == L"UseMouseWheel")
-	{
-		if (targetControl->Type() == UIClass::UI_NumericUpDown)
-			((NumericUpDown*)targetControl)->UseMouseWheel = value;
-	}
-	else if (propertyName == L"IsExpanded")
-	{
-		if (targetControl->Type() == UIClass::UI_Expander)
-			((Expander*)targetControl)->SetExpanded(value);
-	}
 	else if (propertyName == L"Visited")
 	{
 		if (targetControl->Type() == UIClass::UI_LinkLabel)
 			((LinkLabel*)targetControl)->Visited = value;
-	}
-	else if (propertyName == L"IsSplitterFixed")
-	{
-		if (targetControl->Type() == UIClass::UI_SplitContainer)
-			((SplitContainer*)targetControl)->IsSplitterFixed = value;
-	}
-	else if (propertyName == L"LastChildFill")
-	{
-		if (targetControl->Type() == UIClass::UI_DockPanel)
-			((DockPanel*)targetControl)->SetLastChildFill(value);
 	}
 	else if (propertyName == L"Enabled")
 	{
@@ -2132,6 +1958,26 @@ void PropertyGrid::UpdatePropertyFromBool(std::wstring propertyName, bool value)
 	else if (propertyName == L"Visible")
 	{
 		targetControl->Visible = value;
+	}
+	else
+	{
+		const auto properties = DesignerPropertyCatalog::GetStyleProperties(*targetControl);
+		const auto* property = DesignerPropertyCatalog::Find(properties, propertyName);
+		if (property && property->ValueKind == DesignerStyleValueKind::Bool)
+		{
+			std::wstring canonicalName;
+			DesignerStyleValue effective;
+			if (DesignerPropertyCatalog::ApplyValue(
+				*targetControl,
+				property->Name,
+				DesignerStyleValue{ DesignerStyleValueKind::Bool, value ? L"true" : L"false" },
+				&canonicalName,
+				&effective))
+			{
+				SetTrackedMetadataProperty(
+					*currentControl, std::move(canonicalName), std::move(effective));
+			}
+		}
 	}
 
 
@@ -2229,7 +2075,7 @@ void PropertyGrid::CommitPendingEdits()
 			Control* current = stack.back();
 			stack.pop_back();
 			if (!current) continue;
-			for (int i = 0; i < current->Children.size(); i++)
+			for (size_t i = 0; i < current->Children.size(); ++i)
 			{
 				auto* child = current->Children[i];
 				if (!child) continue;
@@ -2321,6 +2167,86 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 			CreatePropertyItem(L"Width", std::to_wstring(s.cx), yOffset);
 			CreatePropertyItem(L"Height", std::to_wstring(s.cy), yOffset);
 
+			{
+				auto* container = GetContentContainer();
+				const int width = GetContentWidthLocal();
+				auto schemaButtonText = [canvas]() {
+					return L"编辑 DataContext Schema ("
+						+ std::to_wstring(canvas->GetDataContextSchema().size()) + L")...";
+				};
+				auto* editSchema = new Button(
+					schemaButtonText(), 10, yOffset + 8, width - 20, 28);
+				editSchema->OnMouseClick += [this, canvas, editSchema, schemaButtonText](
+					Control*, MouseEventArgs) {
+					if (!this->ParentForm) return;
+					DataContextSchemaEditorDialog dialog(
+						canvas->GetDataContextSchema(),
+						canvas->GetDesignDataContext().get());
+					dialog.ShowDialog(this->ParentForm->Handle);
+					if (!dialog.Applied
+						|| dialog.ResultSchema == canvas->GetDataContextSchema()) return;
+
+					auto result = std::move(dialog.ResultSchema);
+					std::wstring schemaError;
+					ExecutePropertyCommand(L"DataContextSchema", [canvas, &schemaError,
+						result = std::move(result)]() mutable {
+						(void)canvas->SetDataContextSchema(std::move(result), &schemaError);
+					});
+					if (!schemaError.empty())
+					{
+						::MessageBoxW(this->ParentForm->Handle, schemaError.c_str(),
+							L"DataContext Schema 无效", MB_OK | MB_ICONWARNING);
+						return;
+					}
+					editSchema->Text = schemaButtonText();
+					editSchema->InvalidateVisual();
+				};
+				container->AddControl(editSchema);
+				_extraControls.push_back(editSchema);
+				RegisterScrollable(editSchema);
+				yOffset += 36;
+			}
+
+			{
+				auto* container = GetContentContainer();
+				const int width = GetContentWidthLocal();
+				auto styleButtonText = [canvas]() {
+					const auto& styleSheet = canvas->GetDocumentStyleSheet();
+					return L"编辑文档样式表 ("
+						+ std::to_wstring(styleSheet.Resources.size()) + L" 资源, "
+						+ std::to_wstring(styleSheet.Rules.size()) + L" 规则)...";
+				};
+				auto* editStyles = new Button(
+					styleButtonText(), 10, yOffset + 8, width - 20, 28);
+				editStyles->OnMouseClick += [this, canvas, editStyles, styleButtonText](
+					Control*, MouseEventArgs) {
+					if (!this->ParentForm) return;
+					StyleSheetEditorDialog dialog(canvas->GetDocumentStyleSheet());
+					dialog.ShowDialog(this->ParentForm->Handle);
+					if (!dialog.Applied
+						|| dialog.ResultStyleSheet == canvas->GetDocumentStyleSheet()) return;
+
+					auto result = std::move(dialog.ResultStyleSheet);
+					std::wstring styleError;
+					ExecutePropertyCommand(L"StyleSheet", [canvas, &styleError,
+						result = std::move(result)]() mutable {
+						(void)canvas->SetDocumentStyleSheet(std::move(result), &styleError);
+					});
+					if (!styleError.empty())
+					{
+						::MessageBoxW(this->ParentForm->Handle, styleError.c_str(),
+							L"样式表无效", MB_OK | MB_ICONWARNING);
+						return;
+					}
+					editStyles->Text = styleButtonText();
+					editStyles->InvalidateVisual();
+				};
+				container->AddControl(editStyles);
+				_extraControls.push_back(editStyles);
+				RegisterScrollable(editStyles);
+				yOffset += 36;
+			}
+
 			// 窗体事件（设计期映射，仅用于导出代码）
 			for (const auto& ev : GetFormEventProperties())
 			{
@@ -2341,6 +2267,8 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 
 	// 基本属性
 	CreatePropertyItem(L"Name", control->Name, yOffset);
+	CreatePropertyItem(L"StyleId", targetControl->GetStyleId(), yOffset);
+	CreatePropertyItem(L"StyleClasses", JoinStyleClasses(*targetControl), yOffset);
 	CreatePropertyItem(L"Text", targetControl->Text, yOffset);
 	if (control->Type == UIClass::UI_LinkLabel)
 	{
@@ -2375,14 +2303,14 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 	CreateColorPropertyItem(L"BackColor", targetControl->BackColor, yOffset);
 	CreateColorPropertyItem(L"ForeColor", targetControl->ForeColor, yOffset);
 	CreateColorPropertyItem(L"BorderColor", targetControl->BorderColor, yOffset);
+	CreateBoolPropertyItem(L"ShowValidationBorder", targetControl->ShowValidationBorder, yOffset);
+	CreateBoolPropertyItem(L"ShowValidationToolTip", targetControl->ShowValidationToolTip, yOffset);
+	CreatePropertyItem(L"ValidationBorderThickness", FloatToText(targetControl->ValidationBorderThickness), yOffset);
+	CreatePropertyItem(L"ValidationCornerRadius", FloatToText(targetControl->ValidationCornerRadius), yOffset);
+	CreatePropertyItem(L"ValidationToolTipMaxWidth", FloatToText(targetControl->ValidationToolTipMaxWidth), yOffset);
+	CreatePropertyItem(L"AccessibleDescription", targetControl->AccessibleDescription, yOffset);
 	CreateThicknessPropertyItem(L"Margin", targetControl->Margin, yOffset);
-	// ToolBar/StatusBar 的 Padding 是 int（会隐藏 Control::Padding(Thickness)），这里对齐其实际语义
-	if (control->Type == UIClass::UI_ToolBar)
-		CreatePropertyItem(L"Padding", std::to_wstring(((ToolBar*)targetControl)->Padding), yOffset);
-	else if (control->Type == UIClass::UI_StatusBar)
-		CreatePropertyItem(L"Padding", std::to_wstring(((StatusBar*)targetControl)->Padding), yOffset);
-	else
-		CreateThicknessPropertyItem(L"Padding", targetControl->Padding, yOffset);
+	CreateThicknessPropertyItem(L"Padding", targetControl->Padding, yOffset);
 	CreateAnchorPropertyItem(L"Anchor", targetControl->AnchorStyles, yOffset);
 	CreateEnumPropertyItem(L"HAlign", HAlignToText(targetControl->HAlign), { L"Left", L"Center", L"Right", L"Stretch" }, yOffset);
 	CreateEnumPropertyItem(L"VAlign", VAlignToText(targetControl->VAlign), { L"Top", L"Center", L"Bottom", L"Stretch" }, yOffset);
@@ -2395,63 +2323,6 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 		CreatePropertyItem(L"GridColumn", std::to_wstring(targetControl->GridColumn), yOffset);
 		CreatePropertyItem(L"GridRowSpan", std::to_wstring(targetControl->GridRowSpan), yOffset);
 		CreatePropertyItem(L"GridColumnSpan", std::to_wstring(targetControl->GridColumnSpan), yOffset);
-	}
-	if (control->Type == UIClass::UI_TabControl)
-	{
-		auto* tabControl = (TabControl*)targetControl;
-		CreatePropertyItem(L"SelectedIndex", std::to_wstring(tabControl->SelectedIndex), yOffset);
-		CreatePropertyItem(L"TitleHeight", std::to_wstring(tabControl->TitleHeight), yOffset);
-		CreatePropertyItem(L"TitleWidth", std::to_wstring(tabControl->TitleWidth), yOffset);
-		CreateEnumPropertyItem(L"TitlePosition", TabTitlePositionToText(tabControl->TitlePosition), { L"Top", L"Bottom", L"Left", L"Right" }, yOffset);
-		CreateEnumPropertyItem(L"AnimationMode", TabAnimationModeToText(tabControl->AnimationMode), { L"DirectReplace", L"SlideHorizontal" }, yOffset);
-	}
-	if (control->Type == UIClass::UI_DockPanel)
-	{
-		auto* dockPanel = (DockPanel*)targetControl;
-		CreateBoolPropertyItem(L"LastChildFill", dockPanel->GetLastChildFill(), yOffset);
-	}
-	if (control->Type == UIClass::UI_GroupBox)
-	{
-		auto* groupBox = (GroupBox*)targetControl;
-		CreatePropertyItem(L"CaptionMarginLeft", FloatToText(groupBox->CaptionMarginLeft), yOffset);
-		CreatePropertyItem(L"CaptionPaddingX", FloatToText(groupBox->CaptionPaddingX), yOffset);
-		CreatePropertyItem(L"CaptionPaddingY", FloatToText(groupBox->CaptionPaddingY), yOffset);
-	}
-	if (control->Type == UIClass::UI_Expander)
-	{
-		auto* expander = (Expander*)targetControl;
-		CreatePropertyItem(L"HeaderHeight", FloatToText(expander->HeaderHeight), yOffset);
-		CreatePropertyItem(L"AnimationDurationMs", std::to_wstring(expander->AnimationDurationMs), yOffset);
-		CreateBoolPropertyItem(L"IsExpanded", expander->IsExpanded, yOffset);
-	}
-	if (control->Type == UIClass::UI_SplitContainer)
-	{
-		auto* split = (SplitContainer*)targetControl;
-		CreateEnumPropertyItem(L"SplitOrientation", OrientationToText(split->SplitOrientation), { L"Horizontal", L"Vertical" }, yOffset);
-		CreatePropertyItem(L"SplitterDistance", std::to_wstring(split->SplitterDistance), yOffset);
-		CreatePropertyItem(L"SplitterWidth", std::to_wstring(split->SplitterWidth), yOffset);
-		CreatePropertyItem(L"Panel1MinSize", std::to_wstring(split->Panel1MinSize), yOffset);
-		CreatePropertyItem(L"Panel2MinSize", std::to_wstring(split->Panel2MinSize), yOffset);
-		CreateBoolPropertyItem(L"IsSplitterFixed", split->IsSplitterFixed, yOffset);
-	}
-	if (control->Type == UIClass::UI_StatusBar)
-	{
-		auto* statusBar = (StatusBar*)targetControl;
-		CreateBoolPropertyItem(L"TopMost", statusBar->TopMost, yOffset);
-		CreatePropertyItem(L"Gap", std::to_wstring(statusBar->Gap), yOffset);
-	}
-	if (control->Type == UIClass::UI_StackPanel)
-	{
-		auto* stackPanel = (StackPanel*)targetControl;
-		CreateEnumPropertyItem(L"Orientation", OrientationToText(stackPanel->GetOrientation()), { L"Horizontal", L"Vertical" }, yOffset);
-		CreatePropertyItem(L"Spacing", std::to_wstring(stackPanel->GetSpacing()), yOffset);
-	}
-	if (control->Type == UIClass::UI_WrapPanel)
-	{
-		auto* wrapPanel = (WrapPanel*)targetControl;
-		CreateEnumPropertyItem(L"Orientation", OrientationToText(wrapPanel->GetOrientation()), { L"Horizontal", L"Vertical" }, yOffset);
-		CreatePropertyItem(L"ItemWidth", std::to_wstring(wrapPanel->GetItemWidth()), yOffset);
-		CreatePropertyItem(L"ItemHeight", std::to_wstring(wrapPanel->GetItemHeight()), yOffset);
 	}
 	if (control->Type == UIClass::UI_ProgressBar)
 	{
@@ -2485,32 +2356,9 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 		CreateBoolPropertyItem(L"AllowModeSwitch", dateTimePicker->AllowModeSwitch, yOffset);
 		CreateBoolPropertyItem(L"Expand", dateTimePicker->Expand, yOffset);
 	}
-	if (control->Type == UIClass::UI_NumericUpDown)
-	{
-		auto* numericUpDown = (NumericUpDown*)targetControl;
-		CreatePropertyItem(L"Min", DoubleToText(numericUpDown->Min), yOffset);
-		CreatePropertyItem(L"Max", DoubleToText(numericUpDown->Max), yOffset);
-		CreatePropertyItem(L"Value", DoubleToText(numericUpDown->Value), yOffset);
-		CreatePropertyItem(L"Step", DoubleToText(numericUpDown->Step), yOffset);
-		CreatePropertyItem(L"DecimalPlaces", std::to_wstring(numericUpDown->DecimalPlaces), yOffset);
-		CreateBoolPropertyItem(L"SnapToStep", numericUpDown->SnapToStep, yOffset);
-		CreateBoolPropertyItem(L"UseMouseWheel", numericUpDown->UseMouseWheel, yOffset);
-	}
 	if (control->Type == UIClass::UI_PictureBox)
 	{
 		CreateEnumPropertyItem(L"SizeMode", ImageSizeModeToText(targetControl->SizeMode), { L"Normal", L"CenterImage", L"Stretch", L"Zoom" }, yOffset);
-	}
-	if (control->Type == UIClass::UI_ScrollView)
-	{
-		auto* scrollView = (ScrollView*)targetControl;
-		CreateColorPropertyItem(L"ScrollBackColor", scrollView->ScrollBackColor, yOffset);
-		CreateColorPropertyItem(L"ScrollForeColor", scrollView->ScrollForeColor, yOffset);
-		CreateBoolPropertyItem(L"AlwaysShowVScroll", scrollView->AlwaysShowVScroll, yOffset);
-		CreateBoolPropertyItem(L"AlwaysShowHScroll", scrollView->AlwaysShowHScroll, yOffset);
-		CreateBoolPropertyItem(L"AutoContentSize", scrollView->AutoContentSize, yOffset);
-		CreatePropertyItem(L"ContentWidth", std::to_wstring(scrollView->ContentSize.cx), yOffset);
-		CreatePropertyItem(L"ContentHeight", std::to_wstring(scrollView->ContentSize.cy), yOffset);
-		CreatePropertyItem(L"MouseWheelStep", std::to_wstring(scrollView->MouseWheelStep), yOffset);
 	}
 	if (control->Type == UIClass::UI_TreeView)
 	{
@@ -2519,89 +2367,49 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 		CreateColorPropertyItem(L"UnderMouseItemBackColor", treeView->UnderMouseItemBackColor, yOffset);
 		CreateColorPropertyItem(L"SelectedForeColor", treeView->SelectedForeColor, yOffset);
 	}
-	if (control->Type == UIClass::UI_ToolBar)
-	{
-		auto* toolBar = (ToolBar*)targetControl;
-		CreatePropertyItem(L"Gap", std::to_wstring(toolBar->Gap), yOffset);
-		CreatePropertyItem(L"ItemHeight", std::to_wstring(toolBar->ItemHeight), yOffset);
-	}
-	if (control->Type == UIClass::UI_ComboBox)
-	{
-		auto* comboBox = (ComboBox*)targetControl;
-		CreatePropertyItem(L"ExpandCount", std::to_wstring(comboBox->ExpandCount), yOffset);
-		CreatePropertyItem(L"SelectedIndex", std::to_wstring(comboBox->SelectedIndex), yOffset);
-	}
-	if (control->Type == UIClass::UI_ListView || control->Type == UIClass::UI_ListBox)
-	{
-		auto* listView = (ListView*)targetControl;
-		if (control->Type == UIClass::UI_ListView)
-		{
-			std::wstring mode = L"List";
-			switch (listView->ViewMode)
-			{
-			case ListViewViewMode::Details: mode = L"Details"; break;
-			case ListViewViewMode::Tile: mode = L"Tile"; break;
-			case ListViewViewMode::Icon: mode = L"Icon"; break;
-			case ListViewViewMode::List:
-			default: mode = L"List"; break;
-			}
-			CreateEnumPropertyItem(L"ViewMode", mode, { L"List", L"Details", L"Tile", L"Icon" }, yOffset);
-		}
-		CreateBoolPropertyItem(L"MultiSelect", listView->SelectionMode == ListViewSelectionMode::Multiple, yOffset);
-		CreateBoolPropertyItem(L"ShowCheckBoxes", listView->ShowCheckBoxes, yOffset);
-		CreateBoolPropertyItem(L"ShowColumnHeaders", listView->ShowColumnHeaders, yOffset);
-		CreateBoolPropertyItem(L"AlternatingRows", listView->AlternatingRows, yOffset);
-		CreatePropertyItem(L"SelectedIndex", std::to_wstring(listView->SelectedIndex), yOffset);
-		CreatePropertyItem(L"RowHeight", FloatToText(listView->RowHeight), yOffset);
-		CreatePropertyItem(L"TileHeight", FloatToText(listView->TileHeight), yOffset);
-		CreatePropertyItem(L"IconSize", FloatToText(listView->IconSize), yOffset);
-		CreateColorPropertyItem(L"SelectedItemBackColor", listView->SelectedItemBackColor, yOffset);
-		CreateColorPropertyItem(L"UnderMouseItemBackColor", listView->UnderMouseItemBackColor, yOffset);
-		CreateColorPropertyItem(L"SelectedItemForeColor", listView->SelectedItemForeColor, yOffset);
-	}
-	if (control->Type == UIClass::UI_PropertyGrid)
-	{
-		auto* propertyGridView = (PropertyGridView*)targetControl;
-		CreateBoolPropertyItem(L"ShowHeader", propertyGridView->ShowHeader, yOffset);
-		CreateBoolPropertyItem(L"ShowCategories", propertyGridView->ShowCategories, yOffset);
-		CreateBoolPropertyItem(L"AlternatingRows", propertyGridView->AlternatingRows, yOffset);
-		CreateBoolPropertyItem(L"AllowEditing", propertyGridView->AllowEditing, yOffset);
-		CreatePropertyItem(L"SelectedIndex", std::to_wstring(propertyGridView->SelectedIndex), yOffset);
-		CreatePropertyItem(L"RowHeight", FloatToText(propertyGridView->RowHeight), yOffset);
-		CreatePropertyItem(L"CategoryHeight", FloatToText(propertyGridView->CategoryHeight), yOffset);
-		CreatePropertyItem(L"NameColumnWidth", FloatToText(propertyGridView->NameColumnWidth), yOffset);
-	}
-	if (control->Type == UIClass::UI_Slider)
-	{
-		auto* slider = (Slider*)targetControl;
-		CreatePropertyItem(L"Min", std::to_wstring(slider->Min), yOffset);
-		CreatePropertyItem(L"Max", std::to_wstring(slider->Max), yOffset);
-		CreatePropertyItem(L"Value", std::to_wstring(slider->Value), yOffset);
-		CreatePropertyItem(L"Step", std::to_wstring(slider->Step), yOffset);
-		CreateBoolPropertyItem(L"SnapToStep", slider->SnapToStep, yOffset);
-	}
 	if (control->Type == UIClass::UI_MediaPlayer)
 	{
-		auto* mediaPlayer = (MediaPlayer*)targetControl;
 		std::wstring mediaFile;
 		auto it = control->DesignStrings.find(L"mediaFile");
 		if (it != control->DesignStrings.end()) mediaFile = it->second;
 		CreatePropertyItem(L"MediaFile", mediaFile, yOffset);
-		CreateBoolPropertyItem(L"AutoPlay", mediaPlayer->AutoPlay, yOffset);
-		CreateBoolPropertyItem(L"Loop", mediaPlayer->Loop, yOffset);
-		CreateFloatSliderPropertyItem(L"Volume", (float)mediaPlayer->Volume, 0.0f, 1.0f, 0.01f, yOffset);
-		CreatePropertyItem(L"PlaybackRate", FloatToText(mediaPlayer->PlaybackRate), yOffset);
-		std::wstring renderMode = L"Fit";
-		switch (mediaPlayer->RenderMode)
-		{
-		case MediaPlayer::VideoRenderMode::Fit: renderMode = L"Fit"; break;
-		case MediaPlayer::VideoRenderMode::Fill: renderMode = L"Fill"; break;
-		case MediaPlayer::VideoRenderMode::Stretch: renderMode = L"Stretch"; break;
-		case MediaPlayer::VideoRenderMode::Center: renderMode = L"Center"; break;
-		case MediaPlayer::VideoRenderMode::UniformToFill: renderMode = L"UniformToFill"; break;
-		default: renderMode = L"Fit"; break;
-		}
-		CreateEnumPropertyItem(L"RenderMode", renderMode, { L"Fit", L"Fill", L"Stretch", L"Center", L"UniformToFill" }, yOffset);
+	}
+
+	CreateMetadataPropertyItems(control, yOffset);
+
+	// 数据绑定使用结构化编辑器；目标属性列表完全来自运行时元数据。
+	if (!BindingPropertyRegistry::GetProperties(*targetControl).empty())
+	{
+		auto* container = GetContentContainer();
+		const int width = GetContentWidthLocal();
+		auto bindingButtonText = [control]() {
+			return L"编辑数据绑定 (" + std::to_wstring(control->DataBindings.size()) + L")...";
+		};
+		auto* editBindings = new Button(bindingButtonText(), 10, yOffset + 8, width - 20, 28);
+		editBindings->OnMouseClick += [this, editBindings, bindingButtonText](Control*, MouseEventArgs) {
+			auto currentControl = _binding.GetBoundControl();
+			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
+
+			const auto* canvas = _binding.GetCanvas();
+			BindingEditorDialog dialog(
+				currentControl->ControlInstance,
+				currentControl->DataBindings,
+				canvas ? canvas->GetDataContextSchema() : DesignerDataContextSchema{},
+				canvas ? canvas->GetDesignDataContext().get() : nullptr);
+			dialog.ShowDialog(this->ParentForm->Handle);
+			if (!dialog.Applied || dialog.ResultBindings == currentControl->DataBindings) return;
+
+			auto result = std::move(dialog.ResultBindings);
+			ExecutePropertyCommand(L"DataBindings", [currentControl, result = std::move(result)]() mutable {
+				currentControl->DataBindings = std::move(result);
+			});
+			editBindings->Text = bindingButtonText();
+			editBindings->InvalidateVisual();
+		};
+		container->AddControl(editBindings);
+		_extraControls.push_back(editBindings);
+		RegisterScrollable(editBindings);
+		yOffset += 36;
 	}
 
 	// 事件（设计期映射，仅用于导出代码）
@@ -2624,6 +2432,18 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 			if (!comboBox) return;
 			ComboBoxItemsEditorDialog dlg(comboBox);
 			dlg.ShowDialog(this->ParentForm->Handle);
+			if (dlg.Applied)
+			{
+				std::wstring canonicalName;
+				DesignerStyleValue selectedValue;
+				if (DesignerPropertyCatalog::CaptureValue(
+					*comboBox, L"SelectedIndex", &canonicalName, selectedValue))
+				{
+					SetTrackedMetadataProperty(
+						*currentControl, std::move(canonicalName),
+						std::move(selectedValue));
+				}
+			}
 			comboBox->InvalidateVisual();
 			};
 		container->AddControl(editBtn);
@@ -2781,77 +2601,27 @@ void PropertyGrid::Clear()
 {
 	CommitGroupedFloatSliderEdit();
 
-	auto removeFromParent = [this](Control* c) {
+	auto deleteOwnedControl = [this](Control* c) {
 		if (!c) return;
-		if (_contentHost && c->Parent == _contentHost)
-			_contentHost->RemoveControl(c);
-		else
-			this->RemoveControl(c);
+		if (c->Parent && c->Parent->DeleteControl(c))
+			return;
+		if (this->DeleteControl(c))
+			return;
+		// 兼容尚未挂载或历史异常状态下的编辑器控件。
+		delete c;
 	};
-
-	auto isDescendantOf = [](Control* root, Control* node) -> bool {
-		if (!root || !node) return false;
-		if (root == node) return true;
-		std::vector<Control*> stack;
-		stack.reserve(64);
-		stack.push_back(root);
-		while (!stack.empty())
-		{
-			Control* cur = stack.back();
-			stack.pop_back();
-			if (!cur) continue;
-			for (int i = 0; i < cur->Children.size(); i++)
-			{
-				auto* ch = cur->Children[i];
-				if (!ch) continue;
-				if (ch == node) return true;
-				stack.push_back(ch);
-			}
-		}
-		return false;
-	};
-
-	// 在移除控件前，如果Form的Selected是PropertyGrid的子控件，先清除Selected
-	// 避免移除后的控件在处理鼠标事件时访问ParentForm
-	if (this->ParentForm && this->ParentForm->Selected)
-	{
-		for (auto item : _items)
-		{
-			if ((item->NameLabel && this->ParentForm->Selected == item->NameLabel) ||
-				(item->ValueControl && (this->ParentForm->Selected == item->ValueControl || isDescendantOf(item->ValueControl, this->ParentForm->Selected))) ||
-				(item->ValueTextBox && this->ParentForm->Selected == item->ValueTextBox) ||
-				(item->ValueCheckBox && this->ParentForm->Selected == item->ValueCheckBox))
-			{
-				this->ParentForm->Selected = nullptr;
-				break;
-			}
-		}
-		if (this->ParentForm->Selected)
-		{
-			for (auto* c : _extraControls)
-			{
-				if (c && (this->ParentForm->Selected == c || isDescendantOf(c, this->ParentForm->Selected)))
-				{
-					this->ParentForm->Selected = nullptr;
-					break;
-				}
-			}
-		}
-	}
 
 	// 移除所有属性项（保留标题）
 	for (auto item : _items)
 	{
 		if (item->NameLabel)
 		{
-			removeFromParent(item->NameLabel);
-			delete item->NameLabel;
+			deleteOwnedControl(item->NameLabel);
 			item->NameLabel = nullptr;
 		}
 		if (item->ValueControl)
 		{
-			removeFromParent(item->ValueControl);
-			delete item->ValueControl;
+			deleteOwnedControl(item->ValueControl);
 			item->ValueControl = nullptr;
 		}
 		else
@@ -2859,14 +2629,12 @@ void PropertyGrid::Clear()
 			// 兜底：某些条目可能不走 ValueControl（历史代码/异常场景）
 			if (item->ValueTextBox)
 			{
-				removeFromParent(item->ValueTextBox);
-				delete item->ValueTextBox;
+				deleteOwnedControl(item->ValueTextBox);
 				item->ValueTextBox = nullptr;
 			}
 			if (item->ValueCheckBox)
 			{
-				removeFromParent(item->ValueCheckBox);
-				delete item->ValueCheckBox;
+				deleteOwnedControl(item->ValueCheckBox);
 				item->ValueCheckBox = nullptr;
 			}
 		}
@@ -2877,8 +2645,7 @@ void PropertyGrid::Clear()
 	for (auto* c : _extraControls)
 	{
 		if (!c) continue;
-		removeFromParent(c);
-		delete c;
+		deleteOwnedControl(c);
 	}
 	_extraControls.clear();
 	_scrollEntries.clear();

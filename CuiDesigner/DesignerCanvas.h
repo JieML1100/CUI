@@ -1,11 +1,12 @@
-#pragma once
+﻿#pragma once
 
 /**
  * @file DesignerCanvas.h
  * @brief DesignerCanvas：设计器画布与控件选中/拖拽交互实现。
  */
-#include "../CUI/GUI/Panel.h"
+#include "../CUI/include/Panel.h"
 #include "DesignerTypes.h"
+#include "DesignerStyleSheet.h"
 #include <functional>
 #include <vector>
 #include <memory>
@@ -48,6 +49,10 @@ private:
 	bool _designedFormEnable = true;
 	bool _designedFormVisible = true;
 	std::map<std::wstring, std::wstring> _designedFormEventHandlers;
+	DesignerDataContextSchema _dataContextSchema;
+	DesignerStyleSheet _documentStyleSheet;
+	std::shared_ptr<ControlStyleSheet> _previewStyleSheet;
+	std::shared_ptr<IBindingSource> _designDataContext;
 	bool _designedFormVisibleHead = true;
 	int _designedFormHeadHeight = 24;
 	bool _designedFormMinBox = true;
@@ -183,6 +188,18 @@ public:
 	bool GetDesignedFormVisible() const { return _designedFormVisible; }
 	void SetDesignedFormVisible(bool v) { _designedFormVisible = v; }
 	const std::map<std::wstring, std::wstring>& GetDesignedFormEventHandlers() const { return _designedFormEventHandlers; }
+	const DesignerDataContextSchema& GetDataContextSchema() const { return _dataContextSchema; }
+	bool SetDataContextSchema(DesignerDataContextSchema schema, std::wstring* outError = nullptr);
+	const DesignerStyleSheet& GetDocumentStyleSheet() const { return _documentStyleSheet; }
+	bool SetDocumentStyleSheet(DesignerStyleSheet styleSheet, std::wstring* outError = nullptr);
+	void SetDesignDataContext(std::shared_ptr<IBindingSource> source)
+	{
+		_designDataContext = std::move(source);
+	}
+	const std::shared_ptr<IBindingSource>& GetDesignDataContext() const
+	{
+		return _designDataContext;
+	}
 	bool GetDesignedFormEventEnabled(const std::wstring& eventName) const { return _designedFormEventHandlers.find(eventName) != _designedFormEventHandlers.end(); }
 	void SetDesignedFormEventEnabled(const std::wstring& eventName, bool enabled)
 	{

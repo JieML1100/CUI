@@ -54,6 +54,16 @@
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup Label="WebView2Package">
+    <WebView2PackageVersion>1.0.3712-prerelease</WebView2PackageVersion>
+    <WebView2PackageDir>$(ProjectDir)..\packages\Microsoft.Web.WebView2.$(WebView2PackageVersion)</WebView2PackageDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Platform)'=='Win32'">
+    <WebView2ArchDir>x86</WebView2ArchDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Platform)'=='x64'">
+    <WebView2ArchDir>x64</WebView2ArchDir>
+  </PropertyGroup>
   <ImportGroup Label="ExtensionSettings">
   </ImportGroup>
   <ImportGroup Label="Shared">
@@ -80,11 +90,13 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils;$(ProjectDir)..\LibXML\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -98,11 +110,13 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils;$(ProjectDir)..\LibXML\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -115,11 +129,13 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils;$(ProjectDir)..\LibXML\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -134,16 +150,20 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics;$(ProjectDir)..\Utils\Utils;$(ProjectDir)..\LibXML\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="CodeGenerator.cpp" />
+	<ClCompile Include="BindingEditorDialog.cpp" />
+	<ClCompile Include="CodeGenerator.cpp" />
     <ClCompile Include="ComboBoxItemsEditorDialog.cpp" />
+	<ClCompile Include="DataContextSchemaEditorDialog.cpp" />
     <ClCompile Include="DesignerCore\CommandManager.cpp" />
     <ClCompile Include="DesignerCore\DesignerCommandCoordinator.cpp">
       <MultiProcessorCompilation>false</MultiProcessorCompilation>
@@ -172,14 +192,20 @@
     <ClCompile Include="DesignerModel\DesignDocumentSerializer.cpp" />
     <ClCompile Include="FakeWebBrowser.cpp" />
     <ClCompile Include="MenuItemsEditorDialog.cpp" />
-    <ClCompile Include="StatusBarPartsEditorDialog.cpp" />
+	<ClCompile Include="StatusBarPartsEditorDialog.cpp" />
+	<ClCompile Include="StyleSheetEditorDialog.cpp" />
     <ClCompile Include="main.cpp">
       <MultiProcessorCompilation>false</MultiProcessorCompilation>
     </ClCompile>
-    <ClCompile Include="Designer.cpp">
+	<ClCompile Include="Designer.cpp">
       <MultiProcessorCompilation>false</MultiProcessorCompilation>
     </ClCompile>
-    <ClCompile Include="DesignerCanvas.cpp" />
+	<ClCompile Include="DesignerCanvas.cpp" />
+	<ClCompile Include="DesignerBindingUtils.cpp" />
+	<ClCompile Include="DesignerDataContextSchemaUtils.cpp" />
+	<ClCompile Include="DesignerControlFactory.cpp" />
+	<ClCompile Include="DesignerPropertyCatalog.cpp" />
+	<ClCompile Include="DesignerStyleSheetUtils.cpp" />
     <ClCompile Include="DesignerTypes.cpp" />
     <ClCompile Include="GridPanelDefinitionsEditorDialog.cpp" />
     <ClCompile Include="GridViewColumnsEditorDialog.cpp" />
@@ -192,9 +218,11 @@
     <ClCompile Include="TreeViewNodesEditorDialog.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="CodeGenerator.h" />
+	<ClInclude Include="BindingEditorDialog.h" />
+	<ClInclude Include="CodeGenerator.h" />
     <ClInclude Include="CodeGenInput.h" />
     <ClInclude Include="ComboBoxItemsEditorDialog.h" />
+	<ClInclude Include="DataContextSchemaEditorDialog.h" />
     <ClInclude Include="DesignerCore\CommandManager.h" />
     <ClInclude Include="DesignerCore\DesignerCommandCoordinator.h" />
     <ClInclude Include="DesignerCore\HitTestService.h" />
@@ -209,9 +237,17 @@
     <ClInclude Include="DesignerModel\DesignDocumentSerializer.h" />
     <ClInclude Include="FakeWebBrowser.h" />
     <ClInclude Include="MenuItemsEditorDialog.h" />
-    <ClInclude Include="StatusBarPartsEditorDialog.h" />
+	<ClInclude Include="StatusBarPartsEditorDialog.h" />
+	<ClInclude Include="StyleSheetEditorDialog.h" />
     <ClInclude Include="Designer.h" />
-    <ClInclude Include="DesignerCanvas.h" />
+	<ClInclude Include="DesignerCanvas.h" />
+	<ClInclude Include="DesignerBindingUtils.h" />
+	<ClInclude Include="DesignerDataContextSchemaUtils.h" />
+	<ClInclude Include="DesignerControlFactory.h" />
+	<ClInclude Include="DesignerPropertyCatalog.h" />
+	<ClInclude Include="DesignerPropertyValue.h" />
+	<ClInclude Include="DesignerStyleSheet.h" />
+	<ClInclude Include="DesignerStyleSheetUtils.h" />
     <ClInclude Include="DesignerTypes.h" />
     <ClInclude Include="GridPanelDefinitionsEditorDialog.h" />
     <ClInclude Include="GridViewColumnsEditorDialog.h" />

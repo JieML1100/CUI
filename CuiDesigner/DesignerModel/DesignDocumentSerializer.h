@@ -9,8 +9,7 @@ class DesignDocumentSerializer
 public:
 	static bool SaveToFile(const DesignDocument& document, const std::wstring& filePath, std::wstring* outError = nullptr);
 	static bool LoadFromFile(const std::wstring& filePath, DesignDocument& document, std::wstring* outError = nullptr);
-
-private:
+	/** In-memory equivalents used by tooling, tests, and non-file transports. */
 	static std::string ToXml(const DesignDocument& document);
 	static bool FromXml(const std::string& xml, DesignDocument& document, std::wstring* outError);
 };

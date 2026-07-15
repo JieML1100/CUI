@@ -1,5 +1,5 @@
-D:\Projects\CUI-main\D2DGraphics\BitmapSource.cpp;D:\Projects\CUI-main\D2DGraphics\D2DGraphics\x64\Release\BitmapSource.obj
-D:\Projects\CUI-main\D2DGraphics\Factory.cpp;D:\Projects\CUI-main\D2DGraphics\D2DGraphics\x64\Release\Factory.obj
-D:\Projects\CUI-main\D2DGraphics\Font.cpp;D:\Projects\CUI-main\D2DGraphics\D2DGraphics\x64\Release\Font.obj
-D:\Projects\CUI-main\D2DGraphics\Graphics.cpp;D:\Projects\CUI-main\D2DGraphics\D2DGraphics\x64\Release\Graphics.obj
-D:\Projects\CUI-main\D2DGraphics\SvgParserInternal.cpp;D:\Projects\CUI-main\D2DGraphics\D2DGraphics\x64\Release\SvgParserInternal.obj
+D:\Projects\CUI\D2DGraphics\src\BitmapSource.cpp;D:\Projects\CUI\D2DGraphics\D2DGraphics\x64\Release\BitmapSource.obj
+D:\Projects\CUI\D2DGraphics\src\Factory.cpp;D:\Projects\CUI\D2DGraphics\D2DGraphics\x64\Release\Factory.obj
+D:\Projects\CUI\D2DGraphics\src\Font.cpp;D:\Projects\CUI\D2DGraphics\D2DGraphics\x64\Release\Font.obj
+D:\Projects\CUI\D2DGraphics\src\Graphics.cpp;D:\Projects\CUI\D2DGraphics\D2DGraphics\x64\Release\Graphics.obj
+D:\Projects\CUI\D2DGraphics\src\SvgParserInternal.cpp;D:\Projects\CUI\D2DGraphics\D2DGraphics\x64\Release\SvgParserInternal.obj

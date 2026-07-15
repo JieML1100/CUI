@@ -1,15 +1,15 @@
-#pragma once
+﻿#pragma once
 
 /**
  * @file PropertyGrid.h
  * @brief PropertyGrid：设计器属性面板（显示/编辑控件属性）。
  */
-#include "../CUI/GUI/Panel.h"
-#include "../CUI/GUI/ScrollView.h"
-#include "../CUI/GUI/Label.h"
-#include "../CUI/GUI/CheckBox.h"
-#include "../CUI/GUI/TextBox.h"
-#include "../CUI/GUI/Button.h"
+#include "../CUI/include/Panel.h"
+#include "../CUI/include/ScrollView.h"
+#include "../CUI/include/Label.h"
+#include "../CUI/include/CheckBox.h"
+#include "../CUI/include/TextBox.h"
+#include "../CUI/include/Button.h"
 #include "DesignerTypes.h"
 #include "DesignerCore/PropertyGridBinder.h"
 #include "DesignerModel/DesignDocument.h"
@@ -17,6 +17,7 @@
 #include <functional>
 
 class DesignerCanvas;
+struct DesignerPropertyDescriptor;
 
 class PropertyItem
 {
@@ -95,8 +96,14 @@ private:
 	void CreateAnchorPropertyItem(std::wstring propertyName, uint8_t anchorStyles, int& yOffset);
 	void CreateEnumPropertyItem(std::wstring propertyName, const std::wstring& value,
 		const std::vector<std::wstring>& options, int& yOffset);
+	void CreateChoicePropertyItem(
+		const DesignerPropertyDescriptor& property,
+		int& yOffset);
 	void CreateFloatSliderPropertyItem(std::wstring propertyName, float value,
 		float minValue, float maxValue, float step, int& yOffset);
+	void CreateMetadataPropertyItems(
+		const std::shared_ptr<DesignerControl>& control,
+		int& yOffset);
 	bool ShouldGroupFloatSliderProperty(const std::wstring& propertyName) const;
 	bool TryCapturePropertyCommandState(DesignerModel::DesignDocument& document,
 		std::vector<std::wstring>& selectionNames,

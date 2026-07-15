@@ -1,234 +1,174 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <Filter Include="Utils">
-      <UniqueIdentifier>{afb1e9cc-41b8-46d3-9217-765fb2dc1ac0}</UniqueIdentifier>
+    <Filter Include="include">
+      <UniqueIdentifier>{11111111-1111-1111-1111-111111111111}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Utils\zlib">
-      <UniqueIdentifier>{ecff695d-2774-426c-8b08-8db5e7083875}</UniqueIdentifier>
+    <Filter Include="src">
+      <UniqueIdentifier>{22222222-2222-2222-2222-222222222222}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Utils\Utils.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\CRC.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\Clipboard.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\CRandom.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\Convert.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\Clipboard.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\CRandom.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\Convert.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\DateTime.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\DataPack.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\defines.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\DateTime.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\Dialog.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\Dialog.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\Dictionary.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\Dictionary.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\Environment.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\Environment.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\Event.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\Event.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\File.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\File.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\FileInfo.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\FileInfo.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\FileStream.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\FileStream.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\Guid.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\Guid.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\HttpHelper.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\HttpHelper.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\httplib.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\List.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\List.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\MD5.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\MD5.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\Process.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\MemLoadLibrary2.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\ProcessOperator.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\ProcessOperator.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\Registry.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\Registry.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\SHA256.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\SHA256.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\Socket.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\Socket.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\StopWatch.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\StopWatch.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\StringBuilder.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\StringBuilder.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\StringHelper.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\StringHelper.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\TimeSpan.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\TimeSpan.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\Tuple.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\Tuple.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\Utils.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Utils\zlib\crc32.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\deflate.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\gzguts.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\inffast.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\inffixed.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\inflate.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\inftrees.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\trees.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\zconf.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\zlib.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\zlib\zutil.h">
-      <Filter>Utils\zlib</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\jsonlite.hpp">
-      <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="Utils\json.h">
-      <Filter>Utils</Filter>
+    <ClInclude Include="include\defines.h">
+      <Filter>include</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Utils\Clipboard.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\CRC.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\Convert.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\CRandom.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\CRandom.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\Clipboard.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\DateTime.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\Convert.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\Dialog.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\DataPack.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\Environment.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\DateTime.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\File.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\Dialog.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\FileInfo.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\Environment.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\FileStream.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\Event.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\Guid.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\File.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\httplib.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\FileInfo.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\MD5.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\FileStream.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\ProcessOperator.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\Guid.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\Registry.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\MD5.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\SHA256.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\Process.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\Socket.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\ProcessOperator.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\StopWatch.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\Registry.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\StringBuilder.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\SHA256.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\StringHelper.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\Socket.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\TimeSpan.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\StopWatch.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\Utils.cpp">
-      <Filter>Utils</Filter>
+    <ClCompile Include="src\StringBuilder.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\zlib\adler32.c">
-      <Filter>Utils\zlib</Filter>
+    <ClCompile Include="src\StringHelper.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\zlib\compress.c">
-      <Filter>Utils\zlib</Filter>
+    <ClCompile Include="src\TimeSpan.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Utils\zlib\crc32.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\deflate.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\infback.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\inffast.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\inflate.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\inftrees.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\trees.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\uncompr.c">
-      <Filter>Utils\zlib</Filter>
-    </ClCompile>
-    <ClCompile Include="Utils\zlib\zutil.c">
-      <Filter>Utils\zlib</Filter>
+    <ClCompile Include="src\Utils.cpp">
+      <Filter>src</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

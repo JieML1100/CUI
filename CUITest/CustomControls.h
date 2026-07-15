@@ -4,8 +4,8 @@
  * @file CustomControls.h
  * @brief CUITest 自定义控件声明（用于示例/测试）。
  */
-#include "../CUI/GUI/TextBox.h"
-#include "../CUI/GUI/Label.h"
+#include "../CUI/include/TextBox.h"
+#include "../CUI/include/Label.h"
 class CustomTextBox1 : public TextBox
 {
 public:

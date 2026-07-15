@@ -5,6 +5,7 @@
  * @brief CodeGenerator：将 Designer 模型导出为 C++ 代码的生成器。
  */
 #include "DesignerTypes.h"
+#include "DesignerStyleSheet.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -40,6 +41,7 @@ private:
 	bool _formAllowResize = true;
 	std::wstring _formFontName;
 	float _formFontSize = 18.0f;
+	DesignerStyleSheet _styleSheet;
 	std::unordered_map<const DesignerControl*, std::string> _varNameOf;
 	
 	std::string WStringToString(const std::wstring& wstr) const;
@@ -57,12 +59,14 @@ private:
 	std::string HorizontalAlignmentToString(::HorizontalAlignment a);
 	std::string VerticalAlignmentToString(::VerticalAlignment a);
 	std::string DockToString(::Dock d);
-	std::string OrientationToString(::Orientation o);
 	std::string SizeUnitToString(SizeUnit u);
 	std::string GridLengthToCtorString(const GridLength& gl);
+	std::string GenerateStyleValueExpression(const DesignerStyleValue& value);
+	std::string GenerateStyleSheetCode(int indent);
 
 	std::string GenerateControlInstantiation(const std::shared_ptr<DesignerControl>& dc, int indent);
 	std::string GenerateControlCommonProperties(const std::shared_ptr<DesignerControl>& dc, int indent);
+	std::string GenerateMetadataProperties(const std::shared_ptr<DesignerControl>& dc, int indent);
 	std::string GenerateContainerProperties(const std::shared_ptr<DesignerControl>& dc, int indent);
 	
 public:

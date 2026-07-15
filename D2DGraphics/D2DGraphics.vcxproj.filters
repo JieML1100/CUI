@@ -1,54 +1,48 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <Filter Include="源文件">
-      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
-      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    <Filter Include="include">
+      <UniqueIdentifier>{11111111-1111-1111-1111-111111111111}</UniqueIdentifier>
     </Filter>
-    <Filter Include="头文件">
-      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
-      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
-    </Filter>
-    <Filter Include="资源文件">
-      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
-      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    <Filter Include="src">
+      <UniqueIdentifier>{22222222-2222-2222-2222-222222222222}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="BitmapSource.h">
-      <Filter>头文件</Filter>
+    <ClInclude Include="include\BitmapSource.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Colors.h">
-      <Filter>头文件</Filter>
+    <ClInclude Include="include\Colors.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Factory.h">
-      <Filter>头文件</Filter>
+    <ClInclude Include="include\Factory.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Font.h">
-      <Filter>头文件</Filter>
+    <ClInclude Include="include\Font.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="Graphics.h">
-      <Filter>头文件</Filter>
+    <ClInclude Include="include\Graphics.h">
+      <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="SvgParserInternal.h">
-      <Filter>头文件</Filter>
+    <ClInclude Include="include\SvgParserInternal.h">
+      <Filter>include</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Factory.cpp">
-      <Filter>源文件</Filter>
+    <ClCompile Include="src\BitmapSource.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Font.cpp">
-      <Filter>源文件</Filter>
+    <ClCompile Include="src\Factory.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Graphics.cpp">
-      <Filter>源文件</Filter>
+    <ClCompile Include="src\Font.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="BitmapSource.cpp">
-      <Filter>源文件</Filter>
+    <ClCompile Include="src\Graphics.cpp">
+      <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="SvgParserInternal.cpp">
-      <Filter>源文件</Filter>
+    <ClCompile Include="src\SvgParserInternal.cpp">
+      <Filter>src</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

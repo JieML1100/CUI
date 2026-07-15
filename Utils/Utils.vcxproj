@@ -19,81 +19,61 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Utils\Clipboard.h" />
-    <ClInclude Include="Utils\Convert.h" />
-    <ClInclude Include="Utils\CRandom.h" />
-    <ClInclude Include="Utils\DateTime.h" />
-    <ClInclude Include="Utils\defines.h" />
-    <ClInclude Include="Utils\Dialog.h" />
-    <ClInclude Include="Utils\Dictionary.h" />
-    <ClInclude Include="Utils\Environment.h" />
-    <ClInclude Include="Utils\Event.h" />
-    <ClInclude Include="Utils\File.h" />
-    <ClInclude Include="Utils\FileInfo.h" />
-    <ClInclude Include="Utils\FileStream.h" />
-    <ClInclude Include="Utils\Guid.h" />
-    <ClInclude Include="Utils\HttpHelper.h" />
-    <ClInclude Include="Utils\httplib.h" />
-    <ClInclude Include="Utils\json.h" />
-    <ClInclude Include="Utils\jsonlite.hpp" />
-    <ClInclude Include="Utils\List.h" />
-    <ClInclude Include="Utils\MD5.h" />
-    <ClInclude Include="Utils\MemLoadLibrary2.h" />
-    <ClInclude Include="Utils\ProcessOperator.h" />
-    <ClInclude Include="Utils\Registry.h" />
-    <ClInclude Include="Utils\SHA256.h" />
-    <ClInclude Include="Utils\Socket.h" />
-    <ClInclude Include="Utils\StopWatch.h" />
-    <ClInclude Include="Utils\StringBuilder.h" />
-    <ClInclude Include="Utils\StringHelper.h" />
-    <ClInclude Include="Utils\TimeSpan.h" />
-    <ClInclude Include="Utils\Tuple.h" />
-    <ClInclude Include="Utils\Utils.h" />
-    <ClInclude Include="Utils\zlib\crc32.h" />
-    <ClInclude Include="Utils\zlib\deflate.h" />
-    <ClInclude Include="Utils\zlib\gzguts.h" />
-    <ClInclude Include="Utils\zlib\inffast.h" />
-    <ClInclude Include="Utils\zlib\inffixed.h" />
-    <ClInclude Include="Utils\zlib\inflate.h" />
-    <ClInclude Include="Utils\zlib\inftrees.h" />
-    <ClInclude Include="Utils\zlib\trees.h" />
-    <ClInclude Include="Utils\zlib\zconf.h" />
-    <ClInclude Include="Utils\zlib\zlib.h" />
-    <ClInclude Include="Utils\zlib\zutil.h" />
+    <ClInclude Include="include\CRC.h" />
+    <ClInclude Include="include\CRandom.h" />
+    <ClInclude Include="include\Clipboard.h" />
+    <ClInclude Include="include\Convert.h" />
+    <ClInclude Include="include\DataPack.h" />
+    <ClInclude Include="include\DateTime.h" />
+    <ClInclude Include="include\Dialog.h" />
+    <ClInclude Include="include\Dictionary.h" />
+    <ClInclude Include="include\Environment.h" />
+    <ClInclude Include="include\Event.h" />
+    <ClInclude Include="include\File.h" />
+    <ClInclude Include="include\FileInfo.h" />
+    <ClInclude Include="include\FileStream.h" />
+    <ClInclude Include="include\Guid.h" />
+    <ClInclude Include="include\HttpHelper.h" />
+    <ClInclude Include="include\List.h" />
+    <ClInclude Include="include\MD5.h" />
+    <ClInclude Include="include\Process.h" />
+    <ClInclude Include="include\ProcessOperator.h" />
+    <ClInclude Include="include\Registry.h" />
+    <ClInclude Include="include\SHA256.h" />
+    <ClInclude Include="include\Socket.h" />
+    <ClInclude Include="include\StopWatch.h" />
+    <ClInclude Include="include\StringBuilder.h" />
+    <ClInclude Include="include\StringHelper.h" />
+    <ClInclude Include="include\TimeSpan.h" />
+    <ClInclude Include="include\Tuple.h" />
+    <ClInclude Include="include\Utils.h" />
+    <ClInclude Include="include\defines.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Utils\Clipboard.cpp" />
-    <ClCompile Include="Utils\Convert.cpp" />
-    <ClCompile Include="Utils\CRandom.cpp" />
-    <ClCompile Include="Utils\DateTime.cpp" />
-    <ClCompile Include="Utils\Dialog.cpp" />
-    <ClCompile Include="Utils\Environment.cpp" />
-    <ClCompile Include="Utils\File.cpp" />
-    <ClCompile Include="Utils\FileInfo.cpp" />
-    <ClCompile Include="Utils\FileStream.cpp" />
-    <ClCompile Include="Utils\Guid.cpp" />
-    <ClCompile Include="Utils\httplib.cpp" />
-    <ClCompile Include="Utils\MD5.cpp" />
-    <ClCompile Include="Utils\ProcessOperator.cpp" />
-    <ClCompile Include="Utils\Registry.cpp" />
-    <ClCompile Include="Utils\SHA256.cpp" />
-    <ClCompile Include="Utils\Socket.cpp" />
-    <ClCompile Include="Utils\StopWatch.cpp" />
-    <ClCompile Include="Utils\StringBuilder.cpp" />
-    <ClCompile Include="Utils\StringHelper.cpp" />
-    <ClCompile Include="Utils\TimeSpan.cpp" />
-    <ClCompile Include="Utils\Utils.cpp" />
-    <ClCompile Include="Utils\zlib\adler32.c" />
-    <ClCompile Include="Utils\zlib\compress.c" />
-    <ClCompile Include="Utils\zlib\crc32.c" />
-    <ClCompile Include="Utils\zlib\deflate.c" />
-    <ClCompile Include="Utils\zlib\infback.c" />
-    <ClCompile Include="Utils\zlib\inffast.c" />
-    <ClCompile Include="Utils\zlib\inflate.c" />
-    <ClCompile Include="Utils\zlib\inftrees.c" />
-    <ClCompile Include="Utils\zlib\trees.c" />
-    <ClCompile Include="Utils\zlib\uncompr.c" />
-    <ClCompile Include="Utils\zlib\zutil.c" />
+    <ClCompile Include="src\CRC.cpp" />
+    <ClCompile Include="src\CRandom.cpp" />
+    <ClCompile Include="src\Clipboard.cpp" />
+    <ClCompile Include="src\Convert.cpp" />
+    <ClCompile Include="src\DataPack.cpp" />
+    <ClCompile Include="src\DateTime.cpp" />
+    <ClCompile Include="src\Dialog.cpp" />
+    <ClCompile Include="src\Environment.cpp" />
+    <ClCompile Include="src\Event.cpp" />
+    <ClCompile Include="src\File.cpp" />
+    <ClCompile Include="src\FileInfo.cpp" />
+    <ClCompile Include="src\FileStream.cpp" />
+    <ClCompile Include="src\Guid.cpp" />
+    <ClCompile Include="src\MD5.cpp" />
+    <ClCompile Include="src\Process.cpp" />
+    <ClCompile Include="src\ProcessOperator.cpp" />
+    <ClCompile Include="src\Registry.cpp" />
+    <ClCompile Include="src\SHA256.cpp" />
+    <ClCompile Include="src\Socket.cpp" />
+    <ClCompile Include="src\StopWatch.cpp" />
+    <ClCompile Include="src\StringBuilder.cpp" />
+    <ClCompile Include="src\StringHelper.cpp" />
+    <ClCompile Include="src\TimeSpan.cpp" />
+    <ClCompile Include="src\Utils.cpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
@@ -161,6 +141,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>
@@ -183,6 +164,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>
@@ -202,6 +184,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>
@@ -224,6 +207,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>

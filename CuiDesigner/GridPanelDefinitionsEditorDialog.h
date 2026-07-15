@@ -4,11 +4,11 @@
  * @file GridPanelDefinitionsEditorDialog.h
  * @brief GridPanelDefinitionsEditorDialog：编辑 GridPanel 行/列定义的对话框。
  */
-#include "../CUI/GUI/Form.h"
-#include "../CUI/GUI/Label.h"
-#include "../CUI/GUI/RichTextBox.h"
-#include "../CUI/GUI/Button.h"
-#include "../CUI/GUI/Layout/GridPanel.h"
+#include "../CUI/include/Form.h"
+#include "../CUI/include/Label.h"
+#include "../CUI/include/RichTextBox.h"
+#include "../CUI/include/Button.h"
+#include "../CUI/include/Layout/GridPanel.h"
 
 class GridPanelDefinitionsEditorDialog : public Form
 {

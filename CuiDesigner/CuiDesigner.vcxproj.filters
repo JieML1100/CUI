@@ -24,7 +24,25 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="main.cpp">
+	<ClCompile Include="BindingEditorDialog.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="DataContextSchemaEditorDialog.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="DesignerDataContextSchemaUtils.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="DesignerControlFactory.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="DesignerPropertyCatalog.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="DesignerStyleSheetUtils.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="main.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="CodeGenerator.cpp">
@@ -36,9 +54,12 @@
     <ClCompile Include="Designer.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="DesignerCanvas.cpp">
+	<ClCompile Include="DesignerCanvas.cpp">
       <Filter>源文件</Filter>
-    </ClCompile>
+	</ClCompile>
+	<ClCompile Include="DesignerBindingUtils.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
     <ClCompile Include="DesignerTypes.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -69,6 +90,9 @@
     <ClCompile Include="StatusBarPartsEditorDialog.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+	<ClCompile Include="StyleSheetEditorDialog.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
     <ClCompile Include="FakeWebBrowser.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -110,7 +134,31 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="CodeGenInput.h">
+	<ClInclude Include="BindingEditorDialog.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DataContextSchemaEditorDialog.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerDataContextSchemaUtils.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerControlFactory.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerPropertyCatalog.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerPropertyValue.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerStyleSheet.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerStyleSheetUtils.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="CodeGenInput.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="CodeGenerator.h">
@@ -122,9 +170,12 @@
     <ClInclude Include="Designer.h">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="DesignerCanvas.h">
+	<ClInclude Include="DesignerCanvas.h">
       <Filter>头文件</Filter>
-    </ClInclude>
+	</ClInclude>
+	<ClInclude Include="DesignerBindingUtils.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
     <ClInclude Include="DesignerTypes.h">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -155,6 +206,9 @@
     <ClInclude Include="StatusBarPartsEditorDialog.h">
       <Filter>头文件</Filter>
     </ClInclude>
+	<ClInclude Include="StyleSheetEditorDialog.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
     <ClInclude Include="FakeWebBrowser.h">
       <Filter>头文件</Filter>
     </ClInclude>

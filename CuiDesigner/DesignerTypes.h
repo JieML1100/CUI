@@ -4,11 +4,12 @@
  * @file DesignerTypes.h
  * @brief 设计器数据模型与辅助类型定义（控件树、属性、布局等）。
  */
-#include "../CUI/GUI/Control.h"
+#include "../CUI/include/Control.h"
+#include "DesignerPropertyValue.h"
 #include <string>
 #include <map>
 #include <unordered_map>
-#include <Utils.h>
+#include <vector>
 
 // 设计器中控件的元数据
 struct ControlMetadata
@@ -19,6 +20,35 @@ struct ControlMetadata
 	SIZE DefaultSize;
 	bool IsContainer;
 };
+
+struct DesignerDataBinding
+{
+	std::wstring SourceProperty;
+	BindingMode Mode = BindingMode::OneWay;
+	DataSourceUpdateMode UpdateMode = DataSourceUpdateMode::OnPropertyChanged;
+	/** Named runtime converter resolved through BindingValueConverterRegistry. */
+	std::wstring Converter;
+
+	bool operator==(const DesignerDataBinding&) const = default;
+};
+
+/** One discoverable property path on the form's design-time data context. */
+struct DesignerDataContextProperty
+{
+	std::wstring Path;
+	BindingValueKind ValueKind = BindingValueKind::Empty;
+	bool CanRead = true;
+	bool CanWrite = true;
+	bool CanObserve = true;
+
+	bool operator==(const DesignerDataContextProperty&) const = default;
+};
+
+/**
+ * Flat dotted paths keep the persisted format simple while still describing a
+ * nested property tree (for example Profile and Profile.DisplayName).
+ */
+using DesignerDataContextSchema = std::vector<DesignerDataContextProperty>;
 
 // 设计器中的控件包装类
 class DesignerControl
@@ -35,6 +65,10 @@ public:
 	// 事件绑定：key 为事件成员名（如 OnMouseClick/OnTextChanged），value 为类成员函数名
 	// 仅用于设计期保存/加载与导出代码生成；运行时不自动绑定。
 	std::map<std::wstring, std::wstring> EventHandlers;
+	// 数据绑定：key 为目标属性名，value 描述统一数据上下文上的源路径与模式。
+	std::map<std::wstring, DesignerDataBinding> DataBindings;
+	// Metadata-backed properties not represented by legacy Props/Extra fields.
+	std::map<std::wstring, DesignerStyleValue> MetadataProperties;
 
 	// 设计期附加数据（不一定映射到运行时属性）。
 	// 例如：MediaPlayer 的媒体源路径等。

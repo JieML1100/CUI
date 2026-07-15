@@ -91,7 +91,7 @@
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)D2DGraphics\include\;$(SolutionDir)Utils\include\</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -110,7 +110,7 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)D2DGraphics\include\;$(SolutionDir)Utils\include\</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -127,7 +127,7 @@
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)D2DGraphics\include\;$(SolutionDir)Utils\include\</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -146,7 +146,7 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)D2DGraphics\include\;$(SolutionDir)Utils\include\</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -158,13 +158,11 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="CustomControls.cpp" />
     <ClCompile Include="DemoWindow.cpp" />
-    <ClCompile Include="TestUtils.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CustomControls.h" />
     <ClInclude Include="DemoWindow.h" />
     <ClInclude Include="imgs.h" />
-    <ClInclude Include="TestUtils.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
@@ -175,6 +173,9 @@
     </ProjectReference>
     <ProjectReference Include="..\CUI\CUI.vcxproj">
       <Project>{48316892-3a38-48f2-8c34-4d676304f769}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\Utils\Utils.vcxproj">
+      <Project>{1ddaee3c-caa8-489f-bfbe-84d30c9b4774}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -1,18 +1,18 @@
-#include "LayoutBridge.h"
+﻿#include "LayoutBridge.h"
 
 #include "../FakeWebBrowser.h"
-#include "../../CUI/GUI/Button.h"
-#include "../../CUI/GUI/Control.h"
-#include "../../CUI/GUI/Menu.h"
-#include "../../CUI/GUI/StatusBar.h"
-#include "../../CUI/GUI/TabControl.h"
-#include "../../CUI/GUI/ToolBar.h"
-#include "../../CUI/GUI/Layout/DockPanel.h"
-#include "../../CUI/GUI/Layout/GridPanel.h"
-#include "../../CUI/GUI/Layout/RelativePanel.h"
-#include "../../CUI/GUI/Layout/StackPanel.h"
-#include "../../CUI/GUI/Layout/WrapPanel.h"
-#include "../../CUI/GUI/Panel.h"
+#include "../../CUI/include/Button.h"
+#include "../../CUI/include/Control.h"
+#include "../../CUI/include/Menu.h"
+#include "../../CUI/include/StatusBar.h"
+#include "../../CUI/include/TabControl.h"
+#include "../../CUI/include/ToolBar.h"
+#include "../../CUI/include/Layout/DockPanel.h"
+#include "../../CUI/include/Layout/GridPanel.h"
+#include "../../CUI/include/Layout/RelativePanel.h"
+#include "../../CUI/include/Layout/StackPanel.h"
+#include "../../CUI/include/Layout/WrapPanel.h"
+#include "../../CUI/include/Panel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -28,8 +28,12 @@ Control* LayoutBridge::NormalizeContainerForDrop(Control* container)
 			tabControl->AddPage(L"Page 1");
 		}
 		if (tabControl->Count <= 0) return tabControl;
-		if (tabControl->SelectedIndex < 0) tabControl->SelectedIndex = 0;
-		if (tabControl->SelectedIndex >= tabControl->Count) tabControl->SelectedIndex = tabControl->Count - 1;
+		if (tabControl->SelectedIndex < 0
+			|| tabControl->SelectedIndex >= tabControl->Count)
+		{
+			tabControl->SelectPage((std::clamp)(
+				tabControl->SelectedIndex, 0, tabControl->Count - 1));
+		}
 		return tabControl->operator[](tabControl->SelectedIndex);
 	}
 	return container;
@@ -56,6 +60,15 @@ void LayoutBridge::AttachChild(Control* container, Control* child)
 		return;
 	}
 	container->AddControl(child);
+}
+
+Control* LayoutBridge::AttachChild(Control* container, std::unique_ptr<Control> child)
+{
+	if (!container || !child)
+		return nullptr;
+	if (container->Type() == UIClass::UI_ToolBar)
+		return static_cast<ToolBar*>(container)->AddOwned(std::move(child));
+	return container->AddOwned(std::move(child));
 }
 
 void LayoutBridge::ApplyNewChildLayout(Control* container, Control* child, POINT local, POINT dropLocal)
@@ -135,19 +148,13 @@ void LayoutBridge::ApplyNewChildLayout(Control* container, Control* child, POINT
 			}
 		}
 		auto found = std::find(wrapPanel->Children.begin(), wrapPanel->Children.end(), child);
-		int curIndex = (found != wrapPanel->Children.end()) ? std::distance(wrapPanel->Children.begin(), found) : -1;
+		int curIndex = (found != wrapPanel->Children.end())
+			? static_cast<int>(std::distance(wrapPanel->Children.begin(), found)) : -1;
 		if (curIndex >= 0)
 		{
-			while (curIndex > insertIndex)
-			{
-				std::swap(wrapPanel->Children[curIndex], wrapPanel->Children[curIndex - 1]);
-				curIndex--;
-			}
-			while (curIndex < insertIndex)
-			{
-				std::swap(wrapPanel->Children[curIndex], wrapPanel->Children[curIndex + 1]);
-				curIndex++;
-			}
+			wrapPanel->Children.Move(
+				static_cast<size_t>(curIndex),
+				static_cast<size_t>(insertIndex));
 		}
 		child->Location = { 0, 0 };
 		return;
@@ -217,19 +224,13 @@ void LayoutBridge::ApplyExistingChildLayout(
 			}
 		}
 		auto found = std::find(stackPanel->Children.begin(), stackPanel->Children.end(), child);
-		int curIndex = (found != stackPanel->Children.end()) ? std::distance(stackPanel->Children.begin(), found) : -1;
+		int curIndex = (found != stackPanel->Children.end())
+			? static_cast<int>(std::distance(stackPanel->Children.begin(), found)) : -1;
 		if (curIndex >= 0)
 		{
-			while (curIndex > insertIndex)
-			{
-				std::swap(stackPanel->Children[curIndex], stackPanel->Children[curIndex - 1]);
-				curIndex--;
-			}
-			while (curIndex < insertIndex)
-			{
-				std::swap(stackPanel->Children[curIndex], stackPanel->Children[curIndex + 1]);
-				curIndex++;
-			}
+			stackPanel->Children.Move(
+				static_cast<size_t>(curIndex),
+				static_cast<size_t>(insertIndex));
 		}
 		child->Location = { 0, 0 };
 		return;

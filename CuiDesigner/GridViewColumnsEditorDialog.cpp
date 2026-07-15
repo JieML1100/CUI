@@ -84,6 +84,7 @@ bool GridViewColumnsEditorDialog::TryParseColumnType(const std::wstring& s, Colu
 void GridViewColumnsEditorDialog::RefreshGridFromTarget()
 {
 	if (!_grid) return;
+	auto update = _grid->DeferUpdates();
 	_grid->ClearRows();
 	if (!_target) return;
 	auto typeItems = BuildColumnTypeItems();
@@ -206,8 +207,7 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 				{
 					int sel = r;
 					if (static_cast<size_t>(sel) >= _grid->RowCount()) sel = static_cast<int>(_grid->RowCount()) - 1;
-					_grid->SelectedRowIndex = sel;
-					_grid->SelectedColumnIndex = COL_NAME;
+					_grid->SelectCell(COL_NAME, sel);
 				}
 				_grid->InvalidateVisual();
 			}
@@ -220,6 +220,7 @@ GridViewColumnsEditorDialog::GridViewColumnsEditorDialog(GridView* target)
 		if (!_target || !_grid) { this->Close(); return; }
 		_grid->ChangeEditionSelected(-1, -1);
 
+		auto update = _target->DeferUpdates();
 		_target->ClearColumns();
 		auto typeItems = BuildColumnTypeItems();
 		for (size_t i = 0; i < _grid->RowCount(); i++)

@@ -5,18 +5,18 @@
  * @brief CUITest 演示窗口声明（用于示例/测试）。
  */
 #include <iostream>
-#include "../CUI/GUI/Form.h"
-#include "../CUI/GUI/Layout/Layout.h"
-#include "../CUI/GUI/ChartView.h"
-#include "../CUI/GUI/ListView.h"
-#include "../CUI/GUI/MessageDialog.h"
-#include "../CUI/GUI/PropertyGrid.h"
-#include "../CUI/GUI/ReportView.h"
-#include "../CUI/GUI/Toast.h"
-#include "../CUI/GUI/KpiCard.h"
-#include "../CUI/GUI/FilterBar.h"
+#include "../CUI/include/Form.h"
+#include "../CUI/include/Layout/Layout.h"
+#include "../CUI/include/ChartView.h"
+#include "../CUI/include/ListView.h"
+#include "../CUI/include/MessageDialog.h"
+#include "../CUI/include/PropertyGrid.h"
+#include "../CUI/include/ReportView.h"
+#include "../CUI/include/Toast.h"
+#include "../CUI/include/KpiCard.h"
+#include "../CUI/include/FilterBar.h"
 #include "CustomControls.h"
-#include "TestUtils.h"
+#include <Utils.h>
 
 class WebBrowser;
 class DemoWindow : public Form

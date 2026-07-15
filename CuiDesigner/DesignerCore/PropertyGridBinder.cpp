@@ -1,6 +1,6 @@
-#include "PropertyGridBinder.h"
+﻿#include "PropertyGridBinder.h"
 #include "../DesignerCanvas.h"
-#include "../../CUI/GUI/SplitContainer.h"
+#include "../../CUI/include/SplitContainer.h"
 
 void PropertyGridBinder::SetCanvas(DesignerCanvas* canvas)
 {

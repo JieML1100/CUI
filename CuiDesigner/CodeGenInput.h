@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DesignerStyleSheet.h"
 #include <windows.h>
 #include <d2d1helper.h>
 #include <map>
@@ -33,4 +34,5 @@ struct CodeGenInput
 	bool FormAllowResize = true;
 	std::wstring FormFontName;
 	float FormFontSize = 18.0f;
+	DesignerStyleSheet StyleSheet;
 };

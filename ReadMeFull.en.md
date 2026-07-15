@@ -840,14 +840,16 @@ auto result = MessageDialog::Show(
 
 ```cpp
 auto notify = new NotifyIcon();
-notify->InitNotifyIcon(hwnd, 1);
-notify->SetIcon(LoadIcon(NULL, IDI_APPLICATION));
-notify->SetToolTip("My App");
+if (!notify->TryInitialize(hwnd, 1)) {
+    // GetLastError() identifies invalid arguments or host windows
+}
+notify->SetIcon(LoadIcon(nullptr, IDI_APPLICATION)); // HICON stays caller-owned
+notify->SetToolTip(L"My App");
 
 notify->ClearMenu();
-notify->AddMenuItem(NotifyIconMenuItem("Show Window", 1));
+notify->AddMenuItem(NotifyIconMenuItem(L"Show Window", 1));
 notify->AddMenuSeparator();
-notify->AddMenuItem(NotifyIconMenuItem("Exit", 3));
+notify->AddMenuItem(NotifyIconMenuItem(L"Exit", 3));
 
 notify->OnNotifyIconMenuClick += [](NotifyIcon* sender, int menuId) {
     switch (menuId) {
@@ -856,8 +858,15 @@ notify->OnNotifyIconMenuClick += [](NotifyIcon* sender, int menuId) {
     }
 };
 
-notify->ShowNotifyIcon();
+if (!notify->TryShow()) {
+    auto hr = notify->GetLastError();
+}
 ```
+
+Menu data uses `std::wstring` and supports recursive submenus plus `FindMenuItem`,
+`TryEnableMenuItem`, `TrySetMenuItemText`, and `RemoveMenuItem`. Right-click opens the menu
+automatically, and visible icons are restored after Explorer restarts. Legacy narrow and void APIs
+remain available; narrow text is decoded as UTF-8 first.
 
 #### Taskbar
 
@@ -865,16 +874,27 @@ notify->ShowNotifyIcon();
 auto taskbar = new Taskbar(hwnd);
 
 // Set taskbar progress
-taskbar->SetValue(current, total);
+if (!taskbar->TrySetValue(current, total)) {
+    auto hr = taskbar->GetLastError();
+}
 
-// Set taskbar thumbnail buttons
-taskbar->AddThumbnailButton(/* button config */);
+taskbar->TrySetPaused();
+taskbar->TrySetError();
+taskbar->TrySetIndeterminate();
+taskbar->TryClear();
 ```
+
+Each `Taskbar` owns its own `ITaskbarList3`, so multiple instances cannot double-release shared COM state.
 
 ### WebBrowser Control
 
 ```cpp
 auto web = AddControl(new WebBrowser(20, 20, 760, 500));
+
+// These values can be set before initialization or supplied by Binding / Designer
+web->InitialUrl = L"https://www.example.com";
+web->ZoomFactor = 1.25;
+web->AreDefaultContextMenusEnabled = false;
 
 // Register JS-to-C++ handler
 web->RegisterJsInvokeHandler(L"native.log", [](const std::wstring& msg) {
@@ -885,12 +905,20 @@ web->RegisterJsInvokeHandler(L"native.log", [](const std::wstring& msg) {
 // C++ calls JS
 web->ExecuteScriptAsync(L"console.log('Hello from C++');");
 
-// Set HTML
-web->SetHtml(L"<html><body><h1>Embedded Content</h1></body></html>");
+// Safe operations report whether they ran or were queued successfully
+if (!web->TrySetHtml(L"<html><body><h1>Embedded Content</h1></body></html>")) {
+    auto hr = web->GetLastWebViewError();
+    // Log or display the failure
+}
 
 // Navigate to URL
-web->Navigate(L"https://www.example.com");
+web->TryNavigate(L"https://www.example.com");
 ```
+
+Call `TryInitialize()` to request asynchronous initialization explicitly. Use
+`GetInitializationState()`, `GetLastEnvironmentError()`, `GetLastControllerError()`, and
+`GetLastWebViewError()` to identify the failing stage. URL and HTML requests made before readiness
+share one pending slot, so the most recent request wins.
 
 ---
 
@@ -1121,6 +1149,73 @@ control->OnLostFocus += [](Control* sender) {
     // Lose focus
 };
 ```
+
+### Keyboard Navigation and Accessibility
+
+`Form` sorts focus candidates by `TabIndex` and preserves tree order for ties. Invisible, disabled,
+`IsTabStop=false`, and non-focusable controls are skipped. Tab/Shift+Tab wrap at both ends;
+RichTextBox consumes a Tab character only when `AllowTabInput=true`.
+
+```cpp
+auto name = form->Add<TextBox>(L"", 20, 20, 220, 28);
+name->TabIndex = 0;
+name->AccessibleName = L"Display name";
+name->AccessibleHelpText = L"Enter the name shown to other users.";
+name->AutomationId = L"displayName";
+
+auto save = form->Add<Button>(L"&Save", 20, 60, 100, 28);
+save->TabIndex = 1;
+save->AccessibleName = L"Save profile";
+save->AccessibleDescription = L"Saves the current profile.";
+save->AutomationId = L"saveProfile";
+form->SetDefaultButton(save); // Enter
+
+auto cancel = form->Add<Button>(L"Cancel", 130, 60, 100, 28);
+cancel->AccessKey = L"C";     // Alt+C; a single '&' in action text also works
+cancel->TabIndex = 2;
+form->SetCancelButton(cancel); // Escape
+```
+
+`Invoke()` on Button, LinkLabel, CheckBox, RadioBox, and Switch matches their primary pointer action
+and is also used by default/cancel buttons, access keys, and assistive technology. A value-only
+`GetAccessibilitySnapshot()` is available without COM. Each window also returns an `IAccessible`
+client object and a lifetime-safe native UI Automation fragment tree from `WM_GETOBJECT`. Core
+controls expose Invoke, Toggle, Value, RangeValue, ExpandCollapse, SelectionItem, and Selection
+patterns; focus, name, value, state, and structure changes raise both UIA events and WinEvents.
+Password-box content is never exposed as an accessible name or value, and retained providers report
+an unavailable element after their window is destroyed.
+
+In addition to the real `Control` hierarchy and `TabPage` children, the fragment tree covers
+ListView/ListBox items, ComboBox items, TreeNode objects, and GridView headers, rows, and cells.
+Virtual items use independent stable runtime IDs: sorting or swapping keeps the logical identity,
+while item removal or Form destruction makes retained providers unavailable. Collections expose the
+appropriate Selection/SelectionItem, Toggle, ExpandCollapse, Grid/GridItem, Table/TableItem, Value,
+Invoke, VirtualizedItem, and ScrollItem patterns. Collapsed or unrealized items remain reachable via
+Realize/ScrollIntoView. UIA focus is tracked separately from selection, so AddToSelection preserves
+existing multi-selection and ScrollIntoView does not implicitly select a grid cell.
+
+### System Visual Preferences
+
+`Form` reads Windows high-contrast, client-animation, keyboard-focus-cue, and text-scale settings at
+construction and refreshes them after `WM_SETTINGCHANGE`, `WM_THEMECHANGED`, or `WM_SYSCOLORCHANGE`.
+High contrast overrides the form plus common control surfaces, foregrounds, and focus colors;
+disabling client animations makes common transitions complete immediately; inherited and explicit
+fonts scale from 100% through 225% and trigger layout again.
+
+```cpp
+auto preferences = Application::QuerySystemVisualPreferences();
+form->ApplySystemVisualPreferences(preferences); // custom snapshots aid deterministic tests
+
+if (!form->AreSystemAnimationsEnabled()) {
+    // Custom controls should complete visual state changes immediately too.
+}
+float textScale = form->GetTextScaleFactor();
+```
+
+Custom animations should use `Control::AreSystemAnimationsEnabled()` or
+`Control::EffectiveAnimationDuration(configuredDurationMs)` rather than bypassing reduced-motion
+preferences. Specialized controls still need individual contrast review for selection, hover, and
+accent colors.
 
 ### Drag and Drop Events
 
@@ -1779,7 +1874,7 @@ private:
 
 ### Q1: Which Windows versions does CUI support?
 
-**A**: `CUI` supports Windows 7 and above. Use the preprocessor macro `CUI_ENABLE_WEBVIEW2` to enable DirectComposition + WebView2 (requires Windows 8+); without it, only Direct2D HWND rendering is used, maintaining Windows 7 compatibility (WebBrowser not included).
+**A**: `CUI` supports Windows 7 and above. Set the MSBuild property `CUIEnableWebView2=false` to disable the DirectComposition + WebView2 implementation. `WebBrowser` keeps the same public ABI in that mode, reports `Unsupported`, and returns `E_NOTIMPL` diagnostics.
 
 ### Q2: How to handle high DPI displays?
 
@@ -1795,21 +1890,23 @@ private:
 
 ### Q4: How to handle navigation errors in WebBrowser?
 
-**A**: Use `NavigationCompleted` and `NavigationStarting` events:
+**A**: Check the result of `TryNavigate()` first, then use `OnNavigationCompleted` and `OnNavigationStarting`:
 
 ```cpp
-_web->OnNavigationStarting += [](Control* sender, NavigationStartingArgs& args) {
+_web->OnNavigationStarting += [](WebBrowser* sender, WebBrowser::NavigationStartingArgs& args) {
     // Can cancel navigation
     // args.Cancel = true;
 };
 
-_web->OnNavigationCompleted += [](Control* sender, NavigationCompletedArgs args) {
+_web->OnNavigationCompleted += [](WebBrowser* sender, const WebBrowser::NavigationCompletedArgs& args) {
     if (!args.IsSuccess) {
         // Handle navigation error
         // args.WebErrorStatus contains error type
     }
 };
 ```
+
+For initialization failures, use `GetInitializationState()` and the per-stage HRESULT accessors to distinguish environment, controller, and WebView creation errors.
 
 ### Q5: How to implement custom drawing?
 
@@ -1939,7 +2036,7 @@ Thanks to all contributors and community members for your support!
 | BreadcrumbBar | Items, SelectedIndex | SelectionChanged, OnItemClick |
 | CalendarView | SelectedDate, RangeStart, RangeEnd | OnSelectionChanged |
 | DateRangePicker | StartDate, EndDate, Expand | OnRangeChanged |
-| WebBrowser | Url, Html | OnNavigationCompleted |
+| WebBrowser | InitialUrl, ZoomFactor, web settings | OnNavigationCompleted, OnProcessFailed |
 | MediaPlayer | Volume, Position, Duration | OnMediaOpened, OnPositionChanged |
 
 ### B. Layout Properties Quick Reference

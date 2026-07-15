@@ -1,6 +1,6 @@
-#include "ToolBox.h"
-#include "../CUI/GUI/Label.h"
-#include "../CUI/GUI/Form.h"
+﻿#include "ToolBox.h"
+#include "../CUI/include/Label.h"
+#include "../CUI/include/Form.h"
 #include <BitmapSource.h>
 
 const char* _ico = R"(<svg t="1766410686901" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="5087" data-darkreader-inline-fill="" width="200" height="200"><path d="M496 895.2L138.4 771.2c-6.4-2.4-10.4-8-10.4-15.2V287.2l368 112v496z m32 0l357.6-124c6.4-2.4 10.4-8 10.4-15.2V287.2l-368 112v496z m-400-640l384 112 384-112-379.2-125.6c-3.2-0.8-7.2-0.8-10.4 0L128 255.2z" p-id="5088" fill="#1afa29" data-darkreader-inline-fill="" style="--darkreader-inline-fill: var(--darkreader-background-1afa29, #11ce4a);"></path></svg>)";
@@ -51,18 +51,20 @@ void ToolBoxItem::Update()
 	bool isSelected = this->ParentForm->Selected == this;
 	auto d2d = this->ParentForm->Render;
 	auto size = this->ActualSize();
+	const float width = static_cast<float>(size.cx);
+	const float height = static_cast<float>(size.cy);
 	this->BeginRender();
 	{
 		float roundVal = this->Height * Round;
-		d2d->FillRoundRect(this->BorderThickness * 0.5f, this->BorderThickness * 0.5f, size.cx - this->BorderThickness, size.cy - this->BorderThickness, this->BackColor, roundVal);
+		d2d->FillRoundRect(this->BorderThickness * 0.5f, this->BorderThickness * 0.5f, width - this->BorderThickness, height - this->BorderThickness, this->BackColor, roundVal);
 		D2D1::ColorF color = isUnderMouse ? (isSelected ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.7f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.4f)) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f);
-		d2d->FillRoundRect(0, 0, size.cx, size.cy, color, roundVal);
+		d2d->FillRoundRect(0, 0, width, height, color, roundVal);
 
 		float paddingLeft = 8.0f;
 		float gap = 8.0f;
 		float iconSize = 20.0f;
 		float iconLeft = paddingLeft;
-		float iconTop = ((float)size.cy - iconSize) / 2.0f;
+		float iconTop = (height - iconSize) / 2.0f;
 		if (auto* bmp = GetIconBitmap(d2d))
 		{
 			d2d->DrawBitmap(bmp, iconLeft, iconTop, iconSize, iconSize);
@@ -71,16 +73,16 @@ void ToolBoxItem::Update()
 		auto font = this->Font;
 		auto textSize = font->GetTextSize(this->Text);
 		float textLeft = paddingLeft + iconSize + gap;
-		float textTop = (((float)size.cy - textSize.height) / 2.0f);
+		float textTop = ((height - textSize.height) / 2.0f);
 		d2d->DrawString(this->Text, textLeft, textTop, this->ForeColor, this->Font);
 
 		d2d->DrawRoundRect(this->BorderThickness * 0.5f, this->BorderThickness * 0.5f,
-			size.cx - this->BorderThickness, size.cy - this->BorderThickness,
+			width - this->BorderThickness, height - this->BorderThickness,
 			this->BorderColor, this->BorderThickness, roundVal);
 	}
 
 	if (!this->Enable)
-		d2d->FillRect(0, 0, size.cx, size.cy, { 1.0f ,1.0f ,1.0f ,0.5f });
+		d2d->FillRect(0, 0, width, height, { 1.0f ,1.0f ,1.0f ,0.5f });
 	this->EndRender();
 }
 

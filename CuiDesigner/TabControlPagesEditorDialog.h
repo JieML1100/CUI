@@ -4,11 +4,11 @@
  * @file TabControlPagesEditorDialog.h
  * @brief TabControlPagesEditorDialog：编辑 TabControl 页面列表的对话框。
  */
-#include "../CUI/GUI/Form.h"
-#include "../CUI/GUI/Label.h"
-#include "../CUI/GUI/Button.h"
-#include "../CUI/GUI/TabControl.h"
-#include "../CUI/GUI/GridView.h"
+#include "../CUI/include/Form.h"
+#include "../CUI/include/Label.h"
+#include "../CUI/include/Button.h"
+#include "../CUI/include/TabControl.h"
+#include "../CUI/include/GridView.h"
 #include <functional>
 
 class TabControlPagesEditorDialog : public Form

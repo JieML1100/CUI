@@ -4,11 +4,11 @@
  * @file ToolBarButtonsEditorDialog.h
  * @brief ToolBarButtonsEditorDialog：编辑 ToolBar 按钮集合的对话框。
  */
-#include "../CUI/GUI/Form.h"
-#include "../CUI/GUI/Label.h"
-#include "../CUI/GUI/Button.h"
-#include "../CUI/GUI/ToolBar.h"
-#include "../CUI/GUI/GridView.h"
+#include "../CUI/include/Form.h"
+#include "../CUI/include/Label.h"
+#include "../CUI/include/Button.h"
+#include "../CUI/include/ToolBar.h"
+#include "../CUI/include/GridView.h"
 #include <functional>
 
 class ToolBarButtonsEditorDialog : public Form

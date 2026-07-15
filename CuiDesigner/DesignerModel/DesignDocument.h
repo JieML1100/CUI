@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../DesignerTypes.h"
+#include "../DesignerStyleSheet.h"
 #include "DesignValue.h"
 #include <map>
 #include <string>
@@ -45,16 +46,20 @@ struct DesignNode
 	DesignValue Props = DesignValue::object();
 	DesignValue Extra = DesignValue::object();
 	DesignValue Events = DesignValue::object();
+	DesignValue Bindings = DesignValue::object();
 
 	bool operator==(const DesignNode& other) const;
 };
 
 struct DesignDocument
 {
+	static constexpr int CurrentSchemaVersion = 3;
 	std::string Schema = "cui.designer";
-	int SchemaVersion = 1;
+	int SchemaVersion = CurrentSchemaVersion;
 	int NextStableId = 1;
 	DesignFormModel Form;
+	DesignerDataContextSchema DataContextSchema;
+	DesignerStyleSheet StyleSheet;
 	std::vector<DesignNode> Nodes;
 
 	int AllocateNodeId();

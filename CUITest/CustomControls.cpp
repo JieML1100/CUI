@@ -1,6 +1,6 @@
-#define NOMINMAX
+﻿#define NOMINMAX
 #include "CustomControls.h"
-#include "../CUI/GUI/Form.h"
+#include "../CUI/include/Form.h"
 
 CustomTextBox1::CustomTextBox1(std::wstring text, int x, int y, int width, int height) :TextBox(text, x, y, width, height)
 {

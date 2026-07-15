@@ -1,4 +1,5 @@
 #include "TabControlPagesEditorDialog.h"
+#include <algorithm>
 #include <sstream>
 #include <unordered_set>
 
@@ -170,8 +171,7 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 			if (!page) continue;
 			if (used.find(page) != used.end()) continue;
 			if (OnBeforeDeletePage) OnBeforeDeletePage(page);
-			_target->RemoveControl(page);
-			delete page;
+			_target->DeleteControl(page);
 		}
 
 		// 重排页顺序：把 desiredPages 交换到目标位置
@@ -185,7 +185,8 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 			}
 			if (cur >= 0 && cur != i)
 			{
-				std::swap(_target->Children[cur], _target->Children[i]);
+				_target->Children.SwapIndices(
+					static_cast<size_t>(cur), static_cast<size_t>(i));
 			}
 		}
 
@@ -195,8 +196,9 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 			_target->operator[](i)->Text = titles[i];
 		}
 
-		if (_target->SelectedIndex < 0) _target->SelectedIndex = 0;
-		if (_target->SelectedIndex >= _target->Count) _target->SelectedIndex = _target->Count - 1;
+		if (_target->Count > 0)
+			_target->SelectPage((std::clamp)(
+				_target->SelectedIndex, 0, _target->Count - 1));
 
 		Applied = true;
 		_target->InvalidateVisual();

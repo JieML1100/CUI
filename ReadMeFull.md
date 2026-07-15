@@ -689,17 +689,27 @@ color->OnColorChanged += [](ColorPicker* sender, D2D1_COLOR_F oldColor,
 ```cpp
 auto grid = AddControl(new GridView(290, 20, 500, 400));
 
-// 添加列
-grid->Columns.Add(GridViewColumn(L"名称", 150, ColumnType::Text));
-grid->Columns.Add(GridViewColumn(L"类型", 100, ColumnType::Text));
-grid->Columns.Add(GridViewColumn(L"操作", 80, ColumnType::Button));
+// 批量添加列与行：作用域结束时只校正滚动并重绘一次
+{
+    auto update = grid->DeferUpdates();
+    grid->AddColumn(GridViewColumn(L"名称", 150, ColumnType::Text, true));
+    grid->AddColumn(GridViewColumn(L"类型", 100, ColumnType::Text));
+    GridViewColumn action(L"操作", 80, ColumnType::Button);
+    action.ButtonText = L"执行";
+    grid->AddColumn(action);
 
-// 添加行数据
-for (int i = 0; i < 20; i++) {
-    GridViewRow row;
-    row.Cells = { L"项目 " + std::to_wstring(i), L"类型 A", L"" };
-    grid->Rows.push_back(row);
+    // 添加行数据
+    for (int i = 0; i < 20; i++) {
+        GridViewRow row;
+        row.Cells = { L"项目 " + std::to_wstring(i), L"类型 A", L"" };
+        grid->AddRow(row);
+    }
 }
+
+// FullRowSelect 默认开启；文本编辑也可由业务代码显式控制
+grid->BeginEdit(0, 0);
+grid->SetEditingText(L"新名称");
+grid->CommitEdit(); // 或 CancelEdit()
 ```
 
 #### PagedGridView 分页数据网格
@@ -840,14 +850,16 @@ auto result = MessageDialog::Show(
 
 ```cpp
 auto notify = new NotifyIcon();
-notify->InitNotifyIcon(hwnd, 1);
-notify->SetIcon(LoadIcon(NULL, IDI_APPLICATION));
-notify->SetToolTip("我的应用");
+if (!notify->TryInitialize(hwnd, 1)) {
+    // notify->GetLastError() 可用于诊断参数/窗口错误
+}
+notify->SetIcon(LoadIcon(nullptr, IDI_APPLICATION)); // HICON 仍由调用方拥有
+notify->SetToolTip(L"我的应用");
 
 notify->ClearMenu();
-notify->AddMenuItem(NotifyIconMenuItem("显示窗口", 1));
+notify->AddMenuItem(NotifyIconMenuItem(L"显示窗口", 1));
 notify->AddMenuSeparator();
-notify->AddMenuItem(NotifyIconMenuItem("退出", 3));
+notify->AddMenuItem(NotifyIconMenuItem(L"退出", 3));
 
 notify->OnNotifyIconMenuClick += [](NotifyIcon* sender, int menuId) {
     switch (menuId) {
@@ -856,8 +868,14 @@ notify->OnNotifyIconMenuClick += [](NotifyIcon* sender, int menuId) {
     }
 };
 
-notify->ShowNotifyIcon();
+if (!notify->TryShow()) {
+    auto hr = notify->GetLastError();
+}
 ```
+
+菜单数据使用 `std::wstring`，支持递归子菜单和 `FindMenuItem`、`TryEnableMenuItem`、
+`TrySetMenuItemText`、`RemoveMenuItem`。右键会自动打开菜单；Explorer 重启后可自动重新注册。
+旧 `char*` 和 void 方法继续可用，窄字符串优先按 UTF-8 解码。
 
 #### Taskbar 任务栏
 
@@ -865,16 +883,27 @@ notify->ShowNotifyIcon();
 auto taskbar = new Taskbar(hwnd);
 
 // 设置任务栏进度
-taskbar->SetValue(current, total);
+if (!taskbar->TrySetValue(current, total)) {
+    auto hr = taskbar->GetLastError();
+}
 
-// 设置任务栏缩略图按钮
-taskbar->AddThumbnailButton(/* 按钮配置 */);
+taskbar->TrySetPaused();        // 黄色
+taskbar->TrySetError();         // 红色
+taskbar->TrySetIndeterminate(); // 不确定进度
+taskbar->TryClear();
 ```
+
+每个 `Taskbar` 独立持有 `ITaskbarList3`，多实例析构不会共享或重复释放 COM 指针。
 
 ### WebBrowser 浏览器控件
 
 ```cpp
 auto web = AddControl(new WebBrowser(20, 20, 760, 500));
+
+// 这些配置可在初始化前设置，也可由 Binding / Designer 写入
+web->InitialUrl = L"https://www.example.com";
+web->ZoomFactor = 1.25;
+web->AreDefaultContextMenusEnabled = false;
 
 // 注册 JS 调用 C++ 处理器
 web->RegisterJsInvokeHandler(L"native.log", [](const std::wstring& msg) {
@@ -885,12 +914,19 @@ web->RegisterJsInvokeHandler(L"native.log", [](const std::wstring& msg) {
 // C++ 调用 JS
 web->ExecuteScriptAsync(L"console.log('Hello from C++');");
 
-// 设置 HTML
-web->SetHtml(L"<html><body><h1>Embedded Content</h1></body></html>");
+// 安全操作返回“已执行或已成功排队”
+if (!web->TrySetHtml(L"<html><body><h1>Embedded Content</h1></body></html>")) {
+    auto hr = web->GetLastWebViewError();
+    // 记录或显示错误
+}
 
 // 导航到 URL
-web->Navigate(L"https://www.example.com");
+web->TryNavigate(L"https://www.example.com");
 ```
+
+`TryInitialize()` 可显式请求异步初始化；`GetInitializationState()` 以及
+`GetLastEnvironmentError()`、`GetLastControllerError()`、`GetLastWebViewError()` 可区分失败阶段。
+初始化完成前的 URL 与 HTML 共用一个待处理槽，最后一次请求获胜。
 
 ---
 
@@ -1121,6 +1157,67 @@ control->OnLostFocus += [](Control* sender) {
     // 失去焦点
 };
 ```
+
+### 键盘导航与无障碍
+
+`Form` 会按 `TabIndex` 排序，并在相同索引时保持控件树顺序；不可见、禁用、`IsTabStop=false`
+或默认不可聚焦的控件会被跳过。Tab/Shift+Tab 在首尾循环，RichTextBox 仅在
+`AllowTabInput=true` 时消费 Tab 字符。
+
+```cpp
+auto name = form->Add<TextBox>(L"", 20, 20, 220, 28);
+name->TabIndex = 0;
+name->AccessibleName = L"Display name";
+name->AccessibleHelpText = L"Enter the name shown to other users.";
+name->AutomationId = L"displayName";
+
+auto save = form->Add<Button>(L"&Save", 20, 60, 100, 28);
+save->TabIndex = 1;
+save->AccessibleName = L"Save profile";
+save->AccessibleDescription = L"Saves the current profile.";
+save->AutomationId = L"saveProfile";
+form->SetDefaultButton(save); // Enter
+
+auto cancel = form->Add<Button>(L"Cancel", 130, 60, 100, 28);
+cancel->AccessKey = L"C";     // Alt+C；也可在按钮文本中使用单个 '&'
+cancel->TabIndex = 2;
+form->SetCancelButton(cancel); // Escape
+```
+
+`Button`、`LinkLabel`、`CheckBox`、`RadioBox` 和 `Switch` 的 `Invoke()` 与鼠标主动作一致，
+也供默认/取消按钮、访问键和辅助技术调用。`GetAccessibilitySnapshot()` 返回不依赖 COM 的值快照；
+窗口还会通过 `WM_GETOBJECT` 提供生命周期安全的原生 UI Automation Fragment 树，以及兼容的
+`IAccessible` 客户区对象。核心控件公开 Invoke、Toggle、Value、RangeValue、ExpandCollapse、
+SelectionItem 和 Selection Pattern；焦点、名称、值、状态和结构变化会同步发送 UIA 事件与 WinEvent。
+密码框内容不会作为无障碍名称或值公开，窗口销毁后外部仍持有的 Provider 会返回元素不可用错误。
+
+Fragment 树除真实 `Control` 层级与 `TabPage` 外，也覆盖 ListView/ListBox 项、ComboBox 项、
+TreeNode，以及 GridView 列头、行和单元格。虚拟项使用独立且稳定的 runtime ID；排序或交换后仍表示
+同一逻辑项，项被删除或 Form 销毁后，外部保留的 Provider 会返回元素不可用。集合分别公开
+Selection/SelectionItem、Toggle、ExpandCollapse、Grid/GridItem、Table/TableItem、Value、Invoke、
+VirtualizedItem 与 ScrollItem；折叠或未实现的项仍可通过 Realize/ScrollIntoView 到达。UIA 焦点与选择
+分开维护，`AddToSelection` 不会先清空已有多选，`ScrollIntoView` 也不会隐式改变表格选择。
+
+### 系统视觉偏好
+
+`Form` 创建时会读取 Windows 高对比度、客户端动画、键盘焦点提示与文字缩放设置，并在收到
+`WM_SETTINGCHANGE`、`WM_THEMECHANGED` 或 `WM_SYSCOLORCHANGE` 时自动刷新。高对比度会覆盖窗体、
+公共控件表面、前景与焦点色；关闭客户端动画后常用控件过渡立即完成；继承和显式设置的字体按
+100%–225% 的文字比例缩放并重新布局。
+
+```cpp
+auto preferences = Application::QuerySystemVisualPreferences();
+form->ApplySystemVisualPreferences(preferences); // 测试也可注入自定义快照
+
+if (!form->AreSystemAnimationsEnabled()) {
+    // 自定义控件也应立即完成视觉状态变化
+}
+float textScale = form->GetTextScaleFactor();
+```
+
+自定义动画应使用 `Control::AreSystemAnimationsEnabled()` 或
+`Control::EffectiveAnimationDuration(configuredDurationMs)`，不要绕过系统的减少动态效果设置。
+专用控件仍需单独审计选中、悬停和强调色在高对比度下的可辨识度。
 
 ### 拖放事件
 
@@ -1704,16 +1801,15 @@ public:
         _dataGrid->AllowUserToAddRows = false;
 
         // 设置列
-        _dataGrid->Columns.Add(GridViewColumn(L"ID", 60, ColumnType::Text));
-        _dataGrid->Columns.Add(GridViewColumn(L"名称", 200, ColumnType::Text));
-        _dataGrid->Columns.Add(GridViewColumn(L"类别", 120, ColumnType::Text));
-        _dataGrid->Columns.Add(GridViewColumn(L"价格", 100, ColumnType::Text));
-        _dataGrid->Columns.Add(GridViewColumn(L"库存", 80, ColumnType::Text));
-        _dataGrid->Columns.Add(GridViewColumn(L"状态", 100, ColumnType::ComboBox));
+        _dataGrid->AddColumn(GridViewColumn(L"ID", 60, ColumnType::Text));
+        _dataGrid->AddColumn(GridViewColumn(L"名称", 200, ColumnType::Text));
+        _dataGrid->AddColumn(GridViewColumn(L"类别", 120, ColumnType::Text));
+        _dataGrid->AddColumn(GridViewColumn(L"价格", 100, ColumnType::Text));
+        _dataGrid->AddColumn(GridViewColumn(L"库存", 80, ColumnType::Text));
+        _dataGrid->AddColumn(GridViewColumn(L"状态", 100, ColumnType::ComboBox));
         
         // 设置列下拉选项
-        auto statusCol = _dataGrid->Columns[5];
-        statusCol.ComboBoxItems = { L"在售", L"缺货", L"停售" };
+        _dataGrid->ColumnAt(5).ComboBoxItems = { L"在售", L"缺货", L"停售" };
 
         // 添加示例数据
         GenerateSampleData();
@@ -1785,7 +1881,7 @@ private:
 
 ### Q1: CUI 支持哪些 Windows 版本？
 
-**A**: `CUI` 支持 Windows 7 及以上版本。通过预处理器宏 `CUI_ENABLE_WEBVIEW2` 控制是否启用 DirectComposition + WebView2 功能（需要 Windows 8+）；不定义该宏时仅使用 Direct2D HWND 渲染，兼容 Windows 7（不含 WebBrowser）。
+**A**: `CUI` 支持 Windows 7 及以上版本。项目属性 `CUIEnableWebView2=false` 可关闭 DirectComposition + WebView2 实现；此时 `WebBrowser` 仍保留相同公共 ABI，但初始化状态为 `Unsupported`，操作返回失败并报告 `E_NOTIMPL`。
 
 ### Q2: 如何处理高 DPI 显示？
 
@@ -1801,21 +1897,23 @@ private:
 
 ### Q4: WebBrowser 控件如何处理导航错误？
 
-**A**: 使用 `NavigationCompleted` 和 `NavigationStarting` 事件：
+**A**: 先检查 `TryNavigate()` 的返回值，再使用 `OnNavigationCompleted` 和 `OnNavigationStarting` 事件：
 
 ```cpp
-_web->OnNavigationStarting += [](Control* sender, NavigationStartingArgs& args) {
+_web->OnNavigationStarting += [](WebBrowser* sender, WebBrowser::NavigationStartingArgs& args) {
     // 可以取消导航
     // args.Cancel = true;
 };
 
-_web->OnNavigationCompleted += [](Control* sender, NavigationCompletedArgs args) {
+_web->OnNavigationCompleted += [](WebBrowser* sender, const WebBrowser::NavigationCompletedArgs& args) {
     if (!args.IsSuccess) {
         // 处理导航错误
         // args.WebErrorStatus 包含错误类型
     }
 };
 ```
+
+若初始化本身失败，可用 `GetInitializationState()` 和分阶段 HRESULT 查询定位环境、控制器或 WebView 创建错误。
 
 ### Q5: 如何实现自定义绘制？
 
@@ -1945,7 +2043,7 @@ Microsoft.Web.WebView2
 | BreadcrumbBar | Items, SelectedIndex | SelectionChanged, OnItemClick |
 | CalendarView | SelectedDate, RangeStart, RangeEnd | OnSelectionChanged |
 | DateRangePicker | StartDate, EndDate, Expand | OnRangeChanged |
-| WebBrowser | Url, Html | OnNavigationCompleted |
+| WebBrowser | InitialUrl, ZoomFactor, Web 设置 | OnNavigationCompleted, OnProcessFailed |
 | MediaPlayer | Volume, Position, Duration | OnMediaOpened, OnPositionChanged |
 
 ### B. 布局属性速查

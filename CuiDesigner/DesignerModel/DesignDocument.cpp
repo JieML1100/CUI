@@ -44,7 +44,8 @@ bool DesignNode::operator==(const DesignNode& other) const
 		&& Order == other.Order
 		&& Props == other.Props
 		&& Extra == other.Extra
-		&& Events == other.Events;
+		&& Events == other.Events
+		&& Bindings == other.Bindings;
 }
 
 int DesignDocument::AllocateNodeId()
@@ -77,6 +78,8 @@ bool DesignDocument::operator==(const DesignDocument& other) const
 		&& SchemaVersion == other.SchemaVersion
 		&& NextStableId == other.NextStableId
 		&& Form == other.Form
+		&& DataContextSchema == other.DataContextSchema
+		&& StyleSheet == other.StyleSheet
 		&& Nodes == other.Nodes;
 }
 }

@@ -1,7 +1,7 @@
 ﻿#include "DemoWindow.h"
 #include "imgs.h"
 #include <memory>
-#include "../CUI/GUI/WebBrowser.h"
+#include "../CUI/include/WebBrowser.h"
 
 namespace {
 
@@ -65,6 +65,11 @@ namespace {
 				theme.Window.CaptionPressedColor = D2D1::ColorF(0.18f, 0.42f, 0.88f, 0.20f);
 				theme.Window.CloseHoverColor = D2D1::ColorF(0.88f, 0.26f, 0.26f, 0.24f);
 				theme.Window.ClosePressedColor = D2D1::ColorF(0.88f, 0.26f, 0.26f, 0.38f);
+				theme.Window.ValidationErrorColor = D2D1::ColorF(0.82f, 0.18f, 0.25f, 1.0f);
+				theme.Window.ValidationWarningColor = D2D1::ColorF(0.88f, 0.50f, 0.05f, 1.0f);
+				theme.Window.ValidationInfoColor = D2D1::ColorF(0.10f, 0.42f, 0.78f, 1.0f);
+				theme.Window.ValidationToolTipBackColor = D2D1::ColorF(0.10f, 0.11f, 0.14f, 0.97f);
+				theme.Window.ValidationToolTipTextColor = D2D1::ColorF(0.98f, 0.99f, 1.0f, 1.0f);
 				theme.Surface = D2D1::ColorF(0.95f, 0.96f, 0.98f, 1.0f);
 				theme.SurfaceAlt = D2D1::ColorF(0.91f, 0.93f, 0.96f, 1.0f);
 				theme.SurfacePanel = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.96f);
@@ -97,6 +102,11 @@ namespace {
 				theme.Window.CaptionPressedColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.24f);
 				theme.Window.CloseHoverColor = D2D1::ColorF(0.90f, 0.24f, 0.24f, 0.42f);
 				theme.Window.ClosePressedColor = D2D1::ColorF(0.90f, 0.24f, 0.24f, 0.58f);
+				theme.Window.ValidationErrorColor = D2D1::ColorF(0.98f, 0.35f, 0.42f, 1.0f);
+				theme.Window.ValidationWarningColor = D2D1::ColorF(0.98f, 0.70f, 0.22f, 1.0f);
+				theme.Window.ValidationInfoColor = D2D1::ColorF(0.32f, 0.68f, 1.0f, 1.0f);
+				theme.Window.ValidationToolTipBackColor = D2D1::ColorF(0.08f, 0.09f, 0.12f, 0.98f);
+				theme.Window.ValidationToolTipTextColor = D2D1::ColorF(0.96f, 0.97f, 1.0f, 1.0f);
 				theme.InputBack = D2D1::ColorF(0.16f, 0.17f, 0.19f, 0.98f);
 				theme.InputHover = D2D1::ColorF(0.22f, 0.23f, 0.26f, 1.0f);
 				return theme;
@@ -973,7 +983,8 @@ void DemoWindow::Ui_UpdateProgress(float value01)
 	}
 	if (_taskbar)
 	{
-		_taskbar->SetValue((ULONGLONG)(value01 * 1000.0f), 1000);
+		(void)_taskbar->TrySetValue(
+			(ULONGLONG)(value01 * 1000.0f), 1000);
 	}
 }
 
@@ -1112,16 +1123,21 @@ void DemoWindow::System_OnNotifyToggle(class Control* sender, MouseEventArgs e)
 	(void)sender;
 	(void)e;
 	if (!_notify) return;
-	_notifyVisible = !_notifyVisible;
-	if (_notifyVisible)
+	if (!_notify->IsVisible())
 	{
-		_notify->ShowNotifyIcon();
-		Ui_UpdateStatus(L"NotifyIcon: Show");
+		const bool shown = _notify->TryShow();
+		_notifyVisible = _notify->IsVisible();
+		Ui_UpdateStatus(shown
+			? L"NotifyIcon: Show"
+			: L"NotifyIcon: Show failed");
 	}
 	else
 	{
-		_notify->HideNotifyIcon();
-		Ui_UpdateStatus(L"NotifyIcon: Hide");
+		const bool hidden = _notify->TryHide();
+		_notifyVisible = _notify->IsVisible();
+		Ui_UpdateStatus(hidden
+			? L"NotifyIcon: Hide"
+			: L"NotifyIcon: Hide failed");
 	}
 }
 
@@ -1130,8 +1146,11 @@ void DemoWindow::System_OnBalloonTip(class Control* sender, MouseEventArgs e)
 	(void)sender;
 	(void)e;
 	if (!_notify) return;
-	_notify->ShowBalloonTip("CUI", "NotifyIcon Balloon Tip", 3000, NIIF_INFO);
-	Ui_UpdateStatus(L"NotifyIcon: BalloonTip");
+	const bool shown = _notify->TryShowBalloonTip(
+		L"CUI", L"NotifyIcon Unicode 气泡提示", 3000, NIIF_INFO);
+	Ui_UpdateStatus(shown
+		? L"NotifyIcon: BalloonTip"
+		: L"NotifyIcon: BalloonTip failed");
 }
 
 void DemoWindow::System_OnContextMenuCommand(class Control* sender, int id)
@@ -1156,7 +1175,7 @@ void DemoWindow::System_OnContextMenuCommand(class Control* sender, int id)
 
 void DemoWindow::BuildMenuToolStatus()
 {
-	_menu = this->AddControl(new Menu(0, 0, this->Size.cx, 28));
+	_menu = this->Add<Menu>(0, 0, this->Size.cx, 28);
 	_menu->BarBackColor = D2D1_COLOR_F{ 1,1,1,0.08f };
 	_menu->DropBackColor = D2D1_COLOR_F{ 0.12f,0.12f,0.12f,0.92f };
 	_menu->OnMenuCommand += [this](class Control* sender, int id) { this->Menu_OnCommand(sender, id); };
@@ -1170,14 +1189,14 @@ void DemoWindow::BuildMenuToolStatus()
 		help->AddSubItem(L"关于", 201);
 	}
 
-	_toolbar = this->AddControl(new ToolBar(0, 0, this->Size.cx, 40));
+	_toolbar = this->Add<ToolBar>(0, 0, this->Size.cx, 40);
 	auto tbBasic = _toolbar->AddTextButton(L"基础", 64);
 	auto tbData = _toolbar->AddTextButton(L"数据", 64);
 	auto tbSystem = _toolbar->AddTextButton(L"系统", 64);
 
-	tbBasic->OnMouseClick += [this](class Control* s, MouseEventArgs e) { (void)s; (void)e; if (_tabs) _tabs->SelectedIndex = 0; Ui_UpdateStatus(L"ToolBar/TextButton: 基础"); };
-	tbData->OnMouseClick += [this](class Control* s, MouseEventArgs e) { (void)s; (void)e; if (_tabs) _tabs->SelectedIndex = 2; Ui_UpdateStatus(L"ToolBar/TextButton: 数据"); };
-	tbSystem->OnMouseClick += [this](class Control* s, MouseEventArgs e) { (void)s; (void)e; if (_tabs) _tabs->SelectedIndex = 5; Ui_UpdateStatus(L"ToolBar/TextButton: 系统"); };
+	tbBasic->OnMouseClick += [this](class Control* s, MouseEventArgs e) { (void)s; (void)e; if (_tabs) _tabs->SelectPage(0); Ui_UpdateStatus(L"ToolBar/TextButton: 基础"); };
+	tbData->OnMouseClick += [this](class Control* s, MouseEventArgs e) { (void)s; (void)e; if (_tabs) _tabs->SelectPage(2); Ui_UpdateStatus(L"ToolBar/TextButton: 数据"); };
+	tbSystem->OnMouseClick += [this](class Control* s, MouseEventArgs e) { (void)s; (void)e; if (_tabs) _tabs->SelectPage(5); Ui_UpdateStatus(L"ToolBar/TextButton: 系统"); };
 
 	_toolbar->AddSeparator();
 
@@ -1212,7 +1231,7 @@ void DemoWindow::BuildMenuToolStatus()
 			(void)sender;
 			if (_tabs && pageCombo->SelectedIndex >= 0 && pageCombo->SelectedIndex < _tabs->Count)
 			{
-				_tabs->SelectedIndex = pageCombo->SelectedIndex;
+				_tabs->SelectPage(pageCombo->SelectedIndex);
 				_tabs->InvalidateVisual();
 			}
 			Ui_UpdateStatus(L"ToolBar/ComboBox: " + pageCombo->Text);
@@ -1226,7 +1245,7 @@ void DemoWindow::BuildMenuToolStatus()
 			if (_toolbar)
 			{
 				_toolbar->Gap = check->Checked ? 3 : 6;
-				_toolbar->Padding = check->Checked ? 4 : 6;
+				_toolbar->HorizontalPadding = check->Checked ? 4 : 6;
 				_toolbar->LayoutItems();
 				_toolbar->InvalidateVisual();
 			}
@@ -1244,7 +1263,7 @@ void DemoWindow::BuildMenuToolStatus()
 			Ui_UpdateStatus(check->Checked ? L"TabControl : Left" : L"TabControl : Top");
 		};
 
-	_statusbar = this->AddControl(new StatusBar(0, 0, this->Size.cx, 26));
+	_statusbar = this->Add<StatusBar>(0, 0, this->Size.cx, 26);
 	_statusbar->AddPart(L"Ready", -1);
 	_statusbar->AddPart(L"CUI", 120);
 }
@@ -1285,7 +1304,7 @@ void DemoWindow::BuildTabs()
 		};
 
 	const int tabsTop = static_cast<int>(_topSlider->Bottom + 8);
-	_tabs = this->AddControl(new TabControl(10, tabsTop, this->Size.cx - 20, this->Size.cy - tabsTop - 10));
+	_tabs = this->Add<TabControl>(10, tabsTop, this->Size.cx - 20, this->Size.cy - tabsTop - 10);
 	_tabs->BackColor = D2D1_COLOR_F{ 1.0f,1.0f,1.0f,0.0f };
 	_tabs->Margin = Thickness(10, static_cast<float>(tabsTop), 10, 10);
 	_tabs->AnchorStyles = AnchorStyles::Left | AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom;
@@ -1316,13 +1335,24 @@ void DemoWindow::BuildTab_Basic(TabPage* page)
 	page->AddControl(new Label(L"Button / Label / LinkLabel / TextBox / ComboBox / NumericUpDown / ColorPicker / CheckBox / RadioBox / Calendar / RichTextBox", 10, 10));
 	page->AddControl(new CustomLabel1(L"CustomLabel1（渐变绘制）", 10, 38));
 
-	_basicButton = page->AddControl(new Button(L"点击计数[0]", 10, 70, 160, 28));
+	_basicButton = page->Add<Button>(L"点击计数[0] (&C)", 10, 70, 160, 28);
+	_basicButton->TabIndex = 0;
+	_basicButton->AccessKey = L"C";
+	_basicButton->AccessibleName = L"增加点击计数";
+	_basicButton->AccessibleDescription = L"演示按钮的鼠标、Enter、Space 与 Alt+C 激活";
+	_basicButton->AutomationId = L"basicClickCounter";
 	_basicButton->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->Basic_OnButtonClick(sender, e); };
 
-	_basicEnableCheck = page->AddControl(new CheckBox(L"启用输入框", 180, 74));
+	_basicEnableCheck = page->AddControl(new CheckBox(L"启用输入框 (&E)", 180, 74));
+	_basicEnableCheck->TabIndex = 1;
+	_basicEnableCheck->AccessibleName = L"启用输入框";
+	_basicEnableCheck->AutomationId = L"basicInputsEnabled";
 	_basicEnableCheck->Checked = true;
 
-	_basicLink = page->AddControl(new LinkLabel(L"查看文档", 320, 74));
+	_basicLink = page->AddControl(new LinkLabel(L"查看文档 (&D)", 320, 74));
+	_basicLink->TabIndex = 2;
+	_basicLink->AccessibleName = L"查看 CUI 文档";
+	_basicLink->AutomationId = L"basicDocumentationLink";
 	_basicLink->OnMouseClick += [this](class Control* sender, MouseEventArgs e)
 		{
 			(void)sender;
@@ -1339,6 +1369,17 @@ void DemoWindow::BuildTab_Basic(TabPage* page)
 	auto tb2 = page->AddControl(new CustomTextBox1(L"CustomTextBox1", 10, 145, 200, 26));
 	auto tb3 = page->AddControl(new RoundTextBox(L"RoundTextBox", 10, 180, 200, 26));
 	auto pwd = page->AddControl(new PasswordBox(L"pwd", 10, 215, 200, 26));
+	tb1->TabIndex = 3;
+	tb1->AccessibleName = L"基础文本输入";
+	tb1->AutomationId = L"basicTextBox";
+	tb2->TabIndex = 4;
+	tb2->AccessibleName = L"自定义文本输入";
+	tb3->TabIndex = 5;
+	tb3->AccessibleName = L"圆角文本输入";
+	pwd->TabIndex = 6;
+	pwd->AccessibleName = L"密码输入";
+	pwd->AccessibleDescription = L"密码内容不会作为无障碍名称或值公开";
+	pwd->AutomationId = L"basicPassword";
 
 	_basicEnableCheck->OnChecked += [tb1, tb2, tb3, pwd](class Control* sender)
 		{
@@ -1354,6 +1395,9 @@ void DemoWindow::BuildTab_Basic(TabPage* page)
 		};
 
 	auto combo = page->AddControl(new ComboBox(L"item0", 240, 110, 180, 28));
+	combo->TabIndex = 7;
+	combo->AccessibleName = L"示例选项";
+	combo->AutomationId = L"basicComboBox";
 	combo->ExpandCount = 8;
 	for (int i = 0; i < 30; i++) combo->Items.push_back(StringHelper::Format(L"item%d", i));
 	combo->OnSelectionChanged += [this, combo](class Control* sender)
@@ -1429,8 +1473,12 @@ void DemoWindow::BuildTab_Basic(TabPage* page)
 					range.Start.wYear, range.Start.wMonth, range.Start.wDay));
 		};
 
-	_rb1 = page->AddControl(new RadioBox(L"选项 A", 240, 150));
-	_rb2 = page->AddControl(new RadioBox(L"选项 B", 240, 180));
+	_rb1 = page->AddControl(new RadioBox(L"选项 &A", 240, 150));
+	_rb2 = page->AddControl(new RadioBox(L"选项 &B", 240, 180));
+	_rb1->TabIndex = 8;
+	_rb2->TabIndex = 9;
+	_rb1->AutomationId = L"basicOptionA";
+	_rb2->AutomationId = L"basicOptionB";
 	_rb1->Checked = true;
 	_rb1->OnChecked += [this](class Control* sender) { this->Basic_OnRadioChecked(sender); };
 	_rb2->OnChecked += [this](class Control* sender) { this->Basic_OnRadioChecked(sender); };
@@ -1465,12 +1513,12 @@ void DemoWindow::BuildTab_Containers(TabPage* page)
 	auto openBtn = page->AddControl(new Button(L"打开图片", 10, 40, 120, 28));
 	openBtn->OnMouseClick += [this](class Control* sender, MouseEventArgs e) { this->Picture_OnOpenImage(sender, e); };
 
-	auto panel = page->AddControl(new Panel(10, 78, 520, 320));
+	auto panel = page->Add<Panel>(10, 78, 520, 320);
 	panel->BackColor = D2D1_COLOR_F{ 1,1,1,0.06f };
 	panel->BorderColor = D2D1_COLOR_F{ 1,1,1,0.12f };
 
 	panel->AddControl(new Label(L"PictureBox", 10, 10));
-	_picture = panel->AddControl(new PictureBox(110, 10, 390, 210));
+	_picture = panel->Add<PictureBox>(110, 10, 390, 210);
 	_picture->SizeMode = ImageSizeMode::StretchImage;
 	_picture->OnDropFile += [this](class Control* sender, std::vector<std::wstring> files) { this->Picture_OnDropFile(sender, files); };
 
@@ -2277,6 +2325,7 @@ void DemoWindow::BuildTab_Media(TabPage* page)
 
 DemoWindow::DemoWindow() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
 {
+	auto layoutScope = cui::layout::DeferLayout(*this);
 	_bmps[0] = D2DGraphics::ToBitmapFromSvg(_0_ico);
 	_bmps[1] = D2DGraphics::ToBitmapFromSvg(_1_ico);
 	_bmps[2] = D2DGraphics::ToBitmapFromSvg(_2_ico);
@@ -2295,13 +2344,13 @@ DemoWindow::DemoWindow() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
 
 	_taskbar = new Taskbar(this->Handle);
 	_notify = new NotifyIcon();
-	_notify->InitNotifyIcon(this->Handle, 1);
+	(void)_notify->TryInitialize(this->Handle, 1);
 	_notify->SetIcon(LoadIcon(nullptr, IDI_APPLICATION));
-	_notify->SetToolTip("CUI Demo");
+	_notify->SetToolTip(L"CUI Unicode Demo");
 	_notify->ClearMenu();
-	_notify->AddMenuItem(NotifyIconMenuItem("Show Window", 1));
+	_notify->AddMenuItem(NotifyIconMenuItem(L"显示窗口", 1));
 	_notify->AddMenuSeparator();
-	_notify->AddMenuItem(NotifyIconMenuItem("Exit", 3));
+	_notify->AddMenuItem(NotifyIconMenuItem(L"退出", 3));
 	_notify->OnNotifyIconMenuClick += [&](NotifyIcon* sender, int menuId)
 		{
 			switch (menuId)
@@ -2314,8 +2363,8 @@ DemoWindow::DemoWindow() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
 				break;
 			}
 		};
-	_notify->ShowNotifyIcon();
-	_notifyVisible = true;
+	(void)_notify->TryShow();
+	_notifyVisible = _notify->IsVisible();
 
 	this->OnThemeChanged += [this](class Form* sender, std::wstring oldTheme, std::wstring newTheme)
 		{
@@ -2327,14 +2376,15 @@ DemoWindow::DemoWindow() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
 
 	BuildMenuToolStatus();
 	BuildTabs();
+	(void)this->SetDefaultButton(_basicButton);
 
-	_basicToolTip = this->AddControl(new ToolTip());
+	_basicToolTip = this->Add<ToolTip>();
 	if (_basicToolTip && _basicButton)
 	{
 		_basicToolTip->Bind(_basicButton, L"这是绑定到 Button 的悬停提示示例");
 	}
 
-	_systemContextMenu = this->AddControl(new ContextMenu());
+	_systemContextMenu = this->Add<ContextMenu>();
 	if (_systemContextMenu)
 	{
 		_systemContextMenu->AddItem(L"新建项目", 1001);
@@ -2348,5 +2398,5 @@ DemoWindow::DemoWindow() : Form(L"CUI Test Demo", { 0,0 }, { 1400,800 })
 
 	this->SizeMode = ImageSizeMode::StretchImage;
 	Theme_Apply(DemoThemeKeyDark());
-
+	layoutScope.Commit();
 }

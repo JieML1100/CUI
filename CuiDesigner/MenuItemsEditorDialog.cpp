@@ -301,8 +301,7 @@ void MenuItemsEditorDialog::ApplyToTarget()
 	while (_target->Count > 0)
 	{
 		auto* c = _target->operator[](_target->Count - 1);
-		_target->RemoveControl(c);
-		delete c;
+		_target->DeleteControl(c);
 	}
 
 	for (auto& t : _tops)
@@ -310,8 +309,7 @@ void MenuItemsEditorDialog::ApplyToTarget()
 		if (t.Separator)
 		{
 			// 顶层也允许分割线（表现为不可交互的分隔项）。
-			auto* sep = _target->AddControl(MenuItem::CreateSeparator());
-			if (sep) sep->Height = _target->BarHeight;
+			_target->AddSeparator();
 			continue;
 		}
 

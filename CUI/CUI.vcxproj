@@ -55,8 +55,11 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <!-- WebView2 (NuGet: Microsoft.Web.WebView2) -->
   <PropertyGroup Label="WebView2Package">
-    <WebView2PackageVersion>1.0.3650.58</WebView2PackageVersion>
+    <WebView2PackageVersion>1.0.3712-prerelease</WebView2PackageVersion>
     <WebView2PackageDir>$(SolutionDir)packages\Microsoft.Web.WebView2.$(WebView2PackageVersion)</WebView2PackageDir>
+	<CUIEnableWebView2 Condition="'$(CUIEnableWebView2)'==''">true</CUIEnableWebView2>
+	<WebView2PreprocessorDefinition Condition="'$(CUIEnableWebView2)'=='true'">CUI_ENABLE_WEBVIEW2;</WebView2PreprocessorDefinition>
+	<WebView2LoaderDependency Condition="'$(CUIEnableWebView2)'=='true'">WebView2LoaderStatic.lib;</WebView2LoaderDependency>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Platform)'=='Win32'" Label="WebView2Arch">
     <WebView2ArchDir>x86</WebView2ArchDir>
@@ -99,7 +102,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>CUI_ENABLE_WEBVIEW2;WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>$(WebView2PreprocessorDefinition)WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -109,14 +112,14 @@
       <EnableModules>false</EnableModules>
       <BuildStlModules>true</BuildStlModules>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(WebView2LoaderDependency)%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -125,7 +128,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>CUI_ENABLE_WEBVIEW2;WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>$(WebView2PreprocessorDefinition)WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -136,7 +139,7 @@
       <BuildStlModules>true</BuildStlModules>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
-      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -144,14 +147,14 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(WebView2LoaderDependency)%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>CUI_ENABLE_WEBVIEW2;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>$(WebView2PreprocessorDefinition)_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -161,14 +164,14 @@
       <EnableModules>false</EnableModules>
       <BuildStlModules>true</BuildStlModules>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <UACExecutionLevel>AsInvoker</UACExecutionLevel>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(WebView2LoaderDependency)%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -177,7 +180,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>CUI_ENABLE_WEBVIEW2;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>$(WebView2PreprocessorDefinition)NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -190,7 +193,7 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
       <FavorSizeOrSpeed>Size</FavorSizeOrSpeed>
-      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -206,138 +209,146 @@
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <MergeSections>.rdata=.text</MergeSections>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(WebView2LoaderDependency)%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="GUI\Application.h" />
-    <ClInclude Include="GUI\Binding.h" />
-    <ClInclude Include="GUI\Button.h" />
-    <ClInclude Include="GUI\CalendarView.h" />
-    <ClInclude Include="GUI\ChartView.h" />
-    <ClInclude Include="GUI\CheckBox.h" />
-    <ClInclude Include="GUI\ColorPicker.h" />
-    <ClInclude Include="GUI\ColorPickerPopup.h" />
-    <ClInclude Include="GUI\ComboBox.h" />
-    <ClInclude Include="GUI\ContextMenu.h" />
-    <ClInclude Include="GUI\DateTimePicker.h" />
-    <ClInclude Include="GUI\FilterBar.h" />
-    <ClInclude Include="GUI\Control.h" />
-    <ClInclude Include="GUI\DCompLayeredHost.h" />
-    <ClInclude Include="GUI\DropDownPopup.h" />
-    <ClInclude Include="GUI\Event.h" />
-    <ClInclude Include="GUI\Expander.h" />
-    <ClInclude Include="GUI\Form.h" />
-    <ClInclude Include="GUI\GridView.h" />
-    <ClInclude Include="GUI\GroupBox.h" />
-    <ClInclude Include="GUI\KpiCard.h" />
-    <ClInclude Include="GUI\Label.h" />
-    <ClInclude Include="GUI\LinkLabel.h" />
-    <ClInclude Include="GUI\ListView.h" />
-    <ClInclude Include="GUI\Menu.h" />
-    <ClInclude Include="GUI\MessageDialog.h" />
-    <ClInclude Include="GUI\NavigationView.h" />
-    <ClInclude Include="GUI\NumericUpDown.h" />
-    <ClInclude Include="GUI\NotifyIcon.h" />
-    <ClInclude Include="GUI\Panel.h" />
-    <ClInclude Include="GUI\PasswordBox.h" />
-    <ClInclude Include="GUI\PagedGridView.h" />
-    <ClInclude Include="GUI\PictureBox.h" />
-    <ClInclude Include="GUI\PropertyGrid.h" />
-    <ClInclude Include="GUI\LoadingRing.h" />
-    <ClInclude Include="GUI\ProgressBar.h" />
-    <ClInclude Include="GUI\ProgressRing.h" />
-    <ClInclude Include="GUI\RadioBox.h" />
-    <ClInclude Include="GUI\ReportView.h" />
-    <ClInclude Include="GUI\RichTextBox.h" />
-    <ClInclude Include="GUI\RoundTextBox.h" />
-    <ClInclude Include="GUI\ScrollView.h" />
-    <ClInclude Include="GUI\Slider.h" />
-    <ClInclude Include="GUI\Switch.h" />
-    <ClInclude Include="GUI\TabControl.h" />
-    <ClInclude Include="GUI\Taskbar.h" />
-    <ClInclude Include="GUI\ToolTip.h" />
-    <ClInclude Include="GUI\Toast.h" />
-    <ClInclude Include="GUI\ToolBar.h" />
-    <ClInclude Include="GUI\StatusBar.h" />
-    <ClInclude Include="GUI\SplitContainer.h" />
-    <ClInclude Include="GUI\WebBrowser.h" />
-    <ClInclude Include="GUI\TextEditCore.h" />
-    <ClInclude Include="GUI\TextBox.h" />
-    <ClInclude Include="GUI\TreeView.h" />
-    <ClInclude Include="GUI\MediaPlayer.h" />
-    <ClInclude Include="GUI\Layout\LayoutTypes.h" />
-    <ClInclude Include="GUI\Layout\LayoutEngine.h" />
-    <ClInclude Include="GUI\Layout\StackPanel.h" />
-    <ClInclude Include="GUI\Layout\GridPanel.h" />
-    <ClInclude Include="GUI\Layout\DockPanel.h" />
-    <ClInclude Include="GUI\Layout\WrapPanel.h" />
-    <ClInclude Include="GUI\Layout\RelativePanel.h" />
-    <ClInclude Include="GUI\Layout\Layout.h" />
+    <ClInclude Include="include\Core\EventConnection.h" />
+    <ClInclude Include="include\Core\Geometry.h" />
+    <ClInclude Include="include\Application.h" />
+    <ClInclude Include="include\Binding.h" />
+	<ClInclude Include="include\Style.h" />
+    <ClInclude Include="include\Button.h" />
+    <ClInclude Include="include\CalendarView.h" />
+    <ClInclude Include="include\ChartView.h" />
+    <ClInclude Include="include\CheckBox.h" />
+    <ClInclude Include="include\ColorPicker.h" />
+    <ClInclude Include="include\ColorPickerPopup.h" />
+    <ClInclude Include="include\ComboBox.h" />
+    <ClInclude Include="include\ContextMenu.h" />
+    <ClInclude Include="include\DateTimePicker.h" />
+    <ClInclude Include="include\FilterBar.h" />
+    <ClInclude Include="include\Control.h" />
+    <ClInclude Include="include\DCompLayeredHost.h" />
+    <ClInclude Include="include\DropDownPopup.h" />
+    <ClInclude Include="include\Event.h" />
+    <ClInclude Include="include\Expander.h" />
+    <ClInclude Include="include\Form.h" />
+    <ClInclude Include="include\GridView.h" />
+    <ClInclude Include="include\GroupBox.h" />
+    <ClInclude Include="include\KpiCard.h" />
+    <ClInclude Include="include\Label.h" />
+    <ClInclude Include="include\LinkLabel.h" />
+    <ClInclude Include="include\ListView.h" />
+    <ClInclude Include="include\Menu.h" />
+    <ClInclude Include="include\MessageDialog.h" />
+    <ClInclude Include="include\NavigationView.h" />
+    <ClInclude Include="include\NumericUpDown.h" />
+    <ClInclude Include="include\NotifyIcon.h" />
+    <ClInclude Include="include\ObservableCollection.h" />
+    <ClInclude Include="include\Panel.h" />
+    <ClInclude Include="include\PasswordBox.h" />
+    <ClInclude Include="include\PagedGridView.h" />
+    <ClInclude Include="include\PictureBox.h" />
+    <ClInclude Include="include\PropertyGrid.h" />
+    <ClInclude Include="include\LoadingRing.h" />
+    <ClInclude Include="include\ProgressBar.h" />
+    <ClInclude Include="include\ProgressRing.h" />
+    <ClInclude Include="include\RadioBox.h" />
+    <ClInclude Include="include\ReportView.h" />
+    <ClInclude Include="include\RichTextBox.h" />
+    <ClInclude Include="include\RoundTextBox.h" />
+    <ClInclude Include="include\ScrollView.h" />
+    <ClInclude Include="include\Slider.h" />
+    <ClInclude Include="include\Switch.h" />
+    <ClInclude Include="include\TabControl.h" />
+    <ClInclude Include="include\Taskbar.h" />
+    <ClInclude Include="include\ToolTip.h" />
+    <ClInclude Include="include\Toast.h" />
+    <ClInclude Include="include\ToolBar.h" />
+    <ClInclude Include="include\StatusBar.h" />
+    <ClInclude Include="include\SplitContainer.h" />
+    <ClInclude Include="include\WebBrowser.h" />
+    <ClInclude Include="include\TextEditCore.h" />
+    <ClInclude Include="include\TextBox.h" />
+    <ClInclude Include="include\TreeView.h" />
+    <ClInclude Include="include\MediaPlayer.h" />
+    <ClInclude Include="include\Layout\LayoutTypes.h" />
+    <ClInclude Include="include\Layout\LayoutState.h" />
+	<ClInclude Include="include\Layout\LayoutDeferral.h" />
+    <ClInclude Include="include\Layout\LegacyCanvasLayout.h" />
+    <ClInclude Include="include\Layout\LegacyCanvasAdapter.h" />
+    <ClInclude Include="include\Layout\LayoutEngine.h" />
+    <ClInclude Include="include\Layout\StackPanel.h" />
+    <ClInclude Include="include\Layout\GridPanel.h" />
+    <ClInclude Include="include\Layout\DockPanel.h" />
+    <ClInclude Include="include\Layout\WrapPanel.h" />
+    <ClInclude Include="include\Layout\RelativePanel.h" />
+    <ClInclude Include="include\Layout\Layout.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="GUI\Application.cpp" />
-    <ClCompile Include="GUI\Binding.cpp" />
-    <ClCompile Include="GUI\Button.cpp" />
-    <ClCompile Include="GUI\CalendarView.cpp" />
-    <ClCompile Include="GUI\ChartView.cpp" />
-    <ClCompile Include="GUI\CheckBox.cpp" />
-    <ClCompile Include="GUI\ColorPicker.cpp" />
-    <ClCompile Include="GUI\ColorPickerPopup.cpp" />
-    <ClCompile Include="GUI\ComboBox.cpp" />
-    <ClCompile Include="GUI\ContextMenu.cpp" />
-    <ClCompile Include="GUI\DateTimePicker.cpp" />
-    <ClCompile Include="GUI\FilterBar.cpp" />
-    <ClCompile Include="GUI\Control.cpp" />
-    <ClCompile Include="GUI\DCompLayeredHost.cpp" />
-    <ClCompile Include="GUI\DropDownPopup.cpp" />
-    <ClCompile Include="GUI\Expander.cpp" />
-    <ClCompile Include="GUI\Form.cpp" />
-    <ClCompile Include="GUI\GridView.cpp" />
-    <ClCompile Include="GUI\GroupBox.cpp" />
-    <ClCompile Include="GUI\KpiCard.cpp" />
-    <ClCompile Include="GUI\Label.cpp" />
-    <ClCompile Include="GUI\LinkLabel.cpp" />
-    <ClCompile Include="GUI\ListView.cpp" />
-    <ClCompile Include="GUI\Menu.cpp" />
-    <ClCompile Include="GUI\MessageDialog.cpp" />
-    <ClCompile Include="GUI\NavigationView.cpp" />
-    <ClCompile Include="GUI\NumericUpDown.cpp" />
-    <ClCompile Include="GUI\NotifyIcon.cpp" />
-    <ClCompile Include="GUI\Panel.cpp" />
-    <ClCompile Include="GUI\PasswordBox.cpp" />
-    <ClCompile Include="GUI\PagedGridView.cpp" />
-    <ClCompile Include="GUI\PictureBox.cpp" />
-    <ClCompile Include="GUI\PropertyGrid.cpp" />
-    <ClCompile Include="GUI\LoadingRing.cpp" />
-    <ClCompile Include="GUI\ProgressBar.cpp" />
-    <ClCompile Include="GUI\ProgressRing.cpp" />
-    <ClCompile Include="GUI\RadioBox.cpp" />
-    <ClCompile Include="GUI\ReportView.cpp" />
-    <ClCompile Include="GUI\RichTextBox.cpp" />
-    <ClCompile Include="GUI\RoundTextBox.cpp" />
-    <ClCompile Include="GUI\ScrollView.cpp" />
-    <ClCompile Include="GUI\Slider.cpp" />
-    <ClCompile Include="GUI\Switch.cpp" />
-    <ClCompile Include="GUI\TabControl.cpp" />
-    <ClCompile Include="GUI\Taskbar.cpp" />
-    <ClCompile Include="GUI\ToolTip.cpp" />
-    <ClCompile Include="GUI\Toast.cpp" />
-    <ClCompile Include="GUI\ToolBar.cpp" />
-    <ClCompile Include="GUI\StatusBar.cpp" />
-    <ClCompile Include="GUI\SplitContainer.cpp" />
-    <ClCompile Include="GUI\WebBrowser.cpp" />
-    <ClCompile Include="GUI\TextBox.cpp" />
-    <ClCompile Include="GUI\TreeView.cpp" />
-    <ClCompile Include="GUI\MediaPlayer.cpp" />
-    <ClCompile Include="GUI\Layout\StackPanel.cpp" />
-    <ClCompile Include="GUI\Layout\GridPanel.cpp" />
-    <ClCompile Include="GUI\Layout\DockPanel.cpp" />
-    <ClCompile Include="GUI\Layout\WrapPanel.cpp" />
-    <ClCompile Include="GUI\Layout\RelativePanel.cpp" />
+    <ClCompile Include="src\Application.cpp" />
+    <ClCompile Include="src\Binding.cpp" />
+	<ClCompile Include="src\Style.cpp" />
+    <ClCompile Include="src\Button.cpp" />
+    <ClCompile Include="src\CalendarView.cpp" />
+    <ClCompile Include="src\ChartView.cpp" />
+    <ClCompile Include="src\CheckBox.cpp" />
+    <ClCompile Include="src\ColorPicker.cpp" />
+    <ClCompile Include="src\ColorPickerPopup.cpp" />
+    <ClCompile Include="src\ComboBox.cpp" />
+    <ClCompile Include="src\ContextMenu.cpp" />
+    <ClCompile Include="src\DateTimePicker.cpp" />
+    <ClCompile Include="src\FilterBar.cpp" />
+    <ClCompile Include="src\Control.cpp" />
+    <ClCompile Include="src\DCompLayeredHost.cpp" />
+    <ClCompile Include="src\DropDownPopup.cpp" />
+    <ClCompile Include="src\Expander.cpp" />
+    <ClCompile Include="src\Form.cpp" />
+    <ClCompile Include="src\GridView.cpp" />
+    <ClCompile Include="src\GroupBox.cpp" />
+    <ClCompile Include="src\KpiCard.cpp" />
+    <ClCompile Include="src\Label.cpp" />
+    <ClCompile Include="src\LinkLabel.cpp" />
+    <ClCompile Include="src\ListView.cpp" />
+    <ClCompile Include="src\Menu.cpp" />
+    <ClCompile Include="src\MessageDialog.cpp" />
+    <ClCompile Include="src\NavigationView.cpp" />
+    <ClCompile Include="src\NumericUpDown.cpp" />
+    <ClCompile Include="src\NotifyIcon.cpp" />
+    <ClCompile Include="src\Panel.cpp" />
+    <ClCompile Include="src\PasswordBox.cpp" />
+    <ClCompile Include="src\PagedGridView.cpp" />
+    <ClCompile Include="src\PictureBox.cpp" />
+    <ClCompile Include="src\PropertyGrid.cpp" />
+    <ClCompile Include="src\LoadingRing.cpp" />
+    <ClCompile Include="src\ProgressBar.cpp" />
+    <ClCompile Include="src\ProgressRing.cpp" />
+    <ClCompile Include="src\RadioBox.cpp" />
+    <ClCompile Include="src\ReportView.cpp" />
+    <ClCompile Include="src\RichTextBox.cpp" />
+    <ClCompile Include="src\RoundTextBox.cpp" />
+    <ClCompile Include="src\ScrollView.cpp" />
+    <ClCompile Include="src\Slider.cpp" />
+    <ClCompile Include="src\Switch.cpp" />
+    <ClCompile Include="src\TabControl.cpp" />
+    <ClCompile Include="src\Taskbar.cpp" />
+    <ClCompile Include="src\ToolTip.cpp" />
+    <ClCompile Include="src\Toast.cpp" />
+    <ClCompile Include="src\ToolBar.cpp" />
+    <ClCompile Include="src\StatusBar.cpp" />
+    <ClCompile Include="src\SplitContainer.cpp" />
+    <ClCompile Include="src\WebBrowser.cpp" />
+    <ClCompile Include="src\TextBox.cpp" />
+    <ClCompile Include="src\TreeView.cpp" />
+    <ClCompile Include="src\MediaPlayer.cpp" />
+    <ClCompile Include="src\Layout\StackPanel.cpp" />
+    <ClCompile Include="src\Layout\GridPanel.cpp" />
+    <ClCompile Include="src\Layout\DockPanel.cpp" />
+    <ClCompile Include="src\Layout\WrapPanel.cpp" />
+    <ClCompile Include="src\Layout\RelativePanel.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="ClassDiagram.cd" />
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>

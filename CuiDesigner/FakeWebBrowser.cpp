@@ -1,10 +1,9 @@
 ﻿#include "FakeWebBrowser.h"
-#include "../CUI/GUI/Form.h"
+#include "../CUI/include/Form.h"
 
 FakeWebBrowser::FakeWebBrowser(int x, int y, int width, int height)
+	: WebBrowser(x, y, width, height)
 {
-	this->Location = POINT{ x, y };
-	this->Size = SIZE{ width, height };
 	this->BackColor = Colors::Black;
 }
 

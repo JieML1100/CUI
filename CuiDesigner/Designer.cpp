@@ -2,6 +2,7 @@
 #include "CodeGenInput.h"
 #include "DesignerModel/DesignDocument.h"
 #include "DesignerModel/DesignDocumentCodeGenInputBuilder.h"
+#include <Utils.h>
 #include <Windows.h>
 #include <commdlg.h>
 #include <commctrl.h>
@@ -152,6 +153,7 @@ void Designer::InitializeComponents()
 	int canvasX = toolBoxWidth + 20;
 	int canvasWidth = formWidth - toolBoxWidth - propertyGridWidth - 40;
 	_canvas = new DesignerCanvas(canvasX, toolbarHeight + 10, canvasWidth, formHeight - toolbarHeight - 40);
+	_canvas->SetDesignDataContext(_designDataContext);
 	_canvas->OnControlSelected += [this](std::shared_ptr<DesignerControl> control) {
 		OnCanvasControlSelected(control);
 	};
@@ -192,6 +194,12 @@ void Designer::InitializeComponents()
 
 	this->OnSizeChanged += [doLayout](Form*) { doLayout(); };
 	doLayout();
+}
+
+void Designer::SetDesignDataContext(std::shared_ptr<IBindingSource> source)
+{
+	_designDataContext = std::move(source);
+	if (_canvas) _canvas->SetDesignDataContext(_designDataContext);
 }
 
 void Designer::OnToolBoxControlSelected(UIClass type)

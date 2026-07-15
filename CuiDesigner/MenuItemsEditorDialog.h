@@ -4,11 +4,11 @@
  * @file MenuItemsEditorDialog.h
  * @brief MenuItemsEditorDialog：编辑菜单项结构的对话框。
  */
-#include "../CUI/GUI/Form.h"
-#include "../CUI/GUI/Label.h"
-#include "../CUI/GUI/RichTextBox.h"
-#include "../CUI/GUI/Button.h"
-#include "../CUI/GUI/Menu.h"
+#include "../CUI/include/Form.h"
+#include "../CUI/include/Label.h"
+#include "../CUI/include/RichTextBox.h"
+#include "../CUI/include/Button.h"
+#include "../CUI/include/Menu.h"
 
 class MenuItemsEditorDialog : public Form
 {
