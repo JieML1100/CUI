@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <unordered_set>
 #include <utility>
 
@@ -677,26 +678,57 @@ void ListView::SetScrollOffset(float offsetY)
 	SetCurrentScrollYOffset(target);
 }
 
+void ListView::GetVisibleItemRange(int& start, int& end) const noexcept
+{
+	GetVisibleItemRange(CalcLayout(), start, end);
+}
+
 int ListView::HitTestItem(int localX, int localY) const
 {
 	auto layout = CalcLayout();
 	if (!PtInRectF(layout.ContentRect, (float)localX, (float)localY)) return -1;
 
-	if (static_cast<ListViewViewMode>(_viewMode) == ListViewViewMode::Icon)
+	if (static_cast<ListViewViewMode>(_viewMode) == ListViewViewMode::Icon
+		&& !IsListBox())
 	{
-		for (int i = 0; i < (int)this->Items.size(); i++)
-		{
-			auto rect = GetItemRect(i, layout);
-			if (PtInRectF(rect, (float)localX, (float)localY))
-				return i;
-		}
-		return -1;
+		const float itemWidth = GetItemPrimaryExtent();
+		const float itemHeight = GetItemSecondaryExtent();
+		if (itemWidth <= 0.0f || itemHeight <= 0.0f
+			|| layout.ColumnsPerRow <= 0) return -1;
+		const float contentX = static_cast<float>(localX)
+			- layout.ContentRect.left;
+		const float contentY = static_cast<float>(localY)
+			- layout.ContentRect.top + _scrollYOffset;
+		if (contentX < 0.0f || contentY < 0.0f) return -1;
+		const double columnValue = std::floor(
+			static_cast<double>(contentX) / itemWidth);
+		const double rowValue = std::floor(
+			static_cast<double>(contentY) / itemHeight);
+		if (!std::isfinite(columnValue) || !std::isfinite(rowValue)
+			|| columnValue < 0.0 || rowValue < 0.0
+			|| columnValue >= layout.ColumnsPerRow
+			|| rowValue > (std::numeric_limits<int>::max)())
+			return -1;
+		const int64_t candidate = static_cast<int64_t>(rowValue)
+			* layout.ColumnsPerRow + static_cast<int>(columnValue);
+		if (candidate < 0
+			|| static_cast<size_t>(candidate) >= Items.size()
+			|| candidate > (std::numeric_limits<int>::max)()) return -1;
+		const int index = static_cast<int>(candidate);
+		return PtInRectF(GetItemRect(index, layout),
+			static_cast<float>(localX), static_cast<float>(localY))
+			? index : -1;
 	}
 
 	const float itemH = GetItemSecondaryExtent();
 	if (itemH <= 0.0f) return -1;
-	int index = (int)std::floor(((float)localY - layout.ContentRect.top + _scrollYOffset) / itemH);
-	return index >= 0 && index < (int)this->Items.size() ? index : -1;
+	const double indexValue = std::floor((
+		static_cast<double>(localY) - layout.ContentRect.top
+		+ _scrollYOffset) / itemH);
+	if (!std::isfinite(indexValue) || indexValue < 0.0
+		|| indexValue > (std::numeric_limits<int>::max)()) return -1;
+	const int index = static_cast<int>(indexValue);
+	return static_cast<size_t>(index) < Items.size() ? index : -1;
 }
 
 void ListView::EnsureAccessibilityItemIds() const
@@ -1459,6 +1491,45 @@ float ListView::GetItemSecondaryExtent() const
 	}
 }
 
+void ListView::GetVisibleItemRange(
+	const Layout& layout, int& start, int& end) const noexcept
+{
+	start = 0;
+	end = 0;
+	const size_t cappedItemCount = (std::min)(
+		Items.size(), static_cast<size_t>((std::numeric_limits<int>::max)()));
+	const int itemCount = static_cast<int>(cappedItemCount);
+	const double viewportHeight = static_cast<double>(
+		(std::max)(0.0f, RectHeight(layout.ContentRect)));
+	const double itemExtent = static_cast<double>(GetItemSecondaryExtent());
+	if (itemCount == 0 || viewportHeight <= 0.0
+		|| !std::isfinite(itemExtent) || itemExtent <= 0.0) return;
+
+	const bool icon = static_cast<ListViewViewMode>(_viewMode)
+		== ListViewViewMode::Icon && !IsListBox();
+	const int columns = icon ? (std::max)(1, layout.ColumnsPerRow) : 1;
+	const int64_t totalRows = icon
+		? (static_cast<int64_t>(itemCount) + columns - 1) / columns
+		: itemCount;
+	const double maxScroll = std::isfinite(layout.MaxScrollY)
+		? (std::max)(0.0, static_cast<double>(layout.MaxScrollY))
+		: (std::numeric_limits<double>::max)();
+	const double proposedScroll = std::isfinite(_scrollYOffset)
+		? static_cast<double>(_scrollYOffset) : 0.0;
+	const double scroll = (std::clamp)(proposedScroll, 0.0, maxScroll);
+	const double firstRowValue = (std::clamp)(
+		std::floor(scroll / itemExtent), 0.0, static_cast<double>(totalRows));
+	const double endRowValue = (std::clamp)(
+		std::ceil((scroll + viewportHeight) / itemExtent),
+		firstRowValue, static_cast<double>(totalRows));
+	const int64_t firstRow = static_cast<int64_t>(firstRowValue);
+	const int64_t endRow = static_cast<int64_t>(endRowValue);
+	start = static_cast<int>((std::min)(
+		static_cast<int64_t>(itemCount), firstRow * columns));
+	end = static_cast<int>((std::min)(
+		static_cast<int64_t>(itemCount), endRow * columns));
+}
+
 D2D1_RECT_F ListView::GetItemRect(int index, const Layout& layout) const
 {
 	if (index < 0 || index >= (int)this->Items.size()) return D2D1::RectF();
@@ -1524,7 +1595,10 @@ void ListView::DrawItems(D2DGraphics* d2d, const Layout& layout)
 	if (!d2d || RectWidth(layout.ContentRect) <= 0.0f || RectHeight(layout.ContentRect) <= 0.0f) return;
 
 	d2d->PushDrawRect(layout.ContentRect.left, layout.ContentRect.top, RectWidth(layout.ContentRect), RectHeight(layout.ContentRect));
-	for (int i = 0; i < (int)this->Items.size(); i++)
+	int start = 0;
+	int end = 0;
+	GetVisibleItemRange(layout, start, end);
+	for (int i = start; i < end; ++i)
 	{
 		auto rect = GetItemRect(i, layout);
 		if (rect.bottom < layout.ContentRect.top || rect.top > layout.ContentRect.bottom)

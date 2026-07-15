@@ -862,6 +862,19 @@ void GridView::EndUpdate() noexcept
 		--_updateDepth;
 		return;
 	}
+	// The collections keep Grid internals synchronized for every mutation but
+	// publish their coalesced Reset only below. Rebuild the logical-id index now
+	// so public observers see the final row/column structure. Keep EndUpdate's
+	// no-throw contract: a failed allocation leaves the index dirty and the next
+	// accessibility query can retry the lazy rebuild.
+	try
+	{
+		EnsureAccessibilityIds();
+	}
+	catch (...)
+	{
+		_accessibilityIdsDirty = true;
+	}
 	// Apply column changes first so every public row notification observes
 	// cells that are already aligned with the final column collection.
 	Columns.EndUpdate();
@@ -2512,6 +2525,8 @@ void GridView::OnRowsCollectionChanged(
 		SetCurrentScrollYOffset(0.0f);
 		SetCurrentScrollRowPosition(0);
 	}
+	if (_updateDepth == 0)
+		EnsureAccessibilityIds();
 	NotifyCollectionStructureChanged();
 	RequestRefresh();
 }
@@ -2608,6 +2623,8 @@ void GridView::OnColumnsCollectionChanged(
 			SortedColumnIndex, change, Columns.size());
 	SetCurrentSortedColumnIndex(sorted);
 	if (Columns.empty()) SetCurrentScrollXOffset(0.0f);
+	if (_updateDepth == 0)
+		EnsureAccessibilityIds();
 	NotifyCollectionStructureChanged();
 	RequestRefresh();
 }

@@ -888,12 +888,24 @@ int main()
 		GridView grid(0, 0, 300, 120);
 		size_t columnChanges = 0;
 		size_t rowChanges = 0;
+		bool collectionObserversSawReadyAccessibilityIds = true;
+		auto observeReadyAccessibilityIds = [&]
+		{
+			for (const auto& column : grid.Columns)
+				collectionObserversSawReadyAccessibilityIds =
+					collectionObserversSawReadyAccessibilityIds
+					&& column.AccessibilityId != 0;
+			for (const auto& row : grid.Rows)
+				collectionObserversSawReadyAccessibilityIds =
+					collectionObserversSawReadyAccessibilityIds
+					&& row.AccessibilityId != 0;
+		};
 		auto columnConnection = grid.Columns.Changed.Subscribe(
 			[&](GridView::ColumnCollection*, const CollectionChangedEventArgs&)
-			{ ++columnChanges; });
+			{ ++columnChanges; observeReadyAccessibilityIds(); });
 		auto rowConnection = grid.Rows.Changed.Subscribe(
 			[&](GridView::RowCollection*, const CollectionChangedEventArgs&)
-			{ ++rowChanges; });
+			{ ++rowChanges; observeReadyAccessibilityIds(); });
 		grid.BeginUpdate();
 		grid.Columns.push_back(GridViewColumn(
 			L"A", 100.0f, ColumnType::Text, true));
@@ -908,6 +920,7 @@ int main()
 		grid.EndUpdate();
 		CUI_EXPECT_EQ(1ULL, columnChanges);
 		CUI_EXPECT_EQ(1ULL, rowChanges);
+		CUI_EXPECT_TRUE(collectionObserversSawReadyAccessibilityIds);
 		CUI_EXPECT_TRUE(grid.SelectCell(1, 1));
 		const uint32_t selectedRowId = grid.Rows[1].AccessibilityId;
 		const uint32_t selectedColumnId = grid.Columns[1].AccessibilityId;
@@ -1129,6 +1142,81 @@ int main()
 		CUI_EXPECT_NEAR(100.0, scrollInfo.VerticalScrollPercent, 0.000001);
 	});
 
+	runner.Add("ListView visible ranges cover only viewport candidates", []
+	{
+		std::vector<ListViewItem> items;
+		for (int index = 0; index < 100; ++index)
+			items.emplace_back(L"Item " + std::to_wstring(index));
+
+		ListView list(0, 0, 240, 180);
+		list.RowHeight = 40.0f;
+		list.SetItems(items);
+		int start = -1;
+		int end = -1;
+		list.GetVisibleItemRange(start, end);
+		CUI_EXPECT_EQ(0, start);
+		CUI_EXPECT_EQ(5, end);
+		list.SetScrollOffset(80.0f);
+		list.GetVisibleItemRange(start, end);
+		CUI_EXPECT_EQ(2, start);
+		CUI_EXPECT_EQ(7, end);
+		CUI_EXPECT_EQ(2, list.HitTestItem(10, 0));
+		CUI_EXPECT_EQ(6, list.HitTestItem(10, 179));
+
+		ListView details(0, 0, 240, 180);
+		details.ViewMode = ListViewViewMode::Details;
+		details.RowHeight = 40.0f;
+		details.SetItems(items);
+		details.GetVisibleItemRange(start, end);
+		CUI_EXPECT_EQ(0, start);
+		CUI_EXPECT_EQ(4, end);
+		details.SetScrollOffset(80.0f);
+		details.GetVisibleItemRange(start, end);
+		CUI_EXPECT_EQ(2, start);
+		CUI_EXPECT_EQ(6, end);
+
+		ListView tiles(0, 0, 240, 180);
+		tiles.ViewMode = ListViewViewMode::Tile;
+		tiles.TileHeight = 50.0f;
+		tiles.IconSize = 16.0f;
+		tiles.SetItems(items);
+		tiles.GetVisibleItemRange(start, end);
+		CUI_EXPECT_EQ(0, start);
+		CUI_EXPECT_EQ(4, end);
+		tiles.SetScrollOffset(50.0f);
+		tiles.GetVisibleItemRange(start, end);
+		CUI_EXPECT_EQ(1, start);
+		CUI_EXPECT_EQ(5, end);
+
+		ListView icons(0, 0, 240, 180);
+		icons.ViewMode = ListViewViewMode::Icon;
+		icons.IconItemWidth = 80.0f;
+		icons.IconItemHeight = 60.0f;
+		icons.IconSize = 16.0f;
+		icons.ItemGap = 8.0f;
+		icons.SetItems(items);
+		icons.GetVisibleItemRange(start, end);
+		CUI_EXPECT_EQ(0, start);
+		CUI_EXPECT_EQ(6, end);
+		CUI_EXPECT_EQ(0, icons.HitTestItem(10, 10));
+		CUI_EXPECT_EQ(1, icons.HitTestItem(90, 10));
+		CUI_EXPECT_EQ(-1, icons.HitTestItem(80, 10));
+		icons.SetScrollOffset(60.0f);
+		icons.GetVisibleItemRange(start, end);
+		CUI_EXPECT_EQ(2, start);
+		CUI_EXPECT_EQ(8, end);
+		CUI_EXPECT_EQ(2, icons.HitTestItem(10, 10));
+		CUI_EXPECT_EQ(3, icons.HitTestItem(90, 10));
+
+		ListBox listBox(0, 0, 240, 180);
+		listBox.ViewMode = ListViewViewMode::Icon;
+		listBox.RowHeight = 40.0f;
+		listBox.SetItems(items);
+		listBox.GetVisibleItemRange(start, end);
+		CUI_EXPECT_EQ(0, start);
+		CUI_EXPECT_EQ(5, end);
+	});
+
 	runner.Add("Indexed virtual queries stay coherent on large collections", []
 	{
 		constexpr size_t listRowCount = 12000;
@@ -1148,6 +1236,17 @@ int main()
 			items.push_back(std::move(item));
 		}
 		details.SetItems(items);
+		details.RowHeight = 40.0f;
+		int visibleStart = -1;
+		int visibleEnd = -1;
+		details.GetVisibleItemRange(visibleStart, visibleEnd);
+		CUI_EXPECT_EQ(0, visibleStart);
+		CUI_EXPECT_EQ(4, visibleEnd);
+		details.SetScrollOffset(400000.0f);
+		details.GetVisibleItemRange(visibleStart, visibleEnd);
+		CUI_EXPECT_TRUE(visibleStart > 0);
+		CUI_EXPECT_TRUE(visibleEnd - visibleStart <= 4);
+		details.SetScrollOffset(0.0f);
 		CUI_EXPECT_EQ(0ULL, details.MaterializedAccessibilityCellCount());
 		CUI_EXPECT_EQ(listRowCount + listColumnCount,
 			details.GetAccessibilityVirtualChildCount(0));
@@ -1275,7 +1374,16 @@ int main()
 		CUI_EXPECT_TRUE(grid.GetAccessibilityVirtualItemAt(
 			0, 0, movedGridCellId));
 		CUI_EXPECT_EQ(gridCellId, movedGridCellId);
+		bool removalObserverSawPrunedCells = false;
+		auto gridRowsConnection = grid.Rows.Changed.Subscribe(
+			[&](GridView::RowCollection*, const CollectionChangedEventArgs& change)
+			{
+				if (change.Action == CollectionChangeAction::Remove)
+					removalObserverSawPrunedCells =
+						grid.MaterializedAccessibilityCellCount() == 0;
+			});
 		CUI_EXPECT_TRUE(grid.RemoveRowAt(0));
+		CUI_EXPECT_TRUE(removalObserverSawPrunedCells);
 		CUI_EXPECT_FALSE(grid.TryGetAccessibilityVirtualNode(
 			gridCellId, gridCell));
 		CUI_EXPECT_EQ(0ULL, grid.MaterializedAccessibilityCellCount());

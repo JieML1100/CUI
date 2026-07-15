@@ -154,6 +154,8 @@ public:
 	std::vector<int> GetSelectedIndices() const;
 	void EnsureVisible(int index);
 	void SetScrollOffset(float offsetY);
+	/** Returns the current viewport's contiguous candidate range as [start, end). */
+	void GetVisibleItemRange(int& start, int& end) const noexcept;
 	int HitTestItem(int localX, int localY) const;
 	void GetAccessibilityVirtualChildren(
 		uint32_t parentId, std::vector<uint32_t>& result) override;
@@ -274,6 +276,8 @@ private:
 	float GetEffectiveRowHeight() const;
 	float GetItemPrimaryExtent() const;
 	float GetItemSecondaryExtent() const;
+	void GetVisibleItemRange(
+		const Layout& layout, int& start, int& end) const noexcept;
 	D2D1_RECT_F GetItemRect(int index, const Layout& layout) const;
 	D2D1_RECT_F GetCheckRect(const D2D1_RECT_F& itemRect) const;
 	void ClampScroll(Layout& layout);

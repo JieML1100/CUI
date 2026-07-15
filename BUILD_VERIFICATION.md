@@ -365,13 +365,13 @@ panel->DeleteControl(obsoleteLabel);
 7. 用 Inspect 展开 ListView/ListBox、ComboBox、TreeView 和 GridView：确认逻辑项是独立 Fragment，四类容器按实际范围公开 Scroll Pattern；不可滚动轴的百分比为 NoScroll、视口为 100，大小/偏移变化会刷新属性，Scroll/SetScrollPercent 不得改变选择。折叠或离屏项可 Realize/ScrollIntoView，交换/排序后 runtime ID 保持，删除项后旧元素变为不可用。
 8. 将 ListView 切换到 Details：确认容器同时公开 Grid/Table，列头、行和单元格形成稳定层级，GetItem(row, column) 可寻址，GridItem/TableItem 的行列与列头关系正确；列移动后单元格身份跟随逻辑行列，删除行/列后旧 Provider 变为不可用。GridView 继续公开 Grid/Table，多选列表的 AddToSelection 不得清空已有项，Grid ScrollIntoView 不得改变选择。
 9. 对大型虚拟集合执行首尾子项、相邻兄弟和命中查询，确认 Provider 使用索引入口且不调用旧的整组 `GetAccessibilityVirtualChildren` 回退；ListView Details 只在 GetItem/导航实际访问单元格时物化其 ID。批量重排后逻辑项与单元格 ID 保持，删除后旧节点立即失效。
-   GridView 同样应在仅查询容器/行列数时保持 `MaterializedAccessibilityCellCount()==0`，首次 GetItem 后只增长到 1；可在 PowerShell 中设置 `$env:CUI_TEST_TIMINGS='1'` 后运行 Release x64 `CUICoreTests.exe` 获取逐测试耗时。本机本轮大型虚拟集合参考值约 44 ms，仅用于后续同机趋势比较，不作为跨机器门禁。
+   ListView Details 与 GridView 都应在仅查询容器/行列数时保持 `MaterializedAccessibilityCellCount()==0`，首次 GetItem 后只增长到 1。滚动 12k 项 ListView 后，`GetVisibleItemRange()` 返回的 `[start,end)` 候选数仍应只覆盖视口；Icon 间隙命中返回 -1，滚动后坐标直接映射到新行。可在 PowerShell 中设置 `$env:CUI_TEST_TIMINGS='1'` 后运行 Release x64 `CUICoreTests.exe` 获取逐测试耗时。本机本轮大型虚拟集合参考值约 29–44 ms，仅用于后续同机趋势比较，不作为跨机器门禁。
 10. 密码框只公开显式 `AccessibleName`，不得把密码内容放入 Name、Value 或 Description；关闭窗口后，MSAA 对象应返回 `CO_E_OBJNOTCONNECTED`，UIA Provider 应返回 `UIA_E_ELEMENTNOTAVAILABLE`，均不得访问已释放控件。
 11. 打开 Windows 高对比度，确认窗体、公共控件表面、文本和焦点框切换到系统色；再切换关闭动画、始终显示键盘提示和 150%/225% 文字大小，确认过渡立即完成、键盘焦点可见且字体重新布局。退出设置后应自动恢复，无需重启窗口。
 
 ## 已知后续清理项
 
-- 当前 `Debug|x64`、`Release|x64`、`Debug|x86`、`Release|x86` 四套默认启用模式的 `CUICoreTests` 均为 122/122。`CUIEnableWebView2=false` 的 x64 Release 已完整 `Rebuild` 并通过 122/122；随后默认启用模式的 x64 Release 全解决方案也已完整重建，`CUI`、`CUITest`、`CUICoreTests` 与 `CuiDesigner` 均成功，并再次通过 122/122。
+- 当前 `Debug|x64`、`Release|x64`、`Debug|x86`、`Release|x86` 四套默认启用模式的 `CUICoreTests` 均为 123/123。`CUIEnableWebView2=false` 的 x64 Release 已完整 `Rebuild` 并通过 123/123；随后默认启用模式的 x64 Release 全解决方案也已完整重建，`CUI`、`CUITest`、`CUICoreTests` 与 `CuiDesigner` 均成功，并再次通过 123/123。
 - Release 配置若沿用历史 LTCG/IPDB/IOBJ 中间产物，增量链接可能报告 `LNK1103`；对对应配置执行一次 `/t:Rebuild` 可重新生成一致的调试信息，本轮 x64/x86 Release 均已通过完整重建。
 - `TextBox` / `PasswordBox` 的输入、选择、拖放和光标绘制转换 warning 已收敛；`ComboBox` 的索引、滚动和下拉绘制转换 warning 已收敛；`GridView` 的行列索引、组合框单元格、编辑路径和主要绘制转换 warning 已收敛；`TabControl` 的页签绘制和拖放循环转换 warning 已收敛；`RichTextBox` 的滚动、绘制和拖放循环转换 warning 已收敛。
 - `CUITest` Demo 和自定义示例控件的常见转换 warning 已收敛。

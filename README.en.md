@@ -257,6 +257,9 @@ Built-in virtual controls rebuild stable indexes on structural mutation; ListVie
 cell IDs are created on demand and only materialized invalid identities are pruned, avoiding a
 rows-by-columns UIA reverse-index allocation for large tables. Both expose
 `MaterializedAccessibilityCellCount()` for deterministic cache-size diagnostics.
+ListView drawing and icon-mode hit testing now use a shared `[start, end)` visible index range.
+`GetVisibleItemRange()` also exposes that range for work such as deferred image loading, so per-frame
+drawing scales with visible items instead of scanning the complete Items collection.
 These virtual collections are now driven by `ObservableCollection`, so direct structural mutation no
 longer waits for the next provider query to reconcile identity. TreeNode also exposes `AddChild`,
 `DetachChildAt`, `RemoveChild`, and `ClearChildren` for explicit nested-node ownership.
