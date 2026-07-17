@@ -4,7 +4,7 @@
 
 [完整文档(中文)](ReadMeFull.md)
 
-CUI is a modern native Windows GUI framework based on **Direct2D** and **DirectComposition** (C++20). It also comes with a **visual designer** (drag & drop, XML save/load, and automatic C++ code generation).
+CUI is a modern native Windows GUI framework based on **Direct2D** and **DirectComposition** (C++20). It also comes with a **visual designer** (drag & drop, XML/XAML save/load, and automatic C++ code generation).
 
 This repository mainly contains:
 - `CUI/`: runtime GUI framework and controls
@@ -23,7 +23,7 @@ This repository mainly contains:
 - **SVG support**: built-in nanosvg (included)
 - **Media playback**: built-in MediaPlayer control
 - **WebView2 integration**: embed modern web content via Microsoft WebView2
-- **Designer workflow**: property editing, live preview, XML design files, and C++ code generation
+- **Designer workflow**: property editing, live preview, XML/XAML design files, and C++ code generation
 
 ## Data binding
 
@@ -106,11 +106,17 @@ kinds together with a representative value. Even when that type is not yet prese
 the canvas, a lightweight probe validates property existence, writability, conversion,
 and coercion so errors are reported before a future control starts matching the rule.
 
-The same catalog now fills the ordinary property panel with metadata properties that
-are not already represented by legacy fields. Edits use runtime conversion and
-coercion, then persist the canonical value in the optional typed `props.metadata` bag.
-Existing XML fields remain compatible while load, undo/redo, and generated C++ share
-the canonical property name and value kind.
+The ordinary control property panel now comes directly from a catalog view that includes
+every browsable scalar, including Legacy properties. Common properties that still use legacy
+XML fields—including text, bounds, colors, margin/padding, and alignment—no longer have
+separate display branches and route
+edits through the same runtime metadata, so coercion, change callbacks, and
+Local/Style/Binding precedence are no longer bypassed by direct field writes. A unified
+access layer synchronizes the optional typed `props.metadata` bag from the declared
+`Persistence` policy: Metadata/Automatic values are stored canonically, while Legacy
+and Transient duplicates are removed. Reset clears the Local value and exposes the
+next Style, Binding, Theme, or default value. Existing XML fields remain compatible
+while load, undo/redo, and generated C++ share the canonical property name and kind.
 
 `ControlPropertyOptions::Design` can additionally declare browsability, display name,
 category and ordering, a preferred editor, strongly typed choices, numeric bounds, and
@@ -118,6 +124,632 @@ persistence policy. The ordinary property panel groups these descriptors and sel
 Boolean, choice, color, thickness, size, length, numeric, or text editor automatically.
 `Legacy` and `Transient` properties are kept out of the generic metadata bag while
 remaining valid Binding and style-setter targets.
+
+`X`, `Y`, `Enabled`, and `Dock` are presentation names for the canonical `Left`, `Top`,
+`Enable`, and `DockPosition` properties; Grid placement and Dock appear only under the
+matching parent container. Former type-specific scalar rows for rings, DateTimePicker,
+PictureBox, and TreeView are metadata-backed as well. ComboBox items, GridView columns,
+tab pages, toolbar buttons, tree nodes, Grid definitions, menu items, and status-bar parts
+retain structural dialogs, but their entries now come from the extensible
+`DesignerCustomEditorCatalog` rather than a control-type `if/else` chain. All eight
+dialogs run inside one strict document transaction captured before opening. Confirmed,
+valid changes enter history as one command; cancel and no-op changes do not. Exceptions,
+nested edits, invalid post-state, or history insertion failure restore the prior document
+and complete selection. Results distinguish `Begun`, `Committed`, `Unchanged`,
+`RolledBack`, `Canceled`, `Aborted`, `Rejected`, and `Failed`; cancellation also detects
+and restores a dialog that unexpectedly leaked mutations instead of merely discarding
+the before snapshot.
+
+Properties owned by the Designer wrapper rather than runtime metadata—Name, Anchor,
+StyleId, StyleClasses, font overrides, and the MediaPlayer source path—now share a
+typed `DesignerControlPropertyCatalog`. PropertyGrid captures, applies, and resets
+them through its Binder, so unique naming, inherited fonts, anchor-bound preservation,
+and design-only data no longer live in separate text, Boolean, or float fallbacks.
+Unknown properties and kind mismatches are rejected instead of writing raw fields.
+
+`DesignerPropertyRowCatalog` then projects the form catalog, wrapper-owned catalog,
+and runtime metadata into one row type carrying source, current typed value, category
+and order, editor, choices, numeric hints, reset capability, and Binding/Validation/
+Style/Theme diagnostics. Control rows are
+deduplicated by canonical name and globally sorted before rendering, so each category
+appears once. The Designer projects that row stream directly into CUI's native
+`PropertyGridView`. Boolean, enum, color, and slider rows use native editors (including
+`ColorPickerPopup`), while mixed values, reset affordances, action rows, and grouped
+slider sessions are reusable `PropertyGridView` capabilities instead of Designer-built
+rows of TextBox/CheckBox/ComboBox/Button controls. Diagnostics identify binding paths,
+modes, converters, preview state, source validation, winning style rule IDs/specificity,
+and higher-precedence values that mask a style candidate.
+
+Canvas multi-selection is passed to the same Binder as a complete selection set. The
+property panel intersects rows whose kinds, editors, and constraints are compatible,
+marks mixed values and mixed effective sources explicitly, and excludes identity fields
+such as `Name` from batch editing. A new value is preflighted against every target before
+one batch is applied and recorded as a single undo command with the complete selection.
+Rows owned by an active Binding on any target are read-only for both apply and reset.
+Mixed diagnostics are flagged instead of presenting the primary target's details as if
+they applied to the complete selection.
+
+Property apply and reset now converge on the transactional `DesignerPropertyEdit`
+service. It validates every target and captures Local/wrapper values plus tracked
+metadata before mutation; a rejected or throwing setter restores all touched targets in
+reverse order and returns a target-qualified error. PropertyGrid reserves a fixed,
+accessible error-status area and clears it after a successful edit or selection change.
+Ordinary scalar apply/reset and grouped sliders now commit per-property deltas, while
+DataContext Schema, document styles, bindings, and structural editors share the
+result-bearing `DesignerCanvas` transaction model. ComboBox Items (together with the
+Local/Binding values, binding configuration, and tracked metadata of `SelectedIndex`),
+TreeView nodes, GridView columns, GridPanel row/column definitions, and StatusBar parts
+use a typed, single-control `ControlStructureCommand`; recursive Menu Items also retain
+text, command IDs, shortcuts, enabled/separator state, and hierarchy ownership. Editors
+that transfer Designer-owned child controls, such as TabControl and ToolBar, retain the
+full-document fallback. PropertyGrid no longer
+duplicates before/after document and selection capture, command construction, or failure
+recovery. Grouped sliders restore their pre-drag property state when either preview or
+commit fails.
+
+`PropertyGrid::ApplyPropertyValue(...)`, `ResetPropertyValue(...)`, and read-only
+row/error inspection expose that same production interaction path to automation without
+bypassing the Binder or command stack. `Designer.exe --self-test` constructs the real
+`DesignerCanvas` and `PropertyGrid` without showing a window and verifies mixed values,
+multi-target edits, rejected-input feedback, reset, complete selection, document-
+rebuilding undo/redo, transaction states, leaked-cancel mutation recovery, rejected and
+throwing operation rollback, and restoration of Local fallback values across design-time
+binding attach/detach as a runtime smoke gate beyond model-only unit tests.
+
+The Designer toolbox is grouped into seven stable control families and supports
+multi-token filtering by localized name, C++ type name, and category. Every control has
+a code-native vector silhouette; long secondary type names stay on one ellipsized line
+in narrow sidebars instead of wrapping across neighboring rows.
+
+Designer command `Execute()`, `Undo()`, and `Redo()` now return the same result object
+end to end. Failed or throwing restores retain their error and `DocumentRestored` state
+and keep the command on its original undo/redo stack; empty history is an explicit
+`Unchanged` result rather than the same `false` used for failure. Canvas Add/Delete now uses
+`ControlSubtreeCommand`: the runtime tree owns attached controls exclusively, while the command
+owns absent roots through `unique_ptr` and retains only normalized subtree nodes, reconstructible
+parent locators, sibling order, ToolBar size overrides, and complete selection. It no longer stores
+the whole document in history. Structural and placement/tree deltas require a successful
+pre-capture before mutation, reject mismatched endpoints without losing the stack entry, and
+restore the prior state and selection if capture or command insertion fails. Keyboard nudges, mouse
+move/resize, and SplitContainer splitter previews use result-bearing Canvas delta-preview
+transactions. The splitter reuses a single-target `ControlPropertyCommand`. Mouse-up commits
+once; Escape, system cancellation, focus loss,
+or capture loss restores the pre-preview document without destroying redo. Canvas retains
+and publishes the last result for the Designer status area. Add/Delete/Undo/Redo publish
+a separate discrete-command completion event with the history label, so empty deletion,
+out-of-bounds add, empty history, and actual restore failure remain distinguishable and
+toolbar/keyboard entry points no longer report unconditional success. A splitter metadata
+failure aborts and rolls back instead of falling through to a raw setter.
+The six structure deltas verify stable ID, name, control type, and the expected
+collection state before changing anything. Undo/redo preserves the control instance;
+an external-state conflict leaves the history entry retryable. Their memory usage grows
+only with the edited ComboBox/Menu items, columns, nodes, tracks, or parts, not with
+unrelated controls, styles, bindings, or resources in the document.
+
+The Designer document lifecycle now uses the same result and restoration semantics.
+`CommandManager` assigns a non-reusable document-state ID to every commit, so the save
+point is independent of undo-stack depth: undoing a save and creating a new branch stays
+dirty, while undo/redo back to the exact saved state becomes clean. New and Open clear
+history and establish a fresh save point only after the complete target document applies;
+parse or apply failures restore the previous document, complete selection, history state,
+and dirty flag. Save writes and flushes a sibling temporary file before atomically replacing
+the XML, so write or replacement failure preserves both the old file and the dirty save
+point. The window title marks unsaved work with `*`; New, Open, and Close first settle
+pending property edits, roll back an active Canvas preview, and offer Save/Discard/Cancel.
+The current filename changes only after Open or Save actually succeeds.
+
+A dirty document is also written to an automatic recovery snapshot 750 ms after the
+last committed command. Snapshots live under
+`%LOCALAPPDATA%\CUI\Designer\Recovery` and use the same flushed temporary-file plus
+atomic-replace path as a normal save without moving the real save point. Each Designer
+process owns a session file keyed by PID and process creation time. Startup skips sessions
+whose owner is still running and offers only genuinely orphaned snapshots for recovery.
+A recovered document has no fabricated Undo history but remains dirty until explicitly
+saved. Successful Save, New, Open, or clean shutdown removes only the current session's
+snapshot. Corrupt, truncated, oversized, or unsupported recovery envelopes are renamed
+into quarantine without replacing the current document or blocking other recovery files.
+
+Undo history is now bounded by both the existing 128-entry Undo-side count and a default 64 MiB
+estimated-memory budget spanning the Undo and Redo sides. Trimming removes the farthest
+history first but always retains at least one nearest actionable command, even when one
+large snapshot exceeds the budget by itself. Ordinary control properties—including
+multi-selection, Reset, Name, grouped sliders, and continuous SplitterDistance previews—store
+per-target property deltas.
+Keyboard nudges, pointer move/resize, Reparent, and Stack/Wrap reordering store a
+placement/tree delta containing Location, Margin, explicit dimensions, alignment, Anchor,
+Grid/Dock fields, a parent locator, and sibling index. These high-frequency edits no longer
+retain two full documents or rebuild control instances during ordinary Undo/Redo. Legacy
+properties restore a serialization-equivalent base value, while Metadata properties
+preserve their exact Local and tracked states. Simple Add/Delete subtree entries remain below
+32 KiB and small nested subtrees below 64 KiB, with their runtime ownership included in the
+estimate. All eight modal structural editors now use local deltas: six store typed value
+collections, while TabControl pages and ToolBar buttons transfer live subtree ownership,
+Designer wrappers, stable IDs, selection, and attachment metadata without rebuilding instances.
+Form, event, and Binding edits retain the full-document transaction fallback; gestures in an unidentifiable custom parent
+also fall back safely.
+
+Changes to the same property on the same selection, and consecutive keyboard nudges, merge
+the original before state with the newest after state when commits are at most one second
+apart. Merging never crosses an exact save point, an existing Redo branch, a selection
+change, a different operation label, or a discontinuous current state. Targets are resolved
+again by name and type after another snapshot command rebuilds controls. Pointer gestures
+such as splitter dragging explicitly opt out of time-window merging. Canvas exposes the
+budget, estimated usage, and Undo/Redo counts, and hosts can tune the budget for their
+document scale.
+
+The property panel now has separate Properties and Events views (`Ctrl+1` / `Ctrl+2`)
+plus an immediate filter box. The Properties view owns properties, Binding, and structural
+editors; the Events view owns named events and document-wide handler management. Each view
+retains its own filter, collapsed categories, and scroll position, so an edit or selection
+refresh does not expand every group or return to the top. Whitespace-separated tokens use
+AND matching across names, categories, current values, editor kinds, choices, source
+names, and diagnostic details. Rows show their effective `[Default]`, `[Theme]`,
+`[Style]`, `[Binding]`, or `[Local]` source plus binding/error/mixed-diagnostic badges.
+Accessible descriptions and inline summaries refresh after validation or style changes,
+making precedence issues visible. Event rows are editable C++ member-function
+names rather than Boolean switches: empty unbinds, legacy `1/true` values resolve to a
+conventional default, and F4/the drop-down lists handlers with the same parameter
+signature. Events are grouped as action, value, mouse, keyboard, focus, drag/drop,
+layout, lifecycle, data, navigation, media, or diagnostics, and the catalog declares one
+default event per control type. Double-clicking either an event row or a control on the
+canvas reuses an existing handler or writes the conventional default through the normal
+undoable transaction; double-clicking the Form client surface activates its one-shot
+`OnShown` event. After one explicit code export, activation also safely regenerates `.g.*`,
+appends a missing user stub, and opens the user `.cpp`. Source lookup ignores comments,
+ordinary/raw strings, and declarations. The Designer detects VS Code or Visual Studio and
+requests the exact definition line without sending paths through a shell. Hosts may override
+the executable with `CUI_CODE_EDITOR` and provide a `CUI_CODE_EDITOR_ARGS` template containing
+`{file}`, `{line}`, and `{column}`; a failed editor launch falls back to the system file
+association. The status area reports exact navigation or fallback. A successful export persists the C++ class
+identity as `x:Class`, separately from `Form.Name`, and the extensionless path relative to
+the design file as `d:CodeBehind`; save/reopen therefore retains the association. Before
+the first export it only asks the user to establish a target and never guesses an overwrite
+path. `x:Class` accepts `Acme.Views.MainWindow` or `Acme::Views::MainWindow` and canonicalizes
+to C++ `::`; generated headers declare the leaf type inside that namespace, independently of
+the output file stem. Invalid class segments/handlers and cross-signature reuse are rejected.
+
+Code export separates regenerated and user-owned files. `FormName.g.h/.g.cpp` contains
+the generated base class, protected typed control references, virtual event hooks, and
+RAII-owned `Subscribe(std::bind_front(...))` connections. `FormName.h/.cpp` is created
+once; later exports only append missing handler stubs. `FormName.handlers.g.inc` retains
+old declarations after unbinding so existing user definitions keep compiling. A small C++
+token scan recognizes actual `Class::Handler(...) {}` definitions while ignoring comments,
+ordinary/raw strings, and prefix collisions such as `Handle` versus `HandleSave`; fake text
+therefore cannot suppress a required stub. Before writing, the same token surface verifies
+that an existing user header derives the current generated base and that the user source owns
+the matching constructor, preventing a manually changed `x:Class` from mixing class generations.
+Export refuses same-name files with missing markers or mismatched class identity. Every target in one export is staged and flushed beside
+its destination before batch commit. If a target is locked or replacement fails, previously
+committed existing files are restored from backups in reverse order and newly created targets
+are removed, preventing mixed generations across `.g.h`, `.g.cpp`, `.handlers.g.inc`, and the
+user source.
+Only an explicit export creates or changes the code-behind association. An unsaved design
+first records the class identity, then computes the portable relative path when the design
+file is first saved. The association participates in normal document transactions and
+Undo/Redo; absolute machine-specific paths are never persisted.
+
+The Designer window and build tooling now call the same HWND-free
+`DesignCodeGenerationService`, so interactive export, CI, and local builds cannot drift into
+separate generation rules. `CuiCodeGenCore/CuiCodeGenCore.vcxproj` is the sole compilation
+owner of `CodeGenerator.cpp` and the service implementation and emits `CuiCodeGenCore.lib`;
+the Designer, `CuiCodeGen.exe`, and `CUICoreTests` only link that library instead of compiling
+parallel copies. `CuiCodeGen.exe` accepts `.xml` and `.xaml`; by default it reads
+`x:Class` and `d:CodeBehind`, while explicit class and extensionless output-base overrides are
+available:
+
+```powershell
+.\CuiCodeGen\x64\Debug\CuiCodeGen.exe generate `
+    .\CuiStaticGeneratedSample\NamespacedWindow.cui.xaml
+.\CuiCodeGen\x64\Debug\CuiCodeGen.exe generate .\MainWindow.cui.xaml `
+    --output .\Generated\MainWindow --class Acme.Views.MainWindow --quiet
+```
+
+Exit codes `0`, `1`, and `2` mean success, generation failure, and command-line usage error.
+The command retains the same atomic five-file commit and user-code protection. For incremental
+pre-compile integration, reference `CuiCodeGen.vcxproj`, set `CuiCodeGenExe`, declare one or
+more `CuiDesign` items, and import `build/CuiCodeGen.targets` after
+`Microsoft.Cpp.targets`:
+
+```xml
+<ItemGroup>
+  <CuiDesign Include="MainWindow.cui.xaml">
+    <OutputBase>$(ProjectDir)Generated\MainWindow</OutputBase>
+    <!-- ClassName is normally omitted so x:Class stays authoritative. -->
+  </CuiDesign>
+</ItemGroup>
+<Import Project="..\build\CuiCodeGen.targets" />
+```
+
+The target records design-file freshness with a stamp under `$(IntDir)\CuiCodeGen` and verifies
+that all five code files exist before accepting that stamp. An unchanged input does not launch
+the generator. Even when the input timestamp changes, byte-identical canonical output keeps
+the code files and their timestamps intact, avoiding a needless C++ rebuild.
+`CuiStaticGeneratedSample` uses this build path instead of relying on a manual pre-generation
+step.
+
+The runtime representation follows a hybrid roadmap: static generation remains the
+default deployment path, while dynamic loading reuses the same document model instead
+of maintaining a second property/container implementation. `DesignDocumentGraph` is now
+the single topology layer for IDs, parent resolution, and child order.
+`DesignDocumentControlPool` instantiates controls through an injected factory, retains
+`unique_ptr` ownership before attachment, rolls back automatically on failure, and
+transfers ownership only when materialization succeeds. The public
+`RuntimeDocumentLoader` now transactionally builds a complete control tree from a
+`DesignDocument`, canonical XML, or a XAML-style string/file; failure leaves the caller's existing
+`RuntimeDocument` unchanged. The runtime document owns every root until
+`ReleaseRootControls()` or `TransferRootControlsTo()`, supports lookup by stable ID or design-time name, attaches a
+DataContext while restoring suspended Local fallbacks, and owns RAII control/form event
+connections supplied by an application name resolver. `ApplyFormProperties(...)`
+projects the form model onto an application-owned `Form` and retains that target;
+`BindFormEvents(...)` likewise retains the Form and resolver so in-place, recomposed,
+and replaced reloads can refresh presentation and rebuild Form connections. Static code-generation input
+now comes from that same `RuntimeDocument`, and generated document styles are attached
+to every root tree instead of calling the nonexistent `Form::SetStyleSheet`.
+
+`DesignDocumentEventIndex` resolves every form/control event reference into a handler
+name plus its exact C++ Event function type. It centrally rejects unknown events, invalid
+identifiers, and cross-signature name reuse. Event rows remain editable and offer
+same-signature handlers; the document-wide Rename Handler action updates every shared
+reference as one undoable transaction. XML, XAML, dynamic loading, and static generation
+therefore use the same contract. Static output still emits
+`Subscribe(std::bind_front(&GeneratedClass::Handler, this))`. Renaming deliberately does
+not rewrite arbitrary user C++ bodies; regeneration preserves the old user code and
+creates a missing safe stub for the new name.
+
+Dynamic hosts no longer need a handler-name `if/switch` for every load.
+`RuntimeEventHandlerRegistry` registers a handler name, Designer event descriptor, real
+CUI `Event` member, and callable as one route. Catalog entries now derive the field name,
+function identity, and generated C++ parameter types from the real member; parameter names
+are only readable code-generation labels. Registration also checks exact member identity,
+so `OnMouseMove` cannot masquerade as same-shaped `OnMouseClick`. Ordinary `Event<>`, the
+validation notification wrapper, and inherited Form/Control events share this contract.
+The registry rejects invalid names, cross-type reuse, and duplicate routes.
+`ControlResolver()` and `FormResolver()` capture shared registration
+state, so handlers added for a later hot reload are immediately visible to resolvers
+already retained by a RuntimeDocument. Static generation still emits direct
+`std::bind_front` subscriptions and does not acquire runtime string dispatch.
+
+For the common “file + Form + named events + save-driven reload” host, prefer
+`RuntimeDocumentSession`. It gathers the document, shared event registry, and
+threadless watcher into one non-movable UI-thread session without hiding transaction
+boundaries or creating a worker thread. Initial `MountFile()` becomes visible only after
+parsing, materialization, Binding, control/Form events, presentation, and root commit all
+succeed. The host still calls `Poll()` and handles explicit `Reloaded` / `Failed` results.
+The Form and objects captured by callbacks must outlive the session.
+
+```cpp
+Form form; // Declare first: the Form must outlive the session.
+DesignerModel::RuntimeDocumentSession session{
+    std::chrono::milliseconds{150}};
+session.EventHandlers().RegisterControl(
+    L"HandleSave", UIClass::UI_Base, L"OnMouseClick",
+    &Control::OnMouseClick,
+    std::bind_front(&MainWindow::HandleSave, this), &error);
+session.EventHandlers().RegisterForm(
+    L"HandleCommand", L"OnCommand", &Form::OnCommand,
+    std::bind_front(&MainWindow::HandleCommand, this), &error);
+
+DesignerModel::RuntimeDocumentSessionMountOptions mount;
+mount.DataContext = viewModel;
+if (!session.MountFile(L"MainForm.cui.xaml", form, mount, &error)) {
+    // Form and session.Document() retain their pre-mount state; register and retry.
+}
+
+// Called from a timer on that same UI thread.
+const auto result = session.Poll();
+if (result.State == DesignerModel::RuntimeDocumentWatchState::Failed)
+    ShowReloadError(result.Error); // The previous UI remains active.
+```
+
+The `RuntimeDocumentLoader`, standalone registry, and watcher below are the equivalent
+lower-level composition points for in-memory text, pre-attach inspection, custom root
+hosts, or application-managed multi-document lifecycles.
+
+Full property application, composite attachment, layout refresh, and style assembly now
+converge in the neutral `DesignDocumentMaterializer`. Both `DesignerCanvas` and
+`RuntimeDocumentLoader` consume its detached control forest, so dynamic loading no longer
+constructs a hidden Designer or depends on Designer-owned fonts and client-surface
+lifetimes. Static generation remains the default deployment mode, while dynamic loading
+is usable by tools, previews, and controlled hosts; future property support has one
+materialization path to maintain.
+
+```cpp
+DesignerModel::RuntimeDocument document;
+DesignerModel::RuntimeDocumentLoadOptions options;
+options.DataContext = viewModel;
+DesignerModel::RuntimeEventHandlerRegistry handlers;
+if (!handlers.RegisterControl(
+        L"HandleSave", UIClass::UI_Base, L"OnMouseClick",
+        &Control::OnMouseClick,
+        std::bind_front(&MainWindow::HandleSave, this), &error)) {
+    // Invalid name, signature conflict, duplicate route, or unknown event.
+}
+options.ControlEventResolver = handlers.ControlResolver();
+if (!handlers.RegisterForm(
+		L"HandleCommand", L"OnCommand", &Form::OnCommand,
+		std::bind_front(&MainWindow::HandleCommand, this), &error)) {
+	// Form events use the same name/signature rules.
+}
+if (!DesignerModel::RuntimeDocumentLoader::LoadFileIntoForm(
+		L"MainForm.cui.xml", form, document, options,
+		handlers.FormResolver(), &error)) {
+	// Parse, materialization, Binding, event, presentation, or root commit failed;
+	// both form and document retain their previous state.
+}
+```
+
+`Load*IntoForm(...)` is the recommended first-load path for a dynamic window. It
+commits Form presentation, Form-event connections, and the root forest only after the
+candidate document is fully ready. A host that needs to inspect or adjust the detached
+tree can call `Load*()` followed by `document.AttachToForm(...)`; the second step still
+rolls back as a unit. Once roots have been handed off by `AttachToForm`,
+`TransferRootControlsTo`, or the legacy manual-release path, direct `Load*()` is rejected
+without side effects. Subsequent changes must use `Reload*()` so the retained host
+adapter participates in commit and recovery.
+
+`XamlDocumentParser` is a readable frontend over that same `DesignDocument`, not a
+second control runtime. It supports a `Form`/`Window` root, nested controls, `x:Name`,
+optional `DesignId`, Grid definitions, TabPage content, both SplitContainer regions,
+attached layout properties, direct text, metadata-backed enum values, and floating or
+`Auto` control width/height. `{Binding ...}` becomes the existing generic binding model;
+undeclared dotted source paths are added to the DataContext schema with an unknown value
+kind. Event attributes accept either a handler such as `Click="HandleSave"` or
+`Click="Auto"`, and are ultimately connected by generated `std::bind_front` code or a
+dynamic host's name resolver. Resources and styles support typed values, setters,
+class/state selectors, and WPF-like `x:Key` plus `Style="{StaticResource ...}"`.
+Runtime property metadata remains authoritative, so a newly exposed generic property
+does not need a dedicated XAML setter.
+
+```cpp
+const std::string_view xaml = R"(
+<Form xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Name="MainForm" Text="CUI XAML" Width="480" Height="240">
+  <Form.Resources>
+    <Color x:Key="Accent">#FF0078D4</Color>
+    <Style x:Key="PrimaryButton" TargetType="Button" Class="primary">
+      <Setter Property="BackColor" Value="{StaticResource Accent}" />
+      <Setter Property="Round" Value="8" />
+    </Style>
+  </Form.Resources>
+  <StackPanel x:Name="root" Width="Auto" Height="Auto"
+              Orientation="Vertical" Spacing="8">
+    <Button x:Name="saveButton" Classes="primary"
+            Style="{StaticResource PrimaryButton}"
+            Text="{Binding User.Caption, Mode=OneWay}"
+            Click="HandleSave" />
+  </StackPanel>
+</Form>)";
+
+if (!DesignerModel::RuntimeDocumentLoader::LoadXaml(
+        std::string(xaml), document, options, &error)) {
+    // Parse/materialization failed; document still owns its previous tree.
+}
+```
+
+External controls use a prefixed element plus portable design/code-generation
+metadata. `d:BaseType` selects the built-in CUI base used for Designer preview,
+property/event metadata, layout, and headless generation. `d:CppType`, `d:Header`,
+and `d:Constructor` select the static C++ output. Constructor conventions are
+`Default`, `Bounds(x, y, width, height)`, and
+`TextBounds(text, x, y, width, height)`. Canonical XAML and v5 XML preserve the
+complete descriptor:
+
+```xml
+<Form xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:d="urn:cui:designer" xmlns:controls="urn:acme:controls">
+  <controls:StatusBadge x:Name="statusBadge"
+      d:CppType="Acme.Controls.StatusBadge"
+      d:Header="Controls/StatusBadge.h"
+      d:BaseType="Button" d:Constructor="Bounds"
+      Text="Ready" Width="120" Height="30" />
+</Form>
+```
+
+A dynamic host must register the real factory explicitly. The returned control
+must inherit and retain the declared `d:BaseType` from `Type()`. A missing
+registration fails transactionally instead of silently replacing the control.
+The Designer and `CuiCodeGen` opt into a built-in-base proxy, so they can preview
+generic metadata and emit the typed member, include, and constructor without
+loading an application DLL. Custom-only XAML properties still require metadata
+from the real control. Dynamic parsing validates and coerces them through the
+registered factory. Canonical output keeps tool-unknown values and Bindings in
+typed `d:DesignProps` / `d:DesignBindings` bags; the CLI proxy preserves them and
+emits deferred setters/bindings. Unknown attributes are never guessed. Reload
+inherits the current document's registry when it is omitted, so custom properties
+can still update in place.
+
+The Designer ToolBox can register the same portable descriptors from a UTF-8
+control manifest without loading application DLLs. Loading is transactional and
+strictly validates the schema, instantiable built-in base, XAML identity/prefix
+conflicts, canonical C++ type, and safe relative include. See
+`CuiStaticGeneratedSample/CuiDesigner.controls.xml` for a complete example:
+
+```xml
+<cuiControlCatalog schema="cui.designer.controls" version="1">
+  <control name="StatusBadge" displayName="Status badge" category="Samples"
+    baseType="Button" xamlPrefix="sample" xamlName="StatusBadge"
+    xamlNamespace="urn:cui:samples" cppType="Acme.Controls.StatusBadge"
+	header="Controls/StatusBadge.h" constructor="Bounds"
+	width="150" height="30" container="false">
+    <property name="Severity" displayName="Severity" category="Appearance"
+      kind="Int64" default="1" editor="Choice"
+      minimum="0" maximum="2" bindable="true" twoWay="false">
+      <choice displayName="Normal" value="1" />
+      <choice displayName="Warning" value="2" />
+    </property>
+    <event name="OnSeverityInvoked" displayName="Severity invoked"
+      field="OnSeverityInvoked" category="Action"
+      signature="SenderInt" order="5" default="true" />
+  </control>
+</cuiControlCatalog>
+```
+
+Launch with `Designer.exe --controls <manifest>` to add the entries to the
+ToolBox, or use `Designer.exe --validate-controls <manifest>` in CI for a
+validation-only `0/2` exit code. A `property` schema drives typed PropertyGrid
+rows, choices/ranges, Reset, Undo/Redo, persistence, and deferred Binding. The
+real custom control should still register runtime metadata under the same name.
+`twoWay=true` explicitly promises a getter and change notification; the default
+portable contract exposes only OneWay/OneTime.
+
+An `event` schema adds the custom event to the PropertyGrid event page and drives
+default-event activation, named handlers, Undo/Redo, XAML/XML round-trip, and
+static `std::bind_front` generation. `signature` is a fixed safe preset rather
+than arbitrary C++ text: `None`, `Sender`, `SenderBool`, `SenderInt`,
+`SenderFloat`, `SenderDouble`, `SenderString`, `SenderIntInt`, `SenderIntBool`,
+`SenderDoubleDouble`, or `SenderStringString`; sender is always `Control*`.
+The contract is persisted in `d:CustomEvents`, so headless generation does not
+depend on a locally installed manifest. A dynamic host additionally registers
+the real Event member through `RuntimeEventHandlerRegistry::RegisterCustomControl(...)`,
+which verifies `Event::function_type`. If an installed manifest changes the
+name, field, or signature of an event already in use, the Designer rejects the
+load and preserves the current canvas. See `CuiRuntimeSample/main.cpp` for the
+complete dynamic example.
+
+Without enhanced preview the canvas uses a `baseType` proxy while persisted
+XAML and generated C++ retain the real type. An in-process host can use
+`DesignerControlCatalog::AttachPreviewFactory(...)`. A separate trusted DLL is
+loaded only through explicit `--preview-plugin <dll>` configuration; CI can run
+`--validate-preview-plugin <dll> <xaml-namespace> <xaml-name>`. The host owns the
+proxy and the plugin returns bounded value-only drawing primitives, never a
+`Control*`. Design files and manifests cannot supply a DLL path. See the
+[value-only C ABI](CuiDesigner/CUSTOM_CONTROL_PLUGIN_ABI.md).
+
+```cpp
+auto controls = std::make_shared<DesignerModel::RuntimeCustomControlRegistry>();
+controls->Register(L"urn:acme:controls", L"StatusBadge",
+    [](const DesignerModel::DesignNode&) {
+        return std::make_unique<Acme::Controls::StatusBadge>();
+    }, &error);
+
+DesignerModel::RuntimeDocumentLoadOptions options;
+options.CustomControls = controls;
+DesignerModel::RuntimeDocumentLoader::LoadXaml(xaml, document, options, &error);
+```
+
+Dynamic hosts can safely call `Reload(...)`, `ReloadXaml(...)`, or `ReloadFile(...)`.
+Common scalar/metadata properties, Binding and DataContext schema, document styles,
+control events, and form presentation return `RuntimeDocumentReloadMode::InPlace`.
+The loader first materializes a complete candidate for validation, then retains every
+control instance by stable `DesignId` and transactionally commits property sources,
+bindings, styles, and event connections; a failure restores the previous state. Omitted
+DataContext and resolver options inherit the current runtime attachments. For topology
+or container `Extra` changes, the loader builds a candidate tree and transplants maximal
+`DesignId` subtrees whose payload and internal topology are unchanged. It returns
+`RuntimeDocumentReloadMode::Recomposed`, so add/remove/reorder operations and parent
+replacement retain unrelated control instances. Binding, event, or style failure rolls
+back both ownership and runtime attachments. With no reusable subtree, font ownership,
+unknown property bags, and a persisted property occupied by an active Binding still
+conservatively require `Replaced`. `TransferRootControlsTo(form)` retains a transactional
+Form-root adapter: reload detaches the old forest from its recorded slots, commits the
+candidate at the same anchor, and restores the exact old slots if materialization,
+Binding, events, styles, or host commit fails. Host-owned roots outside the document are
+left intact. Custom hosts can implement the `RuntimeDocumentRootHost`
+Detach/Replacement/Rollback contract. The legacy `ReleaseRootControls()` remains the
+fully manual path; without an adapter, required recomposition or replacement fails
+explicitly instead of guessing the host structure.
+
+```cpp
+DesignerModel::RuntimeDocumentReloadMode mode;
+if (!DesignerModel::RuntimeDocumentLoader::ReloadXaml(
+        updatedXaml, document, {}, &mode, &error)) {
+    // Existing instances, connections, and DataContext remain active.
+}
+
+// O(1), typed stable-ID reference; Get() resolves a replacement after reload.
+auto saveButton = document.ReferenceByDesignId<Button>(42);
+if (auto* button = saveButton.Get()) button->Text = L"Save";
+```
+
+Runtime attachments are non-owning. After `ApplyFormProperties(form)`,
+`BindFormEvents(form, ...)`, or `TransferRootControlsTo(form)`, the `Form` must outlive
+the `RuntimeDocument` (normally declare the Form first). Reload commits candidate Form
+presentation, Form-event connections, and the root forest as one transaction. Resolver
+or host rejection preserves the old presentation/font semantics, connections, and root slots.
+
+`FindControlByDesignId` and `FindControlByName` use document-owned O(1) indexes.
+`RuntimeControlRef<T>` is non-owning and resolves its stable ID on every access, so it
+follows `InPlace`, `Recomposed`, and `Replaced` reloads. Keep the same
+`RuntimeDocument` object alive and at a stable address while references are in use.
+
+For a lower-level host that composes monitoring itself, use the threadless
+`RuntimeDocumentFileWatcher`. The host calls
+`Poll()` from a UI timer. File identity, write time, and size detect direct writes and
+atomic replacement; a format-aware `ReloadFile` runs only after the signature remains
+stable for the debounce interval. A failed stable signature is not executed on every
+tick; a new file signature recovers automatically, or the host can call `RequestRetry()`:
+
+```cpp
+DesignerModel::RuntimeDocumentFileWatcher watcher{std::chrono::milliseconds{150}};
+if (!watcher.Start(L"MainWindow.cui.xaml", &error)) return;
+
+// Poll on the same UI thread that creates and operates the controls.
+const auto result = watcher.Poll(document);
+if (result.State == DesignerModel::RuntimeDocumentWatchState::Failed) {
+    ShowReloadError(result.Error); // The previous document remains active.
+}
+```
+
+The watcher creates no thread, posts no window message, and does not own the
+`RuntimeDocument`; the host retains control of scheduling, thread affinity, diagnostics,
+and whether a `Recomposed` or `Replaced` result is acceptable.
+
+This is a CUI-oriented XAML dialect rather than the full WPF XAML object system.
+Unsupported elements, properties, or markup extensions fail before commit.
+`XamlDocumentSerializer` is the parser's canonical counterpart. It keeps ordinary
+properties readable and stores structured compatibility data that has no direct syntax
+in `d:DesignProps` / `d:DesignExtra`, so a save/reload cycle preserves the complete
+Designer model. The Designer opens and saves `.cui.xaml` / `.xaml` directly and keeps
+the current source format on Save; `.cui.xml` / `.xml` use v5 XML. Version 5 adds optional
+code-behind class identity and a relative base path; versions 1–4 remain readable and are
+upgraded on the next save. Both use atomic replacement and the same materialization/code-generation path. The explicit
+Reload command runs the existing save/discard/cancel flow for dirty documents and keeps
+the current canvas if loading fails. `LoadXamlFile(...)` remains the runtime file entry.
+
+`CuiRuntime/CuiRuntime.vcxproj` packages this dynamic path as a standalone static
+library; applications do not link the Designer executable. `CuiRuntimeSample` is a
+buildable minimal host covering XAML/XML round-trip, registered custom controls, nested Grid/Tab/Split content,
+stable lookup, property/Binding/style/event in-place transactions, replacement
+boundaries, topology subtree recomposition and rollback, root ownership transfer, and
+debounced file watching plus the `RuntimeDocumentSession` UI-thread lifecycle.
+Applications include only
+`CuiRuntime/include/CuiRuntime.h`; the Designer itself now references the same
+`CuiRuntime.lib` instead of compiling a second copy of the runtime implementation:
+
+```powershell
+msbuild CuiRuntimeSample\CuiRuntimeSample.vcxproj /m /p:Configuration=Debug /p:Platform=x64
+.\CuiRuntimeSample\x64\Debug\CuiRuntimeSample.exe
+```
+
+`CuiStaticGeneratedSample` adds the Designer's namespaced `x:Class` and external custom-control output to the solution as
+real `.g.h/.g.cpp` and user `.h/.cpp` translation units, then runs it. The generated base exposes
+const and non-const typed accessors for every `x:Name` (for example `GetNamespaceButton()`) and
+publishes the matching stable IDs through `ControlIds`, so application code does not scan
+`Form::Controls` or use `dynamic_cast`. Normalized C++ member names are globally uniqued and
+their pointers are null-initialized. `CUICoreTests` also compares all five checked-in code files
+with fresh generator output (normalizing line endings), so a compiling fixture cannot silently
+drift away from the generator.
+
+```powershell
+msbuild CuiStaticGeneratedSample\CuiStaticGeneratedSample.vcxproj /m /p:Configuration=Debug /p:Platform=x64
+.\CuiStaticGeneratedSample\x64\Debug\CuiStaticGeneratedSample.exe
+```
+
+The default materialization factory creates production controls, including a real
+`WebBrowser`. Only `DesignerCanvas` explicitly injects the lightweight preview factory,
+so the Designer still avoids WebView initialization while dynamic hosts never receive a
+`FakeWebBrowser`.
+
+The designed form no longer has a duplicate `DesignedFormSnapshot` plus separate text
+and Boolean update switches. Its persisted `DesignFormModel` is now the single state
+model used by the property panel, undo/redo, XML, and code-generation input. A typed
+catalog describes all 21 form properties, including category, order, numeric bounds,
+and defaults, and centralizes coercion for size, title height, and font size. The
+property panel exposes a per-property “↺” action for form values and control metadata
+with defaults. Reset participates in undo and, for controls, clears the Local layer to
+reveal the next Style, Binding, Theme, or default value. An explicit font size now also
+round-trips when the form continues to use the default font family.
 
 `StackPanel` orientation, spacing, and content alignment; `WrapPanel` orientation, item width,
 and item height; `DockPanel` last-child fill; and `SplitContainer` orientation, splitter
@@ -205,6 +837,13 @@ flags in one operation, and generated code applies configuration metadata before
 Legacy List scalars are promoted only when matching metadata is absent. `FullRowSelect` and
 `HideSelectionWhenLostFocus` now affect rendering, while derived ListBox metadata keeps its hidden
 column-header default false.
+Large edits can use nested `BeginUpdate()` / `EndUpdate()` or `DeferUpdates()`. Stable identities,
+selection, and positions advance incrementally, while public Items/Columns observers each receive one
+Reset and scroll correction, UIA notification, and redraw are finalized once. Tail appends touch only
+the new identity/selection entries; `LastAccessibilityIndexUpdateWork()` and
+`LastSelectionUpdateWork()` provide deterministic complexity diagnostics. After directly changing the
+public `ListViewItem::Selected` field, call `Items.NotifyReset()` to reconcile the selection cache from
+Items as the source of truth.
 
 `GridView::Rows` and `Columns` are observable collections as well. Direct add/remove/move/swap/sort
 operations preserve selected row and column identity by stable ID and move every row's cells with the
@@ -320,9 +959,11 @@ destroyed source does not leave stale validation results visible.
 `DataSourceUpdateMode::OnValidation` still means “write on focus loss” for text
 controls and is independent from source-side validation state.
 
-The Designer property panel provides an Edit Data Bindings command. Its structured editor lists target properties from the selected control's metadata and filters binding modes and update modes using each property's read, write, and change-notification capabilities. Source paths support dotted values such as `Profile.Name`. The editor can select the built-in `BooleanNegation`, `StringIsNotEmpty`, and `StringTrim` converters or persist an application-defined converter ID. When a host supplies a design-time data source, the editor also previews active runtime validation issues for the selected path; this transient state is not persisted. Validation-presentation options and `AccessibleDescription` are editable as regular properties and persist into the design document and generated code. Bindings are stored in the XML design document, and generated forms with bindings expose `BindData(IBindingSource& dataContext)` so the application supplies the data context explicitly.
+The Designer property panel provides an Edit Data Bindings command. Its structured editor lists target properties from the selected control's metadata and filters binding modes and update modes using each property's read, write, and change-notification capabilities. Source paths support dotted values such as `Profile.Name`. The editor can select the built-in `BooleanNegation`, `StringIsNotEmpty`, and `StringTrim` converters or persist an application-defined converter ID. When a host supplies a design-time data source, the Designer materializes persisted configurations as real runtime bindings. It snapshots and clears masking Local values before attach, then restores them when the context is removed, the configuration changes, or attach fails. Rows expose attach errors and active source validation; this transient state is not persisted. Validation-presentation options and `AccessibleDescription` are editable as regular properties and persist into the design document and generated code. Bindings are stored in the XML design document, and generated forms with bindings expose `BindData(IBindingSource& dataContext)`. Generated attach code applies the same Local snapshot/clear/failure-restore rule so initialization cannot permanently mask a binding.
 
-When no control is selected, the form property panel provides an Edit DataContext Schema command. The schema declares dotted source paths together with their value kinds and read, write, and change-notification capabilities. Once defined, the binding editor offers discoverable source-path choices and validates source capabilities plus both sides of converter metadata. An embedded Designer host can call `Designer::SetDesignDataContext(...)` and recursively import metadata from the real view model; cyclic object graphs are truncated safely. Documents without a schema retain free-form source paths. The current design document version 3 persists both the schema and document style sheet; version 1 and 2 files remain readable and are upgraded on the next save.
+When no control is selected, the form property panel provides an Edit DataContext Schema command. The schema declares dotted source paths together with their value kinds and read, write, and change-notification capabilities. Once defined, the binding editor offers discoverable source-path choices and validates source capabilities plus both sides of converter metadata. An embedded Designer host can call `Designer::SetDesignDataContext(...)` and recursively import metadata from the real view model; cyclic object graphs are truncated safely. Documents without a schema retain free-form source paths.
+
+The current design document format is version 5. Every control persists an `id` that survives renames and reordering, an optional `parentId` for ordinary control parents, and the document persists a `nextId` high-water mark so deleted IDs are not reused. Optional code-behind metadata stores a validated C++ class identity and an extensionless path relative to the design file, never an absolute workstation path. Name references remain for readability and compatibility cases such as TabPage parents. Version 1–4 documents remain readable, receive missing state in memory, and are upgraded on the next save. Runtime controls expose `DesignId` and `FindControlByDesignId(...)`; generated code assigns the same IDs, giving dynamic XML loading and static generated UI a shared lookup contract.
 
 Register custom converters before calling a generated form's `BindData`. The metadata lets both the runtime and design tools reason about the target value kind and reverse-conversion support:
 
@@ -387,7 +1028,7 @@ The MediaPlayer page demonstrates the built-in media playback control.
   - `CUITest` now carries the small helper code it previously consumed from `Utils`, so it no longer depends on `Utils`
   - `CuiDesigner` currently depends on `CUI` and `Utils`
 - **Third-party dependencies**: WebView2; the graphics and utility source used by this repo is already included locally
-- **Designer output**: the designer saves XML and generates C++ code; it’s recommended to version-control generated code and keep the XML design files as the long-term UI source.
+- **Designer output**: the designer saves XML or CUI XAML by extension and generates C++ code; keep `.cui.xml` / `.cui.xaml` under version control as the long-term UI source.
 
 ## Community
 

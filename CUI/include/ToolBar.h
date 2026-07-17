@@ -56,6 +56,9 @@ private:
 	bool _showBottomLine = true;
 
 public:
+	/** Sentinel used by item-size overrides that follow ToolBar::ItemHeight. */
+	static constexpr int AutoItemHeightOverride = -2;
+
 	virtual UIClass Type() override;
 	void EnsureBindingPropertiesRegistered() override;
 
@@ -86,6 +89,13 @@ public:
 
 	/** @brief 添加已有控件实例到工具栏，ToolBar 负责位置排布但不接管额外样式。 */
 	Control* AddToolItem(Control* item, int width = -1, int height = -1);
+	/** @brief 查询工具项的布局尺寸覆盖，供所有权转移保真使用。 */
+	bool TryGetToolItemSizeOverride(
+		Control* item, SIZE& value) const noexcept;
+	/** @brief 恢复已挂载工具项的布局尺寸覆盖。 */
+	void SetToolItemSizeOverride(Control* item, SIZE value);
+	/** @brief 移除已分离工具项的布局尺寸覆盖。 */
+	void ClearToolItemSizeOverride(Control* item) noexcept;
 
 	template<typename T>
 	T AddToolItem(T item, int width = -1, int height = -1)
@@ -120,6 +130,9 @@ public:
 
 	/** @brief 创建并添加文字按钮。 */
 	Button* AddTextButton(std::wstring text, int width = 90);
+	/** Creates a detached button with the same defaults as AddToolButton(). */
+	std::unique_ptr<Button> CreateToolButton(
+		std::wstring text, int width = 90) const;
 	/** @brief 创建并添加一个工具按钮（自动 new）。返回按钮指针以便绑定事件。 */
 	Button* AddToolButton(std::wstring text, int width = 90);
 	/** @brief 添加已有按钮实例到工具栏（将其作为子控件）。 */

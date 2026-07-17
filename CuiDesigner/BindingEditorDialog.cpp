@@ -30,6 +30,20 @@ namespace
 		return value ? L"是" : L"否";
 	}
 
+	BindingValueKind ToBindingValueKind(DesignerStyleValueKind kind)
+	{
+		switch (kind)
+		{
+		case DesignerStyleValueKind::Bool: return BindingValueKind::Bool;
+		case DesignerStyleValueKind::Int: return BindingValueKind::Int;
+		case DesignerStyleValueKind::Int64: return BindingValueKind::Int64;
+		case DesignerStyleValueKind::Float: return BindingValueKind::Float;
+		case DesignerStyleValueKind::Double: return BindingValueKind::Double;
+		case DesignerStyleValueKind::String: return BindingValueKind::String;
+		default: return BindingValueKind::Object;
+		}
+	}
+
 	const wchar_t* ValidationSeverityName(BindingValidationSeverity severity)
 	{
 		switch (severity)
@@ -46,7 +60,8 @@ BindingEditorDialog::BindingEditorDialog(
 	Control* target,
 	const std::map<std::wstring, DesignerDataBinding>& bindings,
 	const DesignerDataContextSchema& sourceSchema,
-	IBindingSource* runtimeSource)
+	IBindingSource* runtimeSource,
+	const std::vector<DesignerCustomPropertyDescriptor>& customProperties)
 	: Form(L"编辑数据绑定", POINT{ 320, 190 }, SIZE{ 820, 704 }),
 	  ResultBindings(bindings),
 	  _target(target),
@@ -123,13 +138,35 @@ BindingEditorDialog::BindingEditorDialog(
 	_cancel = this->AddControl(new Button(L"取消", 152, 622, 120, 36));
 
 	if (_target)
-		_properties = BindingPropertyRegistry::GetProperties(*_target);
+	{
+		for (const auto* metadata : BindingPropertyRegistry::GetProperties(*_target))
+		{
+			if (!metadata) continue;
+			_properties.push_back({
+				metadata->Name(), metadata->ValueKind(),
+				metadata->CanRead(), metadata->CanWrite(), metadata->CanObserve() });
+		}
+	}
+	for (const auto& property : customProperties)
+	{
+		if (!property.Bindable) continue;
+		const auto duplicate = std::find_if(
+			_properties.begin(), _properties.end(), [&](const auto& existing)
+			{
+				return _wcsicmp(existing.Name.c_str(), property.Name.c_str()) == 0;
+			});
+		if (duplicate != _properties.end()) continue;
+		_properties.push_back({
+			property.Name,
+			ToBindingValueKind(property.DefaultValue.Kind),
+			property.SupportsTwoWayBinding,
+			true,
+			property.SupportsTwoWayBinding });
+	}
 	std::vector<std::wstring> propertyNames;
 	propertyNames.reserve(_properties.size());
-	for (const auto* metadata : _properties)
-	{
-		if (metadata) propertyNames.push_back(metadata->Name());
-	}
+	for (const auto& metadata : _properties)
+		propertyNames.push_back(metadata.Name);
 	_targetProperty->Items = propertyNames;
 
 	_targetProperty->OnSelectionChanged += [this](Control*) {
@@ -183,9 +220,9 @@ BindingEditorDialog::BindingEditorDialog(
 			{
 				if (!SaveCurrentBinding()) return;
 			}
-			else if (ResultBindings.find(metadata->Name()) != ResultBindings.end())
+			else if (ResultBindings.find(metadata->Name) != ResultBindings.end())
 			{
-				ResultBindings.erase(metadata->Name());
+				ResultBindings.erase(metadata->Name);
 			}
 		}
 		Applied = true;
@@ -199,7 +236,7 @@ BindingEditorDialog::BindingEditorDialog(
 	if (!_properties.empty())
 	{
 		_targetProperty->SelectedIndex = 0;
-		_targetProperty->Text = _properties.front()->Name();
+		_targetProperty->Text = _properties.front().Name;
 		LoadSelectedBinding();
 	}
 	else
@@ -218,12 +255,13 @@ BindingEditorDialog::BindingEditorDialog(
 	RefreshSummary();
 }
 
-const BindingPropertyMetadata* BindingEditorDialog::SelectedMetadata() const
+const DesignerBindingUtils::TargetMetadata*
+BindingEditorDialog::SelectedMetadata() const
 {
 	if (!_targetProperty) return nullptr;
 	const int index = _targetProperty->SelectedIndex;
 	if (index < 0 || index >= static_cast<int>(_properties.size())) return nullptr;
-	return _properties[static_cast<size_t>(index)];
+	return &_properties[static_cast<size_t>(index)];
 }
 
 void BindingEditorDialog::SelectComboValue(ComboBox* combo, const std::wstring& value)
@@ -243,7 +281,7 @@ void BindingEditorDialog::LoadSelectedBinding()
 
 	_loadingEditor = true;
 	DesignerDataBinding binding;
-	auto it = ResultBindings.find(metadata->Name());
+	auto it = ResultBindings.find(metadata->Name);
 	if (it != ResultBindings.end()) binding = it->second;
 	_sourcePath->Text = it == ResultBindings.end() ? L"" : binding.SourceProperty;
 	SelectKnownSourcePath(_sourcePath->Text);
@@ -287,7 +325,7 @@ void BindingEditorDialog::RefreshUpdateModeOptions(DataSourceUpdateMode preferre
 		names.push_back(L"OnPropertyChanged");
 		_updateMode->Enable = false;
 	}
-	else if (metadata && !metadata->CanObserve())
+	else if (metadata && !metadata->CanObserve)
 	{
 		names.push_back(L"Never");
 		preferredMode = DataSourceUpdateMode::Never;
@@ -312,7 +350,7 @@ void BindingEditorDialog::RefreshConverterOptions(const std::wstring& preferredC
 	{
 		const bool targetCompatible = !targetMetadata
 			|| converter.TargetKind == BindingValueKind::Empty
-			|| converter.TargetKind == targetMetadata->ValueKind();
+		|| converter.TargetKind == targetMetadata->ValueKind;
 		const bool sourceCompatible = !sourceMetadata
 			|| sourceMetadata->ValueKind == BindingValueKind::Empty
 			|| converter.SourceKind == BindingValueKind::Empty
@@ -389,10 +427,10 @@ void BindingEditorDialog::RefreshCapabilities()
 		return;
 	}
 	_capabilities->Text = L"值类型: "
-		+ std::wstring(DesignerBindingUtils::ValueKindName(metadata->ValueKind()))
-		+ L"    可读: " + YesNo(metadata->CanRead())
-		+ L"    可写: " + YesNo(metadata->CanWrite())
-		+ L"    可通知: " + YesNo(metadata->CanObserve());
+		+ std::wstring(DesignerBindingUtils::ValueKindName(metadata->ValueKind))
+		+ L"    可读: " + YesNo(metadata->CanRead)
+		+ L"    可写: " + YesNo(metadata->CanWrite)
+		+ L"    可通知: " + YesNo(metadata->CanObserve);
 	if (const auto* source = DesignerDataContextSchemaUtils::Find(
 		_sourceSchema, _sourcePath ? _sourcePath->Text : L""))
 	{
@@ -556,7 +594,7 @@ bool BindingEditorDialog::TryReadEditor(
 		return false;
 	}
 
-	targetProperty = metadata->Name();
+	targetProperty = metadata->Name;
 	binding.SourceProperty = DesignerBindingUtils::Trim(_sourcePath->Text);
 	if (!DesignerBindingUtils::TryParseBindingMode(_mode->Text, binding.Mode))
 	{
@@ -581,8 +619,8 @@ bool BindingEditorDialog::TryReadEditor(
 	{
 		binding.Converter = _converter->Text;
 	}
-	return DesignerBindingUtils::Validate(
-		*_target, targetProperty, binding, nullptr, &error, &_sourceSchema);
+	return DesignerBindingUtils::ValidateTarget(
+		*metadata, binding, &error, &_sourceSchema);
 }
 
 bool BindingEditorDialog::SaveCurrentBinding()
@@ -606,7 +644,7 @@ void BindingEditorDialog::RemoveCurrentBinding()
 {
 	const auto* metadata = SelectedMetadata();
 	if (!metadata) return;
-	const size_t removed = ResultBindings.erase(metadata->Name());
+	const size_t removed = ResultBindings.erase(metadata->Name);
 	_sourcePath->Text = L"";
 	RefreshConverterOptions(L"");
 	RefreshSummary();

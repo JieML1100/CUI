@@ -24,7 +24,8 @@
     <ProjectGuid>{328d4361-1094-47d8-b085-0a933a42ea91}</ProjectGuid>
     <RootNamespace>CuiDesigner</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
-    <ProjectName>Designer</ProjectName>
+	<ProjectName>Designer</ProjectName>
+	<PreferredToolArchitecture>x64</PreferredToolArchitecture>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -89,6 +90,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+	  <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include</AdditionalIncludeDirectories>
     </ClCompile>
@@ -109,6 +111,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+	  <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include</AdditionalIncludeDirectories>
     </ClCompile>
@@ -127,6 +130,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+	  <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include</AdditionalIncludeDirectories>
@@ -148,6 +152,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+	  <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
       <AdditionalIncludeDirectories>$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include</AdditionalIncludeDirectories>
@@ -161,7 +166,6 @@
   </ItemDefinitionGroup>
   <ItemGroup>
 	<ClCompile Include="BindingEditorDialog.cpp" />
-	<ClCompile Include="CodeGenerator.cpp" />
     <ClCompile Include="ComboBoxItemsEditorDialog.cpp" />
 	<ClCompile Include="DataContextSchemaEditorDialog.cpp" />
     <ClCompile Include="DesignerCore\CommandManager.cpp" />
@@ -177,19 +181,28 @@
     <ClCompile Include="DesignerCore\SelectionService.cpp">
       <MultiProcessorCompilation>false</MultiProcessorCompilation>
     </ClCompile>
-    <ClCompile Include="DesignerCore\Commands\AddDeleteCommand.cpp" />
     <ClCompile Include="DesignerCore\Commands\DocumentSnapshotCommand.cpp">
       <MultiProcessorCompilation>false</MultiProcessorCompilation>
     </ClCompile>
-    <ClCompile Include="DesignerCore\Commands\UpdatePropertyCommand.cpp" />
+    <ClCompile Include="DesignerCore\Commands\ControlPropertyCommand.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\Commands\ControlStructureCommand.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\Commands\ControlOwnedCollectionCommand.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\Commands\ControlPlacementCommand.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\Commands\ControlSubtreeCommand.cpp">
+      <MultiProcessorCompilation>false</MultiProcessorCompilation>
+    </ClCompile>
     <ClCompile Include="DesignerCore\PropertyGridBinder.cpp">
       <MultiProcessorCompilation>false</MultiProcessorCompilation>
     </ClCompile>
-    <ClCompile Include="DesignerModel\DesignDocumentCodeGenInputBuilder.cpp" />
-    <ClCompile Include="DesignerModel\DesignDocument.cpp">
-      <MultiProcessorCompilation>false</MultiProcessorCompilation>
-    </ClCompile>
-    <ClCompile Include="DesignerModel\DesignDocumentSerializer.cpp" />
+    <ClCompile Include="DesignerModel\DesignRecoveryStore.cpp" />
     <ClCompile Include="FakeWebBrowser.cpp" />
     <ClCompile Include="MenuItemsEditorDialog.cpp" />
 	<ClCompile Include="StatusBarPartsEditorDialog.cpp" />
@@ -201,11 +214,18 @@
       <MultiProcessorCompilation>false</MultiProcessorCompilation>
     </ClCompile>
 	<ClCompile Include="DesignerCanvas.cpp" />
-	<ClCompile Include="DesignerBindingUtils.cpp" />
-	<ClCompile Include="DesignerDataContextSchemaUtils.cpp" />
+	<ClCompile Include="DesignerControlCatalog.cpp" />
 	<ClCompile Include="DesignerControlFactory.cpp" />
-	<ClCompile Include="DesignerPropertyCatalog.cpp" />
-	<ClCompile Include="DesignerStyleSheetUtils.cpp" />
+	<ClCompile Include="DesignerCustomEditorCatalog.cpp" />
+	<ClCompile Include="DesignerControlPropertyCatalog.cpp" />
+	<ClCompile Include="DesignerPropertyRowCatalog.cpp" />
+	<ClCompile Include="DesignerPropertyEdit.cpp" />
+	<ClCompile Include="DesignerStructureEdit.cpp" />
+	<ClCompile Include="DesignerPreviewPlugin.cpp" />
+	<ClCompile Include="DesignerPreviewBridge.cpp" />
+	<ClCompile Include="EventHandlerEditorDialog.cpp" />
+	<ClCompile Include="DesignerSelfTest.cpp" />
+	<ClCompile Include="SourceCodeNavigator.cpp" />
     <ClCompile Include="DesignerTypes.cpp" />
     <ClCompile Include="GridPanelDefinitionsEditorDialog.cpp" />
     <ClCompile Include="GridViewColumnsEditorDialog.cpp" />
@@ -220,21 +240,40 @@
   <ItemGroup>
 	<ClInclude Include="BindingEditorDialog.h" />
 	<ClInclude Include="CodeGenerator.h" />
+	<ClInclude Include="DesignerModel\DesignCodeGenerationService.h" />
+	<ClInclude Include="DesignerEventCatalog.h" />
+	<ClInclude Include="EventHandlerEditorDialog.h" />
     <ClInclude Include="CodeGenInput.h" />
     <ClInclude Include="ComboBoxItemsEditorDialog.h" />
 	<ClInclude Include="DataContextSchemaEditorDialog.h" />
     <ClInclude Include="DesignerCore\CommandManager.h" />
+    <ClInclude Include="DesignerCore\DesignerDocumentTransaction.h" />
     <ClInclude Include="DesignerCore\DesignerCommandCoordinator.h" />
     <ClInclude Include="DesignerCore\HitTestService.h" />
     <ClInclude Include="DesignerCore\LayoutBridge.h" />
     <ClInclude Include="DesignerCore\SelectionService.h" />
-    <ClInclude Include="DesignerCore\Commands\AddDeleteCommand.h" />
     <ClInclude Include="DesignerCore\Commands\DocumentSnapshotCommand.h" />
-    <ClInclude Include="DesignerCore\Commands\UpdatePropertyCommand.h" />
+    <ClInclude Include="DesignerCore\Commands\ControlPropertyCommand.h" />
+    <ClInclude Include="DesignerCore\Commands\ControlStructureCommand.h" />
+    <ClInclude Include="DesignerCore\Commands\ControlOwnedCollectionCommand.h" />
+    <ClInclude Include="DesignerCore\Commands\ControlPlacementCommand.h" />
+    <ClInclude Include="DesignerCore\Commands\ControlSubtreeCommand.h" />
     <ClInclude Include="DesignerCore\PropertyGridBinder.h" />
+    <ClInclude Include="DesignerModel\AtomicFile.h" />
     <ClInclude Include="DesignerModel\DesignDocumentCodeGenInputBuilder.h" />
+    <ClInclude Include="DesignerModel\DesignDocumentControlPool.h" />
     <ClInclude Include="DesignerModel\DesignDocument.h" />
+	<ClInclude Include="DesignerModel\DesignDocumentEventIndex.h" />
+	<ClInclude Include="DesignerModel\DesignDocumentFileFormat.h" />
+    <ClInclude Include="DesignerModel\DesignDocumentGraph.h" />
+    <ClInclude Include="DesignerModel\DesignDocumentMaterializer.h" />
+    <ClInclude Include="DesignerModel\RuntimeDocument.h" />
+	<ClInclude Include="DesignerModel\RuntimeDocumentFileWatcher.h" />
+	<ClInclude Include="DesignerModel\RuntimeDocumentTopologyReloader.h" />
+	<ClInclude Include="DesignerModel\XamlDocumentParser.h" />
+	<ClInclude Include="DesignerModel\XamlDocumentSerializer.h" />
     <ClInclude Include="DesignerModel\DesignDocumentSerializer.h" />
+    <ClInclude Include="DesignerModel\DesignRecoveryStore.h" />
     <ClInclude Include="FakeWebBrowser.h" />
     <ClInclude Include="MenuItemsEditorDialog.h" />
 	<ClInclude Include="StatusBarPartsEditorDialog.h" />
@@ -243,9 +282,21 @@
 	<ClInclude Include="DesignerCanvas.h" />
 	<ClInclude Include="DesignerBindingUtils.h" />
 	<ClInclude Include="DesignerDataContextSchemaUtils.h" />
+	<ClInclude Include="DesignerControlCatalog.h" />
 	<ClInclude Include="DesignerControlFactory.h" />
+	<ClInclude Include="DesignerFormPropertyCatalog.h" />
+	<ClInclude Include="DesignerCustomEditorCatalog.h" />
+	<ClInclude Include="DesignerControlPropertyCatalog.h" />
+	<ClInclude Include="DesignerPropertyRowCatalog.h" />
+	<ClInclude Include="DesignerPropertyEdit.h" />
+	<ClInclude Include="DesignerStructureEdit.h" />
 	<ClInclude Include="DesignerPropertyCatalog.h" />
+	<ClInclude Include="DesignerSelfTest.h" />
+	<ClInclude Include="SourceCodeNavigator.h" />
 	<ClInclude Include="DesignerPropertyValue.h" />
+	<ClInclude Include="DesignerPreviewPluginAbi.h" />
+	<ClInclude Include="DesignerPreviewPlugin.h" />
+	<ClInclude Include="DesignerPreviewBridge.h" />
 	<ClInclude Include="DesignerStyleSheet.h" />
 	<ClInclude Include="DesignerStyleSheetUtils.h" />
     <ClInclude Include="DesignerTypes.h" />
@@ -258,7 +309,13 @@
     <ClInclude Include="TreeViewNodesEditorDialog.h" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\D2DGraphics\D2DGraphics.vcxproj">
+	<ProjectReference Include="..\CuiCodeGenCore\CuiCodeGenCore.vcxproj">
+	  <Project>{4A2749A7-CA13-4EEA-9E62-BF23B221E934}</Project>
+	</ProjectReference>
+	<ProjectReference Include="..\CuiRuntime\CuiRuntime.vcxproj">
+	  <Project>{a2f2fb5d-7b17-4c41-9c9a-7c0eb68d6a32}</Project>
+	</ProjectReference>
+	<ProjectReference Include="..\D2DGraphics\D2DGraphics.vcxproj">
       <Project>{dbe82cef-212b-4fcd-8a2b-99f17c3b7f19}</Project>
     </ProjectReference>
     <ProjectReference Include="..\CUI\CUI.vcxproj">

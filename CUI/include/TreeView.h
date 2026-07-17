@@ -103,6 +103,7 @@ private:
 	friend class TreeNode;
 public:
 	virtual UIClass Type();
+	void EnsureBindingPropertiesRegistered() override;
 	CursorKind QueryCursor(int localX, int localY) override;
 	bool HandlesMouseWheel() const override { return true; }
 	bool CanHandleMouseWheel(int delta, int localX, int localY) override;

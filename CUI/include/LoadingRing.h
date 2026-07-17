@@ -13,6 +13,7 @@ private:
 
 public:
 	virtual UIClass Type();
+	void EnsureBindingPropertiesRegistered() override;
 	float BorderThickness = 0.0f;
 
 	PROPERTY(bool, Active);

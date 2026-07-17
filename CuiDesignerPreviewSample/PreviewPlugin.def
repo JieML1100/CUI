@@ -1,0 +1,4 @@
+LIBRARY "CuiDesignerPreviewSample"
+EXPORTS
+    CuiDesignerGetPreviewPluginV1
+

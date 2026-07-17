@@ -20,6 +20,28 @@ namespace
 
 UIClass LoadingRing::Type() { return UIClass::UI_LoadingRing; }
 
+void LoadingRing::EnsureBindingPropertiesRegistered()
+{
+	Control::EnsureBindingPropertiesRegistered();
+	static const bool registered = []
+	{
+		ControlPropertyOptions<LoadingRing, bool> options;
+		options.DefaultValue = true;
+		options.Flags = ControlPropertyFlags::AffectsRender;
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 10;
+		options.Design.Editor = ControlPropertyEditorKind::Boolean;
+		options.Design.Persistence = ControlPropertyPersistence::Legacy;
+		BindingPropertyRegistry::Register<LoadingRing, bool>(L"Active",
+			[](LoadingRing& target) { return target.Active; },
+			[](LoadingRing& target, const bool& value) { target.Active = value; },
+			{}, std::move(options));
+		return true;
+	}();
+	(void)registered;
+}
+
 GET_CPP(LoadingRing, bool, Active)
 {
 	return this->_active;

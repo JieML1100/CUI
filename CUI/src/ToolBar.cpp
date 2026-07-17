@@ -319,17 +319,52 @@ Control* ToolBar::AddToolItem(Control* item, int width, int height)
 	return control;
 }
 
+bool ToolBar::TryGetToolItemSizeOverride(
+	Control* item, SIZE& value) const noexcept
+{
+	const auto found = _toolItemSizeOverrides.find(item);
+	if (found == _toolItemSizeOverrides.end()) return false;
+	value = found->second;
+	return true;
+}
+
+void ToolBar::SetToolItemSizeOverride(Control* item, SIZE value)
+{
+	if (!item || item->Parent != this)
+		throw std::invalid_argument(
+			"只能恢复已挂载工具项的尺寸覆盖");
+	_toolItemSizeOverrides[item] = value;
+	if (value.cx > 0) item->Width = value.cx;
+	if (value.cy == AutoItemHeight) item->Height = ItemHeight;
+	else if (value.cy > 0) item->Height = value.cy;
+	if (!IsLayoutSuspended()) LayoutItems();
+}
+
+void ToolBar::ClearToolItemSizeOverride(Control* item) noexcept
+{
+	if (item) _toolItemSizeOverrides.erase(item);
+}
+
 Button* ToolBar::AddTextButton(std::wstring text, int width)
 {
 	return AddToolButton(text, width);
 }
 
+std::unique_ptr<Button> ToolBar::CreateToolButton(
+	std::wstring text, int width) const
+{
+	auto button = std::make_unique<Button>(
+		text, 0, 0, width, _itemHeight);
+	ApplyDefaultToolButtonStyle(button.get());
+	button->Round = _itemCornerRatio;
+	return button;
+}
+
 Button* ToolBar::AddToolButton(std::wstring text, int width)
 {
-	auto button = std::make_unique<Button>(text, 0, 0, width, ItemHeight);
-	ApplyDefaultToolButtonStyle(button.get());
-	button->Round = this->ItemCornerRatio;
-	return AddOwned(std::move(button), width, AutoItemHeight);
+	return AddOwned(
+		CreateToolButton(std::move(text), width),
+		width, AutoItemHeightOverride);
 }
 
 Button* ToolBar::AddToolButton(Button* button)

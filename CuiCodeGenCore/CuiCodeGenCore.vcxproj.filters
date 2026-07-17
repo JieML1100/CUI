@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files"><UniqueIdentifier>{AA82E14D-D28B-42E9-A7F6-0717513E8154}</UniqueIdentifier></Filter>
+    <Filter Include="Header Files"><UniqueIdentifier>{CEEAFF8A-E6E7-459D-8A7F-2290BD57DE69}</UniqueIdentifier></Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\CuiDesigner\CodeGenerator.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignCodeGenerationService.cpp"><Filter>Source Files</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\CuiDesigner\CodeGenerator.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\CuiDesigner\DesignerModel\DesignCodeGenerationService.h"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
+</Project>

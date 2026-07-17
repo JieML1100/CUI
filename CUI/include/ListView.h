@@ -2,6 +2,7 @@
 #include "Control.h"
 #include "ObservableCollection.h"
 #include <unordered_map>
+#include <unordered_set>
 
 /**
  * @file ListView.h
@@ -55,6 +56,7 @@ public:
 	const BitmapSource* ImageCacheSource = nullptr;
 	UINT64 Tag = 0;
 	bool Checked = false;
+	/** Compatibility flag; call owner.Items.NotifyReset() after direct edits. */
 	bool Selected = false;
 	bool Enabled = true;
 
@@ -70,6 +72,21 @@ typedef Event<void(class ListView*, int index, bool checked)> ListViewCheckChang
 class ListView : public Control, public IAccessibilityVirtualizedControl
 {
 public:
+	class UpdateScope
+	{
+	public:
+		explicit UpdateScope(ListView& owner) noexcept;
+		~UpdateScope();
+		UpdateScope(const UpdateScope&) = delete;
+		UpdateScope& operator=(const UpdateScope&) = delete;
+		UpdateScope(UpdateScope&& other) noexcept;
+		UpdateScope& operator=(UpdateScope&& other) noexcept;
+		void Commit() noexcept;
+
+	private:
+		ListView* _owner = nullptr;
+	};
+
 	UIClass Type() override;
 	void EnsureBindingPropertiesRegistered() override;
 	ListView(int x = 0, int y = 0, int width = 240, int height = 180);
@@ -157,6 +174,11 @@ public:
 	/** Returns the current viewport's contiguous candidate range as [start, end). */
 	void GetVisibleItemRange(int& start, int& end) const noexcept;
 	int HitTestItem(int localX, int localY) const;
+	/** Starts/ends a nested structural batch with one public Reset at the edge. */
+	void BeginUpdate() noexcept;
+	void EndUpdate() noexcept;
+	bool IsUpdating() const noexcept { return _updateDepth != 0; }
+	[[nodiscard]] UpdateScope DeferUpdates() noexcept { return UpdateScope(*this); }
 	void GetAccessibilityVirtualChildren(
 		uint32_t parentId, std::vector<uint32_t>& result) override;
 	bool TryGetAccessibilityVirtualNode(
@@ -172,6 +194,16 @@ public:
 	size_t MaterializedAccessibilityCellCount() const noexcept
 	{
 		return _accessibilityCellIds.size();
+	}
+	/** Number of item-index entries touched by the latest structural mutation. */
+	size_t LastAccessibilityIndexUpdateWork() const noexcept
+	{
+		return _lastAccessibilityIndexUpdateWork;
+	}
+	/** Number of selection entries inspected by the latest selection operation. */
+	size_t LastSelectionUpdateWork() const noexcept
+	{
+		return _lastSelectionUpdateWork;
 	}
 	AccessibilityVirtualContainerInfo
 		GetAccessibilityVirtualContainerInfo() const noexcept override;
@@ -222,8 +254,13 @@ private:
 
 	bool _dragVScroll = false;
 	float _scrollThumbGrabOffsetY = 0.0f;
+	unsigned int _updateDepth = 0;
+	bool _updatePendingCollectionRefresh = false;
 	int _anchorIndex = -1;
 	bool _selectionItemsPrepared = false;
+	bool _selectedIndexFollowsItems = false;
+	ControlPropertyValueSource _selectedIndexProjectionSource =
+		ControlPropertyValueSource::Default;
 	int _viewMode = static_cast<int>(ListViewViewMode::List);
 	int _selectionMode = static_cast<int>(ListViewSelectionMode::Single);
 	bool _showCheckBoxes = false;
@@ -251,12 +288,16 @@ private:
 	int _focusedIndex = -1;
 	float _scrollYOffset = 0.0f;
 	mutable uint32_t _accessibilityImplicitColumnId = 0;
+	mutable std::vector<uint32_t> _accessibilityItemIdsByIndex;
 	mutable std::unordered_map<uint32_t, size_t> _accessibilityItemIndexById;
 	mutable std::unordered_map<uint32_t, size_t> _accessibilityColumnIndexById;
 	mutable std::unordered_map<uint64_t, uint32_t> _accessibilityCellIds;
 	mutable std::unordered_map<uint32_t, uint64_t> _accessibilityCellKeyById;
 	mutable bool _accessibilityItemIdsDirty = true;
 	mutable bool _accessibilityDetailsIdsDirty = true;
+	std::unordered_set<uint32_t> _selectedItemIds;
+	mutable size_t _lastAccessibilityIndexUpdateWork = 0;
+	mutable size_t _lastSelectionUpdateWork = 0;
 	D2D1_COLOR_F _headerBackColor = D2D1_COLOR_F{ 0.18f, 0.22f, 0.28f, 0.95f };
 	D2D1_COLOR_F _headerForeColor = D2D1_COLOR_F{ 0.90f, 0.93f, 0.98f, 1.0f };
 	D2D1_COLOR_F _gridLineColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.24f };
@@ -306,14 +347,21 @@ private:
 	void SetCurrentHoveredIndex(int value);
 	void SetCurrentScrollYOffset(float value);
 	void ClampScrollToRange();
+	void RequestCollectionRefresh();
 	void OnItemsCollectionChanged(const CollectionChangedEventArgs& change);
 	void OnColumnsCollectionChanged(const CollectionChangedEventArgs& change);
 	bool ShouldDrawSelection(const ListViewItem& item) const;
 	void EnsureAccessibilityItemIds() const;
+	bool ApplyAccessibilityItemCollectionChange(
+		const CollectionChangedEventArgs& change);
+	void PruneAccessibilityCellsForMissingItems() const;
 	void EnsureAccessibilityDetailsIds() const;
 	uint32_t EnsureAccessibilityCellId(
 		uint32_t rowId, uint32_t columnId) const;
 	int FindAccessibilityItem(uint32_t id) const;
+	bool SetCachedItemSelected(size_t index, bool selected);
+	bool ClearCachedSelection();
+	int FindFirstCachedSelectedIndex() const;
 };
 /**
  * @file ListView.h

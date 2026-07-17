@@ -19,7 +19,10 @@ std::wstring ToolBarButtonsEditorDialog::Trim(const std::wstring& s)
 	return s.substr(start, end - start);
 }
 
-void ToolBarButtonsEditorDialog::AddRow(const std::wstring& text, const std::wstring& width)
+void ToolBarButtonsEditorDialog::AddRow(
+	const std::wstring& text,
+	const std::wstring& width,
+	Button* button)
 {
 	if (!_grid) return;
 	GridViewRow r;
@@ -28,6 +31,7 @@ void ToolBarButtonsEditorDialog::AddRow(const std::wstring& text, const std::wst
 	r.Cells.push_back(CellValue(L""));
 	r.Cells.push_back(CellValue(L""));
 	r.Cells.push_back(CellValue(L""));
+	r.Cells[COL_TEXT].SetPointer(button);
 	_grid->AddRow(r);
 }
 
@@ -40,7 +44,10 @@ void ToolBarButtonsEditorDialog::RefreshGridFromTarget()
 	{
 		auto c = _target->operator[](i);
 		if (!c) continue;
-		AddRow(c->Text, std::to_wstring((int)c->Width));
+		AddRow(
+			c->Text,
+			std::to_wstring(static_cast<int>(c->Width)),
+			dynamic_cast<Button*>(c));
 	}
 }
 
@@ -135,14 +142,7 @@ ToolBarButtonsEditorDialog::ToolBarButtonsEditorDialog(ToolBar* target)
 		if (!_target || !_grid) { this->Close(); return; }
 		_grid->ChangeEditionSelected(-1, -1);
 
-		// 清空现有按钮（递归释放子控件）
-		while (_target->Count > 0)
-		{
-			auto c = _target->operator[](_target->Count - 1);
-			if (OnBeforeDeleteButton) OnBeforeDeleteButton(c);
-			_target->DeleteControl(c);
-		}
-
+		Buttons.clear();
 		for (size_t i = 0; i < _grid->RowCount(); i++)
 		{
 			auto& row = _grid->RowAt(static_cast<int>(i));
@@ -159,12 +159,13 @@ ToolBarButtonsEditorDialog::ToolBarButtonsEditorDialog(ToolBar* target)
 					if (width < 24) width = 24;
 				}
 			}
-			_target->AddToolButton(text, width);
+			auto* existing = static_cast<Button*>(
+				row.Cells[COL_TEXT].GetPointer());
+			if (existing && existing->Parent != _target) existing = nullptr;
+			Buttons.push_back({ existing, std::move(text), width });
 		}
 
-		_target->LayoutItems();
 		Applied = true;
-		_target->InvalidateVisual();
 		this->Close();
 	};
 

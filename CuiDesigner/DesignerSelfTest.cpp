@@ -1,0 +1,4825 @@
+#include "DesignerSelfTest.h"
+#include "CodeGenerator.h"
+#include "DesignerCanvas.h"
+#include "DesignerControlCatalog.h"
+#include "DesignerPreviewPlugin.h"
+#include "DesignerCore/Commands/ControlPlacementCommand.h"
+#include "DesignerCore/Commands/ControlStructureCommand.h"
+#include "DesignerCore/Commands/ControlOwnedCollectionCommand.h"
+#include "DesignerCore/Commands/DocumentSnapshotCommand.h"
+#include "DesignerStructureEdit.h"
+#include "DesignerModel/AtomicFile.h"
+#include "DesignerModel/DesignDocument.h"
+#include "DesignerModel/DesignDocumentEventIndex.h"
+#include "DesignerModel/DesignDocumentCodeGenInputBuilder.h"
+#include "DesignerModel/DesignDocumentSerializer.h"
+#include "DesignerModel/RuntimeDocument.h"
+#include "DesignerModel/XamlDocumentParser.h"
+#include "DesignerModel/XamlDocumentSerializer.h"
+#include "DesignerPropertyCatalog.h"
+#include "DesignerPropertyRowCatalog.h"
+#include "PropertyGrid.h"
+#include "SourceCodeNavigator.h"
+#include "ToolBox.h"
+#include "../CUI/include/ComboBox.h"
+#include "../CUI/include/Form.h"
+#include "../CUI/include/GridView.h"
+#include "../CUI/include/Menu.h"
+#include "../CUI/include/ProgressBar.h"
+#include "../CUI/include/SplitContainer.h"
+#include "../CUI/include/StatusBar.h"
+#include "../CUI/include/TabControl.h"
+#include "../CUI/include/ToolBar.h"
+#include "../CUI/include/TreeView.h"
+#include "../CUI/include/WebBrowser.h"
+#include "../CUI/include/Layout/GridPanel.h"
+#include "../CUI/include/Layout/StackPanel.h"
+#include <algorithm>
+#include <cmath>
+#include <memory>
+#include <limits>
+#include <vector>
+#include <Windows.h>
+
+namespace
+{
+	CuiDesignerPreviewStatusV1 CUI_DESIGNER_PREVIEW_CALL FakePreviewCreate(
+		void*, CuiDesignerUtf8ViewV1, CuiDesignerUtf8ViewV1, void** session)
+	{
+		if (session) *session = reinterpret_cast<void*>(1);
+		return CUI_DESIGNER_PREVIEW_OK_V1;
+	}
+	void CUI_DESIGNER_PREVIEW_CALL FakePreviewDestroy(void*, void*) {}
+	CuiDesignerPreviewStatusV1 CUI_DESIGNER_PREVIEW_CALL FakePreviewSetValue(
+		void*, void*, CuiDesignerUtf8ViewV1,
+		const CuiDesignerPreviewValueV1*)
+	{
+		return CUI_DESIGNER_PREVIEW_OK_V1;
+	}
+	CuiDesignerPreviewStatusV1 CUI_DESIGNER_PREVIEW_CALL FakePreviewRender(
+		void*, void*, const CuiDesignerPreviewFrameInputV1*,
+		CuiDesignerPreviewFrameV1*)
+	{
+		return CUI_DESIGNER_PREVIEW_OK_V1;
+	}
+	void CUI_DESIGNER_PREVIEW_CALL FakePreviewShutdown(void*) {}
+
+	class SelfTestStatusBadge final : public Button
+	{
+	public:
+		SelfTestStatusBadge(int x, int y)
+			: Button(L"Preview", x, y, 150, 30) {}
+	};
+
+	std::shared_ptr<DesignerControl> FindControl(
+		DesignerCanvas& canvas,
+		const std::wstring& name)
+	{
+		const auto& controls = canvas.GetAllControls();
+		const auto found = std::find_if(
+			controls.begin(), controls.end(), [&](const auto& control)
+			{
+				return control && control->Name == name;
+			});
+		return found == controls.end() ? nullptr : *found;
+	}
+
+	std::wstring ControlText(
+		DesignerCanvas& canvas,
+		const std::wstring& name)
+	{
+		auto control = FindControl(canvas, name);
+		return control && control->ControlInstance
+			? control->ControlInstance->Text : std::wstring{};
+	}
+
+	Control* FindDescendantByAccessibleName(
+		Control* root,
+		const std::wstring& accessibleName)
+	{
+		if (!root) return nullptr;
+		if (root->AccessibleName == accessibleName) return root;
+		for (int index = 0; index < root->Count; ++index)
+			if (auto* found = FindDescendantByAccessibleName(
+				root->operator[](index), accessibleName))
+				return found;
+		return nullptr;
+	}
+
+	void AppendFailure(
+		std::vector<std::wstring>& failures,
+		bool condition,
+		std::wstring message)
+	{
+		if (!condition) failures.push_back(std::move(message));
+	}
+
+	void AppendFailure(
+		std::vector<std::wstring>& failures,
+		const DesignerDocumentTransactionResult& result,
+		std::wstring message)
+	{
+		if (result.HasChanges()) return;
+		if (!result.Error.empty()) message += L": " + result.Error;
+		failures.push_back(std::move(message));
+	}
+
+	bool IsUnchanged(
+		const DesignerDocumentTransactionResult& result)
+	{
+		return result.State
+			== DesignerDocumentTransactionState::Unchanged;
+	}
+
+	bool EquivalentDocumentContent(
+		DesignerModel::DesignDocument left,
+		DesignerModel::DesignDocument right)
+	{
+		// nextId is an allocation high-water mark, not visual/document content.
+		left.NextStableId = 1;
+		right.NextStableId = 1;
+		return left == right;
+	}
+
+	std::wstring CreateTemporarySelfTestFile()
+	{
+		wchar_t directory[MAX_PATH]{};
+		wchar_t path[MAX_PATH]{};
+		if (::GetTempPathW(MAX_PATH, directory) == 0
+			|| ::GetTempFileNameW(
+				directory, L"cui", 0, path) == 0)
+			return {};
+		return path;
+	}
+
+	bool HasAtomicSaveTemporaryFile(const std::wstring& filePath)
+	{
+		WIN32_FIND_DATAW data{};
+		const auto pattern = filePath + L".~cui-*.tmp";
+		const HANDLE found = ::FindFirstFileW(pattern.c_str(), &data);
+		if (found == INVALID_HANDLE_VALUE) return false;
+		(void)::FindClose(found);
+		return true;
+	}
+
+	struct TemporarySelfTestFiles
+	{
+		~TemporarySelfTestFiles()
+		{
+			for (const auto& path : Paths)
+				if (!path.empty()) (void)::DeleteFileW(path.c_str());
+		}
+
+		std::vector<std::wstring> Paths;
+	};
+
+	void ReloadCurrentSelection(
+		PropertyGrid& propertyGrid,
+		DesignerCanvas& canvas)
+	{
+		propertyGrid.LoadControls(
+			canvas.GetSelectedControls(), canvas.GetSelectedControl());
+	}
+}
+
+bool RunDesignerSelfTest(std::wstring& report)
+{
+	std::vector<std::wstring> failures;
+	CuiDesignerPreviewPluginV1 previewTable{};
+	previewTable.StructSize = sizeof(previewTable);
+	previewTable.AbiVersion = CUI_DESIGNER_PREVIEW_ABI_V1;
+	previewTable.CreateSession = &FakePreviewCreate;
+	previewTable.DestroySession = &FakePreviewDestroy;
+	previewTable.SetValue = &FakePreviewSetValue;
+	previewTable.Render = &FakePreviewRender;
+	previewTable.Shutdown = &FakePreviewShutdown;
+	std::wstring previewContractError;
+	AppendFailure(failures,
+		DesignerPreviewPluginContract::ValidatePluginTable(
+			&previewTable, &previewContractError),
+		L"preview plugin contract: valid V1 function table was rejected");
+	previewTable.AbiVersion = CUI_DESIGNER_PREVIEW_ABI_V1 + 1;
+	AppendFailure(failures,
+		!DesignerPreviewPluginContract::ValidatePluginTable(
+			&previewTable, &previewContractError),
+		L"preview plugin contract: incompatible ABI was accepted");
+	previewTable.AbiVersion = CUI_DESIGNER_PREVIEW_ABI_V1;
+
+	const char previewText[] = "Badge";
+	CuiDesignerPreviewPrimitiveV1 previewPrimitive{};
+	previewPrimitive.StructSize = sizeof(previewPrimitive);
+	previewPrimitive.Kind = CUI_DESIGNER_PREVIEW_PRIMITIVE_TEXT_V1;
+	previewPrimitive.Width = 100.0f;
+	previewPrimitive.Height = 24.0f;
+	previewPrimitive.FillArgb32 = 0xFF102030u;
+	previewPrimitive.Text = { previewText, 5 };
+	previewPrimitive.FontSize = 13.0f;
+	CuiDesignerPreviewFrameV1 previewFrame{};
+	previewFrame.StructSize = sizeof(previewFrame);
+	previewFrame.Primitives = &previewPrimitive;
+	previewFrame.PrimitiveCount = 1;
+	std::vector<DesignerPreviewPrimitive> copiedPreviewFrame;
+	AppendFailure(failures,
+		DesignerPreviewPluginContract::CopyFrame(
+			previewFrame, copiedPreviewFrame, &previewContractError)
+		&& copiedPreviewFrame.size() == 1
+		&& copiedPreviewFrame.front().Text == L"Badge"
+		&& copiedPreviewFrame.front().FillArgb32 == 0xFF102030u,
+		L"preview plugin contract: valid plugin-owned frame was not copied");
+	const auto retainedPreviewFrame = copiedPreviewFrame;
+	previewPrimitive.Width = std::numeric_limits<float>::quiet_NaN();
+	AppendFailure(failures,
+		!DesignerPreviewPluginContract::CopyFrame(
+			previewFrame, copiedPreviewFrame, &previewContractError)
+		&& copiedPreviewFrame.size() == retainedPreviewFrame.size()
+		&& copiedPreviewFrame.front().Text == retainedPreviewFrame.front().Text,
+		L"preview plugin contract: invalid frame was not rejected transactionally");
+
+	ToolBox toolBox(0, 0, 260, 640);
+	AppendFailure(failures,
+		toolBox.GetItemCount() == ControlRegistry::GetAvailableControls().size()
+		&& toolBox.GetVisibleItemCount() == toolBox.GetItemCount()
+		&& toolBox.GetVisibleCategoryCount() == 7,
+		L"toolbox: controls were not grouped into the expected native categories");
+	toolBox.SetFilterText(L"媒体");
+	AppendFailure(failures,
+		toolBox.GetVisibleItemCount() == 2
+		&& toolBox.GetVisibleCategoryCount() == 1,
+		L"toolbox: category-aware filtering did not isolate media controls");
+	toolBox.SetFilterText(L"Button");
+	AppendFailure(failures,
+		toolBox.GetVisibleItemCount() == 1
+		&& toolBox.GetVisibleCategoryCount() == 1,
+		L"toolbox: type-name filtering did not isolate Button");
+	toolBox.SetFilterText(L"不存在的控件");
+	AppendFailure(failures,
+		toolBox.GetVisibleItemCount() == 0
+		&& toolBox.GetVisibleCategoryCount() == 0,
+		L"toolbox: empty filter results retained stale visible rows");
+
+	auto catalogDescriptors = DesignerControlCatalog::BuiltInDescriptors();
+	const auto builtInDescriptorCount = catalogDescriptors.size();
+	const std::string catalogXml = R"xml(<?xml version="1.0" encoding="utf-8"?>
+<cuiControlCatalog schema="cui.designer.controls" version="1">
+  <control name="StatusBadge" displayName="Status badge" category="Business"
+    baseType="Button" xamlPrefix="sample" xamlName="StatusBadge"
+    xamlNamespace="urn:cui:selftest" cppType="Acme.Controls.StatusBadge"
+    header="Controls/StatusBadge.h" constructor="Bounds"
+	width="150" height="30" container="false">
+    <property name="Severity" displayName="Severity" category="Appearance"
+      categoryOrder="200" order="10" kind="Int64" default="1"
+      editor="Choice" minimum="0" maximum="2" bindable="true">
+      <choice displayName="Info" value="0" />
+      <choice displayName="Normal" value="1" />
+      <choice displayName="Warning" value="2" />
+    </property>
+    <event name="OnSeverityInvoked" displayName="Severity invoked"
+      field="OnSeverityInvoked" category="Action" signature="SenderInt"
+      order="5" default="true" />
+  </control>
+</cuiControlCatalog>)xml";
+	std::wstring catalogError;
+	AppendFailure(failures,
+		DesignerControlCatalog::AppendFromXml(
+			catalogDescriptors, catalogXml, &catalogError)
+		&& catalogDescriptors.size() == builtInDescriptorCount + 1
+		&& catalogDescriptors.back().CustomType.CppType
+			== L"Acme::Controls::StatusBadge"
+		&& catalogDescriptors.back().DefaultSize.cx == 150
+		&& catalogDescriptors.back().Category == L"Business"
+		&& catalogDescriptors.back().CustomProperties.size() == 1
+		&& catalogDescriptors.back().CustomProperties.front().Name == L"Severity"
+		&& catalogDescriptors.back().CustomProperties.front().Choices.size() == 3
+		&& catalogDescriptors.back().CustomEvents.size() == 1
+		&& catalogDescriptors.back().CustomEvents.front().IsDefault,
+		L"custom control catalog: valid manifest did not produce a canonical descriptor");
+	const auto validCatalogSize = catalogDescriptors.size();
+	AppendFailure(failures,
+		!DesignerControlCatalog::AppendFromXml(
+			catalogDescriptors, catalogXml, &catalogError)
+		&& catalogDescriptors.size() == validCatalogSize,
+		L"custom control catalog: duplicate append was not rejected transactionally");
+	const std::string conflictingCatalogXml = R"xml(
+<cuiControlCatalog schema="cui.designer.controls" version="1">
+  <control name="OtherBadge" baseType="Button" xamlPrefix="sample"
+    xamlName="OtherBadge" xamlNamespace="urn:cui:other"
+    cppType="Acme.Controls.OtherBadge" header="Controls/OtherBadge.h" />
+</cuiControlCatalog>)xml";
+	AppendFailure(failures,
+		!DesignerControlCatalog::AppendFromXml(
+			catalogDescriptors, conflictingCatalogXml, &catalogError)
+		&& catalogDescriptors.size() == validCatalogSize,
+		L"custom control catalog: conflicting prefix was not rejected transactionally");
+	const std::string nestedCatalogXml = R"xml(
+<cuiControlCatalog schema="cui.designer.controls" version="1">
+  <control name="NestedBadge" baseType="Button" xamlPrefix="other"
+    xamlName="NestedBadge" xamlNamespace="urn:cui:nested"
+    cppType="Acme.Controls.NestedBadge" header="Controls/NestedBadge.h">
+    <unknown />
+  </control>
+</cuiControlCatalog>)xml";
+	AppendFailure(failures,
+		!DesignerControlCatalog::AppendFromXml(
+			catalogDescriptors, nestedCatalogXml, &catalogError)
+		&& catalogDescriptors.size() == validCatalogSize,
+		L"custom control catalog: nested content was not rejected transactionally");
+	const std::string invalidPropertyCatalogXml = R"xml(
+<cuiControlCatalog schema="cui.designer.controls" version="1">
+  <control name="BadBadge" baseType="Button" xamlPrefix="bad"
+    xamlName="BadBadge" xamlNamespace="urn:cui:bad"
+    cppType="Acme.Controls.BadBadge" header="Controls/BadBadge.h">
+    <property name="Text" kind="String" default="duplicate" />
+  </control>
+</cuiControlCatalog>)xml";
+	AppendFailure(failures,
+		!DesignerControlCatalog::AppendFromXml(
+			catalogDescriptors, invalidPropertyCatalogXml, &catalogError)
+		&& catalogDescriptors.size() == validCatalogSize,
+		L"custom control catalog: base-property collision was not rejected transactionally");
+	const std::string invalidChoiceDefaultCatalogXml = R"xml(
+<cuiControlCatalog schema="cui.designer.controls" version="1">
+  <control name="BadChoiceBadge" baseType="Button" xamlPrefix="bad"
+    xamlName="BadChoiceBadge" xamlNamespace="urn:cui:bad"
+    cppType="Acme.Controls.BadChoiceBadge" header="Controls/BadChoiceBadge.h">
+    <property name="Severity" kind="Int" default="3" editor="Choice">
+      <choice displayName="Normal" value="1" />
+      <choice displayName="Warning" value="2" />
+    </property>
+  </control>
+</cuiControlCatalog>)xml";
+	AppendFailure(failures,
+		!DesignerControlCatalog::AppendFromXml(
+			catalogDescriptors, invalidChoiceDefaultCatalogXml, &catalogError)
+		&& catalogDescriptors.size() == validCatalogSize,
+		L"custom control catalog: choice default outside the set was not rejected");
+	const std::string invalidEventSignatureCatalogXml = R"xml(
+<cuiControlCatalog schema="cui.designer.controls" version="1">
+  <control name="BadEventBadge" baseType="Button" xamlPrefix="bad"
+    xamlName="BadEventBadge" xamlNamespace="urn:cui:bad"
+    cppType="Acme.Controls.BadEventBadge" header="Controls/BadEventBadge.h">
+    <event name="OnInjected" field="OnInjected"
+      signature="void(Acme::Payload*)" />
+  </control>
+</cuiControlCatalog>)xml";
+	AppendFailure(failures,
+		!DesignerControlCatalog::AppendFromXml(
+			catalogDescriptors, invalidEventSignatureCatalogXml, &catalogError)
+		&& catalogDescriptors.size() == validCatalogSize,
+		L"custom control catalog: arbitrary C++ event signature was accepted");
+	const std::string collidingEventCatalogXml = R"xml(
+<cuiControlCatalog schema="cui.designer.controls" version="1">
+  <control name="CollidingEventBadge" baseType="Button" xamlPrefix="bad"
+    xamlName="CollidingEventBadge" xamlNamespace="urn:cui:bad"
+    cppType="Acme.Controls.CollidingEventBadge" header="Controls/CollidingEventBadge.h">
+    <event name="OnMouseClick" field="OnMouseClick" signature="Sender" />
+  </control>
+</cuiControlCatalog>)xml";
+	AppendFailure(failures,
+		!DesignerControlCatalog::AppendFromXml(
+			catalogDescriptors, collidingEventCatalogXml, &catalogError)
+		&& catalogDescriptors.size() == validCatalogSize,
+		L"custom control catalog: inherited event collision was accepted");
+	const std::string dtdCatalogXml = R"xml(<!DOCTYPE cuiControlCatalog [
+<!ENTITY name "Injected">]>
+<cuiControlCatalog schema="cui.designer.controls" version="1">
+  <control name="&name;" baseType="Button" xamlPrefix="other"
+    xamlName="Injected" xamlNamespace="urn:cui:injected"
+    cppType="Acme.Controls.Injected" header="Controls/Injected.h" />
+</cuiControlCatalog>)xml";
+	AppendFailure(failures,
+		!DesignerControlCatalog::AppendFromXml(
+			catalogDescriptors, dtdCatalogXml, &catalogError)
+		&& catalogDescriptors.size() == validCatalogSize,
+		L"custom control catalog: DTD input was not rejected transactionally");
+	const std::string oversizedCatalog(4U * 1024U * 1024U + 1U, ' ');
+	AppendFailure(failures,
+		!DesignerControlCatalog::AppendFromXml(
+			catalogDescriptors, oversizedCatalog, &catalogError)
+		&& catalogDescriptors.size() == validCatalogSize,
+		L"custom control catalog: oversized input was not rejected transactionally");
+	AppendFailure(failures,
+		DesignerControlCatalog::AttachPreviewFactory(
+			catalogDescriptors, L"urn:cui:selftest", L"StatusBadge",
+			[](int x, int y)
+			{
+				return std::make_unique<SelfTestStatusBadge>(x, y);
+			}, &catalogError),
+		L"custom control catalog: process-local preview factory was not attached");
+	const auto customDescriptor = catalogDescriptors.back();
+	AppendFailure(failures,
+		customDescriptor.PreviewFactory
+		&& customDescriptor.PreviewFactory(1, 2)->Type() == UIClass::UI_Button,
+		L"custom control catalog: attached preview factory was not usable");
+
+	DesignerControlDescriptor missingPreviewDescriptor = customDescriptor;
+	missingPreviewDescriptor.PreviewFactory = {};
+	AppendFailure(failures,
+		missingPreviewDescriptor.IsValid(),
+		L"custom control catalog: portable proxy descriptor unexpectedly requires third-party code");
+
+	ToolBox customToolBox(
+		0, 0, 260, 320,
+		std::vector<DesignerControlDescriptor>{ customDescriptor });
+	const auto preview = customDescriptor.PreviewFactory(0, 0);
+	AppendFailure(failures, preview && preview->Type() == UIClass::UI_Button,
+		L"custom control catalog: preview factory returned the wrong base type");
+	DesignerControlDescriptor mismatchedPreviewDescriptor = customDescriptor;
+	mismatchedPreviewDescriptor.PreviewFactory = [](int x, int y)
+	{
+		return std::make_unique<Label>(L"Wrong type", x, y);
+	};
+	DesignerCanvas mismatchedPreviewCanvas(0, 0, 400, 300);
+	AppendFailure(failures,
+		!mismatchedPreviewCanvas.AddControlToCanvas(
+			mismatchedPreviewDescriptor, POINT{ 40, 40 })
+		&& mismatchedPreviewCanvas.GetAllControls().empty(),
+		L"custom control catalog: mismatched preview Type was not rejected");
+	AppendFailure(failures,
+		customToolBox.GetItemCount() == 1
+		&& customToolBox.GetVisibleItemCount() == 1
+		&& customToolBox.GetVisibleCategoryCount() == 1,
+		L"custom toolbox: descriptor/category was not materialized");
+	customToolBox.SetFilterText(L"StatusBadge");
+	AppendFailure(failures,
+		customToolBox.GetVisibleItemCount() == 1,
+		L"custom toolbox: type-name filtering lost the external descriptor");
+
+	DesignerCanvas descriptorCanvas(0, 0, 800, 600);
+	const auto descriptorAdd = descriptorCanvas.AddControlToCanvas(
+		customDescriptor, POINT{ 120, 120 });
+	AppendFailure(failures, descriptorAdd,
+		L"custom descriptor: transactional add failed");
+	AppendFailure(failures,
+		descriptorCanvas.GetAllControls().size() == 1
+		&& descriptorCanvas.GetAllControls().front()->CustomType
+			== customDescriptor.CustomType
+		&& descriptorCanvas.GetAllControls().front()->CustomProperties
+			== customDescriptor.CustomProperties
+		&& dynamic_cast<SelfTestStatusBadge*>(
+			descriptorCanvas.GetAllControls().front()->ControlInstance) != nullptr
+		&& descriptorCanvas.GetAllControls().front()->ControlInstance->Size.cx == 150,
+		L"custom descriptor: preview/custom identity was not retained");
+	PropertyGrid customPropertyGrid(0, 0, 360, 500);
+	customPropertyGrid.SetDesignerCanvas(&descriptorCanvas);
+	ReloadCurrentSelection(customPropertyGrid, descriptorCanvas);
+	const auto* severityRow = DesignerPropertyRowCatalog::Find(
+		customPropertyGrid.GetPresentedPropertyRows(), L"Severity");
+	AppendFailure(failures,
+		severityRow
+		&& severityRow->Source == DesignerPropertyRowSource::CustomDescriptor
+		&& severityRow->Editor == DesignerPropertyRowEditorKind::Choice
+		&& severityRow->Value.Text == L"1",
+		L"custom property catalog: schema was not projected into the property grid");
+	const auto severityEdit = customPropertyGrid.ApplyPropertyValue(
+		L"Severity", L"2");
+	AppendFailure(failures,
+		severityEdit
+		&& descriptorCanvas.GetAllControls().front()->MetadataProperties.at(
+			L"Severity").Text == L"2",
+		L"custom property catalog: typed edit was not tracked");
+	AppendFailure(failures,
+		!customPropertyGrid.ApplyPropertyValue(L"Severity", L"4"),
+		L"custom property catalog: range/choice validation accepted an invalid value");
+	customPropertyGrid.SetViewMode(DesignerPropertyGridViewMode::Events);
+	ReloadCurrentSelection(customPropertyGrid, descriptorCanvas);
+	std::wstring customDefaultHandler;
+	AppendFailure(failures,
+		customPropertyGrid.ActivateDefaultEventHandler(&customDefaultHandler)
+		&& customDefaultHandler.find(L"OnSeverityInvoked") != std::wstring::npos
+		&& descriptorCanvas.GetAllControls().front()->EventHandlers.contains(
+			L"OnSeverityInvoked"),
+		L"custom event catalog: event page/default activation did not use the manifest contract");
+	AppendFailure(failures,
+		descriptorCanvas.UndoCommand()
+		&& !descriptorCanvas.GetAllControls().front()->EventHandlers.contains(
+			L"OnSeverityInvoked"),
+		L"custom event catalog: default handler activation was not undoable");
+	customPropertyGrid.SetViewMode(DesignerPropertyGridViewMode::Properties);
+	ReloadCurrentSelection(customPropertyGrid, descriptorCanvas);
+	auto customControl = descriptorCanvas.GetAllControls().front();
+	customControl->DataBindings[L"Severity"] = {
+		L"View.Severity",
+		BindingMode::OneWay,
+		DataSourceUpdateMode::OnPropertyChanged,
+		L"" };
+	std::wstring customBindingError;
+	AppendFailure(failures,
+		descriptorCanvas.RefreshDesignBindings(
+			*customControl, &customBindingError)
+		&& customControl->BindingPreviewStates.at(L"Severity").Status
+			== DesignerBindingPreviewStatus::Detached,
+		L"custom property binding: portable metadata was not validated without a DataContext");
+	AppendFailure(failures,
+		descriptorCanvas.SetDataContextSchema({
+			{ L"View", BindingValueKind::Object, true, false, true },
+			{ L"View.Severity", BindingValueKind::Int64, true, false, true } },
+			&customBindingError),
+		L"custom property binding: schema validation incorrectly required runtime metadata");
+	customControl->DataBindings[L"Severity"].Mode = BindingMode::TwoWay;
+	AppendFailure(failures,
+		!descriptorCanvas.RefreshDesignBindings(
+			*customControl, &customBindingError)
+		&& customControl->BindingPreviewStates.at(L"Severity").Status
+			== DesignerBindingPreviewStatus::Error,
+		L"custom property binding: unsupported TwoWay mode passed portable validation");
+	customControl->DataBindings[L"Severity"].Mode = BindingMode::OneWay;
+
+	DesignerModel::DesignDocument descriptorDocument;
+	std::wstring descriptorError;
+	const bool descriptorCaptured = descriptorCanvas.BuildDesignDocument(
+		descriptorDocument, &descriptorError);
+	AppendFailure(failures,
+		descriptorCaptured
+		&& descriptorDocument.Nodes.size() == 1
+		&& descriptorDocument.Nodes.front().CustomType
+			== customDescriptor.CustomType
+		&& descriptorDocument.Nodes.front().Props["metadata"]["Severity"]["value"]
+			.get<std::string>() == "2"
+		&& descriptorDocument.Nodes.front().Bindings.contains("Severity"),
+		L"custom descriptor: document capture lost portable identity"
+			+ (descriptorError.empty() ? std::wstring() : L": " + descriptorError));
+	auto incompatibleEventDocument = descriptorDocument;
+	incompatibleEventDocument.Nodes.front().Events["OnSeverityInvoked"] =
+		"StatusBadge1_OnSeverityInvoked";
+	auto incompatibleDescriptor = customDescriptor;
+	incompatibleDescriptor.CustomEvents.front().Signature =
+		DesignerCustomEventSignature::SenderBool;
+	descriptorCanvas.RegisterControlDescriptor(incompatibleDescriptor);
+	std::wstring incompatibilityError;
+	AppendFailure(failures,
+		!descriptorCanvas.ApplyDesignDocument(
+			incompatibleEventDocument, &incompatibilityError)
+		&& incompatibilityError.find(L"不兼容") != std::wstring::npos
+		&& descriptorCanvas.GetAllControls().size() == 1,
+		L"custom event catalog: an incompatible installed signature was accepted");
+	descriptorCanvas.RegisterControlDescriptor(customDescriptor);
+	customControl->DataBindings.clear();
+	(void)descriptorCanvas.RefreshDesignBindings(*customControl, nullptr);
+	AppendFailure(failures,
+		descriptorCanvas.UndoCommand()
+		&& descriptorCanvas.GetAllControls().size() == 1
+		&& descriptorCanvas.GetAllControls().front()->MetadataProperties.find(
+			L"Severity")
+			== descriptorCanvas.GetAllControls().front()->MetadataProperties.end(),
+		L"custom descriptor: property undo did not restore the schema default");
+	AppendFailure(failures,
+		descriptorCanvas.UndoCommand(),
+		L"custom descriptor: add undo failed");
+	AppendFailure(failures, descriptorCanvas.GetAllControls().empty(),
+		L"custom descriptor: undo retained the control");
+	AppendFailure(failures, descriptorCanvas.RedoCommand(),
+		L"custom descriptor: add redo failed");
+	AppendFailure(failures,
+		descriptorCanvas.GetAllControls().size() == 1
+		&& descriptorCanvas.GetAllControls().front()->CustomType
+			== customDescriptor.CustomType
+		&& dynamic_cast<SelfTestStatusBadge*>(
+			descriptorCanvas.GetAllControls().front()->ControlInstance) != nullptr,
+		L"custom descriptor: redo lost the custom identity/real preview factory");
+
+	// High-frequency modal collections keep one small typed delta instead of
+	// rebuilding or retaining the complete DesignDocument.
+	DesignerCanvas comboStructureCanvas(0, 0, 900, 640);
+	comboStructureCanvas.AddControlToCanvasCore(
+		UIClass::UI_ComboBox, POINT{ 80, 80 });
+	auto comboStructureControl =
+		comboStructureCanvas.GetAllControls().back();
+	auto* structureCombo = dynamic_cast<ComboBox*>(
+		comboStructureControl->ControlInstance);
+	structureCombo->Items = {
+		L"Zero", L"One", L"Two", L"Three",
+		L"Four", L"Five", L"Six", L"Seven" };
+	DesignerDataBinding selectedBinding;
+	selectedBinding.SourceProperty = L"Profile.ChoiceIndex";
+	selectedBinding.Mode = BindingMode::OneWay;
+	comboStructureControl->DataBindings[L"SelectedIndex"] = selectedBinding;
+	AppendFailure(failures,
+		structureCombo->TrySetPropertyValue(
+			L"SelectedIndex", 5, ControlPropertyValueSource::Binding),
+		L"structure delta: could not prepare ComboBox Binding value");
+	comboStructureControl->MetadataProperties.erase(L"SelectedIndex");
+	DesignerStructureSnapshot comboBefore;
+	DesignerStructureSnapshot comboAfter;
+	DesignerStructureSnapshot comboCurrent;
+	std::wstring structureError;
+	AppendFailure(failures,
+		DesignerStructureEdit::Capture(
+			*comboStructureControl,
+			DesignerCustomEditorKind::ComboBoxItems,
+			comboBefore, &structureError)
+		&& comboBefore.ComboBox.HasBindingSelectedIndex
+		&& comboBefore.ComboBox.BindingSelectedIndex == 5
+		&& !comboBefore.ComboBox.HasLocalSelectedIndex
+		&& comboBefore.ComboBox.HasConfiguredBinding,
+		L"structure delta: failed to capture complete ComboBox before state");
+	(void)comboStructureCanvas.ResetDocumentHistoryAsSaved();
+	auto* stableComboInstance = comboStructureControl->ControlInstance;
+	structureCombo->Items = { L"Alpha", L"Beta" };
+	structureCombo->SelectedIndex = 1;
+	const bool trackedComboSelectedIndex =
+		DesignerPropertyCatalog::TrackCurrentValue(
+			*structureCombo,
+			comboStructureControl->MetadataProperties,
+			L"SelectedIndex");
+	const bool capturedComboAfter = DesignerStructureEdit::Capture(
+			*comboStructureControl,
+			DesignerCustomEditorKind::ComboBoxItems,
+			comboAfter, &structureError);
+	AppendFailure(failures,
+		trackedComboSelectedIndex
+		&& capturedComboAfter
+		&& comboAfter.ComboBox.HasLocalSelectedIndex
+		&& comboAfter.ComboBox.LocalSelectedIndex == 1
+		&& comboAfter.ComboBox.HasBindingSelectedIndex
+		&& comboAfter.ComboBox.BindingSelectedIndex >= 0
+		&& comboAfter.ComboBox.BindingSelectedIndex < 2
+		&& comboAfter.ComboBox.HasTrackedSelectedIndex,
+		L"structure delta: failed to capture complete ComboBox after state"
+		+ std::wstring(L" (tracked=")
+		+ (trackedComboSelectedIndex ? L"true" : L"false")
+		+ L", captured=" + (capturedComboAfter ? L"true" : L"false")
+		+ L", local=" + (comboAfter.ComboBox.HasLocalSelectedIndex ? L"true" : L"false")
+		+ L":" + std::to_wstring(comboAfter.ComboBox.LocalSelectedIndex)
+		+ L", binding=" + (comboAfter.ComboBox.HasBindingSelectedIndex ? L"true" : L"false")
+		+ L":" + std::to_wstring(comboAfter.ComboBox.BindingSelectedIndex)
+		+ L", metadata=" + (comboAfter.ComboBox.HasTrackedSelectedIndex ? L"true" : L"false")
+		+ L", error=" + structureError + L")");
+	auto comboStructureCommand = std::make_unique<ControlStructureCommand>(
+		&comboStructureCanvas,
+		comboBefore,
+		comboAfter,
+		std::vector<std::wstring>{ comboStructureControl->Name },
+		std::vector<std::wstring>{ comboStructureControl->Name },
+		comboStructureControl->Name,
+		comboStructureControl->Name,
+		L"EditStructure:ComboBoxItems",
+		true);
+	AppendFailure(failures,
+		comboStructureCommand->GetEstimatedMemoryUsage() < 32U * 1024U
+		&& comboStructureCanvas.CommitAlreadyAppliedCommand(
+			std::move(comboStructureCommand)),
+		L"structure delta: ComboBox command was too large or failed to commit");
+	AppendFailure(failures,
+		comboStructureCanvas.UndoCommand()
+		&& comboStructureControl->ControlInstance == stableComboInstance
+		&& DesignerStructureEdit::Capture(
+			*comboStructureControl,
+			DesignerCustomEditorKind::ComboBoxItems,
+			comboCurrent, &structureError)
+		&& comboCurrent == comboBefore,
+		L"structure delta: ComboBox undo lost Items/Local/Binding/metadata state");
+	AppendFailure(failures,
+		comboStructureCanvas.RedoCommand()
+		&& comboStructureControl->ControlInstance == stableComboInstance
+		&& DesignerStructureEdit::Capture(
+			*comboStructureControl,
+			DesignerCustomEditorKind::ComboBoxItems,
+			comboCurrent, &structureError)
+		&& comboCurrent == comboAfter,
+		L"structure delta: ComboBox redo lost Items/Local/Binding/metadata state");
+	comboStructureControl->DataBindings[L"SelectedIndex"].SourceProperty =
+		L"External.ChangedIndex";
+	const auto comboUndoCountBeforeConflict =
+		comboStructureCanvas.GetUndoCommandCount();
+	AppendFailure(failures,
+		!comboStructureCanvas.UndoCommand()
+		&& comboStructureCanvas.GetUndoCommandCount()
+			== comboUndoCountBeforeConflict
+		&& structureCombo->Items
+			== std::vector<std::wstring>{ L"Alpha", L"Beta" },
+		L"structure delta: ComboBox binding conflict consumed history or mutated state");
+	comboStructureControl->DataBindings[L"SelectedIndex"] = selectedBinding;
+	AppendFailure(failures,
+		comboStructureCanvas.UndoCommand()
+		&& DesignerStructureEdit::Capture(
+			*comboStructureControl,
+			DesignerCustomEditorKind::ComboBoxItems,
+			comboCurrent, &structureError)
+		&& comboCurrent == comboBefore,
+		L"structure delta: ComboBox conflict recovery could not retry undo");
+
+	DesignerCanvas structureCanvas(0, 0, 900, 640);
+	structureCanvas.AddControlToCanvasCore(
+		UIClass::UI_GridView, POINT{ 80, 80 });
+	auto gridControl = structureCanvas.GetAllControls().back();
+	auto* structureGrid = dynamic_cast<GridView*>(
+		gridControl->ControlInstance);
+	structureGrid->ClearColumns();
+	structureGrid->AddColumn(GridViewColumn(
+		L"Original", 120.0f, ColumnType::Text, true));
+	DesignerStructureSnapshot gridBefore;
+	AppendFailure(failures,
+		DesignerStructureEdit::Capture(
+			*gridControl, DesignerCustomEditorKind::GridViewColumns,
+			gridBefore, &structureError),
+		L"structure delta: failed to capture GridView before state");
+	(void)structureCanvas.ResetDocumentHistoryAsSaved();
+	auto* stableGridInstance = gridControl->ControlInstance;
+	structureGrid->ClearColumns();
+	GridViewColumn actionColumn(
+		L"Action", 150.0f, ColumnType::Button, false);
+	actionColumn.ButtonText = L"Run";
+	structureGrid->AddColumn(actionColumn);
+	GridViewColumn choiceColumn(
+		L"Choice", 180.0f, ColumnType::ComboBox, true);
+	choiceColumn.ComboBoxItems = { L"One", L"Two" };
+	structureGrid->AddColumn(choiceColumn);
+	DesignerStructureSnapshot gridAfter;
+	AppendFailure(failures,
+		DesignerStructureEdit::Capture(
+			*gridControl, DesignerCustomEditorKind::GridViewColumns,
+			gridAfter, &structureError),
+		L"structure delta: failed to capture GridView after state");
+	auto structureCommand = std::make_unique<ControlStructureCommand>(
+		&structureCanvas,
+		gridBefore,
+		gridAfter,
+		std::vector<std::wstring>{ gridControl->Name },
+		std::vector<std::wstring>{ gridControl->Name },
+		gridControl->Name,
+		gridControl->Name,
+		L"EditStructure:GridViewColumns",
+		true);
+	const auto structureCommandBytes =
+		structureCommand->GetEstimatedMemoryUsage();
+	AppendFailure(failures,
+		structureCommandBytes < 32U * 1024U,
+		L"structure delta: small collection retained document-sized history");
+	AppendFailure(failures,
+		structureCanvas.CommitAlreadyAppliedCommand(
+			std::move(structureCommand)),
+		L"structure delta: failed to commit already-applied columns");
+	AppendFailure(failures,
+		structureCanvas.UndoCommand()
+		&& gridControl->ControlInstance == stableGridInstance
+		&& DesignerStructureEdit::Capture(
+			*gridControl, DesignerCustomEditorKind::GridViewColumns,
+			gridAfter, &structureError)
+		&& gridAfter == gridBefore,
+		L"structure delta: undo replaced the GridView or lost its columns");
+	AppendFailure(failures,
+		structureCanvas.RedoCommand()
+		&& gridControl->ControlInstance == stableGridInstance
+		&& DesignerStructureEdit::Capture(
+			*gridControl, DesignerCustomEditorKind::GridViewColumns,
+			gridBefore, &structureError)
+		&& gridBefore.GridViewColumns.size() == 2,
+		L"structure delta: redo replaced the GridView or lost its columns");
+	const auto expectedAfterConflict = gridBefore;
+	structureGrid->AddColumn(GridViewColumn(
+		L"External", 90.0f, ColumnType::Text, false));
+	const auto undoCountBeforeConflict = structureCanvas.GetUndoCommandCount();
+	AppendFailure(failures,
+		!structureCanvas.UndoCommand()
+		&& structureCanvas.GetUndoCommandCount() == undoCountBeforeConflict
+		&& structureGrid->ColumnCount() == 3,
+		L"structure delta: conflicting undo consumed history or mutated state");
+	AppendFailure(failures,
+		DesignerStructureEdit::Restore(
+			*gridControl, expectedAfterConflict, &structureError)
+		&& structureCanvas.UndoCommand()
+		&& gridControl->ControlInstance == stableGridInstance,
+		L"structure delta: conflict recovery could not retry undo");
+
+	structureCanvas.AddControlToCanvasCore(
+		UIClass::UI_TreeView, POINT{ 300, 80 });
+	auto treeControl = structureCanvas.GetAllControls().back();
+	auto* structureTree = dynamic_cast<TreeView*>(treeControl->ControlInstance);
+	structureTree->Root->ClearChildren();
+	auto rootNode = std::make_unique<TreeNode>(L"Root");
+	rootNode->Expand = true;
+	rootNode->AddChild(std::make_unique<TreeNode>(L"Child"));
+	structureTree->Root->AddChild(std::move(rootNode));
+	DesignerStructureSnapshot treeBefore;
+	DesignerStructureSnapshot treeCurrent;
+	AppendFailure(failures,
+		DesignerStructureEdit::Capture(
+			*treeControl, DesignerCustomEditorKind::TreeViewNodes,
+			treeBefore, &structureError),
+		L"structure delta: failed to capture TreeView nodes");
+	structureTree->Root->ClearChildren();
+	structureTree->Root->AddChild(std::make_unique<TreeNode>(L"Changed"));
+	AppendFailure(failures,
+		DesignerStructureEdit::Restore(
+			*treeControl, treeBefore, &structureError)
+		&& DesignerStructureEdit::Capture(
+			*treeControl, DesignerCustomEditorKind::TreeViewNodes,
+			treeCurrent, &structureError)
+		&& treeCurrent == treeBefore,
+		L"structure delta: TreeView hierarchy did not restore exactly");
+
+	structureCanvas.AddControlToCanvasCore(
+		UIClass::UI_Menu, POINT{ 300, 300 });
+	auto menuControl = structureCanvas.GetAllControls().back();
+	auto* structureMenu = dynamic_cast<Menu*>(menuControl->ControlInstance);
+	structureMenu->ClearItems();
+	auto* fileItem = structureMenu->AddItem(L"File");
+	fileItem->Id = 100;
+	fileItem->Shortcut = L"Alt+F";
+	auto* openItem = fileItem->AddSubItem(L"Open", 101);
+	openItem->Shortcut = L"Ctrl+O";
+	auto* recentItem = fileItem->AddSubItem(L"Recent", 102);
+	auto* projectItem = recentItem->AddSubItem(L"Project", 103);
+	projectItem->Enable = false;
+	fileItem->AddSeparator();
+	structureMenu->AddSeparator();
+	DesignerStructureSnapshot menuBefore;
+	DesignerStructureSnapshot menuCurrent;
+	AppendFailure(failures,
+		DesignerStructureEdit::Capture(
+			*menuControl, DesignerCustomEditorKind::MenuItems,
+			menuBefore, &structureError),
+		L"structure delta: failed to capture recursive Menu items");
+	structureMenu->ClearItems();
+	structureMenu->AddItem(L"Changed")->Id = 999;
+	AppendFailure(failures,
+		DesignerStructureEdit::Restore(
+			*menuControl, menuBefore, &structureError)
+		&& DesignerStructureEdit::Capture(
+			*menuControl, DesignerCustomEditorKind::MenuItems,
+			menuCurrent, &structureError)
+		&& menuCurrent == menuBefore
+		&& menuCurrent.MenuItems.size() == 2
+		&& menuCurrent.MenuItems[0].Id == 100
+		&& menuCurrent.MenuItems[0].Children.size() == 3
+		&& menuCurrent.MenuItems[0].Children[1].Children.size() == 1
+		&& menuCurrent.MenuItems[0].Children[1].Children[0].Id == 103
+		&& !menuCurrent.MenuItems[0].Children[1].Children[0].Enable
+		&& menuCurrent.MenuItems[1].Separator,
+		L"structure delta: Menu hierarchy/command IDs did not restore exactly");
+
+	structureCanvas.AddControlToCanvasCore(
+		UIClass::UI_GridPanel, POINT{ 520, 80 });
+	auto gridPanelControl = structureCanvas.GetAllControls().back();
+	auto* structurePanel = dynamic_cast<GridPanel*>(
+		gridPanelControl->ControlInstance);
+	structurePanel->ClearRows();
+	structurePanel->ClearColumns();
+	structurePanel->AddRow(GridLength::Percent(40.0f), 5.0f, 200.0f);
+	structurePanel->AddColumn(GridLength::Star(2.0f), 10.0f, 300.0f);
+	DesignerStructureSnapshot definitionsBefore;
+	DesignerStructureSnapshot definitionsCurrent;
+	AppendFailure(failures,
+		DesignerStructureEdit::Capture(
+			*gridPanelControl,
+			DesignerCustomEditorKind::GridPanelDefinitions,
+			definitionsBefore, &structureError),
+		L"structure delta: failed to capture GridPanel definitions");
+	structurePanel->ClearRows();
+	structurePanel->ClearColumns();
+	structurePanel->AddRow(GridLength::Auto());
+	structurePanel->AddColumn(GridLength::Pixels(50.0f));
+	AppendFailure(failures,
+		DesignerStructureEdit::Restore(
+			*gridPanelControl, definitionsBefore, &structureError)
+		&& DesignerStructureEdit::Capture(
+			*gridPanelControl,
+			DesignerCustomEditorKind::GridPanelDefinitions,
+			definitionsCurrent, &structureError)
+		&& definitionsCurrent == definitionsBefore,
+		L"structure delta: GridPanel definitions did not restore exactly");
+
+	structureCanvas.AddControlToCanvasCore(
+		UIClass::UI_StatusBar, POINT{ 80, 360 });
+	auto statusControl = structureCanvas.GetAllControls().back();
+	auto* structureStatus = dynamic_cast<StatusBar*>(
+		statusControl->ControlInstance);
+	structureStatus->ClearParts();
+	structureStatus->AddPart(L"Ready", -1);
+	structureStatus->AddPart(L"Line 1", 120);
+	DesignerStructureSnapshot statusBefore;
+	DesignerStructureSnapshot statusCurrent;
+	AppendFailure(failures,
+		DesignerStructureEdit::Capture(
+			*statusControl, DesignerCustomEditorKind::StatusBarParts,
+			statusBefore, &structureError),
+		L"structure delta: failed to capture StatusBar parts");
+	structureStatus->ClearParts();
+	structureStatus->AddPart(L"Changed", 0);
+	AppendFailure(failures,
+		DesignerStructureEdit::Restore(
+			*statusControl, statusBefore, &structureError)
+		&& DesignerStructureEdit::Capture(
+			*statusControl, DesignerCustomEditorKind::StatusBarParts,
+			statusCurrent, &structureError)
+		&& statusCurrent == statusBefore
+		&& !DesignerStructureEdit::SupportsDelta(
+			DesignerCustomEditorKind::TabControlPages)
+		&& !DesignerStructureEdit::SupportsDelta(
+			DesignerCustomEditorKind::ToolBarButtons)
+		&& DesignerStructureEdit::SupportsDelta(
+			DesignerCustomEditorKind::MenuItems),
+		L"structure delta: StatusBar restore or ownership fallback boundary failed");
+
+	// Tab pages and ToolBar buttons transfer live child-tree ownership. Their
+	// commands must preserve instances and wrappers instead of serializing the
+	// complete document or rebuilding the edited subtree.
+	DesignerCanvas tabCollectionCanvas(0, 0, 900, 640);
+	tabCollectionCanvas.AddControlToCanvasCore(
+		UIClass::UI_TabControl, POINT{ 300, 220 });
+	auto tabCollectionControl = tabCollectionCanvas.GetSelectedControl();
+	auto* collectionTabs = tabCollectionControl
+		? dynamic_cast<TabControl*>(tabCollectionControl->ControlInstance)
+		: nullptr;
+	TabPage* firstPage = collectionTabs
+		? collectionTabs->AddPage(L"First") : nullptr;
+	TabPage* secondPage = collectionTabs
+		? collectionTabs->AddPage(L"Second") : nullptr;
+	if (collectionTabs) (void)collectionTabs->SelectPage(0);
+	DesignerDataBinding tabSelectedBinding;
+	tabSelectedBinding.SourceProperty = L"Profile.TabIndex";
+	tabSelectedBinding.Mode = BindingMode::OneWay;
+	if (tabCollectionControl)
+		tabCollectionControl->DataBindings[L"SelectedIndex"] =
+			tabSelectedBinding;
+	const bool tabBindingReady = collectionTabs
+		&& collectionTabs->TrySetPropertyValue(
+			L"SelectedIndex", 0, ControlPropertyValueSource::Binding);
+	if (collectionTabs)
+	{
+		const POINT inside{
+			collectionTabs->AbsLocation.x
+				- tabCollectionCanvas.AbsLocation.x + 90,
+			collectionTabs->AbsLocation.y
+				- tabCollectionCanvas.AbsLocation.y + 100
+		};
+		tabCollectionCanvas.AddControlToCanvasCore(
+			UIClass::UI_Button, inside);
+	}
+	auto pageChildWrapper = tabCollectionCanvas.GetSelectedControl();
+	auto* pageChild = pageChildWrapper
+		? pageChildWrapper->ControlInstance : nullptr;
+	DesignerModel::DesignDocument tabCollectionBefore;
+	std::wstring tabCollectionError;
+	const bool tabCollectionSetup = tabCollectionControl && collectionTabs
+		&& tabBindingReady
+		&& firstPage && secondPage && pageChildWrapper && pageChild
+		&& pageChild->Parent == firstPage
+		&& tabCollectionCanvas.BuildDesignDocument(
+			tabCollectionBefore, &tabCollectionError);
+	AppendFailure(failures, tabCollectionSetup,
+		L"owned collection delta: TabControl setup failed");
+	if (tabCollectionSetup)
+	{
+		(void)tabCollectionCanvas.ResetDocumentHistoryAsSaved();
+		auto command = ControlOwnedCollectionCommand::CreateTabPages(
+			&tabCollectionCanvas, tabCollectionControl,
+			{
+				{ secondPage, L"Second edited" },
+				{ firstPage, L"First edited" },
+				{ nullptr, L"Third" }
+			},
+			L"EditStructure:TabControlPages", &tabCollectionError);
+		const size_t commandBytes = command
+			? command->GetEstimatedMemoryUsage() : 0;
+		const auto execute = command
+			? tabCollectionCanvas.ExecuteCommand(std::move(command))
+			: DesignerDocumentTransactionResult::Failure(
+				DesignerDocumentTransactionState::Failed,
+				tabCollectionError);
+		TabPage* thirdPage = collectionTabs->Count == 3
+			? collectionTabs->GetPage(2) : nullptr;
+		BindingValue selectedBindingValue;
+		int selectedBindingIndex = -1;
+		DesignerModel::DesignDocument tabCollectionAfter;
+		std::wstring tabAfterError;
+		AppendFailure(failures,
+			execute.HasChanges()
+			&& commandBytes > 0 && commandBytes < 32U * 1024U
+			&& collectionTabs->Count == 3
+			&& collectionTabs->GetPage(0) == secondPage
+			&& collectionTabs->GetPage(1) == firstPage
+			&& collectionTabs->SelectedIndex == 1
+			&& collectionTabs->TryGetPropertyValue(
+				L"SelectedIndex", ControlPropertyValueSource::Binding,
+				selectedBindingValue)
+			&& selectedBindingValue.TryGetInt(selectedBindingIndex)
+			&& selectedBindingIndex == 1
+			&& pageChild->Parent == firstPage
+			&& FindControl(tabCollectionCanvas, pageChildWrapper->Name)
+				== pageChildWrapper
+			&& tabCollectionCanvas.BuildDesignDocument(
+				tabCollectionAfter, &tabAfterError)
+			&& tabCollectionAfter != tabCollectionBefore,
+			L"owned collection delta: Tab pages lost order, selection, child identity, or small-history budget"
+			+ (execute.Error.empty() ? L"" : L": " + execute.Error));
+
+		const auto undo = tabCollectionCanvas.UndoCommand();
+		selectedBindingIndex = -1;
+		DesignerModel::DesignDocument tabCollectionUndone;
+		std::wstring tabUndoError;
+		AppendFailure(failures,
+			undo.HasChanges()
+			&& collectionTabs->Count == 2
+			&& collectionTabs->GetPage(0) == firstPage
+			&& collectionTabs->GetPage(1) == secondPage
+			&& collectionTabs->SelectedIndex == 0
+			&& collectionTabs->TryGetPropertyValue(
+				L"SelectedIndex", ControlPropertyValueSource::Binding,
+				selectedBindingValue)
+			&& selectedBindingValue.TryGetInt(selectedBindingIndex)
+			&& selectedBindingIndex == 0
+			&& pageChild->Parent == firstPage
+			&& tabCollectionCanvas.BuildDesignDocument(
+				tabCollectionUndone, &tabUndoError)
+			&& tabCollectionUndone == tabCollectionBefore,
+			L"owned collection delta: Tab undo rebuilt instances or missed exact state"
+			+ (undo.Error.empty() ? L"" : L": " + undo.Error));
+		const auto redo = tabCollectionCanvas.RedoCommand();
+		AppendFailure(failures,
+			redo.HasChanges()
+			&& collectionTabs->Count == 3
+			&& collectionTabs->GetPage(2) == thirdPage
+			&& pageChild->Parent == firstPage,
+			L"owned collection delta: Tab redo did not reuse retained pages");
+
+		secondPage->Text = L"External conflict";
+		const auto undoCount = tabCollectionCanvas.GetUndoCommandCount();
+		const auto guardedUndo = tabCollectionCanvas.UndoCommand();
+		AppendFailure(failures,
+			!guardedUndo.Succeeded()
+			&& tabCollectionCanvas.GetUndoCommandCount() == undoCount
+			&& collectionTabs->GetPage(0) == secondPage
+			&& secondPage->Text == L"External conflict",
+			L"owned collection delta: Tab conflict mutated state or consumed history");
+		secondPage->Text = L"Second edited";
+		AppendFailure(failures,
+			tabCollectionCanvas.UndoCommand().HasChanges()
+			&& collectionTabs->GetPage(0) == firstPage,
+			L"owned collection delta: Tab conflict repair could not retry undo");
+	}
+
+	DesignerCanvas toolCollectionCanvas(0, 0, 900, 640);
+	toolCollectionCanvas.AddControlToCanvasCore(
+		UIClass::UI_ToolBar, POINT{ 300, 180 });
+	auto toolCollectionControl = toolCollectionCanvas.GetSelectedControl();
+	auto* collectionToolBar = toolCollectionControl
+		? dynamic_cast<ToolBar*>(toolCollectionControl->ControlInstance)
+		: nullptr;
+	if (collectionToolBar)
+	{
+		for (int x : { 45, 150 })
+		{
+			const POINT inside{
+				collectionToolBar->AbsLocation.x
+					- toolCollectionCanvas.AbsLocation.x + x,
+				collectionToolBar->AbsLocation.y
+					- toolCollectionCanvas.AbsLocation.y + 16
+			};
+			toolCollectionCanvas.AddControlToCanvasCore(
+				UIClass::UI_Button, inside);
+		}
+	}
+	auto* firstToolButton = collectionToolBar && collectionToolBar->Count >= 2
+		? dynamic_cast<Button*>(collectionToolBar->GetChild(0)) : nullptr;
+	auto* secondToolButton = collectionToolBar && collectionToolBar->Count >= 2
+		? dynamic_cast<Button*>(collectionToolBar->GetChild(1)) : nullptr;
+	auto firstToolWrapper = firstToolButton
+		? std::find_if(toolCollectionCanvas.GetAllControls().begin(),
+			toolCollectionCanvas.GetAllControls().end(),
+			[firstToolButton](const auto& wrapper)
+			{
+				return wrapper && wrapper->ControlInstance == firstToolButton;
+			})
+		: toolCollectionCanvas.GetAllControls().end();
+	DesignerModel::DesignDocument toolCollectionBefore;
+	std::wstring toolCollectionError;
+	const bool toolCollectionSetup = toolCollectionControl
+		&& collectionToolBar && firstToolButton && secondToolButton
+		&& firstToolWrapper != toolCollectionCanvas.GetAllControls().end()
+		&& toolCollectionCanvas.BuildDesignDocument(
+			toolCollectionBefore, &toolCollectionError);
+	AppendFailure(failures, toolCollectionSetup,
+		L"owned collection delta: ToolBar setup failed");
+	if (toolCollectionSetup)
+	{
+		const auto stableFirstWrapper = *firstToolWrapper;
+		(void)toolCollectionCanvas.ResetDocumentHistoryAsSaved();
+		auto command = ControlOwnedCollectionCommand::CreateToolBarButtons(
+			&toolCollectionCanvas, toolCollectionControl,
+			{
+				{ secondToolButton, L"Second", 72 },
+				{ nullptr, L"New", 88 },
+				{ firstToolButton, L"First", 64 }
+			},
+			L"EditStructure:ToolBarButtons", &toolCollectionError);
+		const size_t commandBytes = command
+			? command->GetEstimatedMemoryUsage() : 0;
+		const auto execute = command
+			? toolCollectionCanvas.ExecuteCommand(std::move(command))
+			: DesignerDocumentTransactionResult::Failure(
+				DesignerDocumentTransactionState::Failed,
+				toolCollectionError);
+		auto* newToolButton = collectionToolBar->Count == 3
+			? dynamic_cast<Button*>(collectionToolBar->GetChild(1)) : nullptr;
+		auto newToolWrapper = newToolButton
+			? std::find_if(toolCollectionCanvas.GetAllControls().begin(),
+				toolCollectionCanvas.GetAllControls().end(),
+				[newToolButton](const auto& wrapper)
+				{
+					return wrapper && wrapper->ControlInstance == newToolButton;
+				})
+			: toolCollectionCanvas.GetAllControls().end();
+		SIZE firstOverride{ -1, -1 };
+		DesignerModel::DesignDocument toolCollectionAfter;
+		std::wstring toolAfterError;
+		AppendFailure(failures,
+			execute.HasChanges()
+			&& commandBytes > 0 && commandBytes < 32U * 1024U
+			&& collectionToolBar->GetChild(0) == secondToolButton
+			&& collectionToolBar->GetChild(2) == firstToolButton
+			&& newToolButton && newToolButton->DesignId > 0
+			&& newToolWrapper != toolCollectionCanvas.GetAllControls().end()
+			&& (*newToolWrapper)->StableId == newToolButton->DesignId
+			&& collectionToolBar->TryGetToolItemSizeOverride(
+				firstToolButton, firstOverride)
+			&& firstOverride.cx == 64
+			&& firstOverride.cy == ToolBar::AutoItemHeightOverride
+			&& toolCollectionCanvas.BuildDesignDocument(
+				toolCollectionAfter, &toolAfterError)
+			&& toolCollectionAfter != toolCollectionBefore,
+			L"owned collection delta: ToolBar edit lost wrapper, stable ID, size override, or budget"
+			+ (execute.Error.empty() ? L"" : L": " + execute.Error));
+
+		const auto undo = toolCollectionCanvas.UndoCommand();
+		DesignerModel::DesignDocument toolCollectionUndone;
+		std::wstring toolUndoError;
+		const bool toolUndoDocumentCaptured =
+			toolCollectionCanvas.BuildDesignDocument(
+				toolCollectionUndone, &toolUndoError);
+		auto toolCollectionComparable = toolCollectionUndone;
+		// Stable IDs are monotonic and deliberately not reused after undoing a
+		// newly created button; compare the restored document payload separately.
+		toolCollectionComparable.NextStableId =
+			toolCollectionBefore.NextStableId;
+		const bool toolUndoDocumentEqual = toolUndoDocumentCaptured
+			&& toolCollectionComparable == toolCollectionBefore;
+		std::wstring toolUndoDifference;
+		if (toolUndoDocumentCaptured && !toolUndoDocumentEqual)
+		{
+			const auto beforeXml =
+				DesignerModel::DesignDocumentSerializer::ToXml(
+					toolCollectionBefore);
+			const auto afterXml =
+				DesignerModel::DesignDocumentSerializer::ToXml(
+					toolCollectionUndone);
+			size_t offset = 0;
+			while (offset < beforeXml.size() && offset < afterXml.size()
+				&& beforeXml[offset] == afterXml[offset]) ++offset;
+			const size_t start = offset > 64 ? offset - 64 : 0;
+			const auto beforePart = beforeXml.substr(start, 220);
+			const auto afterPart = afterXml.substr(start, 220);
+			toolUndoDifference = L", offset=" + std::to_wstring(offset)
+				+ L", before="
+				+ std::wstring(beforePart.begin(), beforePart.end())
+				+ L", after="
+				+ std::wstring(afterPart.begin(), afterPart.end());
+		}
+		AppendFailure(failures,
+			undo.HasChanges()
+			&& collectionToolBar->Count == 2
+			&& collectionToolBar->GetChild(0) == firstToolButton
+			&& collectionToolBar->GetChild(1) == secondToolButton
+			&& FindControl(toolCollectionCanvas, stableFirstWrapper->Name)
+				== stableFirstWrapper
+			&& toolUndoDocumentEqual,
+			std::wstring(L"owned collection delta: ToolBar undo rebuilt buttons or missed document state")
+			+ L" (undo=" + (undo.HasChanges() ? std::wstring(L"true") : L"false")
+			+ L", count=" + std::to_wstring(collectionToolBar->Count)
+			+ L", order0=" + (collectionToolBar->GetChild(0) == firstToolButton ? std::wstring(L"true") : L"false")
+			+ L", order1=" + (collectionToolBar->GetChild(1) == secondToolButton ? std::wstring(L"true") : L"false")
+			+ L", wrapper=" + (FindControl(toolCollectionCanvas, stableFirstWrapper->Name)
+				== stableFirstWrapper ? std::wstring(L"true") : L"false")
+			+ L", captured=" + (toolUndoDocumentCaptured ? std::wstring(L"true") : L"false")
+			+ L", equal=" + (toolUndoDocumentEqual ? std::wstring(L"true") : L"false")
+			+ toolUndoDifference
+			+ (undo.Error.empty() ? L"" : L", error=" + undo.Error) + L")");
+		AppendFailure(failures,
+			toolCollectionCanvas.RedoCommand().HasChanges()
+			&& collectionToolBar->GetChild(1) == newToolButton,
+			L"owned collection delta: ToolBar redo did not reuse the new button instance");
+	}
+
+	DesignerCanvas legacyToolCanvas(0, 0, 700, 480);
+	legacyToolCanvas.AddControlToCanvasCore(
+		UIClass::UI_ToolBar, POINT{ 250, 150 });
+	auto legacyToolWrapper = legacyToolCanvas.GetSelectedControl();
+	auto* legacyTool = legacyToolWrapper
+		? dynamic_cast<ToolBar*>(legacyToolWrapper->ControlInstance) : nullptr;
+	auto* legacyButton = legacyTool
+		? legacyTool->AddToolButton(L"Legacy", 90) : nullptr;
+	(void)legacyToolCanvas.ResetDocumentHistoryAsSaved();
+	std::wstring legacyToolError;
+	auto legacyCommand = ControlOwnedCollectionCommand::CreateToolBarButtons(
+		&legacyToolCanvas, legacyToolWrapper,
+		{ { legacyButton, L"Legacy", 90 } },
+		L"EditStructure:ToolBarButtons", &legacyToolError);
+	const auto legacyExecute = legacyCommand
+		? legacyToolCanvas.ExecuteCommand(std::move(legacyCommand))
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed, legacyToolError);
+	auto legacyButtonWrapper = legacyButton
+		? std::find_if(legacyToolCanvas.GetAllControls().begin(),
+			legacyToolCanvas.GetAllControls().end(),
+			[legacyButton](const auto& wrapper)
+			{
+				return wrapper && wrapper->ControlInstance == legacyButton;
+			})
+		: legacyToolCanvas.GetAllControls().end();
+	const auto retainedLegacyWrapper =
+		legacyButtonWrapper != legacyToolCanvas.GetAllControls().end()
+			? *legacyButtonWrapper : nullptr;
+	AppendFailure(failures,
+		legacyExecute.HasChanges() && legacyButton
+		&& legacyButton->DesignId > 0 && retainedLegacyWrapper,
+		L"owned collection delta: legacy unwrapped ToolBar button was not repaired");
+	const auto legacyUndo = legacyToolCanvas.UndoCommand();
+	const bool legacyWrapperAbsent = std::none_of(
+		legacyToolCanvas.GetAllControls().begin(),
+		legacyToolCanvas.GetAllControls().end(),
+		[legacyButton](const auto& wrapper)
+		{
+			return wrapper && wrapper->ControlInstance == legacyButton;
+		});
+	AppendFailure(failures,
+		legacyUndo.HasChanges() && legacyButton
+		&& legacyButton->Parent == legacyTool
+		&& legacyButton->DesignId == 0 && legacyWrapperAbsent,
+		L"owned collection delta: legacy ToolBar undo did not restore unwrapped state");
+	AppendFailure(failures,
+		legacyToolCanvas.RedoCommand().HasChanges()
+		&& retainedLegacyWrapper
+		&& FindControl(legacyToolCanvas, retainedLegacyWrapper->Name)
+			== retainedLegacyWrapper
+		&& legacyButton->Parent == legacyTool,
+		L"owned collection delta: legacy ToolBar redo rebuilt its wrapper or button");
+
+	DesignerCanvas canvas(0, 0, 1000, 760);
+	canvas.AddControlToCanvasCore(UIClass::UI_Button, POINT{ 100, 100 });
+	canvas.AddControlToCanvasCore(UIClass::UI_Button, POINT{ 280, 100 });
+
+	AppendFailure(failures, canvas.GetAllControls().size() == 2,
+		L"setup: expected two controls");
+	if (canvas.GetAllControls().size() != 2)
+	{
+		report = failures.front();
+		return false;
+	}
+
+	const auto firstName = canvas.GetAllControls()[0]->Name;
+	const auto secondName = canvas.GetAllControls()[1]->Name;
+	canvas.GetAllControls()[1]->ControlInstance->Text = L"不同文本";
+	canvas.RestoreSelectionByNames(
+		{ firstName, secondName }, firstName, false);
+
+	PropertyGrid propertyGrid(0, 0, 360, 700);
+	propertyGrid.SetDesignerCanvas(&canvas);
+	ReloadCurrentSelection(propertyGrid, canvas);
+
+	const auto* mixedText = DesignerPropertyRowCatalog::Find(
+		propertyGrid.GetPresentedPropertyRows(), L"Text");
+	AppendFailure(failures, mixedText != nullptr,
+		L"mixed selection: Text row missing");
+	AppendFailure(failures, mixedText && mixedText->HasMixedValue,
+		L"mixed selection: Text row did not report mixed values");
+
+	const auto batchEdit = propertyGrid.ApplyPropertyValue(
+		L"Text", L"批量文本");
+	AppendFailure(failures, batchEdit.Succeeded && batchEdit.AppliedCount == 2,
+		L"batch edit: expected both targets to update");
+	AppendFailure(failures,
+		ControlText(canvas, firstName) == L"批量文本"
+			&& ControlText(canvas, secondName) == L"批量文本",
+		L"batch edit: runtime values differ");
+	AppendFailure(failures, !propertyGrid.HasPropertyEditError(),
+		L"batch edit: stale error remained visible");
+
+	AppendFailure(failures, canvas.UndoCommand(),
+		L"undo: command was not available");
+	AppendFailure(failures,
+		ControlText(canvas, firstName) != L"批量文本"
+			&& ControlText(canvas, secondName) == L"不同文本",
+		L"undo: pre-edit values were not restored");
+	AppendFailure(failures, canvas.GetSelectedControls().size() == 2
+		&& canvas.GetSelectedControl()
+		&& canvas.GetSelectedControl()->Name == firstName,
+		L"undo: complete selection was not restored");
+
+	AppendFailure(failures, canvas.RedoCommand(),
+		L"redo: command was not available");
+	AppendFailure(failures,
+		ControlText(canvas, firstName) == L"批量文本"
+			&& ControlText(canvas, secondName) == L"批量文本",
+		L"redo: edited values were not restored");
+	AppendFailure(failures, canvas.GetSelectedControls().size() == 2,
+		L"redo: complete selection was not restored");
+
+	ReloadCurrentSelection(propertyGrid, canvas);
+	const auto invalidEdit = propertyGrid.ApplyPropertyValue(
+		L"FontSize", L"not-a-number");
+	AppendFailure(failures, !invalidEdit.Succeeded,
+		L"error state: invalid numeric text was accepted");
+	AppendFailure(failures, propertyGrid.HasPropertyEditError()
+		&& propertyGrid.GetPropertyEditErrorProperty() == L"FontSize"
+		&& !propertyGrid.GetPropertyEditErrorMessage().empty(),
+		L"error state: failure was not exposed by PropertyGrid");
+	AppendFailure(failures,
+		ControlText(canvas, firstName) == L"批量文本"
+			&& ControlText(canvas, secondName) == L"批量文本",
+		L"error state: rejected edit mutated unrelated values");
+	AppendFailure(failures, canvas.UndoCommand(),
+		L"error state: prior valid command was no longer undoable");
+	AppendFailure(failures,
+		ControlText(canvas, firstName) != L"批量文本"
+			&& ControlText(canvas, secondName) == L"不同文本",
+		L"error state: rejected edit entered the undo history");
+	AppendFailure(failures, canvas.RedoCommand(),
+		L"error state: prior valid command was no longer redoable");
+	AppendFailure(failures,
+		ControlText(canvas, firstName) == L"批量文本"
+			&& ControlText(canvas, secondName) == L"批量文本",
+		L"error state: redo did not restore the prior valid edit");
+
+	ReloadCurrentSelection(propertyGrid, canvas);
+	const auto reset = propertyGrid.ResetPropertyValue(L"Text");
+	AppendFailure(failures, reset.Succeeded && reset.AppliedCount == 2,
+		L"reset: expected both targets to reset");
+	AppendFailure(failures,
+		ControlText(canvas, firstName).empty()
+			&& ControlText(canvas, secondName).empty(),
+		L"reset: default values were not applied (first='"
+			+ ControlText(canvas, firstName) + L"', second='"
+			+ ControlText(canvas, secondName) + L"')");
+	AppendFailure(failures, !propertyGrid.HasPropertyEditError(),
+		L"reset: successful edit did not clear the error state");
+
+	AppendFailure(failures, canvas.UndoCommand(),
+		L"reset undo: command was not available");
+	AppendFailure(failures,
+		ControlText(canvas, firstName) == L"批量文本"
+			&& ControlText(canvas, secondName) == L"批量文本",
+		L"reset undo: edited values were not restored");
+	AppendFailure(failures, canvas.RedoCommand(),
+		L"reset redo: command was not available");
+	AppendFailure(failures,
+		ControlText(canvas, firstName).empty()
+			&& ControlText(canvas, secondName).empty(),
+		L"reset redo: defaults were not restored (first='"
+			+ ControlText(canvas, firstName) + L"', second='"
+			+ ControlText(canvas, secondName) + L"')");
+
+	// Design-time bindings must temporarily reveal the Binding value layer and
+	// restore the persisted Local fallback when the preview context is removed.
+	auto boundControl = FindControl(canvas, firstName);
+	AppendFailure(failures, boundControl && boundControl->ControlInstance,
+		L"binding preview: target control missing");
+	if (boundControl && boundControl->ControlInstance)
+	{
+		boundControl->ControlInstance->Text = L"本地后备值";
+		boundControl->DataBindings[L"Text"] = {
+			L"Caption",
+			BindingMode::OneWay,
+			DataSourceUpdateMode::OnPropertyChanged,
+			L"StringTrim"
+		};
+		auto dataContext = std::make_shared<ObservableObject>();
+		dataContext->SetValue(L"Caption", std::wstring(L"  绑定预览  "));
+		canvas.SetDesignDataContext(dataContext);
+		AppendFailure(failures,
+			boundControl->ControlInstance->Text == L"绑定预览",
+			L"binding preview: source value did not become effective");
+		AppendFailure(failures,
+			boundControl->ControlInstance->GetPropertyValueSource(L"Text")
+				== ControlPropertyValueSource::Binding,
+			L"binding preview: Binding did not own the effective value");
+		const auto rows = DesignerPropertyRowCatalog::GetControlRows(
+			*boundControl, DesignerControlPropertyContext{});
+		const auto* textRow = DesignerPropertyRowCatalog::Find(rows, L"Text");
+		AppendFailure(failures,
+			textRow && textRow->HasConfiguredBinding && textRow->IsReadOnly
+				&& !textRow->Diagnostics.empty(),
+			L"binding preview: PropertyGrid row did not expose diagnostics");
+
+		canvas.SetDesignDataContext(nullptr);
+		AppendFailure(failures,
+			boundControl->ControlInstance->Text == L"本地后备值",
+			L"binding preview: removing DataContext did not restore Local value");
+		AppendFailure(failures,
+			boundControl->ControlInstance->DataBindings.Count() == 0,
+			L"binding preview: transient runtime binding was not removed");
+		const auto detached = boundControl->BindingPreviewStates.find(L"Text");
+		AppendFailure(failures,
+			detached != boundControl->BindingPreviewStates.end()
+				&& detached->second.Status
+					== DesignerBindingPreviewStatus::Detached,
+			L"binding preview: detached state was not reported");
+	}
+
+	DesignerCanvas invisibleControlCanvas(0, 0, 800, 640);
+	invisibleControlCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 180, 170 });
+	const auto invisibleControl =
+		invisibleControlCanvas.GetSelectedControl();
+	auto* const invisibleRuntime = invisibleControl
+		? invisibleControl->ControlInstance : nullptr;
+	PropertyGrid invisiblePropertyGrid(0, 0, 360, 620);
+	invisiblePropertyGrid.SetDesignerCanvas(&invisibleControlCanvas);
+	ReloadCurrentSelection(
+		invisiblePropertyGrid, invisibleControlCanvas);
+	const auto hideControlResult =
+		invisiblePropertyGrid.ApplyPropertyValue(L"Visible", L"false");
+	invisibleControlCanvas.Update();
+	AppendFailure(failures,
+		hideControlResult.Succeeded
+		&& invisibleRuntime && !invisibleRuntime->Visible
+		&& invisibleControlCanvas.GetSelectedControl() == invisibleControl,
+		L"designer visibility: Visible=false discarded the selected control");
+	if (invisibleRuntime)
+	{
+		const auto runtimeLocation = invisibleRuntime->AbsLocation;
+		const auto runtimeSize = invisibleRuntime->ActualSize();
+		const auto canvasLocation = invisibleControlCanvas.AbsLocation;
+		const POINT hiddenCenter{
+			runtimeLocation.x - canvasLocation.x + runtimeSize.cx / 2,
+			runtimeLocation.y - canvasLocation.y + runtimeSize.cy / 2
+		};
+		invisibleControlCanvas.RestoreSelectionByNames({}, L"", false);
+		(void)invisibleControlCanvas.ProcessMessage(
+			WM_LBUTTONDOWN, MK_LBUTTON, 0,
+			hiddenCenter.x, hiddenCenter.y);
+		AppendFailure(failures,
+			invisibleControlCanvas.GetSelectedControl() == invisibleControl,
+			L"designer visibility: hidden placeholder was not hit-testable");
+		(void)invisibleControlCanvas.CancelActivePointerInteraction(
+			L"self-test cleanup");
+	}
+
+	DesignerCanvas hiddenAncestorCanvas(0, 0, 800, 640);
+	hiddenAncestorCanvas.AddControlToCanvasCore(
+		UIClass::UI_Panel, POINT{ 230, 200 });
+	const auto hiddenAncestor = hiddenAncestorCanvas.GetSelectedControl();
+	auto* const hiddenAncestorRuntime = hiddenAncestor
+		? hiddenAncestor->ControlInstance : nullptr;
+	if (hiddenAncestorRuntime)
+	{
+		const POINT inside{
+			hiddenAncestorRuntime->AbsLocation.x
+				- hiddenAncestorCanvas.AbsLocation.x + 60,
+			hiddenAncestorRuntime->AbsLocation.y
+				- hiddenAncestorCanvas.AbsLocation.y + 55
+		};
+		hiddenAncestorCanvas.AddControlToCanvasCore(
+			UIClass::UI_Button, inside);
+	}
+	const auto hiddenDescendant = hiddenAncestorCanvas.GetSelectedControl();
+	if (hiddenAncestorRuntime) hiddenAncestorRuntime->Visible = false;
+	hiddenAncestorCanvas.Update();
+	AppendFailure(failures,
+		hiddenAncestor && hiddenDescendant
+		&& hiddenAncestorCanvas.GetSelectedControl() == nullptr,
+		L"designer visibility: a hidden ancestor retained a concealed descendant selection");
+	if (hiddenAncestor)
+	{
+		hiddenAncestorCanvas.RestoreSelectionByNames(
+			{ hiddenAncestor->Name }, hiddenAncestor->Name, false);
+		hiddenAncestorCanvas.Update();
+		AppendFailure(failures,
+			hiddenAncestorCanvas.GetSelectedControl() == hiddenAncestor,
+			L"designer visibility: a self-hidden container was not retained");
+	}
+
+	DesignerCanvas falseBooleanCanvas(0, 0, 800, 640);
+	falseBooleanCanvas.AddControlToCanvasCore(
+		UIClass::UI_CheckBox, POINT{ 170, 160 });
+	if (auto eventControl = falseBooleanCanvas.GetSelectedControl())
+		eventControl->EventHandlers[L"OnMouseClick"] = L"1";
+	PropertyGrid falseBooleanGrid(0, 0, 360, 360);
+	falseBooleanGrid.SetDesignerCanvas(&falseBooleanCanvas);
+	ReloadCurrentSelection(falseBooleanGrid, falseBooleanCanvas);
+	const auto checkedRow = std::find_if(
+		falseBooleanGrid.GetPresentedPropertyRows().begin(),
+		falseBooleanGrid.GetPresentedPropertyRows().end(),
+		[](const DesignerPropertyRow& row)
+		{ return _wcsicmp(row.Name.c_str(), L"Checked") == 0; });
+	const auto checkedDisplayName =
+		checkedRow != falseBooleanGrid.GetPresentedPropertyRows().end()
+		? checkedRow->DisplayName : std::wstring{};
+	auto* nativeFalseGrid = falseBooleanGrid.GetNativePropertyGrid();
+	const PropertyGridItem* nativeCheckedItem = nullptr;
+	const PropertyGridItem* nativeColorItem = nullptr;
+	const PropertyGridItem* nativeAnchorItem = nullptr;
+	bool propertyViewContainedEvent = false;
+	int nativeCheckedIndex = -1;
+	if (nativeFalseGrid)
+	{
+		for (int index = 0;
+			index < static_cast<int>(nativeFalseGrid->Items.size()); ++index)
+		{
+			const auto& item = nativeFalseGrid->Items[static_cast<size_t>(index)];
+			if (checkedRow != falseBooleanGrid.GetPresentedPropertyRows().end()
+				&& item.Name.rfind(checkedRow->DisplayName, 0) == 0)
+			{
+				nativeCheckedItem = &item;
+				nativeCheckedIndex = index;
+			}
+			if (item.ValueType == PropertyGridValueType::Color)
+				nativeColorItem = &item;
+			if (item.ValueType == PropertyGridValueType::Anchor)
+				nativeAnchorItem = &item;
+			if (item.Name == L"OnMouseClick" || item.Name == L"OnChecked")
+				propertyViewContainedEvent = true;
+		}
+	}
+	AppendFailure(failures,
+		checkedRow != falseBooleanGrid.GetPresentedPropertyRows().end()
+		&& checkedRow->Value.Text == L"false"
+		&& nativeFalseGrid && nativeFalseGrid->Visible
+		&& nativeCheckedItem
+		&& nativeCheckedItem->ValueType == PropertyGridValueType::Bool
+		&& _wcsicmp(nativeCheckedItem->Value.c_str(), L"false") == 0
+		&& !nativeCheckedItem->IsMixed
+		&& nativeFalseGrid->CheckBackColor.a >= 0.9f
+		&& nativeFalseGrid->CheckBorderColor.a >= 0.9f,
+		L"property boolean editor: false Checked value was not visibly represented");
+	AppendFailure(failures,
+		nativeColorItem != nullptr,
+		L"native property grid: color metadata did not use the native color editor");
+	AppendFailure(failures,
+		nativeAnchorItem != nullptr
+		&& nativeAnchorItem->Options.empty()
+		&& nativeAnchorItem->Value == L"0",
+		L"native property grid: Anchor metadata did not use the visual anchor editor");
+	AppendFailure(failures,
+		falseBooleanGrid.GetViewMode()
+			== DesignerPropertyGridViewMode::Properties
+		&& nativeFalseGrid
+		&& nativeFalseGrid->GetNameHeaderLabel() == L"属性"
+		&& nativeFalseGrid->GetValueHeaderLabel() == L"值"
+		&& !propertyViewContainedEvent,
+		L"property/event views: property mode still mixed event rows into properties");
+	std::wstring propertyModeCategory = nativeCheckedItem
+		? nativeCheckedItem->Category : std::wstring{};
+	if (nativeFalseGrid && !propertyModeCategory.empty())
+	{
+		nativeFalseGrid->CollapseCategory(propertyModeCategory, true);
+		nativeFalseGrid->SetScrollOffset(80.0f);
+	}
+	const float propertyModeScroll = nativeFalseGrid
+		? nativeFalseGrid->ScrollYOffset : 0.0f;
+	falseBooleanGrid.SetViewMode(DesignerPropertyGridViewMode::Events);
+	ReloadCurrentSelection(falseBooleanGrid, falseBooleanCanvas);
+	const PropertyGridItem* nativeEventItem = nullptr;
+	const PropertyGridItem* nativeDefaultEventItem = nullptr;
+	const PropertyGridItem* nativeEventManagerItem = nullptr;
+	bool eventViewContainedProperty = false;
+	if (nativeFalseGrid)
+	{
+		for (const auto& item : nativeFalseGrid->Items)
+		{
+			if (item.Name == L"OnMouseClick") nativeEventItem = &item;
+			if (item.Name == L"OnChecked") nativeDefaultEventItem = &item;
+			if (item.Name == L"重命名处理函数")
+				nativeEventManagerItem = &item;
+			if (!checkedDisplayName.empty()
+				&& item.Name.rfind(checkedDisplayName, 0) == 0)
+				eventViewContainedProperty = true;
+		}
+	}
+	const auto eventControl = falseBooleanCanvas.GetSelectedControl();
+	const auto defaultEventName = eventControl
+		? eventControl->Name + L"_OnMouseClick" : std::wstring{};
+	AppendFailure(failures,
+		nativeEventItem
+		&& nativeEventItem->ValueType == PropertyGridValueType::EditableEnum
+		&& nativeEventItem->Value == defaultEventName
+		&& std::find(nativeEventItem->Options.begin(), nativeEventItem->Options.end(),
+			defaultEventName) != nativeEventItem->Options.end(),
+		L"native property grid: legacy event mapping did not expose an editable default handler");
+	AppendFailure(failures,
+		nativeDefaultEventItem
+		&& nativeDefaultEventItem->Category.find(L"值变化") != std::wstring::npos
+		&& nativeDefaultEventItem->Description.find(L"默认事件") != std::wstring::npos,
+		L"native property grid: event category or default-event metadata was not presented");
+	AppendFailure(failures,
+		nativeEventManagerItem
+		&& nativeEventManagerItem->ValueType == PropertyGridValueType::Action
+		&& nativeEventManagerItem->Value.find(L"1") != std::wstring::npos,
+		L"native property grid: document-wide event handler manager was not exposed");
+	AppendFailure(failures,
+		falseBooleanGrid.GetViewMode() == DesignerPropertyGridViewMode::Events
+		&& nativeFalseGrid
+		&& nativeFalseGrid->GetNameHeaderLabel() == L"事件"
+		&& nativeFalseGrid->GetValueHeaderLabel() == L"处理函数"
+		&& !eventViewContainedProperty,
+		L"property/event views: event mode still mixed property rows into events");
+	const auto namedEventEdit = falseBooleanGrid.ApplyPropertyValue(
+		L"OnMouseClick", L"HandleCheckClick");
+	const auto conflictingEventEdit = falseBooleanGrid.ApplyPropertyValue(
+		L"OnChecked", L"HandleCheckClick");
+	const auto invalidEventEdit = falseBooleanGrid.ApplyPropertyValue(
+		L"OnMouseClick", L"bad::handler");
+	const auto currentEventControl = falseBooleanCanvas.GetSelectedControl();
+	std::wstring activatedHandler;
+	int activatedHandlerCount = 0;
+	falseBooleanGrid.OnEventHandlerActivated +=
+		[&](PropertyGrid*, const std::wstring& handler)
+		{
+			activatedHandler = handler;
+			++activatedHandlerCount;
+		};
+	std::wstring existingActivatedHandler;
+	const auto existingEventActivation = falseBooleanGrid.ActivateEventHandler(
+		L"OnMouseClick", &existingActivatedHandler);
+	std::wstring defaultActivatedHandler;
+	const auto defaultEventActivation = falseBooleanGrid.ActivateEventHandler(
+		L"OnMouseDoubleClick", &defaultActivatedHandler);
+	std::wstring catalogDefaultActivatedHandler;
+	const auto catalogDefaultActivation =
+		falseBooleanGrid.ActivateDefaultEventHandler(
+			&catalogDefaultActivatedHandler);
+	const auto expectedDoubleClickHandler = currentEventControl
+		? currentEventControl->Name + L"_OnMouseDoubleClick"
+		: std::wstring{};
+	const auto expectedCheckedHandler = currentEventControl
+		? currentEventControl->Name + L"_OnChecked"
+		: std::wstring{};
+	AppendFailure(failures,
+		namedEventEdit
+		&& !conflictingEventEdit
+		&& !conflictingEventEdit.Error.empty()
+		&& !invalidEventEdit
+		&& currentEventControl
+		&& currentEventControl->EventHandlers[L"OnMouseClick"]
+			== L"HandleCheckClick",
+		L"native property grid: event names or signature conflicts bypassed validation");
+	AppendFailure(failures,
+		existingEventActivation
+		&& existingEventActivation.AppliedCount == 0
+		&& existingActivatedHandler == L"HandleCheckClick"
+		&& defaultEventActivation
+		&& defaultEventActivation.AppliedCount == 1
+		&& !expectedDoubleClickHandler.empty()
+		&& defaultActivatedHandler == expectedDoubleClickHandler
+		&& catalogDefaultActivation
+		&& catalogDefaultActivation.AppliedCount == 1
+		&& catalogDefaultActivatedHandler == expectedCheckedHandler
+		&& activatedHandler == expectedCheckedHandler
+		&& activatedHandlerCount == 3
+		&& currentEventControl
+		&& currentEventControl->EventHandlers[L"OnMouseDoubleClick"]
+			== expectedDoubleClickHandler
+		&& currentEventControl->EventHandlers[L"OnChecked"]
+			== expectedCheckedHandler,
+		L"native property grid: event activation did not reuse or create an undoable handler");
+
+	ReloadCurrentSelection(falseBooleanGrid, falseBooleanCanvas);
+	std::wstring eventModeCategory;
+	if (nativeFalseGrid)
+	{
+		for (const auto& item : nativeFalseGrid->Items)
+		{
+			if (item.Name == L"OnMouseClick")
+			{
+				eventModeCategory = item.Category;
+				break;
+			}
+		}
+		if (!eventModeCategory.empty())
+			nativeFalseGrid->CollapseCategory(eventModeCategory, true);
+		nativeFalseGrid->SetScrollOffset(70.0f);
+	}
+	const float eventModeScroll = nativeFalseGrid
+		? nativeFalseGrid->ScrollYOffset : 0.0f;
+	falseBooleanGrid.SetViewMode(DesignerPropertyGridViewMode::Properties);
+	ReloadCurrentSelection(falseBooleanGrid, falseBooleanCanvas);
+	const bool restoredPropertyModeState = nativeFalseGrid
+		&& !propertyModeCategory.empty()
+		&& nativeFalseGrid->IsCategoryCollapsed(propertyModeCategory)
+		&& propertyModeScroll > 0.0f
+		&& std::fabs(nativeFalseGrid->ScrollYOffset - propertyModeScroll) < 0.01f;
+	falseBooleanGrid.SetViewMode(DesignerPropertyGridViewMode::Events);
+	ReloadCurrentSelection(falseBooleanGrid, falseBooleanCanvas);
+	const bool restoredEventModeState = nativeFalseGrid
+		&& !eventModeCategory.empty()
+		&& nativeFalseGrid->IsCategoryCollapsed(eventModeCategory)
+		&& eventModeScroll > 0.0f
+		&& std::fabs(nativeFalseGrid->ScrollYOffset - eventModeScroll) < 0.01f;
+	AppendFailure(failures,
+		restoredPropertyModeState && restoredEventModeState,
+		L"property/event views: collapse or scroll state leaked across view modes");
+
+	falseBooleanGrid.SetFilterText(L"Mouse");
+	falseBooleanGrid.SetViewMode(DesignerPropertyGridViewMode::Properties);
+	ReloadCurrentSelection(falseBooleanGrid, falseBooleanCanvas);
+	const bool propertyFilterInitiallyIndependent =
+		falseBooleanGrid.GetFilterText().empty();
+	falseBooleanGrid.SetFilterText(L"Checked");
+	falseBooleanGrid.SetViewMode(DesignerPropertyGridViewMode::Events);
+	ReloadCurrentSelection(falseBooleanGrid, falseBooleanCanvas);
+	const bool restoredEventFilter =
+		falseBooleanGrid.GetFilterText() == L"Mouse";
+	falseBooleanGrid.SetViewMode(DesignerPropertyGridViewMode::Properties);
+	ReloadCurrentSelection(falseBooleanGrid, falseBooleanCanvas);
+	const bool restoredPropertyFilter =
+		falseBooleanGrid.GetFilterText() == L"Checked";
+	AppendFailure(failures,
+		propertyFilterInitiallyIndependent
+		&& restoredEventFilter && restoredPropertyFilter,
+		L"property/event views: filters were not retained independently");
+	falseBooleanGrid.SetFilterText(L"");
+	ReloadCurrentSelection(falseBooleanGrid, falseBooleanCanvas);
+	nativeCheckedIndex = -1;
+	if (nativeFalseGrid)
+	{
+		for (int index = 0;
+			index < static_cast<int>(nativeFalseGrid->Items.size()); ++index)
+		{
+			const auto& item = nativeFalseGrid->Items[static_cast<size_t>(index)];
+			if (!checkedDisplayName.empty()
+				&& item.Name.rfind(checkedDisplayName, 0) == 0)
+			{
+				nativeCheckedIndex = index;
+				break;
+			}
+		}
+	}
+
+	const std::wstring navigationSource =
+		L"D:\\Project Folder\\Window.cpp";
+	const auto codeNavigationPlan = SourceCodeNavigator::BuildPlan(
+		SourceCodeEditorKind::VisualStudioCode,
+		L"C:\\Editor Folder\\Code.exe", navigationSource, 42);
+	const auto visualStudioNavigationPlan = SourceCodeNavigator::BuildPlan(
+		SourceCodeEditorKind::VisualStudio,
+		L"C:\\Visual Studio\\devenv.exe", navigationSource, 42);
+	const auto customNavigationPlan = SourceCodeNavigator::BuildPlan(
+		SourceCodeEditorKind::Custom,
+		L"C:\\Custom Editor\\editor.exe", navigationSource, 42,
+		L"--file {file} --line {line} --column {column}");
+	const auto customAppendFilePlan = SourceCodeNavigator::BuildPlan(
+		SourceCodeEditorKind::Custom,
+		L"C:\\Custom Editor\\editor.exe", navigationSource, 0,
+		L"--reuse-window");
+	AppendFailure(failures,
+		codeNavigationPlan.RequestsExactLine
+		&& codeNavigationPlan.Arguments
+			== L"--goto \"D:\\Project Folder\\Window.cpp:42:1\""
+		&& visualStudioNavigationPlan.RequestsExactLine
+		&& visualStudioNavigationPlan.Arguments
+			== L"/Edit \"D:\\Project Folder\\Window.cpp\" /Command \"Edit.Goto 42\""
+		&& customNavigationPlan.RequestsExactLine
+		&& customNavigationPlan.Arguments
+			== L"--file \"D:\\Project Folder\\Window.cpp\" --line 42 --column 1"
+		&& !customAppendFilePlan.RequestsExactLine
+		&& customAppendFilePlan.Arguments
+			== L"--reuse-window \"D:\\Project Folder\\Window.cpp\""
+		&& SourceCodeNavigator::QuoteArgument(L"C:\\Folder With Space\\")
+			== L"\"C:\\Folder With Space\\\\\"",
+		L"source navigation: editor plans did not quote paths or request exact lines safely");
+	constexpr std::string_view locatorSource =
+		"// void Fake::HandleClick() {}\n"
+		"const char* text = \"Fake::HandleClick() {\";\n"
+		"auto raw = R\"tag(Fake::HandleClick() {})tag\";\n"
+		"void Fake::HandleClick();\n"
+		"/* void Fake::HandleClick() {} */\n"
+		"void Other::HandleClick() {}\n"
+		"void Acme::Window::HandleClick(\n"
+		"    Control*, MouseEventArgs)\n"
+		"{\n"
+		"}\n";
+	AppendFailure(failures,
+		SourceCodeNavigator::FindMemberDefinitionLineInText(
+			locatorSource, "HandleClick", "Acme::Window") == 7
+		&& SourceCodeNavigator::FindMemberDefinitionLineInText(
+			locatorSource, "HandleClick", "Missing::Window") == 0
+		&& SourceCodeNavigator::FindMemberDefinitionLineInText(
+			locatorSource, "MissingHandler", "Acme::Window") == 0,
+		L"source navigation: comments, literals, declarations, or another class produced a false target line");
+
+	DesignerCanvas canvasDefaultEventCanvas(0, 0, 800, 640);
+	canvasDefaultEventCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 180, 160 });
+	PropertyGrid canvasDefaultEventGrid(0, 0, 360, 360);
+	canvasDefaultEventGrid.SetDesignerCanvas(&canvasDefaultEventCanvas);
+	ReloadCurrentSelection(canvasDefaultEventGrid, canvasDefaultEventCanvas);
+	int canvasDefaultRequestCount = 0;
+	DesignerPropertyEditResult canvasDefaultResult;
+	canvasDefaultEventCanvas.OnControlSelected +=
+		[&](std::shared_ptr<DesignerControl> selected)
+		{
+			canvasDefaultEventGrid.LoadControls(
+				canvasDefaultEventCanvas.GetSelectedControls(), selected);
+		};
+	canvasDefaultEventCanvas.OnDefaultEventRequested +=
+		[&](std::shared_ptr<DesignerControl>)
+		{
+			++canvasDefaultRequestCount;
+			canvasDefaultResult =
+				canvasDefaultEventGrid.ActivateDefaultEventHandler();
+		};
+	const auto canvasDefaultControl =
+		canvasDefaultEventCanvas.GetSelectedControl();
+	if (canvasDefaultControl && canvasDefaultControl->ControlInstance)
+	{
+		auto* runtime = canvasDefaultControl->ControlInstance;
+		const auto size = runtime->ActualSize();
+		const POINT center{
+			runtime->AbsLocation.x - canvasDefaultEventCanvas.AbsLocation.x
+				+ size.cx / 2,
+			runtime->AbsLocation.y - canvasDefaultEventCanvas.AbsLocation.y
+				+ size.cy / 2
+		};
+		(void)canvasDefaultEventCanvas.ProcessMessage(
+			WM_LBUTTONDBLCLK, MK_LBUTTON, 0, center.x, center.y);
+	}
+	const auto expectedCanvasHandler = canvasDefaultControl
+		? canvasDefaultControl->Name + L"_OnMouseClick" : std::wstring{};
+	AppendFailure(failures,
+		canvasDefaultControl
+		&& canvasDefaultRequestCount == 1
+		&& canvasDefaultResult
+		&& canvasDefaultControl->EventHandlers[L"OnMouseClick"]
+			== expectedCanvasHandler,
+		L"canvas default event: control double-click did not create the catalog default handler");
+
+	DesignerCanvas formDefaultEventCanvas(0, 0, 800, 640);
+	PropertyGrid formDefaultEventGrid(0, 0, 360, 360);
+	formDefaultEventGrid.SetDesignerCanvas(&formDefaultEventCanvas);
+	formDefaultEventGrid.LoadControls({}, nullptr);
+	int formDefaultRequestCount = 0;
+	DesignerPropertyEditResult formDefaultResult;
+	formDefaultEventCanvas.OnControlSelected +=
+		[&](std::shared_ptr<DesignerControl> selected)
+		{
+			formDefaultEventGrid.LoadControls(
+				formDefaultEventCanvas.GetSelectedControls(), selected);
+		};
+	formDefaultEventCanvas.OnDefaultEventRequested +=
+		[&](std::shared_ptr<DesignerControl>)
+		{
+			++formDefaultRequestCount;
+			formDefaultResult =
+				formDefaultEventGrid.ActivateDefaultEventHandler();
+		};
+	(void)formDefaultEventCanvas.ProcessMessage(
+		WM_LBUTTONDBLCLK, MK_LBUTTON, 0, 30, 60);
+	const auto& formDefaultHandlers =
+		formDefaultEventCanvas.GetDesignedFormEventHandlers();
+	const auto shownHandler = formDefaultHandlers.find(L"OnShown");
+	AppendFailure(failures,
+		formDefaultRequestCount == 1
+		&& formDefaultResult
+		&& shownHandler != formDefaultHandlers.end()
+		&& shownHandler->second == L"MainForm_OnShown",
+		L"canvas default event: form double-click did not create OnShown");
+
+	DesignerCanvas eventRenameCanvas(0, 0, 800, 640);
+	eventRenameCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 120, 120 });
+	eventRenameCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 280, 120 });
+	const auto& renameControls = eventRenameCanvas.GetAllControls();
+	if (renameControls.size() == 2)
+	{
+		renameControls[0]->EventHandlers[L"OnMouseClick"] = L"HandleSharedClick";
+		renameControls[0]->EventHandlers[L"OnMouseDoubleClick"] = L"HandleSharedClick";
+		renameControls[1]->EventHandlers[L"OnMouseClick"] = L"HandleSharedClick";
+	}
+	eventRenameCanvas.SetDesignedFormEventHandler(
+		L"OnCommand", L"HandleCommand");
+	size_t renamedEventReferences = 0;
+	auto renamedEventTransaction =
+		eventRenameCanvas.ExecuteDocumentEditTransaction(
+			L"RenameEventHandler",
+			[&](std::wstring& error)
+			{
+				return eventRenameCanvas.RenameEventHandler(
+					L"HandleSharedClick", L"HandleClick",
+					&renamedEventReferences, &error);
+			});
+	const bool renamedLiveReferences = renameControls.size() == 2
+		&& renameControls[0]->EventHandlers[L"OnMouseClick"] == L"HandleClick"
+		&& renameControls[0]->EventHandlers[L"OnMouseDoubleClick"] == L"HandleClick"
+		&& renameControls[1]->EventHandlers[L"OnMouseClick"] == L"HandleClick";
+	auto undoEventRename = eventRenameCanvas.UndoCommand();
+	const bool restoredOldEventReferences = renameControls.size() == 2
+		&& renameControls[0]->EventHandlers[L"OnMouseClick"] == L"HandleSharedClick"
+		&& renameControls[1]->EventHandlers[L"OnMouseClick"] == L"HandleSharedClick";
+	auto redoEventRename = eventRenameCanvas.RedoCommand();
+
+	DesignerModel::DesignDocument renamedEventDocument;
+	std::wstring renamedEventError;
+	const bool capturedRenamedEvents = eventRenameCanvas.BuildDesignDocument(
+		renamedEventDocument, &renamedEventError);
+	DesignerModel::DesignDocumentEventIndex renamedEventIndex;
+	const bool indexedRenamedEvents = capturedRenamedEvents
+		&& DesignerModel::DesignDocumentEventIndex::Build(
+			renamedEventDocument, renamedEventIndex, &renamedEventError);
+	DesignerModel::DesignDocument xmlRenamedEvents;
+	DesignerModel::DesignDocumentEventIndex xmlRenamedEventIndex;
+	const bool xmlRenamedEventRoundTrip = indexedRenamedEvents
+		&& DesignerModel::DesignDocumentSerializer::FromXml(
+			DesignerModel::DesignDocumentSerializer::ToXml(renamedEventDocument),
+			xmlRenamedEvents, &renamedEventError)
+		&& DesignerModel::DesignDocumentEventIndex::Build(
+			xmlRenamedEvents, xmlRenamedEventIndex, &renamedEventError)
+		&& xmlRenamedEventIndex.FindHandler(L"HandleClick")
+		&& xmlRenamedEventIndex.FindHandler(L"HandleClick")
+			->ReferenceIndices.size() == 3
+		&& !xmlRenamedEventIndex.FindHandler(L"HandleSharedClick");
+	DesignerModel::DesignDocument xamlRenamedEvents;
+	DesignerModel::DesignDocumentEventIndex xamlRenamedEventIndex;
+	const bool xamlRenamedEventRoundTrip = indexedRenamedEvents
+		&& DesignerModel::XamlDocumentParser::FromXaml(
+			DesignerModel::XamlDocumentSerializer::ToXaml(renamedEventDocument),
+			xamlRenamedEvents, &renamedEventError)
+		&& DesignerModel::DesignDocumentEventIndex::Build(
+			xamlRenamedEvents, xamlRenamedEventIndex, &renamedEventError)
+		&& xamlRenamedEventIndex.FindHandler(L"HandleClick")
+		&& xamlRenamedEventIndex.FindHandler(L"HandleClick")
+			->ReferenceIndices.size() == 3
+		&& !xamlRenamedEventIndex.FindHandler(L"HandleSharedClick");
+	CodeGenInput renamedEventCodeInput;
+	const bool builtRenamedEventCodeInput = indexedRenamedEvents
+		&& DesignerModel::DesignDocumentCodeGenInputBuilder::Build(
+			renamedEventDocument, renamedEventCodeInput, &renamedEventError);
+	CodeGenerator renamedEventGenerator(
+		L"RenamedEventForm", renamedEventCodeInput);
+	const auto renamedEventHeader = builtRenamedEventCodeInput
+		? renamedEventGenerator.GenerateHeader() : std::string{};
+	const auto renamedEventCpp = builtRenamedEventCodeInput
+		? renamedEventGenerator.GenerateCpp() : std::string{};
+	const bool generatedRenamedEventCode = builtRenamedEventCodeInput
+		&& renamedEventHeader.find("virtual void HandleClick(") != std::string::npos
+		&& renamedEventHeader.find("HandleSharedClick") == std::string::npos
+		&& renamedEventCpp.find("::HandleClick, this)") != std::string::npos
+		&& renamedEventCpp.find("HandleSharedClick") == std::string::npos;
+	const auto beforeConflictingRename = renamedEventDocument;
+	auto conflictingRenameTransaction =
+		eventRenameCanvas.ExecuteDocumentEditTransaction(
+			L"RenameEventHandler",
+			[&](std::wstring& error)
+			{
+				return eventRenameCanvas.RenameEventHandler(
+					L"HandleClick", L"HandleCommand", nullptr, &error);
+			});
+	DesignerModel::DesignDocument afterConflictingRename;
+	const bool capturedAfterConflict = eventRenameCanvas.BuildDesignDocument(
+		afterConflictingRename, &renamedEventError);
+	AppendFailure(failures,
+		renamedEventTransaction.HasChanges()
+		&& renamedEventReferences == 3
+		&& renamedLiveReferences
+		&& undoEventRename.HasChanges()
+		&& restoredOldEventReferences
+		&& redoEventRename.HasChanges()
+		&& indexedRenamedEvents
+		&& renamedEventIndex.FindHandler(L"HandleClick")
+		&& renamedEventIndex.FindHandler(L"HandleClick")
+			->ReferenceIndices.size() == 3
+		&& xmlRenamedEventRoundTrip
+		&& xamlRenamedEventRoundTrip
+		&& generatedRenamedEventCode
+		&& !conflictingRenameTransaction
+		&& !conflictingRenameTransaction.Error.empty()
+		&& capturedAfterConflict
+		&& afterConflictingRename == beforeConflictingRename,
+		L"event handler rename: shared references, undo/redo, persistence, or conflict rollback failed"
+		+ std::wstring(L" [renameState=")
+		+ std::to_wstring(static_cast<int>(renamedEventTransaction.State))
+		+ L", count=" + std::to_wstring(renamedEventReferences)
+		+ L", live=" + (renamedLiveReferences ? L"1" : L"0")
+		+ L", undo=" + (undoEventRename.HasChanges() ? L"1" : L"0")
+		+ L", old=" + (restoredOldEventReferences ? L"1" : L"0")
+		+ L", redo=" + (redoEventRename.HasChanges() ? L"1" : L"0")
+		+ L", index=" + (indexedRenamedEvents ? L"1" : L"0")
+		+ L", xml=" + (xmlRenamedEventRoundTrip ? L"1" : L"0")
+		+ L", xaml=" + (xamlRenamedEventRoundTrip ? L"1" : L"0")
+		+ L", codegen=" + (generatedRenamedEventCode ? L"1" : L"0")
+		+ L", conflictState="
+		+ std::to_wstring(static_cast<int>(conflictingRenameTransaction.State))
+		+ L", restored=" + (capturedAfterConflict
+			&& afterConflictingRename == beforeConflictingRename ? L"1" : L"0")
+		+ L", error=" + renamedEventError + L"]");
+	std::wstring preservedCategory;
+	if (nativeFalseGrid)
+	{
+		for (const auto& item : nativeFalseGrid->Items)
+		{
+			if (!item.Category.empty())
+			{
+				preservedCategory = item.Category;
+				break;
+			}
+		}
+		if (!preservedCategory.empty())
+			nativeFalseGrid->CollapseCategory(preservedCategory, true);
+		nativeFalseGrid->SetScrollOffset(120.0f);
+	}
+	const float preservedScroll = nativeFalseGrid
+		? nativeFalseGrid->ScrollYOffset : 0.0f;
+	const bool statePreservingEdit = nativeFalseGrid
+		&& nativeCheckedIndex >= 0
+		&& nativeFalseGrid->SetValue(nativeCheckedIndex, L"True");
+	ReloadCurrentSelection(falseBooleanGrid, falseBooleanCanvas);
+	AppendFailure(failures,
+		statePreservingEdit
+		&& nativeFalseGrid
+		&& !preservedCategory.empty()
+		&& nativeFalseGrid->IsCategoryCollapsed(preservedCategory)
+		&& preservedScroll > 0.0f
+		&& std::fabs(nativeFalseGrid->ScrollYOffset - preservedScroll) < 0.01f,
+		L"native property grid: value reload lost category collapse or scroll state");
+
+	DesignerCanvas nativeSliderCanvas(0, 0, 800, 640);
+	nativeSliderCanvas.AddControlToCanvasCore(
+		UIClass::UI_ProgressBar, POINT{ 170, 160 });
+	PropertyGrid nativeSliderGrid(0, 0, 360, 620);
+	nativeSliderGrid.SetDesignerCanvas(&nativeSliderCanvas);
+	ReloadCurrentSelection(nativeSliderGrid, nativeSliderCanvas);
+	const auto* percentageRow = DesignerPropertyRowCatalog::Find(
+		nativeSliderGrid.GetPresentedPropertyRows(), L"PercentageValue");
+	auto* nativeSliderView = nativeSliderGrid.GetNativePropertyGrid();
+	int nativeSliderIndex = -1;
+	if (percentageRow && nativeSliderView)
+	{
+		for (int index = 0;
+			index < static_cast<int>(nativeSliderView->Items.size()); ++index)
+		{
+			const auto& item = nativeSliderView->Items[static_cast<size_t>(index)];
+			if (item.Name.rfind(percentageRow->DisplayName, 0) == 0)
+			{
+				nativeSliderIndex = index;
+				break;
+			}
+		}
+	}
+	AppendFailure(failures,
+		nativeSliderIndex >= 0
+		&& nativeSliderView->Items[static_cast<size_t>(nativeSliderIndex)].ValueType
+			== PropertyGridValueType::Slider,
+		L"native property grid: bounded float metadata did not use Slider");
+	if (nativeSliderIndex >= 0)
+	{
+		const size_t commandCountBeforeSlider =
+			nativeSliderCanvas.GetUndoCommandCount();
+		nativeSliderView->EnsureVisible(nativeSliderIndex);
+		int sliderTop = -1;
+		int sliderBottom = -1;
+		for (int y = 0; y < nativeSliderView->Height; ++y)
+		{
+			if (nativeSliderView->HitTestItem(230, y) == nativeSliderIndex)
+			{
+				if (sliderTop < 0) sliderTop = y;
+				sliderBottom = y;
+			}
+		}
+		const int sliderY = sliderTop >= 0
+			? (sliderTop + sliderBottom) / 2 : -1;
+		if (sliderY >= 0)
+		{
+			nativeSliderView->ProcessMessage(
+				WM_LBUTTONDOWN, 0, 0, 215, sliderY);
+			nativeSliderView->ProcessMessage(
+				WM_MOUSEMOVE, 0, 0, 285, sliderY);
+			nativeSliderView->ProcessMessage(
+				WM_LBUTTONUP, 0, 0, 285, sliderY);
+		}
+		AppendFailure(failures,
+			sliderY >= 0
+			&& nativeSliderCanvas.GetUndoCommandCount()
+				== commandCountBeforeSlider + 1
+			&& !nativeSliderGrid.HasPropertyEditError(),
+			L"native property grid: Slider drag was not committed as one command"
+			+ std::wstring(L" (y=") + std::to_wstring(sliderY)
+			+ L", before=" + std::to_wstring(commandCountBeforeSlider)
+			+ L", after=" + std::to_wstring(
+				nativeSliderCanvas.GetUndoCommandCount())
+			+ L", error=" + nativeSliderGrid.GetPropertyEditErrorMessage() + L")");
+	}
+
+	DesignerCanvas structuralCanvas(0, 0, 800, 640);
+	structuralCanvas.AddControlToCanvasCore(
+		UIClass::UI_ComboBox, POINT{ 140, 140 });
+	AppendFailure(failures, structuralCanvas.GetAllControls().size() == 1,
+		L"structure transaction: setup control missing");
+	if (structuralCanvas.GetAllControls().size() == 1)
+	{
+		const auto structuralName =
+			structuralCanvas.GetAllControls().front()->Name;
+		auto getCombo = [&structuralCanvas, &structuralName]() -> ComboBox*
+		{
+			auto control = FindControl(structuralCanvas, structuralName);
+			return control && control->ControlInstance
+				? dynamic_cast<ComboBox*>(control->ControlInstance) : nullptr;
+		};
+		auto* combo = getCombo();
+		AppendFailure(failures, combo != nullptr,
+			L"structure transaction: target is not ComboBox");
+		if (combo)
+		{
+			const auto originalItems = combo->Items;
+			const auto originalSelectedIndex = combo->SelectedIndex;
+			auto structureBegin = structuralCanvas.BeginDocumentEditTransaction(
+				L"SelfTest:ComboBoxItems");
+			AppendFailure(failures,
+				structureBegin.State
+					== DesignerDocumentTransactionState::Begun,
+				L"structure transaction: could not capture before document");
+			auto nestedBegin = structuralCanvas.BeginDocumentEditTransaction(
+				L"SelfTest:Nested");
+			AppendFailure(failures,
+				nestedBegin.State
+					== DesignerDocumentTransactionState::Rejected,
+				L"structure transaction: nested transaction was accepted");
+			combo->Items = { L"Alpha", L"Beta" };
+			combo->SelectedIndex = 1;
+			auto structuralControl = FindControl(
+				structuralCanvas, structuralName);
+			if (structuralControl)
+				(void)DesignerPropertyCatalog::TrackCurrentValue(
+					*combo,
+					structuralControl->MetadataProperties,
+					L"SelectedIndex");
+			auto structureCommit =
+				structuralCanvas.CommitDocumentEditTransaction();
+			AppendFailure(failures,
+				structureCommit.State
+					== DesignerDocumentTransactionState::Committed,
+				L"structure transaction: commit failed");
+			AppendFailure(failures,
+				getCombo() && getCombo()->Items
+					== std::vector<std::wstring>{ L"Alpha", L"Beta" }
+					&& getCombo()->SelectedIndex == 1,
+				L"structure transaction: committed values differ");
+
+			AppendFailure(failures, structuralCanvas.UndoCommand(),
+				L"structure transaction: undo unavailable");
+			AppendFailure(failures,
+				getCombo() && getCombo()->Items == originalItems
+					&& getCombo()->SelectedIndex == originalSelectedIndex,
+				L"structure transaction: undo did not restore collection");
+			AppendFailure(failures, structuralCanvas.RedoCommand(),
+				L"structure transaction: redo unavailable");
+			AppendFailure(failures,
+				getCombo() && getCombo()->Items
+					== std::vector<std::wstring>{ L"Alpha", L"Beta" }
+					&& getCombo()->SelectedIndex == 1,
+				L"structure transaction: redo did not restore collection");
+
+			auto rollbackBegin = structuralCanvas.BeginDocumentEditTransaction(
+				L"SelfTest:Rollback");
+			AppendFailure(failures,
+				rollbackBegin.State
+					== DesignerDocumentTransactionState::Begun,
+				L"structure transaction: rollback snapshot unavailable");
+			if (auto* current = getCombo())
+				current->Items = { L"Transient" };
+			auto rollbackResult =
+				structuralCanvas.RollbackDocumentEditTransaction();
+			AppendFailure(failures,
+				rollbackResult.State
+					== DesignerDocumentTransactionState::RolledBack,
+				L"structure transaction: explicit rollback failed");
+			AppendFailure(failures,
+				getCombo() && getCombo()->Items
+					== std::vector<std::wstring>{ L"Alpha", L"Beta" },
+				L"structure transaction: rollback retained transient values");
+		}
+	}
+	DesignerCanvas emptyTransactionCanvas(0, 0, 800, 640);
+	emptyTransactionCanvas.AddControlToCanvasCore(
+		UIClass::UI_ComboBox, POINT{ 140, 140 });
+	const auto emptyComboName = emptyTransactionCanvas.GetAllControls().empty()
+		? std::wstring{}
+		: emptyTransactionCanvas.GetAllControls().front()->Name;
+	auto getEmptyCombo = [&emptyTransactionCanvas,
+		&emptyComboName]() -> ComboBox*
+	{
+		auto control = FindControl(emptyTransactionCanvas, emptyComboName);
+		return control && control->ControlInstance
+			? dynamic_cast<ComboBox*>(control->ControlInstance) : nullptr;
+	};
+	const auto emptyOriginalItems = getEmptyCombo()
+		? getEmptyCombo()->Items : std::vector<std::wstring>{};
+	auto noChangeBegin = emptyTransactionCanvas.BeginDocumentEditTransaction(
+		L"SelfTest:NoChange");
+	auto noChangeCommit = emptyTransactionCanvas.CommitDocumentEditTransaction();
+	AppendFailure(failures,
+		noChangeBegin.State == DesignerDocumentTransactionState::Begun
+		&& noChangeCommit.State
+			== DesignerDocumentTransactionState::Unchanged,
+		L"structure transaction: no-change commit failed");
+	AppendFailure(failures,
+		IsUnchanged(emptyTransactionCanvas.UndoCommand()),
+		L"structure transaction: no-change commit entered history");
+	auto cancelBegin = emptyTransactionCanvas.BeginDocumentEditTransaction(
+		L"SelfTest:Cancel");
+	AppendFailure(failures,
+		cancelBegin.State == DesignerDocumentTransactionState::Begun,
+		L"structure transaction: cancel snapshot unavailable");
+	auto cancelResult = emptyTransactionCanvas.CancelDocumentEditTransaction();
+	AppendFailure(failures,
+		cancelResult.State == DesignerDocumentTransactionState::Canceled,
+		L"structure transaction: unchanged cancel state was not reported");
+	AppendFailure(failures,
+		IsUnchanged(emptyTransactionCanvas.UndoCommand()),
+		L"structure transaction: canceled edit entered history");
+
+	(void)emptyTransactionCanvas.BeginDocumentEditTransaction(
+		L"SelfTest:CancelMutation");
+	if (auto* current = getEmptyCombo())
+		current->Items = { L"CancelTransient" };
+	auto cancelMutation =
+		emptyTransactionCanvas.CancelDocumentEditTransaction();
+	AppendFailure(failures,
+		cancelMutation.State
+			== DesignerDocumentTransactionState::RolledBack
+		&& getEmptyCombo()
+		&& getEmptyCombo()->Items == emptyOriginalItems,
+		L"structure transaction: cancel did not restore leaked mutation");
+	AppendFailure(failures,
+		IsUnchanged(emptyTransactionCanvas.UndoCommand()),
+		L"structure transaction: restored cancel entered history");
+
+	auto abortedTransaction =
+		emptyTransactionCanvas.ExecuteDocumentEditTransaction(
+			L"SelfTest:Abort",
+			[&getEmptyCombo](std::wstring& error)
+			{
+				if (auto* current = getEmptyCombo())
+					current->Items = { L"AbortTransient" };
+				error = L"expected rejection";
+				return false;
+			});
+	AppendFailure(failures,
+		abortedTransaction.State
+			== DesignerDocumentTransactionState::Aborted
+		&& abortedTransaction.DocumentRestored
+		&& getEmptyCombo()
+		&& getEmptyCombo()->Items == emptyOriginalItems,
+		L"document transaction: rejected operation was not restored");
+	AppendFailure(failures,
+		IsUnchanged(emptyTransactionCanvas.UndoCommand()),
+		L"document transaction: rejected operation entered history");
+
+	auto throwingTransaction =
+		emptyTransactionCanvas.ExecuteDocumentEditTransaction(
+			L"SelfTest:Exception",
+			[&getEmptyCombo](std::wstring&) -> bool
+			{
+				if (auto* current = getEmptyCombo())
+					current->Items = { L"ExceptionTransient" };
+				throw 1;
+			});
+	AppendFailure(failures,
+		throwingTransaction.State
+			== DesignerDocumentTransactionState::Failed
+		&& throwingTransaction.DocumentRestored
+		&& getEmptyCombo()
+		&& getEmptyCombo()->Items == emptyOriginalItems,
+		L"document transaction: exception was not restored");
+	AppendFailure(failures,
+		IsUnchanged(emptyTransactionCanvas.UndoCommand()),
+		L"document transaction: exception entered history");
+
+	auto executedTransaction =
+		emptyTransactionCanvas.ExecuteDocumentEditTransaction(
+			L"SelfTest:Execute",
+			[&getEmptyCombo](std::wstring& error)
+			{
+				auto* current = getEmptyCombo();
+				if (!current)
+				{
+					error = L"ComboBox unavailable";
+					return false;
+				}
+				current->Items = { L"Executed" };
+				return true;
+			});
+	AppendFailure(failures,
+		executedTransaction.State
+			== DesignerDocumentTransactionState::Committed
+		&& getEmptyCombo()
+		&& getEmptyCombo()->Items
+			== std::vector<std::wstring>{ L"Executed" },
+		L"document transaction: execute did not commit");
+	AppendFailure(failures, emptyTransactionCanvas.UndoCommand()
+		&& getEmptyCombo()
+		&& getEmptyCombo()->Items == emptyOriginalItems,
+		L"document transaction: execute undo did not restore state");
+
+	DesignerCanvas codeBehindCanvas(0, 0, 800, 640);
+	DesignerModel::DesignCodeBehindModel codeBehindAssociation;
+	codeBehindAssociation.ClassName = L"PersistentWindow";
+	codeBehindAssociation.RelativeBasePath = L"generated/PersistentWindow";
+	auto codeBehindTransaction =
+		codeBehindCanvas.ExecuteDocumentEditTransaction(
+			L"SelfTest:CodeBehind",
+			[&](std::wstring& error)
+			{
+				return codeBehindCanvas.SetCodeBehind(
+					codeBehindAssociation, &error);
+			});
+	DesignerModel::DesignDocument capturedCodeBehind;
+	std::wstring codeBehindError;
+	const bool capturedAssociatedCodeBehind =
+		codeBehindCanvas.BuildDesignDocument(
+			capturedCodeBehind, &codeBehindError);
+	auto undoCodeBehind = codeBehindCanvas.UndoCommand();
+	const bool clearedAssociatedCodeBehind =
+		codeBehindCanvas.GetCodeBehind().Empty();
+	auto redoCodeBehind = codeBehindCanvas.RedoCommand();
+	DesignerModel::DesignCodeBehindModel invalidCodeBehind;
+	invalidCodeBehind.ClassName = L"PersistentWindow";
+	invalidCodeBehind.RelativeBasePath = L"C:/outside/PersistentWindow";
+	const bool rejectedInvalidCodeBehind =
+		!codeBehindCanvas.SetCodeBehind(
+			invalidCodeBehind, &codeBehindError);
+	AppendFailure(failures,
+		codeBehindTransaction.HasChanges()
+		&& capturedAssociatedCodeBehind
+		&& capturedCodeBehind.CodeBehind == codeBehindAssociation
+		&& undoCodeBehind.HasChanges()
+		&& clearedAssociatedCodeBehind
+		&& redoCodeBehind.HasChanges()
+		&& codeBehindCanvas.GetCodeBehind() == codeBehindAssociation
+		&& rejectedInvalidCodeBehind
+		&& codeBehindCanvas.GetCodeBehind() == codeBehindAssociation,
+		L"document transaction: code-behind association did not validate or round-trip through undo/redo");
+
+	DesignerCanvas coalescedPropertyCanvas(0, 0, 800, 640);
+	coalescedPropertyCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 160, 160 });
+	PropertyGrid coalescedPropertyGrid(0, 0, 360, 620);
+	coalescedPropertyGrid.SetDesignerCanvas(&coalescedPropertyCanvas);
+	ReloadCurrentSelection(
+		coalescedPropertyGrid, coalescedPropertyCanvas);
+	const auto coalescedPropertyName =
+		coalescedPropertyCanvas.GetSelectedControl()
+			? coalescedPropertyCanvas.GetSelectedControl()->Name
+			: std::wstring{};
+	const auto originalCoalescedText =
+		ControlText(coalescedPropertyCanvas, coalescedPropertyName);
+	const auto coalescedPropertyIdentity =
+		coalescedPropertyCanvas.GetSelectedControl();
+	const auto firstCoalescedProperty =
+		coalescedPropertyGrid.ApplyPropertyValue(L"Text", L"A");
+	const auto secondCoalescedProperty =
+		coalescedPropertyGrid.ApplyPropertyValue(L"Text", L"AB");
+	AppendFailure(failures,
+		firstCoalescedProperty.Succeeded
+		&& secondCoalescedProperty.Succeeded
+		&& coalescedPropertyCanvas.GetUndoCommandCount() == 1
+		&& ControlText(coalescedPropertyCanvas, coalescedPropertyName)
+			== L"AB"
+		&& coalescedPropertyCanvas.UndoCommand().HasChanges()
+		&& ControlText(coalescedPropertyCanvas, coalescedPropertyName)
+			== originalCoalescedText
+		&& coalescedPropertyCanvas.RedoCommand().HasChanges()
+		&& ControlText(coalescedPropertyCanvas, coalescedPropertyName)
+			== L"AB"
+		&& FindControl(coalescedPropertyCanvas, coalescedPropertyName)
+			== coalescedPropertyIdentity
+		&& coalescedPropertyCanvas.GetCommandHistoryMemoryUsage() < 32768,
+		L"history coalescing: property edits did not merge end to end");
+	ReloadCurrentSelection(
+		coalescedPropertyGrid, coalescedPropertyCanvas);
+	(void)coalescedPropertyCanvas.MarkDocumentSaved();
+	const auto afterSaveProperty =
+		coalescedPropertyGrid.ApplyPropertyValue(L"Text", L"ABC");
+	AppendFailure(failures,
+		afterSaveProperty.Succeeded
+		&& coalescedPropertyCanvas.GetUndoCommandCount() == 2
+		&& coalescedPropertyCanvas.IsDocumentDirty()
+		&& coalescedPropertyCanvas.UndoCommand().HasChanges()
+		&& !coalescedPropertyCanvas.IsDocumentDirty()
+		&& ControlText(coalescedPropertyCanvas, coalescedPropertyName)
+			== L"AB",
+		L"history coalescing: merge crossed an exact save point");
+	const auto identityBeforeSubtreeDelta =
+		FindControl(coalescedPropertyCanvas, coalescedPropertyName);
+	const auto addAfterPropertyDelta = coalescedPropertyCanvas.AddControlToCanvas(
+		UIClass::UI_Label, POINT{ 360, 240 });
+	const auto undoSnapshotAfterDelta = coalescedPropertyCanvas.UndoCommand();
+	const auto identityAfterSubtreeDelta =
+		FindControl(coalescedPropertyCanvas, coalescedPropertyName);
+	AppendFailure(failures,
+		addAfterPropertyDelta.HasChanges()
+		&& undoSnapshotAfterDelta.HasChanges()
+		&& identityAfterSubtreeDelta
+		&& identityAfterSubtreeDelta == identityBeforeSubtreeDelta
+		&& coalescedPropertyCanvas.UndoCommand().HasChanges()
+		&& ControlText(coalescedPropertyCanvas, coalescedPropertyName)
+			== originalCoalescedText
+		&& coalescedPropertyCanvas.RedoCommand().HasChanges()
+		&& ControlText(coalescedPropertyCanvas, coalescedPropertyName)
+			== L"AB",
+		L"property delta: target resolution failed after Add subtree undo");
+	coalescedPropertyCanvas.SetCommandHistoryMemoryLimit(1);
+	AppendFailure(failures,
+		coalescedPropertyCanvas.GetCommandHistoryMemoryLimit() == 1
+		&& coalescedPropertyCanvas.GetUndoCommandCount() == 1
+		&& coalescedPropertyCanvas.GetRedoCommandCount() == 0
+		&& coalescedPropertyCanvas.GetCommandHistoryMemoryUsage() > 1,
+		L"history budget: did not retain exactly one nearest oversized command");
+
+	DesignerCanvas renameCanvas(0, 0, 800, 640);
+	renameCanvas.AddControlToCanvasCore(UIClass::UI_Button, POINT{ 160, 160 });
+	PropertyGrid renameGrid(0, 0, 360, 620);
+	renameGrid.SetDesignerCanvas(&renameCanvas);
+	ReloadCurrentSelection(renameGrid, renameCanvas);
+	const auto renameIdentity = renameCanvas.GetSelectedControl();
+	const auto originalName = renameIdentity ? renameIdentity->Name : std::wstring{};
+	const int originalStableId = renameIdentity ? renameIdentity->StableId : 0;
+	const auto renameResult = renameGrid.ApplyPropertyValue(
+		L"Name", L"RenamedButton");
+	AppendFailure(failures,
+		renameResult.Succeeded
+		&& renameCanvas.GetSelectedControl()
+		&& renameCanvas.GetSelectedControl()->Name == L"RenamedButton"
+		&& renameCanvas.UndoCommand().HasChanges()
+		&& renameCanvas.GetSelectedControl()
+		&& renameCanvas.GetSelectedControl()->Name == originalName
+		&& renameCanvas.GetSelectedControl() == renameIdentity
+		&& renameCanvas.RedoCommand().HasChanges()
+		&& renameCanvas.GetSelectedControl()
+		&& renameCanvas.GetSelectedControl()->Name == L"RenamedButton"
+		&& renameCanvas.GetSelectedControl() == renameIdentity
+		&& renameCanvas.GetSelectedControl()->StableId == originalStableId
+		&& renameCanvas.GetSelectedControl()->ControlInstance->DesignId
+			== originalStableId,
+		L"property delta: Name undo/redo lost identity or selection");
+
+	DesignerModel::DesignDocument renamedDocument;
+	std::wstring stableIdError;
+	const bool capturedRenamedDocument = renameCanvas.BuildDesignDocument(
+		renamedDocument, &stableIdError);
+	DesignerModel::DesignDocument reloadedRenamedDocument;
+	const auto renamedXml = capturedRenamedDocument
+		? DesignerModel::DesignDocumentSerializer::ToXml(renamedDocument)
+		: std::string{};
+	const bool parsedRenamedDocument = capturedRenamedDocument
+		&& DesignerModel::DesignDocumentSerializer::FromXml(
+			renamedXml, reloadedRenamedDocument, &stableIdError);
+	DesignerCanvas reloadedIdentityCanvas(0, 0, 800, 640);
+	const bool appliedRenamedDocument = parsedRenamedDocument
+		&& reloadedIdentityCanvas.ApplyDesignDocument(
+			reloadedRenamedDocument, &stableIdError);
+	auto reloadedIdentity = FindControl(
+		reloadedIdentityCanvas, L"RenamedButton");
+	AppendFailure(failures,
+		appliedRenamedDocument
+		&& reloadedIdentity
+		&& reloadedIdentity->StableId == originalStableId
+		&& reloadedIdentity->ControlInstance->DesignId == originalStableId
+		&& reloadedRenamedDocument.NextStableId > originalStableId,
+		L"stable identity: save/load or rename changed the control id");
+
+	if (reloadedIdentity)
+	{
+		const int expectedNewId = reloadedRenamedDocument.NextStableId;
+		reloadedIdentityCanvas.RestoreSelectionByNames(
+			{ reloadedIdentity->Name }, reloadedIdentity->Name, false);
+		const auto removedIdentity =
+			reloadedIdentityCanvas.DeleteSelectedControl();
+		reloadedIdentityCanvas.AddControlToCanvasCore(
+			UIClass::UI_Button, POINT{ 300, 180 });
+		auto newIdentity = reloadedIdentityCanvas.GetSelectedControl();
+		const int newStableId = newIdentity ? newIdentity->StableId : 0;
+		const auto restoredIdentity = reloadedIdentityCanvas.UndoCommand();
+		auto restoredOriginal = FindControl(
+			reloadedIdentityCanvas, L"RenamedButton");
+		AppendFailure(failures,
+			removedIdentity.HasChanges()
+			&& newIdentity
+			&& newStableId == expectedNewId
+			&& restoredIdentity.HasChanges()
+			&& restoredOriginal
+			&& restoredOriginal->StableId == originalStableId
+			&& restoredOriginal->StableId != newStableId,
+			L"stable identity: delete/add reused an id or undo changed identity");
+	}
+
+	// The public dynamic loader must consume the same complete materialized tree
+	// as code generation: identity, style, bindings, and named events all travel
+	// through one RuntimeDocument, and failed replacements leave it unchanged.
+	DesignerCanvas runtimeSourceCanvas(0, 0, 800, 640);
+	runtimeSourceCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 180, 170 });
+	runtimeSourceCanvas.SetDesignedFormEventHandler(
+		L"OnCommand", L"HandleRuntimeCommand");
+	auto runtimeSourceControl = runtimeSourceCanvas.GetSelectedControl();
+	DesignerModel::DesignDocument runtimeSourceDocument;
+	std::wstring runtimeDocumentError;
+	if (runtimeSourceControl && runtimeSourceControl->ControlInstance)
+	{
+		runtimeSourceControl->ControlInstance->Text = L"运行时本地后备";
+		runtimeSourceControl->EventHandlers[L"OnMouseClick"] =
+			L"HandleRuntimeClick";
+		runtimeSourceControl->DataBindings[L"Text"] = {
+			L"Caption",
+			BindingMode::OneWay,
+			DataSourceUpdateMode::OnPropertyChanged,
+			{}
+		};
+		DesignerStyleSheet runtimeStyle;
+		DesignerStyleRule runtimeRule;
+		runtimeRule.HasType = true;
+		runtimeRule.Type = UIClass::UI_Button;
+		runtimeRule.Setters.push_back({
+			L"Round", false, {}, { DesignerStyleValueKind::Float, L"7" } });
+		runtimeStyle.Rules.push_back(std::move(runtimeRule));
+		(void)runtimeSourceCanvas.SetDocumentStyleSheet(
+			std::move(runtimeStyle), &runtimeDocumentError);
+		(void)runtimeSourceCanvas.SetDataContextSchema({
+			{ L"Caption", BindingValueKind::String, true, true, true }
+		}, &runtimeDocumentError);
+	}
+	const bool capturedRuntimeDocument = runtimeSourceControl
+		&& runtimeSourceCanvas.BuildDesignDocument(
+			runtimeSourceDocument, &runtimeDocumentError);
+	const auto runtimeXml = capturedRuntimeDocument
+		? DesignerModel::DesignDocumentSerializer::ToXml(runtimeSourceDocument)
+		: std::string{};
+	auto runtimeDataContext = std::make_shared<ObservableObject>();
+	runtimeDataContext->SetValue(
+		L"Caption", std::wstring(L"动态绑定值"));
+	int runtimeClickCount = 0;
+	DesignerModel::RuntimeDocumentLoadOptions runtimeOptions;
+	runtimeOptions.DataContext = runtimeDataContext;
+	runtimeOptions.RequireControlEventResolver = true;
+	runtimeOptions.ControlEventResolver =
+		[&runtimeClickCount](
+			const DesignerModel::RuntimeControlEventRequest& request,
+			EventConnection& connection,
+			std::wstring& error)
+		{
+			if (request.HandlerName != L"HandleRuntimeClick"
+				|| request.Event.Name != L"OnMouseClick")
+			{
+				error = L"unexpected runtime event request";
+				return false;
+			}
+			connection = request.Target.OnMouseClick.Subscribe(
+				[&runtimeClickCount](Control*, MouseEventArgs)
+				{
+					++runtimeClickCount;
+				});
+			return true;
+		};
+	DesignerModel::RuntimeDocument runtimeDocument;
+	const bool loadedRuntimeDocument = capturedRuntimeDocument
+		&& DesignerModel::RuntimeDocumentLoader::LoadXml(
+			runtimeXml,
+			runtimeDocument,
+			runtimeOptions,
+			&runtimeDocumentError);
+	auto* runtimeLoadedControl = runtimeSourceControl
+		? runtimeDocument.FindControlByDesignId(runtimeSourceControl->StableId)
+		: nullptr;
+	if (runtimeLoadedControl)
+	{
+		runtimeLoadedControl->OnMouseClick.Invoke(
+			runtimeLoadedControl, MouseEventArgs{});
+	}
+	Form runtimeHostForm(L"runtime host", POINT{ 0, 0 }, SIZE{ 320, 200 });
+	int runtimeCommandCount = 0;
+	const bool appliedRuntimeForm = loadedRuntimeDocument
+		&& runtimeDocument.ApplyFormProperties(
+			runtimeHostForm, &runtimeDocumentError);
+	const bool boundRuntimeFormEvents = appliedRuntimeForm
+		&& runtimeDocument.BindFormEvents(
+			runtimeHostForm,
+			[&runtimeCommandCount](
+				const DesignerModel::RuntimeFormEventRequest& request,
+				EventConnection& connection,
+				std::wstring& error)
+			{
+				if (request.HandlerName != L"HandleRuntimeCommand"
+					|| request.Event.Name != L"OnCommand")
+				{
+					error = L"unexpected runtime form event request";
+					return false;
+				}
+				connection = request.Target.OnCommand.Subscribe(
+					[&runtimeCommandCount](Form*, int, int)
+					{
+						++runtimeCommandCount;
+					});
+				return true;
+			},
+			&runtimeDocumentError);
+	if (boundRuntimeFormEvents)
+		runtimeHostForm.OnCommand.Invoke(&runtimeHostForm, 7, 11);
+	AppendFailure(failures,
+		loadedRuntimeDocument
+		&& runtimeLoadedControl
+		&& runtimeDocument.FindControlByName(runtimeSourceControl->Name)
+			== runtimeLoadedControl
+		&& runtimeDocument.RootControls().size() == 1
+		&& runtimeDocument.OwnsRootControls()
+		&& runtimeDocument.Controls().size() == 1
+		&& runtimeDocument.BoundControlEventCount() == 1
+		&& runtimeLoadedControl->Text == L"动态绑定值"
+		&& runtimeLoadedControl->GetStyleSheet() != nullptr
+		&& runtimeClickCount == 1
+		&& appliedRuntimeForm
+		&& boundRuntimeFormEvents
+		&& runtimeDocument.BoundFormEventCount() == 1
+		&& runtimeHostForm.Text == runtimeSourceDocument.Form.Text
+		&& runtimeCommandCount == 1,
+		L"runtime document: XML did not materialize identity, style, binding, and event state"
+		+ std::wstring(L" [loaded=") + (loadedRuntimeDocument ? L"1" : L"0")
+		+ L", roots=" + std::to_wstring(runtimeDocument.RootControls().size())
+		+ L", controls=" + std::to_wstring(runtimeDocument.Controls().size())
+		+ L", events=" + std::to_wstring(runtimeDocument.BoundControlEventCount())
+		+ L", click=" + std::to_wstring(runtimeClickCount)
+		+ L", formEvents=" + std::to_wstring(runtimeDocument.BoundFormEventCount())
+		+ L", command=" + std::to_wstring(runtimeCommandCount)
+		+ L", error=" + runtimeDocumentError + L"]");
+	if (runtimeLoadedControl)
+	{
+		runtimeDataContext->SetValue(
+			L"Caption", std::wstring(L"动态更新值"));
+		AppendFailure(failures,
+			runtimeLoadedControl->Text == L"动态更新值",
+			L"runtime document: live data-context update did not reach the target");
+		runtimeDocument.ClearDataBindings();
+		AppendFailure(failures,
+			runtimeLoadedControl->Text == L"运行时本地后备"
+			&& runtimeLoadedControl->DataBindings.Count() == 0,
+			L"runtime document: clearing bindings did not restore the persisted Local value");
+	}
+	Control* const runtimeBeforeRejectedLoad = runtimeLoadedControl;
+	auto invalidRuntimeXml = runtimeXml;
+	if (runtimeSourceControl)
+	{
+		const auto validId = std::string("id=\"")
+			+ std::to_string(runtimeSourceControl->StableId) + "\"";
+		const auto invalidIdPosition = invalidRuntimeXml.find(validId);
+		if (invalidIdPosition != std::string::npos)
+			invalidRuntimeXml.replace(
+				invalidIdPosition, validId.size(), "id=\"0\"");
+	}
+	const bool rejectedRuntimeReplacement =
+		!DesignerModel::RuntimeDocumentLoader::LoadXml(
+			invalidRuntimeXml,
+			runtimeDocument,
+			{},
+			&runtimeDocumentError);
+	AppendFailure(failures,
+		rejectedRuntimeReplacement
+		&& !runtimeDocumentError.empty()
+		&& runtimeDocument.FindControlByDesignId(
+			runtimeSourceControl ? runtimeSourceControl->StableId : 0)
+			== runtimeBeforeRejectedLoad,
+		L"runtime document: rejected XML corrupted the previously loaded tree");
+
+	const std::string runtimeXaml = R"xaml(
+<Form xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:d="urn:cui:designer"
+      x:Name="XamlRuntimeForm" x:Class="Runtime.Views.RuntimeWindow"
+      d:CodeBehind="generated/RuntimeWindow" Text="Readable runtime form"
+      Width="520" Height="280" Command="HandleRuntimeCommand">
+  <Form.Resources>
+    <Color x:Key="Accent">#FF0067C0</Color>
+    <Style x:Key="PrimaryButton" TargetType="Button" Class="primary">
+      <Setter Property="Round" Value="9" />
+      <Setter Property="BackColor" Value="{StaticResource Accent}" />
+    </Style>
+  </Form.Resources>
+  <StackPanel x:Name="xamlRoot" DesignId="500"
+              Width="Auto" Height="Auto"
+              Orientation="Vertical" Spacing="6">
+    <Button x:Name="xamlAction" DesignId="501"
+            Classes="primary" Style="{StaticResource PrimaryButton}"
+            Width="180.5" Height="36"
+            Text="{Binding Caption, Mode=OneWay}"
+            Click="HandleRuntimeClick" />
+  </StackPanel>
+</Form>)xaml";
+	DesignerModel::DesignDocument parsedXamlDocument;
+	std::wstring xamlError;
+	const bool parsedRuntimeXaml =
+		DesignerModel::XamlDocumentParser::FromXaml(
+			runtimeXaml, parsedXamlDocument, &xamlError);
+	DesignerModel::DesignDocument xamlRoundTrip;
+	const bool roundTrippedRuntimeXaml = parsedRuntimeXaml
+		&& DesignerModel::DesignDocumentSerializer::FromXml(
+			DesignerModel::DesignDocumentSerializer::ToXml(parsedXamlDocument),
+			xamlRoundTrip,
+			&xamlError)
+		&& xamlRoundTrip == parsedXamlDocument;
+	DesignerModel::DesignDocument canonicalXamlRoundTrip;
+	const bool roundTrippedCanonicalXaml = parsedRuntimeXaml
+		&& DesignerModel::XamlDocumentParser::FromXaml(
+			DesignerModel::XamlDocumentSerializer::ToXaml(parsedXamlDocument),
+			canonicalXamlRoundTrip,
+			&xamlError)
+		&& canonicalXamlRoundTrip == parsedXamlDocument;
+	DesignerModel::RuntimeDocument xamlRuntimeDocument;
+	int xamlClickCount = 0;
+	auto xamlOptions = runtimeOptions;
+	xamlOptions.ControlEventResolver =
+		[&xamlClickCount](
+			const DesignerModel::RuntimeControlEventRequest& request,
+			EventConnection& connection,
+			std::wstring& error)
+		{
+			if (request.HandlerName != L"HandleRuntimeClick"
+				|| request.Event.Name != L"OnMouseClick")
+			{
+				error = L"unexpected XAML event request";
+				return false;
+			}
+			connection = request.Target.OnMouseClick.Subscribe(
+				[&xamlClickCount](Control*, MouseEventArgs) { ++xamlClickCount; });
+			return true;
+		};
+	const bool loadedRuntimeXaml =
+		DesignerModel::RuntimeDocumentLoader::LoadXaml(
+			runtimeXaml, xamlRuntimeDocument, xamlOptions, &xamlError);
+	auto* xamlAction = xamlRuntimeDocument.FindControlByDesignId(501);
+	if (xamlAction)
+		xamlAction->OnMouseClick.Invoke(xamlAction, MouseEventArgs{});
+	const auto* xamlActionBeforeFailure = xamlAction;
+	const bool rejectedXamlReplacement =
+		!DesignerModel::RuntimeDocumentLoader::LoadXaml(
+			"<Form><Button Name=\"bad\" UnknownProperty=\"1\" /></Form>",
+			xamlRuntimeDocument,
+			{},
+			&xamlError);
+	auto unchangedParsedDocument = parsedXamlDocument;
+	const bool rejectedParserReplacement =
+		!DesignerModel::XamlDocumentParser::FromXaml(
+			"<Form><Unknown /></Form>", unchangedParsedDocument, &xamlError);
+	auto unchangedConflictDocument = parsedXamlDocument;
+	const bool rejectedSignatureConflictXaml =
+		!DesignerModel::XamlDocumentParser::FromXaml(
+			"<Form x:Name=\"ConflictForm\" "
+			"xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\" "
+			"Command=\"HandleShared\">"
+			"<Button x:Name=\"action\" Click=\"HandleShared\" />"
+			"</Form>", unchangedConflictDocument, &xamlError);
+	auto unchangedInvalidNameDocument = parsedXamlDocument;
+	const bool rejectedInvalidControlNameXaml =
+		!DesignerModel::XamlDocumentParser::FromXaml(
+			"<Form xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\">"
+			"<Button x:Name=\"bad-name\" /></Form>",
+			unchangedInvalidNameDocument, &xamlError);
+	auto unchangedDuplicateNameDocument = parsedXamlDocument;
+	const bool rejectedDuplicateControlNameXaml =
+		!DesignerModel::XamlDocumentParser::FromXaml(
+			"<Form xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\">"
+			"<Button x:Name=\"saveButton\" />"
+			"<Button x:Name=\"SaveButton\" /></Form>",
+			unchangedDuplicateNameDocument, &xamlError);
+	auto unchangedCodeBehindDocument = parsedXamlDocument;
+	const bool rejectedAbsoluteCodeBehindXaml =
+		!DesignerModel::XamlDocumentParser::FromXaml(
+			"<Form xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\" "
+			"xmlns:d=\"urn:cui:designer\" x:Name=\"Unsafe\" "
+			"x:Class=\"UnsafeWindow\" d:CodeBehind=\"C:/outside/UnsafeWindow\" />",
+			unchangedCodeBehindDocument, &xamlError);
+	AppendFailure(failures,
+		parsedRuntimeXaml
+		&& roundTrippedRuntimeXaml
+		&& roundTrippedCanonicalXaml
+		&& loadedRuntimeXaml
+		&& xamlAction
+		&& xamlAction->Text == L"动态更新值"
+		&& xamlAction->GetLayoutWidth().IsFixed()
+		&& std::fabs(xamlAction->GetLayoutWidth().value - 180.5f) < 0.001f
+		&& xamlAction->GetStyleSheet() != nullptr
+		&& xamlClickCount == 1
+		&& xamlRuntimeDocument.FormModel().Name == L"XamlRuntimeForm"
+		&& parsedXamlDocument.CodeBehind.ClassName
+			== L"Runtime::Views::RuntimeWindow"
+		&& parsedXamlDocument.CodeBehind.RelativeBasePath
+			== L"generated/RuntimeWindow"
+		&& xamlRuntimeDocument.RootControls().size() == 1
+		&& xamlRuntimeDocument.Controls().size() == 2
+		&& rejectedXamlReplacement
+		&& xamlRuntimeDocument.FindControlByDesignId(501)
+			== xamlActionBeforeFailure
+		&& rejectedParserReplacement
+		&& unchangedParsedDocument == parsedXamlDocument
+		&& rejectedSignatureConflictXaml
+		&& unchangedConflictDocument == parsedXamlDocument
+		&& rejectedInvalidControlNameXaml
+		&& unchangedInvalidNameDocument == parsedXamlDocument
+		&& rejectedDuplicateControlNameXaml
+		&& unchangedDuplicateNameDocument == parsedXamlDocument
+		&& rejectedAbsoluteCodeBehindXaml
+		&& unchangedCodeBehindDocument == parsedXamlDocument,
+		L"runtime XAML: frontend, floating/Auto layout, binding, style, event, "
+		L"round-trip, or transactional rollback failed [error=" + xamlError + L"]");
+	const auto runtimeGeneratorInput = runtimeDocument.BuildCodeGenInput();
+	auto releasedRuntimeRoots = runtimeDocument.ReleaseRootControls();
+	AppendFailure(failures,
+		runtimeGeneratorInput.Controls.size() == 1
+		&& runtimeGeneratorInput.FormName == runtimeSourceDocument.Form.Name
+		&& releasedRuntimeRoots.size() == 1
+		&& !runtimeDocument.OwnsRootControls()
+		&& runtimeDocument.ReleaseRootControls().empty(),
+		L"runtime document: codegen projection or root ownership transfer was inconsistent"
+		+ std::wstring(L" [inputControls=")
+		+ std::to_wstring(runtimeGeneratorInput.Controls.size())
+		+ L", released=" + std::to_wstring(releasedRuntimeRoots.size())
+		+ L", owns=" + (runtimeDocument.OwnsRootControls() ? L"1" : L"0")
+		+ L"]");
+
+	DesignerModel::DesignDocument runtimeWebDocument;
+	DesignerModel::DesignNode runtimeWebNode;
+	runtimeWebNode.Id = runtimeWebDocument.AllocateNodeId();
+	runtimeWebNode.Name = L"runtimeBrowser";
+	runtimeWebNode.Type = UIClass::UI_WebBrowser;
+	runtimeWebDocument.Nodes.push_back(std::move(runtimeWebNode));
+	DesignerModel::RuntimeDocument runtimeWebResult;
+	const bool loadedProductionWebBrowser =
+		DesignerModel::RuntimeDocumentLoader::Load(
+			runtimeWebDocument, runtimeWebResult, {}, &runtimeDocumentError);
+	auto* runtimeBrowser = runtimeWebResult.FindControlByName(L"runtimeBrowser");
+	AppendFailure(failures,
+		loadedProductionWebBrowser
+		&& runtimeBrowser
+		&& typeid(*runtimeBrowser) == typeid(WebBrowser),
+		L"runtime document: default factory created a Designer WebBrowser placeholder"
+		+ std::wstring(L" [loaded=")
+		+ (loadedProductionWebBrowser ? L"1" : L"0")
+		+ L", error=" + runtimeDocumentError + L"]");
+
+	std::vector<std::unique_ptr<Control>> externallyOwnedRuntimeRoots;
+	Control* externallyOwnedRuntimeControl = nullptr;
+	bool loadedExternalOwnershipBinding = false;
+	{
+		DesignerModel::RuntimeDocument externallyOwnedDocument;
+		DesignerModel::RuntimeDocumentLoadOptions externalOptions;
+		externalOptions.DataContext = runtimeDataContext;
+		loadedExternalOwnershipBinding = capturedRuntimeDocument
+			&& DesignerModel::RuntimeDocumentLoader::LoadXml(
+				runtimeXml,
+				externallyOwnedDocument,
+				externalOptions,
+				&runtimeDocumentError);
+		externallyOwnedRuntimeControl = runtimeSourceControl
+			? externallyOwnedDocument.FindControlByDesignId(
+				runtimeSourceControl->StableId)
+			: nullptr;
+		externallyOwnedRuntimeRoots =
+			externallyOwnedDocument.ReleaseRootControls();
+	}
+	AppendFailure(failures,
+		loadedExternalOwnershipBinding
+		&& externallyOwnedRuntimeControl
+		&& externallyOwnedRuntimeControl->Text == L"运行时本地后备"
+		&& externallyOwnedRuntimeControl->DataBindings.Count() == 0
+		&& externallyOwnedRuntimeRoots.size() == 1,
+		L"runtime document: destruction after root transfer retained managed bindings"
+		+ std::wstring(L" [loaded=")
+		+ (loadedExternalOwnershipBinding ? L"1" : L"0")
+		+ L", roots=" + std::to_wstring(externallyOwnedRuntimeRoots.size())
+		+ L", error=" + runtimeDocumentError + L"]");
+
+	DesignerCanvas largePropertyCanvas(0, 0, 1000, 720);
+	for (int index = 0; index < 160; ++index)
+		largePropertyCanvas.AddControlToCanvasCore(
+			UIClass::UI_Button,
+			POINT{ 30 + (index % 16) * 55, 40 + (index / 16) * 45 });
+	const auto largePropertyTarget = largePropertyCanvas.GetAllControls().front();
+	const auto largePropertyName = largePropertyTarget->Name;
+	const auto largeOriginalText =
+		ControlText(largePropertyCanvas, largePropertyName);
+	largePropertyCanvas.RestoreSelectionByNames(
+		{ largePropertyName }, largePropertyName, false);
+	(void)largePropertyCanvas.ResetDocumentHistoryAsSaved();
+	PropertyGrid largePropertyGrid(0, 0, 360, 620);
+	largePropertyGrid.SetDesignerCanvas(&largePropertyCanvas);
+	ReloadCurrentSelection(largePropertyGrid, largePropertyCanvas);
+	const auto largePropertyResult = largePropertyGrid.ApplyPropertyValue(
+		L"Text", L"LargeDelta");
+	AppendFailure(failures,
+		largePropertyResult.Succeeded
+		&& largePropertyCanvas.GetUndoCommandCount() == 1
+		&& largePropertyCanvas.GetCommandHistoryMemoryUsage() < 32768
+		&& largePropertyCanvas.UndoCommand().HasChanges()
+		&& ControlText(largePropertyCanvas, largePropertyName)
+			== largeOriginalText
+		&& FindControl(largePropertyCanvas, largePropertyName)
+			== largePropertyTarget
+		&& largePropertyCanvas.RedoCommand().HasChanges()
+		&& ControlText(largePropertyCanvas, largePropertyName)
+			== L"LargeDelta"
+		&& FindControl(largePropertyCanvas, largePropertyName)
+			== largePropertyTarget,
+		L"property delta: large document retained a full snapshot or rebuilt controls");
+
+	DesignerCanvas guardedPropertyCanvas(0, 0, 800, 640);
+	guardedPropertyCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 160, 160 });
+	(void)guardedPropertyCanvas.ResetDocumentHistoryAsSaved();
+	PropertyGrid guardedPropertyGrid(0, 0, 360, 620);
+	guardedPropertyGrid.SetDesignerCanvas(&guardedPropertyCanvas);
+	ReloadCurrentSelection(guardedPropertyGrid, guardedPropertyCanvas);
+	const auto guardedPropertyControl =
+		guardedPropertyCanvas.GetSelectedControl();
+	const auto guardedOriginalText = guardedPropertyControl
+		? guardedPropertyControl->ControlInstance->Text : std::wstring{};
+	const auto guardedPropertyEdit = guardedPropertyGrid.ApplyPropertyValue(
+		L"Text", L"GuardedDelta");
+	const auto guardedPropertyMemory =
+		guardedPropertyCanvas.GetCommandHistoryMemoryUsage();
+	if (guardedPropertyControl && guardedPropertyControl->ControlInstance)
+		guardedPropertyControl->ControlInstance->Text = L"ExternalMutation";
+	const auto rejectedPropertyUndo = guardedPropertyCanvas.UndoCommand();
+	AppendFailure(failures,
+		guardedPropertyEdit.Succeeded
+		&& !rejectedPropertyUndo
+		&& guardedPropertyCanvas.GetUndoCommandCount() == 1
+		&& guardedPropertyCanvas.GetCommandHistoryMemoryUsage()
+			== guardedPropertyMemory
+		&& guardedPropertyControl
+		&& guardedPropertyControl->ControlInstance->Text
+			== L"ExternalMutation",
+		L"property delta: mismatched start did not preserve failed undo history");
+	if (guardedPropertyControl && guardedPropertyControl->ControlInstance)
+		guardedPropertyControl->ControlInstance->Text = L"GuardedDelta";
+	AppendFailure(failures,
+		guardedPropertyCanvas.UndoCommand().HasChanges()
+		&& guardedPropertyControl
+		&& guardedPropertyControl->ControlInstance->Text
+			== guardedOriginalText,
+		L"property delta: guarded undo did not recover after start was repaired");
+
+	DesignerCanvas interactionCanvas(0, 0, 800, 640);
+	interactionCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 160, 160 });
+	const auto interactionControlName =
+		interactionCanvas.GetAllControls().empty()
+		? std::wstring{}
+		: interactionCanvas.GetAllControls().front()->Name;
+	auto getInteractionControl = [&interactionCanvas,
+		&interactionControlName]() -> std::shared_ptr<DesignerControl>
+	{
+		return FindControl(interactionCanvas, interactionControlName);
+	};
+	const auto interactionIdentityBeforeNudge = getInteractionControl();
+	DesignerModel::DesignDocument interactionBaseline;
+	std::wstring interactionCaptureError;
+	AppendFailure(failures,
+		interactionCanvas.BuildDesignDocument(
+			interactionBaseline, &interactionCaptureError),
+		L"canvas interaction: baseline capture failed");
+	size_t interactionEventCount = 0;
+	DesignerCanvasInteractionTransactionEventArgs lastInteractionEvent;
+	interactionCanvas.OnInteractionTransactionCompleted +=
+		[&interactionEventCount, &lastInteractionEvent](
+			const DesignerCanvasInteractionTransactionEventArgs& args)
+		{
+			++interactionEventCount;
+			lastInteractionEvent = args;
+		};
+
+	auto nudgeResult = interactionCanvas.NudgeSelectionBy(1, 0);
+	auto secondNudgeResult = interactionCanvas.NudgeSelectionBy(1, 0);
+	DesignerModel::DesignDocument nudgedDocument;
+	std::wstring nudgedCaptureError;
+	const bool nudgedCaptured = interactionCanvas.BuildDesignDocument(
+		nudgedDocument, &nudgedCaptureError);
+	AppendFailure(failures,
+		nudgeResult.State == DesignerDocumentTransactionState::Committed
+		&& secondNudgeResult.State == DesignerDocumentTransactionState::Committed
+		&& interactionCanvas.HasInteractionTransactionResult()
+		&& interactionCanvas.GetLastInteractionTransaction()
+			== L"MoveSelection"
+		&& interactionCanvas.GetLastInteractionTransactionResult().State
+			== DesignerDocumentTransactionState::Committed
+		&& interactionEventCount == 2
+		&& lastInteractionEvent.Operation == L"MoveSelection"
+		&& nudgedCaptured
+		&& nudgedDocument != interactionBaseline
+		&& interactionCanvas.GetUndoCommandCount() == 1
+		&& interactionCanvas.GetCommandHistoryMemoryUsage() > 0
+		&& interactionCanvas.GetCommandHistoryMemoryUsage() < 32768,
+		L"canvas interaction: consecutive nudges were not merged and published");
+	AppendFailure(failures,
+		interactionCanvas.UndoCommand(),
+		L"canvas interaction: nudge undo unavailable");
+	DesignerModel::DesignDocument restoredNudgeDocument;
+	std::wstring restoredNudgeError;
+	AppendFailure(failures,
+		interactionCanvas.BuildDesignDocument(
+			restoredNudgeDocument, &restoredNudgeError)
+		&& restoredNudgeDocument == interactionBaseline
+		&& getInteractionControl() == interactionIdentityBeforeNudge,
+		L"canvas interaction: nudge undo did not restore baseline");
+	AppendFailure(failures,
+		interactionCanvas.RedoCommand(),
+		L"canvas interaction: merged nudge redo unavailable");
+	DesignerModel::DesignDocument redoneNudgeDocument;
+	std::wstring redoneNudgeError;
+	AppendFailure(failures,
+		interactionCanvas.BuildDesignDocument(
+			redoneNudgeDocument, &redoneNudgeError)
+		&& redoneNudgeDocument == nudgedDocument
+		&& getInteractionControl() == interactionIdentityBeforeNudge,
+		L"canvas interaction: merged nudge redo did not restore final state");
+	AppendFailure(failures,
+		interactionCanvas.UndoCommand(),
+		L"canvas interaction: second merged nudge undo unavailable");
+	AppendFailure(failures,
+		interactionCanvas.RedoCommand().HasChanges(),
+		L"placement delta: setup redo unavailable");
+	const auto interactionIdentityBeforeSubtreeDelta =
+		getInteractionControl();
+	const auto addAfterPlacementDelta = interactionCanvas.AddControlToCanvas(
+		UIClass::UI_Label, POINT{ 420, 260 });
+	const auto undoSnapshotAfterPlacement = interactionCanvas.UndoCommand();
+	const auto interactionIdentityAfterSubtreeDelta =
+		getInteractionControl();
+	AppendFailure(failures,
+		addAfterPlacementDelta.HasChanges()
+		&& undoSnapshotAfterPlacement.HasChanges()
+		&& interactionIdentityAfterSubtreeDelta
+		&& interactionIdentityAfterSubtreeDelta
+			== interactionIdentityBeforeSubtreeDelta
+		&& interactionCanvas.UndoCommand().HasChanges(),
+		L"placement delta: target resolution failed after Add subtree undo");
+	DesignerModel::DesignDocument placementAfterRebuildUndo;
+	std::wstring placementAfterRebuildError;
+	const bool capturedPlacementAfterRebuild =
+		interactionCanvas.BuildDesignDocument(
+			placementAfterRebuildUndo, &placementAfterRebuildError);
+	AppendFailure(failures,
+		capturedPlacementAfterRebuild
+		&& EquivalentDocumentContent(
+			placementAfterRebuildUndo, interactionBaseline)
+		&& placementAfterRebuildUndo.NextStableId
+			> interactionBaseline.NextStableId,
+		L"placement delta: rebuilt target did not return to baseline");
+	if (capturedPlacementAfterRebuild
+		&& EquivalentDocumentContent(
+			placementAfterRebuildUndo, interactionBaseline))
+	{
+		// The temporary control consumed an ID even though its addition was undone.
+		interactionBaseline.NextStableId =
+			placementAfterRebuildUndo.NextStableId;
+	}
+	const auto guardedPlacementRedo = interactionCanvas.RedoCommand();
+	auto guardedPlacementControl = getInteractionControl();
+	const auto guardedPlacementLocation = guardedPlacementControl
+		? guardedPlacementControl->ControlInstance->Location : POINT{ 0, 0 };
+	const auto guardedPlacementMemory =
+		interactionCanvas.GetCommandHistoryMemoryUsage();
+	if (guardedPlacementControl && guardedPlacementControl->ControlInstance)
+	{
+		auto externalLocation = guardedPlacementLocation;
+		externalLocation.x += 7;
+		guardedPlacementControl->ControlInstance->Location = externalLocation;
+	}
+	const auto rejectedPlacementUndo = interactionCanvas.UndoCommand();
+	AppendFailure(failures,
+		guardedPlacementRedo.HasChanges()
+		&& !rejectedPlacementUndo
+		&& interactionCanvas.GetUndoCommandCount() == 1
+		&& interactionCanvas.GetCommandHistoryMemoryUsage()
+			== guardedPlacementMemory,
+		L"placement delta: mismatched start did not preserve failed undo history");
+	if (guardedPlacementControl && guardedPlacementControl->ControlInstance)
+		guardedPlacementControl->ControlInstance->Location =
+			guardedPlacementLocation;
+	AppendFailure(failures,
+		interactionCanvas.UndoCommand().HasChanges(),
+		L"placement delta: guarded undo did not recover after start was repaired");
+
+	auto dragControl = getInteractionControl();
+	AppendFailure(failures,
+		dragControl && dragControl->ControlInstance,
+		L"canvas interaction: drag target unavailable after undo");
+	if (dragControl && dragControl->ControlInstance)
+	{
+		auto* runtime = dragControl->ControlInstance;
+		const auto size = runtime->ActualSize();
+		const POINT center{
+			runtime->AbsLocation.x - interactionCanvas.AbsLocation.x
+				+ size.cx / 2,
+			runtime->AbsLocation.y - interactionCanvas.AbsLocation.y
+				+ size.cy / 2
+		};
+		(void)interactionCanvas.ProcessMessage(
+			WM_LBUTTONDOWN, MK_LBUTTON, 0, center.x, center.y);
+		(void)interactionCanvas.ProcessMessage(
+			WM_MOUSEMOVE, MK_LBUTTON, 0, center.x + 15, center.y + 9);
+		DesignerModel::DesignDocument dragPreviewDocument;
+		std::wstring dragPreviewError;
+		AppendFailure(failures,
+			interactionCanvas.BuildDesignDocument(
+				dragPreviewDocument, &dragPreviewError)
+			&& dragPreviewDocument != interactionBaseline,
+			L"canvas interaction: drag preview did not mutate document");
+		const auto previewRedoCount = interactionCanvas.GetRedoCommandCount();
+		const auto blockedPreviewUndo = interactionCanvas.UndoCommand();
+		const auto blockedPreviewSavePoint =
+			interactionCanvas.MarkDocumentSaved();
+		AppendFailure(failures,
+			interactionCanvas.HasActiveDocumentTransaction()
+			&& blockedPreviewUndo.State
+				== DesignerDocumentTransactionState::Rejected
+			&& blockedPreviewSavePoint.State
+				== DesignerDocumentTransactionState::Rejected
+			&& interactionCanvas.GetRedoCommandCount() == previewRedoCount,
+			L"placement preview: history/save-point operations were not rejected");
+		(void)interactionCanvas.ProcessMessage(
+			WM_CANCELMODE, 0, 0, center.x + 15, center.y + 9);
+		DesignerModel::DesignDocument canceledDragDocument;
+		std::wstring canceledDragError;
+		AppendFailure(failures,
+			interactionCanvas.BuildDesignDocument(
+				canceledDragDocument, &canceledDragError)
+			&& canceledDragDocument == interactionBaseline
+			&& interactionCanvas.GetLastInteractionTransaction()
+				== L"MoveSelection"
+			&& interactionCanvas.GetLastInteractionTransactionResult().State
+				== DesignerDocumentTransactionState::RolledBack
+			&& interactionEventCount == 3
+			&& lastInteractionEvent.Result.State
+				== DesignerDocumentTransactionState::RolledBack
+			&& !lastInteractionEvent.Message.empty(),
+			L"canvas interaction: canceled drag was not restored and reported");
+	}
+	AppendFailure(failures,
+		IsUnchanged(interactionCanvas.UndoCommand()),
+		L"canvas interaction: canceled drag entered undo history");
+	AppendFailure(failures, interactionCanvas.RedoCommand(),
+		L"canvas interaction: canceled drag destroyed prior redo history");
+	AppendFailure(failures, interactionCanvas.UndoCommand(),
+		L"canvas interaction: restored redo could not be undone");
+
+	auto resizeControl = getInteractionControl();
+	if (resizeControl && resizeControl->ControlInstance)
+	{
+		auto* runtime = resizeControl->ControlInstance;
+		const auto size = runtime->ActualSize();
+		const POINT bottomRight{
+			runtime->AbsLocation.x - interactionCanvas.AbsLocation.x
+				+ size.cx,
+			runtime->AbsLocation.y - interactionCanvas.AbsLocation.y
+				+ size.cy
+		};
+		(void)interactionCanvas.ProcessMessage(
+			WM_LBUTTONDOWN, MK_LBUTTON, 0,
+			bottomRight.x, bottomRight.y);
+		(void)interactionCanvas.ProcessMessage(
+			WM_MOUSEMOVE, MK_LBUTTON, 0,
+			bottomRight.x + 12, bottomRight.y + 8);
+		DesignerModel::DesignDocument resizePreviewDocument;
+		std::wstring resizePreviewError;
+		AppendFailure(failures,
+			interactionCanvas.BuildDesignDocument(
+				resizePreviewDocument, &resizePreviewError)
+			&& resizePreviewDocument != interactionBaseline,
+			L"canvas interaction: resize preview did not mutate document");
+		(void)interactionCanvas.ProcessMessage(
+			WM_KEYDOWN, VK_ESCAPE, 0,
+			bottomRight.x + 12, bottomRight.y + 8);
+		DesignerModel::DesignDocument canceledResizeDocument;
+		std::wstring canceledResizeError;
+		AppendFailure(failures,
+			interactionCanvas.BuildDesignDocument(
+				canceledResizeDocument, &canceledResizeError)
+			&& canceledResizeDocument == interactionBaseline
+			&& interactionCanvas.GetLastInteractionTransaction()
+				== L"ResizeSelection"
+			&& interactionCanvas.GetLastInteractionTransactionResult().State
+				== DesignerDocumentTransactionState::RolledBack
+			&& interactionEventCount == 4
+			&& !lastInteractionEvent.Message.empty(),
+			L"canvas interaction: Escape did not restore resize preview");
+	}
+	AppendFailure(failures,
+		IsUnchanged(interactionCanvas.UndoCommand()),
+		L"canvas interaction: canceled resize entered undo history");
+
+	auto committedDragControl = getInteractionControl();
+	if (committedDragControl && committedDragControl->ControlInstance)
+	{
+		auto* runtime = committedDragControl->ControlInstance;
+		const auto size = runtime->ActualSize();
+		const POINT center{
+			runtime->AbsLocation.x - interactionCanvas.AbsLocation.x
+				+ size.cx / 2,
+			runtime->AbsLocation.y - interactionCanvas.AbsLocation.y
+				+ size.cy / 2
+		};
+		(void)interactionCanvas.ProcessMessage(
+			WM_LBUTTONDOWN, MK_LBUTTON, 0, center.x, center.y);
+		(void)interactionCanvas.ProcessMessage(
+			WM_MOUSEMOVE, MK_LBUTTON, 0, center.x + 8, center.y + 6);
+		(void)interactionCanvas.ProcessMessage(
+			WM_LBUTTONUP, 0, 0, center.x + 8, center.y + 6);
+		DesignerModel::DesignDocument committedDragDocument;
+		std::wstring committedDragError;
+		AppendFailure(failures,
+			interactionCanvas.BuildDesignDocument(
+				committedDragDocument, &committedDragError)
+			&& committedDragDocument != interactionBaseline
+			&& getInteractionControl() == committedDragControl
+			&& interactionCanvas.GetCommandHistoryMemoryUsage() > 0
+			&& interactionCanvas.GetCommandHistoryMemoryUsage() < 32768
+			&& interactionCanvas.GetLastInteractionTransaction()
+				== L"MoveSelection"
+			&& interactionCanvas.GetLastInteractionTransactionResult().State
+				== DesignerDocumentTransactionState::Committed
+			&& interactionEventCount == 5,
+			L"canvas interaction: mouse-up did not commit drag transaction");
+		AppendFailure(failures,
+			interactionCanvas.UndoCommand(),
+			L"canvas interaction: committed drag undo unavailable");
+		DesignerModel::DesignDocument undoneDragDocument;
+		std::wstring undoneDragError;
+		AppendFailure(failures,
+			interactionCanvas.BuildDesignDocument(
+				undoneDragDocument, &undoneDragError)
+			&& undoneDragDocument == interactionBaseline
+			&& getInteractionControl() == committedDragControl,
+			L"canvas interaction: committed drag undo missed baseline");
+	}
+	else
+	{
+		AppendFailure(failures, false,
+			L"canvas interaction: committed drag target unavailable");
+	}
+
+	auto committedResizeControl = getInteractionControl();
+	if (committedResizeControl && committedResizeControl->ControlInstance)
+	{
+		auto* runtime = committedResizeControl->ControlInstance;
+		const auto size = runtime->ActualSize();
+		const POINT bottomRight{
+			runtime->AbsLocation.x - interactionCanvas.AbsLocation.x
+				+ size.cx,
+			runtime->AbsLocation.y - interactionCanvas.AbsLocation.y
+				+ size.cy
+		};
+		(void)interactionCanvas.ProcessMessage(
+			WM_LBUTTONDOWN, MK_LBUTTON, 0,
+			bottomRight.x, bottomRight.y);
+		(void)interactionCanvas.ProcessMessage(
+			WM_MOUSEMOVE, MK_LBUTTON, 0,
+			bottomRight.x + 14, bottomRight.y + 10);
+		(void)interactionCanvas.ProcessMessage(
+			WM_LBUTTONUP, 0, 0,
+			bottomRight.x + 14, bottomRight.y + 10);
+		DesignerModel::DesignDocument committedResizeDocument;
+		std::wstring committedResizeError;
+		AppendFailure(failures,
+			interactionCanvas.BuildDesignDocument(
+				committedResizeDocument, &committedResizeError)
+			&& committedResizeDocument != interactionBaseline
+			&& getInteractionControl() == committedResizeControl
+			&& interactionCanvas.GetCommandHistoryMemoryUsage() > 0
+			&& interactionCanvas.GetCommandHistoryMemoryUsage() < 32768
+			&& interactionCanvas.GetLastInteractionTransaction()
+				== L"ResizeSelection"
+			&& interactionCanvas.GetLastInteractionTransactionResult().State
+				== DesignerDocumentTransactionState::Committed,
+			L"canvas interaction: committed resize did not use a small delta");
+		AppendFailure(failures,
+			interactionCanvas.UndoCommand().HasChanges(),
+			L"canvas interaction: committed resize undo unavailable");
+		DesignerModel::DesignDocument undoneResizeDocument;
+		std::wstring undoneResizeError;
+		AppendFailure(failures,
+			interactionCanvas.BuildDesignDocument(
+				undoneResizeDocument, &undoneResizeError)
+			&& undoneResizeDocument == interactionBaseline
+			&& getInteractionControl() == committedResizeControl,
+			L"canvas interaction: resize delta did not restore baseline identity");
+	}
+	else
+	{
+		AppendFailure(failures, false,
+			L"canvas interaction: committed resize target unavailable");
+	}
+
+	DesignerCanvas reparentCanvas(0, 0, 800, 640);
+	reparentCanvas.AddControlToCanvasCore(
+		UIClass::UI_StackPanel, POINT{ 220, 190 });
+	auto reparentContainer = reparentCanvas.GetSelectedControl();
+	const auto reparentContainerName = reparentContainer
+		? reparentContainer->Name : std::wstring{};
+	if (reparentContainer && reparentContainer->ControlInstance)
+	{
+		auto* containerRuntime = reparentContainer->ControlInstance;
+		const POINT insideContainer{
+			containerRuntime->AbsLocation.x - reparentCanvas.AbsLocation.x + 70,
+			containerRuntime->AbsLocation.y - reparentCanvas.AbsLocation.y + 60
+		};
+		reparentCanvas.AddControlToCanvasCore(
+			UIClass::UI_Button, insideContainer);
+	}
+	auto reparentTarget = reparentCanvas.GetSelectedControl();
+	const auto reparentTargetName = reparentTarget
+		? reparentTarget->Name : std::wstring{};
+	DesignerModel::DesignDocument reparentBaseline;
+	std::wstring reparentBaselineError;
+	const bool reparentSetup = reparentContainer
+		&& reparentContainer->ControlInstance
+		&& reparentTarget && reparentTarget->ControlInstance
+		&& reparentTarget->DesignerParent
+			== reparentContainer->ControlInstance
+		&& reparentCanvas.BuildDesignDocument(
+			reparentBaseline, &reparentBaselineError);
+	AppendFailure(failures, reparentSetup,
+		L"placement tree delta: nested setup failed");
+	DesignerModel::DesignDocument reparentedDocument;
+	std::shared_ptr<DesignerControl> reparentIdentity = reparentTarget;
+	if (reparentSetup)
+	{
+		auto* runtime = reparentTarget->ControlInstance;
+		const auto size = runtime->ActualSize();
+		const POINT center{
+			runtime->AbsLocation.x - reparentCanvas.AbsLocation.x
+				+ size.cx / 2,
+			runtime->AbsLocation.y - reparentCanvas.AbsLocation.y
+				+ size.cy / 2
+		};
+		const POINT rootDrop{ 650, 500 };
+		(void)reparentCanvas.ProcessMessage(
+			WM_LBUTTONDOWN, MK_LBUTTON, 0, center.x, center.y);
+		(void)reparentCanvas.ProcessMessage(
+			WM_MOUSEMOVE, MK_LBUTTON, 0, rootDrop.x, rootDrop.y);
+		(void)reparentCanvas.ProcessMessage(
+			WM_LBUTTONUP, 0, 0, rootDrop.x, rootDrop.y);
+		std::wstring reparentedError;
+		auto moved = FindControl(reparentCanvas, reparentTargetName);
+		AppendFailure(failures,
+			reparentCanvas.BuildDesignDocument(
+				reparentedDocument, &reparentedError)
+			&& reparentedDocument != reparentBaseline
+			&& moved == reparentIdentity
+			&& moved && !moved->DesignerParent
+			&& moved->ControlInstance->Parent
+				!= reparentContainer->ControlInstance
+			&& reparentCanvas.GetUndoCommandCount() == 1
+			&& reparentCanvas.GetCommandHistoryMemoryUsage() > 0
+			&& reparentCanvas.GetCommandHistoryMemoryUsage() < 32768,
+			L"placement tree delta: drag reparent retained a full snapshot");
+
+		Control* rootParent = moved && moved->ControlInstance
+			? moved->ControlInstance->Parent : nullptr;
+		if (moved && moved->ControlInstance && rootParent
+			&& reparentContainer->ControlInstance)
+		{
+			auto owner = rootParent->DetachControl(moved->ControlInstance);
+			if (owner)
+				reparentContainer->ControlInstance->AddOwned(std::move(owner));
+			moved->DesignerParent = reparentContainer->ControlInstance;
+		}
+		const size_t guardedTreeMemory =
+			reparentCanvas.GetCommandHistoryMemoryUsage();
+		const auto rejectedTreeUndo = reparentCanvas.UndoCommand();
+		AppendFailure(failures,
+			!rejectedTreeUndo
+			&& reparentCanvas.GetUndoCommandCount() == 1
+			&& reparentCanvas.GetCommandHistoryMemoryUsage()
+				== guardedTreeMemory,
+			L"placement tree delta: mismatched parent lost undo history");
+		moved = FindControl(reparentCanvas, reparentTargetName);
+		if (moved && moved->ControlInstance && rootParent
+			&& moved->ControlInstance->Parent
+				== reparentContainer->ControlInstance)
+		{
+			auto owner = reparentContainer->ControlInstance->DetachControl(
+				moved->ControlInstance);
+			if (owner) rootParent->AddOwned(std::move(owner));
+			moved->DesignerParent = nullptr;
+		}
+		AppendFailure(failures,
+			reparentCanvas.UndoCommand().HasChanges(),
+			L"placement tree delta: guarded undo did not recover after repair");
+		DesignerModel::DesignDocument reparentUndone;
+		std::wstring reparentUndoneError;
+		moved = FindControl(reparentCanvas, reparentTargetName);
+		AppendFailure(failures,
+			reparentCanvas.BuildDesignDocument(
+				reparentUndone, &reparentUndoneError)
+			&& reparentUndone == reparentBaseline
+			&& moved == reparentIdentity
+			&& moved && moved->DesignerParent
+				== reparentContainer->ControlInstance,
+			L"placement tree delta: undo did not restore parent and order");
+		AppendFailure(failures,
+			reparentCanvas.RedoCommand().HasChanges(),
+			L"placement tree delta: redo unavailable");
+
+		const auto identityBeforeTreeSubtreeDelta =
+			FindControl(reparentCanvas, reparentTargetName);
+		const auto addAfterTreeDelta = reparentCanvas.AddControlToCanvas(
+			UIClass::UI_Label, POINT{ 700, 180 });
+		const auto undoAfterTreeSnapshot = reparentCanvas.UndoCommand();
+		const auto identityAfterTreeSubtreeDelta =
+			FindControl(reparentCanvas, reparentTargetName);
+		AppendFailure(failures,
+			addAfterTreeDelta.HasChanges()
+			&& undoAfterTreeSnapshot.HasChanges()
+			&& identityAfterTreeSubtreeDelta
+			&& identityAfterTreeSubtreeDelta == identityBeforeTreeSubtreeDelta
+			&& reparentCanvas.UndoCommand().HasChanges(),
+			L"placement tree delta: target resolution failed after Add subtree undo");
+		DesignerModel::DesignDocument treeAfterRebuildUndo;
+		std::wstring treeAfterRebuildError;
+		auto rebuiltTarget = FindControl(reparentCanvas, reparentTargetName);
+		auto rebuiltContainer = FindControl(
+			reparentCanvas, reparentContainerName);
+		AppendFailure(failures,
+			reparentCanvas.BuildDesignDocument(
+				treeAfterRebuildUndo, &treeAfterRebuildError)
+			&& EquivalentDocumentContent(
+				treeAfterRebuildUndo, reparentBaseline)
+			&& treeAfterRebuildUndo.NextStableId
+				> reparentBaseline.NextStableId
+			&& rebuiltTarget && rebuiltContainer
+			&& rebuiltTarget->DesignerParent
+				== rebuiltContainer->ControlInstance,
+			L"placement tree delta: rebuilt undo missed original hierarchy");
+		AppendFailure(failures,
+			reparentCanvas.RedoCommand().HasChanges(),
+			L"placement tree delta: rebuilt redo unavailable");
+		DesignerModel::DesignDocument treeAfterRebuildRedo;
+		std::wstring treeAfterRebuildRedoError;
+		AppendFailure(failures,
+			reparentCanvas.BuildDesignDocument(
+				treeAfterRebuildRedo, &treeAfterRebuildRedoError)
+			&& EquivalentDocumentContent(
+				treeAfterRebuildRedo, reparentedDocument)
+			&& treeAfterRebuildRedo.NextStableId
+				== treeAfterRebuildUndo.NextStableId,
+			L"placement tree delta: rebuilt redo missed reparented hierarchy");
+	}
+
+	DesignerCanvas reorderCanvas(0, 0, 800, 640);
+	reorderCanvas.AddControlToCanvasCore(
+		UIClass::UI_StackPanel, POINT{ 230, 190 });
+	auto reorderContainer = reorderCanvas.GetSelectedControl();
+	std::vector<std::wstring> reorderButtonNames;
+	if (reorderContainer && reorderContainer->ControlInstance)
+	{
+		auto* runtime = reorderContainer->ControlInstance;
+		const POINT firstDrop{
+			runtime->AbsLocation.x - reorderCanvas.AbsLocation.x + 70,
+			runtime->AbsLocation.y - reorderCanvas.AbsLocation.y + 45
+		};
+		const POINT secondDrop{ firstDrop.x, firstDrop.y + 55 };
+		reorderCanvas.AddControlToCanvasCore(
+			UIClass::UI_Button, firstDrop);
+		reorderCanvas.AddControlToCanvasCore(
+			UIClass::UI_Button, secondDrop);
+		for (const auto& control : reorderCanvas.GetAllControls())
+			if (control && control->Type == UIClass::UI_Button)
+				reorderButtonNames.push_back(control->Name);
+	}
+	DesignerModel::DesignDocument reorderBaseline;
+	std::wstring reorderBaselineError;
+	auto firstReorderButton = reorderButtonNames.size() >= 2
+		? FindControl(reorderCanvas, reorderButtonNames[0]) : nullptr;
+	auto secondReorderButton = reorderButtonNames.size() >= 2
+		? FindControl(reorderCanvas, reorderButtonNames[1]) : nullptr;
+	const bool reorderSetup = reorderContainer
+		&& reorderContainer->ControlInstance
+		&& firstReorderButton && firstReorderButton->ControlInstance
+		&& secondReorderButton && secondReorderButton->ControlInstance
+		&& firstReorderButton->ControlInstance->Parent
+			== reorderContainer->ControlInstance
+		&& firstReorderButton->ControlInstance->Parent->IndexOfControl(
+			firstReorderButton->ControlInstance) == 0
+		&& reorderCanvas.BuildDesignDocument(
+			reorderBaseline, &reorderBaselineError);
+	AppendFailure(failures, reorderSetup,
+		L"placement tree delta: reorder setup failed");
+	if (reorderSetup)
+	{
+		auto* firstRuntime = firstReorderButton->ControlInstance;
+		auto* secondRuntime = secondReorderButton->ControlInstance;
+		const auto firstSize = firstRuntime->ActualSize();
+		const auto secondSize = secondRuntime->ActualSize();
+		const POINT firstCenter{
+			firstRuntime->AbsLocation.x - reorderCanvas.AbsLocation.x
+				+ firstSize.cx / 2,
+			firstRuntime->AbsLocation.y - reorderCanvas.AbsLocation.y
+				+ firstSize.cy / 2
+		};
+		const POINT afterSecond{
+			secondRuntime->AbsLocation.x - reorderCanvas.AbsLocation.x
+				+ secondSize.cx / 2,
+			secondRuntime->AbsLocation.y - reorderCanvas.AbsLocation.y
+				+ secondSize.cy + 12
+		};
+		(void)reorderCanvas.ProcessMessage(
+			WM_LBUTTONDOWN, MK_LBUTTON, 0,
+			firstCenter.x, firstCenter.y);
+		(void)reorderCanvas.ProcessMessage(
+			WM_MOUSEMOVE, MK_LBUTTON, 0,
+			afterSecond.x, afterSecond.y);
+		(void)reorderCanvas.ProcessMessage(
+			WM_LBUTTONUP, 0, 0,
+			afterSecond.x, afterSecond.y);
+		DesignerModel::DesignDocument reorderedDocument;
+		std::wstring reorderedError;
+		AppendFailure(failures,
+			reorderCanvas.BuildDesignDocument(
+				reorderedDocument, &reorderedError)
+			&& reorderedDocument != reorderBaseline
+			&& firstRuntime->Parent == reorderContainer->ControlInstance
+			&& firstRuntime->Parent->IndexOfControl(firstRuntime) == 1
+			&& reorderCanvas.GetUndoCommandCount() == 1
+			&& reorderCanvas.GetCommandHistoryMemoryUsage() > 0
+			&& reorderCanvas.GetCommandHistoryMemoryUsage() < 32768,
+			L"placement tree delta: container reorder was not a small delta");
+		AppendFailure(failures,
+			reorderCanvas.UndoCommand().HasChanges()
+			&& firstRuntime->Parent == reorderContainer->ControlInstance
+			&& firstRuntime->Parent->IndexOfControl(firstRuntime) == 0,
+			L"placement tree delta: reorder undo missed sibling order");
+		DesignerModel::DesignDocument reorderUndone;
+		std::wstring reorderUndoneError;
+		AppendFailure(failures,
+			reorderCanvas.BuildDesignDocument(
+				reorderUndone, &reorderUndoneError)
+			&& reorderUndone == reorderBaseline
+			&& firstReorderButton
+				== FindControl(reorderCanvas, reorderButtonNames[0]),
+			L"placement tree delta: reorder undo rebuilt instances");
+		AppendFailure(failures,
+			reorderCanvas.RedoCommand().HasChanges()
+			&& firstRuntime->Parent->IndexOfControl(firstRuntime) == 1,
+			L"placement tree delta: reorder redo missed sibling order");
+	}
+
+	auto verifySpecialParentDelta = [&failures](
+		UIClass parentType,
+		DesignerPlacementParentKind expectedParentKind,
+		const std::wstring& label)
+	{
+		DesignerCanvas canvas(0, 0, 800, 640);
+		canvas.AddControlToCanvasCore(parentType, POINT{ 250, 190 });
+		auto parent = canvas.GetSelectedControl();
+		POINT childDrop{ 300, 250 };
+		if (parent && parent->ControlInstance)
+		{
+			if (auto* split = dynamic_cast<SplitContainer*>(
+				parent->ControlInstance))
+			{
+				split->RefreshSplitterLayout();
+				if (auto* first = split->FirstPanel())
+				{
+					childDrop = POINT{
+						first->AbsLocation.x - canvas.AbsLocation.x + 30,
+						first->AbsLocation.y - canvas.AbsLocation.y + 35
+					};
+				}
+			}
+			else
+			{
+				childDrop = POINT{
+					parent->ControlInstance->AbsLocation.x
+						- canvas.AbsLocation.x + 80,
+					parent->ControlInstance->AbsLocation.y
+						- canvas.AbsLocation.y + 90
+				};
+			}
+			canvas.AddControlToCanvasCore(UIClass::UI_Button, childDrop);
+		}
+		auto target = canvas.GetSelectedControl();
+		if (target && target->ControlInstance)
+		{
+			if (auto* layoutParent = dynamic_cast<Panel*>(
+				target->ControlInstance->Parent))
+			{
+				layoutParent->InvalidateLayout();
+				layoutParent->PerformLayout();
+			}
+		}
+		DesignerControlPlacementSnapshot captured;
+		std::wstring captureError;
+		DesignerModel::DesignDocument baseline;
+		std::wstring baselineError;
+		const bool setup = parent && parent->ControlInstance
+			&& target && target->ControlInstance
+			&& ControlPlacementCommand::Capture(
+				&canvas, { target }, captured, &captureError)
+			&& captured.Targets.size() == 1
+			&& captured.Targets.front().ParentKind == expectedParentKind
+			&& canvas.BuildDesignDocument(baseline, &baselineError);
+		AppendFailure(failures, setup,
+			L"placement tree delta: " + label
+				+ L" parent locator setup failed");
+		if (!setup) return;
+
+		auto identity = target;
+		auto* runtime = target->ControlInstance;
+		const auto size = runtime->ActualSize();
+		const POINT center{
+			runtime->AbsLocation.x - canvas.AbsLocation.x + size.cx / 2,
+			runtime->AbsLocation.y - canvas.AbsLocation.y + size.cy / 2
+		};
+		const POINT rootDrop{ 690, 500 };
+		(void)canvas.ProcessMessage(
+			WM_LBUTTONDOWN, MK_LBUTTON, 0, center.x, center.y);
+		(void)canvas.ProcessMessage(
+			WM_MOUSEMOVE, MK_LBUTTON, 0, rootDrop.x, rootDrop.y);
+		(void)canvas.ProcessMessage(
+			WM_LBUTTONUP, 0, 0, rootDrop.x, rootDrop.y);
+		const auto specialParentUndo = canvas.UndoCommand();
+		AppendFailure(failures,
+			canvas.GetUndoCommandCount() == 0
+			&& canvas.GetCommandHistoryMemoryUsage() > 0
+			&& canvas.GetCommandHistoryMemoryUsage() < 32768
+			&& specialParentUndo.HasChanges(),
+			L"placement tree delta: " + label
+				+ L" undo unavailable"
+				+ (specialParentUndo.Error.empty() ? L""
+					: L": " + specialParentUndo.Error));
+		DesignerModel::DesignDocument restored;
+		std::wstring restoredError;
+		auto restoredTarget = FindControl(canvas, target->Name);
+		const bool restoredCaptured =
+			canvas.BuildDesignDocument(restored, &restoredError);
+		std::wstring difference;
+		if (restoredCaptured && restored != baseline)
+		{
+			const auto beforeXml =
+				DesignerModel::DesignDocumentSerializer::ToXml(baseline);
+			const auto afterXml =
+				DesignerModel::DesignDocumentSerializer::ToXml(restored);
+			size_t offset = 0;
+			while (offset < beforeXml.size() && offset < afterXml.size()
+				&& beforeXml[offset] == afterXml[offset]) ++offset;
+			const size_t start = offset > 48 ? offset - 48 : 0;
+			const auto beforePart = beforeXml.substr(start, 160);
+			const auto afterPart = afterXml.substr(start, 160);
+			difference = L" [offset " + std::to_wstring(offset)
+				+ L", before="
+				+ std::wstring(beforePart.begin(), beforePart.end())
+				+ L", after="
+				+ std::wstring(afterPart.begin(), afterPart.end()) + L"]";
+		}
+		AppendFailure(failures,
+			restoredCaptured
+			&& restored == baseline
+			&& restoredTarget == identity,
+			L"placement tree delta: " + label
+				+ L" parent locator did not restore exactly" + difference);
+	};
+	verifySpecialParentDelta(
+		UIClass::UI_SplitContainer,
+		DesignerPlacementParentKind::SplitFirst,
+		L"Split panel");
+	verifySpecialParentDelta(
+		UIClass::UI_TabControl,
+		DesignerPlacementParentKind::TabPage,
+		L"TabPage");
+
+	DesignerCanvas splitterCanvas(0, 0, 800, 640);
+	splitterCanvas.AddControlToCanvasCore(
+		UIClass::UI_SplitContainer, POINT{ 140, 140 });
+	const auto splitterName = splitterCanvas.GetAllControls().empty()
+		? std::wstring{}
+		: splitterCanvas.GetAllControls().front()->Name;
+	auto getSplitter = [&splitterCanvas, &splitterName]() -> SplitContainer*
+	{
+		auto control = FindControl(splitterCanvas, splitterName);
+		return control && control->ControlInstance
+			? dynamic_cast<SplitContainer*>(control->ControlInstance)
+			: nullptr;
+	};
+	DesignerModel::DesignDocument splitterBaseline;
+	std::wstring splitterBaselineError;
+	AppendFailure(failures,
+		splitterCanvas.BuildDesignDocument(
+			splitterBaseline, &splitterBaselineError),
+		L"canvas interaction: splitter baseline capture failed");
+	if (auto* split = getSplitter())
+	{
+		auto* const splitterIdentity = split;
+		const int baselineDistance = split->SplitterDistance;
+		const auto size = split->ActualSize();
+		POINT splitterPoint{
+			split->AbsLocation.x - splitterCanvas.AbsLocation.x,
+			split->AbsLocation.y - splitterCanvas.AbsLocation.y
+		};
+		if (split->SplitOrientation == Orientation::Horizontal)
+		{
+			splitterPoint.x += split->SplitterDistance
+				+ (std::max)(1, split->SplitterWidth) / 2;
+			splitterPoint.y += size.cy / 2;
+		}
+		else
+		{
+			splitterPoint.x += size.cx / 2;
+			splitterPoint.y += split->SplitterDistance
+				+ (std::max)(1, split->SplitterWidth) / 2;
+		}
+		(void)splitterCanvas.ProcessMessage(
+			WM_LBUTTONDOWN, MK_LBUTTON, 0,
+			splitterPoint.x, splitterPoint.y);
+		const int moveX = split->SplitOrientation == Orientation::Horizontal
+			? splitterPoint.x + 10 : splitterPoint.x;
+		const int moveY = split->SplitOrientation == Orientation::Vertical
+			? splitterPoint.y + 10 : splitterPoint.y;
+		(void)splitterCanvas.ProcessMessage(
+			WM_MOUSEMOVE, MK_LBUTTON, 0, moveX, moveY);
+		DesignerModel::DesignDocument splitterPreview;
+		std::wstring splitterPreviewError;
+		AppendFailure(failures,
+			splitterCanvas.BuildDesignDocument(
+				splitterPreview, &splitterPreviewError)
+			&& splitterPreview != splitterBaseline,
+			L"canvas interaction: splitter preview did not mutate metadata");
+		const auto previewRedoCount = splitterCanvas.GetRedoCommandCount();
+		const auto blockedSplitterUndo = splitterCanvas.UndoCommand();
+		const auto blockedSplitterSave = splitterCanvas.MarkDocumentSaved();
+		AppendFailure(failures,
+			splitterCanvas.HasActiveDocumentTransaction()
+			&& blockedSplitterUndo.State
+				== DesignerDocumentTransactionState::Rejected
+			&& blockedSplitterSave.State
+				== DesignerDocumentTransactionState::Rejected
+			&& splitterCanvas.GetRedoCommandCount() == previewRedoCount,
+			L"property preview: history/save-point operations were not rejected");
+		(void)splitterCanvas.ProcessMessage(
+			WM_CAPTURECHANGED, 0, 0, moveX, moveY);
+		DesignerModel::DesignDocument canceledSplitter;
+		std::wstring canceledSplitterError;
+		AppendFailure(failures,
+			splitterCanvas.BuildDesignDocument(
+				canceledSplitter, &canceledSplitterError)
+			&& canceledSplitter == splitterBaseline
+			&& splitterCanvas.GetLastInteractionTransaction()
+				== L"UpdateProperty:SplitterDistance"
+			&& splitterCanvas.GetLastInteractionTransactionResult().State
+				== DesignerDocumentTransactionState::RolledBack
+			&& splitterCanvas.GetUndoCommandCount() == 0,
+			L"canvas interaction: capture loss did not restore splitter preview");
+
+		(void)splitterCanvas.ProcessMessage(
+			WM_LBUTTONDOWN, MK_LBUTTON, 0,
+			splitterPoint.x, splitterPoint.y);
+		(void)splitterCanvas.ProcessMessage(
+			WM_MOUSEMOVE, MK_LBUTTON, 0, moveX, moveY);
+		(void)splitterCanvas.ProcessMessage(
+			WM_LBUTTONUP, 0, 0, moveX, moveY);
+		DesignerModel::DesignDocument committedSplitter;
+		std::wstring committedSplitterError;
+		AppendFailure(failures,
+			splitterCanvas.BuildDesignDocument(
+				committedSplitter, &committedSplitterError)
+			&& committedSplitter != splitterBaseline
+			&& splitterCanvas.GetUndoCommandCount() == 1
+			&& splitterCanvas.GetCommandHistoryMemoryUsage() < 32 * 1024
+			&& getSplitter() == splitterIdentity
+			&& splitterCanvas.GetLastInteractionTransaction()
+				== L"UpdateProperty:SplitterDistance"
+			&& splitterCanvas.GetLastInteractionTransactionResult().State
+				== DesignerDocumentTransactionState::Committed,
+			L"property delta: splitter commit used a snapshot or rebuilt its target");
+
+		if (auto* committed = getSplitter())
+		{
+			const int committedDistance = committed->SplitterDistance;
+			const auto historyBeforeConflict =
+				splitterCanvas.GetCommandHistoryMemoryUsage();
+			const auto undoCountBeforeConflict =
+				splitterCanvas.GetUndoCommandCount();
+			const bool changedOutsideHistory = committed->TrySetPropertyValue(
+				L"SplitterDistance", BindingValue(baselineDistance),
+				ControlPropertyValueSource::Local);
+			const auto guardedUndo = splitterCanvas.UndoCommand();
+			AppendFailure(failures,
+				changedOutsideHistory
+				&& !guardedUndo.Succeeded()
+				&& splitterCanvas.GetUndoCommandCount()
+					== undoCountBeforeConflict
+				&& splitterCanvas.GetCommandHistoryMemoryUsage()
+					== historyBeforeConflict,
+				L"property delta: splitter conflict lost history or was not detected");
+			const bool repaired = committed->TrySetPropertyValue(
+				L"SplitterDistance", BindingValue(committedDistance),
+				ControlPropertyValueSource::Local);
+			const auto splitterUndo = splitterCanvas.UndoCommand();
+			DesignerModel::DesignDocument undoneSplitter;
+			std::wstring undoneSplitterError;
+			AppendFailure(failures,
+				repaired && splitterUndo.HasChanges()
+				&& splitterCanvas.BuildDesignDocument(
+					undoneSplitter, &undoneSplitterError)
+				&& undoneSplitter == splitterBaseline
+				&& getSplitter() == splitterIdentity,
+				L"property delta: splitter undo did not restore the exact baseline");
+			const auto splitterRedo = splitterCanvas.RedoCommand();
+			DesignerModel::DesignDocument redoneSplitter;
+			std::wstring redoneSplitterError;
+			AppendFailure(failures,
+				splitterRedo.HasChanges()
+				&& splitterCanvas.BuildDesignDocument(
+					redoneSplitter, &redoneSplitterError)
+				&& redoneSplitter == committedSplitter
+				&& getSplitter() == splitterIdentity,
+				L"property delta: splitter redo did not restore the exact endpoint");
+
+			if (auto* redone = getSplitter())
+			{
+				const auto redoneSize = redone->ActualSize();
+				POINT secondPoint{
+					redone->AbsLocation.x - splitterCanvas.AbsLocation.x,
+					redone->AbsLocation.y - splitterCanvas.AbsLocation.y
+				};
+				if (redone->SplitOrientation == Orientation::Horizontal)
+				{
+					secondPoint.x += redone->SplitterDistance
+						+ (std::max)(1, redone->SplitterWidth) / 2;
+					secondPoint.y += redoneSize.cy / 2;
+				}
+				else
+				{
+					secondPoint.x += redoneSize.cx / 2;
+					secondPoint.y += redone->SplitterDistance
+						+ (std::max)(1, redone->SplitterWidth) / 2;
+				}
+				const int secondX = redone->SplitOrientation
+					== Orientation::Horizontal
+					? secondPoint.x - 5 : secondPoint.x;
+				const int secondY = redone->SplitOrientation
+					== Orientation::Vertical
+					? secondPoint.y - 5 : secondPoint.y;
+				(void)splitterCanvas.ProcessMessage(
+					WM_LBUTTONDOWN, MK_LBUTTON, 0,
+					secondPoint.x, secondPoint.y);
+				(void)splitterCanvas.ProcessMessage(
+					WM_MOUSEMOVE, MK_LBUTTON, 0, secondX, secondY);
+				(void)splitterCanvas.ProcessMessage(
+					WM_LBUTTONUP, 0, 0, secondX, secondY);
+				AppendFailure(failures,
+					splitterCanvas.GetUndoCommandCount() == 2
+					&& splitterCanvas.GetCommandHistoryMemoryUsage()
+						< 64 * 1024,
+					L"property delta: adjacent splitter gestures merged or exceeded budget");
+				const auto secondUndo = splitterCanvas.UndoCommand();
+				DesignerModel::DesignDocument secondUndone;
+				std::wstring secondUndoneError;
+				AppendFailure(failures,
+					secondUndo.HasChanges()
+					&& splitterCanvas.BuildDesignDocument(
+						secondUndone, &secondUndoneError)
+					&& secondUndone == committedSplitter
+					&& getSplitter() == splitterIdentity,
+					L"property delta: one splitter undo crossed a gesture boundary");
+			}
+		}
+	}
+	else
+	{
+		AppendFailure(failures, false,
+			L"canvas interaction: splitter target unavailable");
+	}
+	AppendFailure(failures,
+		getSplitter() != nullptr,
+		L"canvas interaction: splitter delta invalidated its target");
+
+	DesignerCanvas commandCanvas(0, 0, 800, 640);
+	size_t commandEventCount = 0;
+	DesignerCanvasCommandEventArgs lastCommandEvent;
+	commandCanvas.OnCommandCompleted +=
+		[&commandEventCount, &lastCommandEvent](
+			const DesignerCanvasCommandEventArgs& args)
+		{
+			++commandEventCount;
+			lastCommandEvent = args;
+		};
+	auto addCommandResult = commandCanvas.AddControlToCanvas(
+		UIClass::UI_Button, POINT{ 120, 120 });
+	AppendFailure(failures,
+		addCommandResult.State
+			== DesignerDocumentTransactionState::Committed
+		&& commandCanvas.GetAllControls().size() == 1
+		&& commandCanvas.HasCommandResult()
+		&& commandCanvas.GetLastCommandOperation() == L"AddControl"
+		&& commandCanvas.GetLastCommandLabel() == L"AddControl"
+		&& commandCanvas.GetLastCommandResult().State
+			== DesignerDocumentTransactionState::Committed
+		&& commandEventCount == 1
+		&& lastCommandEvent.Operation == L"AddControl"
+		&& lastCommandEvent.Label == L"AddControl",
+		L"add command: commit result or event was not published");
+	const auto addedName = commandCanvas.GetAllControls().empty()
+		? std::wstring{} : commandCanvas.GetAllControls().front()->Name;
+	const auto addedIdentity = commandCanvas.GetSelectedControl();
+	auto* const addedRuntimeIdentity = addedIdentity
+		? addedIdentity->ControlInstance : nullptr;
+	const auto addCommandMemory =
+		commandCanvas.GetCommandHistoryMemoryUsage();
+	AppendFailure(failures,
+		addCommandMemory > 0 && addCommandMemory < 32 * 1024,
+		L"add command: simple subtree retained document-sized history");
+	auto undoAddResult = commandCanvas.UndoCommand();
+	AppendFailure(failures,
+		undoAddResult.HasChanges()
+		&& commandEventCount == 2
+		&& lastCommandEvent.Operation == L"Undo"
+		&& lastCommandEvent.Label == L"AddControl",
+		L"add command: undo result or label was not published");
+	AppendFailure(failures, commandCanvas.GetAllControls().empty(),
+		L"add command: undo did not remove the control");
+	auto redoAddResult = commandCanvas.RedoCommand();
+	AppendFailure(failures,
+		redoAddResult.HasChanges()
+		&& commandEventCount == 3
+		&& lastCommandEvent.Operation == L"Redo"
+		&& lastCommandEvent.Label == L"AddControl",
+		L"add command: redo result or label was not published");
+	AppendFailure(failures, commandCanvas.GetAllControls().size() == 1
+		&& commandCanvas.GetSelectedControl()
+		&& commandCanvas.GetSelectedControl()->Name == addedName
+		&& commandCanvas.GetSelectedControl() == addedIdentity
+		&& commandCanvas.GetSelectedControl()->ControlInstance
+			== addedRuntimeIdentity,
+		L"add command: redo did not restore identity and selection");
+
+	const auto beforeDeleteMemory =
+		commandCanvas.GetCommandHistoryMemoryUsage();
+	auto deleteCommandResult = commandCanvas.DeleteSelectedControl();
+	const auto deleteCommandMemory =
+		commandCanvas.GetCommandHistoryMemoryUsage() - beforeDeleteMemory;
+	AppendFailure(failures,
+		deleteCommandResult.HasChanges()
+		&& commandCanvas.GetAllControls().empty()
+		&& deleteCommandMemory > 0 && deleteCommandMemory < 32 * 1024
+		&& commandEventCount == 4
+		&& lastCommandEvent.Operation == L"DeleteSelection"
+		&& lastCommandEvent.Label == L"DeleteSelection",
+		L"delete command: result or event was not published");
+	auto undoDeleteResult = commandCanvas.UndoCommand();
+	AppendFailure(failures,
+		undoDeleteResult.HasChanges()
+		&& commandEventCount == 5
+		&& lastCommandEvent.Operation == L"Undo"
+		&& lastCommandEvent.Label == L"DeleteSelection",
+		L"delete command: undo result or label was not published");
+	AppendFailure(failures, commandCanvas.GetAllControls().size() == 1
+		&& commandCanvas.GetSelectedControl()
+		&& commandCanvas.GetSelectedControl()->Name == addedName
+		&& commandCanvas.GetSelectedControl() == addedIdentity
+		&& commandCanvas.GetSelectedControl()->ControlInstance
+			== addedRuntimeIdentity,
+		L"delete command: undo did not restore identity and selection");
+	auto redoDeleteResult = commandCanvas.RedoCommand();
+	AppendFailure(failures,
+		redoDeleteResult.HasChanges()
+		&& commandEventCount == 6
+		&& lastCommandEvent.Operation == L"Redo"
+		&& lastCommandEvent.Label == L"DeleteSelection",
+		L"delete command: redo result or label was not published");
+	AppendFailure(failures, commandCanvas.GetAllControls().empty(),
+		L"delete command: redo did not remove the control");
+
+	auto blockUndoBegin = commandCanvas.BeginDocumentEditTransaction(
+		L"SelfTest:BlockUndo");
+	auto blockedUndo = commandCanvas.UndoCommand();
+	AppendFailure(failures,
+		blockUndoBegin.State == DesignerDocumentTransactionState::Begun
+		&& blockedUndo.State == DesignerDocumentTransactionState::Rejected
+		&& !blockedUndo.Error.empty()
+		&& commandEventCount == 7
+		&& lastCommandEvent.Operation == L"Undo"
+		&& lastCommandEvent.Label == L"DeleteSelection"
+		&& commandCanvas.GetAllControls().empty(),
+		L"active transaction: undo was not rejected without mutation");
+	auto blockUndoCancel = commandCanvas.CancelDocumentEditTransaction();
+	auto undoAfterBlock = commandCanvas.UndoCommand();
+	AppendFailure(failures,
+		blockUndoCancel.State == DesignerDocumentTransactionState::Canceled
+		&& undoAfterBlock.HasChanges()
+		&& commandEventCount == 8
+		&& lastCommandEvent.Operation == L"Undo"
+		&& lastCommandEvent.Label == L"DeleteSelection"
+		&& commandCanvas.GetAllControls().size() == 1,
+		L"active transaction: rejected undo damaged transaction or history");
+
+	auto blockRedoBegin = commandCanvas.BeginDocumentEditTransaction(
+		L"SelfTest:BlockRedo");
+	auto blockedRedo = commandCanvas.RedoCommand();
+	AppendFailure(failures,
+		blockRedoBegin.State == DesignerDocumentTransactionState::Begun
+		&& blockedRedo.State == DesignerDocumentTransactionState::Rejected
+		&& !blockedRedo.Error.empty()
+		&& commandEventCount == 9
+		&& lastCommandEvent.Operation == L"Redo"
+		&& lastCommandEvent.Label == L"DeleteSelection"
+		&& commandCanvas.GetAllControls().size() == 1,
+		L"active transaction: redo was not rejected without mutation");
+	auto blockRedoCancel = commandCanvas.CancelDocumentEditTransaction();
+	auto redoAfterBlock = commandCanvas.RedoCommand();
+	AppendFailure(failures,
+		blockRedoCancel.State == DesignerDocumentTransactionState::Canceled
+		&& redoAfterBlock.HasChanges()
+		&& commandEventCount == 10
+		&& lastCommandEvent.Operation == L"Redo"
+		&& lastCommandEvent.Label == L"DeleteSelection"
+		&& commandCanvas.GetAllControls().empty(),
+		L"active transaction: rejected redo damaged transaction or history");
+
+	DesignerCanvas subtreeCanvas(0, 0, 900, 680);
+	subtreeCanvas.AddControlToCanvasCore(
+		UIClass::UI_StackPanel, POINT{ 260, 220 });
+	const auto subtreeRoot = subtreeCanvas.GetSelectedControl();
+	auto* const subtreeRootRuntime = subtreeRoot
+		? subtreeRoot->ControlInstance : nullptr;
+	if (subtreeRootRuntime)
+	{
+		const POINT inside{
+			subtreeRootRuntime->AbsLocation.x - subtreeCanvas.AbsLocation.x + 60,
+			subtreeRootRuntime->AbsLocation.y - subtreeCanvas.AbsLocation.y + 50
+		};
+		subtreeCanvas.AddControlToCanvasCore(UIClass::UI_Button, inside);
+		subtreeCanvas.AddControlToCanvasCore(
+			UIClass::UI_Label, POINT{ inside.x + 20, inside.y + 70 });
+	}
+	const auto subtreeFirstChild = subtreeCanvas.GetAllControls().size() > 1
+		? subtreeCanvas.GetAllControls()[1] : nullptr;
+	const auto subtreeSecondChild = subtreeCanvas.GetAllControls().size() > 2
+		? subtreeCanvas.GetAllControls()[2] : nullptr;
+	auto* const subtreeFirstRuntime = subtreeFirstChild
+		? subtreeFirstChild->ControlInstance : nullptr;
+	auto* const subtreeSecondRuntime = subtreeSecondChild
+		? subtreeSecondChild->ControlInstance : nullptr;
+	DesignerModel::DesignDocument subtreeBaseline;
+	std::wstring subtreeBaselineError;
+	const bool subtreeSetup = subtreeRoot && subtreeRootRuntime
+		&& subtreeFirstChild && subtreeFirstRuntime
+		&& subtreeSecondChild && subtreeSecondRuntime
+		&& subtreeRootRuntime->Count == 2
+		&& subtreeCanvas.BuildDesignDocument(
+			subtreeBaseline, &subtreeBaselineError);
+	AppendFailure(failures, subtreeSetup,
+		L"subtree delta: nested setup failed");
+	if (subtreeSetup)
+	{
+		(void)subtreeCanvas.ResetDocumentHistoryAsSaved();
+		subtreeCanvas.RestoreSelectionByNames(
+			{ subtreeRoot->Name }, subtreeRoot->Name, false);
+		const auto deleteSubtree = subtreeCanvas.DeleteSelectedControl();
+		const auto deleteSubtreeMemory =
+			subtreeCanvas.GetCommandHistoryMemoryUsage();
+		AppendFailure(failures,
+			deleteSubtree.HasChanges()
+			&& subtreeCanvas.GetAllControls().empty()
+			&& deleteSubtreeMemory > 0
+			&& deleteSubtreeMemory < 64 * 1024,
+			L"subtree delta: nested delete retained a full document or left wrappers");
+		const auto undoSubtree = subtreeCanvas.UndoCommand();
+		DesignerModel::DesignDocument restoredSubtree;
+		std::wstring restoredSubtreeError;
+		AppendFailure(failures,
+			undoSubtree.HasChanges()
+			&& subtreeCanvas.BuildDesignDocument(
+				restoredSubtree, &restoredSubtreeError)
+			&& restoredSubtree == subtreeBaseline
+			&& FindControl(subtreeCanvas, subtreeRoot->Name) == subtreeRoot
+			&& FindControl(subtreeCanvas, subtreeFirstChild->Name)
+				== subtreeFirstChild
+			&& FindControl(subtreeCanvas, subtreeSecondChild->Name)
+				== subtreeSecondChild
+			&& subtreeRoot->ControlInstance == subtreeRootRuntime
+			&& subtreeFirstChild->ControlInstance == subtreeFirstRuntime
+			&& subtreeSecondChild->ControlInstance == subtreeSecondRuntime
+			&& subtreeRootRuntime->Count == 2
+			&& subtreeRootRuntime->operator[](0) == subtreeFirstRuntime
+			&& subtreeRootRuntime->operator[](1) == subtreeSecondRuntime
+			&& subtreeCanvas.GetSelectedControl() == subtreeRoot,
+			L"subtree delta: nested undo lost document, order, identity, or selection");
+		AppendFailure(failures,
+			subtreeCanvas.RedoCommand().HasChanges()
+			&& subtreeCanvas.GetAllControls().empty(),
+			L"subtree delta: nested redo did not detach the full subtree");
+	}
+
+	DesignerCanvas siblingDeleteCanvas(0, 0, 900, 680);
+	siblingDeleteCanvas.AddControlToCanvasCore(
+		UIClass::UI_Panel, POINT{ 300, 240 });
+	const auto siblingParent = siblingDeleteCanvas.GetSelectedControl();
+	auto* const siblingParentRuntime = siblingParent
+		? siblingParent->ControlInstance : nullptr;
+	if (siblingParentRuntime)
+	{
+		const POINT inside{
+			siblingParentRuntime->AbsLocation.x
+				- siblingDeleteCanvas.AbsLocation.x + 55,
+			siblingParentRuntime->AbsLocation.y
+				- siblingDeleteCanvas.AbsLocation.y + 45
+		};
+		for (int index = 0; index < 3; ++index)
+			siblingDeleteCanvas.AddControlToCanvasCore(
+				UIClass::UI_Button,
+				POINT{ inside.x + index * 45, inside.y + index * 45 });
+	}
+	const auto siblingFirst = siblingDeleteCanvas.GetAllControls().size() > 1
+		? siblingDeleteCanvas.GetAllControls()[1] : nullptr;
+	const auto siblingMiddle = siblingDeleteCanvas.GetAllControls().size() > 2
+		? siblingDeleteCanvas.GetAllControls()[2] : nullptr;
+	const auto siblingLast = siblingDeleteCanvas.GetAllControls().size() > 3
+		? siblingDeleteCanvas.GetAllControls()[3] : nullptr;
+	auto* const siblingFirstRuntime = siblingFirst
+		? siblingFirst->ControlInstance : nullptr;
+	auto* const siblingMiddleRuntime = siblingMiddle
+		? siblingMiddle->ControlInstance : nullptr;
+	auto* const siblingLastRuntime = siblingLast
+		? siblingLast->ControlInstance : nullptr;
+	const bool siblingSetup = siblingParentRuntime
+		&& siblingFirstRuntime && siblingMiddleRuntime && siblingLastRuntime
+		&& siblingParentRuntime->Count == 3;
+	AppendFailure(failures, siblingSetup,
+		L"subtree delta: multi-root sibling setup failed");
+	if (siblingSetup)
+	{
+		(void)siblingDeleteCanvas.ResetDocumentHistoryAsSaved();
+		siblingDeleteCanvas.RestoreSelectionByNames(
+			{ siblingFirst->Name, siblingLast->Name },
+			siblingLast->Name,
+			false);
+		const auto deleteSiblings =
+			siblingDeleteCanvas.DeleteSelectedControl();
+		AppendFailure(failures,
+			deleteSiblings.HasChanges()
+			&& siblingParentRuntime->Count == 1
+			&& siblingParentRuntime->operator[](0) == siblingMiddleRuntime,
+			L"subtree delta: multi-root delete damaged the remaining sibling");
+		const auto undoSiblings = siblingDeleteCanvas.UndoCommand();
+		AppendFailure(failures,
+			undoSiblings.HasChanges()
+			&& siblingParentRuntime->Count == 3
+			&& siblingParentRuntime->operator[](0) == siblingFirstRuntime
+			&& siblingParentRuntime->operator[](1) == siblingMiddleRuntime
+			&& siblingParentRuntime->operator[](2) == siblingLastRuntime
+			&& FindControl(siblingDeleteCanvas, siblingFirst->Name)
+				== siblingFirst
+			&& FindControl(siblingDeleteCanvas, siblingLast->Name)
+				== siblingLast,
+			L"subtree delta: multi-root undo lost sibling order or identity");
+	}
+
+	DesignerCanvas guardedAddCanvas(0, 0, 800, 640);
+	const auto guardedAdd = guardedAddCanvas.AddControlToCanvas(
+		UIClass::UI_Button, POINT{ 150, 150 });
+	const auto guardedAddIdentity = guardedAddCanvas.GetSelectedControl();
+	auto* const guardedAddRuntime = guardedAddIdentity
+		? guardedAddIdentity->ControlInstance : nullptr;
+	const auto guardedAddName = guardedAddIdentity
+		? guardedAddIdentity->Name : std::wstring{};
+	const auto guardedAddText = guardedAddRuntime
+		? guardedAddRuntime->Text : std::wstring{};
+	if (guardedAddRuntime) guardedAddRuntime->Text = L"ExternalMutation";
+	const auto guardedAddUndo = guardedAddCanvas.UndoCommand();
+	AppendFailure(failures,
+		guardedAdd.HasChanges()
+		&& guardedAddUndo.State == DesignerDocumentTransactionState::Failed
+		&& !guardedAddUndo.DocumentRestored
+		&& guardedAddCanvas.GetUndoCommandCount() == 1
+		&& guardedAddCanvas.GetAllControls().size() == 1
+		&& guardedAddCanvas.GetSelectedControl() == guardedAddIdentity
+		&& guardedAddRuntime
+		&& guardedAddRuntime->Text == L"ExternalMutation",
+		L"subtree delta: mismatched Add endpoint damaged state or history");
+	if (guardedAddRuntime) guardedAddRuntime->Text = guardedAddText;
+	const auto repairedAddUndo = guardedAddCanvas.UndoCommand();
+	guardedAddCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 310, 190 });
+	const auto conflictingAdd = guardedAddCanvas.GetSelectedControl();
+	if (conflictingAdd) conflictingAdd->Name = guardedAddName;
+	const auto conflictingRedo = guardedAddCanvas.RedoCommand();
+	AppendFailure(failures,
+		repairedAddUndo.HasChanges()
+		&& conflictingRedo.State == DesignerDocumentTransactionState::Failed
+		&& guardedAddCanvas.GetRedoCommandCount() == 1
+		&& guardedAddCanvas.GetAllControls().size() == 1,
+		L"subtree delta: absent-name conflict did not preserve redo history");
+	guardedAddCanvas.DeleteSelectedControlCore();
+	AppendFailure(failures,
+		guardedAddCanvas.RedoCommand().HasChanges()
+		&& guardedAddCanvas.GetSelectedControl() == guardedAddIdentity
+		&& guardedAddIdentity
+		&& guardedAddIdentity->ControlInstance == guardedAddRuntime,
+		L"subtree delta: Add redo did not recover after name conflict repair");
+
+	DesignerCanvas rebuiltDeleteCanvas(0, 0, 900, 680);
+	rebuiltDeleteCanvas.AddControlToCanvasCore(
+		UIClass::UI_ToolBar, POINT{ 300, 180 });
+	const auto originalToolBar = rebuiltDeleteCanvas.GetSelectedControl();
+	const auto originalToolBarName = originalToolBar
+		? originalToolBar->Name : std::wstring{};
+	auto* const originalToolBarRuntime = originalToolBar
+		? dynamic_cast<ToolBar*>(originalToolBar->ControlInstance) : nullptr;
+	if (originalToolBarRuntime)
+	{
+		const POINT inside{
+			originalToolBarRuntime->AbsLocation.x
+				- rebuiltDeleteCanvas.AbsLocation.x + 50,
+			originalToolBarRuntime->AbsLocation.y
+				- rebuiltDeleteCanvas.AbsLocation.y + 16
+		};
+		rebuiltDeleteCanvas.AddControlToCanvasCore(
+			UIClass::UI_Button, inside);
+	}
+	const auto rebuiltDeleteChild = rebuiltDeleteCanvas.GetSelectedControl();
+	auto* const rebuiltDeleteChildRuntime = rebuiltDeleteChild
+		? rebuiltDeleteChild->ControlInstance : nullptr;
+	if (originalToolBarRuntime && rebuiltDeleteChildRuntime)
+		originalToolBarRuntime->SetToolItemSizeOverride(
+			rebuiltDeleteChildRuntime, SIZE{ 137, -2 });
+	DesignerModel::DesignDocument rebuiltDeleteBaseline;
+	std::wstring rebuiltDeleteBaselineError;
+	const bool rebuiltDeleteSetup = originalToolBar
+		&& originalToolBarRuntime && rebuiltDeleteChild
+		&& rebuiltDeleteChildRuntime
+		&& rebuiltDeleteCanvas.BuildDesignDocument(
+			rebuiltDeleteBaseline, &rebuiltDeleteBaselineError);
+	AppendFailure(failures, rebuiltDeleteSetup,
+		L"subtree delta: rebuild/ToolBar setup failed");
+	if (rebuiltDeleteSetup)
+	{
+		(void)rebuiltDeleteCanvas.ResetDocumentHistoryAsSaved();
+		rebuiltDeleteCanvas.RestoreSelectionByNames(
+			{ rebuiltDeleteChild->Name }, rebuiltDeleteChild->Name, false);
+		const auto deleteBeforeRebuild =
+			rebuiltDeleteCanvas.DeleteSelectedControl();
+		const auto rebuildTransaction =
+			rebuiltDeleteCanvas.ExecuteDocumentEditTransaction(
+				L"SelfTest:RebuildWhileSubtreeAbsent",
+				[&rebuiltDeleteCanvas](std::wstring&)
+				{
+					rebuiltDeleteCanvas.SetDesignedFormText(
+						L"Temporary rebuild text");
+					return true;
+				});
+		const auto undoRebuild = rebuiltDeleteCanvas.UndoCommand();
+		const auto rebuiltToolBarWrapper = FindControl(
+			rebuiltDeleteCanvas, originalToolBarName);
+		auto* const rebuiltToolBarRuntime = rebuiltToolBarWrapper
+			? dynamic_cast<ToolBar*>(
+				rebuiltToolBarWrapper->ControlInstance) : nullptr;
+		const auto undoDeleteAfterRebuild =
+			rebuiltDeleteCanvas.UndoCommand();
+		DesignerModel::DesignDocument rebuiltDeleteRestored;
+		std::wstring rebuiltDeleteRestoredError;
+		SIZE restoredToolItemOverride{};
+		AppendFailure(failures,
+			deleteBeforeRebuild.HasChanges()
+			&& rebuildTransaction.HasChanges()
+			&& undoRebuild.HasChanges()
+			&& rebuiltToolBarWrapper
+			&& rebuiltToolBarWrapper != originalToolBar
+			&& rebuiltToolBarRuntime
+			&& undoDeleteAfterRebuild.HasChanges()
+			&& rebuiltDeleteCanvas.BuildDesignDocument(
+				rebuiltDeleteRestored, &rebuiltDeleteRestoredError)
+			&& rebuiltDeleteRestored == rebuiltDeleteBaseline
+			&& FindControl(
+				rebuiltDeleteCanvas, rebuiltDeleteChild->Name)
+				== rebuiltDeleteChild
+			&& rebuiltDeleteChild->ControlInstance
+				== rebuiltDeleteChildRuntime
+			&& rebuiltDeleteChild->DesignerParent
+				== rebuiltToolBarRuntime
+			&& rebuiltToolBarRuntime->TryGetToolItemSizeOverride(
+				rebuiltDeleteChildRuntime, restoredToolItemOverride)
+			&& restoredToolItemOverride.cx == 137
+			&& restoredToolItemOverride.cy == -2,
+			L"subtree delta: undo after rebuild lost parent, identity, document, or ToolBar metadata");
+	}
+
+	auto verifySubtreeSpecialParent = [&failures](
+		UIClass parentType,
+		const std::wstring& label)
+	{
+		DesignerCanvas specialCanvas(0, 0, 850, 660);
+		specialCanvas.AddControlToCanvasCore(
+			parentType, POINT{ 280, 220 });
+		const auto parent = specialCanvas.GetSelectedControl();
+		POINT childDrop{ 330, 280 };
+		if (parent && parent->ControlInstance)
+		{
+			if (auto* split = dynamic_cast<SplitContainer*>(
+				parent->ControlInstance))
+			{
+				split->RefreshSplitterLayout();
+				if (auto* first = split->FirstPanel())
+					childDrop = POINT{
+						first->AbsLocation.x - specialCanvas.AbsLocation.x + 35,
+						first->AbsLocation.y - specialCanvas.AbsLocation.y + 40
+					};
+			}
+			else
+			{
+				childDrop = POINT{
+					parent->ControlInstance->AbsLocation.x
+						- specialCanvas.AbsLocation.x + 80,
+					parent->ControlInstance->AbsLocation.y
+						- specialCanvas.AbsLocation.y + 80
+				};
+			}
+		}
+		specialCanvas.AddControlToCanvasCore(
+			UIClass::UI_Button, childDrop);
+		const auto child = specialCanvas.GetSelectedControl();
+		auto* const childRuntime = child
+			? child->ControlInstance : nullptr;
+		auto* const runtimeParent = childRuntime
+			? childRuntime->Parent : nullptr;
+		auto* const designerParent = child
+			? child->DesignerParent : nullptr;
+		bool parentKindMatches = false;
+		if (parent && parent->ControlInstance && childRuntime)
+		{
+			if (auto* split = dynamic_cast<SplitContainer*>(
+				parent->ControlInstance))
+				parentKindMatches = runtimeParent == split->FirstPanel()
+					&& designerParent == split;
+			else if (auto* tabs = dynamic_cast<TabControl*>(
+				parent->ControlInstance))
+				parentKindMatches = tabs->Count > 0
+					&& runtimeParent == tabs->operator[](0)
+					&& designerParent == runtimeParent;
+		}
+		const bool setup = parent && child && childRuntime
+			&& runtimeParent && parentKindMatches;
+		AppendFailure(failures, setup,
+			L"subtree delta: " + label + L" setup failed");
+		if (!setup) return;
+		(void)specialCanvas.ResetDocumentHistoryAsSaved();
+		specialCanvas.RestoreSelectionByNames(
+			{ child->Name }, child->Name, false);
+		const auto removed = specialCanvas.DeleteSelectedControl();
+		const auto restored = specialCanvas.UndoCommand();
+		AppendFailure(failures,
+			removed.HasChanges() && restored.HasChanges()
+			&& FindControl(specialCanvas, child->Name) == child
+			&& child->ControlInstance == childRuntime
+			&& childRuntime->Parent == runtimeParent
+			&& child->DesignerParent == designerParent,
+			L"subtree delta: " + label
+				+ L" locator did not restore identity and parent");
+	};
+	verifySubtreeSpecialParent(
+		UIClass::UI_SplitContainer, L"SplitFirst");
+	verifySubtreeSpecialParent(
+		UIClass::UI_TabControl, L"TabPage");
+
+	DesignerCanvas emptyCommandCanvas(0, 0, 800, 640);
+	size_t emptyCommandEventCount = 0;
+	DesignerCanvasCommandEventArgs lastEmptyCommandEvent;
+	emptyCommandCanvas.OnCommandCompleted +=
+		[&emptyCommandEventCount, &lastEmptyCommandEvent](
+			const DesignerCanvasCommandEventArgs& args)
+		{
+			++emptyCommandEventCount;
+			lastEmptyCommandEvent = args;
+		};
+	auto emptyUndoResult = emptyCommandCanvas.UndoCommand();
+	AppendFailure(failures,
+		IsUnchanged(emptyUndoResult)
+		&& emptyCommandEventCount == 1
+		&& lastEmptyCommandEvent.Operation == L"Undo"
+		&& lastEmptyCommandEvent.Label.empty(),
+		L"empty command history: undo state was not reported");
+	auto emptyDeleteResult = emptyCommandCanvas.DeleteSelectedControl();
+	AppendFailure(failures,
+		IsUnchanged(emptyDeleteResult)
+		&& emptyCommandEventCount == 2
+		&& lastEmptyCommandEvent.Operation == L"DeleteSelection"
+		&& !lastEmptyCommandEvent.Message.empty(),
+		L"empty delete: unchanged result or message was not reported");
+	auto rejectedAddResult = emptyCommandCanvas.AddControlToCanvas(
+		UIClass::UI_Button, POINT{ 0, 0 });
+	AppendFailure(failures,
+		rejectedAddResult.State
+			== DesignerDocumentTransactionState::Rejected
+		&& !rejectedAddResult.Error.empty()
+		&& emptyCommandEventCount == 3
+		&& lastEmptyCommandEvent.Operation == L"AddControl"
+		&& lastEmptyCommandEvent.Result.State
+			== DesignerDocumentTransactionState::Rejected
+		&& IsUnchanged(emptyCommandCanvas.UndoCommand()),
+		L"rejected add: failure entered history or was not reported");
+
+	TemporarySelfTestFiles lifecycleFiles;
+	const auto lifecyclePath = CreateTemporarySelfTestFile();
+	const auto invalidLifecyclePath = CreateTemporarySelfTestFile();
+	const auto xamlLifecycleBase = CreateTemporarySelfTestFile();
+	const auto xamlLifecyclePath = xamlLifecycleBase.empty()
+		? std::wstring{} : xamlLifecycleBase + L".cui.xaml";
+	const auto invalidXamlBase = CreateTemporarySelfTestFile();
+	const auto invalidXamlPath = invalidXamlBase.empty()
+		? std::wstring{} : invalidXamlBase + L".cui.xaml";
+	lifecycleFiles.Paths = {
+		lifecyclePath, invalidLifecyclePath,
+		xamlLifecycleBase, xamlLifecyclePath,
+		invalidXamlBase, invalidXamlPath };
+	AppendFailure(failures,
+		!lifecyclePath.empty() && !invalidLifecyclePath.empty()
+		&& !xamlLifecyclePath.empty() && !invalidXamlPath.empty(),
+		L"document lifecycle: temporary files unavailable");
+
+	DesignerCanvas lifecycleCanvas(0, 0, 800, 640);
+	size_t documentStateEventCount = 0;
+	DesignerCanvasDocumentStateEventArgs lastDocumentState;
+	lifecycleCanvas.OnDocumentStateChanged +=
+		[&documentStateEventCount, &lastDocumentState](
+			const DesignerCanvasDocumentStateEventArgs& args)
+		{
+			++documentStateEventCount;
+			lastDocumentState = args;
+		};
+	AppendFailure(failures,
+		!lifecycleCanvas.IsDocumentDirty()
+		&& lifecycleCanvas.GetCurrentDocumentStateId()
+			== lifecycleCanvas.GetSavedDocumentStateId(),
+		L"document lifecycle: initial canvas was not clean");
+	auto lifecycleAdd = lifecycleCanvas.AddControlToCanvas(
+		UIClass::UI_Button, POINT{ 120, 120 });
+	AppendFailure(failures,
+		lifecycleAdd.HasChanges()
+		&& lifecycleCanvas.IsDocumentDirty()
+		&& documentStateEventCount > 0
+		&& lastDocumentState.IsDirty,
+		L"document lifecycle: committed edit did not become dirty");
+
+	if (!lifecyclePath.empty())
+	{
+		std::wstring lifecycleError;
+		auto firstSave = lifecycleCanvas.SaveDesignFile(
+			lifecyclePath, &lifecycleError);
+		const auto savedStateId =
+			lifecycleCanvas.GetSavedDocumentStateId();
+		AppendFailure(failures,
+			firstSave.State == DesignerDocumentTransactionState::Unchanged
+			&& !lifecycleCanvas.IsDocumentDirty()
+			&& lifecycleCanvas.GetCurrentDocumentStateId() == savedStateId
+			&& lifecycleCanvas.GetLastCommandOperation() == L"SaveDocument"
+			&& !lastDocumentState.IsDirty,
+			L"document lifecycle: successful save did not establish save point");
+		AppendFailure(failures,
+			lifecycleCanvas.UndoCommand().HasChanges()
+			&& lifecycleCanvas.IsDocumentDirty(),
+			L"document lifecycle: undo across save point was not dirty");
+		AppendFailure(failures,
+			lifecycleCanvas.RedoCommand().HasChanges()
+			&& !lifecycleCanvas.IsDocumentDirty()
+			&& lifecycleCanvas.GetCurrentDocumentStateId() == savedStateId,
+			L"document lifecycle: redo to save point was not clean");
+		AppendFailure(failures,
+			lifecycleCanvas.UndoCommand().HasChanges(),
+			L"document lifecycle: branch setup undo unavailable");
+		auto branchEdit = lifecycleCanvas.AddControlToCanvas(
+			UIClass::UI_Label, POINT{ 180, 180 });
+		AppendFailure(failures,
+			branchEdit.HasChanges()
+			&& lifecycleCanvas.IsDocumentDirty()
+			&& lifecycleCanvas.GetCurrentDocumentStateId() != savedStateId
+			&& IsUnchanged(lifecycleCanvas.RedoCommand()),
+			L"document lifecycle: branched history matched stale save point");
+
+		auto branchSave = lifecycleCanvas.SaveDesignFile(
+			lifecyclePath, &lifecycleError);
+		DesignerModel::DesignDocument cleanBranchDocument;
+		std::wstring cleanBranchError;
+		AppendFailure(failures,
+			branchSave.State == DesignerDocumentTransactionState::Unchanged
+			&& !lifecycleCanvas.IsDocumentDirty()
+			&& lifecycleCanvas.BuildDesignDocument(
+				cleanBranchDocument, &cleanBranchError),
+			L"document lifecycle: branch save failed");
+
+		if (!xamlLifecyclePath.empty())
+		{
+			std::wstring xamlSaveError;
+			auto xamlSave = lifecycleCanvas.SaveDesignFile(
+				xamlLifecyclePath, &xamlSaveError);
+			DesignerModel::DesignDocument persistedXamlDocument;
+			std::wstring persistedXamlError;
+			DesignerCanvas xamlOpenCanvas(0, 0, 800, 640);
+			auto xamlOpen = xamlOpenCanvas.LoadDesignFile(
+				xamlLifecyclePath, &persistedXamlError);
+			DesignerModel::DesignDocument openedXamlDocument;
+			std::wstring openedXamlError;
+			AppendFailure(failures,
+				xamlSave.State == DesignerDocumentTransactionState::Unchanged
+				&& !lifecycleCanvas.IsDocumentDirty()
+				&& DesignerModel::XamlDocumentParser::LoadFromFile(
+					xamlLifecyclePath, persistedXamlDocument, &persistedXamlError)
+				&& EquivalentDocumentContent(
+					persistedXamlDocument, cleanBranchDocument)
+				&& xamlOpen.Succeeded()
+				&& !xamlOpenCanvas.IsDocumentDirty()
+				&& xamlOpenCanvas.BuildDesignDocument(
+					openedXamlDocument, &openedXamlError)
+				&& EquivalentDocumentContent(
+					openedXamlDocument, cleanBranchDocument)
+				&& !HasAtomicSaveTemporaryFile(xamlLifecyclePath),
+				L"document lifecycle: XAML Save As/open did not preserve content or clean state"
+				+ std::wstring(L" [save=") + xamlSaveError
+				+ L", open=" + persistedXamlError
+				+ L", build=" + openedXamlError + L"]");
+
+			if (!invalidXamlPath.empty())
+			{
+				std::wstring malformedWriteError;
+				const bool malformedWritten = DesignerModel::AtomicFile::Write(
+					invalidXamlPath,
+					"<Form><Unknown /></Form>",
+					&malformedWriteError);
+				const auto beforeRejectedXaml = openedXamlDocument;
+				std::wstring rejectedXamlError;
+				auto rejectedXaml = xamlOpenCanvas.LoadDesignFile(
+					invalidXamlPath, &rejectedXamlError);
+				DesignerModel::DesignDocument afterRejectedXaml;
+				std::wstring afterRejectedXamlError;
+				AppendFailure(failures,
+					malformedWritten
+					&& rejectedXaml.State
+						== DesignerDocumentTransactionState::Failed
+					&& !rejectedXamlError.empty()
+					&& xamlOpenCanvas.BuildDesignDocument(
+						afterRejectedXaml, &afterRejectedXamlError)
+					&& EquivalentDocumentContent(
+						afterRejectedXaml, beforeRejectedXaml)
+					&& !xamlOpenCanvas.IsDocumentDirty(),
+					L"document lifecycle: rejected XAML replacement mutated the open document"
+					+ std::wstring(L" [write=") + malformedWriteError
+					+ L", load=" + rejectedXamlError + L"]");
+			}
+		}
+
+		(void)lifecycleCanvas.AddControlToCanvas(
+			UIClass::UI_Button, POINT{ 260, 220 });
+		const auto dirtyBeforeLockedSave =
+			lifecycleCanvas.GetCurrentDocumentStateId();
+		const HANDLE lockedDesignFile = ::CreateFileW(
+			lifecyclePath.c_str(), GENERIC_READ, 0, nullptr,
+			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		AppendFailure(failures,
+			lockedDesignFile != INVALID_HANDLE_VALUE,
+			L"document lifecycle: could not lock existing save file");
+		if (lockedDesignFile != INVALID_HANDLE_VALUE)
+		{
+			std::wstring lockedSaveError;
+			auto lockedSave = lifecycleCanvas.SaveDesignFile(
+				lifecyclePath, &lockedSaveError);
+			(void)::CloseHandle(lockedDesignFile);
+			DesignerModel::DesignDocument persistedAfterLockedSave;
+			std::wstring persistedError;
+			AppendFailure(failures,
+				lockedSave.State == DesignerDocumentTransactionState::Failed
+				&& !lockedSaveError.empty()
+				&& lifecycleCanvas.IsDocumentDirty()
+				&& lifecycleCanvas.GetCurrentDocumentStateId()
+					== dirtyBeforeLockedSave
+				&& DesignerModel::DesignDocumentSerializer::LoadFromFile(
+					lifecyclePath, persistedAfterLockedSave, &persistedError)
+				&& persistedAfterLockedSave == cleanBranchDocument
+				&& !HasAtomicSaveTemporaryFile(lifecyclePath),
+				L"document lifecycle: failed atomic replacement damaged the old file or save point");
+		}
+		DesignerModel::DesignDocument beforeInvalidLoad;
+		std::wstring beforeInvalidError;
+		const bool beforeInvalidCaptured =
+			lifecycleCanvas.BuildDesignDocument(
+				beforeInvalidLoad, &beforeInvalidError);
+		const auto beforeInvalidStateId =
+			lifecycleCanvas.GetCurrentDocumentStateId();
+		const auto beforeInvalidPrimary = lifecycleCanvas.GetSelectedControl()
+			? lifecycleCanvas.GetSelectedControl()->Name : std::wstring{};
+
+		if (!invalidLifecyclePath.empty()
+			&& !cleanBranchDocument.Nodes.empty())
+		{
+			auto invalidDocument = cleanBranchDocument;
+			invalidDocument.Nodes.front().ParentRef = L"MissingParent";
+			std::wstring invalidSaveError;
+			const bool invalidSaved =
+				DesignerModel::DesignDocumentSerializer::SaveToFile(
+					invalidDocument, invalidLifecyclePath,
+					&invalidSaveError);
+			AppendFailure(failures, invalidSaved,
+				L"document lifecycle: invalid apply probe file unavailable");
+			if (invalidSaved)
+			{
+				std::wstring invalidLoadError;
+				auto invalidLoad = lifecycleCanvas.LoadDesignFile(
+					invalidLifecyclePath, &invalidLoadError);
+				DesignerModel::DesignDocument afterInvalidLoad;
+				std::wstring afterInvalidError;
+				AppendFailure(failures,
+					invalidLoad.State
+						== DesignerDocumentTransactionState::Failed
+					&& invalidLoad.DocumentRestored
+					&& !invalidLoadError.empty()
+					&& beforeInvalidCaptured
+					&& lifecycleCanvas.BuildDesignDocument(
+						afterInvalidLoad, &afterInvalidError)
+					&& afterInvalidLoad == beforeInvalidLoad
+					&& lifecycleCanvas.GetCurrentDocumentStateId()
+						== beforeInvalidStateId
+					&& lifecycleCanvas.IsDocumentDirty()
+					&& lifecycleCanvas.GetSelectedControl()
+					&& lifecycleCanvas.GetSelectedControl()->Name
+						== beforeInvalidPrimary,
+					L"document lifecycle: failed open did not restore document, selection, and dirty state");
+			}
+		}
+
+		auto lifecycleBegin = lifecycleCanvas.BeginDocumentEditTransaction(
+			L"SelfTest:LifecycleGuard");
+		auto blockedSave = lifecycleCanvas.SaveDesignFile(
+			lifecyclePath, &lifecycleError);
+		auto blockedNew = lifecycleCanvas.CreateNewDocument();
+		auto blockedOpen = lifecycleCanvas.LoadDesignFile(
+			lifecyclePath, &lifecycleError);
+		auto blockedRecovery = lifecycleCanvas.RestoreRecoveredDocument(
+			cleanBranchDocument);
+		auto lifecycleCancel =
+			lifecycleCanvas.CancelDocumentEditTransaction();
+		AppendFailure(failures,
+			lifecycleBegin.State == DesignerDocumentTransactionState::Begun
+			&& blockedSave.State
+				== DesignerDocumentTransactionState::Rejected
+			&& blockedNew.State
+				== DesignerDocumentTransactionState::Rejected
+			&& blockedOpen.State
+				== DesignerDocumentTransactionState::Rejected
+			&& blockedRecovery.State
+				== DesignerDocumentTransactionState::Rejected
+			&& lifecycleCancel.State
+				== DesignerDocumentTransactionState::Canceled
+			&& lifecycleCanvas.GetCurrentDocumentStateId()
+				== beforeInvalidStateId,
+			L"document lifecycle: active transaction did not reject replacement operations");
+
+		auto successfulOpen = lifecycleCanvas.LoadDesignFile(
+			lifecyclePath, &lifecycleError);
+		DesignerModel::DesignDocument openedDocument;
+		std::wstring openedError;
+		AppendFailure(failures,
+			successfulOpen.Succeeded()
+			&& !lifecycleCanvas.IsDocumentDirty()
+			&& lifecycleCanvas.GetCurrentDocumentStateId()
+				== lifecycleCanvas.GetSavedDocumentStateId()
+			&& lifecycleCanvas.BuildDesignDocument(
+				openedDocument, &openedError)
+			&& openedDocument == cleanBranchDocument
+			&& IsUnchanged(lifecycleCanvas.UndoCommand()),
+			L"document lifecycle: successful open did not reset clean history");
+
+		auto recoveredDocument = lifecycleCanvas.RestoreRecoveredDocument(
+			cleanBranchDocument);
+		DesignerModel::DesignDocument recoveredDocumentModel;
+		std::wstring recoveredDocumentError;
+		AppendFailure(failures,
+			recoveredDocument.Succeeded()
+			&& lifecycleCanvas.IsDocumentDirty()
+			&& lifecycleCanvas.GetCurrentDocumentStateId()
+				!= lifecycleCanvas.GetSavedDocumentStateId()
+			&& lifecycleCanvas.BuildDesignDocument(
+				recoveredDocumentModel, &recoveredDocumentError)
+			&& recoveredDocumentModel == cleanBranchDocument
+			&& IsUnchanged(lifecycleCanvas.UndoCommand())
+			&& lifecycleCanvas.GetLastCommandOperation() == L"Undo",
+			L"document lifecycle: recovered document was not an undo-free dirty baseline");
+
+		(void)lifecycleCanvas.AddControlToCanvas(
+			UIClass::UI_Button, POINT{ 300, 260 });
+		const auto dirtyBeforeFailedSave =
+			lifecycleCanvas.GetCurrentDocumentStateId();
+		wchar_t tempDirectory[MAX_PATH]{};
+		(void)::GetTempPathW(MAX_PATH, tempDirectory);
+		std::wstring failedSaveError;
+		auto failedSave = lifecycleCanvas.SaveDesignFile(
+			tempDirectory, &failedSaveError);
+		AppendFailure(failures,
+			failedSave.State == DesignerDocumentTransactionState::Failed
+			&& !failedSaveError.empty()
+			&& lifecycleCanvas.IsDocumentDirty()
+			&& lifecycleCanvas.GetCurrentDocumentStateId()
+				== dirtyBeforeFailedSave,
+			L"document lifecycle: failed save cleared dirty state");
+
+		auto newDocument = lifecycleCanvas.CreateNewDocument();
+		DesignerModel::DesignDocument newDocumentModel;
+		std::wstring newDocumentError;
+		AppendFailure(failures,
+			newDocument.Succeeded()
+			&& !lifecycleCanvas.IsDocumentDirty()
+			&& lifecycleCanvas.GetAllControls().empty()
+			&& lifecycleCanvas.BuildDesignDocument(
+				newDocumentModel, &newDocumentError)
+			&& newDocumentModel.Nodes.empty()
+			&& newDocumentModel.Form.Name == L"MainForm"
+			&& newDocumentModel.Form.Text == L"Form"
+			&& IsUnchanged(lifecycleCanvas.UndoCommand()),
+			L"document lifecycle: new document did not restore defaults and clean history");
+	}
+
+	DesignerCanvas failedRestoreCanvas(0, 0, 800, 640);
+	size_t failedCommandEventCount = 0;
+	DesignerCanvasCommandEventArgs lastFailedCommandEvent;
+	failedRestoreCanvas.OnCommandCompleted +=
+		[&failedCommandEventCount, &lastFailedCommandEvent](
+			const DesignerCanvasCommandEventArgs& args)
+		{
+			++failedCommandEventCount;
+			lastFailedCommandEvent = args;
+		};
+	failedRestoreCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 120, 120 });
+	DesignerModel::DesignDocument validDocument;
+	std::wstring captureError;
+	const bool captured = failedRestoreCanvas.BuildDesignDocument(
+		validDocument, &captureError);
+	AppendFailure(failures, captured && validDocument.Nodes.size() == 1,
+		L"failed undo: could not capture valid setup document");
+	if (captured && validDocument.Nodes.size() == 1)
+	{
+		auto invalidDocument = validDocument;
+		invalidDocument.Nodes.push_back(validDocument.Nodes.front());
+		const auto controlName = validDocument.Nodes.front().Name;
+		auto command = std::make_unique<DocumentSnapshotCommand>(
+			&failedRestoreCanvas,
+			std::move(invalidDocument),
+			validDocument,
+			std::vector<std::wstring>{ controlName },
+			std::vector<std::wstring>{ controlName },
+			controlName,
+			controlName,
+			L"InvalidUndoProbe",
+			true);
+		auto probeResult =
+			failedRestoreCanvas.ExecuteCommand(std::move(command));
+		AppendFailure(failures,
+			probeResult.HasChanges()
+			&& failedCommandEventCount == 1
+			&& lastFailedCommandEvent.Operation == L"ExecuteCommand"
+			&& lastFailedCommandEvent.Label == L"InvalidUndoProbe",
+			L"failed undo: probe command did not enter history");
+		auto failedUndoResult = failedRestoreCanvas.UndoCommand();
+		AppendFailure(failures,
+			failedUndoResult.State
+				== DesignerDocumentTransactionState::Failed
+			&& failedUndoResult.DocumentRestored
+			&& !failedUndoResult.Error.empty()
+			&& failedCommandEventCount == 2
+			&& lastFailedCommandEvent.Operation == L"Undo"
+			&& lastFailedCommandEvent.Label == L"InvalidUndoProbe"
+			&& lastFailedCommandEvent.Result.DocumentRestored,
+			L"failed undo: failure details were not retained and published");
+		AppendFailure(failures,
+			failedRestoreCanvas.GetAllControls().size() == 1
+				&& failedRestoreCanvas.GetAllControls().front()->Name == controlName
+				&& failedRestoreCanvas.GetSelectedControl()
+				&& failedRestoreCanvas.GetSelectedControl()->Name == controlName,
+			L"failed undo: current document or selection was not rolled back");
+		auto redoAfterFailedUndo = failedRestoreCanvas.RedoCommand();
+		AppendFailure(failures,
+			IsUnchanged(redoAfterFailedUndo)
+			&& failedCommandEventCount == 3
+			&& lastFailedCommandEvent.Operation == L"Redo"
+			&& lastFailedCommandEvent.Label.empty(),
+			L"failed undo: command was incorrectly moved to redo history");
+		auto repeatedFailedUndo = failedRestoreCanvas.UndoCommand();
+		AppendFailure(failures,
+			repeatedFailedUndo.State
+				== DesignerDocumentTransactionState::Failed
+			&& repeatedFailedUndo.DocumentRestored
+			&& failedCommandEventCount == 4
+			&& lastFailedCommandEvent.Operation == L"Undo"
+			&& lastFailedCommandEvent.Label == L"InvalidUndoProbe",
+			L"failed undo: failed command was not retained on undo history");
+		AppendFailure(failures,
+			failedRestoreCanvas.GetAllControls().size() == 1
+				&& failedRestoreCanvas.GetAllControls().front()->Name == controlName,
+			L"failed undo: repeated failure did not preserve current document");
+	}
+
+	if (failures.empty())
+	{
+		report = L"Designer interaction self-test passed.";
+		return true;
+	}
+
+	report.clear();
+	for (const auto& failure : failures)
+	{
+		if (!report.empty()) report += L"\r\n";
+		report += L"- " + failure;
+	}
+	return false;
+}

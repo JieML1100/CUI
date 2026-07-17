@@ -2093,6 +2093,9 @@ int GridView::HitTestNewRow(int x, int y, int& outColumnIndex)
 void GridView::AddNewRow()
 {
 	if (!this->AllowUserToAddRows) return;
+	bool cancel = false;
+	this->OnUserAddingRow(this, cancel);
+	if (cancel) return;
 
 	// 创建新行
 	GridViewRow newRow;

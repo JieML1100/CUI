@@ -1,4 +1,5 @@
 #include "TestRunner.h"
+#include <AnchorPickerPopup.h>
 #include <Button.h>
 #include <CheckBox.h>
 #include <CalendarView.h>
@@ -21,6 +22,7 @@
 #include <Layout/WrapPanel.h>
 #include <ListView.h>
 #include <LinkLabel.h>
+#include <LoadingRing.h>
 #include <MediaPlayer.h>
 #include <Menu.h>
 #include <NavigationView.h>
@@ -31,7 +33,9 @@
 #include <Panel.h>
 #include <PasswordBox.h>
 #include <ProgressBar.h>
+#include <ProgressRing.h>
 #include <PropertyGrid.h>
+#include <PictureBox.h>
 #include <RadioBox.h>
 #include <ScrollView.h>
 #include <Slider.h>
@@ -46,16 +50,39 @@
 #include <TreeView.h>
 #include <WebBrowser.h>
 #include "../CuiDesigner/DesignerBindingUtils.h"
+#include "../CuiDesigner/DesignerCore/CommandManager.h"
+#include "../CuiDesigner/DesignerControlPropertyCatalog.h"
 #include "../CuiDesigner/DesignerDataContextSchemaUtils.h"
+#include "../CuiDesigner/DesignerFormPropertyCatalog.h"
+#include "../CuiDesigner/DesignerCustomEditorCatalog.h"
 #include "../CuiDesigner/DesignerPropertyCatalog.h"
+#include "../CuiDesigner/DesignerPropertyEdit.h"
+#include "../CuiDesigner/DesignerPropertyRowCatalog.h"
 #include "../CuiDesigner/DesignerStyleSheetUtils.h"
 #include "../CuiDesigner/CodeGenInput.h"
 #include "../CuiDesigner/CodeGenerator.h"
+#include "../CuiDesigner/DesignerEventCatalog.h"
+#include "../CuiDesigner/DesignerModel/AtomicFile.h"
+#include "../CuiDesigner/DesignerModel/DesignCodeGenerationService.h"
+#include "../CuiDesigner/DesignerModel/DesignDocumentControlPool.h"
+#include "../CuiDesigner/DesignerModel/DesignDocumentGraph.h"
+#include "../CuiDesigner/DesignerModel/DesignDocumentEventIndex.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentSerializer.h"
+#include "../CuiDesigner/DesignerModel/DesignDocumentCodeGenInputBuilder.h"
+#include "../CuiDesigner/DesignerModel/RuntimeDocument.h"
+#include "../CuiDesigner/DesignerModel/XamlDocumentParser.h"
+#include "../CuiDesigner/DesignerModel/XamlDocumentSerializer.h"
+#include "../CuiDesigner/DesignerModel/DesignRecoveryStore.h"
+#include <algorithm>
+#include <chrono>
 #include <concepts>
+#include <cwctype>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <oleacc.h>
+#include <set>
 #include <uiautomationclient.h>
 
 static_assert(std::same_as<
@@ -367,6 +394,16 @@ int main()
 {
     cui::test::Runner runner;
 
+	runner.Add("Control render decorator is explicit host-owned state", []
+	{
+		Control control;
+		CUI_EXPECT_FALSE(control.HasRenderDecorator());
+		control.SetRenderDecorator([](Control&, D2DGraphics&) {});
+		CUI_EXPECT_TRUE(control.HasRenderDecorator());
+		control.SetRenderDecorator({});
+		CUI_EXPECT_FALSE(control.HasRenderDecorator());
+	});
+
     runner.Add("Runner assertions remain active", []
     {
         bool failureObserved = false;
@@ -389,6 +426,414 @@ int main()
         CUI_EXPECT_FALSE(evaluationCount == 0);
         CUI_EXPECT_NEAR(0.3, 0.1 + 0.2, 1.0e-12);
     });
+
+	runner.Add("Designer command history preserves failed undo and redo entries", []
+	{
+		class ProbeCommand final : public IDesignerCommand
+		{
+		public:
+			ProbeCommand(int* state, bool failUndo, bool failRedo)
+				: _state(state), _failUndo(failUndo), _failRedo(failRedo)
+			{
+			}
+
+			DesignerDocumentTransactionResult Execute() override
+			{
+				++_executeCount;
+				if (_executeCount > 1 && _failRedo)
+					return DesignerDocumentTransactionResult::Failure(
+						DesignerDocumentTransactionState::Failed,
+						L"probe redo failed");
+				if (_state) ++*_state;
+				return DesignerDocumentTransactionResult::Success(
+					DesignerDocumentTransactionState::Committed);
+			}
+
+			DesignerDocumentTransactionResult Undo() override
+			{
+				if (_failUndo)
+					return DesignerDocumentTransactionResult::Failure(
+						DesignerDocumentTransactionState::Failed,
+						L"probe undo failed");
+				if (_state) --*_state;
+				return DesignerDocumentTransactionResult::Success(
+					DesignerDocumentTransactionState::Committed);
+			}
+
+			std::wstring GetLabel() const override
+			{
+				return L"Probe";
+			}
+
+		private:
+			int* _state = nullptr;
+			bool _failUndo = false;
+			bool _failRedo = false;
+			int _executeCount = 0;
+		};
+
+		int failedUndoState = 0;
+		CommandManager failedUndo;
+		auto executeFailedUndo = failedUndo.Execute(
+			std::make_unique<ProbeCommand>(
+				&failedUndoState, true, false));
+		CUI_EXPECT_TRUE(executeFailedUndo.HasChanges());
+		const auto failedUndoStateId = failedUndo.GetCurrentStateId();
+		const auto failedUndoMemory = failedUndo.GetHistoryMemoryUsage();
+		CUI_EXPECT_TRUE(failedUndo.IsDirty());
+		CUI_EXPECT_EQ(1, failedUndoState);
+		CUI_EXPECT_TRUE(failedUndo.GetUndoLabel() == L"Probe");
+		auto failedUndoResult = failedUndo.Undo();
+		CUI_EXPECT_FALSE(failedUndoResult.Succeeded());
+		CUI_EXPECT_TRUE(failedUndoResult.Error == L"probe undo failed");
+		CUI_EXPECT_TRUE(failedUndoResult.DocumentRestored);
+		CUI_EXPECT_EQ(1, failedUndoState);
+		CUI_EXPECT_EQ(1ULL, failedUndo.GetUndoCount());
+		CUI_EXPECT_EQ(0ULL, failedUndo.GetRedoCount());
+		CUI_EXPECT_EQ(failedUndoStateId,
+			failedUndo.GetCurrentStateId());
+		CUI_EXPECT_EQ(failedUndoMemory,
+			failedUndo.GetHistoryMemoryUsage());
+
+		int failedRedoState = 0;
+		CommandManager failedRedo;
+		CUI_EXPECT_TRUE(failedRedo.Execute(
+			std::make_unique<ProbeCommand>(
+				&failedRedoState, false, true)).HasChanges());
+		CUI_EXPECT_TRUE(failedRedo.Undo().HasChanges());
+		const auto failedRedoStateId = failedRedo.GetCurrentStateId();
+		const auto failedRedoMemory = failedRedo.GetHistoryMemoryUsage();
+		CUI_EXPECT_EQ(0, failedRedoState);
+		CUI_EXPECT_TRUE(failedRedo.GetRedoLabel() == L"Probe");
+		auto failedRedoResult = failedRedo.Redo();
+		CUI_EXPECT_FALSE(failedRedoResult.Succeeded());
+		CUI_EXPECT_TRUE(failedRedoResult.Error == L"probe redo failed");
+		CUI_EXPECT_EQ(0, failedRedoState);
+		CUI_EXPECT_EQ(0ULL, failedRedo.GetUndoCount());
+		CUI_EXPECT_EQ(1ULL, failedRedo.GetRedoCount());
+		CUI_EXPECT_EQ(failedRedoStateId,
+			failedRedo.GetCurrentStateId());
+		CUI_EXPECT_EQ(failedRedoMemory,
+			failedRedo.GetHistoryMemoryUsage());
+
+		int successState = 0;
+		CommandManager success;
+		CUI_EXPECT_TRUE(success.Execute(
+			std::make_unique<ProbeCommand>(
+				&successState, false, false)).HasChanges());
+		CUI_EXPECT_TRUE(success.Undo().HasChanges());
+		CUI_EXPECT_EQ(0, successState);
+		CUI_EXPECT_TRUE(success.Redo().HasChanges());
+		CUI_EXPECT_EQ(1, successState);
+		CUI_EXPECT_TRUE(success.IsDirty());
+		success.MarkSaved();
+		const auto savedStateId = success.GetSavedStateId();
+		CUI_EXPECT_EQ(savedStateId, success.GetCurrentStateId());
+		CUI_EXPECT_FALSE(success.IsDirty());
+		CUI_EXPECT_TRUE(success.Undo().HasChanges());
+		CUI_EXPECT_TRUE(success.IsDirty());
+		CUI_EXPECT_TRUE(success.Redo().HasChanges());
+		CUI_EXPECT_FALSE(success.IsDirty());
+		CUI_EXPECT_TRUE(success.Undo().HasChanges());
+		CUI_EXPECT_TRUE(success.Execute(
+			std::make_unique<ProbeCommand>(
+				&successState, false, false)).HasChanges());
+		CUI_EXPECT_EQ(1, successState);
+		CUI_EXPECT_TRUE(success.IsDirty());
+		CUI_EXPECT_TRUE(savedStateId != success.GetCurrentStateId());
+		CUI_EXPECT_EQ(0ULL, success.GetRedoCount());
+		const auto branchStateId = success.GetCurrentStateId();
+		success.Clear();
+		CUI_EXPECT_FALSE(success.IsDirty());
+		CUI_EXPECT_TRUE(branchStateId != success.GetCurrentStateId());
+		CUI_EXPECT_EQ(success.GetCurrentStateId(),
+			success.GetSavedStateId());
+		CUI_EXPECT_EQ(0ULL, success.GetUndoCount());
+		CUI_EXPECT_EQ(0ULL, success.GetRedoCount());
+		success.ResetAsUnsaved();
+		CUI_EXPECT_TRUE(success.IsDirty());
+		CUI_EXPECT_TRUE(success.GetCurrentStateId()
+			!= success.GetSavedStateId());
+		CUI_EXPECT_EQ(0ULL, success.GetUndoCount());
+		CUI_EXPECT_EQ(0ULL, success.GetRedoCount());
+		success.MarkSaved();
+		CUI_EXPECT_FALSE(success.IsDirty());
+
+		CommandManager empty;
+		CUI_EXPECT_FALSE(empty.IsDirty());
+		CUI_EXPECT_TRUE(empty.Undo().State
+			== DesignerDocumentTransactionState::Unchanged);
+		CUI_EXPECT_TRUE(empty.Redo().State
+			== DesignerDocumentTransactionState::Unchanged);
+	});
+
+	runner.Add("Designer recovery snapshots are atomic isolated and versioned", []
+	{
+		wchar_t temporaryDirectory[MAX_PATH]{};
+		CUI_EXPECT_TRUE(::GetTempPathW(
+			MAX_PATH, temporaryDirectory) != 0);
+		const auto processStart =
+			DesignerModel::DesignRecoveryStore::GetCurrentProcessStartTime();
+		const auto recoveryPath =
+			DesignerModel::DesignRecoveryStore::MakeSessionFilePath(
+				temporaryDirectory,
+				::GetCurrentProcessId(),
+				processStart + ::GetTickCount64());
+		(void)DesignerModel::DesignRecoveryStore::DeleteFile(recoveryPath);
+
+		DesignerModel::DesignRecoverySnapshot expected;
+		expected.OwnerProcessId = ::GetCurrentProcessId();
+		expected.OwnerProcessStartTime = processStart;
+		expected.OriginalFilePath = L"C:\\设计\\窗口.cui.xml";
+		expected.Document.Form.Text = L"恢复窗口";
+		expected.Document.Form.Size = { 987, 654 };
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::DesignRecoveryStore::SaveToFile(
+			expected, recoveryPath, &error));
+		CUI_EXPECT_TRUE(error.empty());
+
+		DesignerModel::DesignRecoverySnapshot loaded;
+		CUI_EXPECT_TRUE(DesignerModel::DesignRecoveryStore::LoadFromFile(
+			recoveryPath, loaded, &error));
+		CUI_EXPECT_EQ(expected.OwnerProcessId, loaded.OwnerProcessId);
+		CUI_EXPECT_EQ(expected.OwnerProcessStartTime,
+			loaded.OwnerProcessStartTime);
+		CUI_EXPECT_TRUE(expected.OriginalFilePath == loaded.OriginalFilePath);
+		CUI_EXPECT_TRUE(expected.Document == loaded.Document);
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignRecoveryStore::IsOwnerProcessRunning(loaded));
+		loaded.OwnerProcessId = 0;
+		CUI_EXPECT_FALSE(
+			DesignerModel::DesignRecoveryStore::IsOwnerProcessRunning(loaded));
+
+		auto replacement = expected;
+		replacement.Document.Form.Text = L"不应覆盖";
+		const HANDLE locked = ::CreateFileW(
+			recoveryPath.c_str(), GENERIC_READ, 0, nullptr,
+			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		CUI_EXPECT_TRUE(locked != INVALID_HANDLE_VALUE);
+		if (locked != INVALID_HANDLE_VALUE)
+		{
+			CUI_EXPECT_FALSE(DesignerModel::DesignRecoveryStore::SaveToFile(
+				replacement, recoveryPath, &error));
+			CUI_EXPECT_FALSE(error.empty());
+			(void)::CloseHandle(locked);
+		}
+		DesignerModel::DesignRecoverySnapshot afterLockedSave;
+		CUI_EXPECT_TRUE(DesignerModel::DesignRecoveryStore::LoadFromFile(
+			recoveryPath, afterLockedSave, &error));
+		CUI_EXPECT_TRUE(afterLockedSave.Document == expected.Document);
+		WIN32_FIND_DATAW temporaryData{};
+		const HANDLE temporaryFind = ::FindFirstFileW(
+			(recoveryPath + L".~cui-*.tmp").c_str(), &temporaryData);
+		CUI_EXPECT_TRUE(temporaryFind == INVALID_HANDLE_VALUE);
+		if (temporaryFind != INVALID_HANDLE_VALUE)
+			(void)::FindClose(temporaryFind);
+
+		std::vector<DesignerModel::DesignRecoveryFile> recoveryFiles;
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignRecoveryStore::EnumerateRecoveryFiles(
+				temporaryDirectory, recoveryFiles, &error));
+		CUI_EXPECT_TRUE(std::any_of(
+			recoveryFiles.begin(), recoveryFiles.end(),
+			[&](const auto& file) { return file.Path == recoveryPath; }));
+
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			recoveryPath, "invalid recovery envelope", &error));
+		DesignerModel::DesignRecoverySnapshot unchanged;
+		unchanged.OriginalFilePath = L"sentinel";
+		CUI_EXPECT_FALSE(DesignerModel::DesignRecoveryStore::LoadFromFile(
+			recoveryPath, unchanged, &error));
+		CUI_EXPECT_TRUE(unchanged.OriginalFilePath == L"sentinel");
+		CUI_EXPECT_FALSE(error.empty());
+		std::wstring quarantinedPath;
+		CUI_EXPECT_TRUE(DesignerModel::DesignRecoveryStore::QuarantineFile(
+			recoveryPath, &quarantinedPath, &error));
+		CUI_EXPECT_FALSE(quarantinedPath.empty());
+		CUI_EXPECT_TRUE(::GetFileAttributesW(quarantinedPath.c_str())
+			!= INVALID_FILE_ATTRIBUTES);
+		CUI_EXPECT_TRUE(DesignerModel::DesignRecoveryStore::DeleteFile(
+			quarantinedPath, &error));
+		CUI_EXPECT_TRUE(DesignerModel::DesignRecoveryStore::DeleteFile(
+			recoveryPath, &error));
+	});
+
+	runner.Add("Designer history coalesces safely and enforces a memory budget", []
+	{
+		class MergeProbeCommand final : public IDesignerCommand
+		{
+		public:
+			MergeProbeCommand(
+				int* state,
+				int after,
+				std::wstring key,
+				size_t bytes = 100)
+				: _state(state),
+				  _before(state ? *state : 0),
+				  _after(after),
+				  _key(std::move(key)),
+				  _bytes(bytes)
+			{
+			}
+
+			DesignerDocumentTransactionResult Execute() override
+			{
+				if (_state) *_state = _after;
+				return DesignerDocumentTransactionResult::Success(
+					DesignerDocumentTransactionState::Committed);
+			}
+
+			DesignerDocumentTransactionResult Undo() override
+			{
+				if (_state) *_state = _before;
+				return DesignerDocumentTransactionResult::Success(
+					DesignerDocumentTransactionState::Committed);
+			}
+
+			std::wstring GetLabel() const override { return _key; }
+
+			bool TryMergeWith(IDesignerCommand& command) noexcept override
+			{
+				auto* newer = dynamic_cast<MergeProbeCommand*>(&command);
+				if (!newer || newer->_state != _state
+					|| newer->_key != _key || _after != newer->_before)
+					return false;
+				_after = newer->_after;
+				_bytes = newer->_bytes;
+				return true;
+			}
+
+			size_t GetEstimatedMemoryUsage() const noexcept override
+			{
+				return _bytes;
+			}
+
+		private:
+			int* _state = nullptr;
+			int _before = 0;
+			int _after = 0;
+			std::wstring _key;
+			size_t _bytes = 0;
+		};
+
+		int mergedState = 0;
+		CommandManager merged;
+		CUI_EXPECT_TRUE(merged.Execute(
+			std::make_unique<MergeProbeCommand>(
+				&mergedState, 1, L"Property:X", 100)).HasChanges());
+		const auto firstMergedStateId = merged.GetCurrentStateId();
+		CUI_EXPECT_TRUE(merged.Execute(
+			std::make_unique<MergeProbeCommand>(
+				&mergedState, 2, L"Property:X", 150)).HasChanges());
+		CUI_EXPECT_EQ(2, mergedState);
+		CUI_EXPECT_EQ(1ULL, merged.GetUndoCount());
+		CUI_EXPECT_EQ(150ULL, merged.GetHistoryMemoryUsage());
+		CUI_EXPECT_TRUE(firstMergedStateId != merged.GetCurrentStateId());
+		CUI_EXPECT_TRUE(merged.Undo().HasChanges());
+		CUI_EXPECT_EQ(0, mergedState);
+		CUI_EXPECT_TRUE(merged.Redo().HasChanges());
+		CUI_EXPECT_EQ(2, mergedState);
+
+		int savedState = 0;
+		CommandManager savedBoundary;
+		CUI_EXPECT_TRUE(savedBoundary.Execute(
+			std::make_unique<MergeProbeCommand>(
+				&savedState, 1, L"Property:X")).HasChanges());
+		savedBoundary.MarkSaved();
+		const auto exactSavedStateId = savedBoundary.GetSavedStateId();
+		CUI_EXPECT_TRUE(savedBoundary.Execute(
+			std::make_unique<MergeProbeCommand>(
+				&savedState, 2, L"Property:X")).HasChanges());
+		CUI_EXPECT_EQ(2ULL, savedBoundary.GetUndoCount());
+		CUI_EXPECT_TRUE(savedBoundary.IsDirty());
+		CUI_EXPECT_TRUE(savedBoundary.Undo().HasChanges());
+		CUI_EXPECT_EQ(1, savedState);
+		CUI_EXPECT_FALSE(savedBoundary.IsDirty());
+		CUI_EXPECT_EQ(exactSavedStateId,
+			savedBoundary.GetCurrentStateId());
+
+		int branchState = 0;
+		CommandManager branch;
+		CUI_EXPECT_TRUE(branch.Execute(
+			std::make_unique<MergeProbeCommand>(
+				&branchState, 1, L"Property:X")).HasChanges());
+		CUI_EXPECT_TRUE(branch.Execute(
+			std::make_unique<MergeProbeCommand>(
+				&branchState, 2, L"Property:Y")).HasChanges());
+		CUI_EXPECT_TRUE(branch.Undo().HasChanges());
+		CUI_EXPECT_TRUE(branch.Execute(
+			std::make_unique<MergeProbeCommand>(
+				&branchState, 2, L"Property:X")).HasChanges());
+		CUI_EXPECT_EQ(2ULL, branch.GetUndoCount());
+		CUI_EXPECT_EQ(0ULL, branch.GetRedoCount());
+
+		int budgetState = 0;
+		CommandManager budget;
+		budget.SetHistoryMemoryLimit(250);
+		for (int value = 1; value <= 3; ++value)
+			CUI_EXPECT_TRUE(budget.Execute(
+				std::make_unique<MergeProbeCommand>(
+					&budgetState, value,
+					L"Distinct:" + std::to_wstring(value), 100)).HasChanges());
+		CUI_EXPECT_EQ(2ULL, budget.GetUndoCount());
+		CUI_EXPECT_EQ(200ULL, budget.GetHistoryMemoryUsage());
+		CUI_EXPECT_EQ(250ULL, budget.GetHistoryMemoryLimit());
+		CUI_EXPECT_TRUE(budget.Undo().HasChanges());
+		CUI_EXPECT_EQ(2, budgetState);
+		CUI_EXPECT_TRUE(budget.Undo().HasChanges());
+		CUI_EXPECT_EQ(1, budgetState);
+		CUI_EXPECT_TRUE(budget.Undo().State
+			== DesignerDocumentTransactionState::Unchanged);
+
+		int oversizedState = 0;
+		CommandManager oversized;
+		oversized.SetHistoryMemoryLimit(100);
+		CUI_EXPECT_TRUE(oversized.Execute(
+			std::make_unique<MergeProbeCommand>(
+				&oversizedState, 1, L"Large", 500)).HasChanges());
+		CUI_EXPECT_EQ(1ULL, oversized.GetUndoCount());
+		CUI_EXPECT_EQ(500ULL, oversized.GetHistoryMemoryUsage());
+
+		int redoState = 0;
+		CommandManager redoBudget;
+		redoBudget.SetHistoryMemoryLimit(1000);
+		for (int value = 1; value <= 3; ++value)
+			CUI_EXPECT_TRUE(redoBudget.Execute(
+				std::make_unique<MergeProbeCommand>(
+					&redoState, value,
+					L"Redo:" + std::to_wstring(value), 100)).HasChanges());
+		CUI_EXPECT_TRUE(redoBudget.Undo().HasChanges());
+		CUI_EXPECT_TRUE(redoBudget.Undo().HasChanges());
+		CUI_EXPECT_TRUE(redoBudget.Undo().HasChanges());
+		redoBudget.SetHistoryMemoryLimit(150);
+		CUI_EXPECT_EQ(0ULL, redoBudget.GetUndoCount());
+		CUI_EXPECT_EQ(1ULL, redoBudget.GetRedoCount());
+		CUI_EXPECT_EQ(100ULL, redoBudget.GetHistoryMemoryUsage());
+		CUI_EXPECT_TRUE(redoBudget.Redo().HasChanges());
+		CUI_EXPECT_EQ(1, redoState);
+
+		int pressureState = 0;
+		CommandManager pressure;
+		pressure.SetHistoryMemoryLimit(500);
+		for (int value = 1; value <= 1000; ++value)
+		{
+			CUI_EXPECT_TRUE(pressure.Execute(
+				std::make_unique<MergeProbeCommand>(
+					&pressureState, value,
+					L"Pressure:" + std::to_wstring(value), 100)).HasChanges());
+			if (value == 500) pressure.MarkSaved();
+		}
+		CUI_EXPECT_EQ(1000, pressureState);
+		CUI_EXPECT_EQ(5ULL, pressure.GetUndoCount());
+		CUI_EXPECT_EQ(500ULL, pressure.GetHistoryMemoryUsage());
+		CUI_EXPECT_TRUE(pressure.IsDirty());
+		for (int step = 0; step < 5; ++step)
+			CUI_EXPECT_TRUE(pressure.Undo().HasChanges());
+		CUI_EXPECT_EQ(995, pressureState);
+		CUI_EXPECT_TRUE(pressure.IsDirty());
+		CUI_EXPECT_TRUE(pressure.Undo().State
+			== DesignerDocumentTransactionState::Unchanged);
+	});
 
     runner.Add("DIP rectangles normalize and clip", []
     {
@@ -839,6 +1284,33 @@ int main()
 		CUI_EXPECT_TRUE(apiParent.Children.empty());
 	});
 
+	runner.Add("Form transactional root insertion preserves caller ownership", []
+	{
+		Form form(L"transactional roots", POINT{ 0, 0 }, SIZE{ 240, 120 });
+		std::unique_ptr<Control> first = std::make_unique<Control>();
+		auto* firstRaw = first.get();
+		CUI_EXPECT_TRUE(form.TryInsertOwned(0, first));
+		CUI_EXPECT_FALSE(first);
+		CUI_EXPECT_EQ(0, form.IndexOfControl(firstRaw));
+		CUI_EXPECT_TRUE(firstRaw->ParentForm == &form);
+
+		auto detached = form.DetachControl(firstRaw);
+		CUI_EXPECT_TRUE(detached.get() == firstRaw);
+		CUI_EXPECT_TRUE(firstRaw->ParentForm == nullptr);
+		CUI_EXPECT_FALSE(form.TryInsertOwned(2, detached));
+		CUI_EXPECT_TRUE(detached.get() == firstRaw);
+		CUI_EXPECT_TRUE(form.Controls.empty());
+
+		std::unique_ptr<Control> prefix = std::make_unique<Control>();
+		auto* prefixRaw = prefix.get();
+		CUI_EXPECT_TRUE(form.TryInsertOwned(0, prefix));
+		CUI_EXPECT_TRUE(form.TryInsertOwned(0, detached));
+		CUI_EXPECT_EQ(0, form.IndexOfControl(firstRaw));
+		CUI_EXPECT_EQ(1, form.IndexOfControl(prefixRaw));
+		CUI_EXPECT_TRUE(form.DetachControl(firstRaw).get() == firstRaw);
+		CUI_EXPECT_EQ(0, form.IndexOfControl(prefixRaw));
+	});
+
 	runner.Add("Collection-backed controls stay coherent under direct mutation", []
 	{
 		ComboBox combo(L"", 0, 0, 180, 28);
@@ -1215,6 +1687,154 @@ int main()
 		listBox.GetVisibleItemRange(start, end);
 		CUI_EXPECT_EQ(0, start);
 		CUI_EXPECT_EQ(5, end);
+	});
+
+	runner.Add("ListView incremental batches keep identity and selection bounded", []
+	{
+		ListView list(0, 0, 320, 160);
+		list.ViewMode = ListViewViewMode::Details;
+		list.AddItem(ListViewItem(L"Selected"));
+		CUI_EXPECT_TRUE(list.SelectItem(0));
+		const uint32_t selectedId = list.Items[0].AccessibilityId;
+		CUI_EXPECT_TRUE(selectedId != 0);
+
+		size_t itemChanges = 0;
+		size_t columnChanges = 0;
+		bool observerSawReadyIndex = false;
+		bool columnObserverSawReset = false;
+		auto itemConnection = list.Items.Changed.Subscribe(
+			[&](ListView::ItemCollection*, const CollectionChangedEventArgs& change)
+			{
+				++itemChanges;
+				uint32_t lastId = 0;
+				observerSawReadyIndex = change.Action == CollectionChangeAction::Reset
+					&& list.SelectedIndex == 0
+					&& list.TryGetAccessibilityVirtualChildAt(
+						0, list.Columns.size() + list.Items.size() - 1, lastId)
+					&& lastId == list.Items.back().AccessibilityId;
+			});
+		auto columnConnection = list.Columns.Changed.Subscribe(
+			[&](ListView::ColumnCollection*, const CollectionChangedEventArgs& change)
+			{
+				++columnChanges;
+				columnObserverSawReset =
+					change.Action == CollectionChangeAction::Reset;
+			});
+
+		constexpr int appendCount = 4096;
+		ListViewItem duplicateIdentity = list.Items[0];
+		duplicateIdentity.Selected = false;
+		{
+			auto update = list.DeferUpdates();
+			list.AddColumn(ListViewColumn(L"Name", 160.0f));
+			list.AddColumn(ListViewColumn(L"Value", 120.0f));
+			for (int index = 0; index < appendCount; ++index)
+			{
+				list.AddItem(ListViewItem(
+					L"Item " + std::to_wstring(index)));
+				CUI_EXPECT_EQ(1ULL,
+					list.LastAccessibilityIndexUpdateWork());
+				CUI_EXPECT_TRUE(list.LastSelectionUpdateWork() <= 1);
+			}
+			list.AddItem(duplicateIdentity);
+			CUI_EXPECT_EQ(1ULL,
+				list.LastAccessibilityIndexUpdateWork());
+			CUI_EXPECT_TRUE(list.Items.back().AccessibilityId != selectedId);
+			CUI_EXPECT_EQ(0ULL, itemChanges);
+			CUI_EXPECT_EQ(0ULL, columnChanges);
+			CUI_EXPECT_TRUE(list.IsUpdating());
+			CUI_EXPECT_EQ(selectedId, list.Items[0].AccessibilityId);
+		}
+		CUI_EXPECT_FALSE(list.IsUpdating());
+		CUI_EXPECT_EQ(1ULL, itemChanges);
+		CUI_EXPECT_EQ(1ULL, columnChanges);
+		CUI_EXPECT_TRUE(observerSawReadyIndex);
+		CUI_EXPECT_TRUE(columnObserverSawReset);
+		CUI_EXPECT_EQ(0, list.SelectedIndex);
+		CUI_EXPECT_EQ(selectedId, list.Items[0].AccessibilityId);
+		const size_t beforeNestedBatch = itemChanges;
+		list.BeginUpdate();
+		list.BeginUpdate();
+		list.AddItem(ListViewItem(L"Nested"));
+		list.EndUpdate();
+		CUI_EXPECT_TRUE(list.IsUpdating());
+		CUI_EXPECT_EQ(beforeNestedBatch, itemChanges);
+		list.EndUpdate();
+		CUI_EXPECT_FALSE(list.IsUpdating());
+		CUI_EXPECT_EQ(beforeNestedBatch + 1, itemChanges);
+
+		uint32_t selectedCellId = 0;
+		CUI_EXPECT_TRUE(list.GetAccessibilityVirtualItemAt(
+			0, 1, selectedCellId));
+		CUI_EXPECT_EQ(1ULL, list.MaterializedAccessibilityCellCount());
+
+		const size_t itemCount = list.Items.size();
+		CUI_EXPECT_TRUE(list.Items.Move(0, itemCount - 1));
+		CUI_EXPECT_EQ(static_cast<int>(itemCount - 1), list.SelectedIndex);
+		CUI_EXPECT_EQ(selectedId, list.Items.back().AccessibilityId);
+		uint32_t movedCellId = 0;
+		CUI_EXPECT_TRUE(list.GetAccessibilityVirtualItemAt(
+			static_cast<int>(itemCount - 1), 1, movedCellId));
+		CUI_EXPECT_EQ(selectedCellId, movedCellId);
+		CUI_EXPECT_EQ(itemCount, list.LastAccessibilityIndexUpdateWork());
+		CUI_EXPECT_TRUE(list.LastSelectionUpdateWork() <= 1);
+
+		CUI_EXPECT_TRUE(list.Items.SwapIndices(itemCount - 1, 0));
+		CUI_EXPECT_EQ(0, list.SelectedIndex);
+		CUI_EXPECT_EQ(selectedId, list.Items[0].AccessibilityId);
+		CUI_EXPECT_EQ(2ULL, list.LastAccessibilityIndexUpdateWork());
+		CUI_EXPECT_TRUE(list.LastSelectionUpdateWork() <= 1);
+
+		list.Items.insert(list.Items.begin(), ListViewItem(L"Prefix"));
+		CUI_EXPECT_EQ(1, list.SelectedIndex);
+		CUI_EXPECT_EQ(selectedId, list.Items[1].AccessibilityId);
+		CUI_EXPECT_EQ(list.Items.size(),
+			list.LastAccessibilityIndexUpdateWork());
+		CUI_EXPECT_TRUE(list.RemoveItemAt(1));
+		CUI_EXPECT_EQ(-1, list.SelectedIndex);
+		AccessibilityVirtualNode removed;
+		CUI_EXPECT_FALSE(list.TryGetAccessibilityVirtualNode(
+			selectedId, removed));
+		CUI_EXPECT_FALSE(list.TryGetAccessibilityVirtualNode(
+			selectedCellId, removed));
+		CUI_EXPECT_EQ(0ULL, list.MaterializedAccessibilityCellCount());
+		const uint32_t replacedId = list.Items[5].AccessibilityId;
+		CUI_EXPECT_TRUE(list.Items.Replace(
+			5, ListViewItem(L"Replacement")));
+		CUI_EXPECT_EQ(1ULL, list.LastAccessibilityIndexUpdateWork());
+		CUI_EXPECT_TRUE(list.Items[5].AccessibilityId != 0);
+		CUI_EXPECT_TRUE(list.Items[5].AccessibilityId != replacedId);
+		CUI_EXPECT_FALSE(list.TryGetAccessibilityVirtualNode(
+			replacedId, removed));
+
+		ListView directFlags(0, 0, 240, 120);
+		std::vector<ListViewItem> directValues;
+		for (int index = 0; index < 32; ++index)
+			directValues.emplace_back(L"Direct " + std::to_wstring(index));
+		directFlags.SetItems(std::move(directValues));
+		directFlags.Items[10].Selected = true;
+		directFlags.Items.NotifyReset();
+		CUI_EXPECT_EQ(10, directFlags.SelectedIndex);
+		CUI_EXPECT_EQ(1ULL, directFlags.GetSelectedIndices().size());
+		CUI_EXPECT_EQ(directFlags.Items.size(),
+			directFlags.LastAccessibilityIndexUpdateWork());
+		CUI_EXPECT_EQ(directFlags.Items.size(),
+			directFlags.LastSelectionUpdateWork());
+
+		ListView multiple(0, 0, 240, 120);
+		multiple.SelectionMode = ListViewSelectionMode::Multiple;
+		std::vector<ListViewItem> values{
+			ListViewItem(L"Zero"), ListViewItem(L"One"),
+			ListViewItem(L"Two"), ListViewItem(L"Three") };
+		values[1].Selected = true;
+		values[3].Selected = true;
+		multiple.SetItems(std::move(values));
+		const uint32_t threeId = multiple.Items[3].AccessibilityId;
+		CUI_EXPECT_EQ(1, multiple.SelectedIndex);
+		CUI_EXPECT_TRUE(multiple.Items.Move(3, 0));
+		CUI_EXPECT_EQ(0, multiple.SelectedIndex);
+		CUI_EXPECT_EQ(threeId, multiple.Items[0].AccessibilityId);
+		CUI_EXPECT_EQ(2ULL, multiple.GetSelectedIndices().size());
 	});
 
 	runner.Add("Indexed virtual queries stay coherent on large collections", []
@@ -1599,6 +2219,24 @@ int main()
 			target.GetPropertyValueSource(L"Level"));
 		CUI_EXPECT_EQ(1ULL,
 			target.ClearPropertyValues(ControlPropertyValueSource::Style));
+		CUI_EXPECT_EQ(4, target.GetLevel());
+
+		CUI_EXPECT_TRUE(target.TrySetPropertyValue(
+			L"Level", BindingValue(6), ControlPropertyValueSource::Style));
+		CUI_EXPECT_TRUE(target.TrySetPropertyValue(L"Level", BindingValue(8)));
+		CUI_EXPECT_TRUE(target.TrySetPropertyBaseValue(
+			L"Level", BindingValue(7)));
+		CUI_EXPECT_EQ(8, target.GetLevel());
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(
+			L"Level", ControlPropertyValueSource::Local));
+		CUI_EXPECT_EQ(6, target.GetLevel());
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(
+			L"Level", ControlPropertyValueSource::Style));
+		CUI_EXPECT_EQ(7, target.GetLevel());
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Default,
+			target.GetPropertyValueSource(L"Level"));
+		CUI_EXPECT_TRUE(target.TrySetPropertyBaseValue(
+			L"Level", BindingValue(4)));
 		CUI_EXPECT_EQ(4, target.GetLevel());
 
 		CUI_EXPECT_TRUE(target.TrySetPropertyValue(
@@ -2012,6 +2650,35 @@ int main()
 		CUI_EXPECT_FALSE(DesignerStyleSheetUtils::Validate(invalid, &error));
 	});
 
+	runner.Add("Binding collections find and remove individual target bindings", []
+	{
+		Button target(L"Local", 0, 0);
+		MetadataObservableObject source;
+		source.SetValue(L"Caption", std::wstring(L"Bound"));
+		source.SetValidationError(L"Caption", L"caption is invalid", L"caption");
+		(void)target.ClearPropertyValue(
+			L"Text", ControlPropertyValueSource::Local);
+		auto* binding = target.DataBindings.Add(
+			L"Text", source, L"Caption", BindingMode::OneWay);
+		CUI_EXPECT_TRUE(binding != nullptr);
+		CUI_EXPECT_EQ(binding, target.DataBindings.Find(L"text"));
+		const auto& readOnlyBindings = target.DataBindings;
+		CUI_EXPECT_EQ(binding, readOnlyBindings.Find(L"TEXT"));
+		int validationChanges = 0;
+		auto validationConnection = target.DataBindings.ValidationChanged().Subscribe(
+			[&validationChanges](const BindingValidationChangedEventArgs&)
+			{
+				++validationChanges;
+			});
+		CUI_EXPECT_TRUE(target.DataBindings.Remove(L"tExT"));
+		CUI_EXPECT_EQ(1, validationChanges);
+		CUI_EXPECT_EQ(0ULL, target.DataBindings.Count());
+		CUI_EXPECT_TRUE(target.DataBindings.Find(L"Text") == nullptr);
+		CUI_EXPECT_FALSE(target.DataBindings.Remove(L"Text"));
+		source.SetValue(L"Caption", std::wstring(L"Changed"));
+		CUI_EXPECT_FALSE(target.Text == L"Changed");
+	});
+
 	runner.Add("Designer property catalog projects writable runtime style metadata", []
 	{
 		Button button(L"Catalog", 0, 0);
@@ -2167,6 +2834,841 @@ int main()
 			scrollProperties, L"ScrollXOffset") == nullptr);
 		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(
 			scrollProperties, L"ScrollYOffset") == nullptr);
+	});
+
+	runner.Add("PropertyGrid catalog includes legacy scalars and registered structural editors", []
+	{
+		Button button(L"Metadata panel", 4, 6);
+		auto properties = DesignerPropertyCatalog::GetPropertyGridProperties(button);
+		const auto* text = DesignerPropertyCatalog::Find(properties, L"Text");
+		const auto* enabled = DesignerPropertyCatalog::Find(properties, L"Enable");
+		const auto* enabledAlias = DesignerPropertyCatalog::Find(properties, L"Enabled");
+		const auto* left = DesignerPropertyCatalog::Find(properties, L"Left");
+		const auto* zIndex = DesignerPropertyCatalog::Find(properties, L"ZIndex");
+		CUI_EXPECT_TRUE(text != nullptr);
+		CUI_EXPECT_EQ(ControlPropertyPersistence::Legacy, text->Persistence);
+		CUI_EXPECT_TRUE(enabled != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Enabled"), enabled->DisplayName);
+		CUI_EXPECT_TRUE(enabledAlias == nullptr);
+		CUI_EXPECT_TRUE(left != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"X"), left->DisplayName);
+		CUI_EXPECT_TRUE(zIndex != nullptr);
+
+		GridPanel grid;
+		button.Parent = &grid;
+		properties = DesignerPropertyCatalog::GetPropertyGridProperties(button);
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(properties, L"GridRow") != nullptr);
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(properties, L"DockPosition") == nullptr);
+		DockPanel dock;
+		button.Parent = &dock;
+		properties = DesignerPropertyCatalog::GetPropertyGridProperties(button);
+		const auto* dockPosition = DesignerPropertyCatalog::Find(properties, L"DockPosition");
+		CUI_EXPECT_TRUE(dockPosition != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Dock"), dockPosition->DisplayName);
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(properties, L"GridRow") == nullptr);
+		button.Parent = nullptr;
+
+		LinkLabel link(L"Link", 0, 0);
+		properties = DesignerPropertyCatalog::GetPropertyGridProperties(link);
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(properties, L"Visited") != nullptr);
+
+		LoadingRing loading(0, 0);
+		properties = DesignerPropertyCatalog::GetPropertyGridProperties(loading);
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(properties, L"Active") != nullptr);
+
+		ProgressRing ring(0, 0);
+		properties = DesignerPropertyCatalog::GetPropertyGridProperties(ring);
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(properties, L"PercentageValue") != nullptr);
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(properties, L"ShowPercentage") != nullptr);
+
+		PictureBox picture(0, 0);
+		properties = DesignerPropertyCatalog::GetPropertyGridProperties(picture);
+		const auto* sizeMode = DesignerPropertyCatalog::Find(properties, L"SizeMode");
+		CUI_EXPECT_TRUE(sizeMode != nullptr);
+		CUI_EXPECT_EQ(ControlPropertyEditorKind::Choice, sizeMode->Editor);
+		CUI_EXPECT_EQ(4ULL, sizeMode->Choices.size());
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ApplyValue(
+			picture, L"SizeMode", { DesignerStyleValueKind::Int, L"2" },
+			nullptr, nullptr, &error));
+		CUI_EXPECT_EQ(ImageSizeMode::StretchImage, picture.SizeMode);
+		CUI_EXPECT_TRUE(picture.ResetPropertyValue(L"SizeMode"));
+		CUI_EXPECT_EQ(ImageSizeMode::Zoom, picture.SizeMode);
+
+		DateTimePicker picker;
+		properties = DesignerPropertyCatalog::GetPropertyGridProperties(picker);
+		const auto* mode = DesignerPropertyCatalog::Find(properties, L"Mode");
+		CUI_EXPECT_TRUE(mode != nullptr);
+		CUI_EXPECT_EQ(3ULL, mode->Choices.size());
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(properties, L"AllowModeSwitch") != nullptr);
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(properties, L"Expand") != nullptr);
+
+		TreeView tree(0, 0);
+		properties = DesignerPropertyCatalog::GetPropertyGridProperties(tree);
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(properties, L"SelectedBackColor") != nullptr);
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(
+			properties, L"UnderMouseItemBackColor") != nullptr);
+
+		CUI_EXPECT_FALSE(DesignerCustomEditorCatalog::Register({}));
+		CUI_EXPECT_TRUE(DesignerCustomEditorCatalog::Register({
+			L"Probe", UIClass::UI_Base, L"Edit probe...", 20,
+			DesignerCustomEditorKind::ComboBoxItems }));
+		CUI_EXPECT_TRUE(DesignerCustomEditorCatalog::Register({
+			L"probe", UIClass::UI_Base, L"Edit replacement...", 10,
+			DesignerCustomEditorKind::GridViewColumns }));
+		const auto probeEditors =
+			DesignerCustomEditorCatalog::GetEditors(UIClass::UI_Base);
+		CUI_EXPECT_EQ(1ULL, probeEditors.size());
+		CUI_EXPECT_EQ(std::wstring(L"Edit replacement..."),
+			probeEditors.front().ButtonText);
+		CUI_EXPECT_EQ(DesignerCustomEditorKind::GridViewColumns,
+			probeEditors.front().Kind);
+
+		CUI_EXPECT_EQ(1ULL,
+			DesignerCustomEditorCatalog::GetEditors(UIClass::UI_ComboBox).size());
+		CUI_EXPECT_EQ(1ULL,
+			DesignerCustomEditorCatalog::GetEditors(UIClass::UI_GridView).size());
+		CUI_EXPECT_EQ(1ULL,
+			DesignerCustomEditorCatalog::GetEditors(UIClass::UI_TabControl).size());
+		CUI_EXPECT_EQ(1ULL,
+			DesignerCustomEditorCatalog::GetEditors(UIClass::UI_ToolBar).size());
+		CUI_EXPECT_EQ(1ULL,
+			DesignerCustomEditorCatalog::GetEditors(UIClass::UI_TreeView).size());
+		CUI_EXPECT_EQ(1ULL,
+			DesignerCustomEditorCatalog::GetEditors(UIClass::UI_GridPanel).size());
+		CUI_EXPECT_EQ(1ULL,
+			DesignerCustomEditorCatalog::GetEditors(UIClass::UI_Menu).size());
+		CUI_EXPECT_EQ(1ULL,
+			DesignerCustomEditorCatalog::GetEditors(UIClass::UI_StatusBar).size());
+	});
+
+	runner.Add("Designer property edits share metadata persistence and reset semantics", []
+	{
+		Button button(L"Tracked metadata", 0, 0);
+		DesignerPropertyCatalog::TrackedPropertyValues trackedValues;
+		std::wstring canonicalName;
+		DesignerStyleValue effectiveValue;
+		std::wstring error;
+
+		CUI_EXPECT_TRUE(button.TrySetPropertyValue(
+			L"Round", BindingValue(5.0f), ControlPropertyValueSource::Style));
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ApplyAndTrackValue(
+			button,
+			trackedValues,
+			L"round",
+			{ DesignerStyleValueKind::Float, L"9.25" },
+			&canonicalName,
+			&effectiveValue,
+			&error));
+		CUI_EXPECT_EQ(std::wstring(L"Round"), canonicalName);
+		CUI_EXPECT_EQ(1ULL, trackedValues.size());
+		CUI_EXPECT_EQ(effectiveValue, trackedValues.at(L"Round"));
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Local,
+			button.GetPropertyValueSource(L"Round"));
+
+		trackedValues[L"round"] = {
+			DesignerStyleValueKind::Float, L"stale" };
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ApplyAndTrackValue(
+			button,
+			trackedValues,
+			L"ROUND",
+			{ DesignerStyleValueKind::Float, L"7.5" }));
+		CUI_EXPECT_EQ(1ULL, trackedValues.size());
+		CUI_EXPECT_EQ(std::wstring(L"7.5"), trackedValues.at(L"Round").Text);
+
+		trackedValues[L"margin"] = {
+			DesignerStyleValueKind::Thickness, L"99" };
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ApplyAndTrackValue(
+			button,
+			trackedValues,
+			L"Margin",
+			{ DesignerStyleValueKind::Thickness, L"1, 2" }));
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Local,
+			button.GetPropertyValueSource(L"Margin"));
+		CUI_EXPECT_TRUE(trackedValues.find(L"margin") == trackedValues.end());
+		CUI_EXPECT_EQ(1ULL, trackedValues.size());
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ApplyAndTrackValue(
+			button,
+			trackedValues,
+			L"GridRow",
+			{ DesignerStyleValueKind::Int, L"-4" },
+			nullptr,
+			&effectiveValue));
+		CUI_EXPECT_EQ(0, button.GridRow);
+		CUI_EXPECT_EQ(std::wstring(L"0"), effectiveValue.Text);
+		CUI_EXPECT_EQ(1ULL, trackedValues.size());
+
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ResetAndUntrackValue(
+			button,
+			trackedValues,
+			L"Round",
+			&canonicalName,
+			&effectiveValue,
+			&error));
+		CUI_EXPECT_TRUE(trackedValues.empty());
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Style,
+			button.GetPropertyValueSource(L"Round"));
+		CUI_EXPECT_EQ(std::wstring(L"5"), effectiveValue.Text);
+		// Reset is idempotent when a lower-priority source is already effective.
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ResetAndUntrackValue(
+			button, trackedValues, L"Round"));
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Style,
+			button.GetPropertyValueSource(L"Round"));
+
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ResetAndUntrackValue(
+			button, trackedValues, L"Margin"));
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Default,
+			button.GetPropertyValueSource(L"Margin"));
+		CUI_EXPECT_FALSE(DesignerPropertyCatalog::ApplyAndTrackValue(
+			button,
+			trackedValues,
+			L"Round",
+			{ DesignerStyleValueKind::String, L"invalid" },
+			nullptr,
+			nullptr,
+			&error));
+		CUI_EXPECT_TRUE(trackedValues.empty());
+	});
+
+	runner.Add("Designer form properties use one typed model and reset contract", []
+	{
+		DesignerModel::DesignFormModel form;
+		const auto& properties = DesignerFormPropertyCatalog::GetProperties();
+		CUI_EXPECT_EQ(21ULL, properties.size());
+		std::set<std::wstring> names;
+		for (const auto& property : properties)
+		{
+			auto canonical = property.Name;
+			std::transform(canonical.begin(), canonical.end(), canonical.begin(), towlower);
+			CUI_EXPECT_TRUE(names.insert(std::move(canonical)).second);
+			DesignerStyleValue current;
+			CUI_EXPECT_TRUE(DesignerFormPropertyCatalog::CaptureValue(
+				form, property.Name, current));
+			CUI_EXPECT_EQ(property.DefaultValue, current);
+		}
+
+		DesignerStyleValue effective;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerFormPropertyCatalog::ApplyValue(
+			form, L"width", { DesignerStyleValueKind::Int, L"12" },
+			&effective, &error));
+		CUI_EXPECT_EQ(50, form.Size.cx);
+		CUI_EXPECT_EQ(std::wstring(L"50"), effective.Text);
+		CUI_EXPECT_TRUE(DesignerFormPropertyCatalog::ApplyValue(
+			form, L"HeadHeight", { DesignerStyleValueKind::Int, L"-8" },
+			&effective, &error));
+		CUI_EXPECT_EQ(0, form.HeadHeight);
+		CUI_EXPECT_TRUE(DesignerFormPropertyCatalog::ApplyValue(
+			form, L"FontSize", { DesignerStyleValueKind::Float, L"999" },
+			&effective, &error));
+		CUI_EXPECT_EQ(200.0f, form.FontSize);
+		CUI_EXPECT_TRUE(DesignerFormPropertyCatalog::ApplyValue(
+			form, L"Name", { DesignerStyleValueKind::String, L"" },
+			&effective, &error));
+		CUI_EXPECT_EQ(std::wstring(L"MainForm"), form.Name);
+		CUI_EXPECT_TRUE(DesignerFormPropertyCatalog::ApplyValue(
+			form, L"BackColor",
+			{ DesignerStyleValueKind::Color, L"#80402010" },
+			&effective, &error));
+		CUI_EXPECT_EQ(std::wstring(L"#80402010"), effective.Text);
+		CUI_EXPECT_TRUE(DesignerFormPropertyCatalog::ApplyValue(
+			form, L"Visible", { DesignerStyleValueKind::Bool, L"false" },
+			&effective, &error));
+		CUI_EXPECT_FALSE(form.Visible);
+		CUI_EXPECT_FALSE(DesignerFormPropertyCatalog::ApplyValue(
+			form, L"Visible", { DesignerStyleValueKind::String, L"false" },
+			nullptr, &error));
+		CUI_EXPECT_FALSE(DesignerFormPropertyCatalog::ApplyValue(
+			form, L"Missing", { DesignerStyleValueKind::Int, L"1" },
+			nullptr, &error));
+
+		CUI_EXPECT_TRUE(DesignerFormPropertyCatalog::ResetValue(
+			form, L"Width", &effective, &error));
+		CUI_EXPECT_EQ(800, form.Size.cx);
+		CUI_EXPECT_TRUE(DesignerFormPropertyCatalog::ResetValue(
+			form, L"FontSize", &effective, &error));
+		CUI_EXPECT_EQ(18.0f, form.FontSize);
+		CUI_EXPECT_TRUE(DesignerFormPropertyCatalog::ResetValue(
+			form, L"Visible", &effective, &error));
+		CUI_EXPECT_TRUE(form.Visible);
+
+		form.FontName.clear();
+		form.FontSize = 42.0f;
+		DesignerModel::DesignDocument document;
+		document.Form = form;
+		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument loaded;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			xml, loaded, &error));
+		CUI_EXPECT_TRUE(loaded.Form.FontName.empty());
+		CUI_EXPECT_EQ(42.0f, loaded.Form.FontSize);
+	});
+
+	runner.Add("Designer-only control properties use one typed catalog and reset contract", []
+	{
+		Button button(L"Catalog", 0, 0);
+		::Font sharedFont(L"Segoe UI", 19.0f);
+		button.SetFontEx(&sharedFont, false);
+		DesignerControl target(
+			&button, L"button1", UIClass::UI_Button);
+
+		std::wstring requestedName;
+		std::wstring synchronizedName;
+		uint8_t appliedAnchor = 0;
+		DesignerControlPropertyContext context;
+		context.SharedFont = &sharedFont;
+		context.MakeUniqueName = [&](DesignerControl&, const std::wstring& desired)
+		{
+			requestedName = desired;
+			return std::wstring(L"button2");
+		};
+		context.SyncDefaultNameCounter = [&](UIClass type, const std::wstring& name)
+		{
+			CUI_EXPECT_EQ(UIClass::UI_Button, type);
+			synchronizedName = name;
+		};
+		context.ApplyAnchorStylesKeepingBounds = [&](Control* control, uint8_t value)
+		{
+			CUI_EXPECT_TRUE(control == &button);
+			appliedAnchor = value;
+			control->AnchorStyles = value;
+		};
+
+		const auto properties = DesignerControlPropertyCatalog::GetProperties(target);
+		CUI_EXPECT_EQ(6ULL, properties.size());
+		CUI_EXPECT_EQ(std::wstring(L"Name"), properties[0].Name);
+		CUI_EXPECT_EQ(std::wstring(L"Anchor"), properties[1].Name);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
+			target, L"styleclasses") != nullptr);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
+			target, L"MediaFile") == nullptr);
+		CUI_EXPECT_FALSE(DesignerControlPropertyCatalog::Find(
+			target, L"Name")->CanReset);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
+			target, L"Anchor")->CanReset);
+
+		DesignerStyleValue current;
+		DesignerStyleValue effective;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::CaptureValue(
+			target, context, L"FontName", current, &error));
+		CUI_EXPECT_TRUE(current.Text.empty());
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::CaptureValue(
+			target, context, L"FontSize", current, &error));
+		CUI_EXPECT_EQ(std::wstring(L"19"), current.Text);
+
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ApplyValue(
+			target, context, L"Name",
+			{ DesignerStyleValueKind::String, L"requested" }, &effective, &error));
+		CUI_EXPECT_EQ(std::wstring(L"requested"), requestedName);
+		CUI_EXPECT_EQ(std::wstring(L"button2"), target.Name);
+		CUI_EXPECT_EQ(target.Name, synchronizedName);
+		CUI_EXPECT_EQ(target.Name, effective.Text);
+
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ApplyValue(
+			target, context, L"StyleId",
+			{ DesignerStyleValueKind::String, L"  primary-button  " },
+			&effective, &error));
+		CUI_EXPECT_EQ(std::wstring(L"primary-button"), button.GetStyleId());
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ApplyValue(
+			target, context, L"StyleClasses",
+			{ DesignerStyleValueKind::String,
+				L" primary, compact, PRIMARY, " }, &effective, &error));
+		CUI_EXPECT_EQ(2ULL, button.GetStyleClasses().size());
+		CUI_EXPECT_EQ(std::wstring(L"primary, compact"), effective.Text);
+
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ApplyValue(
+			target, context, L"FontName",
+			{ DesignerStyleValueKind::String, L" Consolas " }, &effective, &error));
+		CUI_EXPECT_EQ(std::wstring(L"Consolas"), button.Font->FontName);
+		CUI_EXPECT_TRUE(button.Font != &sharedFont);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ApplyValue(
+			target, context, L"FontSize",
+			{ DesignerStyleValueKind::Float, L"999" }, &effective, &error));
+		CUI_EXPECT_EQ(200.0f, button.Font->FontSize);
+		CUI_EXPECT_FALSE(DesignerControlPropertyCatalog::ApplyValue(
+			target, context, L"FontSize",
+			{ DesignerStyleValueKind::Float, L"nan" }, nullptr, &error));
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ResetValue(
+			target, context, L"FontSize", &effective, &error));
+		CUI_EXPECT_EQ(19.0f, button.Font->FontSize);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ResetValue(
+			target, context, L"FontName", &effective, &error));
+		CUI_EXPECT_TRUE(button.Font == &sharedFont);
+		CUI_EXPECT_TRUE(effective.Text.empty());
+
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ApplyValue(
+			target, context, L"Anchor",
+			{ DesignerStyleValueKind::Int, L"255" }, &effective, &error));
+		const auto allAnchors = static_cast<uint8_t>(AnchorStyles::Left
+			| AnchorStyles::Top | AnchorStyles::Right | AnchorStyles::Bottom);
+		CUI_EXPECT_EQ(allAnchors, appliedAnchor);
+		CUI_EXPECT_EQ(std::to_wstring(allAnchors), effective.Text);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ResetValue(
+			target, context, L"Anchor", &effective, &error));
+		CUI_EXPECT_EQ(static_cast<uint8_t>(0), appliedAnchor);
+
+		MediaPlayer media(0, 0, 320, 180);
+		DesignerControl mediaTarget(
+			&media, L"mediaPlayer1", UIClass::UI_MediaPlayer);
+		const auto mediaProperties =
+			DesignerControlPropertyCatalog::GetProperties(mediaTarget);
+		CUI_EXPECT_EQ(7ULL, mediaProperties.size());
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ApplyValue(
+			mediaTarget, context, L"MediaFile",
+			{ DesignerStyleValueKind::String, L"  C:\\media\\clip.mp4  " },
+			&effective, &error));
+		CUI_EXPECT_EQ(std::wstring(L"C:\\media\\clip.mp4"),
+			mediaTarget.DesignStrings[L"mediaFile"]);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ResetValue(
+			mediaTarget, context, L"MediaFile", &effective, &error));
+		CUI_EXPECT_TRUE(mediaTarget.DesignStrings.find(L"mediaFile")
+			== mediaTarget.DesignStrings.end());
+
+		CUI_EXPECT_FALSE(DesignerControlPropertyCatalog::ApplyValue(
+			target, context, L"Anchor",
+			{ DesignerStyleValueKind::String, L"Left" }, nullptr, &error));
+		CUI_EXPECT_FALSE(DesignerControlPropertyCatalog::ApplyValue(
+			target, context, L"Missing",
+			{ DesignerStyleValueKind::String, L"value" }, nullptr, &error));
+		CUI_EXPECT_FALSE(DesignerControlPropertyCatalog::ResetValue(
+			target, context, L"Name", nullptr, &error));
+	});
+
+	runner.Add("Designer property rows merge sources into one ordered presentation model", []
+	{
+		auto expectContiguousCategories = [](const auto& rows)
+		{
+			std::set<std::wstring> completed;
+			std::wstring current;
+			for (const auto& row : rows)
+			{
+				std::wstring category = row.Category;
+				std::transform(category.begin(), category.end(),
+					category.begin(), towlower);
+				if (category == current) continue;
+				CUI_EXPECT_TRUE(completed.insert(category).second);
+				current = std::move(category);
+			}
+		};
+
+		DesignerModel::DesignFormModel form;
+		form.FontName.clear();
+		form.FontSize = 21.0f;
+		const auto formRows = DesignerPropertyRowCatalog::GetFormRows(form);
+		CUI_EXPECT_EQ(21ULL, formRows.size());
+		expectContiguousCategories(formRows);
+		for (const auto& row : formRows)
+		{
+			CUI_EXPECT_EQ(DesignerPropertyRowSource::Form, row.Source);
+			CUI_EXPECT_TRUE(row.CanReset);
+		}
+		const auto* formFontName = DesignerPropertyRowCatalog::Find(
+			formRows, L"fontname");
+		const auto* formFontSize = DesignerPropertyRowCatalog::Find(
+			formRows, L"FontSize");
+		const auto* formVisible = DesignerPropertyRowCatalog::Find(
+			formRows, L"Visible");
+		const auto* formBackColor = DesignerPropertyRowCatalog::Find(
+			formRows, L"BackColor");
+		CUI_EXPECT_TRUE(formFontName != nullptr);
+		CUI_EXPECT_TRUE(formFontSize != nullptr);
+		CUI_EXPECT_TRUE(formVisible != nullptr);
+		CUI_EXPECT_TRUE(formBackColor != nullptr);
+		CUI_EXPECT_EQ(DesignerPropertyRowEditorKind::FontName,
+			formFontName->Editor);
+		CUI_EXPECT_EQ(DesignerPropertyRowEditorKind::FontSize,
+			formFontSize->Editor);
+		CUI_EXPECT_EQ(std::wstring(L"21"), formFontSize->Value.Text);
+		CUI_EXPECT_EQ(DesignerPropertyRowEditorKind::Boolean,
+			formVisible->Editor);
+		CUI_EXPECT_EQ(DesignerPropertyRowEditorKind::Color,
+			formBackColor->Editor);
+
+		Button button(L"Rows", 0, 0);
+		DesignerControl target(
+			&button, L"button1", UIClass::UI_Button);
+		DesignerControlPropertyContext context;
+		const auto rows = DesignerPropertyRowCatalog::GetControlRows(
+			target, context);
+		expectContiguousCategories(rows);
+		std::set<std::wstring> expectedNames;
+		for (const auto& property :
+			DesignerControlPropertyCatalog::GetProperties(target))
+		{
+			auto name = property.Name;
+			std::transform(name.begin(), name.end(), name.begin(), towlower);
+			expectedNames.insert(std::move(name));
+		}
+		for (const auto& property :
+			DesignerPropertyCatalog::GetPropertyGridProperties(button))
+		{
+			auto name = property.Name;
+			std::transform(name.begin(), name.end(), name.begin(), towlower);
+			expectedNames.insert(std::move(name));
+		}
+		CUI_EXPECT_EQ(expectedNames.size(), rows.size());
+		std::set<std::wstring> actualNames;
+		for (const auto& row : rows)
+		{
+			auto name = row.Name;
+			std::transform(name.begin(), name.end(), name.begin(), towlower);
+			CUI_EXPECT_TRUE(actualNames.insert(std::move(name)).second);
+		}
+
+		const auto* name = DesignerPropertyRowCatalog::Find(rows, L"Name");
+		const auto* text = DesignerPropertyRowCatalog::Find(rows, L"Text");
+		const auto* anchor = DesignerPropertyRowCatalog::Find(rows, L"Anchor");
+		const auto* fontName = DesignerPropertyRowCatalog::Find(rows, L"FontName");
+		const auto* horizontal = DesignerPropertyRowCatalog::Find(rows, L"HAlign");
+		CUI_EXPECT_TRUE(name != nullptr);
+		CUI_EXPECT_TRUE(text != nullptr);
+		CUI_EXPECT_TRUE(anchor != nullptr);
+		CUI_EXPECT_TRUE(fontName != nullptr);
+		CUI_EXPECT_TRUE(horizontal != nullptr);
+		CUI_EXPECT_EQ(DesignerPropertyRowSource::ControlDesign, name->Source);
+		CUI_EXPECT_EQ(DesignerPropertyRowSource::RuntimeMetadata, text->Source);
+		CUI_EXPECT_FALSE(name->CanReset);
+		CUI_EXPECT_TRUE(text->CanReset);
+		CUI_EXPECT_EQ(DesignerPropertyRowEditorKind::Anchor, anchor->Editor);
+		CUI_EXPECT_EQ(DesignerPropertyRowEditorKind::FontName, fontName->Editor);
+		CUI_EXPECT_EQ(DesignerPropertyRowEditorKind::Choice, horizontal->Editor);
+		CUI_EXPECT_TRUE(!horizontal->Choices.empty());
+
+		ProgressBar progress(0, 0, 200, 20);
+		DesignerControl progressTarget(
+			&progress, L"progressBar1", UIClass::UI_ProgressBar);
+		const auto progressRows = DesignerPropertyRowCatalog::GetControlRows(
+			progressTarget, context);
+		const auto* percentage = DesignerPropertyRowCatalog::Find(
+			progressRows, L"PercentageValue");
+		CUI_EXPECT_TRUE(percentage != nullptr);
+		CUI_EXPECT_EQ(DesignerPropertyRowEditorKind::FloatSlider,
+			percentage->Editor);
+		CUI_EXPECT_TRUE(percentage->Minimum.has_value());
+		CUI_EXPECT_TRUE(percentage->Maximum.has_value());
+
+		MediaPlayer media(0, 0, 320, 180);
+		DesignerControl mediaTarget(
+			&media, L"mediaPlayer1", UIClass::UI_MediaPlayer);
+		const auto mediaRows = DesignerPropertyRowCatalog::GetControlRows(
+			mediaTarget, context);
+		const auto* mediaFile = DesignerPropertyRowCatalog::Find(
+			mediaRows, L"MediaFile");
+		CUI_EXPECT_TRUE(mediaFile != nullptr);
+		CUI_EXPECT_EQ(DesignerPropertyRowSource::ControlDesign,
+			mediaFile->Source);
+		CUI_EXPECT_EQ(std::wstring(L"Data"), mediaFile->Category);
+	});
+
+	runner.Add("Designer property rows expose value sources and tokenized filtering", []
+	{
+		Button button(L"Rows", 0, 0);
+		(void)button.ClearPropertyValue(
+			L"Text", ControlPropertyValueSource::Local);
+		CUI_EXPECT_TRUE(button.TrySetPropertyValue(
+			L"Text", BindingValue(std::wstring(L"Styled")),
+			ControlPropertyValueSource::Style));
+		DesignerControl target(
+			&button, L"button1", UIClass::UI_Button);
+		DesignerControlPropertyContext context;
+		auto rows = DesignerPropertyRowCatalog::GetControlRows(target, context);
+		const auto* text = DesignerPropertyRowCatalog::Find(rows, L"Text");
+		CUI_EXPECT_TRUE(text != nullptr);
+		CUI_EXPECT_TRUE(text->EffectiveValueSource.has_value());
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Style,
+			*text->EffectiveValueSource);
+		for (const auto& row : rows)
+		{
+			if (row.Source != DesignerPropertyRowSource::RuntimeMetadata) continue;
+			CUI_EXPECT_TRUE(row.EffectiveValueSource.has_value());
+			CUI_EXPECT_EQ(button.GetPropertyValueSource(row.Name),
+				*row.EffectiveValueSource);
+		}
+
+		const auto styleRows = DesignerPropertyRowCatalog::FilterRows(
+			rows, L"样式 text");
+		CUI_EXPECT_EQ(1ULL, styleRows.size());
+		CUI_EXPECT_EQ(std::wstring(L"Text"), styleRows[0].Name);
+		const auto fontRows = DesignerPropertyRowCatalog::FilterRows(
+			rows, L"appearance font");
+		CUI_EXPECT_TRUE(fontRows.size() >= 2);
+		for (const auto& row : fontRows)
+			CUI_EXPECT_EQ(std::wstring(L"Appearance"), row.Category);
+		const auto alignmentRows = DesignerPropertyRowCatalog::FilterRows(
+			rows, L"stretch halign");
+		CUI_EXPECT_EQ(1ULL, alignmentRows.size());
+		CUI_EXPECT_EQ(std::wstring(L"HAlign"), alignmentRows[0].Name);
+		CUI_EXPECT_EQ(rows.size(), DesignerPropertyRowCatalog::FilterRows(
+			rows, L"   ").size());
+		CUI_EXPECT_TRUE(DesignerPropertyRowCatalog::FilterRows(
+			rows, L"not-a-property").empty());
+		CUI_EXPECT_TRUE(DesignerPropertyRowCatalog::MatchesFilterText(
+			L"DataContext Schema 数据上下文", L"schema data"));
+		CUI_EXPECT_FALSE(DesignerPropertyRowCatalog::MatchesFilterText(
+			L"DataContext Schema", L"schema style"));
+
+		ObservableObject source;
+		source.SetValue(L"Caption", std::wstring(L"Bound"));
+		CUI_EXPECT_TRUE(button.DataBindings.Add(
+			L"Text", source, L"Caption", BindingMode::OneWay) != nullptr);
+		rows = DesignerPropertyRowCatalog::GetControlRows(target, context);
+		text = DesignerPropertyRowCatalog::Find(rows, L"Text");
+		CUI_EXPECT_TRUE(text != nullptr);
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Binding,
+			*text->EffectiveValueSource);
+		const auto bindingRows = DesignerPropertyRowCatalog::FilterRows(
+			rows, L"绑定 text");
+		CUI_EXPECT_EQ(1ULL, bindingRows.size());
+		CUI_EXPECT_EQ(std::wstring(L"Text"), bindingRows[0].Name);
+	});
+
+	runner.Add("Designer property rows expose binding validation and style diagnostics", []
+	{
+		Button button(L"Local caption", 0, 0);
+		DesignerControl target(
+			&button, L"button1", UIClass::UI_Button);
+		target.DataBindings[L"Text"] = {
+			L"Profile.Caption",
+			BindingMode::OneWay,
+			DataSourceUpdateMode::OnPropertyChanged,
+			L"StringTrim"
+		};
+		target.BindingPreviewStates[L"Text"] = {
+			DesignerBindingPreviewStatus::Detached,
+			L"未设置设计期 DataContext"
+		};
+		DesignerControlPropertyContext context;
+		auto rows = DesignerPropertyRowCatalog::GetControlRows(target, context);
+		const auto* text = DesignerPropertyRowCatalog::Find(rows, L"Text");
+		CUI_EXPECT_TRUE(text != nullptr);
+		CUI_EXPECT_TRUE(text->HasConfiguredBinding);
+		CUI_EXPECT_FALSE(text->IsReadOnly);
+		CUI_EXPECT_EQ(1ULL, text->Diagnostics.size());
+		CUI_EXPECT_TRUE(text->Diagnostics.front().Summary.find(L"Profile.Caption")
+			!= std::wstring::npos);
+		CUI_EXPECT_EQ(1ULL, DesignerPropertyRowCatalog::FilterRows(
+			rows, L"profile.caption stringtrim datacontext").size());
+
+		MetadataObservableObject source;
+		target.DataBindings[L"Text"].SourceProperty = L"Caption";
+		source.SetValue(L"Caption", std::wstring(L"Bound caption"));
+		source.SetValidationError(
+			L"Caption", L"caption is required", L"required");
+		(void)button.ClearPropertyValue(
+			L"Text", ControlPropertyValueSource::Local);
+		CUI_EXPECT_TRUE(button.DataBindings.Add(
+			L"Text", source, L"Caption", BindingMode::OneWay,
+			DataSourceUpdateMode::OnPropertyChanged,
+			BindingValueConverterRegistry::Create(L"StringTrim")) != nullptr);
+		target.BindingPreviewStates[L"Text"] = {
+			DesignerBindingPreviewStatus::Active,
+			L"设计期预览绑定已连接"
+		};
+		rows = DesignerPropertyRowCatalog::GetControlRows(target, context);
+		text = DesignerPropertyRowCatalog::Find(rows, L"Text");
+		CUI_EXPECT_TRUE(text != nullptr);
+		CUI_EXPECT_TRUE(text->IsReadOnly);
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Binding,
+			*text->EffectiveValueSource);
+		CUI_EXPECT_TRUE(std::any_of(
+			text->Diagnostics.begin(), text->Diagnostics.end(),
+			[](const DesignerPropertyDiagnostic& diagnostic)
+			{
+				return diagnostic.Kind
+					== DesignerPropertyDiagnosticKind::Validation
+					&& diagnostic.Severity
+					== BindingValidationSeverity::Error;
+			}));
+		CUI_EXPECT_EQ(1ULL, DesignerPropertyRowCatalog::FilterRows(
+			rows, L"caption required error").size());
+
+		auto sheet = std::make_shared<ControlStyleSheet>();
+		ControlStyleSelector selector;
+		selector.Type = UIClass::UI_Button;
+		const auto ruleId = sheet->AddRule(std::move(selector), {
+			ControlStyleSetter(L"Round", BindingValue(8.0f))
+		});
+		CUI_EXPECT_TRUE(button.SetStyleSheet(sheet));
+		button.Round = 5.0f;
+		rows = DesignerPropertyRowCatalog::GetControlRows(target, context);
+		const auto* round = DesignerPropertyRowCatalog::Find(rows, L"Round");
+		CUI_EXPECT_TRUE(round != nullptr);
+		CUI_EXPECT_TRUE(std::any_of(
+			round->Diagnostics.begin(), round->Diagnostics.end(),
+			[ruleId](const DesignerPropertyDiagnostic& diagnostic)
+			{
+				return diagnostic.Kind == DesignerPropertyDiagnosticKind::Style
+					&& diagnostic.Summary.find(std::to_wstring(ruleId))
+						!= std::wstring::npos
+					&& diagnostic.Details.find(L"Local")
+						!= std::wstring::npos;
+			}));
+		CUI_EXPECT_EQ(1ULL, DesignerPropertyRowCatalog::FilterRows(
+			rows, L"style local round").size());
+	});
+
+	runner.Add("Designer multi-selection rows intersect properties and expose mixed values", []
+	{
+		Button first(L"First", 0, 0);
+		Button second(L"Second", 0, 0);
+		(void)first.ClearPropertyValue(
+			L"Text", ControlPropertyValueSource::Local);
+		(void)second.ClearPropertyValue(
+			L"Text", ControlPropertyValueSource::Local);
+		CUI_EXPECT_TRUE(first.TrySetPropertyValue(
+			L"Text", BindingValue(std::wstring(L"One")),
+			ControlPropertyValueSource::Local));
+		CUI_EXPECT_TRUE(second.TrySetPropertyValue(
+			L"Text", BindingValue(std::wstring(L"Two")),
+			ControlPropertyValueSource::Style));
+		DesignerControl firstTarget(
+			&first, L"button1", UIClass::UI_Button);
+		DesignerControl secondTarget(
+			&second, L"button2", UIClass::UI_Button);
+		DesignerControlPropertyContext context;
+		const auto firstRows = DesignerPropertyRowCatalog::GetControlRows(
+			firstTarget, context);
+		auto secondRows = DesignerPropertyRowCatalog::GetControlRows(
+			secondTarget, context);
+		const auto common = DesignerPropertyRowCatalog::GetCommonControlRows(
+			{ firstRows, secondRows });
+		CUI_EXPECT_TRUE(DesignerPropertyRowCatalog::Find(common, L"Name") == nullptr);
+		const auto* text = DesignerPropertyRowCatalog::Find(common, L"Text");
+		const auto* anchor = DesignerPropertyRowCatalog::Find(common, L"Anchor");
+		CUI_EXPECT_TRUE(text != nullptr);
+		CUI_EXPECT_TRUE(anchor != nullptr);
+		CUI_EXPECT_TRUE(text->HasMixedValue);
+		CUI_EXPECT_TRUE(text->HasMixedValueSource);
+		CUI_EXPECT_FALSE(text->IsReadOnly);
+		CUI_EXPECT_FALSE(text->EffectiveValueSource.has_value());
+		CUI_EXPECT_FALSE(anchor->HasMixedValue);
+		const auto mixedRows = DesignerPropertyRowCatalog::FilterRows(
+			common, L"混合值 text");
+		CUI_EXPECT_EQ(1ULL, mixedRows.size());
+		CUI_EXPECT_EQ(std::wstring(L"Text"), mixedRows.front().Name);
+
+		ObservableObject source;
+		source.SetValue(L"Caption", std::wstring(L"Bound"));
+		CUI_EXPECT_TRUE(second.DataBindings.Add(
+			L"Text", source, L"Caption", BindingMode::OneWay) != nullptr);
+		secondRows = DesignerPropertyRowCatalog::GetControlRows(
+			secondTarget, context);
+		const auto boundCommon =
+			DesignerPropertyRowCatalog::GetCommonControlRows(
+				{ firstRows, secondRows });
+		const auto* boundText = DesignerPropertyRowCatalog::Find(
+			boundCommon, L"Text");
+		CUI_EXPECT_TRUE(boundText != nullptr);
+		CUI_EXPECT_TRUE(boundText->IsReadOnly);
+		CUI_EXPECT_EQ(1ULL, DesignerPropertyRowCatalog::FilterRows(
+			boundCommon, L"只读 text").size());
+
+		auto* incompatible = const_cast<DesignerPropertyRow*>(
+			DesignerPropertyRowCatalog::Find(secondRows, L"Text"));
+		CUI_EXPECT_TRUE(incompatible != nullptr);
+		incompatible->Editor = DesignerPropertyRowEditorKind::Color;
+		const auto compatibleOnly =
+			DesignerPropertyRowCatalog::GetCommonControlRows(
+				{ firstRows, secondRows });
+		CUI_EXPECT_TRUE(DesignerPropertyRowCatalog::Find(
+			compatibleOnly, L"Text") == nullptr);
+	});
+
+	runner.Add("Designer property edit transactions validate targets and report failures", []
+	{
+		DesignerControlPropertyContext context;
+		ProgressBar progress(0, 0, 200, 20);
+		DesignerControl progressTarget(
+			&progress, L"progress1", UIClass::UI_ProgressBar);
+		const auto progressRows = DesignerPropertyRowCatalog::GetControlRows(
+			progressTarget, context);
+		const auto* percentage = DesignerPropertyRowCatalog::Find(
+			progressRows, L"PercentageValue");
+		CUI_EXPECT_TRUE(percentage != nullptr);
+		const auto initialPercentage = progress.GetPercentageValue();
+		auto invalid = DesignerPropertyEdit::Apply(
+			{ { &progressTarget, context } }, *percentage, L"not-a-number");
+		CUI_EXPECT_FALSE(invalid.Succeeded);
+		CUI_EXPECT_EQ(0ULL, invalid.AppliedCount);
+		CUI_EXPECT_TRUE(invalid.Error.find(L"progress1") != std::wstring::npos);
+		CUI_EXPECT_NEAR(initialPercentage,
+			progress.GetPercentageValue(), 0.0001f);
+
+		Button first(L"First", 0, 0);
+		Button second(L"Second", 0, 0);
+		DesignerControl firstTarget(
+			&first, L"button1", UIClass::UI_Button);
+		DesignerControl secondTarget(
+			&second, L"button2", UIClass::UI_Button);
+		auto firstRows = DesignerPropertyRowCatalog::GetControlRows(
+			firstTarget, context);
+		auto secondRows = DesignerPropertyRowCatalog::GetControlRows(
+			secondTarget, context);
+		auto common = DesignerPropertyRowCatalog::GetCommonControlRows(
+			{ firstRows, secondRows });
+		const auto* text = DesignerPropertyRowCatalog::Find(common, L"Text");
+		CUI_EXPECT_TRUE(text != nullptr);
+		auto applied = DesignerPropertyEdit::Apply(
+			{ { &firstTarget, context }, { &secondTarget, context } },
+			*text,
+			L"Shared");
+		CUI_EXPECT_TRUE(applied.Succeeded);
+		CUI_EXPECT_EQ(2ULL, applied.AppliedCount);
+		CUI_EXPECT_EQ(std::wstring(L"Shared"), first.Text);
+		CUI_EXPECT_EQ(std::wstring(L"Shared"), second.Text);
+		const auto* anchor = DesignerPropertyRowCatalog::Find(common, L"Anchor");
+		CUI_EXPECT_TRUE(anchor != nullptr);
+		const auto firstAnchor = first.AnchorStyles;
+		const auto secondAnchor = second.AnchorStyles;
+		DesignerControlPropertyContext failingContext;
+		failingContext.ApplyAnchorStylesKeepingBounds = [](
+			Control* control, uint8_t value)
+		{
+			if (value == AnchorStyles::Right) throw 1;
+			control->AnchorStyles = value;
+		};
+		auto rolledBack = DesignerPropertyEdit::Apply(
+			{ { &firstTarget, context }, { &secondTarget, failingContext } },
+			*anchor,
+			std::to_wstring(AnchorStyles::Right));
+		CUI_EXPECT_FALSE(rolledBack.Succeeded);
+		CUI_EXPECT_EQ(0ULL, rolledBack.AppliedCount);
+		CUI_EXPECT_TRUE(rolledBack.Error.find(L"setter") != std::wstring::npos);
+		CUI_EXPECT_EQ(firstAnchor, first.AnchorStyles);
+		CUI_EXPECT_EQ(secondAnchor, second.AnchorStyles);
+
+		ObservableObject source;
+		source.SetValue(L"Caption", std::wstring(L"Bound"));
+		CUI_EXPECT_TRUE(second.ClearPropertyValue(
+			L"Text", ControlPropertyValueSource::Local));
+		CUI_EXPECT_TRUE(second.DataBindings.Add(
+			L"Text", source, L"Caption", BindingMode::OneWay) != nullptr);
+		firstRows = DesignerPropertyRowCatalog::GetControlRows(
+			firstTarget, context);
+		secondRows = DesignerPropertyRowCatalog::GetControlRows(
+			secondTarget, context);
+		common = DesignerPropertyRowCatalog::GetCommonControlRows(
+			{ firstRows, secondRows });
+		text = DesignerPropertyRowCatalog::Find(common, L"Text");
+		CUI_EXPECT_TRUE(text != nullptr);
+		CUI_EXPECT_TRUE(text->IsReadOnly);
+		auto rejected = DesignerPropertyEdit::Apply(
+			{ { &firstTarget, context }, { &secondTarget, context } },
+			*text,
+			L"Rejected");
+		CUI_EXPECT_FALSE(rejected.Succeeded);
+		CUI_EXPECT_EQ(0ULL, rejected.AppliedCount);
+		CUI_EXPECT_TRUE(rejected.Error.find(L"Binding") != std::wstring::npos);
+		CUI_EXPECT_EQ(std::wstring(L"Shared"), first.Text);
+		CUI_EXPECT_EQ(std::wstring(L"Bound"), second.Text);
+		auto reset = DesignerPropertyEdit::Reset(
+			{ { &firstTarget, context }, { &secondTarget, context } }, *text);
+		CUI_EXPECT_FALSE(reset.Succeeded);
+		CUI_EXPECT_EQ(0ULL, reset.AppliedCount);
+		CUI_EXPECT_TRUE(reset.Error.find(L"Binding") != std::wstring::npos);
+		CUI_EXPECT_EQ(std::wstring(L"Shared"), first.Text);
+		CUI_EXPECT_EQ(std::wstring(L"Bound"), second.Text);
 	});
 
 	runner.Add("Container layout properties use Designer metadata end to end", []
@@ -4124,6 +5626,11 @@ int main()
 		propertyGrid.RowHeight = 24.0f;
 		propertyGrid.RowHeight = std::numeric_limits<float>::quiet_NaN();
 		CUI_EXPECT_NEAR(24.0f, propertyGrid.RowHeight, 0.0001f);
+		propertyGrid.SetHeaderLabels(L"Property name", L"Current value");
+		CUI_EXPECT_EQ(std::wstring(L"Property name"),
+			propertyGrid.GetNameHeaderLabel());
+		CUI_EXPECT_EQ(std::wstring(L"Current value"),
+			propertyGrid.GetValueHeaderLabel());
 
 		std::vector<PropertyGridItem> items;
 		for (int index = 0; index < 8; ++index)
@@ -4136,6 +5643,27 @@ int main()
 		}
 		propertyGrid.SetItems(std::move(items));
 		CUI_EXPECT_EQ(8ULL, propertyGrid.ItemCount());
+
+		PropertyGridView replacementState(0, 0, 240, 90);
+		std::vector<PropertyGridItem> stateItems;
+		for (int index = 0; index < 12; ++index)
+		{
+			stateItems.emplace_back(
+				index < 2 ? L"First" : L"Second",
+				L"State " + std::to_wstring(index),
+				L"Before");
+		}
+		replacementState.SetItems(stateItems);
+		replacementState.CollapseCategory(L"First", true);
+		replacementState.SetScrollOffset(80.0f);
+		const float replacementScroll = replacementState.ScrollYOffset;
+		CUI_EXPECT_TRUE(replacementScroll > 0.0f);
+		for (auto& item : stateItems) item.Value = L"After";
+		replacementState.SetItems(std::move(stateItems));
+		CUI_EXPECT_TRUE(replacementState.IsCategoryCollapsed(L"First"));
+		CUI_EXPECT_NEAR(replacementScroll,
+			replacementState.ScrollYOffset, 0.0001f);
+
 		CUI_EXPECT_TRUE(propertyGrid.BeginEdit(0));
 		CUI_EXPECT_TRUE(propertyGrid.IsEditing());
 		CUI_EXPECT_TRUE(propertyGrid.SetEditingText(L"Cancelled"));
@@ -4145,6 +5673,103 @@ int main()
 		CUI_EXPECT_TRUE(propertyGrid.SetEditingText(L"Committed"));
 		CUI_EXPECT_TRUE(propertyGrid.CommitEdit());
 		CUI_EXPECT_EQ(std::wstring(L"Committed"), propertyGrid.GetValue(0));
+
+		PropertyGridView nativeDesignerSemantics(0, 0, 240, 120);
+		PropertyGridItem mixedBool(
+			L"Common", L"Visible", L"True", PropertyGridValueType::Bool);
+		mixedBool.IsMixed = true;
+		PropertyGridItem action(
+			L"Data", L"Bindings", L"Edit...", PropertyGridValueType::Action);
+		PropertyGridItem resettable(
+			L"Layout", L"Width", L"120", PropertyGridValueType::Number);
+		resettable.CanReset = true;
+		PropertyGridItem anchor(
+			L"Layout", L"Anchor", L"3", PropertyGridValueType::Anchor);
+		nativeDesignerSemantics.SetItems(
+			{ mixedBool, action, resettable, anchor });
+		int changedCount = 0;
+		int actionCount = 0;
+		int resetCount = 0;
+		nativeDesignerSemantics.OnValueChanged +=
+			[&](PropertyGridView*, int, std::wstring, std::wstring)
+			{ ++changedCount; };
+		nativeDesignerSemantics.OnItemClick +=
+			[&](PropertyGridView*, int index)
+			{ if (index == 1) ++actionCount; };
+		nativeDesignerSemantics.OnResetRequested +=
+			[&](PropertyGridView*, int index)
+			{ if (index == 2) ++resetCount; };
+		CUI_EXPECT_TRUE(nativeDesignerSemantics.SetValue(0, L"True"));
+		CUI_EXPECT_FALSE(nativeDesignerSemantics.Items[0].IsMixed);
+		CUI_EXPECT_EQ(1, changedCount);
+		CUI_EXPECT_TRUE(nativeDesignerSemantics.ActivateItem(1));
+		CUI_EXPECT_EQ(1, actionCount);
+		CUI_EXPECT_FALSE(nativeDesignerSemantics.BeginEdit(1));
+		CUI_EXPECT_TRUE(nativeDesignerSemantics.RequestReset(2));
+		CUI_EXPECT_EQ(1, resetCount);
+		CUI_EXPECT_FALSE(nativeDesignerSemantics.RequestReset(1));
+		CUI_EXPECT_FALSE(nativeDesignerSemantics.BeginEdit(3));
+
+		uint8_t parsedAnchors = AnchorStyles::None;
+		CUI_EXPECT_TRUE(AnchorPickerPopup::TryParseAnchors(
+			L"5", parsedAnchors));
+		CUI_EXPECT_EQ(static_cast<int>(AnchorStyles::Left | AnchorStyles::Right),
+			static_cast<int>(parsedAnchors));
+		CUI_EXPECT_TRUE(AnchorPickerPopup::TryParseAnchors(
+			L"Left + Top (3)", parsedAnchors));
+		CUI_EXPECT_EQ(3, static_cast<int>(parsedAnchors));
+		CUI_EXPECT_EQ(std::wstring(L"Top, Left, Right"),
+			AnchorPickerPopup::AnchorToString(
+				AnchorStyles::Top | AnchorStyles::Left | AnchorStyles::Right));
+		AnchorPickerPopup anchorPicker;
+		anchorPicker.SetSelectedAnchors(
+			AnchorStyles::Left | AnchorStyles::Top);
+		int anchorChanged = 0;
+		std::wstring anchorValue;
+		anchorPicker.OnAnchorChanged +=
+			[&](AnchorPickerPopup*, uint8_t anchors, std::wstring value)
+			{
+				++anchorChanged;
+				parsedAnchors = anchors;
+				anchorValue = std::move(value);
+			};
+		CUI_EXPECT_TRUE(anchorPicker.ToggleAnchor(AnchorStyles::Right));
+		CUI_EXPECT_EQ(1, anchorChanged);
+		CUI_EXPECT_EQ(7, static_cast<int>(parsedAnchors));
+		CUI_EXPECT_EQ(std::wstring(L"7"), anchorValue);
+		CUI_EXPECT_FALSE(anchorPicker.ToggleAnchor(3));
+
+		PropertyGridView nativeSlider(0, 0, 240, 120);
+		PropertyGridItem sliderItem(
+			L"Data", L"Opacity", L"0", PropertyGridValueType::Slider);
+		sliderItem.Minimum = 0.0;
+		sliderItem.Maximum = 10.0;
+		sliderItem.Step = 1.0;
+		nativeSlider.SetItems({ sliderItem });
+		int sliderStarted = 0;
+		int sliderCompleted = 0;
+		int sliderCanceled = 0;
+		nativeSlider.OnEditStarted +=
+			[&](PropertyGridView*, int) { ++sliderStarted; };
+		nativeSlider.OnEditCompleted +=
+			[&](PropertyGridView*, int) { ++sliderCompleted; };
+		nativeSlider.OnEditCanceled +=
+			[&](PropertyGridView*, int) { ++sliderCanceled; };
+		CUI_EXPECT_FALSE(nativeSlider.BeginEdit(0));
+		CUI_EXPECT_TRUE(nativeSlider.ProcessMessage(
+			WM_LBUTTONDOWN, 0, 0, 180, 62));
+		CUI_EXPECT_TRUE(nativeSlider.ProcessMessage(
+			WM_MOUSEMOVE, 0, 0, 198, 62));
+		CUI_EXPECT_TRUE(nativeSlider.ProcessMessage(
+			WM_LBUTTONUP, 0, 0, 198, 62));
+		CUI_EXPECT_EQ(1, sliderStarted);
+		CUI_EXPECT_EQ(1, sliderCompleted);
+		CUI_EXPECT_TRUE(nativeSlider.GetValue(0) != L"0");
+		CUI_EXPECT_TRUE(nativeSlider.ProcessMessage(
+			WM_LBUTTONDOWN, 0, 0, 180, 62));
+		CUI_EXPECT_TRUE(nativeSlider.ProcessMessage(
+			WM_CANCELMODE, 0, 0, 180, 62));
+		CUI_EXPECT_EQ(1, sliderCanceled);
 
 		ObservableObject source;
 		source.SetValue(L"SelectedProperty", 0);
@@ -4172,7 +5797,16 @@ int main()
 		generatedItem.Description = L"Current mode";
 		generatedItem.Options = { L"Ready", L"Busy" };
 		generatedItem.Tag = 42;
-		generated.SetItems({ generatedItem });
+		generatedItem.IsMixed = true;
+		generatedItem.CanReset = true;
+		PropertyGridItem generatedSlider(
+			L"Data", L"Opacity", L"0.5", PropertyGridValueType::Slider);
+		generatedSlider.Minimum = 0.1;
+		generatedSlider.Maximum = 0.9;
+		generatedSlider.Step = 0.05;
+		PropertyGridItem generatedAnchor(
+			L"Layout", L"Anchor", L"3", PropertyGridValueType::Anchor);
+		generated.SetItems({ generatedItem, generatedSlider, generatedAnchor });
 		auto designer = std::make_shared<DesignerControl>(
 			&generated, L"settingsGrid", UIClass::UI_PropertyGrid);
 		std::wstring canonicalName;
@@ -4197,6 +5831,19 @@ int main()
 		CUI_EXPECT_TRUE(cpp.find("settingsGrid->ShowHeader =")
 			== std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find("__propertyItem_settingsGrid_1.Tag = 42ULL")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find("__propertyItem_settingsGrid_1.IsMixed = true")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find("__propertyItem_settingsGrid_1.CanReset = true")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find("__propertyItem_settingsGrid_2.Minimum = 0.1")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find("__propertyItem_settingsGrid_2.Maximum = 0.9")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find("__propertyItem_settingsGrid_2.Step = 0.05")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find(
+			"L\"Anchor\", L\"3\", static_cast<PropertyGridValueType>(8)")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find(
 			"__propertyItem_settingsGrid_1.Options.push_back(L\"Busy\")")
@@ -4257,6 +5904,23 @@ int main()
 		CUI_EXPECT_EQ(-1, propertyGrid.SelectedIndex);
 		CUI_EXPECT_EQ(-1, source.GetValue<int>(L"Selected"));
 		CUI_EXPECT_FALSE(propertyGrid.IsEditing());
+	});
+
+	runner.Add("PropertyGrid editable enum combines free text and suggestions", []
+	{
+		CUI_EXPECT_EQ(
+			static_cast<int>(PropertyGridValueType::Anchor) + 1,
+			static_cast<int>(PropertyGridValueType::EditableEnum));
+		PropertyGridView propertyGrid(0, 0, 260, 120);
+		PropertyGridItem handler(
+			L"Events", L"OnMouseClick", L"HandleSave",
+			PropertyGridValueType::EditableEnum);
+		handler.Options = { L"saveButton_OnMouseClick", L"HandleSave" };
+		propertyGrid.Items.push_back(std::move(handler));
+		CUI_EXPECT_TRUE(propertyGrid.BeginEdit(0));
+		CUI_EXPECT_TRUE(propertyGrid.IsEditing());
+		CUI_EXPECT_TRUE(propertyGrid.CommitEdit());
+		CUI_EXPECT_TRUE(propertyGrid.HandlesNavigationKey(VK_F4));
 	});
 
 	runner.Add("MediaPlayer metadata, binding, safe controls and codegen stay coherent", []
@@ -6375,10 +8039,144 @@ int main()
 			target, L"Text", binding, nullptr, &error, &noSchema));
 	});
 
-	runner.Add("Designer XML v3 persists schema styles and upgrades older versions", []
+	runner.Add("Controls support stable design-id lookup across nested ownership", []
+	{
+		Panel root(0, 0, 320, 240);
+		root.DesignId = 10;
+		auto containerOwner = std::make_unique<Panel>(0, 0, 200, 160);
+		auto* container = containerOwner.get();
+		container->DesignId = 20;
+		auto buttonOwner = std::make_unique<Button>(L"Nested", 0, 0);
+		auto* button = buttonOwner.get();
+		button->DesignId = 30;
+		container->AddOwned(std::move(buttonOwner));
+		root.AddOwned(std::move(containerOwner));
+
+		CUI_EXPECT_EQ(&root, root.FindControlByDesignId(10));
+		CUI_EXPECT_EQ(container, root.FindControlByDesignId(20));
+		CUI_EXPECT_EQ(button, root.FindControlByDesignId(30));
+		CUI_EXPECT_EQ(nullptr, root.FindControlByDesignId(0));
+		CUI_EXPECT_EQ(nullptr, root.FindControlByDesignId(999));
+		const Control& constRoot = root;
+		CUI_EXPECT_EQ(static_cast<const Control*>(button),
+			constRoot.FindControlByDesignId(30));
+	});
+
+	runner.Add("Designer document graph centralizes identity parent and order resolution", []
+	{
+		DesignerModel::DesignDocument document;
+		document.NextStableId = 40;
+		DesignerModel::DesignNode lateChild;
+		lateChild.Id = 30;
+		lateChild.ParentId = 10;
+		lateChild.ParentRef = L"container";
+		lateChild.Name = L"lateChild";
+		lateChild.Type = UIClass::UI_Button;
+		lateChild.Order = 2;
+		document.Nodes.push_back(std::move(lateChild));
+		DesignerModel::DesignNode parent;
+		parent.Id = 10;
+		parent.Name = L"container";
+		parent.Type = UIClass::UI_Panel;
+		parent.Order = 0;
+		document.Nodes.push_back(std::move(parent));
+		DesignerModel::DesignNode earlyChild;
+		earlyChild.Id = 20;
+		earlyChild.ParentId = 10;
+		earlyChild.ParentRef = L"container";
+		earlyChild.Name = L"earlyChild";
+		earlyChild.Type = UIClass::UI_Button;
+		earlyChild.Order = 1;
+		document.Nodes.push_back(std::move(earlyChild));
+
+		DesignerModel::DesignDocumentGraph graph;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentGraph::Build(
+			document, graph, &error));
+		CUI_EXPECT_EQ(30, graph.MaxStableId());
+		CUI_EXPECT_EQ(1ULL, graph.Roots().size());
+		CUI_EXPECT_EQ(1ULL, graph.Roots()[0]);
+		const auto children = graph.ChildrenOf(L"container");
+		CUI_EXPECT_EQ(2ULL, children.size());
+		CUI_EXPECT_EQ(2ULL, children[0]);
+		CUI_EXPECT_EQ(0ULL, children[1]);
+		CUI_EXPECT_EQ(0ULL, graph.FindById(30)->SourceIndex);
+		CUI_EXPECT_EQ(2ULL,
+			graph.FindByName(L"earlyChild")->SourceIndex);
+		CUI_EXPECT_EQ(std::wstring(L"container"),
+			graph.Nodes()[0].ParentKey);
+
+		auto missingParentId = document;
+		missingParentId.Nodes.front().ParentId = 0;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentGraph::Build(
+			missingParentId, graph, &error));
+		auto negativeParentId = document;
+		negativeParentId.Nodes[1].ParentId = -1;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentGraph::Build(
+			negativeParentId, graph, &error));
+	});
+
+	runner.Add("Designer materialization pool owns rollback and transfers controls", []
+	{
+		struct TrackedControl final : Control
+		{
+			explicit TrackedControl(int& destroyed) : Destroyed(&destroyed) {}
+			~TrackedControl() override { ++*Destroyed; }
+			int* Destroyed;
+		};
+
+		DesignerModel::DesignDocument document;
+		for (int id = 1; id <= 3; ++id)
+		{
+			DesignerModel::DesignNode node;
+			node.Id = id;
+			node.Name = L"control" + std::to_wstring(id);
+			node.Type = UIClass::UI_Button;
+			document.Nodes.push_back(std::move(node));
+		}
+		document.NextStableId = 4;
+		DesignerModel::DesignDocumentGraph graph;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentGraph::Build(
+			document, graph, &error));
+
+		int destroyed = 0;
+		{
+			DesignerModel::DesignDocumentControlPool pool;
+			CUI_EXPECT_TRUE(DesignerModel::DesignDocumentControlPool::Build(
+				document, graph,
+				[&](const DesignerModel::DesignNode&)
+				{ return std::make_unique<TrackedControl>(destroyed); },
+				pool, &error));
+			CUI_EXPECT_EQ(3ULL, pool.PendingCount());
+			CUI_EXPECT_EQ(2, pool.FindByName(L"control2")->DesignId);
+			CUI_EXPECT_EQ(pool.FindById(2), pool.FindByName(L"control2"));
+
+			Control runtimeRoot;
+			auto attached = pool.TakeByName(L"control2");
+			CUI_EXPECT_TRUE(attached != nullptr);
+			runtimeRoot.AddOwned(std::move(attached));
+			CUI_EXPECT_EQ(2ULL, pool.PendingCount());
+			CUI_EXPECT_EQ(runtimeRoot.GetChild(0),
+				runtimeRoot.FindControlByDesignId(2));
+		}
+		CUI_EXPECT_EQ(3, destroyed);
+
+		DesignerModel::DesignDocumentControlPool rejected;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentControlPool::Build(
+			document, graph,
+			[](const DesignerModel::DesignNode&)
+			{ return std::unique_ptr<Control>{}; },
+			rejected, &error));
+		CUI_EXPECT_EQ(0ULL, rejected.PendingCount());
+	});
+
+	runner.Add("Designer XML v5 persists code-behind and upgrades older versions", []
 	{
 		DesignerModel::DesignDocument document;
 		document.Form.Name = L"SchemaForm";
+		document.CodeBehind.ClassName = L"Acme::Views::SchemaWindow";
+		document.CodeBehind.RelativeBasePath = L"generated/SchemaWindow";
 		document.DataContextSchema = {
 			{ L"Profile", BindingValueKind::Object, true, false, true },
 			{ L"Profile.DisplayName", BindingValueKind::String, true, true, true }
@@ -6420,9 +8218,24 @@ int main()
 		};
 		node.Props["metadata"] = std::move(metadataProperties);
 		document.Nodes.push_back(std::move(node));
+		DesignerModel::DesignNode child;
+		child.Id = document.AllocateNodeId();
+		child.ParentId = document.Nodes.front().Id;
+		child.ParentRef = document.Nodes.front().Name;
+		child.Name = L"saveButton";
+		child.Type = UIClass::UI_Button;
+		document.Nodes.push_back(std::move(child));
+		// Persist the high-water mark independently of the current maximum ID.
+		document.NextStableId = 17;
 
 		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
-		CUI_EXPECT_TRUE(xml.find("version=\"3\"") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("version=\"5\"") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("nextId=\"17\"") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find(
+			"<codeBehind class=\"Acme::Views::SchemaWindow\" relativeBasePath=\"generated/SchemaWindow\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("id=\"1\"") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("parentId=\"1\"") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("<dataContext>") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("<styleSheet>") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("requiredStates=\"Focused\"") != std::string::npos);
@@ -6452,6 +8265,7 @@ int main()
 			upgraded.SchemaVersion);
 		CUI_EXPECT_TRUE(upgraded.DataContextSchema.empty());
 		CUI_EXPECT_TRUE(upgraded.StyleSheet.Empty());
+		CUI_EXPECT_TRUE(upgraded.CodeBehind.Empty());
 
 		const std::string versionTwo =
 			"<designDocument schema=\"cui.designer\" version=\"2\">"
@@ -6463,11 +8277,792 @@ int main()
 		CUI_EXPECT_EQ(1ULL, upgraded.DataContextSchema.size());
 		CUI_EXPECT_TRUE(upgraded.StyleSheet.Empty());
 
+		const std::string versionThree =
+			"<designDocument schema=\"cui.designer\" version=\"3\">"
+			"<controls>"
+			"<control name=\"legacyPanel\" type=\"Panel\" order=\"0\"><props/></control>"
+			"<control name=\"legacyButton\" type=\"Button\" parent=\"legacyPanel\" order=\"0\"><props/></control>"
+			"</controls></designDocument>";
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			versionThree, upgraded, &error));
+		CUI_EXPECT_EQ(2ULL, upgraded.Nodes.size());
+		CUI_EXPECT_EQ(1, upgraded.Nodes[0].Id);
+		CUI_EXPECT_EQ(2, upgraded.Nodes[1].Id);
+		CUI_EXPECT_EQ(upgraded.Nodes[0].Id, upgraded.Nodes[1].ParentId);
+		CUI_EXPECT_EQ(3, upgraded.NextStableId);
+
 		const std::string unsupported =
-			"<designDocument schema=\"cui.designer\" version=\"4\">"
+			"<designDocument schema=\"cui.designer\" version=\"6\">"
 			"<controls></controls></designDocument>";
 		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
 			unsupported, upgraded, &error));
+
+		const std::string duplicateId =
+			"<designDocument schema=\"cui.designer\" version=\"4\" nextId=\"3\">"
+			"<controls>"
+			"<control id=\"1\" name=\"a\" type=\"Panel\" order=\"0\"><props/></control>"
+			"<control id=\"1\" name=\"b\" type=\"Button\" order=\"1\"><props/></control>"
+			"</controls></designDocument>";
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			duplicateId, upgraded, &error));
+		const std::string danglingParent =
+			"<designDocument schema=\"cui.designer\" version=\"4\" nextId=\"3\">"
+			"<controls>"
+			"<control id=\"1\" parentId=\"2\" name=\"a\" type=\"Button\" order=\"0\"><props/></control>"
+			"</controls></designDocument>";
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			danglingParent, upgraded, &error));
+		const std::string parentCycle =
+			"<designDocument schema=\"cui.designer\" version=\"4\" nextId=\"3\">"
+			"<controls>"
+			"<control id=\"1\" parentId=\"2\" name=\"a\" type=\"Panel\" order=\"0\"><props/></control>"
+			"<control id=\"2\" parentId=\"1\" name=\"b\" type=\"Panel\" order=\"0\"><props/></control>"
+			"</controls></designDocument>";
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			parentCycle, upgraded, &error));
+		const std::string regressedHighWater =
+			"<designDocument schema=\"cui.designer\" version=\"4\" nextId=\"1\">"
+			"<controls>"
+			"<control id=\"1\" name=\"a\" type=\"Button\" order=\"0\"><props/></control>"
+			"</controls></designDocument>";
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			regressedHighWater, upgraded, &error));
+
+		const std::string absoluteCodeBehind =
+			"<designDocument schema=\"cui.designer\" version=\"5\" nextId=\"1\">"
+			"<codeBehind class=\"WindowCode\" relativeBasePath=\"C:/outside/WindowCode\"/>"
+			"<controls></controls></designDocument>";
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			absoluteCodeBehind, upgraded, &error));
+		const std::string missingCodeClass =
+			"<designDocument schema=\"cui.designer\" version=\"5\" nextId=\"1\">"
+			"<codeBehind relativeBasePath=\"WindowCode\"/>"
+			"<controls></controls></designDocument>";
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			missingCodeClass, upgraded, &error));
+		DesignerModel::DesignCodeBehindModel invalidClass;
+		invalidClass.ClassName = L"bad::class";
+		CUI_EXPECT_FALSE(invalidClass.Validate(&error));
+		std::wstring normalizedClass;
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeBehindModel::TryNormalizeClassName(
+				L"Acme.Views.MainWindow", normalizedClass, &error));
+		CUI_EXPECT_EQ(std::wstring(L"Acme::Views::MainWindow"), normalizedClass);
+		CUI_EXPECT_FALSE(
+			DesignerModel::DesignCodeBehindModel::TryNormalizeClassName(
+				L"Acme::::MainWindow", normalizedClass, &error));
+	});
+
+	runner.Add("Designer event catalog owns signatures names and legacy migration", []
+	{
+		auto click = DesignerEventCatalog::FindControlEvent(
+			UIClass::UI_Button, L"OnMouseClick");
+		CUI_EXPECT_TRUE(click.has_value());
+		CUI_EXPECT_EQ(std::string("OnMouseClick"), click->EventField);
+		CUI_EXPECT_EQ(std::string("Control* sender, MouseEventArgs e"),
+			click->ParameterList);
+		CUI_EXPECT_TRUE(click->MatchesEventMember(&Control::OnMouseClick));
+		CUI_EXPECT_FALSE(click->MatchesEventMember(&Control::OnMouseMove));
+		CUI_EXPECT_TRUE(click->IsDefault);
+		CUI_EXPECT_EQ(DesignerEventCategory::Mouse, click->Category);
+		auto checkDefault = DesignerEventCatalog::GetDefaultControlEvent(
+			UIClass::UI_CheckBox);
+		CUI_EXPECT_TRUE(checkDefault.has_value());
+		CUI_EXPECT_EQ(std::wstring(L"OnChecked"), checkDefault->Name);
+		CUI_EXPECT_EQ(DesignerEventCategory::Value, checkDefault->Category);
+		auto listDefault = DesignerEventCatalog::GetDefaultControlEvent(
+			UIClass::UI_ListView);
+		CUI_EXPECT_TRUE(listDefault.has_value());
+		CUI_EXPECT_EQ(std::wstring(L"OnItemDoubleClick"), listDefault->Name);
+		auto formClose = DesignerEventCatalog::FindFormEvent(L"OnClose");
+		CUI_EXPECT_TRUE(formClose.has_value());
+		CUI_EXPECT_EQ(std::string("OnClosing"), formClose->EventField);
+		CUI_EXPECT_EQ(std::string("Form* sender, bool& cancel"),
+			formClose->ParameterList);
+		CUI_EXPECT_TRUE(formClose->MatchesEventMember(&Form::OnClosing));
+		auto formDefault = DesignerEventCatalog::GetDefaultFormEvent();
+		CUI_EXPECT_TRUE(formDefault.has_value());
+		CUI_EXPECT_EQ(std::wstring(L"OnShown"), formDefault->Name);
+		CUI_EXPECT_TRUE(formDefault->MatchesEventMember(&Form::OnShown));
+		CUI_EXPECT_EQ(DesignerEventCategory::Lifecycle, formDefault->Category);
+		Form shownProbe(L"shown probe", POINT{ 10, 10 }, SIZE{ 80, 60 });
+		int shownCount = 0;
+		auto shownConnection = shownProbe.OnShown.Subscribe(
+			[&shownCount](Form*) { ++shownCount; });
+		shownProbe.Visible = true;
+		shownProbe.Show();
+		shownProbe.Visible = false;
+		CUI_EXPECT_TRUE(shownConnection.Connected());
+		CUI_EXPECT_EQ(1, shownCount);
+		for (int value = static_cast<int>(UIClass::UI_Base);
+			value <= static_cast<int>(UIClass::UI_CUSTOM); ++value)
+		{
+			const auto events = DesignerEventCatalog::GetControlEvents(
+				static_cast<UIClass>(value));
+			CUI_EXPECT_EQ(1ULL, static_cast<unsigned long long>(std::count_if(
+				events.begin(), events.end(), [](const auto& event)
+				{ return event.IsDefault; })));
+		}
+		auto addingRow = DesignerEventCatalog::FindControlEvent(
+			UIClass::UI_GridView, L"OnUserAddingRow");
+		CUI_EXPECT_TRUE(addingRow.has_value());
+		auto gridCombo = DesignerEventCatalog::FindControlEvent(
+			UIClass::UI_GridView, L"OnGridViewComboBoxSelectionChanged");
+		CUI_EXPECT_TRUE(gridCombo.has_value());
+		CUI_EXPECT_EQ(std::string(
+			"GridView* sender, int c, int r, int selectedIndex, std::wstring selectedText"),
+			gridCombo->ParameterList);
+		auto chartPoint = DesignerEventCatalog::FindControlEvent(
+			UIClass::UI_ChartView, L"OnPointClick");
+		CUI_EXPECT_TRUE(chartPoint.has_value());
+		CUI_EXPECT_EQ(std::string(
+			"ChartView* sender, int seriesIndex, int pointIndex"),
+			chartPoint->ParameterList);
+		auto filterQuery = DesignerEventCatalog::FindControlEvent(
+			UIClass::UI_FilterBar, L"OnQueryChanged");
+		CUI_EXPECT_TRUE(filterQuery.has_value());
+		CUI_EXPECT_EQ(std::string(
+			"FilterBar* sender, const std::wstring& query"),
+			filterQuery->ParameterList);
+		auto browserStarting = DesignerEventCatalog::FindControlEvent(
+			UIClass::UI_WebBrowser, L"OnNavigationStarting");
+		CUI_EXPECT_TRUE(browserStarting.has_value());
+		auto mediaState = DesignerEventCatalog::FindControlEvent(
+			UIClass::UI_MediaPlayer, L"OnStateChanged");
+		CUI_EXPECT_TRUE(mediaState.has_value());
+		auto formTheme = DesignerEventCatalog::FindFormEvent(L"OnThemeChanged");
+		CUI_EXPECT_TRUE(formTheme.has_value());
+		auto dropFile = DesignerEventCatalog::FindControlEvent(
+			UIClass::UI_Button, L"OnDropFile");
+		CUI_EXPECT_TRUE(dropFile.has_value());
+		CUI_EXPECT_EQ(std::string(
+			"Control* sender, std::vector<std::wstring> files"),
+			dropFile->ParameterList);
+		auto formDropFile = DesignerEventCatalog::FindFormEvent(L"OnDropFile");
+		CUI_EXPECT_TRUE(formDropFile.has_value());
+		CUI_EXPECT_EQ(std::string(
+			"Form* sender, std::vector<std::wstring> files"),
+			formDropFile->ParameterList);
+		auto propertyChanged = DesignerEventCatalog::FindControlEvent(
+			UIClass::UI_Button, L"OnPropertyValueChanged");
+		CUI_EXPECT_TRUE(propertyChanged.has_value());
+		CUI_EXPECT_EQ(std::string(
+			"Control* sender, const ControlPropertyChangedEventArgs& e"),
+			propertyChanged->ParameterList);
+		auto validationChanged = DesignerEventCatalog::FindControlEvent(
+			UIClass::UI_Button, L"OnValidationStateChanged");
+		CUI_EXPECT_TRUE(validationChanged.has_value());
+		CUI_EXPECT_EQ(std::string(
+			"const BindingValidationChangedEventArgs& e"),
+			validationChanged->ParameterList);
+		CUI_EXPECT_EQ(DesignerEventCategory::Diagnostics,
+			validationChanged->Category);
+		GridView eventGrid(0, 0, 200, 100);
+		bool addingRowObserved = false;
+		auto addingRowConnection = eventGrid.OnUserAddingRow.Subscribe(
+			[&addingRowObserved](GridView*, bool& cancel)
+			{
+				addingRowObserved = true;
+				cancel = true;
+			});
+		bool cancelAddingRow = false;
+		eventGrid.OnUserAddingRow.Invoke(&eventGrid, cancelAddingRow);
+		CUI_EXPECT_TRUE(addingRowConnection.Connected());
+		CUI_EXPECT_TRUE(addingRowObserved && cancelAddingRow);
+		CUI_EXPECT_EQ(std::wstring(L"saveButton_OnMouseClick"),
+			DesignerEventCatalog::MakeDefaultHandlerName(
+				L"saveButton", L"OnMouseClick"));
+		CUI_EXPECT_EQ(std::wstring(L"saveButton_OnMouseClick"),
+			DesignerEventCatalog::ResolveHandlerName(
+				L"1", L"saveButton", L"OnMouseClick"));
+		CUI_EXPECT_EQ(std::wstring(L"HandleSave"),
+			DesignerEventCatalog::ResolveHandlerName(
+				L"HandleSave", L"saveButton", L"OnMouseClick"));
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerEventCatalog::ValidateHandlerName(L"HandleSave", &error));
+		CUI_EXPECT_FALSE(DesignerEventCatalog::ValidateHandlerName(L"bad::name", &error));
+		CUI_EXPECT_FALSE(DesignerEventCatalog::ValidateHandlerName(L"class", &error));
+		CUI_EXPECT_FALSE(DesignerEventCatalog::ValidateHandlerName(L"__reserved", &error));
+	});
+
+	runner.Add("Designer event index validates shares and renames handler references", []
+	{
+		DesignerModel::DesignDocument document;
+		document.Form.Name = L"EventForm";
+		document.Form.EventHandlers[L"OnCommand"] = L"HandleCommand";
+
+		DesignerModel::DesignNode save;
+		save.Id = 10;
+		save.Name = L"saveButton";
+		save.Type = UIClass::UI_Button;
+		save.Events["OnMouseClick"] = true;
+		save.Events["OnMouseDoubleClick"] = "HandleSharedMouse";
+		document.Nodes.push_back(save);
+
+		DesignerModel::DesignNode cancel;
+		cancel.Id = 11;
+		cancel.Name = L"cancelButton";
+		cancel.Type = UIClass::UI_Button;
+		cancel.Order = 1;
+		cancel.Events["OnMouseClick"] = "HandleSharedMouse";
+		document.Nodes.push_back(cancel);
+		document.NextStableId = 12;
+
+		DesignerModel::DesignDocumentEventIndex index;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentEventIndex::Build(
+			document, index, &error));
+		CUI_EXPECT_EQ(4ULL, index.References().size());
+		CUI_EXPECT_EQ(3ULL, index.Handlers().size());
+		const auto* shared = index.FindHandler(L"HandleSharedMouse");
+		CUI_EXPECT_TRUE(shared != nullptr);
+		CUI_EXPECT_EQ(2ULL, shared->ReferenceIndices.size());
+		const auto* conventional = index.FindHandler(L"saveButton_OnMouseClick");
+		CUI_EXPECT_TRUE(conventional != nullptr);
+		CUI_EXPECT_TRUE(index.References()[
+			conventional->ReferenceIndices.front()].UsedConventionalName);
+
+		size_t renamed = 0;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentEventIndex::RenameHandler(
+			document, L"HandleSharedMouse", L"HandleMouse", &renamed, &error));
+		CUI_EXPECT_EQ(2ULL, renamed);
+		CUI_EXPECT_EQ(std::string("HandleMouse"),
+			document.Nodes[0].Events["OnMouseDoubleClick"].get<std::string>());
+		CUI_EXPECT_EQ(std::string("HandleMouse"),
+			document.Nodes[1].Events["OnMouseClick"].get<std::string>());
+
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentEventIndex::RenameHandler(
+			document, L"saveButton_OnMouseClick", L"HandleMouse", &renamed, &error));
+		CUI_EXPECT_EQ(1ULL, renamed);
+		CUI_EXPECT_EQ(std::string("HandleMouse"),
+			document.Nodes[0].Events["OnMouseClick"].get<std::string>());
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentEventIndex::Build(
+			document, index, &error));
+		CUI_EXPECT_EQ(2ULL, index.Handlers().size());
+		CUI_EXPECT_EQ(3ULL,
+			index.FindHandler(L"HandleMouse")->ReferenceIndices.size());
+
+		const auto beforeConflict = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentEventIndex::RenameHandler(
+			document, L"HandleCommand", L"HandleMouse", &renamed, &error));
+		CUI_EXPECT_TRUE(document == beforeConflict);
+		CUI_EXPECT_TRUE(!error.empty());
+
+		DesignerModel::DesignDocument sameTypeDifferentNames;
+		sameTypeDifferentNames.Form.Name = L"SharedSignatureForm";
+		sameTypeDifferentNames.Form.EventHandlers[L"OnTextChanged"] =
+			L"HandleStringPair";
+		sameTypeDifferentNames.Form.EventHandlers[L"OnThemeChanged"] =
+			L"HandleStringPair";
+		DesignerModel::DesignDocumentEventIndex sharedSignatureIndex;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentEventIndex::Build(
+			sameTypeDifferentNames, sharedSignatureIndex, &error));
+		const auto* sharedStringPair =
+			sharedSignatureIndex.FindHandler(L"HandleStringPair");
+		CUI_EXPECT_TRUE(sharedStringPair != nullptr);
+		CUI_EXPECT_EQ(2ULL, sharedStringPair->ReferenceIndices.size());
+
+		auto invalid = document;
+		invalid.Nodes[0].Events["UnknownEvent"] = "HandleUnknown";
+		const auto previousReferenceCount = index.References().size();
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentEventIndex::Build(
+			invalid, index, &error));
+		CUI_EXPECT_EQ(previousReferenceCount, index.References().size());
+	});
+
+	runner.Add("Designer event generation preserves user code across regeneration", []
+	{
+		namespace fs = std::filesystem;
+		const fs::path outputDir = fs::temp_directory_path()
+			/ (L"cui-event-codegen-" + std::to_wstring(GetCurrentProcessId())
+				+ L"-" + std::to_wstring(GetTickCount64()));
+		fs::create_directories(outputDir);
+		const auto headerPath = outputDir / L"PersistedEventForm.h";
+		const auto cppPath = outputDir / L"PersistedEventForm.cpp";
+		auto readText = [](const fs::path& path)
+		{
+			std::ifstream stream(path, std::ios::binary);
+			return std::string(
+				std::istreambuf_iterator<char>(stream),
+				std::istreambuf_iterator<char>());
+		};
+		auto countText = [](const std::string& text, const std::string& needle)
+		{
+			size_t count = 0;
+			for (size_t position = 0;
+				(position = text.find(needle, position)) != std::string::npos;
+				position += needle.size()) ++count;
+			return count;
+		};
+
+		Button button(L"Save", 0, 0);
+		auto designButton = std::make_shared<DesignerControl>(
+			&button, L"saveButton", UIClass::UI_Button, nullptr, 42);
+		designButton->EventHandlers[L"OnMouseClick"] = L"HandleSave";
+		designButton->EventHandlers[L"OnMouseDoubleClick"] = L"HandleSave";
+		CodeGenInput input;
+		input.FormName = L"PersistedEventForm";
+		input.Controls = { designButton };
+		input.FormEventHandlers[L"OnCommand"] = L"HandleCommand";
+		input.FormEventHandlers[L"OnClose"] = L"HandleClose";
+		input.FormEventHandlers[L"OnTextChanged"] = L"HandleFormValueChange";
+		input.FormEventHandlers[L"OnThemeChanged"] = L"HandleFormValueChange";
+		input.FormEventHandlers[L"OnShown"] = L"HandleShown";
+		DesignerStyleRule generatedStyleRule;
+		generatedStyleRule.HasType = true;
+		generatedStyleRule.Type = UIClass::UI_Button;
+		generatedStyleRule.Setters.push_back({
+			L"Round", false, {}, { DesignerStyleValueKind::Float, L"6" } });
+		input.StyleSheet.Rules.push_back(std::move(generatedStyleRule));
+
+		CodeGenerator generator(L"PersistedEventForm", input);
+		CUI_EXPECT_TRUE(generator.GenerateFiles(
+			headerPath.wstring(), cppPath.wstring()));
+		const auto generatedHeader = readText(outputDir / L"PersistedEventForm.g.h");
+		const auto generatedCpp = readText(outputDir / L"PersistedEventForm.g.cpp");
+		const auto generatedHandlerInclude = readText(
+			outputDir / L"PersistedEventForm.handlers.g.inc");
+		const auto userHeader = readText(headerPath);
+		auto userCpp = readText(cppPath);
+		CUI_EXPECT_TRUE(generatedHeader.find(
+			"class PersistedEventFormGenerated : public Form") != std::string::npos);
+		CUI_EXPECT_TRUE(generatedHeader.find("Button* saveButton = nullptr;")
+			< generatedHeader.find("std::vector<EventConnection> _generatedEventConnections;"));
+		CUI_EXPECT_TRUE(generatedHeader.find(
+			"static constexpr int saveButton = 42;") != std::string::npos);
+		CUI_EXPECT_TRUE(generatedHeader.find(
+			"Button* GetSaveButton() noexcept { return saveButton; }")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(generatedHeader.find(
+			"const Button* GetSaveButton() const noexcept { return saveButton; }")
+			!= std::string::npos);
+		CUI_EXPECT_EQ(1ULL, countText(generatedHeader,
+			"virtual void HandleSave(Control* sender, MouseEventArgs e);"));
+		CUI_EXPECT_EQ(2ULL, countText(generatedCpp,
+			"std::bind_front(&PersistedEventFormGenerated::HandleSave, this)"));
+		CUI_EXPECT_EQ(1ULL, countText(generatedHeader,
+			"virtual void HandleFormValueChange("));
+		CUI_EXPECT_EQ(2ULL, countText(generatedCpp,
+			"std::bind_front(&PersistedEventFormGenerated::HandleFormValueChange, this)"));
+		CUI_EXPECT_TRUE(generatedHeader.find(
+			"virtual void HandleShown(Form* sender);") != std::string::npos);
+		CUI_EXPECT_TRUE(generatedCpp.find(
+			"this->OnShown.Subscribe(std::bind_front(&PersistedEventFormGenerated::HandleShown, this))")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(generatedCpp.find("saveButton->DesignId = 42;")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(generatedCpp.find(
+			"saveButton->SetStyleSheet(__styleSheet, true);")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(generatedCpp.find(".Subscribe(std::bind_front(")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(generatedCpp.find(
+			"this->OnClosing.Subscribe(std::bind_front(&PersistedEventFormGenerated::HandleClose")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(generatedCpp.find(" += std::bind_front(")
+			== std::string::npos);
+		CUI_EXPECT_TRUE(userHeader.find("<cui-designer-user-header>")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(userCpp.find("<cui-designer-user-source>")
+			!= std::string::npos);
+		CUI_EXPECT_EQ(1ULL, countText(userCpp,
+			"void PersistedEventForm::HandleSave("));
+
+		// Sanitized names must remain globally unique even when one source name
+		// already looks like another source name's numeric fallback.
+		Button collisionOne(L"One", 0, 0);
+		Button collisionTwo(L"Two", 0, 0);
+		Button collisionThree(L"Three", 0, 0);
+		CodeGenInput collisionInput;
+		collisionInput.Controls = {
+			std::make_shared<DesignerControl>(
+				&collisionOne, L"button", UIClass::UI_Button),
+			std::make_shared<DesignerControl>(
+				&collisionTwo, L"Button", UIClass::UI_Button),
+			std::make_shared<DesignerControl>(
+				&collisionThree, L"button2", UIClass::UI_Button),
+		};
+		const auto collisionHeader = CodeGenerator(
+			L"CollisionForm", collisionInput).GenerateHeader();
+		CUI_EXPECT_EQ(1ULL, countText(collisionHeader, "Button* button = nullptr;"));
+		CUI_EXPECT_EQ(1ULL, countText(collisionHeader, "Button* button2 = nullptr;"));
+		CUI_EXPECT_EQ(1ULL, countText(collisionHeader, "Button* button22 = nullptr;"));
+		CUI_EXPECT_TRUE(collisionHeader.find("GetButton22() noexcept")
+			!= std::string::npos);
+
+		CodeGenerator mismatchedClassGenerator(L"RenamedEventForm", input);
+		CUI_EXPECT_FALSE(mismatchedClassGenerator.GenerateFiles(
+			headerPath.wstring(), cppPath.wstring()));
+		CUI_EXPECT_TRUE(!mismatchedClassGenerator.GetLastError().empty());
+		CUI_EXPECT_EQ(generatedHeader,
+			readText(outputDir / L"PersistedEventForm.g.h"));
+		CUI_EXPECT_EQ(generatedCpp,
+			readText(outputDir / L"PersistedEventForm.g.cpp"));
+		CUI_EXPECT_EQ(generatedHandlerInclude,
+			readText(outputDir / L"PersistedEventForm.handlers.g.inc"));
+		CUI_EXPECT_EQ(userHeader, readText(headerPath));
+		CUI_EXPECT_EQ(userCpp, readText(cppPath));
+
+		// Lock the third batch target against rename. The first two generated
+		// files will already have committed and must be restored byte-for-byte.
+		const auto handlerIncludePath =
+			outputDir / L"PersistedEventForm.handlers.g.inc";
+		const auto generatedHeaderPath =
+			outputDir / L"PersistedEventForm.g.h";
+		CUI_EXPECT_TRUE(fs::remove(generatedHeaderPath));
+		const HANDLE lockedHandlerInclude = CreateFileW(
+			handlerIncludePath.c_str(), GENERIC_READ,
+			FILE_SHARE_READ | FILE_SHARE_WRITE,
+			nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		CUI_EXPECT_TRUE(lockedHandlerInclude != INVALID_HANDLE_VALUE);
+		if (lockedHandlerInclude != INVALID_HANDLE_VALUE)
+		{
+			designButton->EventHandlers[L"OnMouseMove"] =
+				L"HandleBatchFailure";
+			CodeGenerator rejectedBatch(L"PersistedEventForm", input);
+			CUI_EXPECT_FALSE(rejectedBatch.GenerateFiles(
+				headerPath.wstring(), cppPath.wstring()));
+			CUI_EXPECT_TRUE(!rejectedBatch.GetLastError().empty());
+			CloseHandle(lockedHandlerInclude);
+			designButton->EventHandlers.erase(L"OnMouseMove");
+
+			CUI_EXPECT_FALSE(fs::exists(generatedHeaderPath));
+			CUI_EXPECT_EQ(generatedCpp,
+				readText(outputDir / L"PersistedEventForm.g.cpp"));
+			CUI_EXPECT_EQ(generatedHandlerInclude,
+				readText(handlerIncludePath));
+			CUI_EXPECT_EQ(userHeader, readText(headerPath));
+			CUI_EXPECT_EQ(userCpp, readText(cppPath));
+			CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+				generatedHeaderPath.wstring(), generatedHeader));
+
+			bool foundBatchArtifact = false;
+			for (const auto& item : fs::directory_iterator(outputDir))
+				if (item.path().filename().wstring().find(L".~cui-batch-")
+					!= std::wstring::npos)
+					foundBatchArtifact = true;
+			CUI_EXPECT_FALSE(foundBatchArtifact);
+		}
+
+		{
+			std::ofstream append(cppPath, std::ios::binary | std::ios::app);
+			append
+				<< "\n// USER_SENTINEL: must survive regeneration.\n"
+				<< "// PersistedEventForm::HandleComment is only a comment.\n"
+				<< "static constexpr auto USER_HANDLER_TEXT = "
+					"\"PersistedEventForm::HandleString\";\n"
+				<< "static constexpr auto USER_HANDLER_RAW = "
+					"R\"(PersistedEventForm::HandleRaw)\";\n";
+		}
+		// "Handle" is also a strict prefix of the existing HandleSave body.
+		designButton->EventHandlers[L"OnMouseDown"] = L"Handle";
+		designButton->EventHandlers[L"OnMouseUp"] = L"HandleComment";
+		designButton->EventHandlers[L"OnMouseEnter"] = L"HandleString";
+		designButton->EventHandlers[L"OnMouseLeave"] = L"HandleRaw";
+		// Same Event function type, different display parameter names. Removing
+		// the first route must not reject the retained user declaration/body.
+		input.FormEventHandlers.erase(L"OnTextChanged");
+		CodeGenerator regenerated(L"PersistedEventForm", input);
+		CUI_EXPECT_TRUE(regenerated.GenerateFiles(
+			headerPath.wstring(), cppPath.wstring()));
+		userCpp = readText(cppPath);
+		CUI_EXPECT_TRUE(userCpp.find("USER_SENTINEL") != std::string::npos);
+		CUI_EXPECT_EQ(1ULL, countText(userCpp,
+			"void PersistedEventForm::HandleSave("));
+		CUI_EXPECT_EQ(1ULL, countText(userCpp,
+			"void PersistedEventForm::Handle("));
+		CUI_EXPECT_EQ(1ULL, countText(userCpp,
+			"void PersistedEventForm::HandleComment("));
+		CUI_EXPECT_EQ(1ULL, countText(userCpp,
+			"void PersistedEventForm::HandleString("));
+		CUI_EXPECT_EQ(1ULL, countText(userCpp,
+			"void PersistedEventForm::HandleRaw("));
+
+		designButton->EventHandlers.erase(L"OnMouseClick");
+		designButton->EventHandlers.erase(L"OnMouseDoubleClick");
+		input.FormEventHandlers.erase(L"OnShown");
+		CodeGenerator afterRemoval(L"PersistedEventForm", input);
+		CUI_EXPECT_TRUE(afterRemoval.GenerateFiles(
+			headerPath.wstring(), cppPath.wstring()));
+		const auto retained = readText(
+			outputDir / L"PersistedEventForm.handlers.g.inc");
+		CUI_EXPECT_TRUE(retained.find("void HandleSave(") != std::string::npos);
+		CUI_EXPECT_TRUE(retained.find("void HandleShown(") != std::string::npos);
+		const auto afterRemovalGeneratedCpp = readText(
+			outputDir / L"PersistedEventForm.g.cpp");
+		CUI_EXPECT_TRUE(afterRemovalGeneratedCpp.find(
+			"OnMouseClick.Subscribe(std::bind_front(&PersistedEventFormGenerated::HandleSave")
+			== std::string::npos);
+		CUI_EXPECT_TRUE(afterRemovalGeneratedCpp.find(
+			"OnShown.Subscribe(std::bind_front(&PersistedEventFormGenerated::HandleShown")
+			== std::string::npos);
+		CUI_EXPECT_TRUE(readText(cppPath).find("USER_SENTINEL") != std::string::npos);
+
+		// Existing user bodies are matched by parameter types, not only by name.
+		// Formatting and parameter-name changes remain valid, while a type drift
+		// must fail before any member of the five-file batch is modified.
+		Button signatureButton(L"Signature", 0, 0);
+		auto signatureDesignButton = std::make_shared<DesignerControl>(
+			&signatureButton, L"signatureButton", UIClass::UI_Button);
+		signatureDesignButton->EventHandlers[L"OnMouseClick"] =
+			L"HandleSignatureDrift";
+		CodeGenInput signatureInput;
+		signatureInput.FormName = L"SignatureDriftForm";
+		signatureInput.Controls = { signatureDesignButton };
+		const auto signatureHeaderPath = outputDir / L"SignatureDriftForm.h";
+		const auto signatureCppPath = outputDir / L"SignatureDriftForm.cpp";
+		CodeGenerator signatureGenerator(L"SignatureDriftForm", signatureInput);
+		CUI_EXPECT_TRUE(signatureGenerator.GenerateFiles(
+			signatureHeaderPath.wstring(), signatureCppPath.wstring()));
+		auto signatureUserCpp = readText(signatureCppPath);
+		const std::string generatedSignature =
+			"void SignatureDriftForm::HandleSignatureDrift(Control* sender, MouseEventArgs e)";
+		const std::string reformattedSignature =
+			"void SignatureDriftForm::HandleSignatureDrift( Control * origin, MouseEventArgs args )";
+		auto signaturePosition = signatureUserCpp.find(generatedSignature);
+		CUI_EXPECT_TRUE(signaturePosition != std::string::npos);
+		if (signaturePosition != std::string::npos)
+			signatureUserCpp.replace(signaturePosition,
+				generatedSignature.size(), reformattedSignature);
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			signatureCppPath.wstring(), signatureUserCpp));
+		CodeGenerator reformattedSignatureGenerator(
+			L"SignatureDriftForm", signatureInput);
+		CUI_EXPECT_TRUE(reformattedSignatureGenerator.GenerateFiles(
+			signatureHeaderPath.wstring(), signatureCppPath.wstring()));
+		CUI_EXPECT_EQ(1ULL, countText(readText(signatureCppPath),
+			"void SignatureDriftForm::HandleSignatureDrift("));
+
+		signatureUserCpp = readText(signatureCppPath);
+		signaturePosition = signatureUserCpp.find("MouseEventArgs args");
+		CUI_EXPECT_TRUE(signaturePosition != std::string::npos);
+		if (signaturePosition != std::string::npos)
+			signatureUserCpp.replace(signaturePosition,
+				std::string("MouseEventArgs args").size(), "KeyEventArgs args");
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			signatureCppPath.wstring(), signatureUserCpp));
+		const std::vector<fs::path> signatureBatchPaths{
+			outputDir / L"SignatureDriftForm.g.h",
+			outputDir / L"SignatureDriftForm.g.cpp",
+			outputDir / L"SignatureDriftForm.handlers.g.inc",
+			signatureHeaderPath,
+			signatureCppPath,
+		};
+		std::vector<std::string> signatureBatchBefore;
+		for (const auto& path : signatureBatchPaths)
+			signatureBatchBefore.push_back(readText(path));
+		CodeGenerator rejectedSignatureGenerator(
+			L"SignatureDriftForm", signatureInput);
+		CUI_EXPECT_FALSE(rejectedSignatureGenerator.GenerateFiles(
+			signatureHeaderPath.wstring(), signatureCppPath.wstring()));
+		CUI_EXPECT_TRUE(rejectedSignatureGenerator.GetLastError().find(
+			L"HandleSignatureDrift") != std::wstring::npos);
+		for (size_t index = 0; index < signatureBatchPaths.size(); ++index)
+			CUI_EXPECT_EQ(signatureBatchBefore[index],
+				readText(signatureBatchPaths[index]));
+
+		Button namespaceButton(L"Namespaced", 0, 0);
+		auto namespaceDesignButton = std::make_shared<DesignerControl>(
+			&namespaceButton, L"namespaceButton", UIClass::UI_Button,
+			nullptr, 77);
+		namespaceDesignButton->EventHandlers[L"OnMouseClick"] =
+			L"HandleNamespacedClick";
+		namespaceDesignButton->EventHandlers[L"OnDropFile"] =
+			L"HandleNamespacedDrop";
+		namespaceDesignButton->EventHandlers[L"OnPropertyValueChanged"] =
+			L"HandleNamespacedPropertyChanged";
+		namespaceDesignButton->EventHandlers[L"OnValidationStateChanged"] =
+			L"HandleNamespacedValidationChanged";
+		CodeGenInput namespaceInput;
+		namespaceInput.FormName = L"NamespacedRuntimeForm";
+		namespaceInput.Controls = { namespaceDesignButton };
+		const auto namespaceHeaderPath = outputDir / L"NamespacedWindow.h";
+		const auto namespaceCppPath = outputDir / L"NamespacedWindow.cpp";
+		CodeGenerator namespaceGenerator(
+			L"Acme::Views::MainWindow", namespaceInput);
+		CUI_EXPECT_TRUE(namespaceGenerator.GenerateFiles(
+			namespaceHeaderPath.wstring(), namespaceCppPath.wstring()));
+		const auto namespaceGeneratedHeader = readText(
+			outputDir / L"NamespacedWindow.g.h");
+		const auto namespaceGeneratedCpp = readText(
+			outputDir / L"NamespacedWindow.g.cpp");
+		const auto namespaceUserHeader = readText(namespaceHeaderPath);
+		const auto namespaceUserCpp = readText(namespaceCppPath);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"namespace Acme::Views") != std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"class MainWindowGenerated : public Form") != std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"static constexpr int namespaceButton = 77;") != std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"Button* GetNamespaceButton() noexcept { return namespaceButton; }")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedCpp.find(
+			"#include \"NamespacedWindow.g.h\"") != std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedCpp.find(
+			"Acme::Views::MainWindowGenerated::MainWindowGenerated()")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedCpp.find(
+			"&Acme::Views::MainWindowGenerated::HandleNamespacedClick")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(namespaceUserHeader.find(
+			"<cui-designer-class>Acme::Views::MainWindow</cui-designer-class>")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(namespaceUserHeader.find(
+			"class MainWindow : public MainWindowGenerated")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(namespaceUserCpp.find(
+			"Acme::Views::MainWindow::MainWindow()") != std::string::npos);
+		CUI_EXPECT_TRUE(namespaceUserCpp.find(
+			"void Acme::Views::MainWindow::HandleNamespacedClick(")
+			!= std::string::npos);
+		CodeGenerator namespaceRegenerator(
+			L"Acme::Views::MainWindow", namespaceInput);
+		CUI_EXPECT_TRUE(namespaceRegenerator.GenerateFiles(
+			namespaceHeaderPath.wstring(), namespaceCppPath.wstring()));
+		CUI_EXPECT_EQ(1ULL, countText(readText(namespaceCppPath),
+			"void Acme::Views::MainWindow::HandleNamespacedClick("));
+		CodeGenerator wrongNamespace(
+			L"Other::Views::MainWindow", namespaceInput);
+		CUI_EXPECT_FALSE(wrongNamespace.GenerateFiles(
+			namespaceHeaderPath.wstring(), namespaceCppPath.wstring()));
+		CUI_EXPECT_EQ(namespaceGeneratedCpp,
+			readText(outputDir / L"NamespacedWindow.g.cpp"));
+		CUI_EXPECT_EQ(namespaceUserCpp, readText(namespaceCppPath));
+
+		const auto legacyHeader = outputDir / L"Legacy.h";
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			legacyHeader.wstring(), "// existing hand-written file\n"));
+		CodeGenerator guarded(L"Legacy", input);
+		CUI_EXPECT_FALSE(guarded.GenerateFiles(
+			legacyHeader.wstring(), (outputDir / L"Legacy.cpp").wstring()));
+		CUI_EXPECT_TRUE(readText(legacyHeader).find("existing hand-written file")
+			!= std::string::npos);
+
+		if (GetEnvironmentVariableW(
+			L"CUI_KEEP_CODEGEN_TEST_OUTPUT", nullptr, 0) == 0)
+			fs::remove_all(outputDir);
+	});
+
+	runner.Add("Headless design code generation resolves XAML and XML associations", []
+	{
+		namespace fs = std::filesystem;
+		const fs::path outputDir = fs::temp_directory_path()
+			/ (L"cui-headless-codegen-" + std::to_wstring(GetCurrentProcessId())
+				+ L"-" + std::to_wstring(GetTickCount64()));
+		fs::create_directories(outputDir);
+		auto findRepositoryRoot = []
+		{
+			std::vector<fs::path> seeds{ fs::current_path() };
+			try
+			{
+				seeds.push_back(fs::absolute(fs::path(__FILE__)).parent_path());
+			}
+			catch (...) {}
+			for (auto seed : seeds)
+				for (int depth = 0; depth < 8 && !seed.empty(); ++depth)
+				{
+					if (fs::exists(seed / L"CUI.sln")) return seed;
+					const auto parent = seed.parent_path();
+					if (parent == seed) break;
+					seed = parent;
+				}
+			return fs::path{};
+		};
+		auto readText = [](const fs::path& path)
+		{
+			std::ifstream stream(path, std::ios::binary);
+			return std::string(
+				std::istreambuf_iterator<char>(stream),
+				std::istreambuf_iterator<char>());
+		};
+		auto canonicalText = [](std::string value)
+		{
+			value.erase(std::remove(value.begin(), value.end(), '\r'), value.end());
+			return value;
+		};
+
+		const auto repositoryRoot = findRepositoryRoot();
+		CUI_EXPECT_TRUE(!repositoryRoot.empty());
+		const auto xamlPath = repositoryRoot
+			/ L"CuiStaticGeneratedSample" / L"NamespacedWindow.cui.xaml";
+		DesignerModel::DesignCodeGenerationOptions xamlOptions;
+		xamlOptions.OutputBasePath = (outputDir / L"NamespacedWindow").wstring();
+		DesignerModel::DesignCodeGenerationResult xamlResult;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::GenerateFile(
+			xamlPath.wstring(), xamlOptions, &xamlResult, &error));
+		CUI_EXPECT_EQ(std::wstring(L"Acme::Views::MainWindow"),
+			xamlResult.ClassName);
+		CUI_EXPECT_EQ(5ULL, xamlResult.OutputFiles().size());
+		for (const auto& file : xamlResult.OutputFiles())
+			CUI_EXPECT_TRUE(fs::exists(file));
+		CUI_EXPECT_TRUE(readText(xamlResult.GeneratedSourcePath).find(
+			"&Acme::Views::MainWindowGenerated::HandleNamespacedClick")
+			!= std::string::npos);
+		const auto staticSample = repositoryRoot / L"CuiStaticGeneratedSample";
+		for (const auto* fileName : {
+			L"NamespacedWindow.g.h", L"NamespacedWindow.g.cpp",
+			L"NamespacedWindow.handlers.g.inc", L"NamespacedWindow.h",
+			L"NamespacedWindow.cpp" })
+		{
+			CUI_EXPECT_EQ(
+				canonicalText(readText(outputDir / fileName)),
+				canonicalText(readText(staticSample / fileName)));
+		}
+		const auto preservedTime = fs::file_time_type::clock::now()
+			- std::chrono::hours(2);
+		std::vector<fs::file_time_type> preservedTimes;
+		for (const auto& file : xamlResult.OutputFiles())
+		{
+			fs::last_write_time(file, preservedTime);
+			preservedTimes.push_back(fs::last_write_time(file));
+		}
+		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::GenerateFile(
+			xamlPath.wstring(), xamlOptions, &xamlResult, &error));
+		const auto regeneratedFiles = xamlResult.OutputFiles();
+		for (size_t index = 0; index < regeneratedFiles.size(); ++index)
+			CUI_EXPECT_EQ(preservedTimes[index],
+				fs::last_write_time(regeneratedFiles[index]));
+
+		DesignerModel::DesignDocument xmlDocument;
+		xmlDocument.Form.Name = L"XmlWindow";
+		xmlDocument.CodeBehind.ClassName = L"Acme::Tools::XmlWindow";
+		xmlDocument.CodeBehind.RelativeBasePath = L"generated/XmlWindow";
+		DesignerModel::DesignNode button;
+		button.Id = 1;
+		button.Name = L"xmlButton";
+		button.Type = UIClass::UI_Button;
+		button.Props["Text"] = "XML";
+		button.Props["Width"] = 100;
+		button.Props["Height"] = 28;
+		button.Events["OnMouseClick"] = "HandleXmlClick";
+		xmlDocument.Nodes.push_back(std::move(button));
+		xmlDocument.RecalculateNextStableId();
+		const auto xmlPath = outputDir / L"XmlWindow.xml";
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::SaveToFile(
+			xmlDocument, xmlPath.wstring(), &error));
+		DesignerModel::DesignCodeGenerationResult xmlResult;
+		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::GenerateFile(
+			xmlPath.wstring(), {}, &xmlResult, &error));
+		CUI_EXPECT_EQ(std::wstring(L"Acme::Tools::XmlWindow"),
+			xmlResult.ClassName);
+		CUI_EXPECT_EQ((outputDir / L"generated" / L"XmlWindow").wstring(),
+			xmlResult.OutputBasePath);
+		for (const auto& file : xmlResult.OutputFiles())
+			CUI_EXPECT_TRUE(fs::exists(file));
+
+		DesignerModel::DesignCodeGenerationOptions invalidOptions;
+		invalidOptions.ClassName = L"Invalid.Window";
+		invalidOptions.OutputBasePath = (outputDir / L"Invalid.cpp").wstring();
+		CUI_EXPECT_FALSE(DesignerModel::DesignCodeGenerationService::Generate(
+			xmlDocument, L"", invalidOptions, nullptr, &error));
+		CUI_EXPECT_TRUE(error.find(L"扩展名") != std::wstring::npos);
+		CUI_EXPECT_FALSE(fs::exists(outputDir / L"Invalid.cpp.g.h"));
+
+		if (GetEnvironmentVariableW(
+			L"CUI_KEEP_CODEGEN_TEST_OUTPUT", nullptr, 0) == 0)
+			fs::remove_all(outputDir);
 	});
 
 	runner.Add("Designer code generation emits document style resources and rules", []
@@ -6487,6 +9082,9 @@ int main()
 			{ L"Round", false, L"", { DesignerStyleValueKind::Float, L"8.5" } }
 		};
 		input.StyleSheet.Rules.push_back(std::move(rule));
+		Button styledRoot(L"Styled", 0, 0, 120, 32);
+		input.Controls.push_back(std::make_shared<DesignerControl>(
+			&styledRoot, L"styledRoot", UIClass::UI_Button, nullptr, 1));
 
 		CodeGenerator generator(L"StyledForm", input);
 		const auto cpp = generator.GenerateCpp();
@@ -6498,7 +9096,12 @@ int main()
 		CUI_EXPECT_TRUE(cpp.find("ControlStyleSetter::Resource(L\"UnderMouseColor\", L\"Accent\")")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find("BindingValue(8.5f)") != std::string::npos);
-		CUI_EXPECT_TRUE(cpp.find("this->SetStyleSheet(__styleSheet);") != std::string::npos);
+		// Form is not a Control. The shared document sheet belongs on each root
+		// control tree and then propagates recursively.
+		CUI_EXPECT_TRUE(cpp.find("->SetStyleSheet(__styleSheet, true);")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find("this->SetStyleSheet(__styleSheet);")
+			== std::string::npos);
 	});
 
 	runner.Add("Designer metadata properties generate through runtime property metadata", []
@@ -6507,17 +9110,17 @@ int main()
 		std::wstring canonicalName;
 		DesignerStyleValue effectiveValue;
 		std::wstring error;
-		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ApplyValue(
+		auto designerControl = std::make_shared<DesignerControl>(
+			&button, L"metadataButton", UIClass::UI_Button);
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ApplyAndTrackValue(
 			button,
+			designerControl->MetadataProperties,
 			L"Round",
 			{ DesignerStyleValueKind::Float, L"9.25" },
 			&canonicalName,
 			&effectiveValue,
 			&error));
 
-		auto designerControl = std::make_shared<DesignerControl>(
-			&button, L"metadataButton", UIClass::UI_Button);
-		designerControl->MetadataProperties[canonicalName] = effectiveValue;
 		CodeGenInput input;
 		input.Controls.push_back(designerControl);
 		CodeGenerator generator(L"MetadataForm", input);
@@ -6527,9 +9130,53 @@ int main()
 		CUI_EXPECT_TRUE(cpp.find(
 			"(void)metadataButton->TrySetPropertyValue(L\"Round\", BindingValue(9.25f));")
 			!= std::string::npos);
+
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ResetAndUntrackValue(
+			button, designerControl->MetadataProperties, L"Round"));
+		CodeGenerator resetGenerator(L"MetadataForm", input);
+		const auto resetCpp = resetGenerator.GenerateCpp();
+		CUI_EXPECT_TRUE(resetCpp.find(
+			"metadataButton->TrySetPropertyValue(L\"Round\"") == std::string::npos);
 	});
 
-	runner.Add("Designer binding validation uses target metadata capabilities", []
+	runner.Add("Designer binding code generation preserves and restores Local values", []
+	{
+		Button captionButton(L"Fallback caption", 0, 0);
+		auto captionTarget = std::make_shared<DesignerControl>(
+			&captionButton, L"captionButton", UIClass::UI_Button);
+		captionTarget->DataBindings[L"Text"] = {
+			L"Caption", BindingMode::OneWay,
+			DataSourceUpdateMode::OnPropertyChanged, L"StringTrim"
+		};
+		CheckBox stateCheckBox(L"State", 0, 0);
+		auto stateTarget = std::make_shared<DesignerControl>(
+			&stateCheckBox, L"stateCheckBox", UIClass::UI_CheckBox);
+		stateTarget->DataBindings[L"Checked"] = {
+			L"Enabled", BindingMode::OneWayToSource,
+			DataSourceUpdateMode::OnPropertyChanged, L""
+		};
+		CodeGenInput input;
+		input.Controls = { captionTarget, stateTarget };
+		CodeGenerator generator(L"BoundForm", input);
+		const auto cpp = generator.GenerateCpp();
+		CUI_EXPECT_TRUE(cpp.find(
+			"TryGetPropertyValue(L\"Text\", ControlPropertyValueSource::Local")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find(
+			"ClearPropertyValue(L\"Text\", ControlPropertyValueSource::Local")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find(
+			"TrySetPropertyValue(L\"Text\", __previousLocal, ControlPropertyValueSource::Local")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find(
+			"BindingValueConverterRegistry::Create(L\"StringTrim\")")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find(
+			"ClearPropertyValue(L\"Checked\", ControlPropertyValueSource::Local")
+			== std::string::npos);
+	});
+
+    runner.Add("Designer binding validation uses target metadata capabilities", []
 	{
 		Control target;
 		DesignerDataBinding binding{
@@ -6625,6 +9272,35 @@ int main()
                 properties[i]->Name().c_str()) < 0);
         }
     });
+
+	runner.Add("Portable custom binding metadata uses the shared validator", []
+	{
+		DesignerBindingUtils::TargetMetadata target{
+			L"Severity", BindingValueKind::Int64,
+			false, true, false };
+		DesignerDataContextSchema schema{
+			{ L"Status.Severity", BindingValueKind::Int64,
+				true, true, true },
+			{ L"Status", BindingValueKind::Object,
+				true, false, true }
+		};
+		DesignerDataBinding oneWay{
+			L"Status.Severity", BindingMode::OneWay,
+			DataSourceUpdateMode::OnPropertyChanged };
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerBindingUtils::ValidateTarget(
+			target, oneWay, &error, &schema));
+
+		auto twoWay = oneWay;
+		twoWay.Mode = BindingMode::TwoWay;
+		CUI_EXPECT_FALSE(DesignerBindingUtils::ValidateTarget(
+			target, twoWay, &error, &schema));
+
+		target.CanRead = true;
+		target.CanObserve = true;
+		CUI_EXPECT_TRUE(DesignerBindingUtils::ValidateTarget(
+			target, twoWay, &error, &schema));
+	});
 
     runner.Add("Interactive state metadata supports TwoWay binding", []
     {
@@ -7477,6 +10153,288 @@ int main()
         CUI_EXPECT_NEAR(20.0f, result.width, 0.0001f);
         CUI_EXPECT_NEAR(44.0f, result.height, 0.0001f);
     });
+
+	runner.Add("Custom XAML controls round-trip portable type metadata", []
+	{
+		const std::string xaml = R"(<Form xmlns="urn:cui"
+			xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+			xmlns:d="urn:cui:designer"
+			xmlns:local="urn:cui:tests"
+			x:Name="CustomForm" Width="640" Height="480">
+			<local:FancyButton x:Name="fancy" DesignId="41"
+				d:CppType="Acme.Controls.FancyButton"
+				d:Header="Controls/FancyButton.h"
+				d:BaseType="Button" d:Constructor="Default"
+				Text="Custom" Canvas.Left="13" Canvas.Top="17"
+				Width="140" Height="36" />
+		</Form>)";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_EQ(1ULL, document.Nodes.size());
+		const auto& node = document.Nodes.front();
+		CUI_EXPECT_EQ(UIClass::UI_Button, node.Type);
+		CUI_EXPECT_EQ(std::wstring(L"local"), node.CustomType.XamlPrefix);
+		CUI_EXPECT_EQ(std::wstring(L"urn:cui:tests"),
+			node.CustomType.XamlNamespace);
+		CUI_EXPECT_EQ(std::wstring(L"Acme::Controls::FancyButton"),
+			node.CustomType.CppType);
+		CUI_EXPECT_EQ(DesignerCustomControlConstructor::Default,
+			node.CustomType.Constructor);
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("xmlns:local=\"urn:cui:tests\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("<local:FancyButton")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"d:CppType=\"Acme::Controls::FancyButton\"") != std::string::npos);
+		DesignerModel::DesignDocument fromXaml;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, fromXaml, &error));
+		CUI_EXPECT_EQ(document, fromXaml);
+
+		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument fromXml;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			xml, fromXml, &error));
+		CUI_EXPECT_EQ(document, fromXml);
+	});
+
+	runner.Add("Custom controls require registration at runtime and allow tool proxies", []
+	{
+		class FancyButton final : public Button
+		{
+		public:
+			FancyButton() : Button(L"", 0, 0, 1, 1) {}
+		};
+
+		DesignerModel::DesignDocument document;
+		document.Form.Name = L"CustomRuntimeForm";
+		DesignerModel::DesignNode node;
+		node.Id = 7;
+		node.Name = L"fancy";
+		node.Type = UIClass::UI_Button;
+		node.CustomType = {
+			L"local", L"FancyButton", L"urn:cui:tests",
+			L"Acme::Controls::FancyButton", L"Controls/FancyButton.h",
+			DesignerCustomControlConstructor::Default };
+		node.Props["metadata"]["Text"] = {
+			{ "kind", "String" }, { "value", "Registered" } };
+		document.Nodes.push_back(node);
+		document.NextStableId = 8;
+
+		std::wstring error;
+		DesignerModel::RuntimeDocument rejected;
+		CUI_EXPECT_FALSE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, rejected, {}, &error));
+
+		auto registry =
+			std::make_shared<DesignerModel::RuntimeCustomControlRegistry>();
+		CUI_EXPECT_TRUE(registry->Register(
+			L"urn:cui:tests", L"FancyButton",
+			[](const DesignerModel::DesignNode&)
+			{ return std::make_unique<FancyButton>(); }, &error));
+		DesignerModel::RuntimeDocumentLoadOptions registeredOptions;
+		registeredOptions.CustomControls = registry;
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, registeredOptions, &error));
+		CUI_EXPECT_TRUE(dynamic_cast<FancyButton*>(
+			runtime.FindControlByDesignId(7)) != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Registered"),
+			runtime.FindControlByDesignId(7)->Text);
+
+		DesignerModel::RuntimeDocumentLoadOptions proxyOptions;
+		proxyOptions.AllowCustomControlProxy = true;
+		DesignerModel::RuntimeDocument proxy;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, proxy, proxyOptions, &error));
+		CUI_EXPECT_TRUE(dynamic_cast<FancyButton*>(
+			proxy.FindControlByDesignId(7)) == nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Acme::Controls::FancyButton"),
+			proxy.Controls().front()->CustomType.CppType);
+	});
+
+	runner.Add("Custom control code generation uses declared include type and constructor", []
+	{
+		DesignerModel::DesignDocument document;
+		document.Form.Name = L"CustomCodeForm";
+		DesignerModel::DesignNode node;
+		node.Id = 9;
+		node.Name = L"fancy";
+		node.Type = UIClass::UI_Button;
+		node.Order = 0;
+		node.CustomType = {
+			L"local", L"FancyButton", L"urn:cui:tests",
+			L"Acme::Controls::FancyButton", L"Controls/FancyButton.h",
+			DesignerCustomControlConstructor::Default };
+		node.Props["location"] = { { "x", 11 }, { "y", 12 } };
+		node.Props["size"] = { { "w", 130 }, { "h", 31 } };
+		node.Props["metadata"]["Text"] = {
+			{ "kind", "String" }, { "value", "Generated" } };
+		node.Props["metadata"]["Severity"] = {
+			{ "kind", "Int" }, { "value", "4" } };
+		node.CustomEvents.push_back({
+			L"OnSeverityInvoked", L"Severity invoked", "OnSeverityInvoked",
+			DesignerEventCategory::Action,
+			DesignerCustomEventSignature::SenderInt, 5, true });
+		node.Events["OnSeverityInvoked"] = "HandleSeverityInvoked";
+		document.Nodes.push_back(std::move(node));
+		document.NextStableId = 10;
+
+		CodeGenInput input;
+		std::wstring error;
+		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument xmlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			xml, xmlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xmlRoundTrip);
+		const auto xaml = DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, xamlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+		auto invalidXamlContract = xaml;
+		const auto xamlSignature = invalidXamlContract.find(
+			" Signature=\"SenderInt\"");
+		CUI_EXPECT_TRUE(xamlSignature != std::string::npos);
+		invalidXamlContract.insert(xamlSignature,
+			" Unsupported=\"manifest-cpp\"");
+		DesignerModel::DesignDocument rejectedXamlContract;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXamlContract, rejectedXamlContract, &error));
+		auto invalidXmlContract = xml;
+		const auto xmlSignature = invalidXmlContract.find(
+			" signature=\"SenderInt\"");
+		CUI_EXPECT_TRUE(xmlSignature != std::string::npos);
+		invalidXmlContract.insert(xmlSignature,
+			" unsupported=\"manifest-cpp\"");
+		DesignerModel::DesignDocument rejectedXmlContract;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidXmlContract, rejectedXmlContract, &error));
+		auto builtInContract = document;
+		builtInContract.Nodes.front().CustomType = {};
+		DesignerModel::DesignDocumentEventIndex rejectedBuiltInContract;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentEventIndex::Build(
+			builtInContract, rejectedBuiltInContract, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignDocumentCodeGenInputBuilder::Build(
+				document, input, &error));
+		CodeGenerator generator(L"CustomCodeForm", input);
+		const auto header = generator.GenerateHeader();
+		const auto cpp = generator.GenerateCpp();
+		CUI_EXPECT_TRUE(header.find(
+			"#include \"Controls/FancyButton.h\"") != std::string::npos);
+		CUI_EXPECT_TRUE(header.find(
+			"Acme::Controls::FancyButton* fancy") != std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find(
+			"std::make_unique<Acme::Controls::FancyButton>()")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find("fancy->Location = {11, 12};")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find("fancy->Size = {130, 31};")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find(
+			"fancy->TrySetPropertyValue(L\"Severity\", BindingValue(4))")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(header.find(
+			"virtual void HandleSeverityInvoked(Control* sender, int value);")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find(
+			"fancy->OnSeverityInvoked.Subscribe(std::bind_front(&CustomCodeFormGenerated::HandleSeverityInvoked, this))")
+			!= std::string::npos);
+	});
+
+	runner.Add("Registered custom probes validate direct properties and canonicalize tool metadata", []
+	{
+		class PropertyBadge final : public Button
+		{
+		public:
+			PropertyBadge() : Button(L"", 0, 0, 120, 30) {}
+			int Severity() const noexcept { return _severity; }
+			void SetSeverity(int value)
+			{
+				SetPropertyField(L"Severity", _severity, value);
+			}
+			void EnsureBindingPropertiesRegistered() override
+			{
+				Button::EnsureBindingPropertiesRegistered();
+				static const bool registered = []
+				{
+					ControlPropertyOptions<PropertyBadge, int> options;
+					options.DefaultValue = 0;
+					options.Design.Category = L"Custom";
+					options.Design.Persistence =
+						ControlPropertyPersistence::Metadata;
+					BindingPropertyRegistry::Register<PropertyBadge, int>(
+						L"Severity",
+						[](PropertyBadge& target) { return target.Severity(); },
+						[](PropertyBadge& target, const int& value)
+						{ target.SetSeverity(value); }, {}, std::move(options));
+					return true;
+				}();
+				(void)registered;
+			}
+
+		private:
+			int _severity = 0;
+		};
+
+		auto registry =
+			std::make_shared<DesignerModel::RuntimeCustomControlRegistry>();
+		std::wstring error;
+		CUI_EXPECT_TRUE(registry->Register(
+			L"urn:cui:tests", L"PropertyBadge",
+			[](const DesignerModel::DesignNode&)
+			{ return std::make_unique<PropertyBadge>(); }, &error));
+		DesignerModel::XamlDocumentParseOptions parseOptions;
+		parseOptions.CustomControlFactory = [registry](
+			const DesignerModel::DesignNode& node)
+			{ return registry->Create(node); };
+		const std::string xaml = R"(<Form xmlns="urn:cui"
+			xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+			xmlns:d="urn:cui:designer" xmlns:local="urn:cui:tests"
+			x:Name="PropertyForm">
+			<local:PropertyBadge x:Name="badge" DesignId="51"
+				d:CppType="Acme.Controls.PropertyBadge"
+				d:Header="Controls/PropertyBadge.h" d:BaseType="Button"
+				Severity="6" />
+		</Form>)";
+		DesignerModel::DesignDocument document;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, parseOptions, &error));
+		CUI_EXPECT_EQ(std::string("6"), document.Nodes.front().Props
+			["metadata"]["Severity"]["value"].get<std::string>());
+		document.Nodes.front().Bindings["Severity"] = {
+			{ "source", "View.Severity" },
+			{ "mode", static_cast<int>(BindingMode::OneWay) },
+			{ "updateMode", static_cast<int>(
+				DataSourceUpdateMode::OnPropertyChanged) } };
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("d:DesignProps") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("d:DesignBindings") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(" Severity=\"") == std::string::npos);
+		DesignerModel::DesignDocument headless;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, headless, &error));
+		CUI_EXPECT_EQ(document, headless);
+		CodeGenInput input;
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignDocumentCodeGenInputBuilder::Build(
+				headless, input, &error));
+		const auto cpp = CodeGenerator(L"PropertyForm", input).GenerateCpp();
+		CUI_EXPECT_TRUE(cpp.find(
+			"badge->TrySetPropertyValue(L\"Severity\", BindingValue(6))")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find(
+			"badge->DataBindings.Add(L\"Severity\", dataContext, L\"View.Severity\"")
+			!= std::string::npos);
+	});
 
     return runner.RunAll();
 }

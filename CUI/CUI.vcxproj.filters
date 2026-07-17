@@ -48,6 +48,9 @@
     <ClInclude Include="include\CalendarView.h">
       <Filter>include</Filter>
     </ClInclude>
+	<ClInclude Include="include\AnchorPickerPopup.h">
+	  <Filter>include</Filter>
+	</ClInclude>
     <ClInclude Include="include\ChartView.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -257,6 +260,9 @@
     <ClCompile Include="src\CalendarView.cpp">
       <Filter>src</Filter>
     </ClCompile>
+	<ClCompile Include="src\AnchorPickerPopup.cpp">
+	  <Filter>src</Filter>
+	</ClCompile>
     <ClCompile Include="src\ChartView.cpp">
       <Filter>src</Filter>
     </ClCompile>

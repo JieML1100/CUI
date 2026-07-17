@@ -3,6 +3,37 @@
 #include "Form.h"
 #include <algorithm>
 UIClass PictureBox::Type() { return UIClass::UI_PictureBox; }
+
+void PictureBox::EnsureBindingPropertiesRegistered()
+{
+	Control::EnsureBindingPropertiesRegistered();
+	static const bool registered = []
+	{
+		ControlPropertyOptions<PictureBox, ImageSizeMode> options;
+		options.DefaultValue = ImageSizeMode::Zoom;
+		options.Flags = ControlPropertyFlags::AffectsRender;
+		options.Design.Category = L"Appearance";
+		options.Design.CategoryOrder = 200;
+		options.Design.Order = 40;
+		options.Design.Editor = ControlPropertyEditorKind::Choice;
+		options.Design.Persistence = ControlPropertyPersistence::Legacy;
+		options.Design.Choices = {
+			{ L"Normal", BindingValue(ImageSizeMode::Normal) },
+			{ L"CenterImage", BindingValue(ImageSizeMode::CenterImage) },
+			{ L"Stretch", BindingValue(ImageSizeMode::StretchImage) },
+			{ L"Zoom", BindingValue(ImageSizeMode::Zoom) }
+		};
+		BindingPropertyRegistry::Register<PictureBox, ImageSizeMode>(L"SizeMode",
+			[](PictureBox& target) { return target.SizeMode; },
+			[](PictureBox& target, const ImageSizeMode& value)
+			{
+				target.SizeMode = value;
+				target.InvalidateVisual();
+			}, {}, std::move(options));
+		return true;
+	}();
+	(void)registered;
+}
 PictureBox::PictureBox(int x, int y, int width, int height)
 {
 	this->Location = POINT{ x,y };

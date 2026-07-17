@@ -4812,6 +4812,7 @@ GET_CPP(Form, bool, Visible)
 SET_CPP(Form, bool, Visible)
 {
 	ShowWindow(this->Handle, value ? SW_SHOW : SW_HIDE);
+	if (value) RaiseShownOnce();
 }
 
 GET_CPP(Form, bool, AllowResize)
@@ -5808,12 +5809,20 @@ void Form::ApplyWindowIcon()
 	if (smallIcon) SendMessage(this->Handle, WM_SETICON, ICON_SMALL, (LPARAM)smallIcon);
 }
 
+void Form::RaiseShownOnce()
+{
+	if (this->_shownRaised) return;
+	this->_shownRaised = true;
+	this->OnShown(this);
+}
+
 void Form::Show()
 {
 	EnsureInitialDpiApplied();
 	ApplyWindowIcon();
 	SyncFormWindowStyles(this->Handle, this->_showInTaskBar, this->MinBox, this->MaxBox, this->CloseBox, this->AllowResize);
 	ShowWindow(this->Handle, SW_SHOWNORMAL);
+	RaiseShownOnce();
 	this->OnSizeChanged(this);
 	this->Invalidate(true);
 }
@@ -5867,6 +5876,7 @@ void Form::ShowDialog(HWND parent)
 	ApplyWindowIcon();
 	SyncFormWindowStyles(this->Handle, this->_showInTaskBar, this->MinBox, this->MaxBox, this->CloseBox, this->AllowResize);
 	ShowWindow(this->Handle, SW_SHOWNORMAL);
+	RaiseShownOnce();
 	this->OnSizeChanged(this);
 	this->Invalidate(true);
 	SetForegroundWindow(this->Handle);
@@ -6287,6 +6297,44 @@ std::unique_ptr<Control> Form::DetachControl(Control* control)
 	this->InvalidateLayout();
 	NotifyAccessibilityEvent(nullptr, AccessibilityChange::Structure);
 	return std::unique_ptr<Control>(control);
+}
+
+bool Form::TryInsertOwned(
+	int index, std::unique_ptr<Control>& control) noexcept
+{
+	if (!control) return false;
+	auto* raw = control.get();
+	if (index < 0 || static_cast<size_t>(index) > Controls.size()
+		|| raw->Parent || raw->ParentForm || IndexOfControl(raw) >= 0)
+		return false;
+	try
+	{
+		InsertControl(index, raw);
+		control.release();
+		return true;
+	}
+	catch (...)
+	{
+		if (IndexOfControl(raw) >= 0)
+		{
+			try
+			{
+				auto detached = DetachControl(raw);
+				if (detached) control = std::move(detached);
+			}
+			catch (...) {}
+		}
+		return false;
+	}
+}
+
+int Form::IndexOfControl(const Control* control) const noexcept
+{
+	if (!control) return -1;
+	const auto found = std::find(
+		Controls.begin(), Controls.end(), control);
+	return found == Controls.end()
+		? -1 : static_cast<int>(found - Controls.begin());
 }
 
 bool Form::DeleteControl(Control* control)

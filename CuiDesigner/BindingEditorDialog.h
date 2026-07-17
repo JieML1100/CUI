@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DesignerBindingUtils.h"
 #include "DesignerTypes.h"
 #include "../CUI/include/Form.h"
 #include "../CUI/include/Label.h"
@@ -22,7 +23,8 @@ public:
 		Control* target,
 		const std::map<std::wstring, DesignerDataBinding>& bindings,
 		const DesignerDataContextSchema& sourceSchema = {},
-		IBindingSource* runtimeSource = nullptr);
+		IBindingSource* runtimeSource = nullptr,
+		const std::vector<DesignerCustomPropertyDescriptor>& customProperties = {});
 	~BindingEditorDialog() = default;
 
 private:
@@ -32,7 +34,7 @@ private:
 	std::vector<EventConnection> _runtimeValidationConnections;
 	std::vector<EventConnection> _runtimePathConnections;
 	DesignerDataContextSchema _sourceSchema;
-	std::vector<const BindingPropertyMetadata*> _properties;
+	std::vector<DesignerBindingUtils::TargetMetadata> _properties;
 	ComboBox* _targetProperty = nullptr;
 	TextBox* _sourcePath = nullptr;
 	ComboBox* _knownSourcePath = nullptr;
@@ -50,7 +52,7 @@ private:
 	Button* _cancel = nullptr;
 	bool _loadingEditor = false;
 
-	const BindingPropertyMetadata* SelectedMetadata() const;
+	const DesignerBindingUtils::TargetMetadata* SelectedMetadata() const;
 	void SelectComboValue(ComboBox* combo, const std::wstring& value);
 	void LoadSelectedBinding();
 	void RefreshModeOptions(BindingMode preferredMode);

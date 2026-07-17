@@ -29,6 +29,12 @@ void ProgressBar::EnsureBindingPropertiesRegistered()
 			[](ProgressBar& target, const float& value) { target.MaxValue = value; },
 			{}, transientValue());
 		ControlPropertyOptions<ProgressBar, float> percentageOptions;
+		percentageOptions.DefaultValue = 0.5f;
+		percentageOptions.Flags = ControlPropertyFlags::AffectsRender;
+		percentageOptions.Coerce = [](ProgressBar&, const float& value) -> std::optional<float>
+		{
+			return (std::clamp)(value, 0.0f, 1.0f);
+		};
 		percentageOptions.Design.Category = L"Data";
 		percentageOptions.Design.CategoryOrder = 600;
 		percentageOptions.Design.Order = 10;

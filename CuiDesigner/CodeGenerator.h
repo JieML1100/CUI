@@ -43,11 +43,14 @@ private:
 	float _formFontSize = 18.0f;
 	DesignerStyleSheet _styleSheet;
 	std::unordered_map<const DesignerControl*, std::string> _varNameOf;
+	std::wstring _lastError;
 	
 	std::string WStringToString(const std::wstring& wstr) const;
 	std::wstring StringToWString(const std::string& str) const;
 	std::string GetControlTypeName(UIClass type);
 	std::string GetIncludeForType(UIClass type);
+	std::string GetControlTypeName(const DesignerControl& control);
+	std::string GetIncludeForType(const DesignerControl& control);
 	void BuildVarNameMap();
 	std::string GetVarName(const std::shared_ptr<DesignerControl>& dc) const;
 	static std::string SanitizeCppIdentifier(const std::string& raw);
@@ -63,11 +66,16 @@ private:
 	std::string GridLengthToCtorString(const GridLength& gl);
 	std::string GenerateStyleValueExpression(const DesignerStyleValue& value);
 	std::string GenerateStyleSheetCode(int indent);
+	bool CollectEventHandlers(
+		std::vector<std::pair<std::string, std::string>>& handlers,
+		std::wstring* outError = nullptr) const;
 
 	std::string GenerateControlInstantiation(const std::shared_ptr<DesignerControl>& dc, int indent);
 	std::string GenerateControlCommonProperties(const std::shared_ptr<DesignerControl>& dc, int indent);
 	std::string GenerateMetadataProperties(const std::shared_ptr<DesignerControl>& dc, int indent);
 	std::string GenerateContainerProperties(const std::shared_ptr<DesignerControl>& dc, int indent);
+	std::string GenerateCppForBaseName(
+		const std::string& generatedHeaderBaseName);
 	
 public:
 	CodeGenerator(std::wstring className, const CodeGenInput& input);
@@ -84,4 +92,5 @@ public:
 	bool GenerateFiles(std::wstring headerPath, std::wstring cppPath);
 	std::string GenerateHeader();
 	std::string GenerateCpp();
+	const std::wstring& GetLastError() const noexcept { return _lastError; }
 };

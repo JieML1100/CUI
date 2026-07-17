@@ -1838,6 +1838,48 @@ void BindingCollection::Clear()
 	_lastError = BindingError::None;
 }
 
+Binding* BindingCollection::Find(const std::wstring& targetProperty)
+{
+	const auto found = std::find_if(_items.begin(), _items.end(),
+		[&targetProperty](const auto& binding)
+		{
+			return binding
+				&& IsSameProperty(binding->TargetProperty(), targetProperty);
+		});
+	return found == _items.end() ? nullptr : found->get();
+}
+
+const Binding* BindingCollection::Find(
+	const std::wstring& targetProperty) const
+{
+	const auto found = std::find_if(_items.begin(), _items.end(),
+		[&targetProperty](const auto& binding)
+		{
+			return binding
+				&& IsSameProperty(binding->TargetProperty(), targetProperty);
+		});
+	return found == _items.end() ? nullptr : found->get();
+}
+
+bool BindingCollection::Remove(const std::wstring& targetProperty)
+{
+	const auto found = std::find_if(_items.begin(), _items.end(),
+		[&targetProperty](const auto& binding)
+		{
+			return binding
+				&& IsSameProperty(binding->TargetProperty(), targetProperty);
+		});
+	if (found == _items.end()) return false;
+	const size_t index = static_cast<size_t>(found - _items.begin());
+	const bool hadValidation = (*found)->HasValidationIssues();
+	if (index < _validationConnections.size())
+		_validationConnections.erase(_validationConnections.begin() + index);
+	_items.erase(found);
+	if (hadValidation) NotifyValidationChanged(targetProperty);
+	_lastError = BindingError::None;
+	return true;
+}
+
 size_t BindingCollection::Count() const
 {
 	return _items.size();

@@ -481,6 +481,41 @@ SET_CPP(ListView, ListViewSelectionMode, SelectionMode)
 		L"SelectionMode", _selectionMode, static_cast<int>(value));
 }
 
+ListView::UpdateScope::UpdateScope(ListView& owner) noexcept
+	: _owner(&owner)
+{
+	_owner->BeginUpdate();
+}
+
+ListView::UpdateScope::~UpdateScope()
+{
+	Commit();
+}
+
+ListView::UpdateScope::UpdateScope(UpdateScope&& other) noexcept
+	: _owner(other._owner)
+{
+	other._owner = nullptr;
+}
+
+ListView::UpdateScope& ListView::UpdateScope::operator=(
+	UpdateScope&& other) noexcept
+{
+	if (this == &other) return *this;
+	Commit();
+	_owner = other._owner;
+	other._owner = nullptr;
+	return *this;
+}
+
+void ListView::UpdateScope::Commit() noexcept
+{
+	if (!_owner) return;
+	auto* owner = _owner;
+	_owner = nullptr;
+	owner->EndUpdate();
+}
+
 ListView::ListView(int x, int y, int width, int height)
 {
 	Items.SetOwnerChangedHandler(
@@ -495,8 +530,38 @@ ListView::ListView(int x, int y, int width, int height)
 	this->BorderColor = D2D1_COLOR_F{ 0.45f, 0.48f, 0.55f, 0.72f };
 }
 
+void ListView::BeginUpdate() noexcept
+{
+	if (_updateDepth++ != 0) return;
+	// Internal identity, selection, and geometry state advances per mutation;
+	// public collection listeners still receive one coalesced Reset.
+	Items.BeginUpdate(true);
+	Columns.BeginUpdate(true);
+}
+
+void ListView::EndUpdate() noexcept
+{
+	if (_updateDepth == 0) return;
+	if (_updateDepth > 1)
+	{
+		--_updateDepth;
+		return;
+	}
+	if (_updatePendingCollectionRefresh)
+		ClampScrollToRange();
+	Items.EndUpdate();
+	Columns.EndUpdate();
+	_updateDepth = 0;
+	if (!_updatePendingCollectionRefresh) return;
+	_updatePendingCollectionRefresh = false;
+	NotifyAccessibilityStructureChanged();
+	NotifyAccessibilityScrollChanged();
+	InvalidateVisual();
+}
+
 void ListView::Clear()
 {
+	auto update = DeferUpdates();
 	ClearItems();
 	ClearColumns();
 }
@@ -567,18 +632,19 @@ bool ListView::SelectItem(int index, bool additive, bool range)
 {
 	if (index < 0 || index >= (int)this->Items.size()) return false;
 	if (!this->Items[index].Enabled) return false;
+	EnsureAccessibilityItemIds();
+	_lastSelectionUpdateWork = 0;
 
 	bool changed = false;
 	if (this->SelectionMode == ListViewSelectionMode::Single || (!additive && !range))
 	{
-		for (int i = 0; i < (int)this->Items.size(); i++)
+		const uint32_t targetId = Items[static_cast<size_t>(index)].AccessibilityId;
+		if (_selectedItemIds.size() != 1
+			|| !_selectedItemIds.contains(targetId))
 		{
-			bool selected = (i == index);
-			if (this->Items[i].Selected != selected)
-			{
-				this->Items[i].Selected = selected;
-				changed = true;
-			}
+			changed = ClearCachedSelection();
+			changed = SetCachedItemSelected(
+				static_cast<size_t>(index), true) || changed;
 		}
 		_anchorIndex = index;
 	}
@@ -587,36 +653,40 @@ bool ListView::SelectItem(int index, bool additive, bool range)
 		int anchor = _anchorIndex >= 0 ? _anchorIndex : (this->SelectedIndex >= 0 ? this->SelectedIndex : index);
 		int first = std::min(anchor, index);
 		int last = std::max(anchor, index);
-		for (int i = 0; i < (int)this->Items.size(); i++)
+		size_t wantedCount = 0;
+		bool alreadyMatches = true;
+		for (int i = first; i <= last; ++i)
 		{
-			bool selected = i >= first && i <= last && this->Items[i].Enabled;
-			if (this->Items[i].Selected != selected)
+			++_lastSelectionUpdateWork;
+			if (!Items[static_cast<size_t>(i)].Enabled) continue;
+			++wantedCount;
+			alreadyMatches = alreadyMatches
+				&& _selectedItemIds.contains(
+					Items[static_cast<size_t>(i)].AccessibilityId);
+		}
+		alreadyMatches = alreadyMatches
+			&& wantedCount == _selectedItemIds.size();
+		if (!alreadyMatches)
+		{
+			changed = ClearCachedSelection();
+			for (int i = first; i <= last; ++i)
 			{
-				this->Items[i].Selected = selected;
-				changed = true;
+				if (Items[static_cast<size_t>(i)].Enabled)
+					changed = SetCachedItemSelected(
+						static_cast<size_t>(i), true) || changed;
 			}
 		}
 	}
 	else
 	{
-		this->Items[index].Selected = !this->Items[index].Selected;
-		changed = true;
+		changed = SetCachedItemSelected(
+			static_cast<size_t>(index), !this->Items[index].Selected);
 		_anchorIndex = index;
 	}
 
 	int newSelectedIndex = index;
 	if (this->SelectionMode == ListViewSelectionMode::Multiple && additive && !range && !this->Items[index].Selected)
-	{
-		newSelectedIndex = -1;
-		for (int i = 0; i < (int)this->Items.size(); i++)
-		{
-			if (this->Items[i].Selected)
-			{
-				newSelectedIndex = i;
-				break;
-			}
-		}
-	}
+		newSelectedIndex = FindFirstCachedSelectedIndex();
 
 	if (changed || this->SelectedIndex != newSelectedIndex || this->FocusedIndex != index)
 	{
@@ -629,27 +699,27 @@ bool ListView::SelectItem(int index, bool additive, bool range)
 
 void ListView::ClearSelection()
 {
-	bool changed = false;
-	for (auto& item : this->Items)
-	{
-		if (item.Selected)
-		{
-			item.Selected = false;
-			changed = true;
-		}
-	}
+	EnsureAccessibilityItemIds();
+	_lastSelectionUpdateWork = 0;
+	const bool changed = ClearCachedSelection();
 	this->_anchorIndex = -1;
 	CommitPreparedSelection(-1, -1, changed);
 }
 
 std::vector<int> ListView::GetSelectedIndices() const
 {
+	EnsureAccessibilityItemIds();
 	std::vector<int> indices;
-	for (int i = 0; i < (int)this->Items.size(); i++)
+	indices.reserve(_selectedItemIds.size());
+	for (const uint32_t id : _selectedItemIds)
 	{
-		if (this->Items[i].Selected)
-			indices.push_back(i);
+		const auto found = _accessibilityItemIndexById.find(id);
+		if (found != _accessibilityItemIndexById.end()
+			&& found->second <= static_cast<size_t>(
+				(std::numeric_limits<int>::max)()))
+			indices.push_back(static_cast<int>(found->second));
 	}
+	std::sort(indices.begin(), indices.end());
 	return indices;
 }
 
@@ -734,7 +804,11 @@ int ListView::HitTestItem(int localX, int localY) const
 void ListView::EnsureAccessibilityItemIds() const
 {
 	if (!_accessibilityItemIdsDirty
+		&& _accessibilityItemIdsByIndex.size() == Items.size()
 		&& _accessibilityItemIndexById.size() == Items.size()) return;
+	_accessibilityItemIdsDirty = true;
+	_accessibilityItemIdsByIndex.clear();
+	_accessibilityItemIdsByIndex.resize(Items.size());
 	_accessibilityItemIndexById.clear();
 	_accessibilityItemIndexById.reserve(Items.size());
 	for (size_t index = 0; index < Items.size(); ++index)
@@ -742,11 +816,179 @@ void ListView::EnsureAccessibilityItemIds() const
 		const auto& item = Items[index];
 		uint32_t id = item.AccessibilityId;
 		while (id == 0
+			|| _accessibilityColumnIndexById.contains(id)
+			|| _accessibilityCellKeyById.contains(id)
 			|| !_accessibilityItemIndexById.emplace(id, index).second)
 			id = AllocateAccessibilityVirtualId();
 		item.AccessibilityId = id;
+		_accessibilityItemIdsByIndex[index] = id;
 	}
+	_lastAccessibilityIndexUpdateWork = Items.size();
 	_accessibilityItemIdsDirty = false;
+}
+
+bool ListView::ApplyAccessibilityItemCollectionChange(
+	const CollectionChangedEventArgs& change)
+{
+	_lastAccessibilityIndexUpdateWork = 0;
+	const bool coherentBefore = _accessibilityItemIdsByIndex.size()
+		== change.OldSize
+		&& _accessibilityItemIndexById.size() == change.OldSize
+		&& (!_accessibilityItemIdsDirty || change.OldSize == 0);
+	if (!coherentBefore)
+	{
+		_accessibilityItemIdsDirty = true;
+		EnsureAccessibilityItemIds();
+		return false;
+	}
+	// Any allocation failure leaves a visible recovery marker; the next query
+	// or structural notification will rebuild from the authoritative Items.
+	_accessibilityItemIdsDirty = true;
+
+	auto repairItemId = [this](size_t index)
+	{
+		auto& item = Items[index];
+		uint32_t id = item.AccessibilityId;
+		while (id == 0 || _accessibilityItemIndexById.contains(id)
+			|| _accessibilityColumnIndexById.contains(id)
+			|| _accessibilityCellKeyById.contains(id))
+			id = AllocateAccessibilityVirtualId();
+		item.AccessibilityId = id;
+		_accessibilityItemIdsByIndex[index] = id;
+		_accessibilityItemIndexById.emplace(id, index);
+	};
+	auto updateRange = [this](size_t first, size_t end)
+	{
+		for (size_t index = first; index < end; ++index)
+		{
+			const uint32_t id = _accessibilityItemIdsByIndex[index];
+			Items[index].AccessibilityId = id;
+			_accessibilityItemIndexById[id] = index;
+			++_lastAccessibilityIndexUpdateWork;
+		}
+	};
+	auto rebuild = [this]()
+	{
+		_accessibilityItemIdsDirty = true;
+		EnsureAccessibilityItemIds();
+		return false;
+	};
+
+	switch (change.Action)
+	{
+	case CollectionChangeAction::Add:
+	{
+		if (change.NewIndex == CollectionChangedEventArgs::Npos
+			|| change.NewIndex > _accessibilityItemIdsByIndex.size()
+			|| Items.size() < change.OldSize
+			|| change.NewCount != Items.size() - change.OldSize)
+			return rebuild();
+		_accessibilityItemIdsByIndex.insert(
+			_accessibilityItemIdsByIndex.begin()
+				+ static_cast<ptrdiff_t>(change.NewIndex),
+			change.NewCount, 0);
+		const size_t addedEnd = change.NewIndex + change.NewCount;
+		for (size_t index = change.NewIndex; index < addedEnd; ++index)
+		{
+			repairItemId(index);
+			if (Items[index].Selected)
+				_selectedItemIds.insert(Items[index].AccessibilityId);
+			++_lastAccessibilityIndexUpdateWork;
+		}
+		updateRange(addedEnd, Items.size());
+		break;
+	}
+	case CollectionChangeAction::Remove:
+	{
+		if (change.OldIndex == CollectionChangedEventArgs::Npos
+			|| change.OldIndex > _accessibilityItemIdsByIndex.size()
+			|| change.OldCount > _accessibilityItemIdsByIndex.size()
+				- change.OldIndex
+			|| change.NewSize != Items.size()) return rebuild();
+		const auto first = _accessibilityItemIdsByIndex.begin()
+			+ static_cast<ptrdiff_t>(change.OldIndex);
+		const auto last = first + static_cast<ptrdiff_t>(change.OldCount);
+		for (auto current = first; current != last; ++current)
+		{
+			_accessibilityItemIndexById.erase(*current);
+			_selectedItemIds.erase(*current);
+			++_lastAccessibilityIndexUpdateWork;
+		}
+		_accessibilityItemIdsByIndex.erase(first, last);
+		updateRange(change.OldIndex, Items.size());
+		break;
+	}
+	case CollectionChangeAction::Move:
+	{
+		if (change.OldIndex >= _accessibilityItemIdsByIndex.size()
+			|| change.NewIndex >= _accessibilityItemIdsByIndex.size())
+			return rebuild();
+		if (change.OldIndex < change.NewIndex)
+			std::rotate(
+				_accessibilityItemIdsByIndex.begin() + change.OldIndex,
+				_accessibilityItemIdsByIndex.begin() + change.OldIndex + 1,
+				_accessibilityItemIdsByIndex.begin() + change.NewIndex + 1);
+		else if (change.NewIndex < change.OldIndex)
+			std::rotate(
+				_accessibilityItemIdsByIndex.begin() + change.NewIndex,
+				_accessibilityItemIdsByIndex.begin() + change.OldIndex,
+				_accessibilityItemIdsByIndex.begin() + change.OldIndex + 1);
+		const size_t first = (std::min)(change.OldIndex, change.NewIndex);
+		const size_t end = (std::max)(change.OldIndex, change.NewIndex) + 1;
+		updateRange(first, end);
+		break;
+	}
+	case CollectionChangeAction::Swap:
+	{
+		if (change.OldIndex >= _accessibilityItemIdsByIndex.size()
+			|| change.NewIndex >= _accessibilityItemIdsByIndex.size())
+			return rebuild();
+		std::swap(_accessibilityItemIdsByIndex[change.OldIndex],
+			_accessibilityItemIdsByIndex[change.NewIndex]);
+		updateRange(change.OldIndex, change.OldIndex + 1);
+		if (change.NewIndex != change.OldIndex)
+			updateRange(change.NewIndex, change.NewIndex + 1);
+		break;
+	}
+	case CollectionChangeAction::Replace:
+	{
+		if (change.NewIndex >= Items.size()
+			|| change.NewIndex >= _accessibilityItemIdsByIndex.size())
+			return rebuild();
+		const uint32_t previousId =
+			_accessibilityItemIdsByIndex[change.NewIndex];
+		_accessibilityItemIndexById.erase(previousId);
+		_selectedItemIds.erase(previousId);
+		repairItemId(change.NewIndex);
+		if (Items[change.NewIndex].Selected)
+			_selectedItemIds.insert(Items[change.NewIndex].AccessibilityId);
+		_lastAccessibilityIndexUpdateWork = 1;
+		break;
+	}
+	case CollectionChangeAction::Reset:
+	default:
+		return rebuild();
+	}
+
+	_accessibilityItemIdsDirty = false;
+	PruneAccessibilityCellsForMissingItems();
+	return true;
+}
+
+void ListView::PruneAccessibilityCellsForMissingItems() const
+{
+	for (auto current = _accessibilityCellIds.begin();
+		current != _accessibilityCellIds.end();)
+	{
+		const uint32_t rowId = static_cast<uint32_t>(current->first >> 32);
+		if (_accessibilityItemIndexById.contains(rowId))
+		{
+			++current;
+			continue;
+		}
+		_accessibilityCellKeyById.erase(current->second);
+		current = _accessibilityCellIds.erase(current);
+	}
 }
 
 void ListView::EnsureAccessibilityDetailsIds() const
@@ -1892,16 +2134,69 @@ void ListView::PageSelection(int direction)
 	MoveSelectionBy(page * direction);
 }
 
+bool ListView::SetCachedItemSelected(size_t index, bool selected)
+{
+	if (index >= Items.size()) return false;
+	EnsureAccessibilityItemIds();
+	++_lastSelectionUpdateWork;
+	auto& item = Items[index];
+	const bool changed = item.Selected != selected;
+	item.Selected = selected;
+	if (selected)
+		_selectedItemIds.insert(item.AccessibilityId);
+	else
+		_selectedItemIds.erase(item.AccessibilityId);
+	return changed;
+}
+
+bool ListView::ClearCachedSelection()
+{
+	bool changed = false;
+	for (const uint32_t id : _selectedItemIds)
+	{
+		++_lastSelectionUpdateWork;
+		const auto found = _accessibilityItemIndexById.find(id);
+		if (found == _accessibilityItemIndexById.end()
+			|| found->second >= Items.size()) continue;
+		auto& item = Items[found->second];
+		changed = item.Selected || changed;
+		item.Selected = false;
+	}
+	_selectedItemIds.clear();
+	return changed;
+}
+
+int ListView::FindFirstCachedSelectedIndex() const
+{
+	size_t first = Items.size();
+	for (const uint32_t id : _selectedItemIds)
+	{
+		++_lastSelectionUpdateWork;
+		const auto found = _accessibilityItemIndexById.find(id);
+		if (found != _accessibilityItemIndexById.end())
+			first = (std::min)(first, found->second);
+	}
+	return first < Items.size()
+		&& first <= static_cast<size_t>((std::numeric_limits<int>::max)())
+		? static_cast<int>(first) : -1;
+}
+
 void ListView::SyncSelectedIndexFromItems(bool raiseEvent)
 {
+	EnsureAccessibilityItemIds();
+	_selectedItemIds.clear();
+	_lastSelectionUpdateWork = 0;
 	int selectedIndex = -1;
 	bool normalized = false;
 	for (int index = 0; index < static_cast<int>(this->Items.size()); ++index)
 	{
+		++_lastSelectionUpdateWork;
 		if (!this->Items[static_cast<size_t>(index)].Selected) continue;
 		if (selectedIndex < 0)
 		{
 			selectedIndex = index;
+			_selectedItemIds.insert(
+				Items[static_cast<size_t>(index)].AccessibilityId);
 			continue;
 		}
 		if (this->SelectionMode == ListViewSelectionMode::Single)
@@ -1909,6 +2204,9 @@ void ListView::SyncSelectedIndexFromItems(bool raiseEvent)
 			this->Items[static_cast<size_t>(index)].Selected = false;
 			normalized = true;
 		}
+		else
+			_selectedItemIds.insert(
+				Items[static_cast<size_t>(index)].AccessibilityId);
 	}
 	const int focusedIndex = this->FocusedIndex >= 0
 		&& this->FocusedIndex < static_cast<int>(this->Items.size())
@@ -1922,9 +2220,22 @@ void ListView::ApplySelectedIndexChange(int oldValue, int newValue)
 {
 	if (oldValue == newValue) return;
 	if (!_selectionItemsPrepared)
+		_selectedIndexFollowsItems = false;
+	if (!_selectionItemsPrepared)
 	{
-		for (int index = 0; index < static_cast<int>(this->Items.size()); ++index)
-			this->Items[static_cast<size_t>(index)].Selected = index == newValue;
+		EnsureAccessibilityItemIds();
+		_lastSelectionUpdateWork = 0;
+		const uint32_t wantedId = newValue >= 0
+			&& newValue < static_cast<int>(Items.size())
+			? Items[static_cast<size_t>(newValue)].AccessibilityId : 0;
+		if ((wantedId == 0 && !_selectedItemIds.empty())
+			|| (wantedId != 0 && (_selectedItemIds.size() != 1
+				|| !_selectedItemIds.contains(wantedId))))
+		{
+			ClearCachedSelection();
+			if (wantedId != 0)
+				SetCachedItemSelected(static_cast<size_t>(newValue), true);
+		}
 		_anchorIndex = newValue >= 0
 			&& newValue < static_cast<int>(this->Items.size())
 			? newValue : -1;
@@ -1942,30 +2253,27 @@ void ListView::NormalizeSelectionForMode()
 		InvalidateVisual();
 		return;
 	}
+	EnsureAccessibilityItemIds();
+	_lastSelectionUpdateWork = 0;
 	int selectedIndex = this->SelectedIndex;
 	if (selectedIndex < 0
 		|| selectedIndex >= static_cast<int>(this->Items.size())
-		|| !this->Items[static_cast<size_t>(selectedIndex)].Selected)
-	{
-		selectedIndex = -1;
-		for (int index = 0; index < static_cast<int>(this->Items.size()); ++index)
-		{
-			if (this->Items[static_cast<size_t>(index)].Selected)
-			{
-				selectedIndex = index;
-				break;
-			}
-		}
-	}
+		|| !_selectedItemIds.contains(
+			Items[static_cast<size_t>(selectedIndex)].AccessibilityId))
+		selectedIndex = FindFirstCachedSelectedIndex();
+	const uint32_t selectedId = selectedIndex >= 0
+		? Items[static_cast<size_t>(selectedIndex)].AccessibilityId : 0;
+	const bool alreadyNormalized = selectedId == 0
+		? _selectedItemIds.empty()
+		: _selectedItemIds.size() == 1
+			&& _selectedItemIds.contains(selectedId);
 	bool changed = false;
-	for (int index = 0; index < static_cast<int>(this->Items.size()); ++index)
+	if (!alreadyNormalized)
 	{
-		const bool selected = index == selectedIndex;
-		if (this->Items[static_cast<size_t>(index)].Selected != selected)
-		{
-			this->Items[static_cast<size_t>(index)].Selected = selected;
-			changed = true;
-		}
+		changed = ClearCachedSelection();
+		if (selectedId != 0)
+			changed = SetCachedItemSelected(
+				static_cast<size_t>(selectedIndex), true) || changed;
 	}
 	_anchorIndex = selectedIndex;
 	CommitPreparedSelection(selectedIndex, selectedIndex, changed);
@@ -1976,6 +2284,7 @@ void ListView::CommitPreparedSelection(
 	int focusedIndex,
 	bool selectionItemsChanged)
 {
+	_selectedIndexFollowsItems = true;
 	const bool indexChanged = this->SelectedIndex != selectedIndex;
 	const bool focusChanged = this->FocusedIndex != focusedIndex;
 	if (focusChanged) SetCurrentFocusedIndex(focusedIndex);
@@ -1984,7 +2293,12 @@ void ListView::CommitPreparedSelection(
 		_selectionItemsPrepared = true;
 		SetCurrentSelectedIndex(selectedIndex);
 		_selectionItemsPrepared = false;
-		if (this->SelectedIndex == selectedIndex) return;
+		if (this->SelectedIndex == selectedIndex)
+		{
+			_selectedIndexProjectionSource =
+				GetPropertyValueSource(L"SelectedIndex");
+			return;
+		}
 	}
 	if (selectionItemsChanged || focusChanged)
 	{
@@ -1994,6 +2308,8 @@ void ListView::CommitPreparedSelection(
 		SelectionChanged(this);
 		InvalidateVisual();
 	}
+	_selectedIndexProjectionSource =
+		GetPropertyValueSource(L"SelectedIndex");
 }
 
 void ListView::SetCurrentSelectedIndex(int value)
@@ -2029,6 +2345,19 @@ void ListView::ClampScrollToRange()
 		SetCurrentScrollYOffset(clamped);
 }
 
+void ListView::RequestCollectionRefresh()
+{
+	if (_updateDepth != 0)
+	{
+		_updatePendingCollectionRefresh = true;
+		return;
+	}
+	ClampScrollToRange();
+	NotifyAccessibilityStructureChanged();
+	NotifyAccessibilityScrollChanged();
+	InvalidateVisual();
+}
+
 void ListView::OnComputedLayoutSizeChanged()
 {
 	ClampScrollToRange();
@@ -2038,8 +2367,6 @@ void ListView::OnComputedLayoutSizeChanged()
 void ListView::OnItemsCollectionChanged(
 	const CollectionChangedEventArgs& change)
 {
-	_accessibilityItemIdsDirty = true;
-	_accessibilityDetailsIdsDirty = true;
 	auto remapIndex = [&](int current)
 	{
 		if (current < 0) return -1;
@@ -2085,6 +2412,10 @@ void ListView::OnItemsCollectionChanged(
 		}
 		return current < static_cast<int>(Items.size()) ? current : -1;
 	};
+	const bool identityUpdatedIncrementally =
+		ApplyAccessibilityItemCollectionChange(change);
+	if (!identityUpdatedIncrementally)
+		PruneAccessibilityCellsForMissingItems();
 
 	if (change.Action == CollectionChangeAction::Reset)
 	{
@@ -2100,10 +2431,13 @@ void ListView::OnItemsCollectionChanged(
 		_anchorIndex = remapIndex(_anchorIndex);
 	}
 
-	EnsureAccessibilityItemIds();
 	bool selectionItemsChanged = false;
 	const auto source = GetPropertyValueSource(L"SelectedIndex");
-	if (source != ControlPropertyValueSource::Default)
+	const bool sourceIsAuthoritative =
+		source != ControlPropertyValueSource::Default
+		&& (!_selectedIndexFollowsItems
+			|| source != _selectedIndexProjectionSource);
+	if (sourceIsAuthoritative)
 	{
 		const bool canRemapExistingSelection =
 			change.Action != CollectionChangeAction::Reset
@@ -2117,12 +2451,41 @@ void ListView::OnItemsCollectionChanged(
 			(void)ReevaluatePropertyValue(L"SelectedIndex");
 			selectedIndex = this->SelectedIndex;
 		}
-		for (int index = 0; index < static_cast<int>(Items.size()); ++index)
+		_lastSelectionUpdateWork = 0;
+		if (!identityUpdatedIncrementally)
 		{
-			const bool selected = index == selectedIndex;
-			if (Items[static_cast<size_t>(index)].Selected == selected) continue;
-			Items[static_cast<size_t>(index)].Selected = selected;
-			selectionItemsChanged = true;
+			_selectedItemIds.clear();
+			for (int index = 0; index < static_cast<int>(Items.size()); ++index)
+			{
+				++_lastSelectionUpdateWork;
+				const bool selected = index == selectedIndex;
+				if (Items[static_cast<size_t>(index)].Selected != selected)
+				{
+					Items[static_cast<size_t>(index)].Selected = selected;
+					selectionItemsChanged = true;
+				}
+				if (selected)
+					_selectedItemIds.insert(
+						Items[static_cast<size_t>(index)].AccessibilityId);
+			}
+		}
+		else
+		{
+			const uint32_t wantedId = selectedIndex >= 0
+				&& selectedIndex < static_cast<int>(Items.size())
+				? Items[static_cast<size_t>(selectedIndex)].AccessibilityId : 0;
+			const bool alreadyApplied = wantedId == 0
+				? _selectedItemIds.empty()
+				: _selectedItemIds.size() == 1
+					&& _selectedItemIds.contains(wantedId);
+			if (!alreadyApplied)
+			{
+				selectionItemsChanged = ClearCachedSelection();
+				if (wantedId != 0)
+					selectionItemsChanged = SetCachedItemSelected(
+						static_cast<size_t>(selectedIndex), true)
+						|| selectionItemsChanged;
+			}
 		}
 		_anchorIndex = selectedIndex >= 0
 			&& selectedIndex < static_cast<int>(Items.size())
@@ -2130,42 +2493,75 @@ void ListView::OnItemsCollectionChanged(
 		const int focusedIndex = FocusedIndex >= 0 ? FocusedIndex : _anchorIndex;
 		CommitPreparedSelection(
 			selectedIndex, focusedIndex, selectionItemsChanged);
+		_selectedIndexFollowsItems = false;
 	}
 	else
 	{
-		if (change.Action == CollectionChangeAction::Add
-			&& SelectionMode == ListViewSelectionMode::Single
-			&& change.NewIndex != CollectionChangedEventArgs::Npos)
+		if (!identityUpdatedIncrementally)
+			SyncSelectedIndexFromItems(selectionItemsChanged);
+		else
 		{
-			int newSelection = -1;
-			const size_t end = (std::min)(Items.size(),
-				change.NewIndex + change.NewCount);
-			for (size_t index = change.NewIndex; index < end; ++index)
+			_lastSelectionUpdateWork = 0;
+			int selectedIndex = -1;
+			if (change.Action == CollectionChangeAction::Add
+				&& change.NewIndex != CollectionChangedEventArgs::Npos)
 			{
-				if (Items[index].Selected)
-					newSelection = static_cast<int>(index);
-			}
-			if (newSelection >= 0)
-			{
-				for (int index = 0; index < static_cast<int>(Items.size()); ++index)
+				int firstAddedSelection = -1;
+				int lastAddedSelection = -1;
+				const size_t end = (std::min)(Items.size(),
+					change.NewIndex + change.NewCount);
+				for (size_t index = change.NewIndex; index < end; ++index)
 				{
-					const bool selected = index == newSelection;
-					if (Items[static_cast<size_t>(index)].Selected == selected) continue;
-					Items[static_cast<size_t>(index)].Selected = selected;
-					selectionItemsChanged = true;
+					++_lastSelectionUpdateWork;
+					if (!Items[index].Selected) continue;
+					if (firstAddedSelection < 0)
+						firstAddedSelection = static_cast<int>(index);
+					lastAddedSelection = static_cast<int>(index);
+				}
+				if (SelectionMode == ListViewSelectionMode::Single
+					&& lastAddedSelection >= 0)
+				{
+					selectionItemsChanged = ClearCachedSelection();
+					selectionItemsChanged = SetCachedItemSelected(
+						static_cast<size_t>(lastAddedSelection), true)
+						|| selectionItemsChanged;
+					selectedIndex = lastAddedSelection;
+				}
+				else
+				{
+					selectedIndex = remapIndex(SelectedIndex);
+					if (SelectionMode == ListViewSelectionMode::Multiple
+						&& firstAddedSelection >= 0
+						&& (selectedIndex < 0
+							|| firstAddedSelection < selectedIndex))
+						selectedIndex = firstAddedSelection;
 				}
 			}
+			else
+			{
+				selectedIndex = FindFirstCachedSelectedIndex();
+				if (SelectionMode == ListViewSelectionMode::Single
+					&& _selectedItemIds.size() > 1)
+				{
+					selectionItemsChanged = ClearCachedSelection();
+					if (selectedIndex >= 0)
+						selectionItemsChanged = SetCachedItemSelected(
+							static_cast<size_t>(selectedIndex), true)
+							|| selectionItemsChanged;
+				}
+			}
+			const int focusedIndex = FocusedIndex >= 0
+				&& FocusedIndex < static_cast<int>(Items.size())
+				? FocusedIndex : selectedIndex;
+			CommitPreparedSelection(
+				selectedIndex, focusedIndex, selectionItemsChanged);
 		}
-		SyncSelectedIndexFromItems(selectionItemsChanged);
 		if (_anchorIndex < 0
 			|| _anchorIndex >= static_cast<int>(Items.size()))
 			_anchorIndex = SelectedIndex;
 	}
 
-	ClampScrollToRange();
-	NotifyAccessibilityStructureChanged();
-	NotifyAccessibilityScrollChanged();
-	InvalidateVisual();
+	RequestCollectionRefresh();
 }
 
 void ListView::OnColumnsCollectionChanged(
@@ -2173,9 +2569,7 @@ void ListView::OnColumnsCollectionChanged(
 {
 	(void)change;
 	_accessibilityDetailsIdsDirty = true;
-	NotifyAccessibilityStructureChanged();
-	NotifyAccessibilityScrollChanged();
-	InvalidateVisual();
+	RequestCollectionRefresh();
 }
 
 bool ListView::ShouldDrawSelection(const ListViewItem& item) const

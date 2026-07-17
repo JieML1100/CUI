@@ -1,6 +1,10 @@
 ﻿#include "DesignDocumentSerializer.h"
+#include "AtomicFile.h"
+#include "DesignDocumentGraph.h"
+#include "DesignDocumentEventIndex.h"
 #include "../../XmlLite/include/Xml.h"
 #include "../DesignerDataContextSchemaUtils.h"
+#include "../DesignerEventCatalog.h"
 #include "../DesignerStyleSheetUtils.h"
 #include <algorithm>
 #include <cctype>
@@ -8,6 +12,8 @@
 #include <type_traits>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace DesignerModel
@@ -93,6 +99,7 @@ namespace
 
 	static bool TryParseUIClass(const std::string& s, UIClass& out)
 	{
+		if (s == "Base" || s == "Control") { out = UIClass::UI_Base; return true; }
 		if (s == "Label") { out = UIClass::UI_Label; return true; }
 		if (s == "LinkLabel") { out = UIClass::UI_LinkLabel; return true; }
 		if (s == "Button") { out = UIClass::UI_Button; return true; }
@@ -460,6 +467,7 @@ bool DesignDocumentSerializer::SaveToFile(const DesignDocument& document, const 
 {
 	try
 	{
+		if (outError) outError->clear();
 		if (filePath.empty())
 		{
 			if (outError) *outError = L"File path is empty.";
@@ -471,15 +479,7 @@ bool DesignDocumentSerializer::SaveToFile(const DesignDocument& document, const 
 			return false;
 		}
 
-		std::string out = ToXml(document);
-		std::ofstream f(filePath, std::ios::binary);
-		if (!f.is_open())
-		{
-			if (outError) *outError = L"Failed to open file for writing.";
-			return false;
-		}
-		f.write(out.data(), (std::streamsize)out.size());
-		return true;
+		return AtomicFile::Write(filePath, ToXml(document), outError);
 	}
 	catch (const std::exception& exception)
 	{
@@ -542,12 +542,30 @@ bool DesignDocumentSerializer::LoadFromFile(const std::wstring& filePath, Design
 
 std::string DesignDocumentSerializer::ToXml(const DesignDocument& document)
 {
+	std::wstring codeBehindError;
+	if (!document.CodeBehind.Validate(&codeBehindError))
+		throw std::invalid_argument(ToUtf8(codeBehindError));
 	XmlDocument xml;
 	xml.AppendChild(xml.CreateXmlDeclaration("1.0", "utf-8", ""));
 
 	auto root = xml.CreateElement("designDocument");
 	root->SetAttribute("schema", document.Schema);
 	root->SetAttribute("version", std::to_string(DesignDocument::CurrentSchemaVersion));
+	DesignDocumentGraph graph;
+	std::wstring graphError;
+	if (!DesignDocumentGraph::Build(document, graph, &graphError))
+		throw std::invalid_argument(ToUtf8(graphError));
+	DesignDocumentEventIndex eventIndex;
+	if (!DesignDocumentEventIndex::Build(document, eventIndex, &graphError))
+		throw std::invalid_argument(ToUtf8(graphError));
+	for (const auto& resolved : graph.Nodes())
+	{
+		const auto& node = document.Nodes[resolved.SourceIndex];
+		if (node.ParentRef != resolved.ParentKey)
+			throw std::invalid_argument(
+				"Design document parentId and parent name disagree");
+	}
+	root->SetAttribute("nextId", std::to_string(document.NextStableId));
 	xml.AppendChild(root);
 
 	auto form = AppendElement(xml, root, "form");
@@ -588,6 +606,15 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& document)
 			event->SetAttribute("name", ToUtf8(kv.first));
 			event->SetAttribute("handler", ToUtf8(kv.second));
 		}
+	}
+
+	if (!document.CodeBehind.Empty())
+	{
+		auto codeBehind = AppendElement(xml, root, "codeBehind");
+		codeBehind->SetAttribute("class", ToUtf8(document.CodeBehind.ClassName));
+		if (!document.CodeBehind.RelativeBasePath.empty())
+			codeBehind->SetAttribute("relativeBasePath",
+				ToUtf8(document.CodeBehind.RelativeBasePath));
 	}
 
 	if (!document.DataContextSchema.empty())
@@ -667,9 +694,49 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& document)
 	for (const auto& node : document.Nodes)
 	{
 		auto control = AppendElement(xml, controls, "control");
+		control->SetAttribute("id", std::to_string(node.Id));
 		control->SetAttribute("name", ToUtf8(node.Name));
 		control->SetAttribute("type", UIClassToString(node.Type));
+		if (!node.CustomType.Empty())
+		{
+			control->SetAttribute("customPrefix", ToUtf8(node.CustomType.XamlPrefix));
+			control->SetAttribute("customName", ToUtf8(node.CustomType.XamlName));
+			control->SetAttribute("customNamespace", ToUtf8(node.CustomType.XamlNamespace));
+			control->SetAttribute("customCppType", ToUtf8(node.CustomType.CppType));
+			control->SetAttribute("customHeader", ToUtf8(node.CustomType.Header));
+			const char* constructor = "Bounds";
+			if (node.CustomType.Constructor
+				== DesignerCustomControlConstructor::Default)
+				constructor = "Default";
+			else if (node.CustomType.Constructor
+				== DesignerCustomControlConstructor::TextBounds)
+				constructor = "TextBounds";
+			control->SetAttribute("customConstructor", constructor);
+		}
+		if (!node.CustomEvents.empty())
+		{
+			auto customEvents = AppendElement(xml, control, "customEvents");
+			for (const auto& contract : node.CustomEvents)
+			{
+				auto event = AppendElement(xml, customEvents, "event");
+				event->SetAttribute("name", ToUtf8(contract.Name));
+				event->SetAttribute("displayName", ToUtf8(contract.DisplayName));
+				event->SetAttribute("field", contract.EventField);
+				event->SetAttribute("category",
+					DesignerEventCatalog::GetCategoryName(contract.Category));
+				event->SetAttribute("signature",
+					DesignerEventCatalog::GetCustomSignatureName(
+						contract.Signature));
+				event->SetAttribute("order", std::to_string(contract.Order));
+				event->SetAttribute("default",
+					contract.IsDefault ? "true" : "false");
+			}
+		}
 		control->SetAttribute("order", std::to_string(node.Order));
+		if (node.ParentId > 0)
+		{
+			control->SetAttribute("parentId", std::to_string(node.ParentId));
+		}
 		if (!node.ParentRef.empty())
 		{
 			control->SetAttribute("parent", ToUtf8(node.ParentRef));
@@ -722,6 +789,14 @@ bool DesignDocumentSerializer::FromXml(const std::string& xmlText, DesignDocumen
 		if (outError) *outError = L"Unsupported design file version.";
 		return false;
 	}
+	int persistedNextId = 1;
+	if (version >= 4
+		&& (!TryReadIntegralAttribute(root, "nextId", persistedNextId)
+			|| persistedNextId < 1))
+	{
+		if (outError) *outError = L"Design file v4+ is missing a valid nextId.";
+		return false;
+	}
 
 	auto controls = FindChildElement(root, "controls");
 	if (!controls)
@@ -733,6 +808,22 @@ bool DesignDocumentSerializer::FromXml(const std::string& xmlText, DesignDocumen
 	document.Clear();
 	document.Schema = "cui.designer";
 	document.SchemaVersion = DesignDocument::CurrentSchemaVersion;
+	if (version >= 4) document.NextStableId = persistedNextId;
+	if (version >= 5)
+	{
+		if (auto codeBehind = FindChildElement(root, "codeBehind"))
+		{
+			if (!DesignCodeBehindModel::TryNormalizeClassName(
+				FromUtf8(codeBehind->GetAttribute("class")),
+				document.CodeBehind.ClassName, outError)) return false;
+			const auto rawPath =
+				FromUtf8(codeBehind->GetAttribute("relativeBasePath"));
+			if (!DesignCodeBehindModel::TryNormalizeRelativeBasePath(
+				rawPath, document.CodeBehind.RelativeBasePath, outError)
+				|| !document.CodeBehind.Validate(outError))
+				return false;
+		}
+	}
 
 	if (auto form = FindChildElement(root, "form"))
 	{
@@ -885,6 +976,7 @@ bool DesignDocumentSerializer::FromXml(const std::string& xmlText, DesignDocumen
 	}
 
 	std::unordered_set<std::wstring> nameSet;
+	std::unordered_set<int> idSet;
 	for (const auto& control : FindChildElements(controls, "control"))
 	{
 		DesignNode node;
@@ -902,8 +994,158 @@ bool DesignDocumentSerializer::FromXml(const std::string& xmlText, DesignDocumen
 		}
 		nameSet.insert(node.Name);
 
-		node.Id = document.AllocateNodeId();
+		if (version >= 4)
+		{
+			if (!TryReadIntegralAttribute(control, "id", node.Id)
+				|| node.Id < 1)
+			{
+				if (outError) *outError = L"Control entry is missing a valid stable id: " + node.Name;
+				return false;
+			}
+			if (!idSet.insert(node.Id).second)
+			{
+				if (outError) *outError = L"Duplicate control stable id: " + std::to_wstring(node.Id);
+				return false;
+			}
+			if (control->HasAttribute("parentId")
+				&& (!TryReadIntegralAttribute(control, "parentId", node.ParentId)
+					|| node.ParentId < 1))
+			{
+				if (outError) *outError = L"Control entry has an invalid parentId: " + node.Name;
+				return false;
+			}
+		}
+		else
+		{
+			node.Id = document.AllocateNodeId();
+		}
 		node.ParentRef = FromUtf8(control->GetAttribute("parent"));
+		if (control->HasAttribute("customName")
+			|| control->HasAttribute("customCppType"))
+		{
+			node.CustomType.XamlPrefix = FromUtf8(
+				control->GetAttribute("customPrefix"));
+			node.CustomType.XamlName = FromUtf8(
+				control->GetAttribute("customName"));
+			node.CustomType.XamlNamespace = FromUtf8(
+				control->GetAttribute("customNamespace"));
+			node.CustomType.CppType = FromUtf8(
+				control->GetAttribute("customCppType"));
+			node.CustomType.Header = FromUtf8(
+				control->GetAttribute("customHeader"));
+			const auto constructor = control->GetAttribute("customConstructor");
+			if (constructor == "Default")
+				node.CustomType.Constructor =
+					DesignerCustomControlConstructor::Default;
+			else if (constructor == "TextBounds")
+				node.CustomType.Constructor =
+					DesignerCustomControlConstructor::TextBounds;
+			else if (constructor.empty() || constructor == "Bounds")
+				node.CustomType.Constructor =
+					DesignerCustomControlConstructor::Bounds;
+			else
+			{
+				if (outError) *outError = L"Control entry has an invalid custom constructor: "
+					+ node.Name;
+				return false;
+			}
+			if (node.CustomType.XamlPrefix.empty()
+				|| node.CustomType.XamlName.empty()
+				|| node.CustomType.XamlNamespace.empty()
+				|| node.CustomType.CppType.empty()
+				|| node.CustomType.Header.empty())
+			{
+				if (outError) *outError = L"Control entry has an incomplete custom type: "
+					+ node.Name;
+				return false;
+			}
+		}
+		if (auto customEvents = FindChildElement(control, "customEvents"))
+		{
+			const auto customEventsText = customEvents->InnerText();
+			if (FindChildElements(control, "customEvents").size() != 1
+				|| !customEvents->Attributes().empty()
+				|| std::any_of(customEventsText.begin(),
+					customEventsText.end(),
+					[](unsigned char ch) { return !std::isspace(ch); }))
+			{
+				if (outError) *outError = L"Control entry has an invalid customEvents container: "
+					+ node.Name;
+				return false;
+			}
+			for (const auto& child : customEvents->ChildNodes())
+			{
+				if (child && child->NodeType() == XmlNodeType::Element
+					&& child->Name() != "event")
+				{
+					if (outError) *outError = L"Control customEvents contains an unsupported element: "
+						+ node.Name;
+					return false;
+				}
+			}
+			for (const auto& event : FindChildElements(customEvents, "event"))
+			{
+				for (const auto& attribute : event->Attributes())
+				{
+					if (!attribute) continue;
+					const auto& name = attribute->Name();
+					if (name != "name" && name != "displayName"
+						&& name != "field" && name != "category"
+						&& name != "signature" && name != "order"
+						&& name != "default")
+					{
+						if (outError) *outError = L"Control custom event contains an unsupported attribute: "
+							+ node.Name;
+						return false;
+					}
+				}
+				bool hasElementContent = false;
+				for (const auto& child : event->ChildNodes())
+					if (child && child->NodeType() == XmlNodeType::Element)
+						hasElementContent = true;
+				const auto eventText = event->InnerText();
+				if (hasElementContent
+					|| std::any_of(eventText.begin(),
+						eventText.end(),
+						[](unsigned char ch) { return !std::isspace(ch); }))
+				{
+					if (outError) *outError = L"Control custom event cannot contain child elements: "
+						+ node.Name;
+					return false;
+				}
+				DesignerCustomEventDescriptor contract;
+				contract.Name = FromUtf8(event->GetAttribute("name"));
+				contract.DisplayName = FromUtf8(
+					event->GetAttribute("displayName"));
+				contract.EventField = event->GetAttribute("field");
+				DesignerEventCategory category{};
+				DesignerCustomEventSignature signature{};
+				if (contract.Name.empty() || contract.EventField.empty()
+					|| !DesignerEventCatalog::TryParseCategory(
+						FromUtf8(event->GetAttribute("category")), category)
+					|| !DesignerEventCatalog::TryParseCustomSignature(
+						FromUtf8(event->GetAttribute("signature")), signature)
+					|| !TryReadIntegralAttribute(event, "order", contract.Order)
+					|| !TryReadBoolAttribute(event, "default", contract.IsDefault))
+				{
+					if (outError) *outError = L"Control entry has an invalid custom event: "
+						+ node.Name;
+					return false;
+				}
+				contract.Category = category;
+				contract.Signature = signature;
+				if (contract.DisplayName.empty()) contract.DisplayName = contract.Name;
+				node.CustomEvents.push_back(std::move(contract));
+			}
+			std::wstring validationError;
+			if (!DesignerEventCatalog::ValidateCustomEvents(
+				node.Type, node.CustomEvents, &validationError))
+			{
+				if (outError) *outError = L"Control entry has invalid custom events: "
+					+ node.Name + L"：" + validationError;
+				return false;
+			}
+		}
 		if (!TryReadIntegralAttribute(control, "order", node.Order))
 		{
 			node.Order = -1;
@@ -952,7 +1194,40 @@ bool DesignDocumentSerializer::FromXml(const std::string& xmlText, DesignDocumen
 		document.Nodes.push_back(std::move(node));
 	}
 
-	document.RecalculateNextStableId();
-	return true;
+	std::unordered_map<int, DesignNode*> nodeById;
+	std::unordered_map<std::wstring, int> idByName;
+	nodeById.reserve(document.Nodes.size());
+	idByName.reserve(document.Nodes.size());
+	for (auto& node : document.Nodes)
+	{
+		nodeById.emplace(node.Id, &node);
+		idByName.emplace(node.Name, node.Id);
+	}
+
+	for (auto& node : document.Nodes)
+	{
+		if (version < 4)
+		{
+			const auto legacyParent = idByName.find(node.ParentRef);
+			if (legacyParent != idByName.end())
+				node.ParentId = legacyParent->second;
+			continue;
+		}
+
+		if (node.ParentId > 0)
+		{
+			const auto parent = nodeById.find(node.ParentId);
+			// ID is authoritative; keep the name reference canonical and human-readable.
+			if (parent != nodeById.end())
+				node.ParentRef = parent->second->Name;
+		}
+	}
+
+	if (version < 4)
+		document.RecalculateNextStableId();
+	DesignDocumentGraph graph;
+	if (!DesignDocumentGraph::Build(document, graph, outError)) return false;
+	DesignDocumentEventIndex eventIndex;
+	return DesignDocumentEventIndex::Build(document, eventIndex, outError);
 }
 }

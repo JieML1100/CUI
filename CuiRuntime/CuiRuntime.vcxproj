@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32"><Configuration>Debug</Configuration><Platform>Win32</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32"><Configuration>Release</Configuration><Platform>Win32</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{A2F2FB5D-7B17-4C41-9C9A-7C0EB68D6A32}</ProjectGuid>
+    <RootNamespace>CuiRuntime</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>CuiRuntime</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType><UseDebugLibraries>true</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><WholeProgramOptimization>true</WholeProgramOptimization><CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType><UseDebugLibraries>true</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><WholeProgramOptimization>true</WholeProgramOptimization><CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel><SDLCheck>true</SDLCheck><PreprocessorDefinitions>_DEBUG;_LIB;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode><LanguageStandard>stdcpp20</LanguageStandard><RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary><DebugInformationFormat>OldStyle</DebugInformationFormat><MultiProcessorCompilation>true</MultiProcessorCompilation><AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel><FunctionLevelLinking>true</FunctionLevelLinking><IntrinsicFunctions>true</IntrinsicFunctions><SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_LIB;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions><ConformanceMode>true</ConformanceMode><LanguageStandard>stdcpp20</LanguageStandard>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary><DebugInformationFormat>OldStyle</DebugInformationFormat><MultiProcessorCompilation>true</MultiProcessorCompilation><AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Lib><LinkTimeCodeGeneration>true</LinkTimeCodeGeneration></Lib>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerDataContextSchemaUtils.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerEventCatalog.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerFormPropertyCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerPropertyCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerStyleSheetUtils.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\AtomicFile.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocument.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentCodeGenInputBuilder.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentControlPool.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentGraph.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentMaterializer.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentSerializer.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\RuntimeDocument.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\RuntimeEventHandlerRegistry.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\RuntimeDocumentFileWatcher.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\RuntimeDocumentSession.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\RuntimeDocumentTopologyReloader.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\XamlDocumentParser.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\XamlDocumentSerializer.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+	<ClInclude Include="include\CuiRuntime.h" />
+	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDocumentFileFormat.h" />
+	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.h" />
+	<ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeDocumentFileWatcher.h" />
+	<ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeDocumentSession.h" />
+	<ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeEventHandlerRegistry.h" />
+	<ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeDocumentTopologyReloader.h" />
+	<ClInclude Include="..\CuiDesigner\DesignerModel\XamlDocumentParser.h" />
+	<ClInclude Include="..\CuiDesigner\DesignerModel\XamlDocumentSerializer.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CUI\CUI.vcxproj"><Project>{48316892-3a38-48f2-8c34-4d676304f769}</Project></ProjectReference>
+    <ProjectReference Include="..\D2DGraphics\D2DGraphics.vcxproj"><Project>{dbe82cef-212b-4fcd-8a2b-99f17c3b7f19}</Project></ProjectReference>
+    <ProjectReference Include="..\Utils\Utils.vcxproj"><Project>{1ddaee3c-caa8-489f-bfbe-84d30c9b4774}</Project></ProjectReference>
+    <ProjectReference Include="..\XmlLite\XmlLite.vcxproj"><Project>{b184b7ea-ea4d-4e1e-abdd-a9a6a91cbbcf}</Project></ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

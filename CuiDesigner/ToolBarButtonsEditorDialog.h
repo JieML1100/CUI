@@ -9,13 +9,20 @@
 #include "../CUI/include/Button.h"
 #include "../CUI/include/ToolBar.h"
 #include "../CUI/include/GridView.h"
-#include <functional>
+#include <vector>
 
 class ToolBarButtonsEditorDialog : public Form
 {
 public:
+	struct ButtonEdit
+	{
+		Button* ExistingButton = nullptr;
+		std::wstring Text;
+		int Width = 90;
+	};
+
 	bool Applied = false;
-	std::function<void(Control* button)> OnBeforeDeleteButton;
+	std::vector<ButtonEdit> Buttons;
 
 	ToolBarButtonsEditorDialog(ToolBar* target);
 	~ToolBarButtonsEditorDialog() = default;
@@ -28,5 +35,8 @@ private:
 
 	static std::wstring Trim(const std::wstring& s);
 	void RefreshGridFromTarget();
-	void AddRow(const std::wstring& text, const std::wstring& width);
+	void AddRow(
+		const std::wstring& text,
+		const std::wstring& width,
+		Button* button = nullptr);
 };

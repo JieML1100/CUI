@@ -9,43 +9,30 @@
 #include "BindingEditorDialog.h"
 #include "DataContextSchemaEditorDialog.h"
 #include "DesignerPropertyCatalog.h"
+#include "DesignerPropertyRowCatalog.h"
+#include "DesignerStyleSheetUtils.h"
+#include "DesignerCustomEditorCatalog.h"
+#include "DesignerEventCatalog.h"
+#include "EventHandlerEditorDialog.h"
 #include "StyleSheetEditorDialog.h"
 #include "MenuItemsEditorDialog.h"
 #include "StatusBarPartsEditorDialog.h"
 #include "DesignerCanvas.h"
-#include "DesignerCore/Commands/UpdatePropertyCommand.h"
-#include "../CUI/include/LinkLabel.h"
+#include "DesignerCore/Commands/ControlPropertyCommand.h"
+#include "DesignerCore/Commands/ControlStructureCommand.h"
+#include "DesignerCore/Commands/ControlOwnedCollectionCommand.h"
+#include "DesignerStructureEdit.h"
 #include "../CUI/include/ComboBox.h"
-#include "../CUI/include/LoadingRing.h"
-#include "../CUI/include/Slider.h"
-#include "../CUI/include/NumericUpDown.h"
-#include "../CUI/include/ProgressBar.h"
-#include "../CUI/include/ProgressRing.h"
-#include "../CUI/include/PictureBox.h"
-#include "../CUI/include/DateTimePicker.h"
-#include "../CUI/include/GroupBox.h"
-#include "../CUI/include/Expander.h"
-#include "../CUI/include/ScrollView.h"
 #include "../CUI/include/ListView.h"
-#include "../CUI/include/PropertyGrid.h"
 #include "../CUI/include/TreeView.h"
 #include "../CUI/include/TabControl.h"
 #include "../CUI/include/ToolBar.h"
 #include "../CUI/include/StatusBar.h"
-#include "../CUI/include/MediaPlayer.h"
-#include "../CUI/include/SplitContainer.h"
-#include "../CUI/include/Layout/StackPanel.h"
-#include "../CUI/include/Layout/WrapPanel.h"
-#include "../CUI/include/Layout/DockPanel.h"
-#include <commdlg.h>
-#include <windowsx.h>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
 #include <cmath>
 #include <set>
-
-#pragma comment(lib, "Comdlg32.lib")
 
 namespace
 {
@@ -67,24 +54,25 @@ namespace
 		return category;
 	}
 
-	static void SetTrackedMetadataProperty(
-		DesignerControl& control,
-		std::wstring canonicalName,
-		DesignerStyleValue value)
+	static std::wstring DesignerValueSourceCaption(
+		ControlPropertyValueSource source)
 	{
-		for (auto it = control.MetadataProperties.begin();
-			it != control.MetadataProperties.end(); ++it)
+		switch (source)
 		{
-			if (!PropertyNamesEqual(it->first, canonicalName)) continue;
-			control.MetadataProperties.erase(it);
-			break;
+		case ControlPropertyValueSource::Theme: return L"主题";
+		case ControlPropertyValueSource::Style: return L"样式";
+		case ControlPropertyValueSource::Binding: return L"绑定";
+		case ControlPropertyValueSource::Local: return L"本地";
+		case ControlPropertyValueSource::Default:
+		default:
+			return L"默认";
 		}
-		control.MetadataProperties[std::move(canonicalName)] = std::move(value);
 	}
 
 	static std::wstring TrimWs(const std::wstring& s);
 
 	static const std::wstring kFontDefaultOption = L"<Default>";
+	static const std::wstring kMixedValueText = L"<多个值>";
 
 	static std::wstring FloatToText(float v)
 	{
@@ -164,37 +152,6 @@ namespace
 		return out;
 	}
 
-	static COLORREF ColorFToCOLORREF(const D2D1_COLOR_F& c)
-	{
-		int r = (int)std::lround(std::clamp(c.r, 0.0f, 1.0f) * 255.0f);
-		int g = (int)std::lround(std::clamp(c.g, 0.0f, 1.0f) * 255.0f);
-		int b = (int)std::lround(std::clamp(c.b, 0.0f, 1.0f) * 255.0f);
-		return RGB(r, g, b);
-	}
-
-	static D2D1_COLOR_F COLORREFToColorF(COLORREF cr, float a01)
-	{
-		float r = GetRValue(cr) / 255.0f;
-		float g = GetGValue(cr) / 255.0f;
-		float b = GetBValue(cr) / 255.0f;
-		return D2D1::ColorF(r, g, b, std::clamp(a01, 0.0f, 1.0f));
-	}
-
-	static bool PickColorWithDialog(HWND owner, const D2D1_COLOR_F& initial, D2D1_COLOR_F& out)
-	{
-		CHOOSECOLORW cc{};
-		static COLORREF custom[16]{};
-		cc.lStructSize = sizeof(cc);
-		cc.hwndOwner = owner;
-		cc.rgbResult = ColorFToCOLORREF(initial);
-		cc.lpCustColors = custom;
-		cc.Flags = CC_FULLOPEN | CC_RGBINIT;
-		if (!ChooseColorW(&cc))
-			return false;
-		out = COLORREFToColorF(cc.rgbResult, initial.a);
-		return true;
-	}
-
 	static std::wstring TrimWs(const std::wstring& s)
 	{
 		size_t b = 0;
@@ -204,454 +161,67 @@ namespace
 		return s.substr(b, e - b);
 	}
 
-	static std::vector<std::wstring> Split(const std::wstring& s, wchar_t sep)
+	static bool IsEventPropertyName(
+		const PropertyGridBinder& binding,
+		const std::wstring& name)
 	{
-		std::vector<std::wstring> out;
-		std::wstring cur;
-		for (wchar_t c : s)
-		{
-			if (c == sep)
-			{
-				out.push_back(TrimWs(cur));
-				cur.clear();
-			}
-			else cur.push_back(c);
-		}
-		out.push_back(TrimWs(cur));
-		return out;
+		if (binding.IsFormBinding())
+			return DesignerEventCatalog::FindFormEvent(name).has_value();
+		const auto control = binding.GetBoundControl();
+		return control && DesignerEventCatalog::FindControlEvent(
+			control->Type, name, control->CustomEvents).has_value();
 	}
 
-	static std::wstring JoinStyleClasses(const Control& control)
+	static std::vector<std::wstring> GetCompatibleHandlerNames(
+		const DesignerCanvas* canvas,
+		const DesignerEventDescriptor& requested,
+		const std::wstring& defaultName,
+		const std::wstring& currentName)
 	{
-		std::wstring result;
-		for (const auto& styleClass : control.GetStyleClasses())
+		std::set<std::wstring> compatible;
+		if (!defaultName.empty()) compatible.insert(defaultName);
+		if (!currentName.empty()) compatible.insert(currentName);
+		if (canvas)
 		{
-			if (!result.empty())
-				result += L", ";
-			result += styleClass;
+			DesignerModel::DesignDocumentEventIndex index;
+			if (canvas->BuildEventHandlerIndex(index, nullptr))
+				for (const auto& handler : index.Handlers())
+					if (handler.Signature == requested.Signature)
+						compatible.insert(handler.Name);
 		}
+
+		std::vector<std::wstring> result;
+		auto appendFirst = [&](const std::wstring& name) {
+			if (name.empty()) return;
+			auto it = compatible.find(name);
+			if (it == compatible.end()) return;
+			result.push_back(*it);
+			compatible.erase(it);
+		};
+		appendFirst(defaultName);
+		appendFirst(currentName);
+		result.insert(result.end(), compatible.begin(), compatible.end());
 		return result;
 	}
 
-	static std::wstring ColorToText(const D2D1_COLOR_F& c)
+	static bool HasConflictingHandlerSignature(
+		const DesignerCanvas* canvas,
+		const std::wstring& handlerName,
+		const DesignerEventDescriptor& requested,
+		std::wstring& error)
 	{
-		auto toByte = [](float v) -> int {
-			return (int)std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f);
-		};
-
-		std::wostringstream oss;
-		oss << L"#"
-			<< std::uppercase << std::hex << std::setfill(L'0')
-			<< std::setw(2) << toByte(c.r)
-			<< std::setw(2) << toByte(c.g)
-			<< std::setw(2) << toByte(c.b);
-
-		int alphaByte = toByte(c.a);
-		if (alphaByte != 255)
-			oss << std::setw(2) << alphaByte;
-
-		return oss.str();
-	}
-
-	static bool TryParseHexNibble(wchar_t c, int& out)
-	{
-		if (c >= L'0' && c <= L'9') { out = c - L'0'; return true; }
-		if (c >= L'a' && c <= L'f') { out = 10 + (c - L'a'); return true; }
-		if (c >= L'A' && c <= L'F') { out = 10 + (c - L'A'); return true; }
-		return false;
-	}
-
-	static bool TryParseHexByte(const std::wstring& s, size_t offset, unsigned char& out)
-	{
-		int hi = 0, lo = 0;
-		if (offset + 1 >= s.size()) return false;
-		if (!TryParseHexNibble(s[offset], hi)) return false;
-		if (!TryParseHexNibble(s[offset + 1], lo)) return false;
-		out = (unsigned char)((hi << 4) | lo);
-		return true;
-	}
-
-	static bool TryParseColor(const std::wstring& s, D2D1_COLOR_F& out)
-	{
-		auto t = TrimWs(s);
-		if (t.empty()) return false;
-		if (t[0] == L'#')
+		if (!canvas || handlerName.empty()) return false;
+		DesignerModel::DesignDocumentEventIndex index;
+		if (!canvas->BuildEventHandlerIndex(index, &error)) return true;
+		if (const auto* existing = index.FindHandler(handlerName);
+			existing && existing->Signature != requested.Signature)
 		{
-			std::wstring hex = t.substr(1);
-			if (hex.size() != 6 && hex.size() != 8) return false;
-
-			unsigned char p0 = 0, p1 = 0, p2 = 0, p3 = 255;
-			if (!TryParseHexByte(hex, 0, p0)) return false;
-			if (!TryParseHexByte(hex, 2, p1)) return false;
-			if (!TryParseHexByte(hex, 4, p2)) return false;
-
-			unsigned char r = p0, g = p1, b = p2, a = 255;
-			if (hex.size() == 8)
-			{
-				if (!TryParseHexByte(hex, 6, p3)) return false;
-
-				const bool argbAlphaIsExtreme = (p0 == 0x00 || p0 == 0xFF);
-				const bool rgbaAlphaIsExtreme = (p3 == 0x00 || p3 == 0xFF);
-				const bool preferArgb = (!argbAlphaIsExtreme && rgbaAlphaIsExtreme);
-
-				if (preferArgb)
-				{
-					a = p0;
-					r = p1;
-					g = p2;
-					b = p3;
-				}
-				else
-				{
-					r = p0;
-					g = p1;
-					b = p2;
-					a = p3;
-				}
-			}
-
-			out = D2D1::ColorF(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
+			error = L"处理函数 “" + handlerName
+				+ L"” 已被不同参数签名的事件使用。请换一个函数名。";
 			return true;
 		}
-		// 0xAARRGGBB
-		if (t.size() == 10 && t[0] == L'0' && (t[1] == L'x' || t[1] == L'X'))
-		{
-			std::wstring hex = t.substr(2);
-			unsigned char a = 255, r = 0, g = 0, b = 0;
-			if (!TryParseHexByte(hex, 0, a)) return false;
-			if (!TryParseHexByte(hex, 2, r)) return false;
-			if (!TryParseHexByte(hex, 4, g)) return false;
-			if (!TryParseHexByte(hex, 6, b)) return false;
-			out = D2D1::ColorF(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
-			return true;
-		}
-		// r,g,b or r,g,b,a (float 0~1 or int 0~255)
-		auto parts = Split(t, L',');
-		if (parts.size() < 3) return false;
-		float v[4] = { 0,0,0,1 };
-		for (size_t i = 0; i < parts.size() && i < 4; i++)
-		{
-			try { v[i] = std::stof(parts[i]); }
-			catch (...) { return false; }
-		}
-		bool anyOver1 = (v[0] > 1.0f || v[1] > 1.0f || v[2] > 1.0f || v[3] > 1.0f);
-		if (anyOver1)
-		{
-			out = D2D1::ColorF(v[0] / 255.0f, v[1] / 255.0f, v[2] / 255.0f, v[3] / 255.0f);
-		}
-		else
-		{
-			out = D2D1::ColorF(v[0], v[1], v[2], v[3]);
-		}
-		return true;
-	}
-
-	static std::wstring ThicknessToText(const Thickness& t)
-	{
-		std::wostringstream oss;
-		oss.setf(std::ios::fixed);
-		oss << std::setprecision(1) << t.Left << L"," << t.Top << L"," << t.Right << L"," << t.Bottom;
-		return oss.str();
-	}
-
-	static bool TryParseThickness(const std::wstring& s, Thickness& out)
-	{
-		auto parts = Split(s, L',');
-		if (parts.size() != 4) return false;
-		try
-		{
-			out.Left = std::stof(parts[0]);
-			out.Top = std::stof(parts[1]);
-			out.Right = std::stof(parts[2]);
-			out.Bottom = std::stof(parts[3]);
-			return true;
-		}
-		catch (...) { return false; }
-	}
-
-	static bool TryParseHAlign(const std::wstring& s, ::HorizontalAlignment& out)
-	{
-		auto t = TrimWs(s);
-		if (t == L"Left") { out = HorizontalAlignment::Left; return true; }
-		if (t == L"Center") { out = HorizontalAlignment::Center; return true; }
-		if (t == L"Right") { out = HorizontalAlignment::Right; return true; }
-		if (t == L"Stretch") { out = HorizontalAlignment::Stretch; return true; }
 		return false;
 	}
-
-	static bool TryParseVAlign(const std::wstring& s, ::VerticalAlignment& out)
-	{
-		auto t = TrimWs(s);
-		if (t == L"Top") { out = VerticalAlignment::Top; return true; }
-		if (t == L"Center") { out = VerticalAlignment::Center; return true; }
-		if (t == L"Bottom") { out = VerticalAlignment::Bottom; return true; }
-		if (t == L"Stretch") { out = VerticalAlignment::Stretch; return true; }
-		return false;
-	}
-
-	static std::wstring HAlignToText(::HorizontalAlignment a)
-	{
-		switch (a)
-		{
-		case HorizontalAlignment::Left: return L"Left";
-		case HorizontalAlignment::Center: return L"Center";
-		case HorizontalAlignment::Right: return L"Right";
-		case HorizontalAlignment::Stretch: return L"Stretch";
-		default: return L"Left";
-		}
-	}
-
-	static std::wstring VAlignToText(::VerticalAlignment a)
-	{
-		switch (a)
-		{
-		case VerticalAlignment::Top: return L"Top";
-		case VerticalAlignment::Center: return L"Center";
-		case VerticalAlignment::Bottom: return L"Bottom";
-		case VerticalAlignment::Stretch: return L"Stretch";
-		default: return L"Top";
-		}
-	}
-
-	static bool TryParseDock(const std::wstring& s, ::Dock& out)
-	{
-		auto t = TrimWs(s);
-		if (t == L"Fill") { out = Dock::Fill; return true; }
-		if (t == L"Left") { out = Dock::Left; return true; }
-		if (t == L"Top") { out = Dock::Top; return true; }
-		if (t == L"Right") { out = Dock::Right; return true; }
-		if (t == L"Bottom") { out = Dock::Bottom; return true; }
-		return false;
-	}
-
-	static std::wstring DockToText(::Dock d)
-	{
-		switch (d)
-		{
-		case Dock::Fill: return L"Fill";
-		case Dock::Left: return L"Left";
-		case Dock::Top: return L"Top";
-		case Dock::Right: return L"Right";
-		case Dock::Bottom: return L"Bottom";
-		default: return L"Fill";
-		}
-	}
-
-	static bool TryParseImageSizeMode(const std::wstring& s, ::ImageSizeMode& out)
-	{
-		auto t = TrimWs(s);
-		if (t == L"Normal") { out = ImageSizeMode::Normal; return true; }
-		if (t == L"CenterImage") { out = ImageSizeMode::CenterImage; return true; }
-		if (t == L"Stretch") { out = ImageSizeMode::StretchImage; return true; }
-		if (t == L"Zoom") { out = ImageSizeMode::Zoom; return true; }
-		// 兼容旧拼写
-		if (t == L"StretchImage") { out = ImageSizeMode::StretchImage; return true; }
-		return false;
-	}
-
-	static std::wstring ImageSizeModeToText(::ImageSizeMode m)
-	{
-		switch (m)
-		{
-		case ImageSizeMode::Normal: return L"Normal";
-		case ImageSizeMode::CenterImage: return L"CenterImage";
-		case ImageSizeMode::StretchImage: return L"Stretch";
-		case ImageSizeMode::Zoom: return L"Zoom";
-		default: return L"Zoom";
-		}
-	}
-
-	static const std::set<std::wstring>& KnownEventPropertyNames()
-	{
-		static const std::set<std::wstring> k = {
-			L"OnMouseWheel",
-			L"OnMouseMove",
-			L"OnMouseDown",
-			L"OnMouseUp",
-			L"OnMouseClick",
-			L"OnMouseDoubleClick",
-			L"OnMouseEnter",
-			L"OnMouseLeave",
-			L"OnKeyDown",
-			L"OnKeyUp",
-			L"OnCharInput",
-			L"OnGotFocus",
-			L"OnLostFocus",
-			L"OnDropFile",
-			L"OnDropText",
-			L"OnPaint",
-			L"OnClose",
-			L"OnMoved",
-			L"OnSizeChanged",
-			L"OnTextChanged",
-			L"OnFormClosing",
-			L"OnFormClosed",
-			L"OnCommand",
-			L"OnChecked",
-			L"OnSelectionChanged",
-			L"OnSelectedChanged",
-			L"OnScrollChanged",
-			L"ScrollChanged",
-			L"SelectionChanged",
-			L"OnGridViewCheckStateChanged",
-			L"OnGridViewLinkedTextClick",
-			L"OnItemClick",
-			L"OnItemDoubleClick",
-			L"OnItemCheckChanged",
-			L"OnToastClick",
-			L"OnToastDismissed",
-			L"OnUserAddingRow",
-			L"OnUserAddedRow",
-			L"OnValueChanged",
-			L"OnMenuCommand",
-		};
-		return k;
-	}
-
-	static bool IsEventPropertyName(const std::wstring& name)
-	{
-		return KnownEventPropertyNames().find(name) != KnownEventPropertyNames().end();
-	}
-
-	static std::vector<std::wstring> GetEventPropertiesFor(UIClass type)
-	{
-		std::vector<std::wstring> out;
-
-		out.push_back(L"OnMouseWheel");
-		out.push_back(L"OnMouseMove");
-		out.push_back(L"OnMouseDown");
-		out.push_back(L"OnMouseUp");
-		out.push_back(L"OnMouseClick");
-		out.push_back(L"OnMouseDoubleClick");
-		out.push_back(L"OnMouseEnter");
-		out.push_back(L"OnMouseLeave");
-		out.push_back(L"OnKeyDown");
-		out.push_back(L"OnKeyUp");
-		out.push_back(L"OnCharInput");
-		out.push_back(L"OnGotFocus");
-		out.push_back(L"OnLostFocus");
-		out.push_back(L"OnDropText");
-		out.push_back(L"OnDropFile");
-		out.push_back(L"OnPaint");
-		out.push_back(L"OnClose");
-		out.push_back(L"OnMoved");
-		out.push_back(L"OnSizeChanged");
-		out.push_back(L"OnSelectedChanged");
-		out.push_back(L"OnScrollChanged");
-
-		switch (type)
-		{
-		case UIClass::UI_TextBox:
-		case UIClass::UI_RichTextBox:
-		case UIClass::UI_PasswordBox:
-			out.push_back(L"OnTextChanged");
-			break;
-		case UIClass::UI_CheckBox:
-		case UIClass::UI_RadioBox:
-		case UIClass::UI_Switch:
-			out.push_back(L"OnChecked");
-			break;
-		case UIClass::UI_ComboBox:
-			out.push_back(L"OnSelectionChanged");
-			break;
-		case UIClass::UI_DateTimePicker:
-			out.push_back(L"OnSelectionChanged");
-			break;
-		case UIClass::UI_GridView:
-			out.push_back(L"ScrollChanged");
-			out.push_back(L"SelectionChanged");
-			out.push_back(L"OnGridViewCheckStateChanged");
-			out.push_back(L"OnGridViewLinkedTextClick");
-			out.push_back(L"OnUserAddingRow");
-			out.push_back(L"OnUserAddedRow");
-			break;
-		case UIClass::UI_TreeView:
-			out.push_back(L"ScrollChanged");
-			out.push_back(L"SelectionChanged");
-			break;
-		case UIClass::UI_ListView:
-		case UIClass::UI_ListBox:
-			out.push_back(L"ScrollChanged");
-			out.push_back(L"SelectionChanged");
-			out.push_back(L"OnItemClick");
-			out.push_back(L"OnItemDoubleClick");
-			out.push_back(L"OnItemCheckChanged");
-			break;
-		case UIClass::UI_PropertyGrid:
-			out.push_back(L"ScrollChanged");
-			out.push_back(L"SelectionChanged");
-			out.push_back(L"OnItemClick");
-			out.push_back(L"OnValueChanged");
-			break;
-		case UIClass::UI_ToastHost:
-			out.push_back(L"OnToastClick");
-			out.push_back(L"OnToastDismissed");
-			break;
-		case UIClass::UI_Slider:
-			out.push_back(L"OnValueChanged");
-			break;
-		case UIClass::UI_NumericUpDown:
-			out.push_back(L"OnValueChanged");
-			break;
-		case UIClass::UI_Expander:
-			out.push_back(L"OnExpandedChanged");
-			break;
-		case UIClass::UI_Menu:
-			out.push_back(L"OnMenuCommand");
-			break;
-		default:
-			break;
-		}
-		return out;
-	}
-
-	static std::vector<std::wstring> GetFormEventProperties()
-	{
-		return {
-			L"OnMouseWheel",
-			L"OnMouseMove",
-			L"OnMouseDown",
-			L"OnMouseUp",
-			L"OnMouseClick",
-			L"OnMouseDoubleClick",
-			L"OnMouseEnter",
-			L"OnMouseLeave",
-			L"OnKeyDown",
-			L"OnKeyUp",
-			L"OnCharInput",
-			L"OnGotFocus",
-			L"OnLostFocus",
-			L"OnDropText",
-			L"OnDropFile",
-			L"OnPaint",
-			L"OnClose",
-			L"OnMoved",
-			L"OnSizeChanged",
-			L"OnTextChanged",
-			L"OnFormClosing",
-			L"OnFormClosed",
-			L"OnCommand",
-		};
-	}
-}
-
-void PropertyGrid::CreateEventBoolPropertyItem(std::wstring eventName, bool enabled, int& yOffset)
-{
-	auto* container = GetContentContainer();
-	int width = GetContentWidthLocal();
-
-	auto checkBox = new CheckBox(eventName, 10, yOffset);
-	checkBox->Size = { width - 20, 20 };
-	checkBox->Checked = enabled;
-	checkBox->ParentForm = this->ParentForm;
-	checkBox->OnMouseClick += [this, eventName](Control* sender, MouseEventArgs) {
-		auto box = (CheckBox*)sender;
-		UpdatePropertyFromBool(eventName, box->Checked);
-	};
-	container->AddControl(checkBox);
-	RegisterScrollable(checkBox);
-	_items.push_back(new PropertyItem(eventName, nullptr, checkBox));
-	yOffset += 25;
 }
 
 PropertyGrid::PropertyGrid(int x, int y, int width, int height)
@@ -666,674 +236,837 @@ PropertyGrid::PropertyGrid(int x, int y, int width, int height)
 	_titleLabel->Font = new ::Font(L"Microsoft YaHei", 16.0f);
 	this->AddControl(_titleLabel);
 
-	_scrollView = new ScrollView(0, _contentTop, width, std::max(0, height - _contentTop));
-	_scrollView->BackColor = this->BackColor;
-	_scrollView->BorderThickness = 0.0f;
-	_scrollView->MouseWheelStep = 25;
-	this->AddControl(_scrollView);
+	auto configureModeButton = [this](Button*& button,
+		const std::wstring& text, const std::wstring& accessibleName)
+	{
+		button = new Button(text, 0, 7, 54, 27);
+		button->Font = new ::Font(L"Microsoft YaHei", 11.0f);
+		button->Raised = false;
+		button->Round = 4.0f;
+		button->BorderThickness = 1.0f;
+		button->BackColor = D2D1::ColorF(0.88f, 0.90f, 0.94f, 1.0f);
+		button->CheckedColor = D2D1::ColorF(0.20f, 0.46f, 0.90f, 0.30f);
+		button->AccessibleName = accessibleName;
+		this->AddControl(button);
+	};
+	configureModeButton(_propertiesModeButton, L"属性", L"显示属性");
+	configureModeButton(_eventsModeButton, L"事件", L"显示事件");
+	_propertiesModeButton->OnMouseClick += [this](Control*, MouseEventArgs)
+	{
+		SetViewMode(DesignerPropertyGridViewMode::Properties);
+	};
+	_eventsModeButton->OnMouseClick += [this](Control*, MouseEventArgs)
+	{
+		SetViewMode(DesignerPropertyGridViewMode::Events);
+	};
 
-	_contentHost = new Panel(0, 0, width, std::max(0, height - _contentTop));
-	_contentHost->BackColor = D2D1::ColorF(0, 0, 0, 0);
-	_contentHost->BorderThickness = 0.0f;
+	_filterLabel = new Label(L"筛选", 10, 40);
+	_filterLabel->Size = { 42, 22 };
+	_filterLabel->Font = new ::Font(L"Microsoft YaHei", 12.0f);
+	_filterLabel->AccessibleName = L"属性筛选标签";
+	this->AddControl(_filterLabel);
+
+	_filterBox = new TextBox(L"", 56, 38, std::max(0, width - 66), 24);
+	_filterBox->AccessibleName = L"筛选属性";
+	_filterBox->AccessibleDescription =
+		L"按属性名称、分类、当前值或值来源筛选；多个关键词需同时匹配。";
+	_filterBox->OnTextChanged += [this](Control*, std::wstring, std::wstring value)
+	{
+		if (_syncingViewModeControls) return;
+		if (_propertyFilter == value) return;
+		_propertyFilter = std::move(value);
+		CurrentViewState().Filter = _propertyFilter;
+		_reloadRequested = true;
+		this->InvalidateVisual();
+	};
+	this->AddControl(_filterBox);
+
+	_editErrorLabel = new Label(L"", 10, 66);
+	_editErrorLabel->Size = { std::max(0, width - 20), 24 };
+	_editErrorLabel->Font = new ::Font(L"Microsoft YaHei", 11.0f);
+	_editErrorLabel->ForeColor = Colors::Red;
+	_editErrorLabel->Visible = false;
+	_editErrorLabel->AccessibleName = L"属性编辑状态";
+	this->AddControl(_editErrorLabel);
+
+	_nativeGrid = new PropertyGridView(
+		0, _contentTop, width, std::max(0, height - _contentTop));
+	_nativeGrid->AccessibleName = L"\u8bbe\u8ba1\u5668\u5c5e\u6027\u7f51\u683c";
+	_nativeGrid->AccessibleDescription =
+		L"\u4f7f\u7528 CUI \u539f\u751f PropertyGrid \u663e\u793a\u548c\u7f16\u8f91\u8bbe\u8ba1\u671f\u5c5e\u6027\u3002";
+	_nativeGrid->BackColor = Colors::White;
+	_nativeGrid->ForeColor = D2D1::ColorF(0.12f, 0.14f, 0.18f, 1.0f);
+	_nativeGrid->HeaderBackColor = D2D1::ColorF(0.91f, 0.93f, 0.96f, 1.0f);
+	_nativeGrid->HeaderForeColor = D2D1::ColorF(0.14f, 0.17f, 0.22f, 1.0f);
+	_nativeGrid->CategoryBackColor = D2D1::ColorF(0.94f, 0.95f, 0.97f, 1.0f);
+	_nativeGrid->CategoryForeColor = D2D1::ColorF(0.20f, 0.24f, 0.31f, 1.0f);
+	_nativeGrid->AlternateRowBackColor = D2D1::ColorF(0.12f, 0.18f, 0.30f, 0.035f);
+	_nativeGrid->GridLineColor = D2D1::ColorF(0.38f, 0.43f, 0.52f, 0.22f);
+	_nativeGrid->ReadOnlyForeColor = D2D1::ColorF(0.46f, 0.49f, 0.55f, 1.0f);
+	_nativeGrid->NameColumnWidth = std::max(96.0f, width * 0.46f);
+	_nativeGrid->SetHeaderLabels(L"属性", L"值");
+	_nativeGrid->OnValueChanged += [this](
+		PropertyGridView*, int index, std::wstring oldValue, std::wstring newValue)
+	{
+		HandleNativeValueChanged(index, oldValue, newValue);
+	};
+	_nativeGrid->OnItemClick += [this](PropertyGridView*, int index)
+	{
+		HandleNativeItemClick(index);
+	};
+	_nativeGrid->OnMouseDoubleClick += [this](Control*, MouseEventArgs eventArgs)
+	{
+		if (!_nativeGrid) return;
+		const auto index = _nativeGrid->HitTestItem(eventArgs.X, eventArgs.Y);
+		HandleNativeDoubleClick(index);
+	};
+	_nativeGrid->OnResetRequested += [this](PropertyGridView*, int index)
+	{
+		HandleNativeResetRequested(index);
+	};
+	_nativeGrid->OnEditStarted += [this](PropertyGridView*, int index)
+	{
+		if (index < 0 || index >= static_cast<int>(_nativeEntries.size())) return;
+		const auto& entry = _nativeEntries[static_cast<size_t>(index)];
+		const auto* row = DesignerPropertyRowCatalog::Find(
+			_propertyRows, entry.PropertyName);
+		if (entry.Kind == NativeGridEntryKind::Property && row
+			&& row->Editor == DesignerPropertyRowEditorKind::FloatSlider)
+			_nativeSliderEditAccepted =
+				BeginGroupedFloatSliderEdit(entry.PropertyName);
+	};
+	_nativeGrid->OnEditCompleted += [this](PropertyGridView*, int)
+	{
+		if (_nativeSliderEditAccepted) CommitGroupedFloatSliderEdit();
+		_nativeSliderEditAccepted = true;
+	};
+	_nativeGrid->OnEditCanceled += [this](PropertyGridView*, int)
+	{
+		if (_nativeSliderEditAccepted) RollbackGroupedFloatSliderEdit(L"");
+		_nativeSliderEditAccepted = true;
+	};
+	this->AddControl(_nativeGrid);
+	UpdateViewModePresentation();
 	UpdateContentHostLayout();
-	_scrollView->AddControl(_contentHost);
 }
 
 PropertyGrid::~PropertyGrid()
 {
 }
 
-void PropertyGrid::RegisterScrollable(Control* c)
-{
-	(void)c;
-}
-
-Panel* PropertyGrid::GetContentContainer()
-{
-	return _contentHost ? _contentHost : this;
-}
-
-int PropertyGrid::GetContentTopLocal()
-{
-	return _contentHost ? 0 : _contentTop;
-}
-
-int PropertyGrid::GetContentWidthLocal()
-{
-	if (!_contentHost) return this->Width;
-	return _contentHost->Width;
-}
-
-int PropertyGrid::GetViewportHeightLocal()
-{
-	if (_scrollView) return _scrollView->Height;
-	return this->Height - _contentTop;
-}
-
 void PropertyGrid::UpdateContentHostLayout()
 {
 	if (_titleLabel)
 	{
-		_titleLabel->Size = { std::max(0, this->Width - 20), 25 };
+		_titleLabel->Size = { std::max(0, this->Width - 138), 25 };
 	}
-	if (_scrollView)
+	if (_propertiesModeButton)
 	{
-		_scrollView->Left = 0;
-		_scrollView->Top = _contentTop;
-		_scrollView->Width = this->Width;
-		_scrollView->Height = std::max(0, this->Height - _contentTop);
+		_propertiesModeButton->Left = std::max(10, this->Width - 124);
+		_propertiesModeButton->Top = 7;
 	}
-	if (!_contentHost) return;
-	int w = _scrollView ? std::max(0, _scrollView->Width - 12) : this->Width;
-	int h = _scrollView ? std::max(0, _scrollView->Height) : std::max(0, this->Height - _contentTop);
-	_contentHost->Left = 0;
-	_contentHost->Top = 0;
-	_contentHost->Width = w;
-	_contentHost->Height = std::max(h, _contentHeight);
-}
-
-void PropertyGrid::ClampScroll()
-{
-}
-
-void PropertyGrid::UpdateScrollLayout()
-{
-	UpdateContentHostLayout();
-	if (!_contentHost) return;
-	int maxBottom = 0;
-	for (int i = 0; i < _contentHost->Count; ++i)
+	if (_eventsModeButton)
 	{
-		auto* child = _contentHost->operator[](i);
-		if (!child || !child->Visible) continue;
-		auto sz = child->ActualSize();
-		maxBottom = (std::max)(maxBottom, static_cast<int>(child->Top) + static_cast<int>(sz.cy));
+		_eventsModeButton->Left = std::max(68, this->Width - 66);
+		_eventsModeButton->Top = 7;
 	}
-	_contentHeight = maxBottom + _contentBottomPadding;
-	_contentHost->Height = (std::max)(GetViewportHeightLocal(), _contentHeight);
+	if (_filterLabel)
+	{
+		_filterLabel->Left = 10;
+		_filterLabel->Top = 40;
+		_filterLabel->Size = { 42, 22 };
+	}
+	if (_filterBox)
+	{
+		_filterBox->Left = 56;
+		_filterBox->Top = 38;
+		_filterBox->Width = std::max(0, this->Width - 66);
+		_filterBox->Height = 24;
+	}
+	if (_editErrorLabel)
+	{
+		_editErrorLabel->Left = 10;
+		_editErrorLabel->Top = 66;
+		_editErrorLabel->Size = { std::max(0, this->Width - 20), 24 };
+	}
+	if (_nativeGrid)
+	{
+		_nativeGrid->Left = 0;
+		_nativeGrid->Top = _contentTop;
+		_nativeGrid->Width = this->Width;
+		_nativeGrid->Height = std::max(0, this->Height - _contentTop);
+		_nativeGrid->NameColumnWidth = std::clamp(
+			_nativeGrid->NameColumnWidth,
+			96.0f,
+			std::max(96.0f, this->Width - 96.0f));
+	}
 }
 
-bool PropertyGrid::TryGetScrollBarLocalRect(D2D1_RECT_F& outTrack, D2D1_RECT_F& outThumb)
+PropertyGrid::ViewState& PropertyGrid::CurrentViewState() noexcept
 {
-	(void)outTrack;
-	(void)outThumb;
-	return true;
+	return _viewMode == DesignerPropertyGridViewMode::Events
+		? _eventsViewState : _propertiesViewState;
+}
+
+const PropertyGrid::ViewState& PropertyGrid::CurrentViewState() const noexcept
+{
+	return _viewMode == DesignerPropertyGridViewMode::Events
+		? _eventsViewState : _propertiesViewState;
+}
+
+void PropertyGrid::CaptureCurrentViewState()
+{
+	// The grid may still show the previous mode when two shortcuts arrive before
+	// the deferred reload. Never save those rows into the newly selected mode.
+	if (_loadedViewMode != _viewMode) return;
+	auto& state = CurrentViewState();
+	state.Filter = _propertyFilter;
+	state.CollapsedCategories.clear();
+	if (!_nativeGrid) return;
+	state.ScrollOffset = _nativeGrid->ScrollYOffset;
+	for (const auto& item : _nativeGrid->Items)
+		if (!item.Category.empty()
+			&& _nativeGrid->IsCategoryCollapsed(item.Category))
+			state.CollapsedCategories.insert(item.Category);
+}
+
+void PropertyGrid::RestoreCurrentViewState()
+{
+	if (!_nativeGrid) return;
+	const auto& state = CurrentViewState();
+	for (const auto& category : state.CollapsedCategories)
+		_nativeGrid->CollapseCategory(category, true);
+	_nativeGrid->SetScrollOffset(state.ScrollOffset);
+}
+
+void PropertyGrid::UpdateViewModePresentation()
+{
+	const bool events = _viewMode == DesignerPropertyGridViewMode::Events;
+	if (_propertiesModeButton)
+	{
+		_propertiesModeButton->Checked = !events;
+		_propertiesModeButton->AccessibleDescription = !events
+			? L"当前正在显示属性；可按 Ctrl+1 切换"
+			: L"切换到属性视图；快捷键 Ctrl+1";
+		_propertiesModeButton->InvalidateVisual();
+	}
+	if (_eventsModeButton)
+	{
+		_eventsModeButton->Checked = events;
+		_eventsModeButton->AccessibleDescription = events
+			? L"当前正在显示事件；可按 Ctrl+2 切换"
+			: L"切换到事件视图；快捷键 Ctrl+2";
+		_eventsModeButton->InvalidateVisual();
+	}
+	if (_nativeGrid)
+	{
+		_nativeGrid->SetHeaderLabels(events ? L"事件" : L"属性",
+			events ? L"处理函数" : L"值");
+		_nativeGrid->AccessibleName = events
+			? L"设计器事件网格" : L"设计器属性网格";
+	}
+	if (_filterLabel)
+		_filterLabel->AccessibleName = events ? L"事件筛选标签" : L"属性筛选标签";
+	if (_filterBox)
+	{
+		_filterBox->AccessibleName = events ? L"筛选事件" : L"筛选属性";
+		_filterBox->AccessibleDescription = events
+			? L"按事件名称、分类或处理函数筛选；多个关键词需同时匹配。"
+			: L"按属性名称、分类、当前值或值来源筛选；多个关键词需同时匹配。";
+	}
+}
+
+void PropertyGrid::SetViewMode(DesignerPropertyGridViewMode mode)
+{
+	if (_viewMode == mode) return;
+	CommitPendingEdits();
+	CaptureCurrentViewState();
+	_viewMode = mode;
+	_propertyFilter = CurrentViewState().Filter;
+	_syncingViewModeControls = true;
+	if (_filterBox) _filterBox->Text = _propertyFilter;
+	_syncingViewModeControls = false;
+	_restoreViewStatePending = true;
+	UpdateViewModePresentation();
+	_reloadRequested = true;
+	InvalidateVisual();
+}
+
+void PropertyGrid::SetFilterText(std::wstring value)
+{
+	if (_propertyFilter == value) return;
+	_propertyFilter = std::move(value);
+	CurrentViewState().Filter = _propertyFilter;
+	_syncingViewModeControls = true;
+	if (_filterBox) _filterBox->Text = _propertyFilter;
+	_syncingViewModeControls = false;
+	_reloadRequested = true;
+	InvalidateVisual();
+}
+
+void PropertyGrid::BeginNativeRowsReload()
+{
+	CommitGroupedFloatSliderEdit();
+	_diagnosticConnections.clear();
+	_nativeEntries.clear();
+	_nativeItemBuffer.clear();
+	_nativeSliderEditAccepted = true;
+	_propertyRows.clear();
+}
+
+void PropertyGrid::CommitNativeRowsReload()
+{
+	if (!_nativeGrid)
+	{
+		_nativeItemBuffer.clear();
+		return;
+	}
+	_syncingNativeGrid = true;
+	_nativeGrid->SetItems(std::move(_nativeItemBuffer));
+	_syncingNativeGrid = false;
+	_loadedViewMode = _viewMode;
+	if (_restoreViewStatePending)
+	{
+		_restoreViewStatePending = false;
+		RestoreCurrentViewState();
+	}
+}
+
+void PropertyGrid::PopulateNativePropertyRows(
+	const std::vector<DesignerPropertyRow>& rows,
+	const std::wstring& scopeCaption)
+{
+	if (!_nativeGrid) return;
+	if (rows.empty() && HasActivePropertyFilter())
+	{
+		AddNativeInformationalRow(
+			L"筛选", L"没有匹配的标量属性");
+		return;
+	}
+
+	auto appendDescription = [](std::wstring& target, const std::wstring& value)
+	{
+		if (value.empty()) return;
+		if (!target.empty()) target += L"；";
+		target += value;
+	};
+
+	for (const auto& row : rows)
+	{
+		PropertyGridItem item;
+		item.Category = scopeCaption + L" · "
+			+ DesignerCategoryCaption(row.Category);
+		item.Name = row.DisplayName;
+		item.Value = row.HasMixedValue ? kMixedValueText : row.Value.Text;
+		item.ReadOnly = row.IsReadOnly;
+		item.IsMixed = row.HasMixedValue;
+		item.CanReset = row.CanReset && !row.IsReadOnly;
+
+		if (row.HasMixedValueSource)
+		{
+			item.Name += L"  [混合来源]";
+			appendDescription(item.Description, L"所选控件的有效值来源不同");
+		}
+		else if (row.EffectiveValueSource)
+		{
+			const auto source = DesignerValueSourceCaption(*row.EffectiveValueSource);
+			item.Name += L"  [" + source + L"]";
+			appendDescription(item.Description, L"当前有效值来源：" + source);
+		}
+		if (row.HasConfiguredBinding)
+		{
+			item.Name += L"  [绑定配置]";
+			appendDescription(item.Description, L"此属性存在绑定配置或运行时绑定");
+		}
+		if (row.HasMixedDiagnostics)
+		{
+			item.Name += L"  [诊断不一致]";
+			appendDescription(item.Description,
+				L"所选控件的绑定、校验或样式诊断不同");
+		}
+		bool hasError = false;
+		bool hasWarning = false;
+		for (const auto& diagnostic : row.Diagnostics)
+		{
+			hasError = hasError
+				|| diagnostic.Severity == BindingValidationSeverity::Error;
+			hasWarning = hasWarning
+				|| diagnostic.Severity == BindingValidationSeverity::Warning;
+			appendDescription(item.Description,
+				diagnostic.Summary + (diagnostic.Details.empty()
+					? L"" : L"：" + diagnostic.Details));
+		}
+		if (hasError) item.Name += L"  [错误]";
+		else if (hasWarning) item.Name += L"  [警告]";
+
+		switch (row.Editor)
+		{
+		case DesignerPropertyRowEditorKind::Boolean:
+			item.ValueType = PropertyGridValueType::Bool;
+			break;
+		case DesignerPropertyRowEditorKind::Choice:
+			item.ValueType = PropertyGridValueType::Enum;
+			for (const auto& choice : row.Choices)
+			{
+				item.Options.push_back(choice.DisplayName);
+				if (!row.HasMixedValue && EnumOptionMatchesValue(
+					choice.ValueText, row.Value.Text))
+					item.Value = choice.DisplayName;
+			}
+			break;
+		case DesignerPropertyRowEditorKind::Color:
+			item.ValueType = PropertyGridValueType::Color;
+			break;
+		case DesignerPropertyRowEditorKind::FloatSlider:
+			item.ValueType = PropertyGridValueType::Slider;
+			item.Minimum = row.Minimum.value_or(0.0);
+			item.Maximum = row.Maximum.value_or(1.0);
+			item.Step = row.Step.value_or(
+				(item.Maximum - item.Minimum) / 100.0);
+			if (!std::isfinite(item.Step) || item.Step <= 0.0)
+				item.Step = 0.01;
+			if (row.Minimum && row.Maximum)
+				appendDescription(item.Description,
+					L"范围 " + DoubleToText(*row.Minimum)
+					+ L" – " + DoubleToText(*row.Maximum));
+			break;
+		case DesignerPropertyRowEditorKind::FontName:
+			item.ValueType = PropertyGridValueType::Enum;
+			item.Options = GetFontNameOptions();
+			if (!row.HasMixedValue && item.Value.empty())
+				item.Value = kFontDefaultOption;
+			break;
+		case DesignerPropertyRowEditorKind::FontSize:
+			item.ValueType = PropertyGridValueType::Enum;
+			item.Options = GetFontSizeOptions();
+			break;
+		case DesignerPropertyRowEditorKind::Anchor:
+			item.ValueType = PropertyGridValueType::Anchor;
+			break;
+		case DesignerPropertyRowEditorKind::Thickness:
+		case DesignerPropertyRowEditorKind::Text:
+		default:
+			item.ValueType = PropertyGridValueType::Text;
+			break;
+		}
+
+		_nativeItemBuffer.push_back(std::move(item));
+		NativeGridEntry entry;
+		entry.Kind = NativeGridEntryKind::Property;
+		entry.PropertyName = row.Name;
+		_nativeEntries.push_back(std::move(entry));
+	}
+}
+
+void PropertyGrid::AddNativeEventRow(
+	const DesignerEventDescriptor& event,
+	const std::wstring& subjectName,
+	const std::wstring& storedHandler,
+	const std::wstring& category)
+{
+	if (!_nativeGrid) return;
+	const auto currentName = DesignerEventCatalog::ResolveHandlerName(
+		storedHandler, subjectName, event.Name);
+	const auto defaultName = DesignerEventCatalog::MakeDefaultHandlerName(
+		subjectName, event.Name);
+	PropertyGridItem item(
+		category,
+		event.DisplayName.empty() ? event.Name : event.DisplayName,
+		currentName,
+		PropertyGridValueType::EditableEnum);
+	item.Options = GetCompatibleHandlerNames(
+		_binding.GetCanvas(), event, defaultName, currentName);
+	item.Description = event.IsDefault ? L"默认事件。" : L"";
+	item.Description += L"签名：void Handler("
+		+ std::wstring(event.ParameterList.begin(), event.ParameterList.end())
+		+ L")。留空表示不绑定；F4 可复用同签名函数；双击生成或定位处理函数。";
+	_nativeItemBuffer.push_back(std::move(item));
+	NativeGridEntry entry;
+	entry.Kind = NativeGridEntryKind::Event;
+	entry.PropertyName = event.Name;
+	_nativeEntries.push_back(std::move(entry));
+}
+
+void PropertyGrid::PopulateNativeEventRows(
+	const std::vector<DesignerEventDescriptor>& events,
+	const std::wstring& subjectName,
+	const std::map<std::wstring, std::wstring>& handlers,
+	const std::wstring& scopeCaption)
+{
+	const auto before = _nativeItemBuffer.size();
+	for (const auto& event : events)
+	{
+		const std::wstring category = scopeCaption + L" · "
+			+ std::wstring(DesignerEventCatalog::GetCategoryDisplayName(
+				event.Category));
+		const auto it = handlers.find(event.Name);
+		const std::wstring storedHandler =
+			it == handlers.end() ? L"" : it->second;
+		const auto currentHandler = DesignerEventCatalog::ResolveHandlerName(
+			storedHandler, subjectName, event.Name);
+		if (!MatchesCurrentFilter(event.Name + L" " + event.DisplayName
+			+ L" Event 事件 "
+			+ category + L" " + currentHandler + L" "
+			+ std::wstring(event.ParameterList.begin(),
+				event.ParameterList.end()))) continue;
+		AddNativeEventRow(
+			event, subjectName, storedHandler, category);
+	}
+	AddNativeEventHandlerManagerRow(scopeCaption);
+	if (_nativeItemBuffer.size() == before && HasActivePropertyFilter())
+		AddNativeInformationalRow(L"筛选", L"没有匹配的事件");
+}
+
+void PropertyGrid::AddNativeEventHandlerManagerRow(
+	const std::wstring& category)
+{
+	if (!_nativeGrid
+		|| !MatchesCurrentFilter(L"Event Handler Rename 事件 处理函数 重命名"))
+		return;
+	auto* canvas = _binding.GetCanvas();
+	if (!canvas) return;
+	DesignerModel::DesignDocumentEventIndex index;
+	std::wstring error;
+	if (!canvas->BuildEventHandlerIndex(index, &error))
+	{
+		AddNativeInformationalRow(category, L"处理函数索引",
+			error.empty() ? L"无法建立事件索引" : error);
+		return;
+	}
+	if (index.Handlers().empty()) return;
+
+	std::wstring preferred;
+	if (_binding.IsFormBinding())
+	{
+		const auto& handlers = canvas->GetDesignedFormEventHandlers();
+		if (!handlers.empty())
+			preferred = DesignerEventCatalog::ResolveHandlerName(
+				handlers.begin()->second,
+				canvas->GetDesignedFormName(), handlers.begin()->first);
+	}
+	else if (const auto control = _binding.GetBoundControl();
+		control && !control->EventHandlers.empty())
+	{
+		const auto& first = *control->EventHandlers.begin();
+		preferred = DesignerEventCatalog::ResolveHandlerName(
+			first.second, control->Name, first.first);
+	}
+
+	AddNativeActionRow(
+		category,
+		L"重命名处理函数",
+		L"管理 (" + std::to_wstring(index.Handlers().size()) + L")…",
+		L"按签名索引文档中的函数名，并一次更新所有同名事件引用。",
+		[this, preferred]()
+		{
+			auto* currentCanvas = _binding.GetCanvas();
+			if (!currentCanvas || !ParentForm) return;
+			DesignerModel::DesignDocumentEventIndex currentIndex;
+			std::wstring indexError;
+			if (!currentCanvas->BuildEventHandlerIndex(
+				currentIndex, &indexError))
+			{
+				ShowPropertyEditError(L"重命名处理函数", indexError);
+				return;
+			}
+			EventHandlerEditorDialog dialog(currentIndex, preferred);
+			dialog.ShowDialog(ParentForm->Handle);
+			if (!dialog.Applied) return;
+
+			size_t renamed = 0;
+			auto transaction = ExecutePropertyCommand(
+				L"RenameEventHandler",
+				[currentCanvas, oldName = dialog.OldName,
+					newName = dialog.NewName, &renamed](std::wstring& error)
+				{
+					return currentCanvas->RenameEventHandler(
+						oldName, newName, &renamed, &error);
+				});
+			if (transaction)
+			{
+				_reloadRequested = true;
+				ClearPropertyEditError();
+			}
+		});
+}
+
+void PropertyGrid::AddNativeActionRow(
+	const std::wstring& category,
+	const std::wstring& name,
+	const std::wstring& value,
+	const std::wstring& description,
+	std::function<void()> action)
+{
+	if (!_nativeGrid) return;
+	PropertyGridItem item(
+		category, name, value, PropertyGridValueType::Action);
+	item.Description = description;
+	_nativeItemBuffer.push_back(std::move(item));
+	NativeGridEntry entry;
+	entry.Kind = NativeGridEntryKind::Action;
+	entry.PropertyName = name;
+	entry.Action = std::move(action);
+	_nativeEntries.push_back(std::move(entry));
+}
+
+void PropertyGrid::AddNativeInformationalRow(
+	const std::wstring& category,
+	const std::wstring& name,
+	const std::wstring& value)
+{
+	if (!_nativeGrid) return;
+	PropertyGridItem item(
+		category, name, value, PropertyGridValueType::ReadOnly);
+	item.ReadOnly = true;
+	_nativeItemBuffer.push_back(std::move(item));
+	_nativeEntries.push_back({ NativeGridEntryKind::Informational, L"", {} });
+}
+
+void PropertyGrid::HandleNativeValueChanged(
+	int index,
+	const std::wstring& oldValue,
+	const std::wstring& newValue)
+{
+	if (_syncingNativeGrid || !_nativeGrid
+		|| index < 0 || index >= static_cast<int>(_nativeEntries.size())
+		|| index >= static_cast<int>(_nativeGrid->Items.size())) return;
+	const auto entry = _nativeEntries[static_cast<size_t>(index)];
+	DesignerPropertyEditResult result = DesignerPropertyEditResult::Failure(
+		L"属性行不支持标量编辑。");
+	bool groupedSliderPreview = false;
+	if (entry.Kind == NativeGridEntryKind::Event)
+	{
+		result = UpdatePropertyFromTextBox(entry.PropertyName, newValue);
+	}
+	else if (entry.Kind == NativeGridEntryKind::Property)
+	{
+		auto valueText = newValue;
+		const auto* row = DesignerPropertyRowCatalog::Find(
+			_propertyRows, entry.PropertyName);
+		if (row)
+		{
+			if (row->Editor == DesignerPropertyRowEditorKind::Choice)
+			{
+				for (const auto& choice : row->Choices)
+				{
+					if (choice.DisplayName == newValue)
+					{
+						valueText = choice.ValueText;
+						break;
+					}
+				}
+			}
+		}
+		if (row && row->Editor == DesignerPropertyRowEditorKind::FloatSlider
+			&& !_nativeSliderEditAccepted)
+		{
+			result = DesignerPropertyEditResult::Failure(
+				_editErrorMessage.empty()
+					? L"滑块事务无法开始。" : _editErrorMessage);
+		}
+		else if (row && row->Editor == DesignerPropertyRowEditorKind::FloatSlider
+			&& _pendingFloatSliderCommand.Active
+			&& _pendingFloatSliderCommand.PropertyName == entry.PropertyName)
+		{
+			groupedSliderPreview = true;
+			float value = 0.0f;
+			if (TryParseFloatWs(valueText, value))
+				result = UpdateFloatPropertyPreview(entry.PropertyName, value);
+			else
+				result = DesignerPropertyEditResult::Failure(
+					L"滑块生成了无效数值。");
+		}
+		else
+			result = UpdatePropertyFromTextBox(entry.PropertyName, valueText);
+	}
+
+	if (result)
+	{
+		if (!groupedSliderPreview) _reloadRequested = true;
+		return;
+	}
+
+	_syncingNativeGrid = true;
+	auto& item = _nativeGrid->Items[static_cast<size_t>(index)];
+	item.Value = oldValue;
+	if (const auto* row = DesignerPropertyRowCatalog::Find(
+		_propertyRows, entry.PropertyName))
+		item.IsMixed = row->HasMixedValue;
+	_syncingNativeGrid = false;
+	_nativeGrid->InvalidateVisual();
+}
+
+void PropertyGrid::HandleNativeItemClick(int index)
+{
+	if (index < 0 || index >= static_cast<int>(_nativeEntries.size())) return;
+	auto action = _nativeEntries[static_cast<size_t>(index)].Action;
+	if (_nativeEntries[static_cast<size_t>(index)].Kind
+		== NativeGridEntryKind::Action && action)
+		action();
+}
+
+void PropertyGrid::HandleNativeDoubleClick(int index)
+{
+	if (index < 0 || index >= static_cast<int>(_nativeEntries.size())) return;
+	const auto entry = _nativeEntries[static_cast<size_t>(index)];
+	if (entry.Kind != NativeGridEntryKind::Event
+		|| entry.PropertyName.empty()) return;
+	if (_nativeGrid) _nativeGrid->CancelEdit();
+	(void)ActivateEventHandler(entry.PropertyName);
+}
+
+void PropertyGrid::HandleNativeResetRequested(int index)
+{
+	if (index < 0 || index >= static_cast<int>(_nativeEntries.size())) return;
+	const auto entry = _nativeEntries[static_cast<size_t>(index)];
+	if (entry.Kind != NativeGridEntryKind::Property
+		|| entry.PropertyName.empty()) return;
+	ResetCurrentProperty(entry.PropertyName);
 }
 
 void PropertyGrid::Update()
 {
+	if (_reloadRequested)
+	{
+		_reloadRequested = false;
+		auto controls = _binding.GetBoundControls();
+		auto primary = _binding.GetBoundControl();
+		LoadControls(controls, primary);
+	}
 	UpdateContentHostLayout();
-	UpdateScrollLayout();
 	Panel::Update();
+}
+
+bool PropertyGrid::HasActivePropertyFilter() const
+{
+	return !DesignerPropertyRowCatalog::MatchesFilterText(L"", _propertyFilter);
+}
+
+bool PropertyGrid::MatchesCurrentFilter(
+	const std::wstring& searchableText) const
+{
+	return DesignerPropertyRowCatalog::MatchesFilterText(
+		searchableText, _propertyFilter);
+}
+
+void PropertyGrid::ShowPropertyEditError(
+	const std::wstring& propertyName,
+	const std::wstring& message)
+{
+	_editErrorProperty = propertyName;
+	_editErrorMessage = message.empty() ? L"属性修改被拒绝。" : message;
+	if (!_editErrorLabel) return;
+	_editErrorLabel->Text = L"错误 · "
+		+ (propertyName.empty() ? std::wstring(L"属性") : propertyName)
+		+ L"：" + _editErrorMessage;
+	_editErrorLabel->AccessibleName = L"属性编辑错误";
+	_editErrorLabel->AccessibleDescription = _editErrorLabel->Text;
+	_editErrorLabel->Visible = true;
+	_editErrorLabel->InvalidateVisual();
+}
+
+void PropertyGrid::ClearPropertyEditError()
+{
+	_editErrorProperty.clear();
+	_editErrorMessage.clear();
+	if (!_editErrorLabel) return;
+	_editErrorLabel->Text.clear();
+	_editErrorLabel->AccessibleDescription.clear();
+	_editErrorLabel->Visible = false;
+	_editErrorLabel->InvalidateVisual();
+}
+
+void PropertyGrid::SubscribePropertyDiagnosticChanges()
+{
+	for (const auto& control : _binding.GetBoundControls())
+	{
+		if (!control || !control->ControlInstance) continue;
+		auto* runtime = control->ControlInstance;
+		_diagnosticConnections.push_back(
+			runtime->OnValidationStateChanged.Subscribe(
+				[this](const BindingValidationChangedEventArgs&)
+				{
+					_reloadRequested = true;
+				}));
+		if (const auto style = runtime->GetStyleSheet())
+			_diagnosticConnections.push_back(style->SubscribeChanged([this]()
+			{
+				_reloadRequested = true;
+			}));
+		if (const auto theme = runtime->GetThemeStyleSheet())
+			_diagnosticConnections.push_back(theme->SubscribeChanged([this]()
+			{
+				_reloadRequested = true;
+			}));
+	}
+}
+
+void PropertyGrid::RefreshPropertyValueSource(
+	const std::wstring& propertyName)
+{
+	(void)propertyName;
+	// Effective source, binding validation, and rule attribution form one row
+	// snapshot; rebuild them together so a small in-place update cannot leave
+	// stale diagnostic text behind.
+	_reloadRequested = true;
+}
+
+DesignerPropertyEditResult PropertyGrid::ResetCurrentProperty(
+	const std::wstring& propertyName)
+{
+	auto result = ExecutePropertyEditCommand(
+		L"Reset " + propertyName, [this, propertyName]
+	{
+		if (_binding.IsFormBinding())
+		{
+			std::wstring error;
+			if (!_binding.ResetFormProperty(
+				propertyName, nullptr, &error))
+				return DesignerPropertyEditResult::Failure(error);
+			return DesignerPropertyEditResult::Success(1);
+		}
+		return _binding.ResetControlPropertyValue(propertyName);
+	});
+	if (result)
+	{
+		_reloadRequested = true;
+		this->InvalidateVisual();
+	}
+	return result;
 }
 
 bool PropertyGrid::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (message == WM_KEYDOWN)
 	{
+		const bool controlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+		if (controlDown && wParam == '1')
+		{
+			SetViewMode(DesignerPropertyGridViewMode::Properties);
+			return true;
+		}
+		if (controlDown && wParam == '2')
+		{
+			SetViewMode(DesignerPropertyGridViewMode::Events);
+			return true;
+		}
 		auto* canvas = _binding.GetCanvas();
-		if (canvas && (GetKeyState(VK_CONTROL) & 0x8000) != 0)
+		if (canvas && controlDown)
 		{
 			const bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 			if (wParam == 'Z' && !shiftDown)
 			{
-				if (canvas->UndoCommand()) return true;
+				auto result = canvas->UndoCommand();
+				if (!result || result.HasChanges()) return true;
 			}
 			else if (wParam == 'Y' || (wParam == 'Z' && shiftDown))
 			{
-				if (canvas->RedoCommand()) return true;
+				auto result = canvas->RedoCommand();
+				if (!result || result.HasChanges()) return true;
 			}
 		}
 	}
 	return Panel::ProcessMessage(message, wParam, lParam, localX, localY);
-}
-
-void PropertyGrid::CreatePropertyItem(std::wstring propertyName, std::wstring value, int& yOffset)
-{
-	auto* container = GetContentContainer();
-	int width = GetContentWidthLocal();
-
-	// 属性名标签
-	auto nameLabel = new Label(propertyName, 10, yOffset);
-	nameLabel->Size = { (width - 30) / 2, 20 };
-	nameLabel->Font = new ::Font(L"Microsoft YaHei", 12.0f);
-	container->AddControl(nameLabel);
-	// 确保ParentForm已设置
-	nameLabel->ParentForm = this->ParentForm;
-	RegisterScrollable(nameLabel);
-
-	// 值文本框
-	auto valueTextBox = new TextBox(L"", (width - 30) / 2 + 15, yOffset, (width - 30) / 2, 20);
-	valueTextBox->Text = value;
-
-	valueTextBox->OnLostFocus += [this, propertyName](Control* sender) {
-		auto* textBox = dynamic_cast<TextBox*>(sender);
-		if (!textBox) return;
-		UpdatePropertyFromTextBox(propertyName, textBox->Text);
-	};
-
-	container->AddControl(valueTextBox);
-	// 确保ParentForm已设置（关键！）
-	valueTextBox->ParentForm = this->ParentForm;
-	RegisterScrollable(valueTextBox);
-
-	auto item = new PropertyItem(propertyName, nameLabel, valueTextBox);
-	_items.push_back(item);
-
-	yOffset += 25;
-}
-
-void PropertyGrid::CreateColorPropertyItem(std::wstring propertyName, const D2D1_COLOR_F& value, int& yOffset)
-{
-	auto* container = GetContentContainer();
-	int width = GetContentWidthLocal();
-
-	auto nameLabel = new Label(propertyName, 10, yOffset);
-	nameLabel->Size = { (width - 30) / 2, 20 };
-	nameLabel->Font = new ::Font(L"Microsoft YaHei", 12.0f);
-	container->AddControl(nameLabel);
-	nameLabel->ParentForm = this->ParentForm;
-	RegisterScrollable(nameLabel);
-
-	int valueX = (width - 30) / 2 + 15;
-	int valueW = (width - 30) / 2;
-
-	// 容器：带背景色的按钮 + 文本
-	auto panel = new Panel(valueX, yOffset, valueW, 20);
-	panel->BackColor = D2D1::ColorF(0, 0);
-	panel->BorderThickness = 0.0f;
-	panel->ParentForm = this->ParentForm;
-
-	const int btnW = 28;
-	const int gap = 6;
-	int textW = valueW - btnW - gap;
-	if (textW < 40) textW = 40;
-
-	auto btn = new Button(L"...", 0, -1, btnW, 22);
-	btn->ParentForm = this->ParentForm;
-	btn->BorderThickness = 1.0f;
-	btn->BorderColor = Colors::DimGrey;
-	auto refreshButtonColor = [btn](const D2D1_COLOR_F& c) {
-		btn->BackColor = c;
-		float luminance = c.r * 0.299f + c.g * 0.587f + c.b * 0.114f;
-		btn->ForeColor = (luminance < 0.5f || c.a < 0.5f) ? Colors::White : Colors::Black;
-		btn->InvalidateVisual();
-	};
-	refreshButtonColor(value);
-
-	auto textBox = new TextBox(L"", btnW + gap, 0, textW, 20);
-	textBox->Text = ColorToText(value);
-	textBox->ParentForm = this->ParentForm;
-	textBox->OnLostFocus += [this, propertyName, textBox, refreshButtonColor](Control*) {
-		UpdatePropertyFromTextBox(propertyName, textBox->Text);
-		D2D1_COLOR_F c{};
-		if (TryParseColor(textBox->Text, c))
-		{
-			refreshButtonColor(c);
-		}
-	};
-
-	btn->OnMouseClick += [this, propertyName, textBox, refreshButtonColor](Control*, MouseEventArgs) {
-		if (!this->ParentForm) return;
-		D2D1_COLOR_F cur{};
-		if (!TryParseColor(textBox->Text, cur)) cur = D2D1::ColorF(0, 0, 0, 1);
-		D2D1_COLOR_F picked{};
-		if (PickColorWithDialog(this->ParentForm->Handle, cur, picked))
-		{
-			refreshButtonColor(picked);
-			textBox->Text = ColorToText(picked);
-			UpdatePropertyFromTextBox(propertyName, textBox->Text);
-		}
-	};
-
-	panel->AddControl(textBox);
-	panel->AddControl(btn);
-	container->AddControl(panel);
-	RegisterScrollable(panel);
-
-	_items.push_back(new PropertyItem(propertyName, nameLabel, (Control*)panel));
-
-	yOffset += 25;
-}
-
-void PropertyGrid::CreateThicknessPropertyItem(std::wstring propertyName, const Thickness& value, int& yOffset)
-{
-	auto* container = GetContentContainer();
-	int width = GetContentWidthLocal();
-
-	auto nameLabel = new Label(propertyName, 10, yOffset);
-	nameLabel->Size = { (width - 30) / 2, 20 };
-	nameLabel->Font = new ::Font(L"Microsoft YaHei", 12.0f);
-	container->AddControl(nameLabel);
-	nameLabel->ParentForm = this->ParentForm;
-	RegisterScrollable(nameLabel);
-
-	int valueX = (width - 30) / 2 + 15;
-	int valueW = (width - 30) / 2;
-
-	// 多行布局：两行（L/T 与 R/B），提升每个输入框宽度，便于输入
-	const int rowH = 20;
-	const int gapX = 6;
-	const int gapY = 4;
-	const int panelH = rowH * 2 + gapY;
-
-	auto panel = new Panel(valueX, yOffset, valueW, panelH);
-	panel->BackColor = D2D1::ColorF(0, 0);
-	panel->BorderThickness = 0.0f;
-	panel->ParentForm = this->ParentForm;
-
-	int boxW = (valueW - gapX) / 2;
-	if (boxW < 40) boxW = 40;
-
-	auto makeBox = [&](int x, int y, float v) {
-		auto t = new TextBox(L"", x, y, boxW, rowH);
-		t->ParentForm = this->ParentForm;
-		std::wostringstream oss;
-		oss.setf(std::ios::fixed);
-		oss << std::setprecision(2) << v;
-		t->Text = oss.str();
-		return t;
-	};
-
-	auto tbL = makeBox(0, 0, value.Left);
-	auto tbT = makeBox(boxW + gapX, 0, value.Top);
-	auto tbR = makeBox(0, rowH + gapY, value.Right);
-	auto tbB = makeBox(boxW + gapX, rowH + gapY, value.Bottom);
-
-	auto apply = [this, propertyName, tbL, tbT, tbR, tbB](Control*, std::wstring, std::wstring) {
-		Thickness t{};
-		try { t.Left = std::stof(tbL->Text); } catch (...) { return; }
-		try { t.Top = std::stof(tbT->Text); } catch (...) { return; }
-		try { t.Right = std::stof(tbR->Text); } catch (...) { return; }
-		try { t.Bottom = std::stof(tbB->Text); } catch (...) { return; }
-		UpdatePropertyFromTextBox(propertyName, ThicknessToText(t));
-	};
-
-	tbL->OnLostFocus += [apply](Control* sender) { apply(sender, L"", L""); };
-	tbT->OnLostFocus += [apply](Control* sender) { apply(sender, L"", L""); };
-	tbR->OnLostFocus += [apply](Control* sender) { apply(sender, L"", L""); };
-	tbB->OnLostFocus += [apply](Control* sender) { apply(sender, L"", L""); };
-
-	panel->AddControl(tbL);
-	panel->AddControl(tbT);
-	panel->AddControl(tbR);
-	panel->AddControl(tbB);
-	container->AddControl(panel);
-	RegisterScrollable(panel);
-
-	_items.push_back(new PropertyItem(propertyName, nameLabel, (Control*)panel));
-
-	yOffset += panelH + 5;
-}
-
-void PropertyGrid::CreateBoolPropertyItem(std::wstring propertyName, bool value, int& yOffset)
-{
-	auto* container = GetContentContainer();
-	int width = GetContentWidthLocal();
-
-	// 属性名标签
-	auto nameLabel = new Label(propertyName, 10, yOffset);
-	nameLabel->Size = { (width - 30) / 2, 20 };
-	nameLabel->Font = new ::Font(L"Microsoft YaHei", 12.0f);
-	container->AddControl(nameLabel);
-	nameLabel->ParentForm = this->ParentForm;
-	RegisterScrollable(nameLabel);
-
-	// 值复选框（不显示额外文字）
-	auto valueCheckBox = new CheckBox(L"", (width - 30) / 2 + 15, yOffset);
-	valueCheckBox->Checked = value;
-	valueCheckBox->ParentForm = this->ParentForm;
-
-	valueCheckBox->OnMouseClick += [this, propertyName](Control* sender, MouseEventArgs) {
-		auto checkBox = (CheckBox*)sender;
-		UpdatePropertyFromBool(propertyName, checkBox->Checked);
-		};
-
-	container->AddControl(valueCheckBox);
-	RegisterScrollable(valueCheckBox);
-
-	auto item = new PropertyItem(propertyName, nameLabel, valueCheckBox);
-	_items.push_back(item);
-
-	yOffset += 25;
-}
-
-void PropertyGrid::CreateMetadataPropertyItems(
-	const std::shared_ptr<DesignerControl>& control,
-	int& yOffset)
-{
-	if (!control || !control->ControlInstance) return;
-	auto* target = control->ControlInstance;
-	auto properties = DesignerPropertyCatalog::GetBrowsableProperties(*target);
-
-	auto represented = [this](const std::wstring& name)
-	{
-		for (const auto* item : _items)
-		{
-			if (item && PropertyNamesEqual(item->PropertyName, name)) return true;
-		}
-		return false;
-	};
-
-	properties.erase(std::remove_if(properties.begin(), properties.end(),
-		[&](const DesignerPropertyDescriptor& property)
-		{
-			return represented(property.Name);
-		}), properties.end());
-	if (properties.empty()) return;
-
-	std::wstring currentCategory;
-	for (const auto& property : properties)
-	{
-		if (!PropertyNamesEqual(currentCategory, property.Category))
-		{
-			currentCategory = property.Category;
-			auto* container = GetContentContainer();
-			const int width = GetContentWidthLocal();
-			auto* heading = new Label(
-				L"元数据属性 · " + DesignerCategoryCaption(property.Category),
-				10, yOffset + 4);
-			heading->Size = { width - 20, 20 };
-			heading->Font = new ::Font(L"Microsoft YaHei", 12.0f);
-			heading->ForeColor = Colors::DimGrey;
-			container->AddControl(heading);
-			heading->ParentForm = this->ParentForm;
-			_extraControls.push_back(heading);
-			RegisterScrollable(heading);
-			yOffset += 28;
-		}
-
-		BindingValue current;
-		(void)property.Metadata->TryGet(*target, current);
-		if (property.Editor == ControlPropertyEditorKind::Choice
-			&& !property.Choices.empty())
-		{
-			CreateChoicePropertyItem(property, yOffset);
-			continue;
-		}
-
-		switch (property.Editor)
-		{
-		case ControlPropertyEditorKind::Boolean:
-		{
-			bool value = false;
-			(void)current.TryGet(value);
-			CreateBoolPropertyItem(property.Name, value, yOffset);
-			break;
-		}
-		case ControlPropertyEditorKind::Color:
-		{
-			D2D1_COLOR_F value{};
-			if (current.TryGet(value)) CreateColorPropertyItem(property.Name, value, yOffset);
-			else CreatePropertyItem(property.Name, property.SampleValue, yOffset);
-			break;
-		}
-		case ControlPropertyEditorKind::Thickness:
-		{
-			Thickness value;
-			if (current.TryGet(value)) CreateThicknessPropertyItem(property.Name, value, yOffset);
-			else CreatePropertyItem(property.Name, property.SampleValue, yOffset);
-			break;
-		}
-		default:
-			if (property.Editor == ControlPropertyEditorKind::Number
-				&& property.Minimum && property.Maximum
-				&& *property.Minimum < *property.Maximum
-				&& (property.ValueKind == DesignerStyleValueKind::Float
-					|| property.ValueKind == DesignerStyleValueKind::Double))
-			{
-				double numericValue = 0.0;
-				if (property.ValueKind == DesignerStyleValueKind::Float)
-				{
-					float value = 0.0f;
-					(void)current.TryGet(value);
-					numericValue = value;
-				}
-				else
-				{
-					(void)current.TryGet(numericValue);
-				}
-				const double step = property.Step.value_or(
-					(*property.Maximum - *property.Minimum) / 100.0);
-				CreateFloatSliderPropertyItem(
-					property.Name,
-					static_cast<float>(numericValue),
-					static_cast<float>(*property.Minimum),
-					static_cast<float>(*property.Maximum),
-					static_cast<float>((std::max)(step, 0.000001)),
-					yOffset);
-			}
-			else
-			{
-				CreatePropertyItem(property.Name, property.SampleValue, yOffset);
-			}
-			break;
-		}
-		if (!_items.empty() && _items.back() && _items.back()->NameLabel)
-			_items.back()->NameLabel->Text = property.DisplayName;
-	}
-}
-
-void PropertyGrid::CreateAnchorPropertyItem(std::wstring propertyName, uint8_t anchorStyles, int& yOffset)
-{
-	auto* container = GetContentContainer();
-	int width = GetContentWidthLocal();
-
-	auto nameLabel = new Label(propertyName, 10, yOffset);
-	nameLabel->Size = { (width - 30) / 2, 20 };
-	nameLabel->Font = new ::Font(L"Microsoft YaHei", 12.0f);
-	container->AddControl(nameLabel);
-	nameLabel->ParentForm = this->ParentForm;
-	RegisterScrollable(nameLabel);
-
-	int valueX = (width - 30) / 2 + 15;
-	int valueW = (width - 30) / 2;
-
-	// 方向布局：像 WinForms 一样按上/左/右/下摆放
-	const int cbSize = 20;
-	const int gap = 4;
-	const int panelH = cbSize * 3 + gap * 2;
-
-	// 使用一个容器承载 4 个方向开关
-	auto panel = new Panel(valueX, yOffset, valueW, panelH);
-	panel->BackColor = D2D1::ColorF(0, 0);
-	panel->BorderThickness = 0.0f;
-	panel->ParentForm = this->ParentForm;
-
-	const int topY = 0;
-	const int midY = cbSize + gap;
-	const int bottomY = (cbSize + gap) * 2;
-	int centerX = (valueW - cbSize) / 2;
-	if (centerX < 0) centerX = 0;
-	const int leftX = 0;
-	int rightX = valueW - cbSize;
-	if (rightX < 0) rightX = 0;
-
-	auto cbT = new CheckBox(L"", centerX, topY);
-	auto cbL = new CheckBox(L"", leftX, midY);
-	auto cbR = new CheckBox(L"", rightX, midY);
-	auto cbB = new CheckBox(L"", centerX, bottomY);
-	cbL->Size = { cbSize, cbSize };
-	cbT->Size = { cbSize, cbSize };
-	cbR->Size = { cbSize, cbSize };
-	cbB->Size = { cbSize, cbSize };
-	cbL->ParentForm = this->ParentForm;
-	cbT->ParentForm = this->ParentForm;
-	cbR->ParentForm = this->ParentForm;
-	cbB->ParentForm = this->ParentForm;
-
-	cbL->Checked = (anchorStyles & AnchorStyles::Left) != 0;
-	cbT->Checked = (anchorStyles & AnchorStyles::Top) != 0;
-	cbR->Checked = (anchorStyles & AnchorStyles::Right) != 0;
-	cbB->Checked = (anchorStyles & AnchorStyles::Bottom) != 0;
-
-	auto apply = [this, cbL, cbT, cbR, cbB](Control*, MouseEventArgs) {
-		UpdateAnchorFromChecks(cbL->Checked, cbT->Checked, cbR->Checked, cbB->Checked);
-	};
-	cbL->OnMouseClick += apply;
-	cbT->OnMouseClick += apply;
-	cbR->OnMouseClick += apply;
-	cbB->OnMouseClick += apply;
-
-	panel->AddControl(cbL);
-	panel->AddControl(cbT);
-	panel->AddControl(cbR);
-	panel->AddControl(cbB);
-
-	container->AddControl(panel);
-	RegisterScrollable(panel);
-
-	auto item = new PropertyItem(propertyName, nameLabel, (Control*)panel);
-	_items.push_back(item);
-
-	yOffset += panelH + 5;
-}
-
-void PropertyGrid::CreateEnumPropertyItem(std::wstring propertyName, const std::wstring& value,
-	const std::vector<std::wstring>& options, int& yOffset)
-{
-	auto* container = GetContentContainer();
-	int width = GetContentWidthLocal();
-
-	auto nameLabel = new Label(propertyName, 10, yOffset);
-	nameLabel->Size = { (width - 30) / 2, 20 };
-	nameLabel->Font = new ::Font(L"Microsoft YaHei", 12.0f);
-	container->AddControl(nameLabel);
-	nameLabel->ParentForm = this->ParentForm;
-	RegisterScrollable(nameLabel);
-
-	auto valueCombo = new ComboBox(L"", (width - 30) / 2 + 15, yOffset, (width - 30) / 2, 20);
-	valueCombo->ParentForm = this->ParentForm;
-	valueCombo->Items.clear();
-	for (auto& o : options) valueCombo->Items.push_back(o);
-
-	int selectedOptionIndex = -1;
-	for (size_t i = 0; i < valueCombo->Items.size(); ++i)
-	{
-		if (EnumOptionMatchesValue(valueCombo->Items[i], value))
-		{
-			selectedOptionIndex = static_cast<int>(i);
-			break;
-		}
-	}
-	valueCombo->SelectedIndex = selectedOptionIndex >= 0 ? selectedOptionIndex : 0;
-	if (!valueCombo->Items.empty()
-		&& selectedOptionIndex >= 0
-		&& static_cast<size_t>(selectedOptionIndex) < valueCombo->Items.size())
-	{
-		valueCombo->Text = valueCombo->Items[static_cast<size_t>(selectedOptionIndex)];
-	}
-	else
-		valueCombo->Text = value;
-
-	valueCombo->OnSelectionChanged += [this, propertyName](Control* sender) {
-		auto comboBox = (ComboBox*)sender;
-		UpdatePropertyFromTextBox(propertyName, comboBox->Text);
-		};
-
-	container->AddControl(valueCombo);
-	RegisterScrollable(valueCombo);
-
-	auto item = new PropertyItem(propertyName, nameLabel, (Control*)valueCombo);
-	_items.push_back(item);
-
-	yOffset += 25;
-}
-
-void PropertyGrid::CreateChoicePropertyItem(
-	const DesignerPropertyDescriptor& property,
-	int& yOffset)
-{
-	auto* container = GetContentContainer();
-	const int width = GetContentWidthLocal();
-	auto* nameLabel = new Label(property.DisplayName, 10, yOffset);
-	nameLabel->Size = { (width - 30) / 2, 20 };
-	nameLabel->Font = new ::Font(L"Microsoft YaHei", 12.0f);
-	nameLabel->ParentForm = this->ParentForm;
-	container->AddControl(nameLabel);
-	RegisterScrollable(nameLabel);
-
-	auto* combo = new ComboBox(
-		L"", (width - 30) / 2 + 15, yOffset, (width - 30) / 2, 20);
-	combo->ParentForm = this->ParentForm;
-	for (const auto& choice : property.Choices)
-		combo->Items.push_back(choice.DisplayName);
-	int selectedIndex = -1;
-	for (size_t index = 0; index < property.Choices.size(); ++index)
-	{
-		if (EnumOptionMatchesValue(
-			property.Choices[index].ValueText, property.SampleValue))
-		{
-			selectedIndex = static_cast<int>(index);
-			break;
-		}
-	}
-	combo->SelectedIndex = selectedIndex;
-	combo->Text = selectedIndex >= 0
-		? property.Choices[static_cast<size_t>(selectedIndex)].DisplayName
-		: property.SampleValue;
-	const auto propertyName = property.Name;
-	const auto choices = property.Choices;
-	combo->OnSelectionChanged += [this, propertyName, choices](Control* sender)
-	{
-		auto* selected = dynamic_cast<ComboBox*>(sender);
-		if (!selected) return;
-		const int index = selected->SelectedIndex;
-		if (index >= 0 && static_cast<size_t>(index) < choices.size())
-			UpdatePropertyFromTextBox(
-				propertyName, choices[static_cast<size_t>(index)].ValueText);
-	};
-	container->AddControl(combo);
-	RegisterScrollable(combo);
-	_items.push_back(new PropertyItem(property.Name, nameLabel, (Control*)combo));
-	yOffset += 25;
-}
-
-void PropertyGrid::CreateFloatSliderPropertyItem(std::wstring propertyName, float value,
-	float minValue, float maxValue, float step, int& yOffset)
-{
-	auto* container = GetContentContainer();
-	int width = GetContentWidthLocal();
-
-	auto nameLabel = new Label(propertyName, 10, yOffset);
-	nameLabel->Size = { (width - 30) / 2, 20 };
-	nameLabel->Font = new ::Font(L"Microsoft YaHei", 12.0f);
-	container->AddControl(nameLabel);
-	nameLabel->ParentForm = this->ParentForm;
-	RegisterScrollable(nameLabel);
-
-	auto slider = new Slider((width - 30) / 2 + 15, yOffset - 4, (width - 30) / 2, 28);
-	slider->ParentForm = this->ParentForm;
-	slider->Min = minValue;
-	slider->Max = maxValue;
-	slider->Step = step;
-	slider->SnapToStep = false;
-	slider->Value = value;
-
-	slider->OnValueChanged += [this, propertyName](Control*, float, float newValue) {
-		if (ShouldGroupFloatSliderProperty(propertyName))
-		{
-			if (_pendingFloatSliderCommand.Active || BeginGroupedFloatSliderEdit(propertyName))
-			{
-				UpdateFloatPropertyPreview(propertyName, newValue);
-				return;
-			}
-		}
-		UpdatePropertyFromFloat(propertyName, newValue);
-		};
-	slider->OnMouseUp += [this, propertyName](Control*, MouseEventArgs) {
-		if (_pendingFloatSliderCommand.Active && _pendingFloatSliderCommand.PropertyName == propertyName)
-		{
-			CommitGroupedFloatSliderEdit();
-		}
-		};
-
-	container->AddControl(slider);
-	RegisterScrollable(slider);
-
-	auto item = new PropertyItem(propertyName, nameLabel, (Control*)slider);
-	_items.push_back(item);
-
-	yOffset += 32;
 }
 
 bool PropertyGrid::ShouldGroupFloatSliderProperty(const std::wstring& propertyName) const
@@ -1353,55 +1086,42 @@ bool PropertyGrid::ShouldGroupFloatSliderProperty(const std::wstring& propertyNa
 		currentControl->Type == UIClass::UI_ProgressRing;
 }
 
-bool PropertyGrid::TryCapturePropertyCommandState(DesignerModel::DesignDocument& document,
-	std::vector<std::wstring>& selectionNames,
-	std::wstring& selectionName) const
-{
-	auto* canvas = _binding.GetCanvas();
-	if (!canvas)
-	{
-		return false;
-	}
-
-	std::wstring error;
-	if (!canvas->BuildDesignDocument(document, &error))
-	{
-		return false;
-	}
-
-	selectionName.clear();
-	selectionNames.clear();
-	if (auto boundControl = _binding.GetBoundControl())
-	{
-		selectionName = boundControl->Name;
-		if (!selectionName.empty())
-		{
-			selectionNames.push_back(selectionName);
-		}
-	}
-
-	return true;
-}
-
 bool PropertyGrid::BeginGroupedFloatSliderEdit(const std::wstring& propertyName)
 {
 	if (_pendingFloatSliderCommand.Active)
 	{
-		return _pendingFloatSliderCommand.PropertyName == propertyName;
-	}
-
-	PendingFloatSliderCommand pending;
-	if (!TryCapturePropertyCommandState(
-		pending.BeforeDocument,
-		pending.BeforeSelectionNames,
-		pending.BeforeSelectionName))
-	{
+		if (_pendingFloatSliderCommand.PropertyName == propertyName) return true;
+		ShowPropertyEditError(
+			propertyName, L"另一个滑块事务仍在进行，当前修改未执行。");
 		return false;
 	}
 
-	pending.Active = true;
-	pending.PropertyName = propertyName;
-	_pendingFloatSliderCommand = std::move(pending);
+	auto* canvas = _binding.GetCanvas();
+	if (!canvas)
+	{
+		ShowPropertyEditError(
+			propertyName, L"设计画布不可用，滑块修改未执行。");
+		return false;
+	}
+	DesignerPropertyBatchSnapshot before;
+	std::wstring error;
+	if (!_binding.CaptureControlPropertySnapshot(
+		propertyName, before, &error))
+	{
+		ShowPropertyEditError(propertyName, error);
+		return false;
+	}
+
+	_pendingFloatSliderCommand.Active = true;
+	_pendingFloatSliderCommand.PropertyName = propertyName;
+	_pendingFloatSliderCommand.Before = std::move(before);
+	for (const auto& control : canvas->GetSelectedControls())
+		if (control && !control->Name.empty())
+			_pendingFloatSliderCommand.BeforeSelectionNames.push_back(
+				control->Name);
+	_pendingFloatSliderCommand.BeforePrimarySelectionName =
+		canvas->GetSelectedControl()
+			? canvas->GetSelectedControl()->Name : std::wstring{};
 	return true;
 }
 
@@ -1412,723 +1132,585 @@ void PropertyGrid::CommitGroupedFloatSliderEdit()
 		return;
 	}
 
+	auto pending = std::move(_pendingFloatSliderCommand);
+	const auto propertyName = pending.PropertyName;
+	_pendingFloatSliderCommand = PendingFloatSliderCommand{};
 	auto* canvas = _binding.GetCanvas();
 	if (!canvas)
 	{
-		CancelGroupedFloatSliderEdit();
+		ShowPropertyEditError(
+			propertyName, L"设计画布不可用，滑块修改未提交。");
 		return;
 	}
 
-	DesignerModel::DesignDocument afterDocument;
+	DesignerPropertyBatchSnapshot after;
+	std::wstring error;
+	if (!_binding.CaptureControlPropertySnapshot(
+		propertyName, after, &error))
+	{
+		std::wstring restoreError;
+		const bool restored = _binding.RestoreBoundControlPropertySnapshot(
+			pending.Before, &restoreError);
+		canvas->RestoreSelectionByNames(
+			pending.BeforeSelectionNames,
+			pending.BeforePrimarySelectionName,
+			true);
+		ShowPropertyEditError(propertyName,
+			L"无法建立滑块修改后的差量：" + error
+				+ (restored ? L"" : L" 属性恢复失败：" + restoreError));
+		return;
+	}
 	std::vector<std::wstring> afterSelectionNames;
-	std::wstring afterSelectionName;
-	if (!TryCapturePropertyCommandState(afterDocument, afterSelectionNames, afterSelectionName))
+	for (const auto& control : canvas->GetSelectedControls())
+		if (control && !control->Name.empty())
+			afterSelectionNames.push_back(control->Name);
+	const auto afterPrimarySelectionName = canvas->GetSelectedControl()
+		? canvas->GetSelectedControl()->Name : std::wstring{};
+	if (!pending.Before.EquivalentTo(after)
+		|| pending.BeforeSelectionNames != afterSelectionNames
+		|| pending.BeforePrimarySelectionName != afterPrimarySelectionName)
 	{
-		CancelGroupedFloatSliderEdit();
-		return;
-	}
-
-	auto command = std::make_unique<UpdatePropertyCommand>(
-		canvas,
-		std::move(_pendingFloatSliderCommand.BeforeDocument),
-		std::move(afterDocument),
-		std::move(_pendingFloatSliderCommand.BeforeSelectionNames),
-		std::move(afterSelectionNames),
-		std::move(_pendingFloatSliderCommand.BeforeSelectionName),
-		std::move(afterSelectionName),
-		L"UpdateProperty:" + _pendingFloatSliderCommand.PropertyName,
-		true);
-	canvas->ExecuteCommand(std::move(command));
-	CancelGroupedFloatSliderEdit();
-}
-
-void PropertyGrid::CancelGroupedFloatSliderEdit()
-{
-	_pendingFloatSliderCommand = PendingFloatSliderCommand{};
-}
-
-void PropertyGrid::ApplyFloatPropertyValue(Control* targetControl, const std::wstring& propertyName, float value)
-{
-	if (!targetControl)
-	{
-		return;
-	}
-
-	if (propertyName == L"PercentageValue")
-	{
-		float v = std::clamp(value, 0.0f, 1.0f);
-		if (targetControl->Type() == UIClass::UI_ProgressBar)
-		{
-			auto* progressBar = (ProgressBar*)targetControl;
-			progressBar->PercentageValue = v;
-		}
-		else if (targetControl->Type() == UIClass::UI_ProgressRing)
-		{
-			auto* progressRing = (ProgressRing*)targetControl;
-			progressRing->PercentageValue = v;
-		}
-	}
-}
-
-void PropertyGrid::UpdateFloatPropertyPreview(const std::wstring& propertyName, float value)
-{
-	auto currentControl = _binding.GetBoundControl();
-	if (!currentControl || !currentControl->ControlInstance)
-	{
-		return;
-	}
-
-	auto* targetControl = currentControl->ControlInstance;
-	try
-	{
-		ApplyFloatPropertyValue(targetControl, propertyName, value);
-	}
-	catch (...)
-	{
-		return;
-	}
-
-	_binding.NotifyControlChanged(targetControl);
-}
-
-void PropertyGrid::UpdatePropertyFromTextBox(std::wstring propertyName, std::wstring value)
-{
-	ExecutePropertyCommand(propertyName, [this, propertyName, value]() {
-	// 未选中控件时：编辑“被设计窗体”属性
-	if (_binding.IsFormBinding())
-	{
-		auto* canvas = _binding.GetCanvas();
-		if (!canvas) return;
+		const auto rollback = pending.Before;
+		DesignerDocumentTransactionResult result =
+			DesignerDocumentTransactionResult::Failure(
+				DesignerDocumentTransactionState::Failed,
+				L"无法把滑块差量加入撤销栈。", false);
 		try
 		{
-			if (propertyName == L"Name")
-			{
-				_binding.ApplyFormTextProperty(propertyName, value);
-			}
-			else if (propertyName == L"Text")
-			{
-				_binding.ApplyFormTextProperty(propertyName, value);
-			}
-			else if (propertyName == L"FontName")
-			{
-				auto v = TrimWs(value);
-				if (v == kFontDefaultOption) v.clear();
-				canvas->SetDesignedFormFontName(v);
-			}
-			else if (propertyName == L"FontSize")
-			{
-				float fs = 0.0f;
-				if (TryParseFloatWs(TrimWs(value), fs))
-					canvas->SetDesignedFormFontSize(fs);
-			}
-			else if (propertyName == L"BackColor")
-			{
-				D2D1_COLOR_F c;
-				if (TryParseColor(value, c)) canvas->SetDesignedFormBackColor(c);
-			}
-			else if (propertyName == L"ForeColor")
-			{
-				D2D1_COLOR_F c;
-				if (TryParseColor(value, c)) canvas->SetDesignedFormForeColor(c);
-			}
-			else if (propertyName == L"HeadHeight")
-			{
-				_binding.ApplyFormTextProperty(propertyName, value);
-			}
-			else if (propertyName == L"X")
-			{
-				auto p = canvas->GetDesignedFormLocation();
-				p.x = std::stoi(value);
-				canvas->SetDesignedFormLocation(p);
-			}
-			else if (propertyName == L"Y")
-			{
-				auto p = canvas->GetDesignedFormLocation();
-				p.y = std::stoi(value);
-				canvas->SetDesignedFormLocation(p);
-			}
-		else if (propertyName == L"Width")
-		{
-			auto formSize = canvas->GetDesignedFormSize();
-			formSize.cx = std::stoi(value);
-			canvas->SetDesignedFormSize(formSize);
+			auto command = std::make_unique<ControlPropertyCommand>(
+				canvas,
+				std::move(pending.Before),
+				std::move(after),
+				pending.BeforeSelectionNames,
+				std::move(afterSelectionNames),
+				pending.BeforePrimarySelectionName,
+				afterPrimarySelectionName,
+				L"UpdateProperty:" + propertyName,
+				true);
+			result = canvas->CommitAlreadyAppliedCommand(std::move(command));
 		}
-		else if (propertyName == L"Height")
+		catch (...)
 		{
-			auto formSize = canvas->GetDesignedFormSize();
-			formSize.cy = std::stoi(value);
-			canvas->SetDesignedFormSize(formSize);
+			result = DesignerDocumentTransactionResult::Failure(
+				DesignerDocumentTransactionState::Failed,
+				L"记录滑块差量时抛出异常。", false);
 		}
-		}
-		catch (...) {}
-		return;
-	}
-	auto currentControl = _binding.GetBoundControl();
-	if (!currentControl || !currentControl->ControlInstance) return;
-
-	// 事件属性：仅更新设计期映射，不改运行时控件状态
-	if (IsEventPropertyName(propertyName))
-	{
-		auto v = TrimWs(value);
-		if (v.empty())
-			currentControl->EventHandlers.erase(propertyName);
-		else
-			currentControl->EventHandlers[propertyName] = std::move(v);
-		return;
-	}
-
-	auto targetControl = currentControl->ControlInstance;
-	auto* canvas = _binding.GetCanvas();
-
-	try
-	{
-		if (propertyName == L"Name")
+		if (!result || !result.HasChanges())
 		{
-			if (canvas)
-			{
-				currentControl->Name = _binding.MakeUniqueControlName(currentControl, value);
-				_binding.SyncDefaultNameCounter(currentControl->Type, currentControl->Name);
-			}
-			else
-				currentControl->Name = value;
-		}
-		else if (propertyName == L"StyleId")
-		{
-			targetControl->SetStyleId(TrimWs(value));
-		}
-		else if (propertyName == L"StyleClasses")
-		{
-			targetControl->ClearStyleClasses();
-			for (auto& styleClass : Split(value, L','))
-			{
-				if (!styleClass.empty())
-					targetControl->AddStyleClass(std::move(styleClass));
-			}
-		}
-		else if (propertyName == L"Text")
-		{
-			targetControl->Text = value;
-		}
-		else if (propertyName == L"FontName")
-		{
-			auto v = TrimWs(value);
-			if (v == kFontDefaultOption || v.empty())
-			{
-				if (_binding.GetDesignedFormSharedFont())
-					targetControl->SetFontEx(_binding.GetDesignedFormSharedFont(), false);
-				else
-					targetControl->SetFontEx(nullptr, false);
-			}
-			else
-			{
-				float curSize = targetControl->Font ? targetControl->Font->FontSize : GetDefaultFontObject()->FontSize;
-				targetControl->Font = new ::Font(v, curSize);
-			}
-		}
-		else if (propertyName == L"FontSize")
-		{
-			float fs = 0.0f;
-			if (!TryParseFloatWs(TrimWs(value), fs))
-				throw std::exception();
-			if (fs < 1.0f) fs = 1.0f;
-			if (fs > 200.0f) fs = 200.0f;
-			std::wstring curName = targetControl->Font ? targetControl->Font->FontName : GetDefaultFontObject()->FontName;
-			targetControl->Font = new ::Font(curName, fs);
-		}
-		else if (propertyName == L"X")
-		{
-			auto loc = targetControl->Location;
-			loc.x = std::stoi(value);
-			targetControl->Location = loc;
-		}
-		else if (propertyName == L"Y")
-		{
-			auto loc = targetControl->Location;
-			loc.y = std::stoi(value);
-			targetControl->Location = loc;
-		}
-		else if (propertyName == L"Width")
-		{
-			auto size = targetControl->Size;
-			size.cx = std::stoi(value);
-			targetControl->Size = size;
-		}
-		else if (propertyName == L"Height")
-		{
-			auto size = targetControl->Size;
-			size.cy = std::stoi(value);
-			targetControl->Size = size;
-		}
-		else if (propertyName == L"Enabled")
-		{
-			targetControl->Enable = (value == L"true" || value == L"True" || value == L"1");
-		}
-		else if (propertyName == L"Visible")
-		{
-			targetControl->Visible = (value == L"true" || value == L"True" || value == L"1");
-		}
-		else if (propertyName == L"BackColor")
-		{
-			D2D1_COLOR_F c;
-			if (TryParseColor(value, c)) targetControl->BackColor = c;
-		}
-		else if (propertyName == L"ForeColor")
-		{
-			D2D1_COLOR_F c;
-			if (TryParseColor(value, c)) targetControl->ForeColor = c;
-		}
-		else if (propertyName == L"BorderColor")
-		{
-			D2D1_COLOR_F c;
-			if (TryParseColor(value, c)) targetControl->BorderColor = c;
-		}
-		else if (propertyName == L"ShowValidationBorder")
-		{
-			targetControl->ShowValidationBorder = (value == L"true" || value == L"True" || value == L"1");
-		}
-		else if (propertyName == L"ShowValidationToolTip")
-		{
-			targetControl->ShowValidationToolTip = (value == L"true" || value == L"True" || value == L"1");
-		}
-		else if (propertyName == L"ValidationBorderThickness")
-		{
-			float parsed = 0.0f;
-			if (TryParseFloatWs(TrimWs(value), parsed)) targetControl->ValidationBorderThickness = parsed;
-		}
-		else if (propertyName == L"ValidationCornerRadius")
-		{
-			float parsed = 0.0f;
-			if (TryParseFloatWs(TrimWs(value), parsed)) targetControl->ValidationCornerRadius = parsed;
-		}
-		else if (propertyName == L"ValidationToolTipMaxWidth")
-		{
-			float parsed = 0.0f;
-			if (TryParseFloatWs(TrimWs(value), parsed)) targetControl->ValidationToolTipMaxWidth = parsed;
-		}
-		else if (propertyName == L"AccessibleDescription")
-		{
-			targetControl->AccessibleDescription = value;
-		}
-		else if (propertyName == L"Margin")
-		{
-			Thickness t;
-			if (TryParseThickness(value, t)) targetControl->Margin = t;
-		}
-		else if (propertyName == L"Padding")
-		{
-			Thickness t;
-			if (TryParseThickness(value, t)) targetControl->Padding = t;
-		}
-		else if (propertyName == L"HAlign")
-		{
-			::HorizontalAlignment a;
-			if (TryParseHAlign(value, a)) targetControl->HAlign = a;
-		}
-		else if (propertyName == L"VAlign")
-		{
-			::VerticalAlignment a;
-			if (TryParseVAlign(value, a)) targetControl->VAlign = a;
-		}
-		else if (propertyName == L"Dock")
-		{
-			::Dock d;
-			if (TryParseDock(value, d)) targetControl->DockPosition = d;
-		}
-				else if (propertyName == L"ZIndex")
-				{
-					targetControl->ZIndex = std::stoi(value);
-				}
-		else if (propertyName == L"GridRow")
-		{
-			targetControl->GridRow = std::stoi(value);
-		}
-		else if (propertyName == L"GridColumn")
-		{
-			targetControl->GridColumn = std::stoi(value);
-		}
-		else if (propertyName == L"GridRowSpan")
-		{
-			targetControl->GridRowSpan = std::stoi(value);
-		}
-		else if (propertyName == L"GridColumnSpan")
-		{
-			targetControl->GridColumnSpan = std::stoi(value);
-		}
-		else if (propertyName == L"Mode")
-		{
-			if (targetControl->Type() == UIClass::UI_DateTimePicker)
-			{
-				auto* dateTimePicker = (DateTimePicker*)targetControl;
-				auto v = TrimWs(value);
-				if (v == L"DateOnly") dateTimePicker->Mode = DateTimePickerMode::DateOnly;
-				else if (v == L"TimeOnly") dateTimePicker->Mode = DateTimePickerMode::TimeOnly;
-				else dateTimePicker->Mode = DateTimePickerMode::DateTime;
-			}
-		}
-		else if (propertyName == L"SizeMode")
-		{
-			if (targetControl->Type() == UIClass::UI_PictureBox)
-			{
-				::ImageSizeMode m;
-				if (TryParseImageSizeMode(value, m)) targetControl->SizeMode = m;
-			}
-		}
-		else if (propertyName == L"MediaFile")
-		{
-			if (currentControl->Type == UIClass::UI_MediaPlayer)
-			{
-				// 设计期字段：仅保存路径，不在设计器里自动加载/播放
-				currentControl->DesignStrings[L"mediaFile"] = TrimWs(value);
-			}
-		}
-		else if (propertyName == L"SelectedBackColor")
-		{
-			if (targetControl->Type() == UIClass::UI_TreeView)
-			{
-				D2D1_COLOR_F c;
-				if (TryParseColor(value, c)) ((TreeView*)targetControl)->SelectedBackColor = c;
-			}
-		}
-		else if (propertyName == L"UnderMouseItemBackColor")
-		{
-			if (targetControl->Type() == UIClass::UI_TreeView)
-			{
-				D2D1_COLOR_F c;
-				if (TryParseColor(value, c)) ((TreeView*)targetControl)->UnderMouseItemBackColor = c;
-			}
-		}
-		else if (propertyName == L"SelectedForeColor")
-		{
-			if (targetControl->Type() == UIClass::UI_TreeView)
-			{
-				D2D1_COLOR_F c;
-				if (TryParseColor(value, c)) ((TreeView*)targetControl)->SelectedForeColor = c;
-			}
-		}
-		else
-		{
-			const auto properties = DesignerPropertyCatalog::GetStyleProperties(*targetControl);
-			const auto* property = DesignerPropertyCatalog::Find(properties, propertyName);
-			if (property)
-			{
-				std::wstring canonicalName;
-				DesignerStyleValue effective;
-				std::wstring metadataError;
-				if (DesignerPropertyCatalog::ApplyValue(
-					*targetControl,
-					property->Name,
-					DesignerStyleValue{ property->ValueKind, value },
-					&canonicalName,
-					&effective,
-					&metadataError))
-				{
-					SetTrackedMetadataProperty(
-						*currentControl, std::move(canonicalName), std::move(effective));
-				}
-			}
-		}
-	}
-	catch (...)
-	{
-	}
-
-	_binding.NotifyControlChanged(targetControl);
-	});
-}
-
-void PropertyGrid::UpdatePropertyFromFloat(std::wstring propertyName, float value)
-{
-	ExecutePropertyCommand(propertyName, [this, propertyName, value]() {
-	auto currentControl = _binding.GetBoundControl();
-	if (!currentControl || !currentControl->ControlInstance) return;
-	auto targetControl = currentControl->ControlInstance;
-
-	try
-	{
-		const auto properties = DesignerPropertyCatalog::GetStyleProperties(*targetControl);
-		const auto* property = DesignerPropertyCatalog::Find(properties, propertyName);
-		if (property && (property->ValueKind == DesignerStyleValueKind::Float
-			|| property->ValueKind == DesignerStyleValueKind::Double))
-		{
-			std::wstring canonicalName;
-			DesignerStyleValue effective;
-			if (DesignerPropertyCatalog::ApplyValue(
-				*targetControl,
-				property->Name,
-				DesignerStyleValue{ property->ValueKind, FloatToText(value) },
-				&canonicalName,
-				&effective))
-			{
-				SetTrackedMetadataProperty(
-					*currentControl, std::move(canonicalName), std::move(effective));
-			}
-		}
-		else
-		{
-			ApplyFloatPropertyValue(targetControl, propertyName, value);
-		}
-	}
-	catch (...) {}
-
-	_binding.NotifyControlChanged(targetControl);
-	});
-}
-
-void PropertyGrid::UpdateAnchorFromChecks(bool left, bool top, bool right, bool bottom)
-{
-	ExecutePropertyCommand(L"Anchor", [this, left, top, right, bottom]() {
-	auto currentControl = _binding.GetBoundControl();
-	if (!currentControl || !currentControl->ControlInstance) return;
-	auto* targetControl = currentControl->ControlInstance;
-
-	uint8_t a = AnchorStyles::None;
-	if (left) a |= AnchorStyles::Left;
-	if (top) a |= AnchorStyles::Top;
-	if (right) a |= AnchorStyles::Right;
-	if (bottom) a |= AnchorStyles::Bottom;
-	_binding.ApplyAnchorStylesKeepingBounds(targetControl, a);
-
-	_binding.NotifyControlChanged(targetControl);
-	});
-}
-
-void PropertyGrid::UpdatePropertyFromBool(std::wstring propertyName, bool value)
-{
-	ExecutePropertyCommand(propertyName, [this, propertyName, value]() {
-	// 未选中控件时：编辑“被设计窗体”属性
-	if (_binding.IsFormBinding())
-	{
-		auto* canvas = _binding.GetCanvas();
-		if (!canvas) return;
-		// 事件：写入窗体事件映射（用于保存/导出）
-		if (IsEventPropertyName(propertyName))
-		{
-			canvas->SetDesignedFormEventEnabled(propertyName, value);
+			std::wstring restoreError;
+			const bool restored = _binding.RestoreBoundControlPropertySnapshot(
+				rollback, &restoreError);
+			canvas->RestoreSelectionByNames(
+				pending.BeforeSelectionNames,
+				pending.BeforePrimarySelectionName,
+				true);
+			ShowPropertyEditError(propertyName,
+				(result.Error.empty()
+					? L"无法把滑块差量加入撤销栈。" : result.Error)
+				+ (restored ? L"" : L" 属性恢复失败：" + restoreError));
 			return;
 		}
-		_binding.ApplyFormBoolProperty(propertyName, value);
-		return;
 	}
-	auto currentControl = _binding.GetBoundControl();
-	if (!currentControl || !currentControl->ControlInstance) return;
-	auto targetControl = currentControl->ControlInstance;
+	ClearPropertyEditError();
+	_reloadRequested = true;
+}
 
-	// 事件：仅更新设计期映射
-	if (IsEventPropertyName(propertyName))
+void PropertyGrid::RollbackGroupedFloatSliderEdit(const std::wstring& error)
+{
+	if (!_pendingFloatSliderCommand.Active)
 	{
-		if (value)
-		{
-			currentControl->EventHandlers[propertyName] = L"1";
-		}
-		else
-		{
-			currentControl->EventHandlers.erase(propertyName);
-		}
+		if (!error.empty()) ShowPropertyEditError(L"Slider", error);
 		return;
 	}
-	else if (propertyName == L"AllowDateSelection")
+	auto pending = std::move(_pendingFloatSliderCommand);
+	const auto propertyName = pending.PropertyName;
+	_pendingFloatSliderCommand = PendingFloatSliderCommand{};
+	std::wstring message = error;
+	if (auto* canvas = _binding.GetCanvas())
 	{
-		if (targetControl->Type() == UIClass::UI_DateTimePicker)
-			((DateTimePicker*)targetControl)->AllowDateSelection = value;
-	}
-	else if (propertyName == L"AllowTimeSelection")
-	{
-		if (targetControl->Type() == UIClass::UI_DateTimePicker)
-			((DateTimePicker*)targetControl)->AllowTimeSelection = value;
-	}
-	else if (propertyName == L"AllowModeSwitch")
-	{
-		if (targetControl->Type() == UIClass::UI_DateTimePicker)
-			((DateTimePicker*)targetControl)->AllowModeSwitch = value;
-	}
-	else if (propertyName == L"Expand")
-	{
-		if (targetControl->Type() == UIClass::UI_DateTimePicker)
-			((DateTimePicker*)targetControl)->SetExpanded(value);
-	}
-	else if (propertyName == L"Visited")
-	{
-		if (targetControl->Type() == UIClass::UI_LinkLabel)
-			((LinkLabel*)targetControl)->Visited = value;
-	}
-	else if (propertyName == L"Enabled")
-	{
-		targetControl->Enable = value;
-	}
-	else if (propertyName == L"Visible")
-	{
-		targetControl->Visible = value;
+		std::wstring restoreError;
+		if (!_binding.RestoreBoundControlPropertySnapshot(
+			pending.Before, &restoreError))
+			message += L" 属性恢复失败：" + restoreError;
+		canvas->RestoreSelectionByNames(
+			pending.BeforeSelectionNames,
+			pending.BeforePrimarySelectionName,
+			true);
 	}
 	else
 	{
-		const auto properties = DesignerPropertyCatalog::GetStyleProperties(*targetControl);
-		const auto* property = DesignerPropertyCatalog::Find(properties, propertyName);
-		if (property && property->ValueKind == DesignerStyleValueKind::Bool)
-		{
-			std::wstring canonicalName;
-			DesignerStyleValue effective;
-			if (DesignerPropertyCatalog::ApplyValue(
-				*targetControl,
-				property->Name,
-				DesignerStyleValue{ DesignerStyleValueKind::Bool, value ? L"true" : L"false" },
-				&canonicalName,
-				&effective))
-			{
-				SetTrackedMetadataProperty(
-					*currentControl, std::move(canonicalName), std::move(effective));
-			}
-		}
+		message += L" 设计画布不可用，文档未能恢复。";
 	}
-
-
-	_binding.NotifyControlChanged(targetControl);
-	});
+	_reloadRequested = true;
+	if (message.empty()) ClearPropertyEditError();
+	else ShowPropertyEditError(propertyName, message);
 }
 
-void PropertyGrid::ExecutePropertyCommand(const std::wstring& propertyName, const std::function<void()>& applyChange)
+DesignerPropertyEditResult PropertyGrid::UpdateFloatPropertyPreview(
+	const std::wstring& propertyName,
+	float value)
+{
+	auto result = _binding.ApplyControlPropertyValue(
+		propertyName, FloatToText(value));
+	if (!result)
+	{
+		if (_pendingFloatSliderCommand.Active)
+			RollbackGroupedFloatSliderEdit(result.Error);
+		else
+			ShowPropertyEditError(propertyName, result.Error);
+		return result;
+	}
+	ClearPropertyEditError();
+	if (!_pendingFloatSliderCommand.Active)
+		RefreshPropertyValueSource(propertyName);
+	return result;
+}
+
+DesignerPropertyEditResult PropertyGrid::UpdatePropertyFromTextBox(
+	std::wstring propertyName,
+	std::wstring value)
+{
+	auto result = ExecutePropertyEditCommand(propertyName, [this, propertyName, value]()
+	{
+		std::optional<DesignerEventDescriptor> currentEvent;
+		if (_binding.IsFormBinding())
+			currentEvent = DesignerEventCatalog::FindFormEvent(propertyName);
+		else if (auto currentControl = _binding.GetBoundControl())
+			currentEvent = DesignerEventCatalog::FindControlEvent(
+				currentControl->Type, propertyName,
+				currentControl->CustomEvents);
+		if (currentEvent)
+		{
+			auto* canvas = _binding.GetCanvas();
+			if (!canvas)
+				return DesignerPropertyEditResult::Failure(L"设计画布不可用。");
+			auto handler = TrimWs(value);
+			std::wstring error;
+			if (!DesignerEventCatalog::ValidateHandlerName(handler, &error))
+				return DesignerPropertyEditResult::Failure(error);
+
+			if (HasConflictingHandlerSignature(
+				canvas, handler, *currentEvent, error))
+				return DesignerPropertyEditResult::Failure(error);
+
+			if (_binding.IsFormBinding())
+			{
+				canvas->SetDesignedFormEventHandler(propertyName, handler);
+				return DesignerPropertyEditResult::Success(1);
+			}
+			auto currentControl = _binding.GetBoundControl();
+			if (!currentControl)
+				return DesignerPropertyEditResult::Failure(L"没有目标控件。");
+			if (handler.empty()) currentControl->EventHandlers.erase(propertyName);
+			else currentControl->EventHandlers[propertyName] = std::move(handler);
+			return DesignerPropertyEditResult::Success(1);
+		}
+
+		if (_binding.IsFormBinding())
+		{
+			const auto* property = DesignerFormPropertyCatalog::Find(propertyName);
+			if (!property)
+				return DesignerPropertyEditResult::Failure(
+					L"窗体没有属性 " + propertyName + L"。");
+			auto normalizedValue = value;
+			if (PropertyNamesEqual(property->Name, L"FontName"))
+			{
+				normalizedValue = TrimWs(normalizedValue);
+				if (normalizedValue == kFontDefaultOption) normalizedValue.clear();
+			}
+			std::wstring error;
+			if (!_binding.ApplyFormProperty(
+				property->Name,
+				DesignerStyleValue{ property->ValueKind, normalizedValue },
+				nullptr,
+				&error))
+				return DesignerPropertyEditResult::Failure(error);
+			return DesignerPropertyEditResult::Success(1);
+		}
+
+		return _binding.ApplyControlPropertyValue(propertyName, value);
+	});
+	if (result && !_binding.IsFormBinding()
+		&& !IsEventPropertyName(_binding, propertyName))
+		RefreshPropertyValueSource(propertyName);
+	return result;
+}
+
+DesignerPropertyEditResult PropertyGrid::UpdatePropertyFromBool(
+	std::wstring propertyName,
+	bool value)
+{
+	auto result = ExecutePropertyEditCommand(propertyName,
+		[this, propertyName, value]()
+	{
+	// 未选中控件时：编辑“被设计窗体”属性
+	if (_binding.IsFormBinding())
+	{
+		auto* canvas = _binding.GetCanvas();
+		if (!canvas) return DesignerPropertyEditResult::Failure(L"设计画布不可用。");
+		const auto* property = DesignerFormPropertyCatalog::Find(propertyName);
+		if (property && property->ValueKind == DesignerStyleValueKind::Bool)
+		{
+			std::wstring error;
+			if (!_binding.ApplyFormProperty(
+				property->Name,
+				DesignerStyleValue{
+					DesignerStyleValueKind::Bool,
+					value ? L"true" : L"false" },
+				nullptr,
+				&error))
+				return DesignerPropertyEditResult::Failure(error);
+			return DesignerPropertyEditResult::Success(1);
+		}
+		return DesignerPropertyEditResult::Failure(
+			L"窗体属性不是 Boolean：" + propertyName);
+	}
+	return _binding.ApplyControlPropertyValue(
+		propertyName, value ? L"true" : L"false");
+	});
+	if (result && !_binding.IsFormBinding()
+		&& !IsEventPropertyName(_binding, propertyName))
+		RefreshPropertyValueSource(propertyName);
+	return result;
+}
+
+DesignerPropertyEditResult PropertyGrid::ExecutePropertyEditCommand(
+	const std::wstring& propertyName,
+	const std::function<DesignerPropertyEditResult()>& applyChange)
 {
 	if (!applyChange)
 	{
-		return;
+		auto result = DesignerPropertyEditResult::Failure(
+			L"属性编辑操作无效。");
+		ShowPropertyEditError(propertyName, result.Error);
+		return result;
 	}
 
 	auto* canvas = _binding.GetCanvas();
 	if (!canvas)
 	{
-		applyChange();
-		return;
+		DesignerPropertyEditResult result;
+		try
+		{
+			result = applyChange();
+		}
+		catch (...)
+		{
+			result = DesignerPropertyEditResult::Failure(
+				L"属性编辑操作抛出异常。");
+		}
+		if (result) ClearPropertyEditError();
+		else ShowPropertyEditError(propertyName, result.Error);
+		return result;
 	}
 
-	DesignerModel::DesignDocument beforeDocument;
-	std::wstring error;
-	if (!canvas->BuildDesignDocument(beforeDocument, &error))
+	std::wstring snapshotPropertyName = propertyName;
+	if (snapshotPropertyName.rfind(L"Reset ", 0) == 0)
+		snapshotPropertyName.erase(0, 6);
+	if (!_binding.IsFormBinding()
+		&& !IsEventPropertyName(_binding, snapshotPropertyName))
 	{
-		applyChange();
-		return;
+		DesignerPropertyBatchSnapshot before;
+		std::wstring captureError;
+		if (_binding.CaptureControlPropertySnapshot(
+			snapshotPropertyName, before, &captureError))
+		{
+			auto captureSelection = [canvas]()
+			{
+				std::vector<std::wstring> names;
+				names.reserve(canvas->GetSelectedControls().size());
+				for (const auto& control : canvas->GetSelectedControls())
+					if (control && !control->Name.empty())
+						names.push_back(control->Name);
+				return names;
+			};
+			auto beforeSelectionNames = captureSelection();
+			const auto beforePrimarySelectionName = canvas->GetSelectedControl()
+				? canvas->GetSelectedControl()->Name : std::wstring{};
+
+			DesignerPropertyEditResult result =
+				DesignerPropertyEditResult::Failure(L"属性修改未执行。");
+			try
+			{
+				result = applyChange();
+			}
+			catch (...)
+			{
+				result = DesignerPropertyEditResult::Failure(
+					L"属性编辑操作抛出异常。");
+			}
+			if (!result)
+			{
+				std::wstring restoreError;
+				const bool restored = _binding.RestoreBoundControlPropertySnapshot(
+					before, &restoreError);
+				canvas->RestoreSelectionByNames(
+					beforeSelectionNames,
+					beforePrimarySelectionName,
+					true);
+				if (!restored)
+					result.Error += L" 属性恢复失败：" + restoreError;
+				ShowPropertyEditError(propertyName, result.Error);
+				return result;
+			}
+
+			DesignerPropertyBatchSnapshot after;
+			if (!_binding.CaptureControlPropertySnapshot(
+				snapshotPropertyName, after, &captureError))
+			{
+				std::wstring restoreError;
+				const bool restored = _binding.RestoreBoundControlPropertySnapshot(
+					before, &restoreError);
+				canvas->RestoreSelectionByNames(
+					beforeSelectionNames,
+					beforePrimarySelectionName,
+					true);
+				result = DesignerPropertyEditResult::Failure(
+					L"无法建立属性修改后的差量：" + captureError
+					+ (restored ? L"" : L" 属性恢复失败：" + restoreError),
+					result.AppliedCount);
+				ShowPropertyEditError(propertyName, result.Error);
+				return result;
+			}
+			auto afterSelectionNames = captureSelection();
+			const auto afterPrimarySelectionName = canvas->GetSelectedControl()
+				? canvas->GetSelectedControl()->Name : std::wstring{};
+			if (before.EquivalentTo(after)
+				&& beforeSelectionNames == afterSelectionNames
+				&& beforePrimarySelectionName == afterPrimarySelectionName)
+			{
+				ClearPropertyEditError();
+				return result;
+			}
+
+			const auto rollbackSnapshot = before;
+			const auto rollbackSelectionNames = beforeSelectionNames;
+			DesignerDocumentTransactionResult transaction =
+				DesignerDocumentTransactionResult::Failure(
+					DesignerDocumentTransactionState::Failed,
+					L"无法把属性差量加入撤销栈。", false);
+			try
+			{
+				auto command = std::make_unique<ControlPropertyCommand>(
+					canvas,
+					std::move(before),
+					std::move(after),
+					std::move(beforeSelectionNames),
+					std::move(afterSelectionNames),
+					beforePrimarySelectionName,
+					afterPrimarySelectionName,
+					L"UpdateProperty:" + propertyName,
+					true);
+				transaction = canvas->CommitAlreadyAppliedCommand(
+					std::move(command));
+			}
+			catch (...)
+			{
+				transaction = DesignerDocumentTransactionResult::Failure(
+					DesignerDocumentTransactionState::Failed,
+					L"记录属性差量时抛出异常。", false);
+			}
+			if (!transaction || !transaction.HasChanges())
+			{
+				std::wstring restoreError;
+				const bool restored = _binding.RestoreBoundControlPropertySnapshot(
+					rollbackSnapshot, &restoreError);
+				canvas->RestoreSelectionByNames(
+					rollbackSelectionNames,
+					beforePrimarySelectionName,
+					true);
+				result = DesignerPropertyEditResult::Failure(
+					transaction.Error.empty()
+						? L"无法把属性差量加入撤销栈。"
+						: transaction.Error,
+					result.AppliedCount);
+				if (!restored)
+					result.Error += L" 属性恢复失败：" + restoreError;
+				ShowPropertyEditError(propertyName, result.Error);
+				return result;
+			}
+			ClearPropertyEditError();
+			return result;
+		}
 	}
 
-	std::wstring beforeSelectionName;
-	if (auto boundControl = _binding.GetBoundControl())
-	{
-		beforeSelectionName = boundControl->Name;
-	}
-	std::vector<std::wstring> beforeSelectionNames;
-	if (!beforeSelectionName.empty())
-	{
-		beforeSelectionNames.push_back(beforeSelectionName);
-	}
-
-	applyChange();
-
-	DesignerModel::DesignDocument afterDocument;
-	if (!canvas->BuildDesignDocument(afterDocument, &error))
-	{
-		return;
-	}
-
-	std::wstring afterSelectionName;
-	if (auto boundControl = _binding.GetBoundControl())
-	{
-		afterSelectionName = boundControl->Name;
-	}
-	std::vector<std::wstring> afterSelectionNames;
-	if (!afterSelectionName.empty())
-	{
-		afterSelectionNames.push_back(afterSelectionName);
-	}
-
-	if (beforeDocument == afterDocument && beforeSelectionName == afterSelectionName && beforeSelectionNames == afterSelectionNames)
-	{
-		return;
-	}
-
-	auto command = std::make_unique<UpdatePropertyCommand>(
-		canvas,
-		std::move(beforeDocument),
-		std::move(afterDocument),
-		std::move(beforeSelectionNames),
-		std::move(afterSelectionNames),
-		std::move(beforeSelectionName),
-		std::move(afterSelectionName),
+	DesignerPropertyEditResult result =
+		DesignerPropertyEditResult::Failure(L"属性修改未执行。");
+	auto transaction = canvas->ExecuteDocumentEditTransaction(
 		L"UpdateProperty:" + propertyName,
-		true);
-	canvas->ExecuteCommand(std::move(command));
+		[&applyChange, &result](std::wstring& error)
+		{
+			result = applyChange();
+			if (result) return true;
+			error = result.Error;
+			return false;
+		});
+	if (!transaction)
+	{
+		result = DesignerPropertyEditResult::Failure(
+			transaction.Error, result.AppliedCount);
+		ShowPropertyEditError(propertyName, result.Error);
+		return result;
+	}
+	ClearPropertyEditError();
+	return result;
+}
+
+DesignerDocumentTransactionResult PropertyGrid::ExecutePropertyCommand(
+	const std::wstring& propertyName,
+	const std::function<bool(std::wstring& error)>& applyChange)
+{
+	if (!applyChange)
+	{
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"属性操作无效。");
+		ShowPropertyEditError(propertyName, result.Error);
+		return result;
+	}
+
+	auto* canvas = _binding.GetCanvas();
+	if (!canvas)
+	{
+		std::wstring error;
+		try
+		{
+			if (applyChange(error))
+			{
+				ClearPropertyEditError();
+				return DesignerDocumentTransactionResult::Success(
+					DesignerDocumentTransactionState::Committed);
+			}
+		}
+		catch (...)
+		{
+			error = L"属性操作抛出异常。";
+		}
+		if (error.empty()) error = L"属性操作被拒绝。";
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Aborted,
+			std::move(error), false);
+		ShowPropertyEditError(propertyName, result.Error);
+		return result;
+	}
+
+	auto result = canvas->ExecuteDocumentEditTransaction(
+		L"UpdateProperty:" + propertyName, applyChange);
+	if (!result)
+	{
+		ShowPropertyEditError(propertyName, result.Error);
+		return result;
+	}
+	ClearPropertyEditError();
+	return result;
 }
 
 void PropertyGrid::CommitPendingEdits()
 {
 	CommitGroupedFloatSliderEdit();
-
-	if (!this->ParentForm || !this->ParentForm->Selected)
-	{
-		return;
-	}
-
-	auto isDescendantOf = [](Control* root, Control* node) -> bool {
-		if (!root || !node) return false;
-		if (root == node) return true;
-		std::vector<Control*> stack;
-		stack.reserve(64);
-		stack.push_back(root);
-		while (!stack.empty())
-		{
-			Control* current = stack.back();
-			stack.pop_back();
-			if (!current) continue;
-			for (size_t i = 0; i < current->Children.size(); ++i)
-			{
-				auto* child = current->Children[i];
-				if (!child) continue;
-				if (child == node) return true;
-				stack.push_back(child);
-			}
-		}
-		return false;
-	};
-
-	auto* selected = this->ParentForm->Selected;
-	bool belongsToPropertyGrid = false;
-	for (auto item : _items)
-	{
-		if (!item) continue;
-		if ((item->NameLabel && selected == item->NameLabel) ||
-			(item->ValueControl && (selected == item->ValueControl || isDescendantOf(item->ValueControl, selected))) ||
-			(item->ValueTextBox && selected == item->ValueTextBox) ||
-			(item->ValueCheckBox && selected == item->ValueCheckBox))
-		{
-			belongsToPropertyGrid = true;
-			break;
-		}
-	}
-
-	if (!belongsToPropertyGrid)
-	{
-		for (auto* control : _extraControls)
-		{
-			if (control && (selected == control || isDescendantOf(control, selected)))
-			{
-				belongsToPropertyGrid = true;
-				break;
-			}
-		}
-	}
-
-	if (!belongsToPropertyGrid)
-	{
-		return;
-	}
-
-	selected->OnLostFocus(selected);
-	selected->InvalidateVisual();
-	this->ParentForm->Selected = nullptr;
+	if (_nativeGrid)
+		_nativeGrid->CommitEdit();
 }
 
 void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 {
-	CommitGroupedFloatSliderEdit();
-	Clear();
-	_binding.BindControl(control);
-	_scrollOffsetY = 0;
+	LoadControls(control
+		? std::vector<std::shared_ptr<DesignerControl>>{ control }
+		: std::vector<std::shared_ptr<DesignerControl>>{}, control);
+}
+
+DesignerPropertyEditResult PropertyGrid::ApplyPropertyValue(
+	const std::wstring& propertyName,
+	const std::wstring& valueText)
+{
+	return UpdatePropertyFromTextBox(propertyName, valueText);
+}
+
+DesignerPropertyEditResult PropertyGrid::ActivateEventHandler(
+	const std::wstring& eventName,
+	std::wstring* outHandlerName)
+{
+	if (outHandlerName) outHandlerName->clear();
+	auto* canvas = _binding.GetCanvas();
+	if (!canvas)
+		return DesignerPropertyEditResult::Failure(L"设计画布不可用。");
+
+	std::optional<DesignerEventDescriptor> descriptor;
+	std::wstring subjectName;
+	std::wstring storedHandler;
+	if (_binding.IsFormBinding())
+	{
+		descriptor = DesignerEventCatalog::FindFormEvent(eventName);
+		subjectName = canvas->GetDesignedFormName();
+		const auto& handlers = canvas->GetDesignedFormEventHandlers();
+		if (const auto found = handlers.find(eventName);
+			found != handlers.end()) storedHandler = found->second;
+	}
+	else if (const auto control = _binding.GetBoundControl())
+	{
+		descriptor = DesignerEventCatalog::FindControlEvent(
+			control->Type, eventName, control->CustomEvents);
+		subjectName = control->Name;
+		if (const auto found = control->EventHandlers.find(eventName);
+			found != control->EventHandlers.end()) storedHandler = found->second;
+	}
+	if (!descriptor)
+		return DesignerPropertyEditResult::Failure(
+			L"目标不支持事件 " + eventName + L"。");
+
+	auto handlerName = DesignerEventCatalog::ResolveHandlerName(
+		storedHandler, subjectName, descriptor->Name);
+	DesignerPropertyEditResult result =
+		DesignerPropertyEditResult::Success();
+	if (handlerName.empty())
+	{
+		handlerName = DesignerEventCatalog::MakeDefaultHandlerName(
+			subjectName, descriptor->Name);
+		result = UpdatePropertyFromTextBox(eventName, handlerName);
+		if (!result) return result;
+		_reloadRequested = true;
+	}
+	if (handlerName.empty())
+		return DesignerPropertyEditResult::Failure(
+			L"无法为事件生成默认处理函数名。");
+	if (outHandlerName) *outHandlerName = handlerName;
+	OnEventHandlerActivated(this, handlerName);
+	return result;
+}
+
+DesignerPropertyEditResult PropertyGrid::ActivateDefaultEventHandler(
+	std::wstring* outHandlerName)
+{
+	std::optional<DesignerEventDescriptor> descriptor;
+	if (_binding.IsFormBinding())
+		descriptor = DesignerEventCatalog::GetDefaultFormEvent();
+	else if (const auto control = _binding.GetBoundControl())
+		descriptor = DesignerEventCatalog::GetDefaultControlEvent(
+			control->Type, control->CustomEvents);
+	if (!descriptor)
+		return DesignerPropertyEditResult::Failure(
+			L"当前目标没有声明默认事件。");
+	return ActivateEventHandler(descriptor->Name, outHandlerName);
+}
+
+DesignerPropertyEditResult PropertyGrid::ResetPropertyValue(
+	const std::wstring& propertyName)
+{
+	return ResetCurrentProperty(propertyName);
+}
+
+void PropertyGrid::LoadControls(
+	const std::vector<std::shared_ptr<DesignerControl>>& controls,
+	std::shared_ptr<DesignerControl> primaryControl)
+{
+	// A direct selection/view refresh satisfies any queued deferred reload.
+	_reloadRequested = false;
+	ClearPropertyEditError();
+	BeginNativeRowsReload();
+	_binding.BindControls(controls, primaryControl);
+	if (_viewMode == DesignerPropertyGridViewMode::Properties)
+		SubscribePropertyDiagnosticChanges();
+	auto control = _binding.GetBoundControl();
 
 	if (!control || !control->ControlInstance)
 	{
@@ -2136,48 +1718,24 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 		auto* canvas = _binding.GetCanvas();
 		if (canvas)
 		{
-			auto form = _binding.CaptureFormSnapshot();
-			_titleLabel->Text = L"属性 - 窗体";
-			int yOffset = GetContentTopLocal();
-			CreatePropertyItem(L"Name", form.Name, yOffset);
-			CreatePropertyItem(L"Text", form.Text, yOffset);
+			const bool events = _viewMode == DesignerPropertyGridViewMode::Events;
+			_titleLabel->Text = events ? L"事件 - 窗体" : L"属性 - 窗体";
+			if (!events)
 			{
-				std::wstring fn = form.FontName;
-				std::wstring dispName = fn.empty() ? kFontDefaultOption : fn;
-				CreateEnumPropertyItem(L"FontName", dispName, GetFontNameOptions(), yOffset);
-				CreateEnumPropertyItem(L"FontSize", FloatToText(form.FontSize), GetFontSizeOptions(), yOffset);
-			}
-			CreateColorPropertyItem(L"BackColor", form.BackColor, yOffset);
-			CreateColorPropertyItem(L"ForeColor", form.ForeColor, yOffset);
-			CreateBoolPropertyItem(L"ShowInTaskBar", form.ShowInTaskBar, yOffset);
-			CreateBoolPropertyItem(L"TopMost", form.TopMost, yOffset);
-			CreateBoolPropertyItem(L"Enable", form.Enable, yOffset);
-			CreateBoolPropertyItem(L"Visible", form.Visible, yOffset);
-			CreateBoolPropertyItem(L"VisibleHead", form.VisibleHead, yOffset);
-			CreatePropertyItem(L"HeadHeight", std::to_wstring(form.HeadHeight), yOffset);
-			CreateBoolPropertyItem(L"MinBox", form.MinBox, yOffset);
-			CreateBoolPropertyItem(L"MaxBox", form.MaxBox, yOffset);
-			CreateBoolPropertyItem(L"CloseBox", form.CloseBox, yOffset);
-			CreateBoolPropertyItem(L"CenterTitle", form.CenterTitle, yOffset);
-			CreateBoolPropertyItem(L"AllowResize", form.AllowResize, yOffset);
-			auto p = form.Location;
-			CreatePropertyItem(L"X", std::to_wstring(p.x), yOffset);
-			CreatePropertyItem(L"Y", std::to_wstring(p.y), yOffset);
-			auto s = form.Size;
-			CreatePropertyItem(L"Width", std::to_wstring(s.cx), yOffset);
-			CreatePropertyItem(L"Height", std::to_wstring(s.cy), yOffset);
+				_propertyRows = _binding.GetPropertyRows();
+				const auto visibleRows = DesignerPropertyRowCatalog::FilterRows(
+					_propertyRows, _propertyFilter);
+				PopulateNativePropertyRows(visibleRows, L"窗体");
 
-			{
-				auto* container = GetContentContainer();
-				const int width = GetContentWidthLocal();
-				auto schemaButtonText = [canvas]() {
-					return L"编辑 DataContext Schema ("
-						+ std::to_wstring(canvas->GetDataContextSchema().size()) + L")...";
-				};
-				auto* editSchema = new Button(
-					schemaButtonText(), 10, yOffset + 8, width - 20, 28);
-				editSchema->OnMouseClick += [this, canvas, editSchema, schemaButtonText](
-					Control*, MouseEventArgs) {
+				if (MatchesCurrentFilter(
+				L"DataContext Schema 数据上下文 架构"))
+				{
+					AddNativeActionRow(
+					L"窗体 · 数据", L"DataContext Schema",
+					L"编辑 (" + std::to_wstring(
+						canvas->GetDataContextSchema().size()) + L")…",
+					L"编辑设计期数据上下文架构。",
+					[this, canvas]() {
 					if (!this->ParentForm) return;
 					DataContextSchemaEditorDialog dialog(
 						canvas->GetDataContextSchema(),
@@ -2187,39 +1745,35 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 						|| dialog.ResultSchema == canvas->GetDataContextSchema()) return;
 
 					auto result = std::move(dialog.ResultSchema);
-					std::wstring schemaError;
-					ExecutePropertyCommand(L"DataContextSchema", [canvas, &schemaError,
-						result = std::move(result)]() mutable {
-						(void)canvas->SetDataContextSchema(std::move(result), &schemaError);
-					});
-					if (!schemaError.empty())
+					auto transaction = ExecutePropertyCommand(
+						L"DataContextSchema",
+						[canvas, result = std::move(result)](
+							std::wstring& error) mutable {
+							return canvas->SetDataContextSchema(
+								std::move(result), &error);
+						});
+					if (!transaction)
 					{
-						::MessageBoxW(this->ParentForm->Handle, schemaError.c_str(),
+						::MessageBoxW(this->ParentForm->Handle,
+							transaction.Error.c_str(),
 							L"DataContext Schema 无效", MB_OK | MB_ICONWARNING);
 						return;
 					}
-					editSchema->Text = schemaButtonText();
-					editSchema->InvalidateVisual();
-				};
-				container->AddControl(editSchema);
-				_extraControls.push_back(editSchema);
-				RegisterScrollable(editSchema);
-				yOffset += 36;
-			}
+					_reloadRequested = true;
+				});
+				}
 
-			{
-				auto* container = GetContentContainer();
-				const int width = GetContentWidthLocal();
-				auto styleButtonText = [canvas]() {
+				if (MatchesCurrentFilter(
+				L"StyleSheet Style 样式表 文档样式"))
+				{
 					const auto& styleSheet = canvas->GetDocumentStyleSheet();
-					return L"编辑文档样式表 ("
-						+ std::to_wstring(styleSheet.Resources.size()) + L" 资源, "
-						+ std::to_wstring(styleSheet.Rules.size()) + L" 规则)...";
-				};
-				auto* editStyles = new Button(
-					styleButtonText(), 10, yOffset + 8, width - 20, 28);
-				editStyles->OnMouseClick += [this, canvas, editStyles, styleButtonText](
-					Control*, MouseEventArgs) {
+					AddNativeActionRow(
+					L"窗体 · 外观", L"文档样式表",
+					L"编辑 (" + std::to_wstring(styleSheet.Resources.size())
+						+ L" 资源, " + std::to_wstring(styleSheet.Rules.size())
+						+ L" 规则)…",
+					L"编辑文档级样式资源和规则。",
+					[this, canvas]() {
 					if (!this->ParentForm) return;
 					StyleSheetEditorDialog dialog(canvas->GetDocumentStyleSheet());
 					dialog.ShowDialog(this->ParentForm->Handle);
@@ -2227,166 +1781,83 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 						|| dialog.ResultStyleSheet == canvas->GetDocumentStyleSheet()) return;
 
 					auto result = std::move(dialog.ResultStyleSheet);
-					std::wstring styleError;
-					ExecutePropertyCommand(L"StyleSheet", [canvas, &styleError,
-						result = std::move(result)]() mutable {
-						(void)canvas->SetDocumentStyleSheet(std::move(result), &styleError);
-					});
-					if (!styleError.empty())
+					auto transaction = ExecutePropertyCommand(
+						L"StyleSheet",
+						[canvas, result = std::move(result)](
+							std::wstring& error) mutable {
+							return canvas->SetDocumentStyleSheet(
+								std::move(result), &error);
+						});
+					if (!transaction)
 					{
-						::MessageBoxW(this->ParentForm->Handle, styleError.c_str(),
+						::MessageBoxW(this->ParentForm->Handle,
+							transaction.Error.c_str(),
 							L"样式表无效", MB_OK | MB_ICONWARNING);
 						return;
 					}
-					editStyles->Text = styleButtonText();
-					editStyles->InvalidateVisual();
-				};
-				container->AddControl(editStyles);
-				_extraControls.push_back(editStyles);
-				RegisterScrollable(editStyles);
-				yOffset += 36;
+					_reloadRequested = true;
+				});
+				}
 			}
-
-			// 窗体事件（设计期映射，仅用于导出代码）
-			for (const auto& ev : GetFormEventProperties())
+			else
 			{
-				bool enabled = _binding.IsFormEventEnabled(ev);
-				CreateEventBoolPropertyItem(ev, enabled, yOffset);
+				PopulateNativeEventRows(
+					DesignerEventCatalog::GetFormEvents(),
+					canvas->GetDesignedFormName(),
+					canvas->GetDesignedFormEventHandlers(),
+					L"窗体 · 事件");
 			}
 			Control::SetChildrenParentForm(this, this->ParentForm);
+			CommitNativeRowsReload();
 			return;
 		}
-		_titleLabel->Text = L"属性";
+		_titleLabel->Text = _viewMode == DesignerPropertyGridViewMode::Events
+			? L"事件" : L"属性";
+		CommitNativeRowsReload();
 		return;
 	}
 
-	_titleLabel->Text = L"属性 - " + control->Name;
+	const auto selectionCount = _binding.GetBoundControls().size();
+	const bool events = _viewMode == DesignerPropertyGridViewMode::Events;
+	const std::wstring viewCaption = events ? L"事件" : L"属性";
+	_titleLabel->Text = selectionCount > 1
+		? viewCaption + L" - " + std::to_wstring(selectionCount) + L" 个控件"
+		: viewCaption + L" - " + control->Name;
 
 	auto targetControl = control->ControlInstance;
-	int yOffset = GetContentTopLocal();
-
-	// 基本属性
-	CreatePropertyItem(L"Name", control->Name, yOffset);
-	CreatePropertyItem(L"StyleId", targetControl->GetStyleId(), yOffset);
-	CreatePropertyItem(L"StyleClasses", JoinStyleClasses(*targetControl), yOffset);
-	CreatePropertyItem(L"Text", targetControl->Text, yOffset);
-	if (control->Type == UIClass::UI_LinkLabel)
+	if (!events)
 	{
-		auto* link = (LinkLabel*)targetControl;
-		CreateBoolPropertyItem(L"Visited", link->Visited, yOffset);
-	}
-	{
-		auto* shared = _binding.GetDesignedFormSharedFont();
-		::Font* f = targetControl->Font;
-		bool isDefaultLike = false;
-		if (shared)
-			isDefaultLike = (f == shared);
-		else
-			isDefaultLike = (f == GetDefaultFontObject());
-		std::wstring dispName = isDefaultLike ? kFontDefaultOption : (f ? f->FontName : kFontDefaultOption);
-		CreateEnumPropertyItem(L"FontName", dispName, GetFontNameOptions(), yOffset);
-		float fs = f ? f->FontSize : GetDefaultFontObject()->FontSize;
-		CreateEnumPropertyItem(L"FontSize", FloatToText(fs), GetFontSizeOptions(), yOffset);
+		_propertyRows = _binding.GetPropertyRows();
+		const auto visibleRows = DesignerPropertyRowCatalog::FilterRows(
+			_propertyRows, _propertyFilter);
+		PopulateNativePropertyRows(
+			visibleRows, selectionCount > 1 ? L"公共属性" : L"属性");
 	}
 
-	// 位置和大小
-	CreatePropertyItem(L"X", std::to_wstring(targetControl->Location.x), yOffset);
-	CreatePropertyItem(L"Y", std::to_wstring(targetControl->Location.y), yOffset);
-	CreatePropertyItem(L"Width", std::to_wstring(targetControl->Size.cx), yOffset);
-	CreatePropertyItem(L"Height", std::to_wstring(targetControl->Size.cy), yOffset);
-
-	// 状态
-	CreateBoolPropertyItem(L"Enabled", targetControl->Enable, yOffset);
-	CreateBoolPropertyItem(L"Visible", targetControl->Visible, yOffset);
-
-	// 常用外观/布局
-	CreateColorPropertyItem(L"BackColor", targetControl->BackColor, yOffset);
-	CreateColorPropertyItem(L"ForeColor", targetControl->ForeColor, yOffset);
-	CreateColorPropertyItem(L"BorderColor", targetControl->BorderColor, yOffset);
-	CreateBoolPropertyItem(L"ShowValidationBorder", targetControl->ShowValidationBorder, yOffset);
-	CreateBoolPropertyItem(L"ShowValidationToolTip", targetControl->ShowValidationToolTip, yOffset);
-	CreatePropertyItem(L"ValidationBorderThickness", FloatToText(targetControl->ValidationBorderThickness), yOffset);
-	CreatePropertyItem(L"ValidationCornerRadius", FloatToText(targetControl->ValidationCornerRadius), yOffset);
-	CreatePropertyItem(L"ValidationToolTipMaxWidth", FloatToText(targetControl->ValidationToolTipMaxWidth), yOffset);
-	CreatePropertyItem(L"AccessibleDescription", targetControl->AccessibleDescription, yOffset);
-	CreateThicknessPropertyItem(L"Margin", targetControl->Margin, yOffset);
-	CreateThicknessPropertyItem(L"Padding", targetControl->Padding, yOffset);
-	CreateAnchorPropertyItem(L"Anchor", targetControl->AnchorStyles, yOffset);
-	CreateEnumPropertyItem(L"HAlign", HAlignToText(targetControl->HAlign), { L"Left", L"Center", L"Right", L"Stretch" }, yOffset);
-	CreateEnumPropertyItem(L"VAlign", VAlignToText(targetControl->VAlign), { L"Top", L"Center", L"Bottom", L"Stretch" }, yOffset);
-		CreatePropertyItem(L"ZIndex", std::to_wstring(targetControl->ZIndex), yOffset);
-	if (targetControl->Parent && targetControl->Parent->Type() == UIClass::UI_DockPanel)
-		CreateEnumPropertyItem(L"Dock", DockToText(targetControl->DockPosition), { L"Fill", L"Left", L"Top", L"Right", L"Bottom" }, yOffset);
-	if (targetControl->Parent && targetControl->Parent->Type() == UIClass::UI_GridPanel)
+	if (selectionCount > 1)
 	{
-		CreatePropertyItem(L"GridRow", std::to_wstring(targetControl->GridRow), yOffset);
-		CreatePropertyItem(L"GridColumn", std::to_wstring(targetControl->GridColumn), yOffset);
-		CreatePropertyItem(L"GridRowSpan", std::to_wstring(targetControl->GridRowSpan), yOffset);
-		CreatePropertyItem(L"GridColumnSpan", std::to_wstring(targetControl->GridColumnSpan), yOffset);
-	}
-	if (control->Type == UIClass::UI_ProgressBar)
-	{
-		auto* progressBar = (ProgressBar*)targetControl;
-		CreateFloatSliderPropertyItem(L"PercentageValue", progressBar->PercentageValue, 0.0f, 1.0f, 0.01f, yOffset);
-	}
-	if (control->Type == UIClass::UI_LoadingRing)
-	{
-		auto* loadingRing = (LoadingRing*)targetControl;
-		CreateBoolPropertyItem(L"Active", loadingRing->Active, yOffset);
-	}
-	if (control->Type == UIClass::UI_ProgressRing)
-	{
-		auto* progressRing = (ProgressRing*)targetControl;
-		CreateFloatSliderPropertyItem(L"PercentageValue", progressRing->PercentageValue, 0.0f, 1.0f, 0.01f, yOffset);
-		CreateBoolPropertyItem(L"ShowPercentage", progressRing->ShowPercentage, yOffset);
-	}
-	if (control->Type == UIClass::UI_DateTimePicker)
-	{
-		auto* dateTimePicker = (DateTimePicker*)targetControl;
-		std::wstring mode = L"DateTime";
-		switch (dateTimePicker->Mode)
-		{
-		case DateTimePickerMode::DateOnly: mode = L"DateOnly"; break;
-		case DateTimePickerMode::TimeOnly: mode = L"TimeOnly"; break;
-		case DateTimePickerMode::DateTime: default: mode = L"DateTime"; break;
-		}
-		CreateEnumPropertyItem(L"Mode", mode, { L"DateOnly", L"TimeOnly", L"DateTime" }, yOffset);
-		CreateBoolPropertyItem(L"AllowDateSelection", dateTimePicker->AllowDateSelection, yOffset);
-		CreateBoolPropertyItem(L"AllowTimeSelection", dateTimePicker->AllowTimeSelection, yOffset);
-		CreateBoolPropertyItem(L"AllowModeSwitch", dateTimePicker->AllowModeSwitch, yOffset);
-		CreateBoolPropertyItem(L"Expand", dateTimePicker->Expand, yOffset);
-	}
-	if (control->Type == UIClass::UI_PictureBox)
-	{
-		CreateEnumPropertyItem(L"SizeMode", ImageSizeModeToText(targetControl->SizeMode), { L"Normal", L"CenterImage", L"Stretch", L"Zoom" }, yOffset);
-	}
-	if (control->Type == UIClass::UI_TreeView)
-	{
-		auto* treeView = (TreeView*)targetControl;
-		CreateColorPropertyItem(L"SelectedBackColor", treeView->SelectedBackColor, yOffset);
-		CreateColorPropertyItem(L"UnderMouseItemBackColor", treeView->UnderMouseItemBackColor, yOffset);
-		CreateColorPropertyItem(L"SelectedForeColor", treeView->SelectedForeColor, yOffset);
-	}
-	if (control->Type == UIClass::UI_MediaPlayer)
-	{
-		std::wstring mediaFile;
-		auto it = control->DesignStrings.find(L"mediaFile");
-		if (it != control->DesignStrings.end()) mediaFile = it->second;
-		CreatePropertyItem(L"MediaFile", mediaFile, yOffset);
+		if (events)
+			AddNativeInformationalRow(
+				L"事件", L"多选时不编辑事件；请选择一个主控件");
+		Control::SetChildrenParentForm(this, this->ParentForm);
+		CommitNativeRowsReload();
+		return;
 	}
 
-	CreateMetadataPropertyItems(control, yOffset);
-
-	// 数据绑定使用结构化编辑器；目标属性列表完全来自运行时元数据。
-	if (!BindingPropertyRegistry::GetProperties(*targetControl).empty())
+	const bool hasCustomBindableProperty = std::any_of(
+		control->CustomProperties.begin(), control->CustomProperties.end(),
+		[](const auto& property) { return property.Bindable; });
+	// 数据绑定使用结构化编辑器；运行时元数据和受验证的自定义 schema 共用同一能力模型。
+	if (!events
+		&& (!BindingPropertyRegistry::GetProperties(*targetControl).empty()
+			|| hasCustomBindableProperty)
+		&& MatchesCurrentFilter(L"Binding DataBinding 数据绑定 绑定"))
 	{
-		auto* container = GetContentContainer();
-		const int width = GetContentWidthLocal();
-		auto bindingButtonText = [control]() {
-			return L"编辑数据绑定 (" + std::to_wstring(control->DataBindings.size()) + L")...";
-		};
-		auto* editBindings = new Button(bindingButtonText(), 10, yOffset + 8, width - 20, 28);
-		editBindings->OnMouseClick += [this, editBindings, bindingButtonText](Control*, MouseEventArgs) {
+		AddNativeActionRow(
+			L"属性 · 数据", L"数据绑定",
+			L"编辑 (" + std::to_wstring(control->DataBindings.size()) + L")…",
+			L"使用属性能力元数据配置 OneWay、TwoWay 等绑定。",
+			[this]() {
 			auto currentControl = _binding.GetBoundControl();
 			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
 
@@ -2395,261 +1866,420 @@ void PropertyGrid::LoadControl(std::shared_ptr<DesignerControl> control)
 				currentControl->ControlInstance,
 				currentControl->DataBindings,
 				canvas ? canvas->GetDataContextSchema() : DesignerDataContextSchema{},
-				canvas ? canvas->GetDesignDataContext().get() : nullptr);
+				canvas ? canvas->GetDesignDataContext().get() : nullptr,
+				currentControl->CustomProperties);
 			dialog.ShowDialog(this->ParentForm->Handle);
 			if (!dialog.Applied || dialog.ResultBindings == currentControl->DataBindings) return;
 
 			auto result = std::move(dialog.ResultBindings);
-			ExecutePropertyCommand(L"DataBindings", [currentControl, result = std::move(result)]() mutable {
-				currentControl->DataBindings = std::move(result);
-			});
-			editBindings->Text = bindingButtonText();
-			editBindings->InvalidateVisual();
-		};
-		container->AddControl(editBindings);
-		_extraControls.push_back(editBindings);
-		RegisterScrollable(editBindings);
-		yOffset += 36;
+			auto transaction = ExecutePropertyCommand(
+				L"DataBindings",
+				[this, currentControl, result = std::move(result)](
+					std::wstring& error) mutable {
+					currentControl->DataBindings = std::move(result);
+					if (auto* canvas = _binding.GetCanvas())
+						return canvas->RefreshDesignBindings(
+							*currentControl, &error);
+					error = L"设计画布不可用。";
+					return false;
+				});
+			if (!transaction) return;
+			_reloadRequested = true;
+		});
 	}
 
-	// 事件（设计期映射，仅用于导出代码）
-	for (const auto& ev : GetEventPropertiesFor(control->Type))
+	if (events)
 	{
-		bool enabled = (control->EventHandlers.find(ev) != control->EventHandlers.end());
-		CreateEventBoolPropertyItem(ev, enabled, yOffset);
+		PopulateNativeEventRows(
+			DesignerEventCatalog::GetControlEvents(
+				control->Type, control->CustomEvents),
+			control->Name, control->EventHandlers,
+			L"属性 · 事件");
 	}
-
-	// 高级编辑入口（模态窗口）
-	if (control->Type == UIClass::UI_ComboBox)
+	else
 	{
-		auto* container = GetContentContainer();
-		int width = GetContentWidthLocal();
-		auto editBtn = new Button(L"编辑下拉项...", 10, yOffset + 8, width - 20, 28);
-		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			auto currentControl = _binding.GetBoundControl();
-			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
-			auto comboBox = dynamic_cast<ComboBox*>(currentControl->ControlInstance);
-			if (!comboBox) return;
-			ComboBoxItemsEditorDialog dlg(comboBox);
-			dlg.ShowDialog(this->ParentForm->Handle);
-			if (dlg.Applied)
-			{
-				std::wstring canonicalName;
-				DesignerStyleValue selectedValue;
-				if (DesignerPropertyCatalog::CaptureValue(
-					*comboBox, L"SelectedIndex", &canonicalName, selectedValue))
-				{
-					SetTrackedMetadataProperty(
-						*currentControl, std::move(canonicalName),
-						std::move(selectedValue));
-				}
-			}
-			comboBox->InvalidateVisual();
-			};
-		container->AddControl(editBtn);
-		_extraControls.push_back(editBtn);
-		RegisterScrollable(editBtn);
-		yOffset += 36;
-	}
-	else if (control->Type == UIClass::UI_GridView)
-	{
-		auto* container = GetContentContainer();
-		int width = GetContentWidthLocal();
-		auto editBtn = new Button(L"编辑列...", 10, yOffset + 8, width - 20, 28);
-		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			auto currentControl = _binding.GetBoundControl();
-			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
-			auto gridView = dynamic_cast<GridView*>(currentControl->ControlInstance);
-			if (!gridView) return;
-			GridViewColumnsEditorDialog dlg(gridView);
-			dlg.ShowDialog(this->ParentForm->Handle);
-			gridView->InvalidateVisual();
-			};
-		container->AddControl(editBtn);
-		_extraControls.push_back(editBtn);
-		RegisterScrollable(editBtn);
-		yOffset += 36;
-	}
-	else if (control->Type == UIClass::UI_TabControl)
-	{
-		auto* container = GetContentContainer();
-		int width = GetContentWidthLocal();
-		auto editBtn = new Button(L"编辑页...", 10, yOffset + 8, width - 20, 28);
-		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			auto currentControl = _binding.GetBoundControl();
-			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
-			auto tabControl = dynamic_cast<TabControl*>(currentControl->ControlInstance);
-			if (!tabControl) return;
-			TabControlPagesEditorDialog dlg(tabControl);
-			// 如果删除页，需要同步移除该页下的 DesignerControl 以避免悬挂
-			dlg.OnBeforeDeletePage = [this](Control* page) {
-				if (page) _binding.RemoveDesignerControlsInSubtree(page);
-				};
-			dlg.ShowDialog(this->ParentForm->Handle);
-			tabControl->InvalidateVisual();
-			};
-		container->AddControl(editBtn);
-		_extraControls.push_back(editBtn);
-		RegisterScrollable(editBtn);
-		yOffset += 36;
-	}
-	else if (control->Type == UIClass::UI_ToolBar)
-	{
-		auto* container = GetContentContainer();
-		int width = GetContentWidthLocal();
-		auto editBtn = new Button(L"编辑文字按钮...", 10, yOffset + 8, width - 20, 28);
-		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			auto currentControl = _binding.GetBoundControl();
-			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
-			auto toolBar = dynamic_cast<ToolBar*>(currentControl->ControlInstance);
-			if (!toolBar) return;
-			ToolBarButtonsEditorDialog dlg(toolBar);
-			// 如果删除按钮控件，需要同步移除 DesignerControl
-			dlg.OnBeforeDeleteButton = [this](Control* btn) {
-				if (btn) _binding.RemoveDesignerControlsInSubtree(btn);
-				};
-			dlg.ShowDialog(this->ParentForm->Handle);
-			toolBar->InvalidateVisual();
-			};
-		container->AddControl(editBtn);
-		_extraControls.push_back(editBtn);
-		RegisterScrollable(editBtn);
-		yOffset += 36;
-	}
-	else if (control->Type == UIClass::UI_TreeView)
-	{
-		auto* container = GetContentContainer();
-		int width = GetContentWidthLocal();
-		auto editBtn = new Button(L"编辑节点...", 10, yOffset + 8, width - 20, 28);
-		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			auto currentControl = _binding.GetBoundControl();
-			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
-			auto treeView = dynamic_cast<TreeView*>(currentControl->ControlInstance);
-			if (!treeView) return;
-			TreeViewNodesEditorDialog dlg(treeView);
-			dlg.ShowDialog(this->ParentForm->Handle);
-			treeView->InvalidateVisual();
-			};
-		container->AddControl(editBtn);
-		_extraControls.push_back(editBtn);
-		RegisterScrollable(editBtn);
-		yOffset += 36;
-	}
-	else if (control->Type == UIClass::UI_GridPanel)
-	{
-		auto* container = GetContentContainer();
-		int width = GetContentWidthLocal();
-		auto editBtn = new Button(L"编辑行/列...", 10, yOffset + 8, width - 20, 28);
-		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			auto currentControl = _binding.GetBoundControl();
-			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
-			auto gridPanel = dynamic_cast<GridPanel*>(currentControl->ControlInstance);
-			if (!gridPanel) return;
-			GridPanelDefinitionsEditorDialog dlg(gridPanel);
-			dlg.ShowDialog(this->ParentForm->Handle);
-			gridPanel->InvalidateVisual();
-			};
-		container->AddControl(editBtn);
-		_extraControls.push_back(editBtn);
-		RegisterScrollable(editBtn);
-		yOffset += 36;
-	}
-	else if (control->Type == UIClass::UI_Menu)
-	{
-		auto* container = GetContentContainer();
-		int width = GetContentWidthLocal();
-		auto editBtn = new Button(L"编辑菜单项...", 10, yOffset + 8, width - 20, 28);
-		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			auto currentControl = _binding.GetBoundControl();
-			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
-			auto m = dynamic_cast<Menu*>(currentControl->ControlInstance);
-			if (!m) return;
-			MenuItemsEditorDialog dlg(m);
-			dlg.ShowDialog(this->ParentForm->Handle);
-			m->InvalidateVisual();
-		};
-		container->AddControl(editBtn);
-		_extraControls.push_back(editBtn);
-		RegisterScrollable(editBtn);
-		yOffset += 36;
-	}
-	else if (control->Type == UIClass::UI_StatusBar)
-	{
-		auto* container = GetContentContainer();
-		int width = GetContentWidthLocal();
-		auto editBtn = new Button(L"编辑分段...", 10, yOffset + 8, width - 20, 28);
-		editBtn->OnMouseClick += [this](Control*, MouseEventArgs) {
-			auto currentControl = _binding.GetBoundControl();
-			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
-			auto statusBar = dynamic_cast<StatusBar*>(currentControl->ControlInstance);
-			if (!statusBar) return;
-			StatusBarPartsEditorDialog dlg(statusBar);
-			dlg.ShowDialog(this->ParentForm->Handle);
-			statusBar->InvalidateVisual();
-		};
-		container->AddControl(editBtn);
-		_extraControls.push_back(editBtn);
-		RegisterScrollable(editBtn);
-		yOffset += 36;
+		AddNativeCustomEditorRows(control->Type);
 	}
 
 	// 确保所有新创建的子控件的ParentForm都被正确设置
 	Control::SetChildrenParentForm(this, this->ParentForm);
+	CommitNativeRowsReload();
+}
+
+void PropertyGrid::AddNativeCustomEditorRows(UIClass targetType)
+{
+	for (const auto& editor : DesignerCustomEditorCatalog::GetEditors(targetType))
+	{
+		if (!MatchesCurrentFilter(
+			editor.ButtonText + L" Editor 编辑器 结构")) continue;
+		AddNativeActionRow(
+			L"属性 · 结构",
+			editor.ButtonText,
+			L"编辑…",
+			L"使用设计器结构化编辑器修改集合内容。",
+			[this, kind = editor.Kind]() { OpenCustomEditor(kind); });
+	}
+}
+
+void PropertyGrid::OpenCustomEditor(DesignerCustomEditorKind kind)
+{
+	auto currentControl = _binding.GetBoundControl();
+	if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
+	auto* target = currentControl->ControlInstance;
+	auto* canvas = _binding.GetCanvas();
+	if (!canvas)
+	{
+		ShowPropertyEditError(L"Structure", L"设计画布不可用，结构修改未执行。");
+		return;
+	}
+
+	std::wstring transactionName;
+	switch (kind)
+	{
+	case DesignerCustomEditorKind::ComboBoxItems: transactionName = L"ComboBoxItems"; break;
+	case DesignerCustomEditorKind::GridViewColumns: transactionName = L"GridViewColumns"; break;
+	case DesignerCustomEditorKind::TabControlPages: transactionName = L"TabControlPages"; break;
+	case DesignerCustomEditorKind::ToolBarButtons: transactionName = L"ToolBarButtons"; break;
+	case DesignerCustomEditorKind::TreeViewNodes: transactionName = L"TreeViewNodes"; break;
+	case DesignerCustomEditorKind::GridPanelDefinitions: transactionName = L"GridPanelDefinitions"; break;
+	case DesignerCustomEditorKind::MenuItems: transactionName = L"MenuItems"; break;
+	case DesignerCustomEditorKind::StatusBarParts: transactionName = L"StatusBarParts"; break;
+	}
+	const auto transactionLabel = L"EditStructure:" + transactionName;
+	const bool useStructureDelta =
+		DesignerStructureEdit::SupportsDelta(kind);
+	const bool useOwnedCollectionDelta =
+		kind == DesignerCustomEditorKind::TabControlPages
+		|| kind == DesignerCustomEditorKind::ToolBarButtons;
+	auto captureSelectionNames = [&]()
+	{
+		std::vector<std::wstring> names;
+		names.reserve(canvas->GetSelectedControls().size());
+		for (const auto& selected : canvas->GetSelectedControls())
+			if (selected && !selected->Name.empty())
+				names.push_back(selected->Name);
+		return names;
+	};
+	DesignerStructureSnapshot deltaBefore;
+	std::vector<std::wstring> beforeSelectionNames;
+	std::wstring beforePrimarySelectionName;
+	if (useStructureDelta)
+	{
+		std::wstring captureError;
+		if (!DesignerStructureEdit::Capture(
+			*currentControl, kind, deltaBefore, &captureError))
+		{
+			ShowPropertyEditError(transactionName, captureError);
+			return;
+		}
+		beforeSelectionNames = captureSelectionNames();
+		beforePrimarySelectionName = canvas->GetSelectedControl()
+			? canvas->GetSelectedControl()->Name : std::wstring{};
+	}
+	else if (!useOwnedCollectionDelta)
+	{
+		auto begin = canvas->BeginDocumentEditTransaction(transactionLabel);
+		if (!begin)
+		{
+			ShowPropertyEditError(transactionName, begin.Error);
+			return;
+		}
+	}
+	auto restoreDeltaState = [&](std::wstring& restoreError)
+	{
+		if (!useStructureDelta) return true;
+		DesignerStructureSnapshot current;
+		if (!DesignerStructureEdit::Capture(
+			*currentControl, kind, current, &restoreError)) return false;
+		const bool restored = current == deltaBefore
+			|| DesignerStructureEdit::Restore(
+				*currentControl, deltaBefore, &restoreError);
+		if (restored)
+			canvas->RestoreSelectionByNames(
+				beforeSelectionNames, beforePrimarySelectionName, true);
+		return restored;
+	};
+
+	bool handled = false;
+	bool applied = false;
+	std::wstring editorApplyError;
+	std::vector<DesignerTabPageCollectionEdit> tabPageEdits;
+	std::vector<DesignerToolBarButtonCollectionEdit> toolBarButtonEdits;
+	try
+	{
+		switch (kind)
+		{
+		case DesignerCustomEditorKind::ComboBoxItems:
+			if (auto* comboBox = dynamic_cast<ComboBox*>(target))
+			{
+				handled = true;
+				ComboBoxItemsEditorDialog dialog(comboBox);
+				dialog.ShowDialog(this->ParentForm->Handle);
+				applied = dialog.Applied;
+				if (applied
+					&& !DesignerPropertyCatalog::TrackCurrentValue(
+						*comboBox,
+						currentControl->MetadataProperties,
+						L"SelectedIndex",
+						nullptr, nullptr, &editorApplyError))
+				{
+					if (editorApplyError.empty())
+						editorApplyError =
+							L"无法同步 ComboBox.SelectedIndex 元数据。";
+				}
+			}
+			break;
+		case DesignerCustomEditorKind::GridViewColumns:
+			if (auto* gridView = dynamic_cast<GridView*>(target))
+			{
+				handled = true;
+				GridViewColumnsEditorDialog dialog(gridView);
+				dialog.ShowDialog(this->ParentForm->Handle);
+				applied = dialog.Applied;
+			}
+			break;
+		case DesignerCustomEditorKind::TabControlPages:
+			if (auto* tabControl = dynamic_cast<TabControl*>(target))
+			{
+				handled = true;
+				TabControlPagesEditorDialog dialog(tabControl);
+				dialog.ShowDialog(this->ParentForm->Handle);
+				applied = dialog.Applied;
+				if (applied)
+				{
+					tabPageEdits.reserve(dialog.Pages.size());
+					for (const auto& page : dialog.Pages)
+						tabPageEdits.push_back({ page.ExistingPage, page.Title });
+				}
+			}
+			break;
+		case DesignerCustomEditorKind::ToolBarButtons:
+			if (auto* toolBar = dynamic_cast<ToolBar*>(target))
+			{
+				handled = true;
+				ToolBarButtonsEditorDialog dialog(toolBar);
+				dialog.ShowDialog(this->ParentForm->Handle);
+				applied = dialog.Applied;
+				if (applied)
+				{
+					toolBarButtonEdits.reserve(dialog.Buttons.size());
+					for (const auto& button : dialog.Buttons)
+						toolBarButtonEdits.push_back({
+							button.ExistingButton, button.Text, button.Width });
+				}
+			}
+			break;
+		case DesignerCustomEditorKind::TreeViewNodes:
+			if (auto* treeView = dynamic_cast<TreeView*>(target))
+			{
+				handled = true;
+				TreeViewNodesEditorDialog dialog(treeView);
+				dialog.ShowDialog(this->ParentForm->Handle);
+				applied = dialog.Applied;
+			}
+			break;
+		case DesignerCustomEditorKind::GridPanelDefinitions:
+			if (auto* gridPanel = dynamic_cast<GridPanel*>(target))
+			{
+				handled = true;
+				GridPanelDefinitionsEditorDialog dialog(gridPanel);
+				dialog.ShowDialog(this->ParentForm->Handle);
+				applied = dialog.Applied;
+			}
+			break;
+		case DesignerCustomEditorKind::MenuItems:
+			if (auto* menu = dynamic_cast<Menu*>(target))
+			{
+				handled = true;
+				MenuItemsEditorDialog dialog(menu);
+				dialog.ShowDialog(this->ParentForm->Handle);
+				applied = dialog.Applied;
+			}
+			break;
+		case DesignerCustomEditorKind::StatusBarParts:
+			if (auto* statusBar = dynamic_cast<StatusBar*>(target))
+			{
+				handled = true;
+				StatusBarPartsEditorDialog dialog(statusBar);
+				dialog.ShowDialog(this->ParentForm->Handle);
+				applied = dialog.Applied;
+			}
+			break;
+		}
+	}
+	catch (...)
+	{
+		std::wstring rollbackError;
+		bool rolledBack = false;
+		if (useStructureDelta || useOwnedCollectionDelta)
+			rolledBack = restoreDeltaState(rollbackError);
+		else
+		{
+			auto rollback = canvas->RollbackDocumentEditTransaction();
+			rolledBack = static_cast<bool>(rollback);
+			rollbackError = std::move(rollback.Error);
+		}
+		ShowPropertyEditError(
+			transactionName,
+			L"结构编辑器发生异常，修改已回滚。"
+			+ std::wstring(rolledBack
+				? L"" : L" " + rollbackError));
+		_reloadRequested = true;
+		return;
+	}
+	if (!editorApplyError.empty())
+	{
+		std::wstring rollbackError;
+		bool rolledBack = false;
+		if (useStructureDelta || useOwnedCollectionDelta)
+			rolledBack = restoreDeltaState(rollbackError);
+		else
+		{
+			auto rollback = canvas->RollbackDocumentEditTransaction();
+			rolledBack = static_cast<bool>(rollback);
+			rollbackError = std::move(rollback.Error);
+		}
+		ShowPropertyEditError(
+			transactionName,
+			editorApplyError
+			+ std::wstring(rolledBack
+				? L"" : L" 恢复失败：" + rollbackError));
+		_reloadRequested = true;
+		return;
+	}
+
+	if (!handled)
+	{
+		std::wstring cancelError;
+		bool cancelled = false;
+		if (useStructureDelta || useOwnedCollectionDelta)
+			cancelled = restoreDeltaState(cancelError);
+		else
+		{
+			auto cancel = canvas->CancelDocumentEditTransaction();
+			cancelled = static_cast<bool>(cancel);
+			cancelError = std::move(cancel.Error);
+		}
+		ShowPropertyEditError(
+			transactionName,
+			L"结构编辑器与当前控件类型不兼容。"
+			+ std::wstring(cancelled
+				? L"" : L" " + cancelError));
+		return;
+	}
+	if (!applied)
+	{
+		std::wstring cancelError;
+		bool cancelled = false;
+		if (useStructureDelta || useOwnedCollectionDelta)
+			cancelled = restoreDeltaState(cancelError);
+		else
+		{
+			auto cancel = canvas->CancelDocumentEditTransaction();
+			cancelled = static_cast<bool>(cancel);
+			cancelError = std::move(cancel.Error);
+		}
+		if (!cancelled)
+		{
+			ShowPropertyEditError(transactionName, cancelError);
+			_reloadRequested = true;
+		}
+		return;
+	}
+	DesignerDocumentTransactionResult commit;
+	if (useOwnedCollectionDelta)
+	{
+		std::wstring commandError;
+		std::unique_ptr<ControlOwnedCollectionCommand> command;
+		if (kind == DesignerCustomEditorKind::TabControlPages)
+			command = ControlOwnedCollectionCommand::CreateTabPages(
+				canvas, currentControl, tabPageEdits,
+				transactionLabel, &commandError);
+		else
+			command = ControlOwnedCollectionCommand::CreateToolBarButtons(
+				canvas, currentControl, toolBarButtonEdits,
+				transactionLabel, &commandError);
+		if (!command)
+		{
+			ShowPropertyEditError(transactionName,
+				commandError.empty()
+					? L"无法创建集合编辑命令。" : commandError);
+			_reloadRequested = true;
+			return;
+		}
+		commit = canvas->ExecuteCommand(std::move(command));
+	}
+	else if (useStructureDelta)
+	{
+		DesignerStructureSnapshot deltaAfter;
+		std::wstring captureError;
+		if (!DesignerStructureEdit::Capture(
+			*currentControl, kind, deltaAfter, &captureError))
+		{
+			std::wstring restoreError;
+			(void)restoreDeltaState(restoreError);
+			ShowPropertyEditError(transactionName,
+				L"无法捕获结构编辑结果：" + captureError
+				+ (restoreError.empty() ? std::wstring()
+					: L" 恢复失败：" + restoreError));
+			_reloadRequested = true;
+			return;
+		}
+		if (deltaBefore == deltaAfter)
+		{
+			ClearPropertyEditError();
+			_reloadRequested = true;
+			return;
+		}
+		auto afterSelectionNames = captureSelectionNames();
+		const auto afterPrimarySelectionName = canvas->GetSelectedControl()
+			? canvas->GetSelectedControl()->Name : std::wstring{};
+		commit = canvas->CommitAlreadyAppliedCommand(
+			std::make_unique<ControlStructureCommand>(
+				canvas,
+				deltaBefore,
+				std::move(deltaAfter),
+				beforeSelectionNames,
+				std::move(afterSelectionNames),
+				beforePrimarySelectionName,
+				afterPrimarySelectionName,
+				transactionLabel,
+				true));
+		if (!commit)
+		{
+			std::wstring restoreError;
+			(void)DesignerStructureEdit::Restore(
+				*currentControl, deltaBefore, &restoreError);
+			canvas->RestoreSelectionByNames(
+				beforeSelectionNames, beforePrimarySelectionName, true);
+			if (!restoreError.empty())
+				commit.Error += L" 恢复失败：" + restoreError;
+		}
+	}
+	else
+	{
+		commit = canvas->CommitDocumentEditTransaction();
+	}
+	if (!commit)
+	{
+		ShowPropertyEditError(
+			transactionName,
+			commit.Error);
+		_reloadRequested = true;
+		return;
+	}
+
+	ClearPropertyEditError();
+	_reloadRequested = true;
 }
 
 void PropertyGrid::Clear()
 {
-	CommitGroupedFloatSliderEdit();
-
-	auto deleteOwnedControl = [this](Control* c) {
-		if (!c) return;
-		if (c->Parent && c->Parent->DeleteControl(c))
-			return;
-		if (this->DeleteControl(c))
-			return;
-		// 兼容尚未挂载或历史异常状态下的编辑器控件。
-		delete c;
-	};
-
-	// 移除所有属性项（保留标题）
-	for (auto item : _items)
+	BeginNativeRowsReload();
+	if (_nativeGrid)
 	{
-		if (item->NameLabel)
-		{
-			deleteOwnedControl(item->NameLabel);
-			item->NameLabel = nullptr;
-		}
-		if (item->ValueControl)
-		{
-			deleteOwnedControl(item->ValueControl);
-			item->ValueControl = nullptr;
-		}
-		else
-		{
-			// 兜底：某些条目可能不走 ValueControl（历史代码/异常场景）
-			if (item->ValueTextBox)
-			{
-				deleteOwnedControl(item->ValueTextBox);
-				item->ValueTextBox = nullptr;
-			}
-			if (item->ValueCheckBox)
-			{
-				deleteOwnedControl(item->ValueCheckBox);
-				item->ValueCheckBox = nullptr;
-			}
-		}
-		delete item;
+		_syncingNativeGrid = true;
+		_nativeGrid->Clear();
+		_syncingNativeGrid = false;
 	}
-	_items.clear();
-
-	for (auto* c : _extraControls)
-	{
-		if (!c) continue;
-		deleteOwnedControl(c);
-	}
-	_extraControls.clear();
-	_scrollEntries.clear();
-	_scrollOffsetY = 0;
-	_contentHeight = 0;
-	_draggingScrollThumb = false;
 }

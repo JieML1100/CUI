@@ -3,14 +3,27 @@
 #include "DesignerBindingUtils.h"
 #include "DesignerControlFactory.h"
 #include "DesignerDataContextSchemaUtils.h"
+#include "DesignerEventCatalog.h"
 #include "DesignerPropertyCatalog.h"
+#include "DesignerPreviewBridge.h"
 #include "DesignerStyleSheetUtils.h"
 #include "DesignerCore/DesignerCommandCoordinator.h"
+#include "DesignerCore/Commands/ControlPlacementCommand.h"
+#include "DesignerCore/Commands/ControlPropertyCommand.h"
+#include "DesignerCore/Commands/ControlSubtreeCommand.h"
 #include "DesignerCore/HitTestService.h"
 #include "DesignerCore/LayoutBridge.h"
+#include "DesignerCore/PropertyGridBinder.h"
 #include "DesignerCore/SelectionService.h"
 #include "DesignerModel/DesignDocument.h"
+#include "DesignerModel/DesignDocumentControlPool.h"
+#include "DesignerModel/DesignDocumentEventIndex.h"
+#include "DesignerModel/DesignDocumentFileFormat.h"
+#include "DesignerModel/DesignDocumentGraph.h"
+#include "DesignerModel/DesignDocumentMaterializer.h"
 #include "DesignerModel/DesignDocumentSerializer.h"
+#include "DesignerModel/XamlDocumentParser.h"
+#include "DesignerModel/XamlDocumentSerializer.h"
 #include <Convert.h>
 #include "FakeWebBrowser.h"
 #include "../CUI/include/Label.h"
@@ -58,6 +71,7 @@
 #include <windowsx.h>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 #include <fstream>
@@ -68,6 +82,182 @@
 #endif
 
 using DesignValue = DesignerModel::DesignValue;
+
+struct DesignerCanvasPlacementInteraction
+{
+	std::wstring Operation;
+	DesignerControlPlacementSnapshot Before;
+	std::vector<std::wstring> BeforeSelectionNames;
+	std::wstring BeforePrimarySelectionName;
+};
+
+struct DesignerCanvasPropertyInteraction
+{
+	std::wstring Operation;
+	DesignerPropertyBatchSnapshot Before;
+	std::vector<std::wstring> BeforeSelectionNames;
+	std::wstring BeforePrimarySelectionName;
+};
+
+namespace
+{
+	DesignerBindingUtils::TargetMetadata CustomBindingTargetMetadata(
+		const DesignerCustomPropertyDescriptor& property)
+	{
+		DesignerBindingUtils::TargetMetadata metadata{
+			property.Name,
+			BindingValueKind::Object,
+			property.SupportsTwoWayBinding,
+			property.Bindable,
+			property.SupportsTwoWayBinding };
+		switch (property.DefaultValue.Kind)
+		{
+		case DesignerStyleValueKind::Bool:
+			metadata.ValueKind = BindingValueKind::Bool; break;
+		case DesignerStyleValueKind::Int:
+			metadata.ValueKind = BindingValueKind::Int; break;
+		case DesignerStyleValueKind::Int64:
+			metadata.ValueKind = BindingValueKind::Int64; break;
+		case DesignerStyleValueKind::Float:
+			metadata.ValueKind = BindingValueKind::Float; break;
+		case DesignerStyleValueKind::Double:
+			metadata.ValueKind = BindingValueKind::Double; break;
+		case DesignerStyleValueKind::String:
+			metadata.ValueKind = BindingValueKind::String; break;
+		default:
+			break;
+		}
+		return metadata;
+	}
+
+	const DesignerCustomPropertyDescriptor* FindCustomProperty(
+		const DesignerControl& control,
+		const std::wstring& name)
+	{
+		const auto found = std::find_if(
+			control.CustomProperties.begin(), control.CustomProperties.end(),
+			[&](const auto& property)
+			{
+				return _wcsicmp(property.Name.c_str(), name.c_str()) == 0;
+			});
+		return found == control.CustomProperties.end() ? nullptr : &*found;
+	}
+
+	std::optional<DesignerControlDescriptor> BuiltInDescriptor(UIClass type)
+	{
+		for (const auto& metadata : ControlRegistry::GetAvailableControls())
+			if (metadata.Type == type)
+				return DesignerControlDescriptor::BuiltIn(metadata);
+		return std::nullopt;
+	}
+
+	bool ResolvePropertyTargets(
+		DesignerCanvas* canvas,
+		const DesignerPropertyBatchSnapshot& snapshot,
+		std::vector<std::shared_ptr<DesignerControl>>& targets,
+		std::wstring* outError)
+	{
+		targets.clear();
+		if (!canvas || snapshot.Targets.empty())
+		{
+			if (outError) *outError = L"属性差量没有可解析的目标。";
+			return false;
+		}
+		targets.reserve(snapshot.Targets.size());
+		for (const auto& identity : snapshot.Targets)
+		{
+			auto match = std::find_if(
+				canvas->GetAllControls().begin(),
+				canvas->GetAllControls().end(),
+				[&identity](const std::shared_ptr<DesignerControl>& candidate)
+				{
+					return candidate && candidate->ControlInstance
+						&& candidate->Name == identity.TargetName
+						&& candidate->Type == identity.TargetType;
+				});
+			if (match == canvas->GetAllControls().end()
+				|| std::find(targets.begin(), targets.end(), *match)
+					!= targets.end())
+			{
+				if (outError)
+					*outError = L"属性差量目标不存在或不唯一："
+						+ identity.TargetName;
+				targets.clear();
+				return false;
+			}
+			targets.push_back(*match);
+		}
+		if (outError) outError->clear();
+		return true;
+	}
+
+	bool CapturePropertySnapshot(
+		DesignerCanvas* canvas,
+		const DesignerPropertyBatchSnapshot& identity,
+		DesignerPropertyBatchSnapshot& snapshot,
+		std::wstring* outError)
+	{
+		try
+		{
+			std::vector<std::shared_ptr<DesignerControl>> targets;
+			if (!ResolvePropertyTargets(canvas, identity, targets, outError))
+				return false;
+			PropertyGridBinder binder;
+			binder.SetCanvas(canvas);
+			binder.BindControls(targets, targets.front());
+			if (!binder.CaptureControlPropertySnapshot(
+				identity.PropertyName, snapshot, outError)) return false;
+			if (snapshot.Source != identity.Source
+				|| snapshot.PropertyName != identity.PropertyName
+				|| snapshot.Targets.size() != identity.Targets.size())
+			{
+				if (outError) *outError = L"属性差量终点与起点不兼容。";
+				return false;
+			}
+			for (size_t index = 0; index < snapshot.Targets.size(); ++index)
+			{
+				if (snapshot.Targets[index].TargetName
+						!= identity.Targets[index].TargetName
+					|| snapshot.Targets[index].TargetType
+						!= identity.Targets[index].TargetType)
+				{
+					if (outError) *outError = L"属性差量目标集合发生变化。";
+					return false;
+				}
+			}
+			if (outError) outError->clear();
+			return true;
+		}
+		catch (...)
+		{
+			snapshot = DesignerPropertyBatchSnapshot{};
+			if (outError) *outError = L"捕获属性差量时抛出异常。";
+			return false;
+		}
+	}
+
+	bool RestorePropertySnapshot(
+		DesignerCanvas* canvas,
+		const DesignerPropertyBatchSnapshot& snapshot,
+		std::wstring* outError)
+	{
+		try
+		{
+			std::vector<std::shared_ptr<DesignerControl>> targets;
+			if (!ResolvePropertyTargets(canvas, snapshot, targets, outError))
+				return false;
+			PropertyGridBinder binder;
+			binder.SetCanvas(canvas);
+			binder.BindControls(targets, targets.front());
+			return binder.RestoreBoundControlPropertySnapshot(snapshot, outError);
+		}
+		catch (...)
+		{
+			if (outError) *outError = L"恢复属性差量时抛出异常。";
+			return false;
+		}
+	}
+}
 
 static RECT IntersectRectSafe(const RECT& a, const RECT& b)
 {
@@ -176,9 +366,14 @@ static bool ApplyTrackedMetadataProperty(
 	const auto* metadata = target.FindPropertyMetadata(propertyName);
 	const std::wstring canonicalCandidate = metadata
 		? metadata->Name() : propertyName;
-	if (preserveExisting
-		&& designerControl.MetadataProperties.find(canonicalCandidate)
-			!= designerControl.MetadataProperties.end())
+	const auto existing = std::find_if(
+		designerControl.MetadataProperties.begin(),
+		designerControl.MetadataProperties.end(),
+		[&](const auto& entry)
+		{
+			return _wcsicmp(entry.first.c_str(), canonicalCandidate.c_str()) == 0;
+		});
+	if (preserveExisting && existing != designerControl.MetadataProperties.end())
 	{
 		if (outError) outError->clear();
 		return true;
@@ -186,11 +381,25 @@ static bool ApplyTrackedMetadataProperty(
 
 	std::wstring canonicalName;
 	DesignerStyleValue effective;
-	if (!DesignerPropertyCatalog::ApplyValue(
-		target, propertyName, value,
+	if (!DesignerPropertyCatalog::ApplyAndTrackValue(
+		target, designerControl.MetadataProperties, propertyName, value,
 		&canonicalName, &effective, outError)) return false;
-	designerControl.MetadataProperties[std::move(canonicalName)] = std::move(effective);
 	return true;
+}
+
+static void AttachPreviewPropertySink(DesignerControl& control)
+{
+	if (!control.ControlInstance || control.CustomType.Empty())
+	{
+		control.PreviewPropertyChanged = {};
+		return;
+	}
+	auto* target = control.ControlInstance;
+	control.PreviewPropertyChanged =
+		[target](const std::wstring& name, const DesignerStyleValue& value)
+		{
+			(void)DesignerPreviewBridge::SetValue(*target, name, value);
+		};
 }
 
 DesignerCanvas::DesignerCanvas(int x, int y, int width, int height)
@@ -257,6 +466,76 @@ void DesignerCanvas::SetDesignedFormFontSize(float size)
 	if (size > 200.0f) size = 200.0f;
 	_designedFormFontSize = size;
 	RebuildDesignedFormSharedFont();
+	this->InvalidateVisual();
+}
+
+DesignerModel::DesignFormModel DesignerCanvas::CaptureDesignedFormModel() const
+{
+	DesignerModel::DesignFormModel form;
+	form.Name = _designedFormName;
+	form.Text = _designedFormText;
+	form.FontName = _designedFormFontName;
+	form.FontSize = _designedFormFontSize;
+	form.Size = _designedFormSize;
+	form.Location = _designedFormLocation;
+	form.BackColor = _designedFormBackColor;
+	form.ForeColor = _designedFormForeColor;
+	form.ShowInTaskBar = _designedFormShowInTaskBar;
+	form.TopMost = _designedFormTopMost;
+	form.Enable = _designedFormEnable;
+	form.Visible = _designedFormVisible;
+	form.VisibleHead = _designedFormVisibleHead;
+	form.HeadHeight = _designedFormHeadHeight;
+	form.MinBox = _designedFormMinBox;
+	form.MaxBox = _designedFormMaxBox;
+	form.CloseBox = _designedFormCloseBox;
+	form.CenterTitle = _designedFormCenterTitle;
+	form.AllowResize = _designedFormAllowResize;
+	form.EventHandlers = _designedFormEventHandlers;
+	return form;
+}
+
+void DesignerCanvas::ApplyDesignedFormModel(
+	const DesignerModel::DesignFormModel& value)
+{
+	auto form = value;
+	if (form.Name.empty()) form.Name = L"MainForm";
+	if (!std::isfinite(form.FontSize)) form.FontSize = 18.0f;
+	form.FontSize = (std::clamp)(form.FontSize, 1.0f, 200.0f);
+	form.HeadHeight = (std::max)(0, form.HeadHeight);
+	if (form.Size.cx < 50) form.Size.cx = 50;
+	if (form.Size.cy < 50) form.Size.cy = 50;
+
+	const bool fontChanged = _designedFormFontName != form.FontName
+		|| std::fabs(_designedFormFontSize - form.FontSize) >= 1e-6f;
+	const bool headerLayoutChanged = _designedFormVisibleHead != form.VisibleHead
+		|| _designedFormHeadHeight != form.HeadHeight;
+	const bool sizeChanged = _designedFormSize.cx != form.Size.cx
+		|| _designedFormSize.cy != form.Size.cy;
+
+	_designedFormName = std::move(form.Name);
+	_designedFormText = std::move(form.Text);
+	_designedFormFontName = std::move(form.FontName);
+	_designedFormFontSize = form.FontSize;
+	_designedFormLocation = form.Location;
+	_designedFormBackColor = form.BackColor;
+	_designedFormForeColor = form.ForeColor;
+	_designedFormShowInTaskBar = form.ShowInTaskBar;
+	_designedFormTopMost = form.TopMost;
+	_designedFormEnable = form.Enable;
+	_designedFormVisible = form.Visible;
+	_designedFormVisibleHead = form.VisibleHead;
+	_designedFormHeadHeight = form.HeadHeight;
+	_designedFormMinBox = form.MinBox;
+	_designedFormMaxBox = form.MaxBox;
+	_designedFormCloseBox = form.CloseBox;
+	_designedFormCenterTitle = form.CenterTitle;
+	_designedFormAllowResize = form.AllowResize;
+	_designedFormEventHandlers = std::move(form.EventHandlers);
+	if (_clientSurface) _clientSurface->BackColor = _designedFormBackColor;
+	if (sizeChanged) SetDesignedFormSize(form.Size);
+	else if (headerLayoutChanged) UpdateClientSurfaceLayout();
+	if (fontChanged) RebuildDesignedFormSharedFont();
 	this->InvalidateVisual();
 }
 
@@ -372,24 +651,16 @@ void DesignerCanvas::RebuildDesignedFormSharedFont()
 void DesignerCanvas::Update()
 {
 	if (this->IsVisual == false) return;
-	if (!this->ParentForm) return;
 
-	// TabControl 切页会隐藏旧 TabPage：若当前选中控件变为不可见，需要清除选中，避免残留选框。
-	auto isEffectivelyVisible = [&](Control* c) -> bool {
-		while (c && c != this)
-		{
-			if (!c->Visible) return false;
-			c = c->Parent;
-		}
-		return true;
-	};
+	// 自身 Visible=false 在设计期仍需保持可选，否则用户无法再把它改回 true。
+	// 只在不可见祖先（例如未激活 TabPage）真正遮蔽目标时移除选择。
 	bool selectionChangedByVisibility = false;
 	if (!_selectedControls.empty())
 	{
 		auto it = std::remove_if(_selectedControls.begin(), _selectedControls.end(),
 			[&](const std::shared_ptr<DesignerControl>& dc) {
 				if (!dc || !dc->ControlInstance) return true;
-				if (!isEffectivelyVisible(dc->ControlInstance))
+				if (!HasVisibleDesignerAncestors(dc->ControlInstance))
 				{
 					dc->IsSelected = false;
 					selectionChangedByVisibility = true;
@@ -408,6 +679,7 @@ void DesignerCanvas::Update()
 			OnControlSelected(_selectedControl);
 		}
 	}
+	if (!this->ParentForm) return;
 
 	auto d2d = this->ParentForm->Render;
 	auto absoluteLocation = this->AbsLocation;
@@ -545,6 +817,40 @@ void DesignerCanvas::Update()
 			auto canvasAbs = this->AbsLocation;
 			d2d->PushDrawRect((float)(canvasAbs.x + finalClip.left), (float)(canvasAbs.y + finalClip.top),
 				(float)(finalClip.right - finalClip.left), (float)(finalClip.bottom - finalClip.top));
+
+			// 运行时不绘制 Visible=false 控件；Designer 叠加一个可命中的
+			// 半透明占位，使它可被选中并恢复 Visible。
+			for (const auto& dc : _designerControls)
+			{
+				if (!dc || dc->Type == UIClass::UI_TabPage
+					|| !dc->ControlInstance
+					|| dc->ControlInstance->Visible
+					|| !HasVisibleDesignerAncestors(dc->ControlInstance))
+					continue;
+				const auto rect = GetControlRectInCanvas(dc->ControlInstance);
+				const float width = static_cast<float>(rect.right - rect.left);
+				const float height = static_cast<float>(rect.bottom - rect.top);
+				if (width <= 0.0f || height <= 0.0f) continue;
+				const float x = static_cast<float>(canvasAbs.x + rect.left);
+				const float y = static_cast<float>(canvasAbs.y + rect.top);
+				auto fill = Colors::DarkOrange;
+				fill.a = 0.12f;
+				auto border = Colors::DarkOrange;
+				border.a = 0.9f;
+				d2d->FillRect(x, y, width, height, fill);
+				d2d->DrawRect(x, y, width, height, border, 1.5f);
+				d2d->DrawLine(x, y, x + width, y + height, border, 1.0f);
+				d2d->DrawLine(x + width, y, x, y + height, border, 1.0f);
+				if (width >= 54.0f && height >= 18.0f)
+				{
+					auto* font = _designedFormSharedFont
+						? _designedFormSharedFont : GetDefaultFontObject();
+					if (font)
+						d2d->DrawString(
+							dc->Name + L" (Hidden)",
+							x + 4.0f, y + 2.0f, border, font);
+				}
+			}
 
 			// 参考线（拖拽/缩放期间）
 			if ((_isDragging || _isResizing) && (!_vGuides.empty() || !_hGuides.empty()))
@@ -828,19 +1134,1045 @@ std::vector<std::wstring> DesignerCanvas::CaptureSelectionNames() const
 	return _selectionService->CaptureNames(_selectedControls);
 }
 
-bool DesignerCanvas::ExecuteCommand(std::unique_ptr<IDesignerCommand> command)
+bool DesignerCanvas::HasActiveDeltaInteraction() const noexcept
 {
-	return _commandCoordinator ? _commandCoordinator->Execute(std::move(command)) : false;
+	return static_cast<bool>(_activePlacementInteraction)
+		|| static_cast<bool>(_activePropertyInteraction);
 }
 
-bool DesignerCanvas::UndoCommand()
+DesignerDocumentTransactionResult DesignerCanvas::ExecuteCommand(
+	std::unique_ptr<IDesignerCommand> command)
 {
-	return _commandCoordinator ? _commandCoordinator->Undo() : false;
+	const auto label = command ? command->GetLabel() : std::wstring{};
+	auto result = ExecuteCommandCore(std::move(command));
+	PublishCanvasCommandResult(L"ExecuteCommand", label, result);
+	return result;
 }
 
-bool DesignerCanvas::RedoCommand()
+DesignerDocumentTransactionResult DesignerCanvas::ExecuteCommandCore(
+	std::unique_ptr<IDesignerCommand> command)
 {
-	return _commandCoordinator ? _commandCoordinator->Redo() : false;
+	return HasActiveDeltaInteraction()
+		? DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"画布差量预览进行中，不能执行其他文档命令。")
+		: _commandCoordinator
+		? _commandCoordinator->Execute(std::move(command))
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"文档命令协调器不可用。", false);
+}
+
+DesignerDocumentTransactionResult DesignerCanvas::CommitAlreadyAppliedCommand(
+	std::unique_ptr<IDesignerCommand> command)
+{
+	return HasActiveDeltaInteraction()
+		? DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"画布差量预览进行中，不能提交其他文档命令。")
+		: _commandCoordinator
+		? _commandCoordinator->Execute(std::move(command))
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"文档命令协调器不可用。", false);
+}
+
+DesignerDocumentTransactionResult DesignerCanvas::UndoCommand()
+{
+	const auto label = _commandCoordinator
+		? _commandCoordinator->GetUndoLabel() : std::wstring{};
+	auto result = HasActiveDeltaInteraction()
+		? DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"画布差量预览进行中，不能撤销。")
+		: _commandCoordinator
+		? _commandCoordinator->Undo()
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"文档命令协调器不可用。", false);
+	PublishCanvasCommandResult(L"Undo", label, result);
+	return result;
+}
+
+DesignerDocumentTransactionResult DesignerCanvas::RedoCommand()
+{
+	const auto label = _commandCoordinator
+		? _commandCoordinator->GetRedoLabel() : std::wstring{};
+	auto result = HasActiveDeltaInteraction()
+		? DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"画布差量预览进行中，不能重做。")
+		: _commandCoordinator
+		? _commandCoordinator->Redo()
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"文档命令协调器不可用。", false);
+	PublishCanvasCommandResult(L"Redo", label, result);
+	return result;
+}
+
+bool DesignerCanvas::IsDocumentDirty() const noexcept
+{
+	return _commandCoordinator
+		&& _commandCoordinator->IsDocumentDirty();
+}
+
+uint64_t DesignerCanvas::GetCurrentDocumentStateId() const noexcept
+{
+	return _commandCoordinator
+		? _commandCoordinator->GetCurrentDocumentStateId() : 0;
+}
+
+uint64_t DesignerCanvas::GetSavedDocumentStateId() const noexcept
+{
+	return _commandCoordinator
+		? _commandCoordinator->GetSavedDocumentStateId() : 0;
+}
+
+void DesignerCanvas::SetCommandHistoryMemoryLimit(size_t byteLimit)
+{
+	if (_commandCoordinator)
+		_commandCoordinator->SetHistoryMemoryLimit(byteLimit);
+}
+
+size_t DesignerCanvas::GetCommandHistoryMemoryLimit() const noexcept
+{
+	return _commandCoordinator
+		? _commandCoordinator->GetHistoryMemoryLimit() : 0;
+}
+
+size_t DesignerCanvas::GetCommandHistoryMemoryUsage() const noexcept
+{
+	return _commandCoordinator
+		? _commandCoordinator->GetHistoryMemoryUsage() : 0;
+}
+
+size_t DesignerCanvas::GetUndoCommandCount() const noexcept
+{
+	return _commandCoordinator
+		? _commandCoordinator->GetUndoCount() : 0;
+}
+
+size_t DesignerCanvas::GetRedoCommandCount() const noexcept
+{
+	return _commandCoordinator
+		? _commandCoordinator->GetRedoCount() : 0;
+}
+
+DesignerDocumentTransactionResult DesignerCanvas::MarkDocumentSaved()
+{
+	if (!_commandCoordinator)
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"文档命令协调器不可用。", false);
+	if (HasActiveDeltaInteraction())
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"画布差量预览进行中，不能标记保存点。");
+	return _commandCoordinator->MarkDocumentSaved();
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::ResetDocumentHistoryAsSaved()
+{
+	if (!_commandCoordinator)
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"文档命令协调器不可用。", false);
+	if (HasActiveDeltaInteraction())
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"画布差量预览进行中，不能重置历史。");
+	return _commandCoordinator->ResetHistoryAsSaved();
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::ResetDocumentHistoryAsUnsaved()
+{
+	if (!_commandCoordinator)
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"文档命令协调器不可用。", false);
+	if (HasActiveDeltaInteraction())
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"画布差量预览进行中，不能重置历史。");
+	return _commandCoordinator->ResetHistoryAsUnsaved();
+}
+
+bool DesignerCanvas::HasActiveDocumentTransaction() const noexcept
+{
+	return HasActiveDeltaInteraction() || (_commandCoordinator
+		&& _commandCoordinator->HasActiveDocumentTransaction());
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::ExecuteDocumentEditTransaction(
+	const std::wstring& label,
+	const std::function<bool(std::wstring& error)>& applyChange)
+{
+	if (!_commandCoordinator)
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"文档命令协调器不可用。", false);
+	if (HasActiveDeltaInteraction())
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"画布差量预览进行中，不能开始文档事务。");
+	return _commandCoordinator->ExecuteDocumentTransaction(
+		label, applyChange);
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::BeginDocumentEditTransaction(
+	const std::wstring& label)
+{
+	if (!_commandCoordinator)
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"文档命令协调器不可用。", false);
+	if (HasActiveDeltaInteraction())
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"画布差量预览进行中，不能开始文档事务。");
+	return _commandCoordinator->BeginDocumentTransaction(label);
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::CommitDocumentEditTransaction()
+{
+	if (!_commandCoordinator)
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"文档命令协调器不可用。", false);
+	if (HasActiveDeltaInteraction())
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"画布差量预览进行中，不能提交其他文档事务。");
+	return _commandCoordinator->CommitDocumentTransaction();
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::RollbackDocumentEditTransaction()
+{
+	if (!_commandCoordinator)
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"文档命令协调器不可用。", false);
+	if (HasActiveDeltaInteraction())
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"画布差量预览进行中，不能回滚其他文档事务。");
+	return _commandCoordinator->RollbackDocumentTransaction();
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::CancelDocumentEditTransaction()
+{
+	if (!_commandCoordinator)
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"文档命令协调器不可用。", false);
+	if (HasActiveDeltaInteraction())
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"画布差量预览进行中，不能取消其他文档事务。");
+	return _commandCoordinator->CancelDocumentTransaction();
+}
+
+bool DesignerCanvas::BeginCanvasInteractionTransaction(
+	const std::wstring& operation)
+{
+	if (HasActiveDeltaInteraction())
+	{
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"另一个画布差量预览正在进行。");
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return false;
+	}
+	if (!_activeInteractionTransaction.empty())
+	{
+		if (_activeInteractionTransaction == operation) return true;
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"另一个画布交互事务正在进行。");
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return false;
+	}
+
+	auto result = BeginDocumentEditTransaction(operation);
+	if (!result)
+	{
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return false;
+	}
+	_activeInteractionTransaction = operation;
+	return true;
+}
+
+bool DesignerCanvas::BeginPlacementInteraction(
+	const std::wstring& operation)
+{
+	if (_activePropertyInteraction)
+	{
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"另一个画布属性预览正在进行。");
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return false;
+	}
+	if (_activePlacementInteraction)
+	{
+		if (_activePlacementInteraction->Operation == operation) return true;
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"另一个画布位置交互正在进行。");
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return false;
+	}
+	if (!_activeInteractionTransaction.empty())
+	{
+		if (_activeInteractionTransaction == operation) return true;
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"另一个画布交互事务正在进行。");
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return false;
+	}
+	if (_commandCoordinator
+		&& _commandCoordinator->HasActiveDocumentTransaction())
+	{
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"另一个文档事务正在进行，不能开始位置预览。");
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return false;
+	}
+
+	DesignerControlPlacementSnapshot before;
+	std::wstring captureError;
+	if (ControlPlacementCommand::Capture(
+		this, _selectedControls, before, &captureError))
+	{
+		try
+		{
+			auto interaction =
+				std::make_unique<DesignerCanvasPlacementInteraction>();
+			interaction->Operation = operation;
+			interaction->Before = std::move(before);
+			interaction->BeforeSelectionNames = CaptureSelectionNames();
+			interaction->BeforePrimarySelectionName = _selectedControl
+				? _selectedControl->Name : std::wstring{};
+			_activePlacementInteraction = std::move(interaction);
+			return true;
+		}
+		catch (...)
+		{
+			captureError = L"无法分配位置差量预览状态。";
+		}
+	}
+
+	// Unknown/custom parent structures remain compatible through the strict
+	// full-document transaction until they gain an explicit parent locator.
+	auto fallback = BeginDocumentEditTransaction(operation);
+	if (!fallback)
+	{
+		if (!captureError.empty())
+			fallback.Error = L"无法建立位置差量（" + captureError
+				+ L"），完整文档事务也失败：" + fallback.Error;
+		PublishCanvasInteractionTransactionResult(operation, fallback);
+		return false;
+	}
+	_activeInteractionTransaction = operation;
+	return true;
+}
+
+bool DesignerCanvas::BeginControlPropertyInteraction(
+	const std::wstring& operation,
+	const std::shared_ptr<DesignerControl>& target,
+	const std::wstring& propertyName)
+{
+	if (_activePropertyInteraction)
+	{
+		const auto& before = _activePropertyInteraction->Before;
+		if (_activePropertyInteraction->Operation == operation
+			&& before.PropertyName == propertyName
+			&& before.Targets.size() == 1
+			&& target
+			&& before.Targets.front().TargetName == target->Name
+			&& before.Targets.front().TargetType == target->Type)
+			return true;
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"另一个画布属性预览正在进行。");
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return false;
+	}
+	if (_activePlacementInteraction || !_activeInteractionTransaction.empty()
+		|| (_commandCoordinator
+			&& _commandCoordinator->HasActiveDocumentTransaction()))
+	{
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"另一个画布或文档事务正在进行，不能开始属性预览。");
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return false;
+	}
+	if (!target || !target->ControlInstance || propertyName.empty())
+	{
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"属性预览目标已经失效。", false);
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return false;
+	}
+
+	PropertyGridBinder binder;
+	binder.SetCanvas(this);
+	binder.BindControl(target);
+	DesignerPropertyBatchSnapshot before;
+	std::wstring error;
+	bool captured = false;
+	try
+	{
+		captured = binder.CaptureControlPropertySnapshot(
+			propertyName, before, &error);
+	}
+	catch (...)
+	{
+		error = L"捕获属性预览起点时抛出异常。";
+	}
+	if (!captured)
+	{
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"无法捕获属性预览起点：" + error, false);
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return false;
+	}
+	try
+	{
+		auto interaction =
+			std::make_unique<DesignerCanvasPropertyInteraction>();
+		interaction->Operation = operation;
+		interaction->Before = std::move(before);
+		interaction->BeforeSelectionNames = CaptureSelectionNames();
+		interaction->BeforePrimarySelectionName = _selectedControl
+			? _selectedControl->Name : std::wstring{};
+		_activePropertyInteraction = std::move(interaction);
+		return true;
+	}
+	catch (...)
+	{
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"无法分配属性差量预览状态。", false);
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return false;
+	}
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::CommitCanvasInteractionTransaction()
+{
+	if (_activePropertyInteraction)
+		return CommitControlPropertyInteraction();
+	if (_activePlacementInteraction)
+		return CommitPlacementInteraction();
+	if (_activeInteractionTransaction.empty())
+		return DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+	const auto operation = std::move(_activeInteractionTransaction);
+	_activeInteractionTransaction.clear();
+	auto result = CommitDocumentEditTransaction();
+	PublishCanvasInteractionTransactionResult(operation, result);
+	return result;
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::CommitControlPropertyInteraction()
+{
+	if (!_activePropertyInteraction)
+		return DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+	auto interaction = std::move(_activePropertyInteraction);
+	const auto operation = interaction->Operation;
+	DesignerPropertyBatchSnapshot after;
+	std::wstring error;
+	if (!CapturePropertySnapshot(this, interaction->Before, after, &error))
+	{
+		std::wstring restoreError;
+		const bool restored = RestorePropertySnapshot(
+			this, interaction->Before, &restoreError);
+		RestoreSelectionByNames(
+			interaction->BeforeSelectionNames,
+			interaction->BeforePrimarySelectionName, true);
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"无法捕获属性交互终点：" + error
+				+ (restored ? L"" : L" 起点恢复失败：" + restoreError),
+			restored);
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return result;
+	}
+	const auto afterSelectionNames = CaptureSelectionNames();
+	const auto afterPrimarySelectionName = _selectedControl
+		? _selectedControl->Name : std::wstring{};
+	if (interaction->Before.EquivalentTo(after)
+		&& interaction->BeforeSelectionNames == afterSelectionNames
+		&& interaction->BeforePrimarySelectionName
+			== afterPrimarySelectionName)
+	{
+		auto result = DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return result;
+	}
+
+	DesignerDocumentTransactionResult result;
+	try
+	{
+		auto command = std::make_unique<ControlPropertyCommand>(
+			this,
+			interaction->Before,
+			std::move(after),
+			interaction->BeforeSelectionNames,
+			afterSelectionNames,
+			interaction->BeforePrimarySelectionName,
+			afterPrimarySelectionName,
+			operation,
+			true,
+			false);
+		result = CommitAlreadyAppliedCommand(std::move(command));
+	}
+	catch (...)
+	{
+		result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"无法创建属性交互历史命令。", false);
+	}
+	if (!result)
+	{
+		std::wstring restoreError;
+		const bool restored = RestorePropertySnapshot(
+			this, interaction->Before, &restoreError);
+		RestoreSelectionByNames(
+			interaction->BeforeSelectionNames,
+			interaction->BeforePrimarySelectionName, true);
+		result.DocumentRestored = restored;
+		if (!restored)
+			result.Error += L" 属性交互起点恢复失败：" + restoreError;
+	}
+	PublishCanvasInteractionTransactionResult(operation, result);
+	return result;
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::CommitPlacementInteraction()
+{
+	if (!_activePlacementInteraction)
+		return DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+	auto interaction = std::move(_activePlacementInteraction);
+	const auto operation = interaction->Operation;
+	DesignerControlPlacementSnapshot after;
+	std::wstring error;
+	if (!ControlPlacementCommand::Capture(
+		this, _selectedControls, after, &error))
+	{
+		std::wstring restoreError;
+		const bool restored = ControlPlacementCommand::Restore(
+			this, interaction->Before, &restoreError);
+		RestoreSelectionByNames(
+			interaction->BeforeSelectionNames,
+			interaction->BeforePrimarySelectionName, true);
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"无法捕获位置交互终点：" + error
+				+ (restored ? L"" : L" 起点恢复失败：" + restoreError),
+			restored);
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return result;
+	}
+	bool compatibleTargets = interaction->Before.Targets.size()
+		== after.Targets.size();
+	for (size_t index = 0;
+		compatibleTargets && index < after.Targets.size(); ++index)
+	{
+		compatibleTargets = interaction->Before.Targets[index].TargetName
+				== after.Targets[index].TargetName
+			&& interaction->Before.Targets[index].TargetType
+				== after.Targets[index].TargetType;
+	}
+	if (!compatibleTargets)
+	{
+		std::wstring restoreError;
+		const bool restored = ControlPlacementCommand::Restore(
+			this, interaction->Before, &restoreError);
+		RestoreSelectionByNames(
+			interaction->BeforeSelectionNames,
+			interaction->BeforePrimarySelectionName, true);
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"位置交互期间目标集合发生变化。"
+				+ (restored ? L"" : L" 起点恢复失败：" + restoreError),
+			restored);
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return result;
+	}
+	const auto afterSelectionNames = CaptureSelectionNames();
+	const auto afterPrimarySelectionName = _selectedControl
+		? _selectedControl->Name : std::wstring{};
+	if (interaction->Before.EquivalentTo(after)
+		&& interaction->BeforeSelectionNames == afterSelectionNames
+		&& interaction->BeforePrimarySelectionName
+			== afterPrimarySelectionName)
+	{
+		auto result = DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+		PublishCanvasInteractionTransactionResult(operation, result);
+		return result;
+	}
+
+	DesignerDocumentTransactionResult result;
+	try
+	{
+		auto command = std::make_unique<ControlPlacementCommand>(
+			this,
+			interaction->Before,
+			std::move(after),
+			interaction->BeforeSelectionNames,
+			afterSelectionNames,
+			interaction->BeforePrimarySelectionName,
+			afterPrimarySelectionName,
+			operation,
+			true);
+		result = CommitAlreadyAppliedCommand(std::move(command));
+	}
+	catch (...)
+	{
+		result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"无法创建位置交互历史命令。", false);
+	}
+	if (!result)
+	{
+		std::wstring restoreError;
+		const bool restored = ControlPlacementCommand::Restore(
+			this, interaction->Before, &restoreError);
+		RestoreSelectionByNames(
+			interaction->BeforeSelectionNames,
+			interaction->BeforePrimarySelectionName, true);
+		result.DocumentRestored = restored;
+		if (!restored)
+			result.Error += L" 位置交互起点恢复失败：" + restoreError;
+	}
+	PublishCanvasInteractionTransactionResult(operation, result);
+	return result;
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::RollbackCanvasInteractionTransaction(std::wstring message)
+{
+	if (_activePropertyInteraction)
+		return RollbackControlPropertyInteraction(std::move(message));
+	if (_activePlacementInteraction)
+		return RollbackPlacementInteraction(std::move(message));
+	if (_activeInteractionTransaction.empty())
+		return DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+	const auto operation = std::move(_activeInteractionTransaction);
+	_activeInteractionTransaction.clear();
+	auto result = RollbackDocumentEditTransaction();
+	PublishCanvasInteractionTransactionResult(
+		operation, result, std::move(message));
+	return result;
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::RollbackControlPropertyInteraction(std::wstring message)
+{
+	if (!_activePropertyInteraction)
+		return DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+	auto interaction = std::move(_activePropertyInteraction);
+	std::wstring error;
+	const bool restored = RestorePropertySnapshot(
+		this, interaction->Before, &error);
+	RestoreSelectionByNames(
+		interaction->BeforeSelectionNames,
+		interaction->BeforePrimarySelectionName, true);
+	auto result = restored
+		? DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::RolledBack)
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"属性交互回滚失败：" + error, false);
+	PublishCanvasInteractionTransactionResult(
+		interaction->Operation, result, std::move(message));
+	return result;
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::RollbackPlacementInteraction(std::wstring message)
+{
+	if (!_activePlacementInteraction)
+		return DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+	auto interaction = std::move(_activePlacementInteraction);
+	std::wstring error;
+	const bool restored = ControlPlacementCommand::Restore(
+		this, interaction->Before, &error);
+	RestoreSelectionByNames(
+		interaction->BeforeSelectionNames,
+		interaction->BeforePrimarySelectionName, true);
+	auto result = restored
+		? DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::RolledBack)
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"位置交互回滚失败：" + error, false);
+	PublishCanvasInteractionTransactionResult(
+		interaction->Operation, result, std::move(message));
+	return result;
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::AbortCanvasInteractionTransaction(std::wstring error)
+{
+	if (_activePropertyInteraction)
+		return AbortControlPropertyInteraction(std::move(error));
+	if (_activePlacementInteraction)
+		return AbortPlacementInteraction(std::move(error));
+	if (error.empty()) error = L"画布交互修改被拒绝。";
+	const auto operation = _activeInteractionTransaction.empty()
+		? CurrentPointerInteractionOperation()
+		: _activeInteractionTransaction;
+	DesignerDocumentTransactionResult rollback =
+		DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+	if (!_activeInteractionTransaction.empty())
+	{
+		_activeInteractionTransaction.clear();
+		rollback = RollbackDocumentEditTransaction();
+	}
+	if (!rollback)
+		error += L" " + rollback.Error;
+	auto result = DesignerDocumentTransactionResult::Failure(
+		DesignerDocumentTransactionState::Aborted,
+		std::move(error), rollback.Succeeded());
+	PublishCanvasInteractionTransactionResult(operation, result);
+	return result;
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::AbortControlPropertyInteraction(std::wstring error)
+{
+	if (error.empty()) error = L"画布属性交互修改被拒绝。";
+	if (!_activePropertyInteraction)
+	{
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Aborted,
+			std::move(error));
+		PublishCanvasInteractionTransactionResult(
+			CurrentPointerInteractionOperation(), result);
+		return result;
+	}
+	auto interaction = std::move(_activePropertyInteraction);
+	std::wstring restoreError;
+	const bool restored = RestorePropertySnapshot(
+		this, interaction->Before, &restoreError);
+	RestoreSelectionByNames(
+		interaction->BeforeSelectionNames,
+		interaction->BeforePrimarySelectionName, true);
+	if (!restored)
+		error += L" 属性交互起点恢复失败：" + restoreError;
+	auto result = DesignerDocumentTransactionResult::Failure(
+		DesignerDocumentTransactionState::Aborted,
+		std::move(error), restored);
+	PublishCanvasInteractionTransactionResult(
+		interaction->Operation, result);
+	return result;
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::AbortPlacementInteraction(std::wstring error)
+{
+	if (error.empty()) error = L"画布位置交互修改被拒绝。";
+	if (!_activePlacementInteraction)
+	{
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Aborted,
+			std::move(error));
+		PublishCanvasInteractionTransactionResult(
+			CurrentPointerInteractionOperation(), result);
+		return result;
+	}
+	auto interaction = std::move(_activePlacementInteraction);
+	std::wstring restoreError;
+	const bool restored = ControlPlacementCommand::Restore(
+		this, interaction->Before, &restoreError);
+	RestoreSelectionByNames(
+		interaction->BeforeSelectionNames,
+		interaction->BeforePrimarySelectionName, true);
+	if (!restored)
+		error += L" 位置交互起点恢复失败：" + restoreError;
+	auto result = DesignerDocumentTransactionResult::Failure(
+		DesignerDocumentTransactionState::Aborted,
+		std::move(error), restored);
+	PublishCanvasInteractionTransactionResult(
+		interaction->Operation, result);
+	return result;
+}
+
+void DesignerCanvas::PublishCanvasInteractionTransactionResult(
+	const std::wstring& operation,
+	const DesignerDocumentTransactionResult& result,
+	std::wstring message)
+{
+	_lastInteractionTransaction = operation;
+	_lastInteractionTransactionResult = result;
+	_hasInteractionTransactionResult = true;
+	DesignerCanvasInteractionTransactionEventArgs args{
+		operation, std::move(message), result
+	};
+	OnInteractionTransactionCompleted(args);
+}
+
+void DesignerCanvas::PublishCanvasCommandResult(
+	const std::wstring& operation,
+	const std::wstring& label,
+	const DesignerDocumentTransactionResult& result,
+	std::wstring message)
+{
+	_lastCommandOperation = operation;
+	_lastCommandLabel = label;
+	_lastCommandResult = result;
+	_hasCommandResult = true;
+	DesignerCanvasCommandEventArgs args{
+		operation, label, std::move(message), result
+	};
+	OnCommandCompleted(args);
+}
+
+void DesignerCanvas::NotifyDocumentStateChanged()
+{
+	DesignerCanvasDocumentStateEventArgs args{
+		GetCurrentDocumentStateId(),
+		GetSavedDocumentStateId(),
+		IsDocumentDirty()
+	};
+	OnDocumentStateChanged(args);
+}
+
+std::wstring DesignerCanvas::CurrentPointerInteractionOperation() const
+{
+	if (_activePropertyInteraction)
+		return _activePropertyInteraction->Operation;
+	if (_activePlacementInteraction)
+		return _activePlacementInteraction->Operation;
+	if (!_activeInteractionTransaction.empty())
+		return _activeInteractionTransaction;
+	if (_isSplitterDragging) return L"UpdateProperty:SplitterDistance";
+	if (_isResizing) return L"ResizeSelection";
+	if (_isDragging) return L"MoveSelection";
+	if (_isBoxSelecting) return L"BoxSelection";
+	return L"CanvasInteraction";
+}
+
+void DesignerCanvas::ResetPointerInteractionState()
+{
+	_isBoxSelecting = false;
+	_boxSelectAddToSelection = false;
+	_isDragging = false;
+	_dragHasMoved = false;
+	_dragLiftedToRoot = false;
+	_dragStartItems.clear();
+	_isSplitterDragging = false;
+	_splitterDragTarget = nullptr;
+	_splitterDragStartDistance = 0;
+	_isResizing = false;
+	_resizeHandle = DesignerControl::ResizeHandle::None;
+	ClearAlignmentGuides();
+	this->Cursor = CursorKind::Arrow;
+	this->InvalidateVisual();
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::CancelActivePointerInteraction(const std::wstring& reason)
+{
+	const auto operation = CurrentPointerInteractionOperation();
+	const bool hadPointerInteraction = _isBoxSelecting || _isDragging
+		|| _isResizing || _isSplitterDragging
+		|| _activePropertyInteraction
+		|| _activePlacementInteraction
+		|| !_activeInteractionTransaction.empty();
+	ResetPointerInteractionState();
+	if (HasActiveDeltaInteraction() || !_activeInteractionTransaction.empty())
+	{
+		return RollbackCanvasInteractionTransaction(reason);
+	}
+	if (!hadPointerInteraction)
+		return DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+	auto result = DesignerDocumentTransactionResult::Success(
+		DesignerDocumentTransactionState::Canceled);
+	PublishCanvasInteractionTransactionResult(operation, result, reason);
+	return result;
+}
+
+void DesignerCanvas::ClearInteractionTransactionResult()
+{
+	_lastInteractionTransaction.clear();
+	_lastInteractionTransactionResult =
+		DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+	_hasInteractionTransactionResult = false;
+}
+
+void DesignerCanvas::ClearCommandResult()
+{
+	_lastCommandOperation.clear();
+	_lastCommandLabel.clear();
+	_lastCommandResult = DesignerDocumentTransactionResult::Success(
+		DesignerDocumentTransactionState::Unchanged);
+	_hasCommandResult = false;
+}
+
+DesignerDocumentTransactionResult
+DesignerCanvas::NudgeSelectionBy(int dx, int dy)
+{
+	if (dx == 0 && dy == 0)
+		return DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+	if (_selectedControls.empty() || !_selectedControl
+		|| !_selectedControl->ControlInstance)
+	{
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"没有可移动的选中控件。");
+		PublishCanvasInteractionTransactionResult(
+			L"MoveSelection", result);
+		return result;
+	}
+
+	DesignerControlPlacementSnapshot before;
+	std::wstring error;
+	if (!ControlPlacementCommand::Capture(
+		this, _selectedControls, before, &error))
+	{
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"无法建立微调起点：" + error);
+		PublishCanvasInteractionTransactionResult(
+			L"MoveSelection", result);
+		return result;
+	}
+	const auto beforeSelectionNames = CaptureSelectionNames();
+	const auto beforePrimarySelectionName = _selectedControl->Name;
+	try
+	{
+		BeginDragFromCurrentSelection(_dragStartPoint);
+		ApplyMoveDeltaToSelection(dx, dy);
+		for (auto& selected : _selectedControls)
+			if (selected && selected->ControlInstance)
+				ClampControlToDesignSurface(selected->ControlInstance);
+	}
+	catch (...)
+	{
+		std::wstring restoreError;
+		const bool restored = ControlPlacementCommand::Restore(
+			this, before, &restoreError);
+		ResetPointerInteractionState();
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"微调操作抛出异常。"
+				+ (restored ? L"" : L" 布局恢复失败：" + restoreError),
+			restored);
+		PublishCanvasInteractionTransactionResult(
+			L"MoveSelection", result);
+		return result;
+	}
+
+	DesignerControlPlacementSnapshot after;
+	if (!ControlPlacementCommand::Capture(
+		this, _selectedControls, after, &error))
+	{
+		std::wstring restoreError;
+		const bool restored = ControlPlacementCommand::Restore(
+			this, before, &restoreError);
+		RestoreSelectionByNames(
+			beforeSelectionNames, beforePrimarySelectionName, true);
+		ResetPointerInteractionState();
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"无法建立微调终点：" + error
+				+ (restored ? L"" : L" 布局恢复失败：" + restoreError),
+			restored);
+		PublishCanvasInteractionTransactionResult(
+			L"MoveSelection", result);
+		return result;
+	}
+	const auto afterSelectionNames = CaptureSelectionNames();
+	const auto afterPrimarySelectionName = _selectedControl
+		? _selectedControl->Name : std::wstring{};
+	if (before.EquivalentTo(after)
+		&& beforeSelectionNames == afterSelectionNames
+		&& beforePrimarySelectionName == afterPrimarySelectionName)
+	{
+		ResetPointerInteractionState();
+		auto result = DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+		PublishCanvasInteractionTransactionResult(
+			L"MoveSelection", result);
+		return result;
+	}
+
+	DesignerDocumentTransactionResult result =
+		DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"无法把微调差量加入撤销栈。", false);
+	const auto rollbackBefore = before;
+	try
+	{
+		auto command = std::make_unique<ControlPlacementCommand>(
+			this,
+			std::move(before),
+			std::move(after),
+			beforeSelectionNames,
+			afterSelectionNames,
+			beforePrimarySelectionName,
+			afterPrimarySelectionName,
+			L"NudgeSelection",
+			true);
+		result = CommitAlreadyAppliedCommand(std::move(command));
+	}
+	catch (...)
+	{
+		result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"记录微调差量时抛出异常。", false);
+	}
+	if (!result || !result.HasChanges())
+	{
+		std::wstring restoreError;
+		const bool restored = ControlPlacementCommand::Restore(
+			this, rollbackBefore, &restoreError);
+		RestoreSelectionByNames(
+			beforeSelectionNames, beforePrimarySelectionName, true);
+		result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			result.Error.empty()
+				? L"无法把微调差量加入撤销栈。"
+				: result.Error + (restored
+					? L"" : L" 布局恢复失败：" + restoreError),
+			restored);
+	}
+	ResetPointerInteractionState();
+	PublishCanvasInteractionTransactionResult(
+		L"MoveSelection", result);
+	return result;
 }
 
 Thickness DesignerCanvas::GetPaddingOfContainer(Control* container)
@@ -971,7 +2303,7 @@ void DesignerCanvas::RestoreSelectionByNames(const std::vector<std::wstring>& se
 void DesignerCanvas::NotifySelectionChangedThrottled()
 {
 	// 拖动中频繁重建 PropertyGrid 可能较重，这里做一个简单节流。
-	// Designer.cpp 已订阅 OnControlSelected 并调用 PropertyGrid::LoadControl。
+	// Designer.cpp 已订阅 OnControlSelected 并把完整选择集交给 PropertyGrid。
 	DWORD now = GetTickCount();
 	if (now - _lastPropSyncTick < 40) return; // ~25fps
 	_lastPropSyncTick = now;
@@ -993,7 +2325,7 @@ void DesignerCanvas::DrawGrid()
 
 	// 裁剪到设计面板
 	d2d->PushDrawRect(surfAbsLeft, surfAbsTop, surfW, surfH);
-	
+
 	// 绘制浅色网格
 	D2D1_COLOR_F gridColor = D2D1::ColorF(0.9f, 0.9f, 0.9f, 1.0f);
 
@@ -1426,21 +2758,21 @@ void DesignerCanvas::ClampControlToDesignSurface(Control* c)
 void DesignerCanvas::DrawSelectionHandles(std::shared_ptr<DesignerControl> dc)
 {
 	if (!dc || !dc->ControlInstance || !this->ParentForm) return;
-	
+
 	auto d2d = this->ParentForm->Render;
 	auto absoluteLocation = this->AbsLocation;
 	auto rect = GetControlRectInCanvas(dc->ControlInstance);
 	int w = rect.right - rect.left;
 	int h = rect.bottom - rect.top;
-	
+
 	// 绘制选中边框
 	float x = (float)(absoluteLocation.x + rect.left);
 	float y = (float)(absoluteLocation.y + rect.top);
 	d2d->DrawRect(x, y, (float)w, (float)h, Colors::DodgerBlue, 2.0f);
-	
+
 	// 绘制8个调整手柄
 	auto rects = GetHandleRectsFromRect(rect, 6);
-	
+
 	for (const auto& r : rects)
 	{
 		float hx = (float)(absoluteLocation.x + r.left);
@@ -1454,7 +2786,53 @@ void DesignerCanvas::DrawSelectionHandles(std::shared_ptr<DesignerControl> dc)
 
 std::shared_ptr<DesignerControl> DesignerCanvas::HitTestControl(POINT pt)
 {
-	return HitTestService::HitTestControl(this, _designerControls, pt, (GetAsyncKeyState(VK_MENU) & 0x8000) != 0);
+	const bool preferParentContainer =
+		(GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+	auto findDesigner = [&](Control* control)
+		-> std::shared_ptr<DesignerControl>
+	{
+		for (auto it = _designerControls.rbegin();
+			it != _designerControls.rend(); ++it)
+			if (*it && (*it)->ControlInstance == control) return *it;
+		return nullptr;
+	};
+
+	// 占位绘制在运行时子树之上，所以自身不可见目标也应先于
+	// 其可见父容器命中。
+	for (auto it = _designerControls.rbegin();
+		it != _designerControls.rend(); ++it)
+	{
+		const auto& dc = *it;
+		if (!dc || dc->Type == UIClass::UI_TabPage
+			|| !dc->ControlInstance || dc->ControlInstance->Visible
+			|| !HasVisibleDesignerAncestors(dc->ControlInstance))
+			continue;
+		const auto rect = GetControlRectInCanvas(dc->ControlInstance);
+		if (pt.x < rect.left || pt.x > rect.right
+			|| pt.y < rect.top || pt.y > rect.bottom)
+			continue;
+		if (preferParentContainer)
+		{
+			for (auto* parent = dc->ControlInstance->Parent;
+				parent && parent != this; parent = parent->Parent)
+				if (auto designerParent = findDesigner(parent))
+					return designerParent;
+		}
+		return dc;
+	}
+
+	return HitTestService::HitTestControl(
+		this, _designerControls, pt, preferParentContainer);
+}
+
+bool DesignerCanvas::HasVisibleDesignerAncestors(
+	Control* control) const noexcept
+{
+	if (!control) return false;
+	for (auto* ancestor = control->Parent;
+		ancestor && ancestor != this; ancestor = ancestor->Parent)
+		if (!ancestor->Visible) return false;
+	return true;
 }
 
 std::shared_ptr<DesignerControl> DesignerCanvas::HitTestSplitContainerSplitter(POINT pt) const
@@ -1549,26 +2927,31 @@ int DesignerCanvas::ClampSplitContainerDistance(SplitContainer* split, int value
 	return (std::clamp)(value, split->Panel1MinSize, maxDistance);
 }
 
-void DesignerCanvas::UpdateSplitContainerPreview(SplitContainer* split, int splitterDistance)
+bool DesignerCanvas::UpdateSplitContainerPreview(
+	SplitContainer* split,
+	int splitterDistance,
+	std::wstring* outError)
 {
 	if (!split)
 	{
-		return;
+		if (outError) *outError = L"分隔条目标已经失效。";
+		return false;
 	}
 
 	const int effectiveDistance = ClampSplitContainerDistance(split, splitterDistance);
 	for (const auto& designerControl : _designerControls)
 	{
 		if (!designerControl || designerControl->ControlInstance != split) continue;
-		if (ApplyTrackedMetadataProperty(
+		return ApplyTrackedMetadataProperty(
 			*designerControl,
 			*split,
 			L"SplitterDistance",
 			{ DesignerStyleValueKind::Int, std::to_wstring(effectiveDistance) },
-			false)) return;
-		break;
+			false,
+			outError);
 	}
-	split->SetSplitterDistance(effectiveDistance);
+	if (outError) *outError = L"找不到分隔条的设计器模型。";
+	return false;
 }
 
 std::vector<RECT> DesignerCanvas::GetHandleRectsFromRect(const RECT& r, int handleSize)
@@ -1791,10 +3174,10 @@ CursorKind DesignerCanvas::GetSplitContainerSplitterCursor(SplitContainer* split
 bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable) return false;
-	
+
 	// Note: localX/localY are already local coordinates relative to this canvas.
 	POINT mousePos = { localX, localY };
-	
+
 	switch (message)
 	{
 	case WM_KEYDOWN:
@@ -1804,25 +3187,30 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			const bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 			if (wParam == 'Z' && !shiftDown)
 			{
-				if (UndoCommand())
-				{
-					return true;
-				}
+				(void)UndoCommand();
+				return true;
 			}
 			else if (wParam == 'Y' || (wParam == 'Z' && shiftDown))
 			{
-				if (RedoCommand())
-				{
-					return true;
-				}
+				(void)RedoCommand();
+				return true;
 			}
 		}
 
 		// 设计器模式下，把键盘操作收敛到画布
 		if (wParam == VK_ESCAPE)
 		{
+			if (_isBoxSelecting || _isDragging || _isResizing
+				|| _isSplitterDragging
+				|| HasActiveDeltaInteraction()
+				|| !_activeInteractionTransaction.empty())
+			{
+				(void)CancelActivePointerInteraction(
+					L"已通过 Escape 取消画布交互。");
+				return true;
+			}
 			// 取消“点击添加控件”模式
-			_controlToAdd = UIClass::UI_Base;
+			_controlToAdd.reset();
 			this->Cursor = CursorKind::Arrow;
 			return true;
 		}
@@ -1886,18 +3274,35 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		(void)shift;
 		if (dx != 0 || dy != 0)
 		{
-			if (_commandCoordinator) _commandCoordinator->BeginInteractionSnapshot(L"MoveSelection");
-			BeginDragFromCurrentSelection(_dragStartPoint);
-			ApplyMoveDeltaToSelection(dx, dy);
-			// 根级控件约束
-			for (auto& sdc : _selectedControls)
-				if (sdc && sdc->ControlInstance) ClampControlToDesignSurface(sdc->ControlInstance);
-			if (_commandCoordinator) _commandCoordinator->CommitInteractionSnapshot();
-			_isDragging = false;
-			_dragHasMoved = false;
-			_dragLiftedToRoot = false;
-			_dragStartItems.clear();
-			ClearAlignmentGuides();
+			(void)NudgeSelectionBy(dx, dy);
+			return true;
+		}
+		break;
+	}
+	case WM_LBUTTONDBLCLK:
+	{
+		if (_controlToAdd) return true;
+		auto hitControl = HitTestControl(mousePos);
+		if (hitControl)
+		{
+			if (!IsSelected(hitControl) || _selectedControls.size() != 1)
+			{
+				ClearSelection();
+				AddToSelection(hitControl, true, true);
+			}
+			else
+			{
+				SetPrimarySelection(hitControl, true);
+			}
+			OnDefaultEventRequested(hitControl);
+			this->InvalidateVisual();
+			return true;
+		}
+		if (IsPointInDesignSurface(mousePos))
+		{
+			ClearSelection();
+			OnControlSelected(nullptr);
+			OnDefaultEventRequested(nullptr);
 			this->InvalidateVisual();
 			return true;
 		}
@@ -1912,11 +3317,11 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		}
 
 		// 如果有待添加的控件，点击时添加（必须在设计面板内）
-		if (_controlToAdd != UIClass::UI_Base)
+		if (_controlToAdd)
 		{
 			if (IsPointInDesignSurface(mousePos))
-				AddControlToCanvas(_controlToAdd, mousePos);
-			_controlToAdd = UIClass::UI_Base;
+				AddControlToCanvas(*_controlToAdd, mousePos);
+			_controlToAdd.reset();
 			this->Cursor = CursorKind::Arrow;
 			return true;
 		}
@@ -1969,7 +3374,7 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 				return true;
 			}
 		}
-		
+
 		// 检查是否点击主选中手柄（仅单选/主选中可调整大小）
 		if (_selectedControl && _selectedControls.size() == 1)
 		{
@@ -2007,7 +3412,7 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			this->Cursor = GetSplitContainerSplitterCursor(split);
 			return true;
 		}
-		
+
 		bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 		ClearAlignmentGuides();
 		// 选中控件
@@ -2079,12 +3484,52 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			int dx = mousePos.x - _splitterDragStartPoint.x;
 			int dy = mousePos.y - _splitterDragStartPoint.y;
 			int delta = _splitterDragTarget->SplitOrientation == Orientation::Horizontal ? dx : dy;
-			if (delta != 0)
+			if (delta == 0)
 			{
-				if (_commandCoordinator) _commandCoordinator->BeginInteractionSnapshot(L"UpdateProperty:SplitterDistance");
+				this->Cursor = GetSplitContainerSplitterCursor(
+					_splitterDragTarget);
+				return true;
+			}
+			std::shared_ptr<DesignerControl> splitterControl;
+			for (const auto& candidate : _designerControls)
+			{
+				if (candidate
+					&& candidate->ControlInstance == _splitterDragTarget)
+				{
+					splitterControl = candidate;
+					break;
+				}
+			}
+			if (!BeginControlPropertyInteraction(
+				L"UpdateProperty:SplitterDistance",
+				splitterControl,
+				L"SplitterDistance"))
+			{
+				ResetPointerInteractionState();
+				return true;
 			}
 
-			UpdateSplitContainerPreview(_splitterDragTarget, _splitterDragStartDistance + delta);
+			std::wstring previewError;
+			try
+			{
+				if (!UpdateSplitContainerPreview(
+					_splitterDragTarget,
+					_splitterDragStartDistance + delta,
+					&previewError))
+				{
+					(void)AbortCanvasInteractionTransaction(
+						std::move(previewError));
+					ResetPointerInteractionState();
+					return true;
+				}
+			}
+			catch (...)
+			{
+				(void)AbortCanvasInteractionTransaction(
+					L"分隔条预览 setter 抛出异常。");
+				ResetPointerInteractionState();
+				return true;
+			}
 			NotifySelectionChangedThrottled();
 			this->Cursor = GetSplitContainerSplitterCursor(_splitterDragTarget);
 			return true;
@@ -2095,84 +3540,128 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 		{
 			int rawDx = mousePos.x - _dragStartPoint.x;
 			int rawDy = mousePos.y - _dragStartPoint.y;
-			if (rawDx != 0 || rawDy != 0)
+			if (rawDx == 0 && rawDy == 0)
 			{
-				if (_commandCoordinator) _commandCoordinator->BeginInteractionSnapshot(L"MoveSelection");
+				this->Cursor = CursorKind::SizeAll;
+				return true;
 			}
-			if (!_dragHasMoved && (std::abs(rawDx) >= _dragStartThreshold || std::abs(rawDy) >= _dragStartThreshold))
+			if (!BeginPlacementInteraction(L"MoveSelection"))
 			{
-				_dragHasMoved = true;
-				// 若原先在布局容器内，先抬升到根设计面，才能拖出容器边界
-				if (_selectedControls.size() == 1)
-					LiftSelectedToRootForDrag();
+				ResetPointerInteractionState();
+				return true;
 			}
-			Control* refParent = (_selectedControl && _selectedControl->ControlInstance) ? _selectedControl->ControlInstance->Parent : (_clientSurface ? (Control*)_clientSurface : (Control*)_designSurface);
-			RECT desired = _dragStartRectInCanvas;
-			desired.left += rawDx; desired.right += rawDx;
-			desired.top += rawDy; desired.bottom += rawDy;
-			desired = ApplyMoveSnap(desired, refParent);
-			int dx = desired.left - _dragStartRectInCanvas.left;
-			int dy = desired.top - _dragStartRectInCanvas.top;
-			ApplyMoveDeltaToSelection(dx, dy);
+			try
+			{
+				if (!_dragHasMoved
+					&& (std::abs(rawDx) >= _dragStartThreshold
+						|| std::abs(rawDy) >= _dragStartThreshold))
+				{
+					_dragHasMoved = true;
+					// 若原先在布局容器内，先抬升到根设计面，才能拖出容器边界
+					if (_selectedControls.size() == 1)
+						LiftSelectedToRootForDrag();
+				}
+				Control* refParent = (_selectedControl
+					&& _selectedControl->ControlInstance)
+					? _selectedControl->ControlInstance->Parent
+					: (_clientSurface ? static_cast<Control*>(_clientSurface)
+						: static_cast<Control*>(_designSurface));
+				RECT desired = _dragStartRectInCanvas;
+				desired.left += rawDx; desired.right += rawDx;
+				desired.top += rawDy; desired.bottom += rawDy;
+				desired = ApplyMoveSnap(desired, refParent);
+				int dx = desired.left - _dragStartRectInCanvas.left;
+				int dy = desired.top - _dragStartRectInCanvas.top;
+				ApplyMoveDeltaToSelection(dx, dy);
+			}
+			catch (...)
+			{
+				(void)AbortCanvasInteractionTransaction(
+					L"拖动预览更新布局时抛出异常。");
+				ResetPointerInteractionState();
+				return true;
+			}
 			NotifySelectionChangedThrottled();
 			this->Cursor = CursorKind::SizeAll;
 			return true;
 		}
-		
+
 		// 调整大小
 		if (_isResizing && _selectedControl && _selectedControl->ControlInstance)
 		{
 			int dx = mousePos.x - _dragStartPoint.x;
 			int dy = mousePos.y - _dragStartPoint.y;
-			if (dx != 0 || dy != 0)
+			if (dx == 0 && dy == 0)
 			{
-				if (_commandCoordinator) _commandCoordinator->BeginInteractionSnapshot(L"ResizeSelection");
+				this->Cursor = GetResizeCursor(_resizeHandle);
+				return true;
 			}
-			
-			RECT newRect = _resizeStartRect;
-			
-			switch (_resizeHandle)
+			if (!BeginPlacementInteraction(L"ResizeSelection"))
 			{
-			case DesignerControl::ResizeHandle::TopLeft:
-				newRect.left += dx; newRect.top += dy; break;
-			case DesignerControl::ResizeHandle::Top:
-				newRect.top += dy; break;
-			case DesignerControl::ResizeHandle::TopRight:
-				newRect.right += dx; newRect.top += dy; break;
-			case DesignerControl::ResizeHandle::Right:
-				newRect.right += dx; break;
-			case DesignerControl::ResizeHandle::BottomRight:
-				newRect.right += dx; newRect.bottom += dy; break;
-			case DesignerControl::ResizeHandle::Bottom:
-				newRect.bottom += dy; break;
-			case DesignerControl::ResizeHandle::BottomLeft:
-				newRect.left += dx; newRect.bottom += dy; break;
-			case DesignerControl::ResizeHandle::Left:
-				newRect.left += dx; break;
+				ResetPointerInteractionState();
+				return true;
 			}
-			
-			// 最小尺寸限制
-			int minSize = 20;
-			if (newRect.right - newRect.left < minSize) newRect.right = newRect.left + minSize;
-			if (newRect.bottom - newRect.top < minSize) newRect.bottom = newRect.top + minSize;
+			try
+			{
+				RECT newRect = _resizeStartRect;
+				switch (_resizeHandle)
+				{
+				case DesignerControl::ResizeHandle::TopLeft:
+					newRect.left += dx; newRect.top += dy; break;
+				case DesignerControl::ResizeHandle::Top:
+					newRect.top += dy; break;
+				case DesignerControl::ResizeHandle::TopRight:
+					newRect.right += dx; newRect.top += dy; break;
+				case DesignerControl::ResizeHandle::Right:
+					newRect.right += dx; break;
+				case DesignerControl::ResizeHandle::BottomRight:
+					newRect.right += dx; newRect.bottom += dy; break;
+				case DesignerControl::ResizeHandle::Bottom:
+					newRect.bottom += dy; break;
+				case DesignerControl::ResizeHandle::BottomLeft:
+					newRect.left += dx; newRect.bottom += dy; break;
+				case DesignerControl::ResizeHandle::Left:
+					newRect.left += dx; break;
+				}
 
-			Control* refParent = _selectedControl->ControlInstance->Parent ? _selectedControl->ControlInstance->Parent : (_clientSurface ? (Control*)_clientSurface : (Control*)_designSurface);
-			newRect = ApplyResizeSnap(newRect, refParent, _resizeHandle);
+				// 最小尺寸限制
+				int minSize = 20;
+				if (newRect.right - newRect.left < minSize)
+					newRect.right = newRect.left + minSize;
+				if (newRect.bottom - newRect.top < minSize)
+					newRect.bottom = newRect.top + minSize;
 
-			// 再次最小尺寸限制（吸附后可能破坏）
-			if (newRect.right - newRect.left < minSize) newRect.right = newRect.left + minSize;
-			if (newRect.bottom - newRect.top < minSize) newRect.bottom = newRect.top + minSize;
-			// 约束到客户区（不允许进入标题栏）
-			auto bounds = GetClientSurfaceRectInCanvas();
-			newRect = ClampRectToBounds(newRect, bounds, false);
+				Control* refParent = _selectedControl->ControlInstance->Parent
+					? _selectedControl->ControlInstance->Parent
+					: (_clientSurface ? static_cast<Control*>(_clientSurface)
+						: static_cast<Control*>(_designSurface));
+				newRect = ApplyResizeSnap(
+					newRect, refParent, _resizeHandle);
 
-			ApplyRectToControl(_selectedControl->ControlInstance, newRect);
+				// 再次最小尺寸限制（吸附后可能破坏）
+				if (newRect.right - newRect.left < minSize)
+					newRect.right = newRect.left + minSize;
+				if (newRect.bottom - newRect.top < minSize)
+					newRect.bottom = newRect.top + minSize;
+				// 约束到客户区（不允许进入标题栏）
+				auto bounds = GetClientSurfaceRectInCanvas();
+				newRect = ClampRectToBounds(newRect, bounds, false);
+				ApplyRectToControl(
+					_selectedControl->ControlInstance, newRect);
+			}
+			catch (...)
+			{
+				(void)AbortCanvasInteractionTransaction(
+					L"缩放预览更新布局时抛出异常。");
+				ResetPointerInteractionState();
+				return true;
+			}
 			NotifySelectionChangedThrottled();
-			
+
 			this->Cursor = GetResizeCursor(_resizeHandle);
 			return true;
 		}
-		
+
 		// 更新鼠标样式（仅单选时显示 resize cursor）
 		if (_selectedControl && _selectedControls.size() == 1)
 		{
@@ -2191,9 +3680,9 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			this->Cursor = GetSplitContainerSplitterCursor((SplitContainer*)splitterHover->ControlInstance);
 			return true;
 		}
-		
+
 		// 如果是添加控件模式
-		if (_controlToAdd != UIClass::UI_Base)
+		if (_controlToAdd)
 		{
 			this->Cursor = CursorKind::Hand;
 		}
@@ -2255,237 +3744,468 @@ bool DesignerCanvas::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 			return true;
 		}
 
-		if (_isSplitterDragging)
-		{
-			if (_commandCoordinator) _commandCoordinator->CommitInteractionSnapshot();
-		}
-
 		// 拖拽结束：单选时尝试放入容器
-		if (_isDragging && _selectedControls.size() == 1 && (_dragHasMoved || _dragLiftedToRoot))
+		if (_isDragging && _selectedControls.size() == 1
+			&& (_dragHasMoved || _dragLiftedToRoot))
 		{
-			TryReparentSelectedAfterDrag();
+			try
+			{
+				TryReparentSelectedAfterDrag();
+			}
+			catch (...)
+			{
+				(void)AbortCanvasInteractionTransaction(
+					L"拖放期间更新父子关系时抛出异常。");
+				ResetPointerInteractionState();
+				return true;
+			}
 		}
-		if (_isDragging)
-		{
-			if (_commandCoordinator) _commandCoordinator->CommitInteractionSnapshot();
-		}
-		else if (_isResizing)
-		{
-			if (_commandCoordinator) _commandCoordinator->CommitInteractionSnapshot();
-		}
-		_isDragging = false;
-		_dragHasMoved = false;
-		_dragLiftedToRoot = false;
-		_dragStartItems.clear();
-		_isSplitterDragging = false;
-		_splitterDragTarget = nullptr;
-		_splitterDragStartDistance = 0;
-		_isResizing = false;
-		_resizeHandle = DesignerControl::ResizeHandle::None;
-		if (_commandCoordinator) _commandCoordinator->ClearInteractionSnapshot();
-		ClearAlignmentGuides();
-		this->Cursor = CursorKind::Arrow;
+		const bool hasTransaction = _activePropertyInteraction
+			|| _activePlacementInteraction
+			|| !_activeInteractionTransaction.empty();
+		ResetPointerInteractionState();
+		if (hasTransaction)
+			(void)CommitCanvasInteractionTransaction();
+		return true;
+	}
+	case WM_CANCELMODE:
+	case WM_CAPTURECHANGED:
+	{
+		(void)CancelActivePointerInteraction(
+			message == WM_CANCELMODE
+				? L"系统取消了画布交互。"
+				: L"画布失去鼠标捕获，修改已回滚。");
 		return true;
 	}
 	}
-	
+
 	return Panel::ProcessMessage(message, wParam, lParam, localX, localY);
 }
 
-void DesignerCanvas::AddControlToCanvas(UIClass type, POINT canvasPos)
+void DesignerCanvas::SetControlToAdd(UIClass type)
 {
-	if (_commandCoordinator) _commandCoordinator->ExecuteDocumentSnapshotCommand(L"AddControl", [this, type, canvasPos]() {
-		AddControlToCanvasCore(type, canvasPos);
-	});
+	_controlToAdd = BuiltInDescriptor(type);
+}
+
+void DesignerCanvas::SetControlDescriptors(
+	const std::vector<DesignerControlDescriptor>& descriptors)
+{
+	_customControlDescriptors.clear();
+	for (const auto& descriptor : descriptors)
+		RegisterControlDescriptor(descriptor);
+}
+
+void DesignerCanvas::RegisterControlDescriptor(
+	const DesignerControlDescriptor& descriptor)
+{
+	if (!descriptor.IsValid() || !descriptor.IsCustom()) return;
+	_customControlDescriptors[descriptor.CustomType.RegistryKey()] = descriptor;
+}
+
+void DesignerCanvas::SetControlToAdd(
+	const DesignerControlDescriptor& descriptor)
+{
+	if (descriptor.IsValid())
+	{
+		RegisterControlDescriptor(descriptor);
+		_controlToAdd = descriptor;
+	}
+	else _controlToAdd.reset();
+}
+
+DesignerDocumentTransactionResult DesignerCanvas::AddControlToCanvas(
+	UIClass type, POINT canvasPos)
+
+{
+	DesignerControlDescriptor descriptor;
+	if (const auto builtIn = BuiltInDescriptor(type)) descriptor = *builtIn;
+	else descriptor.Type = type;
+	return AddControlToCanvas(descriptor, canvasPos);
+}
+
+DesignerDocumentTransactionResult DesignerCanvas::AddControlToCanvas(
+	const DesignerControlDescriptor& descriptor, POINT canvasPos)
+{
+	const auto type = descriptor.Type;
+	DesignerDocumentTransactionResult result;
+	if (!descriptor.IsValid())
+	{
+		result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"未指定有效的控件描述。");
+	}
+	else if (!_designSurface || !_clientSurface)
+	{
+		result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"设计区域不可用。", false);
+	}
+	else if (!IsPointInDesignSurface(canvasPos))
+	{
+		result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"只能在设计区域内添加控件。");
+	}
+	else if (HasActiveDocumentTransaction())
+	{
+		result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"其他文档事务进行中，不能添加控件。");
+	}
+	else
+	{
+		RegisterControlDescriptor(descriptor);
+		const auto beforeSelectionNames = CaptureSelectionNames();
+		const auto beforePrimarySelectionName = _selectedControl
+			? _selectedControl->Name : std::wstring{};
+		const auto beforeCount = _designerControls.size();
+		std::unordered_set<Control*> beforeRuntimeControls;
+		std::function<void(Control*)> collectRuntimeControls =
+			[&](Control* parent)
+			{
+				if (!parent) return;
+				for (int index = 0; index < parent->Count; ++index)
+				{
+					auto* child = parent->operator[](index);
+					if (!child || !beforeRuntimeControls.insert(child).second)
+						continue;
+					collectRuntimeControls(child);
+				}
+			};
+		collectRuntimeControls(_clientSurface);
+		std::shared_ptr<DesignerControl> added;
+		std::wstring error;
+
+		try
+		{
+			AddControlToCanvasCore(descriptor, canvasPos);
+			if (_designerControls.size() > beforeCount)
+				added = _selectedControl;
+		}
+		catch (...)
+		{
+			error = L"创建控件时抛出异常。";
+		}
+
+		auto removeAddedControl = [&]() noexcept
+		{
+			try
+			{
+				std::vector<Control*> newRoots;
+				std::function<void(Control*)> findNewRoots =
+					[&](Control* parent)
+					{
+						if (!parent) return;
+						for (int index = 0; index < parent->Count; ++index)
+						{
+							auto* child = parent->operator[](index);
+							if (!child) continue;
+							if (!beforeRuntimeControls.contains(child))
+							{
+								newRoots.push_back(child);
+								continue;
+							}
+							findNewRoots(child);
+						}
+					};
+				findNewRoots(_clientSurface);
+				ClearSelection();
+				for (auto* root : newRoots)
+				{
+					for (const auto& wrapper : _designerControls)
+						if (wrapper && wrapper->ControlInstance
+							&& (wrapper->ControlInstance == root
+								|| IsDescendantOf(
+									root, wrapper->ControlInstance)))
+							DetachDesignBindingPreview(*wrapper);
+					RemoveDesignerControlsInSubtree(root);
+					if (root->Parent)
+						(void)root->Parent->DeleteControl(root);
+				}
+				RestoreSelectionByNames(
+					beforeSelectionNames,
+					beforePrimarySelectionName,
+					true);
+			}
+			catch (...) {}
+		};
+
+		if (!added || !added->ControlInstance)
+		{
+			removeAddedControl();
+			result = DesignerDocumentTransactionResult::Failure(
+				DesignerDocumentTransactionState::Failed,
+				error.empty()
+					? L"控件创建失败或该控件类型不受支持。"
+					: error,
+				true);
+		}
+		else
+		{
+			DesignerControlSubtreeSnapshot snapshot;
+			if (!ControlSubtreeCommand::Capture(
+				this, { added }, snapshot, &error))
+			{
+				removeAddedControl();
+				result = DesignerDocumentTransactionResult::Failure(
+					DesignerDocumentTransactionState::Failed,
+					L"无法记录新控件子树：" + error,
+					true);
+			}
+			else
+			{
+				const auto afterSelectionNames = CaptureSelectionNames();
+				const auto afterPrimarySelectionName = _selectedControl
+					? _selectedControl->Name : std::wstring{};
+				try
+				{
+					auto command = std::make_unique<ControlSubtreeCommand>(
+						this,
+						std::move(snapshot),
+						beforeSelectionNames,
+						afterSelectionNames,
+						beforePrimarySelectionName,
+						afterPrimarySelectionName,
+						true,
+						L"AddControl",
+						true);
+					result = CommitAlreadyAppliedCommand(std::move(command));
+				}
+				catch (...)
+				{
+					result = DesignerDocumentTransactionResult::Failure(
+						DesignerDocumentTransactionState::Failed,
+						L"创建新控件历史命令时抛出异常。",
+						false);
+				}
+				if (!result && !result.DocumentRestored)
+				{
+					removeAddedControl();
+					result.DocumentRestored = true;
+				}
+			}
+		}
+	}
+	PublishCanvasCommandResult(L"AddControl", L"AddControl", result);
+	return result;
 }
 
 void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
+
 {
+	const auto descriptor = BuiltInDescriptor(type);
+	if (descriptor) AddControlToCanvasCore(*descriptor, canvasPos);
+}
+
+void DesignerCanvas::AddControlToCanvasCore(
+	const DesignerControlDescriptor& descriptor, POINT canvasPos)
+{
+	const auto type = descriptor.Type;
 	Control* newControl = nullptr;
+	std::unique_ptr<Control> newControlOwner;
+	auto ownControl = [&](Control* value)
+	{
+		newControlOwner.reset(value);
+		newControl = value;
+	};
 	std::wstring typeName;
 	if (!_designSurface || !_clientSurface) return;
 	if (!IsPointInDesignSurface(canvasPos)) return;
-	
+
 	// 在点击位置创建控件（左上角对齐，稍微偏移避免手感奇怪）
 	int centerX = (int)canvasPos.x - 30;
 	int centerY = (int)canvasPos.y - 12;
-	
-	switch (type)
+
+	if (!descriptor.IsValid()) return;
+	RegisterControlDescriptor(descriptor);
+	if (descriptor.IsCustom())
+	{
+		auto preview = descriptor.PreviewFactory
+			? descriptor.PreviewFactory(centerX, centerY)
+			: DesignerControlFactory::Create(type, centerX, centerY);
+		if (!preview || preview->Type() != type) return;
+		preview->Location = { centerX, centerY };
+		preview->Size = descriptor.DefaultSize;
+		newControl = preview.get();
+		newControlOwner = std::move(preview);
+		typeName = descriptor.Name;
+	}
+	else switch (type)
 	{
 	case UIClass::UI_Label:
-		newControl = new Label(L"标签", centerX, centerY);
+		ownControl(new Label(L"标签", centerX, centerY));
 		typeName = L"Label";
 		break;
 	case UIClass::UI_LinkLabel:
-		newControl = new LinkLabel(L"链接标签", centerX, centerY);
+		ownControl(new LinkLabel(L"链接标签", centerX, centerY));
 		typeName = L"LinkLabel";
 		break;
 	case UIClass::UI_Button:
-		newControl = new Button(L"按钮", centerX, centerY, 120, 30);
+		ownControl(new Button(L"按钮", centerX, centerY, 120, 30));
 		typeName = L"Button";
 		break;
 	case UIClass::UI_TextBox:
-		newControl = new TextBox(L"", centerX, centerY, 200, 25);
+		ownControl(new TextBox(L"", centerX, centerY, 200, 25));
 		typeName = L"TextBox";
 		break;
 	case UIClass::UI_RichTextBox:
-		newControl = new RichTextBox(L"", centerX, centerY, 300, 160);
+		ownControl(new RichTextBox(L"", centerX, centerY, 300, 160));
 		typeName = L"RichTextBox";
 		break;
 	case UIClass::UI_PasswordBox:
-		newControl = new PasswordBox(L"", centerX, centerY, 200, 25);
+		ownControl(new PasswordBox(L"", centerX, centerY, 200, 25));
 		typeName = L"PasswordBox";
 		break;
 	case UIClass::UI_DateTimePicker:
-		newControl = new DateTimePicker(L"", centerX, centerY, 200, 28);
+		ownControl(new DateTimePicker(L"", centerX, centerY, 200, 28));
 		typeName = L"DateTimePicker";
 		break;
 	case UIClass::UI_NumericUpDown:
-		newControl = new NumericUpDown(centerX, centerY, 140, 30);
+		ownControl(new NumericUpDown(centerX, centerY, 140, 30));
 		typeName = L"NumericUpDown";
 		break;
 	case UIClass::UI_Panel:
-		newControl = new Panel(centerX, centerY, 200, 200);
+		ownControl(new Panel(centerX, centerY, 200, 200));
 		typeName = L"Panel";
 		break;
 	case UIClass::UI_GroupBox:
-		newControl = new GroupBox(L"GroupBox", centerX, centerY, 240, 180);
+		ownControl(new GroupBox(L"GroupBox", centerX, centerY, 240, 180));
 		typeName = L"GroupBox";
 		break;
 	case UIClass::UI_Expander:
-		newControl = new Expander(L"Expander", centerX, centerY, 260, 160);
+		ownControl(new Expander(L"Expander", centerX, centerY, 260, 160));
 		typeName = L"Expander";
 		break;
 	case UIClass::UI_ScrollView:
-		newControl = new ScrollView(centerX, centerY, 240, 200);
+		ownControl(new ScrollView(centerX, centerY, 240, 200));
 		typeName = L"ScrollView";
 		break;
 	case UIClass::UI_StackPanel:
-		newControl = new StackPanel(centerX, centerY, 200, 200);
+		ownControl(new StackPanel(centerX, centerY, 200, 200));
 		typeName = L"StackPanel";
 		break;
 	case UIClass::UI_GridPanel:
-		newControl = new GridPanel(centerX, centerY, 200, 200);
+		ownControl(new GridPanel(centerX, centerY, 200, 200));
 		typeName = L"GridPanel";
 		break;
 	case UIClass::UI_DockPanel:
-		newControl = new DockPanel(centerX, centerY, 200, 200);
+		ownControl(new DockPanel(centerX, centerY, 200, 200));
 		typeName = L"DockPanel";
 		break;
 	case UIClass::UI_WrapPanel:
-		newControl = new WrapPanel(centerX, centerY, 200, 200);
+		ownControl(new WrapPanel(centerX, centerY, 200, 200));
 		typeName = L"WrapPanel";
 		break;
 	case UIClass::UI_RelativePanel:
-		newControl = new RelativePanel(centerX, centerY, 200, 200);
+		ownControl(new RelativePanel(centerX, centerY, 200, 200));
 		typeName = L"RelativePanel";
 		break;
 	case UIClass::UI_SplitContainer:
-		newControl = new SplitContainer(centerX, centerY, 360, 220);
+		ownControl(new SplitContainer(centerX, centerY, 360, 220));
 		typeName = L"SplitContainer";
 		break;
 	case UIClass::UI_CheckBox:
-		newControl = new CheckBox(L"复选框", centerX, centerY);
+		ownControl(new CheckBox(L"复选框", centerX, centerY));
 		typeName = L"CheckBox";
 		break;
 	case UIClass::UI_RadioBox:
-		newControl = new RadioBox(L"单选框", centerX, centerY);
+		ownControl(new RadioBox(L"单选框", centerX, centerY));
 		typeName = L"RadioBox";
 		break;
 	case UIClass::UI_ComboBox:
-		newControl = new ComboBox(L"", centerX, centerY, 150, 25);
+		ownControl(new ComboBox(L"", centerX, centerY, 150, 25));
 		typeName = L"ComboBox";
 		break;
 	case UIClass::UI_ListView:
 	{
 		auto* listView = new ListView(centerX, centerY, 320, 220);
+		ownControl(listView);
 		listView->AddColumn(ListViewColumn(L"名称", 160));
 		listView->AddColumn(ListViewColumn(L"说明", 130));
 		ListViewItem first(L"ListViewItem 1", L"Details row");
 		first.SubItems.push_back(L"Details row");
 		listView->AddItem(first);
 		listView->AddItem(ListViewItem(L"ListViewItem 2", L"Selectable"));
-		newControl = listView;
 		typeName = L"ListView";
 		break;
 	}
 	case UIClass::UI_ListBox:
 	{
 		auto* lb = new ListBox(centerX, centerY, 220, 180);
+		ownControl(lb);
 		lb->AddItem(ListViewItem(L"ListBox Item 1"));
 		lb->AddItem(ListViewItem(L"ListBox Item 2"));
 		lb->AddItem(ListViewItem(L"ListBox Item 3"));
-		newControl = lb;
 		typeName = L"ListBox";
 		break;
 	}
 	case UIClass::UI_GridView:
-		newControl = new GridView(centerX, centerY, 360, 200);
+		ownControl(new GridView(centerX, centerY, 360, 200));
 		typeName = L"GridView";
 		break;
 	case UIClass::UI_PropertyGrid:
 	{
 		auto* pg = new PropertyGridView(centerX, centerY, 300, 320);
+		ownControl(pg);
 		pg->AddProperty(L"Appearance", L"Text", L"PropertyGrid", PropertyGridValueType::Text);
 		pg->AddProperty(L"Appearance", L"Visible", L"True", PropertyGridValueType::Bool);
 		PropertyGridItem dock(L"Layout", L"Dock", L"None", PropertyGridValueType::Enum);
 		dock.Options = { L"None", L"Top", L"Bottom", L"Left", L"Right", L"Fill" };
 		pg->AddItem(dock);
 		pg->AddProperty(L"Layout", L"Width", L"300", PropertyGridValueType::Number);
-		newControl = pg;
 		typeName = L"PropertyGrid";
 		break;
 	}
 	case UIClass::UI_ChartView:
-		newControl = new ChartView(centerX, centerY, 420, 260);
+		ownControl(new ChartView(centerX, centerY, 420, 260));
 		typeName = L"ChartView";
 		break;
 	case UIClass::UI_ReportView:
-		newControl = new ReportView(centerX, centerY, 480, 300);
+		ownControl(new ReportView(centerX, centerY, 480, 300));
 		typeName = L"ReportView";
 		break;
 	case UIClass::UI_KpiCard:
-		newControl = new KpiCard(centerX, centerY, 220, 132);
+		ownControl(new KpiCard(centerX, centerY, 220, 132));
 		typeName = L"KpiCard";
 		break;
 	case UIClass::UI_FilterBar:
-		newControl = new FilterBar(centerX, centerY, 640, 48);
+		ownControl(new FilterBar(centerX, centerY, 640, 48));
 		typeName = L"FilterBar";
 		break;
 	case UIClass::UI_TreeView:
-		newControl = new TreeView(centerX, centerY, 220, 220);
+		ownControl(new TreeView(centerX, centerY, 220, 220));
 		typeName = L"TreeView";
 		break;
 	case UIClass::UI_ProgressBar:
-		newControl = new ProgressBar(centerX, centerY, 200, 20);
+		ownControl(new ProgressBar(centerX, centerY, 200, 20));
 		typeName = L"ProgressBar";
 		break;
 	case UIClass::UI_LoadingRing:
-		newControl = new LoadingRing(centerX, centerY, 48, 48);
+		ownControl(new LoadingRing(centerX, centerY, 48, 48));
 		typeName = L"LoadingRing";
 		break;
 	case UIClass::UI_ProgressRing:
-		newControl = new ProgressRing(centerX, centerY, 72, 72);
+		ownControl(new ProgressRing(centerX, centerY, 72, 72));
 		typeName = L"ProgressRing";
 		break;
 	case UIClass::UI_Slider:
-		newControl = new Slider(centerX, centerY, 200, 30);
+		ownControl(new Slider(centerX, centerY, 200, 30));
 		typeName = L"Slider";
 		break;
 	case UIClass::UI_PictureBox:
-		newControl = new PictureBox(centerX, centerY, 150, 150);
+		ownControl(new PictureBox(centerX, centerY, 150, 150));
 		typeName = L"PictureBox";
 		break;
 	case UIClass::UI_Switch:
-		newControl = new Switch(centerX, centerY, 60, 30);
+		ownControl(new Switch(centerX, centerY, 60, 30));
 		typeName = L"Switch";
 		break;
 	case UIClass::UI_TabControl:
-		newControl = new TabControl(centerX, centerY, 360, 240);
+		ownControl(new TabControl(centerX, centerY, 360, 240));
 		typeName = L"TabControl";
 		break;
 	case UIClass::UI_ToolBar:
-		newControl = new ToolBar(centerX, centerY, 360, 34);
+		ownControl(new ToolBar(centerX, centerY, 360, 34));
 		typeName = L"ToolBar";
 		break;
 	case UIClass::UI_Menu:
@@ -2493,7 +4213,7 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 		// Menu 始终为窗体根级控件：放在客户区顶部并拉伸宽度
 		int w = _clientSurface ? _clientSurface->Width : 360;
 		if (w < 80) w = 80;
-		newControl = new Menu(0, 0, w, 28);
+		ownControl(new Menu(0, 0, w, 28));
 		typeName = L"Menu";
 		break;
 	}
@@ -2505,38 +4225,47 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 		int h = 26;
 		int y = _clientSurface ? (_clientSurface->Height - h) : (centerY);
 		if (y < 0) y = 0;
-		newControl = new StatusBar(0, y, w, h);
+		ownControl(new StatusBar(0, y, w, h));
 		typeName = L"StatusBar";
 		break;
 	}
 	case UIClass::UI_ToastHost:
 	{
 		auto* host = new ToastHost(centerX, centerY, 340, 260);
+		ownControl(host);
 		host->ShowToast(L"ToastHost", L"运行时调用 ShowToast 添加通知。", ToastKind::Info, 0);
-		newControl = host;
 		typeName = L"ToastHost";
 		break;
 	}
 	case UIClass::UI_WebBrowser:
-		newControl = new FakeWebBrowser(centerX, centerY, 500, 360);
+		ownControl(new FakeWebBrowser(centerX, centerY, 500, 360));
 		typeName = L"WebBrowser";
 		break;
 	case UIClass::UI_MediaPlayer:
-		newControl = new MediaPlayer(centerX, centerY, 640, 360);
+		ownControl(new MediaPlayer(centerX, centerY, 640, 360));
 		typeName = L"MediaPlayer";
 		break;
 	default:
 		return;
 	}
-	
+
 	if (newControl)
 	{
+		// Reserve identity before ownership transfer so allocation failure cannot
+		// leave an attached runtime control without a DesignerControl wrapper.
+		const int stableId = AllocateStableControlId();
+		newControl->DesignId = stableId;
 		// Menu/StatusBar 不参与容器命中：强制根级（窗体客户区）
 		if (type == UIClass::UI_Menu || type == UIClass::UI_StatusBar)
 		{
-			_clientSurface->AddControl(newControl);
+			_clientSurface->AddOwned(std::move(newControlOwner));
 			std::wstring name = GenerateDefaultControlName(type, typeName);
-			auto dc = std::make_shared<DesignerControl>(newControl, name, type, nullptr);
+			auto dc = std::make_shared<DesignerControl>(
+				newControl, name, type, nullptr, stableId);
+			dc->CustomType = descriptor.CustomType;
+			dc->CustomProperties = descriptor.CustomProperties;
+			dc->CustomEvents = descriptor.CustomEvents;
+			AttachPreviewPropertySink(*dc);
 			_designerControls.push_back(dc);
 			UpdateDefaultNameCounterFromName(type, name);
 			ClearSelection();
@@ -2570,24 +4299,30 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 			}
 			POINT local = CanvasToContainerPoint({ centerX, centerY }, runtimeHost);
 			POINT dropLocal = CanvasToContainerPoint(canvasPos, runtimeHost);
-			LayoutBridge::AttachChild(runtimeHost, newControl);
+			(void)LayoutBridge::AttachChild(
+				runtimeHost, std::move(newControlOwner));
 			LayoutBridge::ApplyNewChildLayout(runtimeHost, newControl, local, dropLocal);
 			LayoutBridge::RefreshContainerLayout(runtimeHost);
 		}
 		else
 		{
 			// 根级：属于窗体客户区
-			_clientSurface->AddControl(newControl);
+			_clientSurface->AddOwned(std::move(newControlOwner));
 			POINT local = CanvasToContainerPoint({ centerX, centerY }, _clientSurface);
 			newControl->Location = local;
 			// 约束初始位置到客户区
 			ClampControlToDesignSurface(newControl);
 		}
-		
+
 		std::wstring name = GenerateDefaultControlName(type, typeName);
-		
+
 		// 创建设计器控件包装
-		auto dc = std::make_shared<DesignerControl>(newControl, name, type, designerParent);
+		auto dc = std::make_shared<DesignerControl>(
+			newControl, name, type, designerParent, stableId);
+		dc->CustomType = descriptor.CustomType;
+		dc->CustomProperties = descriptor.CustomProperties;
+		dc->CustomEvents = descriptor.CustomEvents;
+		AttachPreviewPropertySink(*dc);
 		if (type == UIClass::UI_SplitContainer)
 		{
 			(void)ApplyTrackedMetadataProperty(
@@ -2609,7 +4344,7 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 		}
 		_designerControls.push_back(dc);
 		UpdateDefaultNameCounterFromName(type, name);
-		
+
 		// 自动选中新添加的控件
 		ClearSelection();
 		AddToSelection(dc, true, true);
@@ -2617,12 +4352,68 @@ void DesignerCanvas::AddControlToCanvasCore(UIClass type, POINT canvasPos)
 	}
 }
 
-void DesignerCanvas::DeleteSelectedControl()
+DesignerDocumentTransactionResult DesignerCanvas::DeleteSelectedControl()
 {
-	if (_selectedControls.empty()) return;
-	if (_commandCoordinator) _commandCoordinator->ExecuteDocumentSnapshotCommand(L"DeleteSelection", [this]() {
-		DeleteSelectedControlCore();
-	});
+	if (_selectedControls.empty())
+	{
+		auto result = DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+		PublishCanvasCommandResult(
+			L"DeleteSelection", L"DeleteSelection", result,
+			L"没有选中可删除的控件。");
+		return result;
+	}
+	if (HasActiveDocumentTransaction())
+	{
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"其他文档事务进行中，不能删除控件。");
+		PublishCanvasCommandResult(
+			L"DeleteSelection", L"DeleteSelection", result);
+		return result;
+	}
+
+	const auto beforeSelectionNames = CaptureSelectionNames();
+	const auto beforePrimarySelectionName = _selectedControl
+		? _selectedControl->Name : std::wstring{};
+	DesignerControlSubtreeSnapshot snapshot;
+	std::wstring error;
+	DesignerDocumentTransactionResult result;
+	if (!ControlSubtreeCommand::Capture(
+		this, _selectedControls, snapshot, &error))
+	{
+		result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"无法记录待删除控件子树：" + error,
+			true);
+	}
+	else
+	{
+		try
+		{
+			auto command = std::make_unique<ControlSubtreeCommand>(
+				this,
+				std::move(snapshot),
+				beforeSelectionNames,
+				std::vector<std::wstring>{},
+				beforePrimarySelectionName,
+				std::wstring{},
+				false,
+				L"DeleteSelection",
+				false);
+			result = ExecuteCommandCore(std::move(command));
+		}
+		catch (...)
+		{
+			result = DesignerDocumentTransactionResult::Failure(
+				DesignerDocumentTransactionState::Failed,
+				L"创建删除子树历史命令时抛出异常。",
+				true);
+		}
+	}
+	PublishCanvasCommandResult(
+		L"DeleteSelection", L"DeleteSelection", result);
+	return result;
 }
 
 void DesignerCanvas::DeleteSelectedControlCore()
@@ -2653,7 +4444,7 @@ void DesignerCanvas::DeleteSelectedControlCore()
 	this->InvalidateVisual();
 }
 
-void DesignerCanvas::ClearCanvas()
+void DesignerCanvas::ClearCanvasCore()
 {
 	if (_clientSurface)
 	{
@@ -2667,13 +4458,14 @@ void DesignerCanvas::ClearCanvas()
 	_designerControls.clear();
 	_selectedControl = nullptr;
 	_controlTypeCounters.clear();
+	_nextStableControlId = 1;
 	_designedFormName = L"MainForm";
 	_designedFormEventHandlers.clear();
 	_dataContextSchema.clear();
 	_documentStyleSheet = {};
 	_previewStyleSheet.reset();
 	if (_clientSurface) (void)_clientSurface->SetStyleSheet(nullptr, true);
-	
+
 	OnControlSelected(nullptr);
 }
 
@@ -2689,13 +4481,23 @@ bool DesignerCanvas::SetDataContextSchema(
 		for (const auto& [targetProperty, binding] : control->DataBindings)
 		{
 			std::wstring validationError;
-			if (!DesignerBindingUtils::Validate(
-				*control->ControlInstance,
-				targetProperty,
-				binding,
-				nullptr,
-				&validationError,
-				&schema))
+			const auto* customProperty = FindCustomProperty(*control, targetProperty);
+			const bool deferredCustomProperty = customProperty
+				&& !control->ControlInstance->FindPropertyMetadata(targetProperty);
+			const bool valid = deferredCustomProperty
+				? DesignerBindingUtils::ValidateTarget(
+					CustomBindingTargetMetadata(*customProperty),
+					binding,
+					&validationError,
+					&schema)
+				: DesignerBindingUtils::Validate(
+					*control->ControlInstance,
+					targetProperty,
+					binding,
+					nullptr,
+					&validationError,
+					&schema);
+			if (!valid)
 			{
 				if (outError) *outError = L"控件 " + control->Name + L"：" + validationError;
 				return false;
@@ -2703,8 +4505,205 @@ bool DesignerCanvas::SetDataContextSchema(
 		}
 	}
 	_dataContextSchema = std::move(schema);
+	(void)RefreshAllDesignBindings(nullptr);
 	if (outError) outError->clear();
 	return true;
+}
+
+void DesignerCanvas::SetDesignDataContext(
+	std::shared_ptr<IBindingSource> source)
+{
+	_designDataContext = std::move(source);
+	(void)RefreshAllDesignBindings(nullptr);
+	OnControlSelected(_selectedControl);
+}
+
+void DesignerCanvas::DetachDesignBindingPreview(
+	DesignerControl& control)
+{
+	auto* target = control.ControlInstance;
+	// Remove only bindings installed by the Designer preview. User/runtime-owned
+	// bindings on unrelated properties must remain intact.
+	if (target)
+	{
+		for (const auto& [property, state] : control.BindingPreviewStates)
+		{
+			if (state.Status == DesignerBindingPreviewStatus::Active)
+				(void)target->DataBindings.Remove(property);
+		}
+		for (const auto& [property, localValue] :
+			control.BindingPreviewLocalValues)
+		{
+			if (localValue)
+				(void)target->TrySetPropertyValue(
+					property, *localValue, ControlPropertyValueSource::Local);
+			else
+				(void)target->ClearPropertyValue(
+					property, ControlPropertyValueSource::Local);
+		}
+	}
+	control.BindingPreviewStates.clear();
+	control.BindingPreviewLocalValues.clear();
+}
+
+bool DesignerCanvas::RefreshDesignBindings(
+	DesignerControl& control,
+	std::wstring* outError)
+{
+	if (outError) outError->clear();
+	auto* target = control.ControlInstance;
+	if (!target)
+	{
+		if (outError) *outError = L"控件实例已经失效。";
+		return false;
+	}
+
+	DetachDesignBindingPreview(control);
+
+	bool success = true;
+	std::wstring firstError;
+	for (const auto& [targetProperty, configuration] : control.DataBindings)
+	{
+		auto& state = control.BindingPreviewStates[targetProperty];
+		const auto* customProperty = FindCustomProperty(control, targetProperty);
+		const bool deferredCustomProperty =
+			customProperty
+			&& !target->FindPropertyMetadata(targetProperty);
+		if (deferredCustomProperty)
+		{
+			std::wstring validationError;
+			if (!DesignerBindingUtils::ValidateTarget(
+				CustomBindingTargetMetadata(*customProperty),
+				configuration,
+				&validationError,
+				_dataContextSchema.empty() ? nullptr : &_dataContextSchema))
+			{
+				state.Status = DesignerBindingPreviewStatus::Error;
+				state.Message = validationError;
+				success = false;
+				if (firstError.empty()) firstError = validationError;
+				continue;
+			}
+
+			state.Status = DesignerBindingPreviewStatus::Detached;
+			state.Message = !_designDataContext
+				? L"未设置设计期 DataContext；配置已校验并保存但尚未连接。"
+				: L"自定义属性 Binding 已校验并保存；"
+					L"当前基类代理没有同名运行时元数据，不建立活动预览连接。";
+			continue;
+		}
+		if (!_designDataContext)
+		{
+			state.Status = DesignerBindingPreviewStatus::Detached;
+			state.Message = L"未设置设计期 DataContext；配置已保存但尚未连接。";
+			continue;
+		}
+
+		std::wstring validationError;
+		const bool valid = DesignerBindingUtils::Validate(
+			*target,
+			targetProperty,
+			configuration,
+			nullptr,
+			&validationError,
+			_dataContextSchema.empty() ? nullptr : &_dataContextSchema);
+		if (!valid)
+		{
+			state.Status = DesignerBindingPreviewStatus::Error;
+			state.Message = validationError;
+			success = false;
+			if (firstError.empty()) firstError = validationError;
+			continue;
+		}
+		std::shared_ptr<const IBindingValueConverter> converter;
+		const auto converterName = DesignerBindingUtils::Trim(
+			configuration.Converter);
+		if (!converterName.empty())
+		{
+			converter = BindingValueConverterRegistry::Create(converterName);
+			if (!converter)
+			{
+				state.Status = DesignerBindingPreviewStatus::Error;
+				state.Message = L"无法创建 Converter：" + converterName;
+				success = false;
+				if (firstError.empty()) firstError = state.Message;
+				continue;
+			}
+		}
+
+		const bool writesTarget = configuration.Mode != BindingMode::OneWayToSource;
+		if (writesTarget)
+		{
+			BindingValue localValue;
+			const bool hadLocal = target->TryGetPropertyValue(
+				targetProperty,
+				ControlPropertyValueSource::Local,
+				localValue);
+			if (hadLocal && !target->ClearPropertyValue(
+				targetProperty, ControlPropertyValueSource::Local))
+			{
+				state.Status = DesignerBindingPreviewStatus::Error;
+				state.Message = L"无法暂存目标属性的 Local 值。";
+				success = false;
+				if (firstError.empty()) firstError = state.Message;
+				continue;
+			}
+			control.BindingPreviewLocalValues[targetProperty] =
+				hadLocal ? std::optional<BindingValue>(std::move(localValue))
+					: std::nullopt;
+		}
+
+		auto* binding = target->DataBindings.Add(
+			targetProperty,
+			*_designDataContext,
+			configuration.SourceProperty,
+			configuration.Mode,
+			configuration.UpdateMode,
+			std::move(converter));
+		if (!binding)
+		{
+			const std::wstring bindingError = target->DataBindings.LastErrorMessage();
+			const auto saved = control.BindingPreviewLocalValues.find(targetProperty);
+			if (saved != control.BindingPreviewLocalValues.end())
+			{
+				if (saved->second)
+					(void)target->TrySetPropertyValue(
+						targetProperty,
+						*saved->second,
+						ControlPropertyValueSource::Local);
+				control.BindingPreviewLocalValues.erase(saved);
+			}
+			state.Status = DesignerBindingPreviewStatus::Error;
+			state.Message = L"预览绑定连接失败：" + bindingError;
+			success = false;
+			if (firstError.empty()) firstError = state.Message;
+			continue;
+		}
+
+		state.Status = DesignerBindingPreviewStatus::Active;
+		state.Message = L"设计期预览绑定已连接。";
+	}
+
+	if (outError && !success)
+		*outError = L"控件 " + control.Name + L"：" + firstError;
+	return success;
+}
+
+bool DesignerCanvas::RefreshAllDesignBindings(std::wstring* outError)
+{
+	if (outError) outError->clear();
+	bool success = true;
+	for (const auto& control : _designerControls)
+	{
+		if (!control) continue;
+		std::wstring error;
+		if (!RefreshDesignBindings(*control, &error))
+		{
+			success = false;
+			if (outError && outError->empty()) *outError = std::move(error);
+		}
+	}
+	return success;
 }
 
 bool DesignerCanvas::SetDocumentStyleSheet(
@@ -2775,6 +4774,26 @@ bool DesignerCanvas::SetDocumentStyleSheet(
 	_previewStyleSheet = _documentStyleSheet.Empty() ? nullptr : std::move(runtime);
 	if (outError) outError->clear();
 	this->InvalidateVisual();
+	return true;
+}
+
+bool DesignerCanvas::SetCodeBehind(
+	DesignerModel::DesignCodeBehindModel codeBehind,
+	std::wstring* outError)
+{
+	std::wstring normalizedClass;
+	if (!DesignerModel::DesignCodeBehindModel::TryNormalizeClassName(
+		codeBehind.ClassName, normalizedClass, outError))
+		return false;
+	codeBehind.ClassName = std::move(normalizedClass);
+	std::wstring normalized;
+	if (!DesignerModel::DesignCodeBehindModel::TryNormalizeRelativeBasePath(
+		codeBehind.RelativeBasePath, normalized, outError))
+		return false;
+	codeBehind.RelativeBasePath = std::move(normalized);
+	if (!codeBehind.Validate(outError)) return false;
+	_codeBehind = std::move(codeBehind);
+	if (outError) outError->clear();
 	return true;
 }
 
@@ -2968,7 +4987,8 @@ std::vector<std::shared_ptr<DesignerControl>> DesignerCanvas::GetAllControlsForE
 					if (rp && !isInternalSurface(rp) && rp != root)
 						designerParent = rp;
 					std::wstring name = makeUniqueName(t);
-					auto dc = std::make_shared<DesignerControl>(c, name, t, designerParent);
+					auto dc = std::make_shared<DesignerControl>(
+						c, name, t, designerParent, c->DesignId);
 					out.push_back(dc);
 					dcOf[c] = dc;
 				}
@@ -2986,26 +5006,27 @@ CodeGenInput DesignerCanvas::BuildCodeGenInput() const
 {
 	CodeGenInput input;
 	input.Controls = GetAllControlsForExport();
-	input.FormText = _designedFormText;
-	input.FormName = _designedFormName;
-	input.FormSize = _designedFormSize;
-	input.FormLocation = _designedFormLocation;
-	input.FormBackColor = _designedFormBackColor;
-	input.FormForeColor = _designedFormForeColor;
-	input.FormShowInTaskBar = _designedFormShowInTaskBar;
-	input.FormTopMost = _designedFormTopMost;
-	input.FormEnable = _designedFormEnable;
-	input.FormVisible = _designedFormVisible;
-	input.FormEventHandlers = _designedFormEventHandlers;
-	input.FormVisibleHead = _designedFormVisibleHead;
-	input.FormHeadHeight = _designedFormHeadHeight;
-	input.FormMinBox = _designedFormMinBox;
-	input.FormMaxBox = _designedFormMaxBox;
-	input.FormCloseBox = _designedFormCloseBox;
-	input.FormCenterTitle = _designedFormCenterTitle;
-	input.FormAllowResize = _designedFormAllowResize;
-	input.FormFontName = _designedFormFontName;
-	input.FormFontSize = _designedFormFontSize;
+	const auto form = CaptureDesignedFormModel();
+	input.FormText = form.Text;
+	input.FormName = form.Name;
+	input.FormSize = form.Size;
+	input.FormLocation = form.Location;
+	input.FormBackColor = form.BackColor;
+	input.FormForeColor = form.ForeColor;
+	input.FormShowInTaskBar = form.ShowInTaskBar;
+	input.FormTopMost = form.TopMost;
+	input.FormEnable = form.Enable;
+	input.FormVisible = form.Visible;
+	input.FormEventHandlers = form.EventHandlers;
+	input.FormVisibleHead = form.VisibleHead;
+	input.FormHeadHeight = form.HeadHeight;
+	input.FormMinBox = form.MinBox;
+	input.FormMaxBox = form.MaxBox;
+	input.FormCloseBox = form.CloseBox;
+	input.FormCenterTitle = form.CenterTitle;
+	input.FormAllowResize = form.AllowResize;
+	input.FormFontName = form.FontName;
+	input.FormFontSize = form.FontSize;
 	input.StyleSheet = _documentStyleSheet;
 	return input;
 }
@@ -3430,6 +5451,11 @@ namespace
 			one["description"] = ToUtf8(item.Description);
 			one["type"] = (int)item.ValueType;
 			one["readOnly"] = item.ReadOnly;
+			one["isMixed"] = item.IsMixed;
+			one["canReset"] = item.CanReset;
+			one["minimum"] = item.Minimum;
+			one["maximum"] = item.Maximum;
+			one["step"] = item.Step;
 			one["tag"] = static_cast<unsigned long long>(item.Tag);
 			if (!item.Options.empty())
 			{
@@ -3456,6 +5482,11 @@ namespace
 			item.Description = FromUtf8(it.value("description", std::string()));
 			item.ValueType = (PropertyGridValueType)it.value("type", (int)PropertyGridValueType::Text);
 			item.ReadOnly = it.value("readOnly", false);
+			item.IsMixed = it.value("isMixed", false);
+			item.CanReset = it.value("canReset", false);
+			item.Minimum = it.value("minimum", 0.0);
+			item.Maximum = it.value("maximum", 1.0);
+			item.Step = it.value("step", 0.01);
 			item.Tag = static_cast<UINT64>(
 				it.value("tag", static_cast<unsigned long long>(0)));
 			if (it.contains("options") && it["options"].is_array())
@@ -3581,14 +5612,76 @@ void DesignerCanvas::UpdateDefaultNameCounterFromName(UIClass type, const std::w
 	counter = (std::max)(counter, suf);
 }
 
-bool DesignerCanvas::SaveDesignFile(const std::wstring& filePath, std::wstring* outError) const
+int DesignerCanvas::AllocateStableControlId()
+{
+	if (_nextStableControlId < 1
+		|| _nextStableControlId == (std::numeric_limits<int>::max)())
+	{
+		throw std::overflow_error("Designer stable control id space exhausted");
+	}
+	return _nextStableControlId++;
+}
+
+DesignerDocumentTransactionResult DesignerCanvas::CreateNewDocument()
 {
 	DesignerModel::DesignDocument document;
-	if (!BuildDesignDocument(document, outError))
+	auto result = ReplaceDesignDocument(document, L"新建文档");
+	PublishCanvasCommandResult(
+		L"NewDocument", L"NewDocument", result);
+	return result;
+}
+
+DesignerDocumentTransactionResult DesignerCanvas::SaveDesignFile(
+	const std::wstring& filePath,
+	std::wstring* outError)
+{
+	if (outError) outError->clear();
+	DesignerDocumentTransactionResult result;
+	if (filePath.empty())
 	{
-		return false;
+		result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"保存路径为空。");
 	}
-	return DesignerModel::DesignDocumentSerializer::SaveToFile(document, filePath, outError);
+	else if (HasActiveDocumentTransaction())
+	{
+		result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"文档事务进行中，不能保存预览状态。");
+	}
+	else
+	{
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!BuildDesignDocument(document, &error))
+		{
+			result = DesignerDocumentTransactionResult::Failure(
+				DesignerDocumentTransactionState::Failed,
+				L"无法构建待保存文档：" + error);
+		}
+		else if (!(DesignerModel::DetectDesignDocumentFileFormat(filePath)
+				== DesignerModel::DesignDocumentFileFormat::Xaml
+			? DesignerModel::XamlDocumentSerializer::SaveToFile(
+				document, filePath, &error)
+			: DesignerModel::DesignDocumentSerializer::SaveToFile(
+				document, filePath, &error)))
+		{
+			result = DesignerDocumentTransactionResult::Failure(
+				DesignerDocumentTransactionState::Failed,
+				error.empty() ? L"无法写入设计文件。" : error);
+		}
+		else
+		{
+			result = MarkDocumentSaved();
+			if (result)
+				result = DesignerDocumentTransactionResult::Success(
+					DesignerDocumentTransactionState::Unchanged);
+		}
+	}
+	if (!result && outError) *outError = result.Error;
+	PublishCanvasCommandResult(
+		L"SaveDocument", filePath, result);
+	return result;
 }
 
 bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document, std::wstring* outError) const
@@ -3596,26 +5689,9 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 	try
 	{
 		document.Clear();
-		document.Form.Name = _designedFormName;
-		document.Form.Text = _designedFormText;
-		document.Form.FontName = _designedFormFontName;
-		document.Form.FontSize = _designedFormFontSize;
-		document.Form.Size = _designedFormSize;
-		document.Form.Location = _designedFormLocation;
-		document.Form.BackColor = _designedFormBackColor;
-		document.Form.ForeColor = _designedFormForeColor;
-		document.Form.ShowInTaskBar = _designedFormShowInTaskBar;
-		document.Form.TopMost = _designedFormTopMost;
-		document.Form.Enable = _designedFormEnable;
-		document.Form.Visible = _designedFormVisible;
-		document.Form.VisibleHead = _designedFormVisibleHead;
-		document.Form.HeadHeight = _designedFormHeadHeight;
-		document.Form.MinBox = _designedFormMinBox;
-		document.Form.MaxBox = _designedFormMaxBox;
-		document.Form.CloseBox = _designedFormCloseBox;
-		document.Form.CenterTitle = _designedFormCenterTitle;
-		document.Form.AllowResize = _designedFormAllowResize;
-		document.Form.EventHandlers = _designedFormEventHandlers;
+		document.NextStableId = _nextStableControlId;
+		document.Form = CaptureDesignedFormModel();
+		document.CodeBehind = _codeBehind;
 		document.DataContextSchema = _dataContextSchema;
 		DesignerDataContextSchemaUtils::Canonicalize(document.DataContextSchema);
 		if (!DesignerDataContextSchemaUtils::Validate(document.DataContextSchema, outError))
@@ -3625,10 +5701,13 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 		if (!DesignerStyleSheetUtils::Validate(document.StyleSheet, outError))
 			return false;
 
-		// 防御：Name 必须唯一，否则 parent 引用会歧义，文件将无法可靠加载
+		// 防御：Name 与稳定 ID 都必须唯一，且 ID 高水位不可回退。
 		{
 			std::unordered_set<std::wstring> used;
+			std::unordered_set<int> usedIds;
 			used.reserve(_designerControls.size());
+			usedIds.reserve(_designerControls.size());
+			int maxStableId = 0;
 			for (auto& dc : _designerControls)
 			{
 				if (!dc) continue;
@@ -3643,16 +5722,30 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 					return false;
 				}
 				used.insert(dc->Name);
+				if (dc->StableId < 1 || !usedIds.insert(dc->StableId).second)
+				{
+					if (outError) *outError = L"控件稳定 ID 无效或重复: " + dc->Name;
+					return false;
+				}
+				maxStableId = (std::max)(maxStableId, dc->StableId);
+			}
+			if (document.NextStableId <= maxStableId)
+			{
+				if (outError) *outError = L"控件稳定 ID 高水位无效。";
+				return false;
 			}
 		}
 
-		// Control* -> name
+		// Control* -> persisted identity
 		std::unordered_map<Control*, std::wstring> nameOf;
+		std::unordered_map<Control*, int> idOf;
 		nameOf.reserve(_designerControls.size());
+		idOf.reserve(_designerControls.size());
 		for (auto& dc : _designerControls)
 		{
 			if (!dc || !dc->ControlInstance) continue;
 			nameOf[dc->ControlInstance] = dc->Name;
+			idOf[dc->ControlInstance] = dc->StableId;
 		}
 
 		// TabPage* -> pageId
@@ -3679,9 +5772,11 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			auto* c = dc->ControlInstance;
 
 			DesignerModel::DesignNode node;
-			node.Id = document.AllocateNodeId();
+			node.Id = dc->StableId;
 			node.Name = dc->Name;
 			node.Type = dc->Type;
+			node.CustomType = dc->CustomType;
+			node.CustomEvents = dc->CustomEvents;
 
 			// parent reference
 			if (!dc->DesignerParent)
@@ -3692,7 +5787,11 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			{
 				auto itName = nameOf.find(dc->DesignerParent);
 				if (itName != nameOf.end())
+				{
 					node.ParentRef = itName->second;
+					auto itId = idOf.find(dc->DesignerParent);
+					if (itId != idOf.end()) node.ParentId = itId->second;
+				}
 				else
 				{
 					auto itPage = tabPageIdOf.find(dc->DesignerParent);
@@ -3759,15 +5858,25 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 				DesignValue metadataProperties = DesignValue::object();
 				for (const auto& [propertyName, storedValue] : dc->MetadataProperties)
 				{
-					(void)storedValue;
 					std::wstring canonicalName;
 					DesignerStyleValue currentValue;
-					std::wstring metadataError;
-					if (!DesignerPropertyCatalog::CaptureValue(
-						*c, propertyName, &canonicalName, currentValue, &metadataError))
+					if (!dc->CustomType.Empty()
+						&& !c->FindPropertyMetadata(propertyName))
 					{
-						if (outError) *outError = L"控件 " + dc->Name + L"：" + metadataError;
-						return false;
+						canonicalName = propertyName;
+						currentValue = storedValue;
+					}
+					else
+					{
+						std::wstring metadataError;
+						if (!DesignerPropertyCatalog::CaptureValue(
+							*c, propertyName, &canonicalName, currentValue,
+							&metadataError))
+						{
+							if (outError) *outError = L"控件 " + dc->Name
+								+ L"：" + metadataError;
+							return false;
+						}
 					}
 					metadataProperties[ToUtf8(canonicalName)] = DesignValue{
 						{ "kind", ToUtf8(DesignerStyleSheetUtils::ValueKindName(currentValue.Kind)) },
@@ -3959,15 +6068,19 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 
 			node.Extra = std::move(extra);
 
-			// events: { "OnMouseClick": true, ... }（兼容旧格式：string handlerName）
+			// Current documents persist the resolved member-function name. Boolean
+			// values remain read-compatible for legacy documents only.
 			if (!dc->EventHandlers.empty())
 			{
 				DesignValue ev = DesignValue::object();
 				for (const auto& kv : dc->EventHandlers)
 				{
 					if (kv.first.empty()) continue;
-					// 现在只保存“是否启用”，handler 名在导出时按规则生成
-					ev[ToUtf8(kv.first)] = true;
+					const auto handlerName =
+						DesignerEventCatalog::ResolveHandlerName(
+							kv.second, dc->Name, kv.first);
+					if (handlerName.empty()) continue;
+					ev[ToUtf8(kv.first)] = ToUtf8(handlerName);
 				}
 				node.Events = std::move(ev);
 			}
@@ -3979,9 +6092,18 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 				{
 					const BindingPropertyMetadata* metadata = nullptr;
 					std::wstring validationError;
-					if (!DesignerBindingUtils::Validate(
-						*c, targetProperty, binding, &metadata, &validationError,
-						&_dataContextSchema))
+					const auto* customProperty = FindCustomProperty(
+						*dc, targetProperty);
+					const bool deferredCustomProperty = customProperty
+						&& !c->FindPropertyMetadata(targetProperty);
+					const bool valid = deferredCustomProperty
+						? DesignerBindingUtils::ValidateTarget(
+							CustomBindingTargetMetadata(*customProperty),
+							binding, &validationError, &_dataContextSchema)
+						: DesignerBindingUtils::Validate(
+							*c, targetProperty, binding, &metadata,
+							&validationError, &_dataContextSchema);
+					if (!valid)
 					{
 						if (outError) *outError = L"控件 " + dc->Name + L"：" + validationError;
 						return false;
@@ -3999,7 +6121,9 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 						bindingDefinition["converter"] = ToUtf8(
 							registered ? registered->Name : converterName);
 					}
-					bindings[ToUtf8(metadata->Name())] = std::move(bindingDefinition);
+					const auto& persistedTarget = deferredCustomProperty
+						? customProperty->Name : metadata->Name();
+					bindings[ToUtf8(persistedTarget)] = std::move(bindingDefinition);
 				}
 				node.Bindings = std::move(bindings);
 			}
@@ -4020,1202 +6144,345 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 	}
 }
 
-bool DesignerCanvas::LoadDesignFile(const std::wstring& filePath, std::wstring* outError)
+bool DesignerCanvas::BuildEventHandlerIndex(
+	DesignerModel::DesignDocumentEventIndex& index,
+	std::wstring* outError) const
 {
 	DesignerModel::DesignDocument document;
-	if (!DesignerModel::DesignDocumentSerializer::LoadFromFile(filePath, document, outError))
+	document.Form.Name = _designedFormName;
+	document.Form.EventHandlers = _designedFormEventHandlers;
+	document.Nodes.reserve(_designerControls.size());
+	for (const auto& control : _designerControls)
 	{
-		return false;
+		if (!control) continue;
+		DesignerModel::DesignNode node;
+		node.Id = control->StableId;
+		node.Name = control->Name;
+		node.Type = control->Type;
+		node.CustomType = control->CustomType;
+		node.CustomEvents = control->CustomEvents;
+		for (const auto& [eventName, handler] : control->EventHandlers)
+			if (!eventName.empty() && !handler.empty())
+				node.Events[ToUtf8(eventName)] = ToUtf8(handler);
+		document.Nodes.push_back(std::move(node));
 	}
-	return ApplyDesignDocument(document, outError);
+	return DesignerModel::DesignDocumentEventIndex::Build(
+		document, index, outError);
 }
 
-bool DesignerCanvas::ApplyDesignDocument(const DesignerModel::DesignDocument& document, std::wstring* outError)
+bool DesignerCanvas::RenameEventHandler(
+	const std::wstring& oldName,
+	const std::wstring& newName,
+	size_t* outRenamedReferenceCount,
+	std::wstring* outError)
 {
+	if (outRenamedReferenceCount) *outRenamedReferenceCount = 0;
+	DesignerModel::DesignDocument document;
+	if (!BuildDesignDocument(document, outError)) return false;
+	size_t renamed = 0;
+	if (!DesignerModel::DesignDocumentEventIndex::RenameHandler(
+		document, oldName, newName, &renamed, outError)) return false;
+	if (renamed == 0)
+	{
+		if (outError) outError->clear();
+		return true;
+	}
+
+	std::unordered_map<int, const DesignerModel::DesignNode*> nodesById;
+	nodesById.reserve(document.Nodes.size());
+	for (const auto& node : document.Nodes) nodesById.emplace(node.Id, &node);
+	for (const auto& control : _designerControls)
+	{
+		if (!control) continue;
+		const auto found = nodesById.find(control->StableId);
+		if (found == nodesById.end())
+		{
+			if (outError) *outError = L"重命名事件时无法按稳定 ID 找到控件："
+				+ control->Name;
+			return false;
+		}
+		std::map<std::wstring, std::wstring> nextHandlers;
+		const auto& events = found->second->Events;
+		if (events.is_object())
+		{
+			for (const auto& [eventName, value] : events.ObjectItems())
+			{
+				if (value.is_string())
+				{
+					auto handler = FromUtf8(value.get<std::string>());
+					if (!handler.empty())
+						nextHandlers.emplace(FromUtf8(eventName), std::move(handler));
+				}
+				else if (value.is_boolean() && value.get<bool>())
+					nextHandlers.emplace(FromUtf8(eventName), L"1");
+			}
+		}
+		control->EventHandlers = std::move(nextHandlers);
+	}
+	_designedFormEventHandlers = std::move(document.Form.EventHandlers);
+	if (outRenamedReferenceCount) *outRenamedReferenceCount = renamed;
+	if (outError) outError->clear();
+	return true;
+}
+
+DesignerDocumentTransactionResult DesignerCanvas::LoadDesignFile(
+	const std::wstring& filePath,
+	std::wstring* outError)
+{
+	if (outError) outError->clear();
+	if (filePath.empty())
+	{
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"打开路径为空。");
+		if (outError) *outError = result.Error;
+		PublishCanvasCommandResult(
+			L"OpenDocument", filePath, result);
+		return result;
+	}
+	DesignerModel::DesignDocument document;
+	std::wstring error;
+	const bool loaded = DesignerModel::DetectDesignDocumentFileFormat(filePath)
+		== DesignerModel::DesignDocumentFileFormat::Xaml
+		? DesignerModel::XamlDocumentParser::LoadFromFile(
+			filePath, document, &error)
+		: DesignerModel::DesignDocumentSerializer::LoadFromFile(
+			filePath, document, &error);
+	if (!loaded)
+	{
+		auto result = DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			error.empty() ? L"无法读取设计文件。" : error);
+		if (outError) *outError = result.Error;
+		PublishCanvasCommandResult(
+			L"OpenDocument", filePath, result);
+		return result;
+	}
+	auto result = ReplaceDesignDocument(document, L"打开文档");
+	if (!result && outError) *outError = result.Error;
+	PublishCanvasCommandResult(
+		L"OpenDocument", filePath, result);
+	return result;
+}
+
+DesignerDocumentTransactionResult DesignerCanvas::RestoreRecoveredDocument(
+	const DesignerModel::DesignDocument& document)
+{
+	auto result = ReplaceDesignDocument(
+		document, L"恢复自动保存文档", false);
+	PublishCanvasCommandResult(
+		L"RestoreRecovery", L"RestoreRecovery", result);
+	return result;
+}
+
+DesignerDocumentTransactionResult DesignerCanvas::ReplaceDesignDocument(
+	const DesignerModel::DesignDocument& document,
+	const std::wstring& operation,
+	bool markAsSaved)
+{
+	if (HasActiveDocumentTransaction())
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			L"文档事务进行中，不能" + operation + L"。");
+
+	DesignerModel::DesignDocument previousDocument;
+	std::wstring captureError;
+	if (!BuildDesignDocument(previousDocument, &captureError))
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"无法建立当前文档的恢复快照：" + captureError);
+	const auto previousSelectionNames = CaptureSelectionNames();
+	const auto previousPrimarySelection = _selectedControl
+		? _selectedControl->Name : std::wstring{};
+	const bool documentChanged = previousDocument != document;
+
+	std::wstring applyError;
+	if (ApplyDesignDocument(document, &applyError))
+	{
+		auto resetResult = markAsSaved
+			? ResetDocumentHistoryAsSaved()
+			: ResetDocumentHistoryAsUnsaved();
+		if (resetResult)
+			return DesignerDocumentTransactionResult::Success(
+				documentChanged || !markAsSaved
+					? DesignerDocumentTransactionState::Committed
+					: DesignerDocumentTransactionState::Unchanged);
+		applyError = L"无法重置新文档的命令历史："
+			+ resetResult.Error;
+	}
+
+	std::wstring restoreError;
+	const bool restored = ApplyDesignDocument(
+		previousDocument, &restoreError);
+	if (restored)
+		RestoreSelectionByNames(
+			previousSelectionNames, previousPrimarySelection, true);
+	std::wstring message = operation
+		+ (restored ? L"失败，已恢复此前文档："
+			: L"失败，且无法恢复此前文档：")
+		+ (applyError.empty() ? L"目标文档无效。" : applyError);
+	if (!restored && !restoreError.empty())
+		message += L" 恢复错误：" + restoreError;
+	return DesignerDocumentTransactionResult::Failure(
+		DesignerDocumentTransactionState::Failed,
+		std::move(message), restored);
+}
+
+bool DesignerCanvas::ApplyDesignDocument(
+	const DesignerModel::DesignDocument& document,
+	std::wstring* outError)
+{
+	for (const auto& node : document.Nodes)
+	{
+		if (node.CustomType.Empty()) continue;
+		const auto installed = _customControlDescriptors.find(
+			node.CustomType.RegistryKey());
+		if (installed == _customControlDescriptors.end()
+			|| installed->second.CustomType != node.CustomType
+			|| installed->second.Type != node.Type)
+			continue;
+		for (const auto& [eventKey, handlerValue] : node.Events.ObjectItems())
+		{
+			if ((handlerValue.is_boolean() && !handlerValue.get<bool>())
+				|| (handlerValue.is_string()
+					&& TrimWs(FromUtf8(handlerValue.get<std::string>())).empty()))
+				continue;
+			const auto eventName = FromUtf8(eventKey);
+			const auto persistedEvent = std::find_if(
+				node.CustomEvents.begin(), node.CustomEvents.end(),
+				[&](const auto& event)
+				{ return _wcsicmp(event.Name.c_str(), eventName.c_str()) == 0; });
+			if (persistedEvent == node.CustomEvents.end()) continue;
+			const auto installedEvent = std::find_if(
+				installed->second.CustomEvents.begin(),
+				installed->second.CustomEvents.end(),
+				[&](const auto& event)
+				{
+					return _wcsicmp(event.Name.c_str(), eventName.c_str()) == 0;
+				});
+			if (installedEvent == installed->second.CustomEvents.end()
+				|| installedEvent->EventField != persistedEvent->EventField
+				|| installedEvent->Signature != persistedEvent->Signature)
+			{
+				if (outError)
+					*outError = L"控件“" + node.Name + L"”使用的自定义事件“"
+						+ eventName
+						+ L"”与当前控件清单不兼容；请恢复原事件名称、field 和 signature，"
+							L"或先移除该事件绑定。";
+				return false;
+			}
+		}
+	}
+
+	DesignerModel::MaterializedControlTree materialized;
+	DesignerModel::DesignDocumentMaterializationOptions materializationOptions;
+	materializationOptions.ControlFactory =
+		[](UIClass type) { return DesignerControlFactory::Create(type); };
+	materializationOptions.CustomControlFactory =
+		[this](const DesignerModel::DesignNode& node) -> std::unique_ptr<Control>
+		{
+			const auto found = _customControlDescriptors.find(
+				node.CustomType.RegistryKey());
+			if (found == _customControlDescriptors.end()
+				|| found->second.CustomType != node.CustomType
+				|| found->second.Type != node.Type
+				|| !found->second.PreviewFactory)
+				return nullptr;
+			return found->second.PreviewFactory(0, 0);
+		};
+	materializationOptions.AllowCustomControlProxy = true;
+	materializationOptions.AllowDeferredCustomMetadata = true;
+	if (!DesignerModel::DesignDocumentMaterializer::Materialize(
+		document, materialized, materializationOptions, outError))
+		return false;
+
 	try
 	{
-		if (!DesignerDataContextSchemaUtils::Validate(document.DataContextSchema, outError))
-			return false;
-		if (!DesignerStyleSheetUtils::Validate(document.StyleSheet, outError))
-			return false;
-		ClearCanvas();
+		ClearCanvasCore();
 		_controlTypeCounters.clear();
-		_designedFormEventHandlers.clear();
-
-		_designedFormName = document.Form.Name.empty() ? L"MainForm" : document.Form.Name;
-		_designedFormText = document.Form.Text;
-		_designedFormFontName = document.Form.FontName;
-		_designedFormFontSize = document.Form.FontSize;
-		if (_designedFormFontSize < 1.0f) _designedFormFontSize = 1.0f;
-		if (_designedFormFontSize > 200.0f) _designedFormFontSize = 200.0f;
-		if (_designedFormFontName.empty())
-		{
-			if (auto* def = GetDefaultFontObject()) _designedFormFontSize = def->FontSize;
-		}
-		_designedFormShowInTaskBar = document.Form.ShowInTaskBar;
-		_designedFormTopMost = document.Form.TopMost;
-		_designedFormEnable = document.Form.Enable;
-		_designedFormVisible = document.Form.Visible;
-		_designedFormVisibleHead = document.Form.VisibleHead;
-		_designedFormHeadHeight = document.Form.HeadHeight;
-		if (_designedFormHeadHeight < 0) _designedFormHeadHeight = 0;
-		_designedFormMinBox = document.Form.MinBox;
-		_designedFormMaxBox = document.Form.MaxBox;
-		_designedFormCloseBox = document.Form.CloseBox;
-		_designedFormCenterTitle = document.Form.CenterTitle;
-		_designedFormAllowResize = document.Form.AllowResize;
-		_designedFormBackColor = document.Form.BackColor;
-		_designedFormForeColor = document.Form.ForeColor;
-		_designedFormEventHandlers = document.Form.EventHandlers;
+		ApplyDesignedFormModel(document.Form);
+		if (!SetCodeBehind(document.CodeBehind, outError)) return false;
 		_dataContextSchema = document.DataContextSchema;
 		DesignerDataContextSchemaUtils::Canonicalize(_dataContextSchema);
-		if (_clientSurface) _clientSurface->BackColor = _designedFormBackColor;
-		SetDesignedFormSize(document.Form.Size);
-		_designedFormLocation = document.Form.Location;
-		UpdateClientSurfaceLayout();
-		RebuildDesignedFormSharedFont();
+		_nextStableControlId = document.NextStableId;
 
-		struct Pending
+		// A detached runtime tree uses the framework default for controls without
+		// an explicit font. The design surface instead previews the form font.
+		std::vector<Control*> pending;
+		for (const auto& root : materialized.Roots)
+			if (root) pending.push_back(root.get());
+		while (!pending.empty())
 		{
-			std::wstring name;
-			int id = 0;
-			UIClass type = UIClass::UI_Base;
-			std::wstring parent;
-			int order = -1;
-			DesignValue props;
-			DesignValue extra;
-			DesignValue events;
-			DesignValue bindings;
-		};
-		std::vector<Pending> items;
-		items.reserve(document.Nodes.size());
-
-		std::unordered_set<std::wstring> nameSet;
-		std::unordered_map<int, std::wstring> nameById;
-		nameById.reserve(document.Nodes.size());
-		for (const auto& node : document.Nodes)
-		{
-			Pending p;
-			p.name = node.Name;
-			p.id = node.Id;
-			if (p.name.empty())
-			{
-				if (outError) *outError = L"控件条目缺少 name/type 或 type 不支持。";
-				return false;
-			}
-			p.type = node.Type;
-			if (nameSet.find(p.name) != nameSet.end())
-			{
-				if (outError) *outError = L"控件 Name 重复: " + p.name;
-				return false;
-			}
-			nameSet.insert(p.name);
-			p.parent = node.ParentRef;
-			p.order = node.Order;
-			p.props = node.Props.is_object() ? node.Props : DesignValue::object();
-			p.extra = node.Extra.is_object() ? node.Extra : DesignValue::object();
-			p.events = node.Events.is_object() ? node.Events : DesignValue::object();
-			p.bindings = node.Bindings.is_object() ? node.Bindings : DesignValue::object();
-			nameById[p.id] = p.name;
-			items.push_back(std::move(p));
+			auto* control = pending.back();
+			pending.pop_back();
+			if (!control) continue;
+			if (control->Font == GetDefaultFontObject())
+				control->SetFontEx(_designedFormSharedFont, false);
+			for (auto* child : control->Children)
+				if (child) pending.push_back(child);
 		}
 
-		auto createControl = [&](UIClass type) -> Control*
+		if (!_clientSurface)
 		{
-			switch (type)
-			{
-	case UIClass::UI_Label: return new Label(L"标签", 0, 0);
-			case UIClass::UI_LinkLabel: return new LinkLabel(L"链接标签", 0, 0);
-			case UIClass::UI_Button: return new Button(L"按钮", 0, 0, 120, 30);
-			case UIClass::UI_TextBox: return new TextBox(L"", 0, 0, 200, 25);
-			case UIClass::UI_RichTextBox: return new RichTextBox(L"", 0, 0, 300, 160);
-			case UIClass::UI_PasswordBox: return new PasswordBox(L"", 0, 0, 200, 25);
-			case UIClass::UI_DateTimePicker: return new DateTimePicker(L"", 0, 0, 200, 28);
-			case UIClass::UI_NumericUpDown: return new NumericUpDown(0, 0, 140, 30);
-			case UIClass::UI_Panel: return new Panel(0, 0, 200, 200);
-			case UIClass::UI_GroupBox: return new GroupBox(L"GroupBox", 0, 0, 240, 180);
-			case UIClass::UI_Expander: return new Expander(L"Expander", 0, 0, 260, 160);
-				case UIClass::UI_ScrollView: return new ScrollView(0, 0, 240, 200);
-			case UIClass::UI_StackPanel: return new StackPanel(0, 0, 200, 200);
-			case UIClass::UI_GridPanel: return new GridPanel(0, 0, 200, 200);
-			case UIClass::UI_DockPanel: return new DockPanel(0, 0, 200, 200);
-			case UIClass::UI_WrapPanel: return new WrapPanel(0, 0, 200, 200);
-			case UIClass::UI_RelativePanel: return new RelativePanel(0, 0, 200, 200);
-			case UIClass::UI_SplitContainer: return new SplitContainer(0, 0, 360, 220);
-			case UIClass::UI_CheckBox: return new CheckBox(L"复选框", 0, 0);
-			case UIClass::UI_RadioBox: return new RadioBox(L"单选框", 0, 0);
-			case UIClass::UI_ComboBox: return new ComboBox(L"", 0, 0, 150, 25);
-			case UIClass::UI_ListView: return new ListView(0, 0, 320, 220);
-			case UIClass::UI_ListBox: return new ListBox(0, 0, 220, 180);
-			case UIClass::UI_GridView: return new GridView(0, 0, 360, 200);
-			case UIClass::UI_PropertyGrid: return new PropertyGridView(0, 0, 300, 320);
-			case UIClass::UI_ChartView: return new ChartView(0, 0, 420, 260);
-			case UIClass::UI_ReportView: return new ReportView(0, 0, 480, 300);
-			case UIClass::UI_KpiCard: return new KpiCard(0, 0, 220, 132);
-			case UIClass::UI_FilterBar: return new FilterBar(0, 0, 640, 48);
-			case UIClass::UI_TreeView: return new TreeView(0, 0, 220, 220);
-			case UIClass::UI_ProgressBar: return new ProgressBar(0, 0, 200, 20);
-			case UIClass::UI_LoadingRing: return new LoadingRing(0, 0, 48, 48);
-			case UIClass::UI_ProgressRing: return new ProgressRing(0, 0, 72, 72);
-			case UIClass::UI_Slider: return new Slider(0, 0, 200, 30);
-			case UIClass::UI_PictureBox: return new PictureBox(0, 0, 150, 150);
-			case UIClass::UI_Switch: return new Switch(0, 0, 60, 30);
-			case UIClass::UI_TabControl: return new TabControl(0, 0, 360, 240);
-			case UIClass::UI_ToolBar: return new ToolBar(0, 0, 360, 34);
-			case UIClass::UI_Menu: return new Menu(0, 0, 600, 28);
-			case UIClass::UI_StatusBar: return new StatusBar(0, 0, 600, 26);
-			case UIClass::UI_ToastHost: return new ToastHost(0, 0, 340, 260);
-			case UIClass::UI_WebBrowser: return new FakeWebBrowser(0, 0, 500, 360);
-			case UIClass::UI_MediaPlayer: return new MediaPlayer(0, 0, 640, 360);
-			default: return nullptr;
-			}
-		};
-
-		std::unordered_map<std::wstring, std::shared_ptr<DesignerControl>> dcOf;
-		dcOf.reserve(items.size());
-		std::unordered_map<std::wstring, Control*> instOf;
-		instOf.reserve(items.size());
-
-		std::unordered_map<std::wstring, Control*> tabPageOf;
-		tabPageOf.reserve(64);
-
-		for (auto& it : items)
-		{
-			Control* c = createControl(it.type);
-			if (!c)
-			{
-				if (outError) *outError = L"无法创建控件实例: " + it.name;
-				return false;
-			}
-			auto dc = std::make_shared<DesignerControl>(c, it.name, it.type, nullptr);
-			dcOf[it.name] = dc;
-			instOf[it.name] = c;
-			UpdateDefaultNameCounterFromName(it.type, it.name);
+			if (outError) *outError = L"设计器客户区不可用。";
+			return false;
 		}
+		for (auto& root : materialized.Roots)
+			if (root) _clientSurface->AddOwned(std::move(root));
 
-		for (auto& it : items)
+		_designerControls = std::move(materialized.Controls);
+		for (const auto& control : _designerControls)
 		{
-			auto dcIt = dcOf.find(it.name);
-			if (dcIt == dcOf.end()) continue;
-			auto dc = dcIt->second;
-			auto* c = dc->ControlInstance;
-			if (!c) continue;
-
-			if (it.events.is_object())
+			if (!control || control->CustomType.Empty()) continue;
+			const auto found = _customControlDescriptors.find(
+				control->CustomType.RegistryKey());
+			if (found != _customControlDescriptors.end()
+				&& found->second.CustomType == control->CustomType)
 			{
-				dc->EventHandlers.clear();
-				for (const auto& [eventName, eventValue] : it.events.ObjectItems())
+				control->CustomProperties = found->second.CustomProperties;
+				control->CustomEvents = found->second.CustomEvents;
+				if (control->ControlInstance)
 				{
-					std::wstring k = FromUtf8(eventName);
-					if (k.empty()) continue;
-					if (eventValue.is_boolean())
+					AttachPreviewPropertySink(*control);
+					for (const auto& property : control->CustomProperties)
 					{
-						if (eventValue.get<bool>())
-							dc->EventHandlers[k] = L"1";
-					}
-					else if (eventValue.is_string())
-					{
-						std::wstring v = FromUtf8(eventValue.get<std::string>());
-						if (!v.empty()) dc->EventHandlers[k] = v;
-					}
-				}
-			}
-
-			if (it.bindings.is_object())
-			{
-				dc->DataBindings.clear();
-				for (const auto& [targetName, bindingValue] : it.bindings.ObjectItems())
-				{
-					if (!bindingValue.is_object())
-					{
-						if (outError) *outError = L"控件 " + it.name + L" 的数据绑定格式无效。";
-						return false;
-					}
-					const std::wstring targetProperty = FromUtf8(targetName);
-					const std::wstring sourceProperty = FromUtf8(
-						bindingValue.value("source", std::string()));
-					const int modeValue = bindingValue.value(
-						"mode", static_cast<int>(BindingMode::OneWay));
-					const int updateModeValue = bindingValue.value(
-						"updateMode", static_cast<int>(DataSourceUpdateMode::OnPropertyChanged));
-					const std::wstring converter = DesignerBindingUtils::Trim(FromUtf8(
-						bindingValue.value("converter", std::string())));
-					if (modeValue < static_cast<int>(BindingMode::OneWay)
-						|| modeValue > static_cast<int>(BindingMode::OneTime)
-						|| updateModeValue < static_cast<int>(DataSourceUpdateMode::OnPropertyChanged)
-						|| updateModeValue > static_cast<int>(DataSourceUpdateMode::Never))
-					{
-						if (outError) *outError = L"控件 " + it.name + L" 的数据绑定参数无效。";
-						return false;
-					}
-
-					DesignerDataBinding binding{
-						DesignerBindingUtils::Trim(sourceProperty),
-						static_cast<BindingMode>(modeValue),
-						static_cast<DataSourceUpdateMode>(updateModeValue),
-						converter };
-					const BindingPropertyMetadata* metadata = nullptr;
-					std::wstring validationError;
-					if (!DesignerBindingUtils::Validate(
-						*c, targetProperty, binding, &metadata, &validationError,
-						&_dataContextSchema))
-					{
-						if (outError) *outError = L"控件 " + it.name + L"：" + validationError;
-						return false;
-					}
-
-					dc->DataBindings[metadata->Name()] = std::move(binding);
-				}
-			}
-
-			if (it.props.is_object())
-			{
-				c->Text = FromUtf8(it.props.value("text", std::string()));
-				c->SetStyleId(it.props.contains("styleId") && it.props["styleId"].is_string()
-					? FromUtf8(it.props["styleId"].get<std::string>())
-					: std::wstring{});
-				c->ClearStyleClasses();
-				if (it.props.contains("styleClasses") && it.props["styleClasses"].is_array())
-				{
-					for (const auto& styleClass : it.props["styleClasses"])
-					{
-						if (styleClass.is_string())
-							c->AddStyleClass(FromUtf8(styleClass.get<std::string>()));
-					}
-				}
-				if (it.props.contains("location"))
-				{
-					auto& l = it.props["location"];
-					if (l.is_object())
-						c->Location = { l.value("x", 0), l.value("y", 0) };
-				}
-				if (it.props.contains("size"))
-				{
-					auto& s = it.props["size"];
-					if (s.is_object())
-						c->Size = { s.value("w", c->Size.cx), s.value("h", c->Size.cy) };
-				}
-				c->Enable = it.props.value("enable", true);
-				c->Visible = it.props.value("visible", true);
-				c->BackColor = ColorFromValue(it.props.contains("backColor") ? it.props["backColor"] : DesignValue(), c->BackColor);
-				c->ForeColor = ColorFromValue(it.props.contains("foreColor") ? it.props["foreColor"] : DesignValue(), c->ForeColor);
-				DesignValue borderColorValue = it.props.contains("borderColor")
-					? it.props["borderColor"]
-					: (it.props.contains("bolderColor") ? it.props["bolderColor"] : DesignValue());
-				c->BorderColor = ColorFromValue(borderColorValue, c->BorderColor);
-				c->ShowValidationBorder = it.props.value("showValidationBorder", c->ShowValidationBorder);
-				c->ShowValidationToolTip = it.props.value("showValidationToolTip", c->ShowValidationToolTip);
-				c->ValidationBorderThickness = (float)it.props.value(
-					"validationBorderThickness", (double)c->ValidationBorderThickness);
-				c->ValidationCornerRadius = (float)it.props.value(
-					"validationCornerRadius", (double)c->ValidationCornerRadius);
-				c->ValidationToolTipMaxWidth = (float)it.props.value(
-					"validationToolTipMaxWidth", (double)c->ValidationToolTipMaxWidth);
-				if (it.props.contains("accessibleDescription")
-					&& it.props["accessibleDescription"].is_string())
-					c->AccessibleDescription = FromUtf8(
-						it.props["accessibleDescription"].get<std::string>());
-				c->Margin = ThicknessFromValue(it.props.contains("margin") ? it.props["margin"] : DesignValue(), c->Margin);
-				c->Padding = ThicknessFromValue(it.props.contains("padding") ? it.props["padding"] : DesignValue(), c->Padding);
-				c->AnchorStyles = (uint8_t)it.props.value("anchor", (int)c->AnchorStyles);
-				HorizontalAlignment ha = c->HAlign;
-				VerticalAlignment va = c->VAlign;
-				Dock dk = c->DockPosition;
-				if (it.props.contains("hAlign") && it.props["hAlign"].is_string())
-					TryParseHAlign(it.props["hAlign"].get<std::string>(), ha);
-				if (it.props.contains("vAlign") && it.props["vAlign"].is_string())
-					TryParseVAlign(it.props["vAlign"].get<std::string>(), va);
-				if (it.props.contains("dock") && it.props["dock"].is_string())
-					TryParseDock(it.props["dock"].get<std::string>(), dk);
-				c->HAlign = ha;
-				c->VAlign = va;
-				c->DockPosition = dk;
-				c->ZIndex = it.props.value("zIndex", c->ZIndex);
-				c->GridRow = it.props.value("gridRow", c->GridRow);
-				c->GridColumn = it.props.value("gridColumn", c->GridColumn);
-				c->GridRowSpan = it.props.value("gridRowSpan", c->GridRowSpan);
-				c->GridColumnSpan = it.props.value("gridColumnSpan", c->GridColumnSpan);
-				c->SizeMode = (ImageSizeMode)it.props.value("sizeMode", (int)c->SizeMode);
-
-				// Font：有显式设置则创建新对象，否则跟随窗体字体/框架默认
-				if (it.props.contains("font") && it.props["font"].is_object())
-				{
-					auto& fj = it.props["font"];
-					std::wstring fn = FromUtf8(fj.value("name", std::string()));
-					float fs = (float)fj.value("size", (double)GetDefaultFontObject()->FontSize);
-					if (fs < 1.0f) fs = 1.0f;
-					if (fs > 200.0f) fs = 200.0f;
-					if (fn.empty()) fn = GetDefaultFontObject()->FontName;
-					c->Font = new ::Font(fn, fs);
-				}
-				else
-				{
-					if (_designedFormSharedFont) c->SetFontEx(_designedFormSharedFont, false);
-					else c->SetFontEx(nullptr, false);
-				}
-
-				if (it.props.contains("metadata") && it.props["metadata"].is_object())
-				{
-					using MetadataEntry = std::pair<const std::string*, const DesignValue*>;
-					std::vector<MetadataEntry> metadataEntries;
-					for (const auto& [propertyKey, propertyValue]
-						: it.props["metadata"].ObjectItems())
-					{
-						metadataEntries.emplace_back(&propertyKey, &propertyValue);
-					}
-					std::stable_sort(metadataEntries.begin(), metadataEntries.end(),
-						[c](const MetadataEntry& left, const MetadataEntry& right)
-						{
-							const auto leftName = FromUtf8(*left.first);
-							const auto rightName = FromUtf8(*right.first);
-							const auto* leftMetadata = c->FindPropertyMetadata(leftName);
-							const auto* rightMetadata = c->FindPropertyMetadata(rightName);
-							if (leftMetadata && rightMetadata)
-							{
-								const auto& leftDesign = leftMetadata->Design();
-								const auto& rightDesign = rightMetadata->Design();
-								if (leftDesign.CategoryOrder != rightDesign.CategoryOrder)
-									return leftDesign.CategoryOrder < rightDesign.CategoryOrder;
-								if (leftDesign.Order != rightDesign.Order)
-									return leftDesign.Order < rightDesign.Order;
-							}
-							else if (leftMetadata != rightMetadata)
-							{
-								return leftMetadata != nullptr;
-							}
-							return _wcsicmp(leftName.c_str(), rightName.c_str()) < 0;
-						});
-
-					for (const auto& [propertyKeyPointer, propertyValuePointer]
-						: metadataEntries)
-					{
-						const auto& propertyKey = *propertyKeyPointer;
-						const auto& propertyValue = *propertyValuePointer;
-						if (!propertyValue.is_object()
-							|| !propertyValue.contains("kind")
-							|| !propertyValue["kind"].is_string()
-							|| !propertyValue.contains("value")
-							|| !propertyValue["value"].is_string())
-						{
-							if (outError) *outError = L"控件 " + it.name
-								+ L" 的元数据属性格式无效。";
-							return false;
-						}
-						DesignerStyleValue value;
-						if (!DesignerStyleSheetUtils::TryParseValueKind(
-							FromUtf8(propertyValue["kind"].get<std::string>()), value.Kind))
-						{
-							if (outError) *outError = L"控件 " + it.name
-								+ L" 的元数据属性类型无效。";
-							return false;
-						}
-						value.Text = FromUtf8(propertyValue["value"].get<std::string>());
-						std::wstring canonicalName;
-						DesignerStyleValue effective;
-						std::wstring metadataError;
-						if (!DesignerPropertyCatalog::ApplyValue(
-							*c, FromUtf8(propertyKey), value,
-							&canonicalName, &effective, &metadataError))
-						{
-							if (outError) *outError = L"控件 " + it.name + L"：" + metadataError;
-							return false;
-						}
-						dc->MetadataProperties[canonicalName] = std::move(effective);
-					}
-				}
-			}
-
-			auto migrateLegacyMetadata = [&](const wchar_t* propertyName,
-				DesignerStyleValue value) -> bool
-			{
-				std::wstring metadataError;
-				if (!ApplyTrackedMetadataProperty(
-					*dc, *c, propertyName, std::move(value), true, &metadataError))
-				{
-					if (outError) *outError = L"控件 " + it.name
-						+ L" 的旧格式属性迁移失败：" + metadataError;
-					return false;
-				}
-				return true;
-			};
-
-			if (it.extra.is_object())
-			{
-				if (it.type == UIClass::UI_GridPanel)
-				{
-					auto* gridPanel = (GridPanel*)c;
-					gridPanel->ClearRows();
-					gridPanel->ClearColumns();
-					if (it.extra.contains("rows") && it.extra["rows"].is_array())
-					{
-						for (auto& r : it.extra["rows"])
-						{
-							if (!r.is_object()) continue;
-							GridLength h = GridLengthFromValue(r.contains("height") ? r["height"] : DesignValue(), GridLength::Auto());
-							float minH = r.value("min", 0.0f);
-							float maxH = r.value("max", FLT_MAX);
-							gridPanel->AddRow(h, minH, maxH);
-						}
-					}
-					if (it.extra.contains("columns") && it.extra["columns"].is_array())
-					{
-						for (auto& col : it.extra["columns"])
-						{
-							if (!col.is_object()) continue;
-							GridLength w = GridLengthFromValue(col.contains("width") ? col["width"] : DesignValue(), GridLength::Auto());
-							float minW = col.value("min", 0.0f);
-							float maxW = col.value("max", FLT_MAX);
-							gridPanel->AddColumn(w, minW, maxW);
-						}
-					}
-				}
-				else if (it.type == UIClass::UI_TabControl)
-				{
-					auto* tabControl = (TabControl*)c;
-					if (it.extra.contains("selectedIndex")
-						&& !migrateLegacyMetadata(L"SelectedIndex", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value(
-								"selectedIndex", tabControl->SelectedIndex)) })) return false;
-					if (it.extra.contains("titleHeight")
-						&& !migrateLegacyMetadata(L"TitleHeight", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value(
-								"titleHeight", static_cast<float>(tabControl->TitleHeight))) })) return false;
-					if (it.extra.contains("titleWidth")
-						&& !migrateLegacyMetadata(L"TitleWidth", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value(
-								"titleWidth", static_cast<float>(tabControl->TitleWidth))) })) return false;
-					if (it.extra.contains("titlePosition")
-						&& !migrateLegacyMetadata(L"TitlePosition", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value(
-								"titlePosition", static_cast<int>(tabControl->TitlePosition))) })) return false;
-					if (it.extra.contains("animationMode")
-						&& !migrateLegacyMetadata(L"AnimationMode", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value(
-								"animationMode", static_cast<int>(tabControl->AnimationMode))) })) return false;
-					if (it.extra.contains("pages") && it.extra["pages"].is_array())
-					{
-						for (auto& pj : it.extra["pages"])
-						{
-							if (!pj.is_object()) continue;
-							std::wstring id = FromUtf8(pj.value("id", std::string()));
-							auto text = FromUtf8(pj.value("text", std::string("Page")));
-							auto* page = tabControl->AddPage(text);
-							if (page)
-								tabPageOf[id] = page;
-						}
-					}
-				}
-				else if (it.type == UIClass::UI_StackPanel)
-				{
-					Orientation o;
-					if (it.extra.contains("orientation") && it.extra["orientation"].is_string() && TryParseOrientation(it.extra["orientation"].get<std::string>(), o))
-					{
-						if (!migrateLegacyMetadata(L"Orientation", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(static_cast<int>(o)) })) return false;
-					}
-					if (it.extra.contains("spacing"))
-					{
-						if (!migrateLegacyMetadata(L"Spacing", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value("spacing", 0.0f)) })) return false;
-					}
-					HorizontalAlignment horizontalAlignment = HorizontalAlignment::Stretch;
-					VerticalAlignment verticalAlignment = VerticalAlignment::Stretch;
-					if (it.extra.contains("horizontalContentAlignment")
-						&& it.extra["horizontalContentAlignment"].is_string()
-						&& TryParseHAlign(it.extra["horizontalContentAlignment"].get<std::string>(), horizontalAlignment))
-					{
-						if (!migrateLegacyMetadata(L"HorizontalContentAlignment", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(static_cast<int>(horizontalAlignment)) })) return false;
-					}
-					if (it.extra.contains("verticalContentAlignment")
-						&& it.extra["verticalContentAlignment"].is_string()
-						&& TryParseVAlign(it.extra["verticalContentAlignment"].get<std::string>(), verticalAlignment))
-					{
-						if (!migrateLegacyMetadata(L"VerticalContentAlignment", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(static_cast<int>(verticalAlignment)) })) return false;
-					}
-				}
-				else if (it.type == UIClass::UI_WrapPanel)
-				{
-					Orientation o;
-					if (it.extra.contains("orientation") && it.extra["orientation"].is_string() && TryParseOrientation(it.extra["orientation"].get<std::string>(), o))
-					{
-						if (!migrateLegacyMetadata(L"Orientation", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(static_cast<int>(o)) })) return false;
-					}
-					if (it.extra.contains("itemWidth"))
-					{
-						if (!migrateLegacyMetadata(L"ItemWidth", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value("itemWidth", 0.0f)) })) return false;
-					}
-					if (it.extra.contains("itemHeight"))
-					{
-						if (!migrateLegacyMetadata(L"ItemHeight", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value("itemHeight", 0.0f)) })) return false;
-					}
-				}
-				else if (it.type == UIClass::UI_DockPanel)
-				{
-					if (it.extra.contains("lastChildFill"))
-					{
-						if (!migrateLegacyMetadata(L"LastChildFill", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("lastChildFill", true) ? L"true" : L"false" }))
-							return false;
-					}
-				}
-				else if (it.type == UIClass::UI_ToolBar)
-				{
-					auto* toolBar = (ToolBar*)c;
-					if (it.extra.contains("padding")
-						&& !migrateLegacyMetadata(L"HorizontalPadding", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value(
-								"padding", toolBar->HorizontalPadding)) })) return false;
-					if (it.extra.contains("gap")
-						&& !migrateLegacyMetadata(L"Gap", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value("gap", toolBar->Gap)) })) return false;
-					if (it.extra.contains("itemHeight")
-						&& !migrateLegacyMetadata(L"ItemHeight", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value(
-								"itemHeight", toolBar->ItemHeight)) })) return false;
-				}
-				else if (it.type == UIClass::UI_ScrollView)
-				{
-					auto* scrollView = (ScrollView*)c;
-					if (it.extra.contains("scrollBackColor")
-						&& !migrateLegacyMetadata(L"ScrollBackColor", {
-							DesignerStyleValueKind::Color,
-							ColorToMetadataText(ColorFromValue(
-								it.extra["scrollBackColor"], scrollView->ScrollBackColor)) })) return false;
-					if (it.extra.contains("scrollForeColor")
-						&& !migrateLegacyMetadata(L"ScrollForeColor", {
-							DesignerStyleValueKind::Color,
-							ColorToMetadataText(ColorFromValue(
-								it.extra["scrollForeColor"], scrollView->ScrollForeColor)) })) return false;
-					if (it.extra.contains("autoContentSize")
-						&& !migrateLegacyMetadata(L"AutoContentSize", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("autoContentSize", scrollView->AutoContentSize)
-								? L"true" : L"false" })) return false;
-					if (it.extra.contains("contentSize") && it.extra["contentSize"].is_object())
-					{
-						auto& cs = it.extra["contentSize"];
-						if (!migrateLegacyMetadata(L"ContentSize", {
-							DesignerStyleValueKind::Size,
-							std::to_wstring(cs.value("w", scrollView->ContentSize.cx))
-								+ L", " + std::to_wstring(cs.value("h", scrollView->ContentSize.cy)) })) return false;
-					}
-					if (it.extra.contains("alwaysShowVScroll")
-						&& !migrateLegacyMetadata(L"AlwaysShowVScroll", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("alwaysShowVScroll", scrollView->AlwaysShowVScroll)
-								? L"true" : L"false" })) return false;
-					if (it.extra.contains("alwaysShowHScroll")
-						&& !migrateLegacyMetadata(L"AlwaysShowHScroll", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("alwaysShowHScroll", scrollView->AlwaysShowHScroll)
-								? L"true" : L"false" })) return false;
-					if (it.extra.contains("mouseWheelStep")
-						&& !migrateLegacyMetadata(L"MouseWheelStep", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value("mouseWheelStep", scrollView->MouseWheelStep)) })) return false;
-					// Scroll offsets are observable runtime state, not design configuration.
-					// Old files remain readable, but new saves intentionally omit them.
-					scrollView->ScrollXOffset = it.extra.value("scrollXOffset", scrollView->ScrollXOffset);
-					scrollView->ScrollYOffset = it.extra.value("scrollYOffset", scrollView->ScrollYOffset);
-				}
-				else if (it.type == UIClass::UI_ComboBox)
-				{
-					auto* comboBox = (ComboBox*)c;
-					std::vector<std::wstring> items;
-					if (it.extra.contains("items") && it.extra["items"].is_array())
-					{
-						for (auto& sj : it.extra["items"])
-							if (sj.is_string()) items.push_back(FromUtf8(sj.get<std::string>()));
-					}
-					comboBox->Items = items;
-					if (it.extra.contains("expandCount")
-						&& !migrateLegacyMetadata(L"ExpandCount", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value(
-								"expandCount", comboBox->ExpandCount)) })) return false;
-					if (it.extra.contains("selectedIndex")
-						&& !migrateLegacyMetadata(L"SelectedIndex", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value(
-								"selectedIndex", comboBox->SelectedIndex)) })) return false;
-				}
-			else if (it.type == UIClass::UI_ListView || it.type == UIClass::UI_ListBox)
-			{
-				auto* listView = (ListView*)c;
-				if (it.extra.contains("viewMode")
-					&& !migrateLegacyMetadata(L"ViewMode", {
-						DesignerStyleValueKind::Int,
-						std::to_wstring(it.extra.value(
-							"viewMode", static_cast<int>(listView->ViewMode))) })) return false;
-				if (it.extra.contains("selectionMode")
-					&& !migrateLegacyMetadata(L"SelectionMode", {
-						DesignerStyleValueKind::Int,
-						std::to_wstring(it.extra.value(
-							"selectionMode", static_cast<int>(listView->SelectionMode))) })) return false;
-				if (it.extra.contains("showCheckBoxes")
-					&& !migrateLegacyMetadata(L"ShowCheckBoxes", {
-						DesignerStyleValueKind::Bool,
-						it.extra.value("showCheckBoxes", listView->ShowCheckBoxes)
-							? L"true" : L"false" })) return false;
-				if (it.extra.contains("showColumnHeaders")
-					&& !migrateLegacyMetadata(L"ShowColumnHeaders", {
-						DesignerStyleValueKind::Bool,
-						it.extra.value("showColumnHeaders", listView->ShowColumnHeaders)
-							? L"true" : L"false" })) return false;
-				if (it.extra.contains("alternatingRows")
-					&& !migrateLegacyMetadata(L"AlternatingRows", {
-						DesignerStyleValueKind::Bool,
-						it.extra.value("alternatingRows", listView->AlternatingRows)
-							? L"true" : L"false" })) return false;
-				if (it.extra.contains("rowHeight")
-					&& !migrateLegacyMetadata(L"RowHeight", {
-						DesignerStyleValueKind::Float,
-						std::to_wstring(it.extra.value("rowHeight", listView->RowHeight)) })) return false;
-				if (it.extra.contains("tileHeight")
-					&& !migrateLegacyMetadata(L"TileHeight", {
-						DesignerStyleValueKind::Float,
-						std::to_wstring(it.extra.value("tileHeight", listView->TileHeight)) })) return false;
-				if (it.extra.contains("iconSize")
-					&& !migrateLegacyMetadata(L"IconSize", {
-						DesignerStyleValueKind::Float,
-						std::to_wstring(it.extra.value("iconSize", listView->IconSize)) })) return false;
-				if (it.extra.contains("selectedItemBackColor")
-					&& !migrateLegacyMetadata(L"SelectedItemBackColor", {
-						DesignerStyleValueKind::Color,
-						ColorToMetadataText(ColorFromValue(
-							it.extra["selectedItemBackColor"], listView->SelectedItemBackColor)) })) return false;
-				if (it.extra.contains("underMouseItemBackColor")
-					&& !migrateLegacyMetadata(L"UnderMouseItemBackColor", {
-						DesignerStyleValueKind::Color,
-						ColorToMetadataText(ColorFromValue(
-							it.extra["underMouseItemBackColor"], listView->UnderMouseItemBackColor)) })) return false;
-				if (it.extra.contains("selectedItemForeColor")
-					&& !migrateLegacyMetadata(L"SelectedItemForeColor", {
-						DesignerStyleValueKind::Color,
-						ColorToMetadataText(ColorFromValue(
-							it.extra["selectedItemForeColor"], listView->SelectedItemForeColor)) })) return false;
-				listView->ClearColumns();
-					if (it.extra.contains("columns") && it.extra["columns"].is_array())
-					{
-						for (auto& cj : it.extra["columns"])
-						{
-							if (!cj.is_object()) continue;
-							ListViewColumn col;
-							col.Header = FromUtf8(cj.value("header", std::string()));
-							col.Width = cj.value("width", col.Width);
-							col.Align = (ListViewCellAlign)cj.value("align", (int)col.Align);
-							listView->Columns.push_back(col);
-						}
-					}
-				std::vector<ListViewItem> items;
-				if (it.extra.contains("items"))
-					ValueToListViewItems(it.extra["items"], items);
-				listView->SetItems(std::move(items));
-			}
-				else if (it.type == UIClass::UI_GridView)
-				{
-					auto* gridView = (GridView*)c;
-					auto update = gridView->DeferUpdates();
-					gridView->ClearColumns();
-					if (it.extra.contains("columns") && it.extra["columns"].is_array())
-					{
-						for (auto& cj : it.extra["columns"])
-						{
-							if (!cj.is_object()) continue;
-							GridViewColumn col;
-							col.Name = FromUtf8(cj.value("name", std::string()));
-							col.Width = cj.value("width", col.Width);
-							col.Type = (ColumnType)cj.value("type", (int)col.Type);
-							col.CanEdit = cj.value("canEdit", col.CanEdit);
-							col.ButtonText = FromUtf8(cj.value("buttonText", std::string()));
-							if (cj.contains("comboBoxItems") && cj["comboBoxItems"].is_array())
-							{
-								for (const auto& item : cj["comboBoxItems"])
-								{
-									if (item.is_string())
-										col.ComboBoxItems.push_back(FromUtf8(item.get<std::string>()));
-								}
-							}
-							gridView->AddColumn(col);
-						}
-					}
-				}
-				else if (it.type == UIClass::UI_PropertyGrid)
-				{
-					auto* pg = (PropertyGridView*)c;
-					if (it.extra.contains("showHeader")
-						&& !migrateLegacyMetadata(L"ShowHeader", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("showHeader", pg->ShowHeader) ? L"true" : L"false" })) return false;
-					if (it.extra.contains("showCategories")
-						&& !migrateLegacyMetadata(L"ShowCategories", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("showCategories", pg->ShowCategories) ? L"true" : L"false" })) return false;
-					if (it.extra.contains("alternatingRows")
-						&& !migrateLegacyMetadata(L"AlternatingRows", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("alternatingRows", pg->AlternatingRows) ? L"true" : L"false" })) return false;
-					if (it.extra.contains("allowEditing")
-						&& !migrateLegacyMetadata(L"AllowEditing", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("allowEditing", pg->AllowEditing) ? L"true" : L"false" })) return false;
-					if (it.extra.contains("rowHeight")
-						&& !migrateLegacyMetadata(L"RowHeight", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value("rowHeight", pg->RowHeight)) })) return false;
-					if (it.extra.contains("categoryHeight")
-						&& !migrateLegacyMetadata(L"CategoryHeight", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value("categoryHeight", pg->CategoryHeight)) })) return false;
-					if (it.extra.contains("nameColumnWidth")
-						&& !migrateLegacyMetadata(L"NameColumnWidth", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value("nameColumnWidth", pg->NameColumnWidth)) })) return false;
-					std::vector<PropertyGridItem> items;
-					if (it.extra.contains("items"))
-						ValueToPropertyGridItems(it.extra["items"], items);
-					pg->SetItems(std::move(items));
-				}
-				else if (it.type == UIClass::UI_TreeView)
-				{
-					auto* treeView = (TreeView*)c;
-					if (treeView->Root)
-					{
-						for (auto node : treeView->Root->Children) delete node;
-						treeView->Root->Children.clear();
-						if (it.extra.contains("nodes"))
-							ValueToTreeNodes(it.extra["nodes"], treeView->Root->Children);
-					}
-					treeView->SelectedBackColor = ColorFromValue(it.extra.contains("selectedBackColor") ? it.extra["selectedBackColor"] : DesignValue(), treeView->SelectedBackColor);
-					treeView->UnderMouseItemBackColor = ColorFromValue(it.extra.contains("underMouseItemBackColor") ? it.extra["underMouseItemBackColor"] : DesignValue(), treeView->UnderMouseItemBackColor);
-					treeView->SelectedForeColor = ColorFromValue(it.extra.contains("selectedForeColor") ? it.extra["selectedForeColor"] : DesignValue(), treeView->SelectedForeColor);
-				}
-				else if (it.type == UIClass::UI_ProgressBar)
-				{
-					((ProgressBar*)c)->PercentageValue = it.extra.value("percentageValue", ((ProgressBar*)c)->PercentageValue);
-				}
-				else if (it.type == UIClass::UI_LoadingRing)
-				{
-					((LoadingRing*)c)->Active = it.extra.value("active", ((LoadingRing*)c)->Active);
-				}
-				else if (it.type == UIClass::UI_ProgressRing)
-				{
-					auto* progressRing = (ProgressRing*)c;
-					progressRing->PercentageValue = it.extra.value("percentageValue", progressRing->PercentageValue);
-					progressRing->ShowPercentage = it.extra.value("showPercentage", progressRing->ShowPercentage);
-				}
-				else if (it.type == UIClass::UI_DateTimePicker)
-				{
-					auto* dateTimePicker = (DateTimePicker*)c;
-					if (it.extra.contains("value") && it.extra["value"].is_object())
-					{
-						SYSTEMTIME st = dateTimePicker->Value;
-						auto& v = it.extra["value"];
-						st.wYear = (WORD)v.value("year", (int)st.wYear);
-						st.wMonth = (WORD)v.value("month", (int)st.wMonth);
-						st.wDay = (WORD)v.value("day", (int)st.wDay);
-						st.wHour = (WORD)v.value("hour", (int)st.wHour);
-						st.wMinute = (WORD)v.value("minute", (int)st.wMinute);
-						st.wSecond = (WORD)v.value("second", (int)st.wSecond);
-						st.wMilliseconds = (WORD)v.value("milliseconds", (int)st.wMilliseconds);
-						dateTimePicker->Value = st;
-					}
-					dateTimePicker->Mode = (DateTimePickerMode)it.extra.value("mode", (int)dateTimePicker->Mode);
-					dateTimePicker->AllowDateSelection = it.extra.value("allowDateSelection", dateTimePicker->AllowDateSelection);
-					dateTimePicker->AllowTimeSelection = it.extra.value("allowTimeSelection", dateTimePicker->AllowTimeSelection);
-					dateTimePicker->AllowModeSwitch = it.extra.value("allowModeSwitch", dateTimePicker->AllowModeSwitch);
-					dateTimePicker->SetExpanded(it.extra.value("expand", dateTimePicker->Expand));
-				}
-				else if (it.type == UIClass::UI_NumericUpDown)
-				{
-					auto* numericUpDown = (NumericUpDown*)c;
-					if (it.extra.contains("min")
-						&& !migrateLegacyMetadata(L"Min", {
-							DesignerStyleValueKind::Double,
-							std::to_wstring(it.extra.value("min", numericUpDown->Min)) })) return false;
-					if (it.extra.contains("max")
-						&& !migrateLegacyMetadata(L"Max", {
-							DesignerStyleValueKind::Double,
-							std::to_wstring(it.extra.value("max", numericUpDown->Max)) })) return false;
-					if (it.extra.contains("step")
-						&& !migrateLegacyMetadata(L"Step", {
-							DesignerStyleValueKind::Double,
-							std::to_wstring(it.extra.value("step", numericUpDown->Step)) })) return false;
-					if (it.extra.contains("decimalPlaces")
-						&& !migrateLegacyMetadata(L"DecimalPlaces", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value("decimalPlaces", numericUpDown->DecimalPlaces)) })) return false;
-					if (it.extra.contains("snapToStep")
-						&& !migrateLegacyMetadata(L"SnapToStep", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("snapToStep", numericUpDown->SnapToStep)
-								? L"true" : L"false" })) return false;
-					if (it.extra.contains("useMouseWheel")
-						&& !migrateLegacyMetadata(L"UseMouseWheel", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("useMouseWheel", numericUpDown->UseMouseWheel)
-								? L"true" : L"false" })) return false;
-					if (it.extra.contains("value")
-						&& !migrateLegacyMetadata(L"Value", {
-							DesignerStyleValueKind::Double,
-							std::to_wstring(it.extra.value("value", numericUpDown->Value)) })) return false;
-				}
-				else if (it.type == UIClass::UI_GroupBox)
-				{
-					auto* groupBox = (GroupBox*)c;
-					if (it.extra.contains("captionMarginLeft")
-						&& !migrateLegacyMetadata(L"CaptionMarginLeft", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value("captionMarginLeft", (double)groupBox->CaptionMarginLeft)) })) return false;
-					if (it.extra.contains("captionPaddingX")
-						&& !migrateLegacyMetadata(L"CaptionPaddingX", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value("captionPaddingX", (double)groupBox->CaptionPaddingX)) })) return false;
-					if (it.extra.contains("captionPaddingY")
-						&& !migrateLegacyMetadata(L"CaptionPaddingY", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value("captionPaddingY", (double)groupBox->CaptionPaddingY)) })) return false;
-				}
-				else if (it.type == UIClass::UI_Expander)
-				{
-					auto* expander = (Expander*)c;
-					if (it.extra.contains("headerHeight")
-						&& !migrateLegacyMetadata(L"HeaderHeight", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value("headerHeight", (double)expander->HeaderHeight)) })) return false;
-					if (it.extra.contains("animationDurationMs")
-						&& !migrateLegacyMetadata(L"AnimationDurationMs", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value("animationDurationMs", (int)expander->AnimationDurationMs)) })) return false;
-					if (it.extra.contains("isExpanded")
-						&& !migrateLegacyMetadata(L"IsExpanded", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("isExpanded", expander->IsExpanded)
-								? L"true" : L"false" })) return false;
-				}
-				else if (it.type == UIClass::UI_SplitContainer)
-				{
-					Orientation orientation = Orientation::Horizontal;
-					if (it.extra.contains("splitOrientation") && it.extra["splitOrientation"].is_string())
-					{
-						if (TryParseOrientation(
-							it.extra["splitOrientation"].get<std::string>(), orientation))
-						{
-							if (!migrateLegacyMetadata(L"SplitOrientation", {
-								DesignerStyleValueKind::Int,
-								std::to_wstring(static_cast<int>(orientation)) })) return false;
-						}
-					}
-					if (it.extra.contains("splitterWidth"))
-					{
-						if (!migrateLegacyMetadata(L"SplitterWidth", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value("splitterWidth", 6)) })) return false;
-					}
-					if (it.extra.contains("panel1MinSize"))
-					{
-						if (!migrateLegacyMetadata(L"Panel1MinSize", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value("panel1MinSize", 48)) })) return false;
-					}
-					if (it.extra.contains("panel2MinSize"))
-					{
-						if (!migrateLegacyMetadata(L"Panel2MinSize", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value("panel2MinSize", 48)) })) return false;
-					}
-					if (it.extra.contains("splitterDistance"))
-					{
-						if (!migrateLegacyMetadata(L"SplitterDistance", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value("splitterDistance", 160)) })) return false;
-					}
-					if (it.extra.contains("isSplitterFixed"))
-					{
-						if (!migrateLegacyMetadata(L"IsSplitterFixed", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("isSplitterFixed", false) ? L"true" : L"false" }))
-							return false;
-					}
-				}
-				else if (it.type == UIClass::UI_Slider)
-				{
-					auto* slider = (Slider*)c;
-					if (it.extra.contains("min")
-						&& !migrateLegacyMetadata(L"Min", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value("min", slider->Min)) })) return false;
-					if (it.extra.contains("max")
-						&& !migrateLegacyMetadata(L"Max", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value("max", slider->Max)) })) return false;
-					if (it.extra.contains("step")
-						&& !migrateLegacyMetadata(L"Step", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value("step", slider->Step)) })) return false;
-					if (it.extra.contains("snapToStep")
-						&& !migrateLegacyMetadata(L"SnapToStep", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("snapToStep", slider->SnapToStep)
-								? L"true" : L"false" })) return false;
-					if (it.extra.contains("value")
-						&& !migrateLegacyMetadata(L"Value", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value("value", slider->Value)) })) return false;
-				}
-				else if (it.type == UIClass::UI_StatusBar)
-				{
-					auto* statusBar = (StatusBar*)c;
-					if (it.extra.contains("topMost")
-						&& !migrateLegacyMetadata(L"TopMost", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("topMost", statusBar->TopMost)
-								? L"true" : L"false" })) return false;
-					statusBar->ClearParts();
-					if (it.extra.contains("parts") && it.extra["parts"].is_array())
-					{
-						for (auto& pj : it.extra["parts"])
-						{
-							if (!pj.is_object()) continue;
-							std::wstring text = FromUtf8(pj.value("text", std::string()));
-							int w = pj.value("width", 0);
-							statusBar->AddPart(text, w);
-						}
-					}
-				}
-				else if (it.type == UIClass::UI_MediaPlayer)
-				{
-					auto* mediaPlayer = (MediaPlayer*)c;
-					// 旧文档标量迁移到统一元数据；新文档只在 extra 保留媒体源路径。
-					if (it.extra.contains("autoPlay")
-						&& !migrateLegacyMetadata(L"AutoPlay", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("autoPlay", mediaPlayer->AutoPlay)
-								? L"true" : L"false" })) return false;
-					if (it.extra.contains("loop")
-						&& !migrateLegacyMetadata(L"Loop", {
-							DesignerStyleValueKind::Bool,
-							it.extra.value("loop", mediaPlayer->Loop)
-								? L"true" : L"false" })) return false;
-					if (it.extra.contains("volume")
-						&& !migrateLegacyMetadata(L"Volume", {
-							DesignerStyleValueKind::Double,
-							std::to_wstring(it.extra.value("volume", mediaPlayer->Volume)) })) return false;
-					if (it.extra.contains("playbackRate")
-						&& !migrateLegacyMetadata(L"PlaybackRate", {
-							DesignerStyleValueKind::Float,
-							std::to_wstring(it.extra.value(
-								"playbackRate", (double)mediaPlayer->PlaybackRate)) })) return false;
-					if (it.extra.contains("renderMode")
-						&& !migrateLegacyMetadata(L"RenderMode", {
-							DesignerStyleValueKind::Int,
-							std::to_wstring(it.extra.value(
-								"renderMode", (int)mediaPlayer->RenderMode)) })) return false;
-					if (it.extra.contains("mediaFile") && it.extra["mediaFile"].is_string())
-						dc->DesignStrings[L"mediaFile"] = FromUtf8(it.extra["mediaFile"].get<std::string>());
-					else
-						dc->DesignStrings.erase(L"mediaFile");
-				}
-				else if (it.type == UIClass::UI_Menu)
-				{
-					auto* m = (Menu*)c;
-					// 清空现有顶层项
-					while (m->Count > 0)
-					{
-						auto* cc = m->operator[](m->Count - 1);
-						m->DeleteControl(cc);
-					}
-					if (it.extra.contains("items") && it.extra["items"].is_array())
-					{
-						for (auto& ij : it.extra["items"])
-						{
-							if (!ij.is_object()) continue;
-							bool sep = ij.value("separator", false);
-							if (sep) continue; // 顶层不支持 separator
-							auto text = FromUtf8(ij.value("text", std::string()));
-							if (text.empty()) continue;
-							auto* top = m->AddItem(text);
-							if (!top) continue;
-							top->Id = ij.value("id", 0);
-							top->Shortcut = FromUtf8(ij.value("shortcut", std::string()));
-							top->Enable = ij.value("enable", true);
-							if (ij.contains("subItems"))
-							{
-								std::vector<MenuItem*> subItems;
-								ValueToMenuSubItems(ij["subItems"], subItems, top);
-							}
-						}
+						const auto stored = control->MetadataProperties.find(
+							property.Name);
+						(void)DesignerPreviewBridge::SetValue(
+							*control->ControlInstance, property.Name,
+							stored == control->MetadataProperties.end()
+								? property.DefaultValue : stored->second);
 					}
 				}
 			}
 		}
-
-		std::unordered_map<std::wstring, std::vector<Pending*>> childrenByParent;
-		childrenByParent.reserve(items.size());
-		std::vector<Pending*> roots;
-		roots.reserve(items.size());
-		for (auto& it : items)
-		{
-			if (it.parent.empty())
-			{
-				roots.push_back(&it);
-				continue;
-			}
-			childrenByParent[it.parent].push_back(&it);
-		}
-
-		auto sortByOrder = [](std::vector<Pending*>& v) {
-			std::stable_sort(v.begin(), v.end(), [](const Pending* a, const Pending* b) {
-				return a->order < b->order;
-			});
-		};
-		sortByOrder(roots);
-		for (auto& kv : childrenByParent) sortByOrder(kv.second);
-
-		std::unordered_set<std::wstring> attached;
-		attached.reserve(items.size());
-
-		auto attachOne = [&](Pending* it, Control* runtimeParent, Control* designerParent)
-		{
-			if (!it) return;
-			auto dc = dcOf[it->name];
-			if (!dc || !dc->ControlInstance) return;
-			auto* c = dc->ControlInstance;
-			if (!runtimeParent) runtimeParent = _clientSurface ? (Control*)_clientSurface : (Control*)_designSurface;
-			if (!runtimeParent) return;
-			if (runtimeParent->Type() == UIClass::UI_ToolBar)
-			{
-				((ToolBar*)runtimeParent)->AddToolItem(c);
-			}
-			else
-			{
-				runtimeParent->AddControl(c);
-			}
-			dc->DesignerParent = designerParent;
-			_designerControls.push_back(dc);
-			attached.insert(it->name);
-		};
-
-		std::function<void(const std::wstring& parentKey, Control* runtimeParent, Control* designerParent)> attachChildren;
-		attachChildren = [&](const std::wstring& parentKey, Control* runtimeParent, Control* designerParent)
-		{
-			auto it = childrenByParent.find(parentKey);
-			if (it == childrenByParent.end()) return;
-			if (auto* split = AsSplitContainer(runtimeParent))
-			{
-				std::vector<Pending*> firstChildren;
-				std::vector<Pending*> secondChildren;
-				for (auto* ch : it->second)
-				{
-					std::string region = ch->extra.value("splitRegion", std::string("panel1"));
-					if (region == "panel2") secondChildren.push_back(ch);
-					else firstChildren.push_back(ch);
-				}
-				sortByOrder(firstChildren);
-				sortByOrder(secondChildren);
-				for (auto* ch : firstChildren)
-				{
-					attachOne(ch, split->FirstPanel(), runtimeParent);
-					attachChildren(ch->name, dcOf[ch->name]->ControlInstance, dcOf[ch->name]->ControlInstance);
-				}
-				for (auto* ch : secondChildren)
-				{
-					attachOne(ch, split->SecondPanel(), runtimeParent);
-					attachChildren(ch->name, dcOf[ch->name]->ControlInstance, dcOf[ch->name]->ControlInstance);
-				}
-				return;
-			}
-			for (auto* ch : it->second)
-			{
-				attachOne(ch, runtimeParent, designerParent);
-				attachChildren(ch->name, dcOf[ch->name]->ControlInstance, dcOf[ch->name]->ControlInstance);
-				if (ch->type == UIClass::UI_TabControl)
-				{
-					auto* tabControl = (TabControl*)dcOf[ch->name]->ControlInstance;
-					(void)tabControl;
-					for (auto& kv : tabPageOf)
-					{
-						std::wstring prefix = ch->name + L"#page";
-						if (kv.first.rfind(prefix, 0) != 0) continue;
-						attachChildren(kv.first, kv.second, kv.second);
-					}
-				}
-			}
-		};
-
-		for (auto* it : roots)
-		{
-			attachOne(it, _clientSurface ? (Control*)_clientSurface : (Control*)_designSurface, nullptr);
-			attachChildren(it->name, dcOf[it->name]->ControlInstance, dcOf[it->name]->ControlInstance);
-			if (it->type == UIClass::UI_TabControl)
-			{
-				for (auto& kv : tabPageOf)
-				{
-					std::wstring prefix = it->name + L"#page";
-					if (kv.first.rfind(prefix, 0) != 0) continue;
-					attachChildren(kv.first, kv.second, kv.second);
-				}
-			}
-		}
-
-		if (attached.size() != items.size())
-		{
-			for (auto& it : items)
-			{
-				if (attached.find(it.name) == attached.end())
-				{
-					if (outError) *outError = L"无法解析控件父级引用，未能挂载控件: " + it.name;
-					return false;
-				}
-			}
-		}
+		for (const auto& control : _designerControls)
+			if (control)
+				UpdateDefaultNameCounterFromName(
+					control->Type, control->Name);
 
 		if (!SetDocumentStyleSheet(document.StyleSheet, outError))
 			return false;
+		// Preview failures are diagnostics, not document-corruption failures: the
+		// persisted configuration remains editable without a compatible source.
+		(void)RefreshAllDesignBindings(nullptr);
 
 		if (_designSurface)
-		{
-			if (auto* p = dynamic_cast<Panel*>(_designSurface))
-			{
-				RefreshDesignerPanelLayout(p);
-			}
-		}
+			RefreshDesignerPanelLayout(_designSurface);
 		UpdateClientSurfaceLayout();
-		for (auto& dc : _designerControls)
-		{
-			if (!dc || !dc->ControlInstance) continue;
-			RefreshDesignerPanelLayout(dc->ControlInstance);
-		}
+		for (const auto& control : _designerControls)
+			if (control && control->ControlInstance)
+				RefreshDesignerPanelLayout(control->ControlInstance);
 
 		ClearSelection();
 		OnControlSelected(nullptr);
 		this->InvalidateVisual();
+		if (outError) outError->clear();
 		return true;
 	}
-	catch (const std::exception& expander)
+	catch (const std::exception& exception)
 	{
-		if (outError) *outError = L"加载失败: " + FromUtf8(expander.what());
+		if (outError) *outError = L"加载失败: " + FromUtf8(exception.what());
 		return false;
 	}
 	catch (...)

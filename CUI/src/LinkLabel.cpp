@@ -3,6 +3,31 @@
 
 UIClass LinkLabel::Type() { return UIClass::UI_LinkLabel; }
 
+void LinkLabel::EnsureBindingPropertiesRegistered()
+{
+	Label::EnsureBindingPropertiesRegistered();
+	static const bool registered = []
+	{
+		ControlPropertyOptions<LinkLabel, bool> options;
+		options.DefaultValue = false;
+		options.Flags = ControlPropertyFlags::AffectsRender;
+		options.Design.Category = L"Behavior";
+		options.Design.CategoryOrder = 300;
+		options.Design.Order = 10;
+		options.Design.Editor = ControlPropertyEditorKind::Boolean;
+		options.Design.Persistence = ControlPropertyPersistence::Metadata;
+		BindingPropertyRegistry::Register<LinkLabel, bool>(L"Visited",
+			[](LinkLabel& target) { return target.Visited; },
+			[](LinkLabel& target, const bool& value)
+			{
+				target.Visited = value;
+				target.InvalidateVisual();
+			}, {}, std::move(options));
+		return true;
+	}();
+	(void)registered;
+}
+
 LinkLabel::LinkLabel(std::wstring text, int x, int y)
 	: Label(text, x, y)
 {

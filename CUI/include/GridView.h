@@ -8,6 +8,7 @@ typedef Event<void(class GridView*, int c, int r, bool v) > OnGridViewCheckState
 typedef Event<void(class GridView*, int c, int r)> OnGridViewButtonClickEvent;
 typedef Event<void(class GridView*, int c, int r, std::wstring text)> OnGridViewLinkedTextClickEvent;
 typedef Event<void(class GridView*, int c, int r, int selectedIndex, std::wstring selectedText)> OnGridViewComboBoxSelectionChangedEvent;
+typedef Event<void(class GridView*, bool& cancel)> OnGridViewUserAddingRowEvent;
 typedef Event<void(class GridView*, int newRowIndex)> OnGridViewUserAddedRowEvent;
 enum class ColumnType
 {
@@ -197,6 +198,7 @@ public:
 	OnGridViewButtonClickEvent OnGridViewButtonClick;
 	OnGridViewLinkedTextClickEvent OnGridViewLinkedTextClick;
 	OnGridViewComboBoxSelectionChangedEvent OnGridViewComboBoxSelectionChanged;
+	OnGridViewUserAddingRowEvent OnUserAddingRow;
 	OnGridViewUserAddedRowEvent OnUserAddedRow;
 	SelectionChangedEvent SelectionChanged;
 	std::function<bool(GridView* sender, int columnIndex, bool ascending)> SortRequestHandler = nullptr;

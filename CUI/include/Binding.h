@@ -352,7 +352,9 @@ public:
 class BindingValidationChangedEvent
 {
 public:
-	using Handler = std::function<void(const BindingValidationChangedEventArgs&)>;
+	using function_type = void(const BindingValidationChangedEventArgs&);
+	using std_function_type = std::function<function_type>;
+	using Handler = std_function_type;
 
 	BindingValidationChangedEvent() = default;
 	// Subscriptions belong to the publisher object, not to copied/moved value state.
@@ -907,6 +909,11 @@ public:
 	}
 
 	void Clear();
+	/** Finds a binding by target property using the same case-insensitive identity as Add. */
+	Binding* Find(const std::wstring& targetProperty);
+	const Binding* Find(const std::wstring& targetProperty) const;
+	/** Removes one binding without disturbing bindings owned by other target properties. */
+	bool Remove(const std::wstring& targetProperty);
 	size_t Count() const;
 	std::vector<BindingValidationResult> GetValidationResults() const;
 	bool HasValidationIssues() const;

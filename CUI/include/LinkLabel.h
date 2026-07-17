@@ -14,6 +14,7 @@ protected:
 	void BeforeDefaultClick(UINT message, MouseEventArgs& e) override;
 public:
 	virtual UIClass Type();
+	void EnsureBindingPropertiesRegistered() override;
 	/** @brief 鼠标悬停时文本颜色。 */
 	D2D1_COLOR_F HoverColor = Colors::DeepSkyBlue;
 	/** @brief 访问/点击后的文本颜色。 */

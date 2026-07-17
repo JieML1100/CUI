@@ -1,0 +1,38 @@
+<Form xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:d="urn:cui:designer"
+	  xmlns:sample="urn:cui:samples"
+      x:Name="NamespacedRuntimeForm"
+      x:Class="Acme.Views.MainWindow"
+      d:CodeBehind="NamespacedWindow"
+      Text="Acme::Views::MainWindow"
+      Width="800" Height="600">
+  <Button x:Name="namespaceButton"
+          DesignId="77"
+          Text="Namespaced"
+          Width="120" Height="24"
+          OnDropFile="HandleNamespacedDrop"
+          Click="HandleNamespacedClick"
+          OnPropertyValueChanged="HandleNamespacedPropertyChanged"
+          OnValidationStateChanged="HandleNamespacedValidationChanged" />
+  <sample:StatusBadge x:Name="statusBadge"
+          DesignId="78"
+          d:CppType="Acme.Controls.StatusBadge"
+          d:Header="Controls/StatusBadge.h"
+          d:BaseType="Button"
+          d:Constructor="Bounds"
+          Text="Custom control"
+          Canvas.Left="140" Canvas.Top="0"
+          Width="150" Height="30"
+          OnSeverityInvoked="HandleSeverityInvoked">
+    <d:CustomEvents>
+      <d:Event Name="OnSeverityInvoked"
+               DisplayName="严重程度触发"
+               Field="OnSeverityInvoked"
+               Category="Action"
+               Signature="SenderInt"
+               Order="5"
+               Default="true" />
+    </d:CustomEvents>
+  </sample:StatusBadge>
+</Form>

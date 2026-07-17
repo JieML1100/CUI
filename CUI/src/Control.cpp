@@ -489,9 +489,27 @@ void Control::BeginRender(float clipW, float clipH)
 	const float titleBarOffset = (this->ParentForm->VisibleHead ? this->ParentForm->HeadHeight / dpiScale : 0.0f);
 	this->ParentForm->Render->PushLocalTransform(absoluteLocation.x, absoluteLocation.y + titleBarOffset, clipW, clipH);
 }
+void Control::SetRenderDecorator(
+	std::function<void(Control&, D2DGraphics&)> decorator)
+{
+	_renderDecorator = std::move(decorator);
+	InvalidateVisual();
+}
 void Control::EndRender()
 {
 	if (!this->ParentForm || !this->ParentForm->Render) return;
+	if (_renderDecorator)
+	{
+		// Rendering extensions are optional. Never allow one to unbalance the
+		// transform stack or abort the framework paint pass.
+		try
+		{
+			_renderDecorator(*this, *this->ParentForm->Render);
+		}
+		catch (...)
+		{
+		}
+	}
 	RenderFocusAdorner();
 	RenderValidationAdorner();
 	this->ParentForm->Render->PopLocalTransform();
@@ -994,6 +1012,55 @@ bool Control::ResetPropertyValue(const std::wstring& propertyName)
 	return metadata->TryGetDefaultValue(defaultValue)
 		&& ApplyEffectivePropertyValue(
 			*metadata, defaultValue, ControlPropertyValueSource::Default);
+}
+
+bool Control::TrySetPropertyBaseValue(
+	const std::wstring& propertyName,
+	const BindingValue& value)
+{
+	const auto* metadata = FindPropertyMetadata(propertyName);
+	if (!metadata || !metadata->CanWrite()) return false;
+	BindingValue converted;
+	BindingValue effective;
+	if (!metadata->TryConvert(value, converted)
+		|| !metadata->TryCoerce(*this, converted, effective))
+		return false;
+
+	auto entryIt = _propertyValues.find(metadata);
+	if (entryIt == _propertyValues.end())
+		return ApplyEffectivePropertyValue(
+			*metadata, effective, ControlPropertyValueSource::Default);
+
+	auto& entry = entryIt->second;
+	const auto previousBase = entry.BaseValue;
+	const bool previouslyHadBase = entry.HasBaseValue;
+	BindingValue previousEffective;
+	ControlPropertyValueSource previousSource =
+		ControlPropertyValueSource::Default;
+	const bool hadPreviousEffective = TryResolveEffectivePropertyValue(
+		*metadata, entry, previousEffective, previousSource);
+	entry.BaseValue = effective;
+	entry.HasBaseValue = true;
+
+	BindingValue nextEffective;
+	ControlPropertyValueSource nextSource = ControlPropertyValueSource::Default;
+	if (!TryResolveEffectivePropertyValue(
+		*metadata, entry, nextEffective, nextSource))
+	{
+		entry.BaseValue = previousBase;
+		entry.HasBaseValue = previouslyHadBase;
+		return false;
+	}
+	if (nextSource != ControlPropertyValueSource::Default
+		|| (hadPreviousEffective
+			&& previousSource == nextSource
+			&& metadata->ValuesEqual(previousEffective, nextEffective)))
+		return true;
+	if (ApplyEffectivePropertyValue(*metadata, nextEffective, nextSource))
+		return true;
+	entry.BaseValue = previousBase;
+	entry.HasBaseValue = previouslyHadBase;
+	return false;
 }
 
 bool Control::IsPropertyValueDefault(const std::wstring& propertyName)
@@ -1714,8 +1781,12 @@ void Control::EnsureBindingPropertiesRegistered()
 					| ControlPropertyFlags::AffectsRender },
 				PropertyDesign(L"Common", 0, 30, ControlPropertyPersistence::Legacy)));
 
-		auto registerEnabled = [](const wchar_t* name)
+		auto registerEnabled = [](const wchar_t* name, bool browsable)
 		{
+			auto design = PropertyDesign(L"Common", 0, 20,
+				ControlPropertyPersistence::Legacy,
+				ControlPropertyEditorKind::Boolean, L"Enabled");
+			design.Browsable = browsable;
 			BindingPropertyRegistry::Register<Control, bool>(name,
 				[](Control& target) { return target.Enable; },
 				[](Control& target, const bool& value)
@@ -1728,10 +1799,10 @@ void Control::EnsureBindingPropertiesRegistered()
 				{},
 				WithPropertyDesign(ControlPropertyOptions<Control, bool>{
 					true, ControlPropertyFlags::AffectsRender },
-					PropertyDesign(L"Common", 0, 20, ControlPropertyPersistence::Legacy)));
+					std::move(design)));
 		};
-		registerEnabled(L"Enable");
-		registerEnabled(L"Enabled");
+		registerEnabled(L"Enable", true);
+		registerEnabled(L"Enabled", false);
 
 		auto movedSubscriber = [](Control& target, Handler handler, DataSourceUpdateMode)
 		{
@@ -1749,13 +1820,15 @@ void Control::EnsureBindingPropertiesRegistered()
 			[](Control& target, const int& value) { target.Left = value; }, movedSubscriber,
 			WithPropertyDesign(ControlPropertyOptions<Control, int>{
 				0, ControlPropertyFlags::AffectsArrange | ControlPropertyFlags::AffectsRender },
-				PropertyDesign(L"Layout", 100, 10, ControlPropertyPersistence::Legacy)));
+				PropertyDesign(L"Layout", 100, 10, ControlPropertyPersistence::Legacy,
+					ControlPropertyEditorKind::Number, L"X")));
 		BindingPropertyRegistry::Register<Control, int>(L"Top",
 			[](Control& target) { return target.Top; },
 			[](Control& target, const int& value) { target.Top = value; }, movedSubscriber,
 			WithPropertyDesign(ControlPropertyOptions<Control, int>{
 				0, ControlPropertyFlags::AffectsArrange | ControlPropertyFlags::AffectsRender },
-				PropertyDesign(L"Layout", 100, 20, ControlPropertyPersistence::Legacy)));
+				PropertyDesign(L"Layout", 100, 20, ControlPropertyPersistence::Legacy,
+					ControlPropertyEditorKind::Number, L"Y")));
 		BindingPropertyRegistry::Register<Control, int>(L"Width",
 			[](Control& target) { return target.Width; },
 			[](Control& target, const int& value) { target.Width = value; }, sizedSubscriber,
@@ -1831,6 +1904,27 @@ void Control::EnsureBindingPropertiesRegistered()
 			WithPropertyDesign(ControlPropertyOptions<Control, VerticalAlignment>{
 				VerticalAlignment::Top, ControlPropertyFlags::AffectsArrange },
 				std::move(verticalAlignmentDesign)));
+		BindingPropertyRegistry::Register<Control, int>(L"ZIndex",
+			[](Control& target) { return target.ZIndex; },
+			[](Control& target, const int& value) { target.ZIndex = value; },
+			{},
+			WithPropertyDesign(ControlPropertyOptions<Control, int>{
+				0, ControlPropertyFlags::AffectsRender },
+				PropertyDesign(L"Layout", 100, 105,
+					ControlPropertyPersistence::Legacy,
+					ControlPropertyEditorKind::Number)));
+		auto gridPlacementDesign = [](int order)
+		{
+			auto design = PropertyDesign(L"Layout", 100, order,
+				ControlPropertyPersistence::Legacy,
+				ControlPropertyEditorKind::Number);
+			design.BrowsableWhen = [](Control& target)
+			{
+				return target.Parent
+					&& target.Parent->Type() == UIClass::UI_GridPanel;
+			};
+			return design;
+		};
 		BindingPropertyRegistry::Register<Control, int>(L"GridRow",
 			[](Control& target) { return target.GridRow; },
 			[](Control& target, const int& value) { target.GridRow = value; },
@@ -1841,7 +1935,7 @@ void Control::EnsureBindingPropertiesRegistered()
 				[](Control&, const int& proposed) -> std::optional<int>
 				{
 					return (std::max)(0, proposed);
-				} }, PropertyDesign(L"Layout", 100, 110, ControlPropertyPersistence::Legacy)));
+				} }, gridPlacementDesign(110)));
 		BindingPropertyRegistry::Register<Control, int>(L"GridColumn",
 			[](Control& target) { return target.GridColumn; },
 			[](Control& target, const int& value) { target.GridColumn = value; },
@@ -1852,7 +1946,7 @@ void Control::EnsureBindingPropertiesRegistered()
 				[](Control&, const int& proposed) -> std::optional<int>
 				{
 					return (std::max)(0, proposed);
-				} }, PropertyDesign(L"Layout", 100, 120, ControlPropertyPersistence::Legacy)));
+				} }, gridPlacementDesign(120)));
 		BindingPropertyRegistry::Register<Control, int>(L"GridRowSpan",
 			[](Control& target) { return target.GridRowSpan; },
 			[](Control& target, const int& value) { target.GridRowSpan = value; },
@@ -1863,7 +1957,7 @@ void Control::EnsureBindingPropertiesRegistered()
 				[](Control&, const int& proposed) -> std::optional<int>
 				{
 					return (std::max)(1, proposed);
-				} }, PropertyDesign(L"Layout", 100, 130, ControlPropertyPersistence::Legacy)));
+				} }, gridPlacementDesign(130)));
 		BindingPropertyRegistry::Register<Control, int>(L"GridColumnSpan",
 			[](Control& target) { return target.GridColumnSpan; },
 			[](Control& target, const int& value) { target.GridColumnSpan = value; },
@@ -1874,7 +1968,7 @@ void Control::EnsureBindingPropertiesRegistered()
 				[](Control&, const int& proposed) -> std::optional<int>
 				{
 					return (std::max)(1, proposed);
-				} }, PropertyDesign(L"Layout", 100, 140, ControlPropertyPersistence::Legacy)));
+				} }, gridPlacementDesign(140)));
 		auto dockDesign = PropertyDesign(
 			L"Layout", 100, 150, ControlPropertyPersistence::Legacy,
 			ControlPropertyEditorKind::Choice);
@@ -1884,6 +1978,12 @@ void Control::EnsureBindingPropertiesRegistered()
 			PropertyChoice(L"Right", Dock::Right),
 			PropertyChoice(L"Bottom", Dock::Bottom),
 			PropertyChoice(L"Fill", Dock::Fill)
+		};
+		dockDesign.DisplayName = L"Dock";
+		dockDesign.BrowsableWhen = [](Control& target)
+		{
+			return target.Parent
+				&& target.Parent->Type() == UIClass::UI_DockPanel;
 		};
 		BindingPropertyRegistry::Register<Control, Dock>(L"DockPosition",
 			[](Control& target) { return target.DockPosition; },
@@ -2171,6 +2271,25 @@ Control* Control::GetChild(int index)
 	if (this->Children.size() <= index)
 		return nullptr;
 	return this->Children[index];
+}
+
+Control* Control::FindControlByDesignId(int designId) noexcept
+{
+	return const_cast<Control*>(
+		static_cast<const Control*>(this)->FindControlByDesignId(designId));
+}
+
+const Control* Control::FindControlByDesignId(int designId) const noexcept
+{
+	if (designId <= 0) return nullptr;
+	if (DesignId == designId) return this;
+	for (const auto* child : Children)
+	{
+		if (!child) continue;
+		if (const auto* match = child->FindControlByDesignId(designId))
+			return match;
+	}
+	return nullptr;
 }
 
 std::vector<Control*> Control::GetChildrenInZOrder() const

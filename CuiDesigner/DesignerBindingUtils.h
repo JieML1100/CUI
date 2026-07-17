@@ -5,6 +5,15 @@
 
 namespace DesignerBindingUtils
 {
+	struct TargetMetadata
+	{
+		std::wstring Name;
+		BindingValueKind ValueKind = BindingValueKind::Empty;
+		bool CanRead = false;
+		bool CanWrite = false;
+		bool CanObserve = false;
+	};
+
 	std::wstring Trim(const std::wstring& value);
 	bool IsValidSourcePath(const std::wstring& path);
 
@@ -20,6 +29,16 @@ namespace DesignerBindingUtils
 	bool IsCompatible(
 		const BindingPropertyMetadata& metadata,
 		const DesignerDataBinding& binding) noexcept;
+	bool IsModeStructurallyCompatible(
+		const TargetMetadata& metadata,
+		BindingMode mode) noexcept;
+
+	/** Validates a portable design-time target without requiring runtime registration. */
+	bool ValidateTarget(
+		const TargetMetadata& target,
+		const DesignerDataBinding& binding,
+		std::wstring* outError = nullptr,
+		const DesignerDataContextSchema* sourceSchema = nullptr);
 
 	bool Validate(
 		Control& target,

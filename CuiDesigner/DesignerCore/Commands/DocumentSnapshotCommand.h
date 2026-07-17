@@ -2,6 +2,7 @@
 
 #include "../CommandManager.h"
 #include "../../DesignerModel/DesignDocument.h"
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -21,12 +22,17 @@ public:
 		std::wstring label,
 		bool skipInitialExecute);
 
-	bool Execute() override;
-	void Undo() override;
+	DesignerDocumentTransactionResult Execute() override;
+	DesignerDocumentTransactionResult Undo() override;
 	std::wstring GetLabel() const override;
+	bool TryMergeWith(IDesignerCommand& newer) noexcept override;
+	size_t GetEstimatedMemoryUsage() const noexcept override;
 
 protected:
-	bool Apply(const DesignerModel::DesignDocument& document, const std::vector<std::wstring>& selectionNames, const std::wstring& primarySelectionName) const;
+	DesignerDocumentTransactionResult Apply(
+		const DesignerModel::DesignDocument& document,
+		const std::vector<std::wstring>& selectionNames,
+		const std::wstring& primarySelectionName) const;
 
 	DesignerCanvas* _canvas = nullptr;
 	DesignerModel::DesignDocument _beforeDocument;
@@ -37,4 +43,6 @@ protected:
 	std::wstring _afterSelectionName;
 	std::wstring _label;
 	bool _skipInitialExecute = false;
+	std::chrono::steady_clock::time_point _committedAt;
+	size_t _estimatedMemoryUsage = 0;
 };

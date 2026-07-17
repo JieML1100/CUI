@@ -1,6 +1,7 @@
 ﻿#include "PropertyGridBinder.h"
 #include "../DesignerCanvas.h"
 #include "../../CUI/include/SplitContainer.h"
+#include <algorithm>
 
 void PropertyGridBinder::SetCanvas(DesignerCanvas* canvas)
 {
@@ -14,7 +15,31 @@ DesignerCanvas* PropertyGridBinder::GetCanvas() const
 
 void PropertyGridBinder::BindControl(const std::shared_ptr<DesignerControl>& control)
 {
-	_control = control;
+	BindControls(control
+		? std::vector<std::shared_ptr<DesignerControl>>{ control }
+		: std::vector<std::shared_ptr<DesignerControl>>{}, control);
+}
+
+void PropertyGridBinder::BindControls(
+	const std::vector<std::shared_ptr<DesignerControl>>& controls,
+	const std::shared_ptr<DesignerControl>& primaryControl)
+{
+	_controls.clear();
+	_controls.reserve(controls.size());
+	for (const auto& control : controls)
+	{
+		if (!control || !control->ControlInstance) continue;
+		if (std::find(_controls.begin(), _controls.end(), control)
+			== _controls.end())
+			_controls.push_back(control);
+	}
+	_control = nullptr;
+	if (primaryControl
+		&& std::find(_controls.begin(), _controls.end(), primaryControl)
+			!= _controls.end())
+		_control = primaryControl;
+	else if (!_controls.empty())
+		_control = _controls.front();
 }
 
 bool PropertyGridBinder::IsFormBinding() const
@@ -27,117 +52,307 @@ std::shared_ptr<DesignerControl> PropertyGridBinder::GetBoundControl() const
 	return _control;
 }
 
+const std::vector<std::shared_ptr<DesignerControl>>&
+PropertyGridBinder::GetBoundControls() const
+{
+	return _controls;
+}
+
 Control* PropertyGridBinder::GetBoundRuntimeControl() const
 {
 	return _control ? _control->ControlInstance : nullptr;
 }
 
-DesignedFormSnapshot PropertyGridBinder::CaptureFormSnapshot() const
+DesignerModel::DesignFormModel PropertyGridBinder::CaptureFormModel() const
 {
-	DesignedFormSnapshot snapshot;
-	if (!_canvas)
-	{
-		return snapshot;
-	}
-
-	snapshot.Name = _canvas->GetDesignedFormName();
-	snapshot.Text = _canvas->GetDesignedFormText();
-	snapshot.FontName = _canvas->GetDesignedFormFontName();
-	snapshot.FontSize = _canvas->GetDesignedFormFontSize();
-	snapshot.BackColor = _canvas->GetDesignedFormBackColor();
-	snapshot.ForeColor = _canvas->GetDesignedFormForeColor();
-	snapshot.ShowInTaskBar = _canvas->GetDesignedFormShowInTaskBar();
-	snapshot.TopMost = _canvas->GetDesignedFormTopMost();
-	snapshot.Enable = _canvas->GetDesignedFormEnable();
-	snapshot.Visible = _canvas->GetDesignedFormVisible();
-	snapshot.VisibleHead = _canvas->GetDesignedFormVisibleHead();
-	snapshot.HeadHeight = _canvas->GetDesignedFormHeadHeight();
-	snapshot.MinBox = _canvas->GetDesignedFormMinBox();
-	snapshot.MaxBox = _canvas->GetDesignedFormMaxBox();
-	snapshot.CloseBox = _canvas->GetDesignedFormCloseBox();
-	snapshot.CenterTitle = _canvas->GetDesignedFormCenterTitle();
-	snapshot.AllowResize = _canvas->GetDesignedFormAllowResize();
-	snapshot.Location = _canvas->GetDesignedFormLocation();
-	snapshot.Size = _canvas->GetDesignedFormSize();
-	snapshot.EventHandlers = _canvas->GetDesignedFormEventHandlers();
-	return snapshot;
+	return _canvas
+		? _canvas->CaptureDesignedFormModel()
+		: DesignerModel::DesignFormModel{};
 }
 
-bool PropertyGridBinder::ApplyFormTextProperty(const std::wstring& propertyName, const std::wstring& value) const
+bool PropertyGridBinder::ApplyFormProperty(
+	const std::wstring& propertyName,
+	const DesignerStyleValue& value,
+	DesignerStyleValue* outEffective,
+	std::wstring* outError) const
 {
-	if (!_canvas)
-	{
-		return false;
-	}
-
-	if (propertyName == L"Name") _canvas->SetDesignedFormName(value);
-	else if (propertyName == L"Text") _canvas->SetDesignedFormText(value);
-	else if (propertyName == L"FontName") _canvas->SetDesignedFormFontName(value);
-	else if (propertyName == L"FontSize") _canvas->SetDesignedFormFontSize((float)std::stod(value));
-	else if (propertyName == L"BackColor") return false;
-	else if (propertyName == L"ForeColor") return false;
-	else if (propertyName == L"HeadHeight") _canvas->SetDesignedFormHeadHeight(std::stoi(value));
-	else if (propertyName == L"X")
-	{
-		auto p = _canvas->GetDesignedFormLocation();
-		p.x = std::stoi(value);
-		_canvas->SetDesignedFormLocation(p);
-	}
-	else if (propertyName == L"Y")
-	{
-		auto p = _canvas->GetDesignedFormLocation();
-		p.y = std::stoi(value);
-		_canvas->SetDesignedFormLocation(p);
-	}
-	else if (propertyName == L"Width")
-	{
-		auto s = _canvas->GetDesignedFormSize();
-		s.cx = std::stoi(value);
-		_canvas->SetDesignedFormSize(s);
-	}
-	else if (propertyName == L"Height")
-	{
-		auto s = _canvas->GetDesignedFormSize();
-		s.cy = std::stoi(value);
-		_canvas->SetDesignedFormSize(s);
-	}
-	else
-	{
-		return false;
-	}
-
+	if (!_canvas) return false;
+	auto form = _canvas->CaptureDesignedFormModel();
+	if (!DesignerFormPropertyCatalog::ApplyValue(
+		form, propertyName, value, outEffective, outError)) return false;
+	_canvas->ApplyDesignedFormModel(form);
 	return true;
 }
 
-bool PropertyGridBinder::ApplyFormBoolProperty(const std::wstring& propertyName, bool value) const
+bool PropertyGridBinder::ResetFormProperty(
+	const std::wstring& propertyName,
+	DesignerStyleValue* outEffective,
+	std::wstring* outError) const
 {
-	if (!_canvas)
-	{
-		return false;
-	}
-
-	if (propertyName == L"VisibleHead") _canvas->SetDesignedFormVisibleHead(value);
-	else if (propertyName == L"MinBox") _canvas->SetDesignedFormMinBox(value);
-	else if (propertyName == L"MaxBox") _canvas->SetDesignedFormMaxBox(value);
-	else if (propertyName == L"CloseBox") _canvas->SetDesignedFormCloseBox(value);
-	else if (propertyName == L"CenterTitle") _canvas->SetDesignedFormCenterTitle(value);
-	else if (propertyName == L"AllowResize") _canvas->SetDesignedFormAllowResize(value);
-	else if (propertyName == L"ShowInTaskBar") _canvas->SetDesignedFormShowInTaskBar(value);
-	else if (propertyName == L"TopMost") _canvas->SetDesignedFormTopMost(value);
-	else if (propertyName == L"Enable") _canvas->SetDesignedFormEnable(value);
-	else if (propertyName == L"Visible") _canvas->SetDesignedFormVisible(value);
-	else return false;
+	if (!_canvas) return false;
+	auto form = _canvas->CaptureDesignedFormModel();
+	if (!DesignerFormPropertyCatalog::ResetValue(
+		form, propertyName, outEffective, outError)) return false;
+	_canvas->ApplyDesignedFormModel(form);
 	return true;
-}
-
-bool PropertyGridBinder::IsFormEventEnabled(const std::wstring& eventName) const
-{
-	return _canvas && _canvas->GetDesignedFormEventEnabled(eventName);
 }
 
 ::Font* PropertyGridBinder::GetDesignedFormSharedFont() const
 {
 	return _canvas ? _canvas->GetDesignedFormSharedFont() : nullptr;
+}
+
+DesignerControlPropertyContext PropertyGridBinder::CreateControlPropertyContext(
+	const std::shared_ptr<DesignerControl>& target) const
+{
+	DesignerControlPropertyContext context;
+	context.SharedFont = GetDesignedFormSharedFont();
+	context.MakeUniqueName = [this, target](DesignerControl&, const std::wstring& desired)
+	{
+		return MakeUniqueControlName(target, desired);
+	};
+	context.SyncDefaultNameCounter = [this](UIClass type, const std::wstring& name)
+	{
+		SyncDefaultNameCounter(type, name);
+	};
+	context.ApplyAnchorStylesKeepingBounds = [this](Control* control, uint8_t anchorStyles)
+	{
+		ApplyAnchorStylesKeepingBounds(control, anchorStyles);
+	};
+	return context;
+}
+
+std::vector<DesignerPropertyRow> PropertyGridBinder::GetPropertyRows() const
+{
+	if (_control)
+	{
+		std::vector<std::vector<DesignerPropertyRow>> controlRows;
+		controlRows.reserve(_controls.size());
+		auto primaryContext = CreateControlPropertyContext(_control);
+		controlRows.push_back(DesignerPropertyRowCatalog::GetControlRows(
+			*_control, primaryContext));
+		for (const auto& control : _controls)
+		{
+			if (control == _control) continue;
+			auto context = CreateControlPropertyContext(control);
+			controlRows.push_back(DesignerPropertyRowCatalog::GetControlRows(
+				*control, context));
+		}
+		return DesignerPropertyRowCatalog::GetCommonControlRows(controlRows);
+	}
+	return _canvas
+		? DesignerPropertyRowCatalog::GetFormRows(CaptureFormModel())
+		: std::vector<DesignerPropertyRow>{};
+}
+
+std::vector<DesignerPropertyEditTarget>
+PropertyGridBinder::CreatePropertyEditTargets() const
+{
+	std::vector<DesignerPropertyEditTarget> targets;
+	targets.reserve(_controls.size());
+	for (const auto& control : _controls)
+	{
+		if (!control || !control->ControlInstance) continue;
+		targets.push_back({
+			control.get(), CreateControlPropertyContext(control)
+		});
+	}
+	return targets;
+}
+
+DesignerPropertyEditResult PropertyGridBinder::ApplyControlPropertyValue(
+	const std::wstring& propertyName,
+	const std::wstring& valueText) const
+{
+	const auto rows = GetPropertyRows();
+	const auto* row = DesignerPropertyRowCatalog::Find(rows, propertyName);
+	if (!row)
+		return DesignerPropertyEditResult::Failure(
+			L"当前选择没有公共属性 " + propertyName + L"。");
+	auto result = DesignerPropertyEdit::Apply(
+		CreatePropertyEditTargets(), *row, valueText);
+	if (result)
+		for (const auto& control : _controls)
+			if (control && control->ControlInstance)
+				NotifyControlChanged(control->ControlInstance);
+	return result;
+}
+
+DesignerPropertyEditResult PropertyGridBinder::ResetControlPropertyValue(
+	const std::wstring& propertyName) const
+{
+	const auto rows = GetPropertyRows();
+	const auto* row = DesignerPropertyRowCatalog::Find(rows, propertyName);
+	if (!row)
+		return DesignerPropertyEditResult::Failure(
+			L"当前选择没有公共属性 " + propertyName + L"。");
+	auto result = DesignerPropertyEdit::Reset(
+		CreatePropertyEditTargets(), *row);
+	if (result)
+		for (const auto& control : _controls)
+			if (control && control->ControlInstance)
+				NotifyControlChanged(control->ControlInstance);
+	return result;
+}
+
+bool PropertyGridBinder::CaptureControlPropertySnapshot(
+	const std::wstring& propertyName,
+	DesignerPropertyBatchSnapshot& out,
+	std::wstring* outError) const
+{
+	out = DesignerPropertyBatchSnapshot{};
+	const auto rows = GetPropertyRows();
+	const auto* row = DesignerPropertyRowCatalog::Find(rows, propertyName);
+	if (!row || row->Source == DesignerPropertyRowSource::Form)
+	{
+		if (outError)
+			*outError = L"当前选择没有可快照的控件属性 "
+				+ propertyName + L"。";
+		return false;
+	}
+	const auto targets = CreatePropertyEditTargets();
+	if (targets.empty())
+	{
+		if (outError) *outError = L"没有可快照的目标控件。";
+		return false;
+	}
+	out.Source = row->Source;
+	out.PropertyName = row->Name;
+	out.Targets.reserve(targets.size());
+	for (const auto& target : targets)
+	{
+		DesignerPropertyTargetSnapshot item;
+		item.TargetName = target.Control->Name;
+		item.TargetType = target.Control->Type;
+		std::wstring error;
+		if (!DesignerPropertyEdit::CaptureSnapshot(
+			target, *row, item.Value, &error))
+		{
+			out = DesignerPropertyBatchSnapshot{};
+			if (outError)
+				*outError = L"控件 " + target.Control->Name + L"：" + error;
+			return false;
+		}
+		out.Targets.push_back(std::move(item));
+	}
+	if (outError) outError->clear();
+	return true;
+}
+
+bool PropertyGridBinder::RestoreBoundControlPropertySnapshot(
+	const DesignerPropertyBatchSnapshot& snapshot,
+	std::wstring* outError) const
+{
+	const auto targets = CreatePropertyEditTargets();
+	if (targets.size() != snapshot.Targets.size() || targets.empty())
+	{
+		if (outError) *outError = L"属性快照的目标集合已经变化。";
+		return false;
+	}
+	DesignerPropertyRow row;
+	row.Source = snapshot.Source;
+	row.Name = snapshot.PropertyName;
+	std::vector<DesignerPropertyValueSnapshot> rollback(targets.size());
+	for (size_t index = 0; index < targets.size(); ++index)
+	{
+		if (!targets[index].Control
+			|| targets[index].Control->Type != snapshot.Targets[index].TargetType)
+		{
+			if (outError) *outError = L"属性快照的目标类型已经变化。";
+			return false;
+		}
+		std::wstring error;
+		if (!DesignerPropertyEdit::CaptureSnapshot(
+			targets[index], row, rollback[index], &error))
+		{
+			if (outError) *outError = std::move(error);
+			return false;
+		}
+	}
+
+	for (size_t index = 0; index < targets.size(); ++index)
+	{
+		std::wstring error;
+		if (DesignerPropertyEdit::RestoreSnapshot(
+			targets[index], row, snapshot.Targets[index].Value, &error))
+			continue;
+		bool rolledBack = true;
+		for (size_t rollbackIndex = index + 1; rollbackIndex > 0; --rollbackIndex)
+			rolledBack = DesignerPropertyEdit::RestoreSnapshot(
+				targets[rollbackIndex - 1], row,
+				rollback[rollbackIndex - 1]) && rolledBack;
+		if (outError)
+			*outError = error + (rolledBack
+				? L"" : L" 属性快照回滚未能完整恢复所有目标。");
+		return false;
+	}
+	for (const auto& target : targets)
+		NotifyControlChanged(target.Control->ControlInstance);
+	if (outError) outError->clear();
+	return true;
+}
+
+std::vector<DesignerControlPropertyDescriptor>
+PropertyGridBinder::GetControlDesignProperties() const
+{
+	return _control
+		? DesignerControlPropertyCatalog::GetProperties(*_control)
+		: std::vector<DesignerControlPropertyDescriptor>{};
+}
+
+bool PropertyGridBinder::CaptureControlDesignProperty(
+	const std::wstring& propertyName,
+	DesignerStyleValue& out,
+	std::wstring* outError) const
+{
+	if (!_control) return false;
+	const auto context = CreateControlPropertyContext(_control);
+	return DesignerControlPropertyCatalog::CaptureValue(
+		*_control, context, propertyName, out, outError);
+}
+
+bool PropertyGridBinder::ApplyControlDesignProperty(
+	const std::wstring& propertyName,
+	const DesignerStyleValue& value,
+	DesignerStyleValue* outEffective,
+	std::wstring* outError) const
+{
+	return ApplyControlDesignProperty(
+		_control, propertyName, value, outEffective, outError);
+}
+
+bool PropertyGridBinder::ApplyControlDesignProperty(
+	const std::shared_ptr<DesignerControl>& target,
+	const std::wstring& propertyName,
+	const DesignerStyleValue& value,
+	DesignerStyleValue* outEffective,
+	std::wstring* outError) const
+{
+	if (!target) return false;
+	auto context = CreateControlPropertyContext(target);
+	return DesignerControlPropertyCatalog::ApplyValue(
+		*target, context, propertyName, value, outEffective, outError);
+}
+
+bool PropertyGridBinder::ResetControlDesignProperty(
+	const std::wstring& propertyName,
+	DesignerStyleValue* outEffective,
+	std::wstring* outError) const
+{
+	return ResetControlDesignProperty(
+		_control, propertyName, outEffective, outError);
+}
+
+bool PropertyGridBinder::ResetControlDesignProperty(
+	const std::shared_ptr<DesignerControl>& target,
+	const std::wstring& propertyName,
+	DesignerStyleValue* outEffective,
+	std::wstring* outError) const
+{
+	if (!target) return false;
+	auto context = CreateControlPropertyContext(target);
+	return DesignerControlPropertyCatalog::ResetValue(
+		*target, context, propertyName, outEffective, outError);
 }
 
 void PropertyGridBinder::NotifyControlChanged(Control* control) const

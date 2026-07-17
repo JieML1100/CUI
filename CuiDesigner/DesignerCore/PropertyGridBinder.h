@@ -1,36 +1,16 @@
 #pragma once
 
 #include "../DesignerTypes.h"
+#include "../DesignerControlPropertyCatalog.h"
+#include "../DesignerFormPropertyCatalog.h"
+#include "../DesignerPropertyRowCatalog.h"
+#include "../DesignerPropertyEdit.h"
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
 class DesignerCanvas;
-
-struct DesignedFormSnapshot
-{
-	std::wstring Name = L"MainForm";
-	std::wstring Text;
-	std::wstring FontName;
-	float FontSize = 18.0f;
-	D2D1_COLOR_F BackColor = Colors::WhiteSmoke;
-	D2D1_COLOR_F ForeColor = Colors::Black;
-	bool ShowInTaskBar = true;
-	bool TopMost = false;
-	bool Enable = true;
-	bool Visible = true;
-	bool VisibleHead = true;
-	int HeadHeight = 24;
-	bool MinBox = true;
-	bool MaxBox = true;
-	bool CloseBox = true;
-	bool CenterTitle = true;
-	bool AllowResize = true;
-	POINT Location{ 100, 100 };
-	SIZE Size{ 800, 600 };
-	std::map<std::wstring, std::wstring> EventHandlers;
-};
 
 class PropertyGridBinder
 {
@@ -39,15 +19,66 @@ public:
 	DesignerCanvas* GetCanvas() const;
 
 	void BindControl(const std::shared_ptr<DesignerControl>& control);
+	void BindControls(
+		const std::vector<std::shared_ptr<DesignerControl>>& controls,
+		const std::shared_ptr<DesignerControl>& primaryControl = nullptr);
 	bool IsFormBinding() const;
 	std::shared_ptr<DesignerControl> GetBoundControl() const;
+	const std::vector<std::shared_ptr<DesignerControl>>& GetBoundControls() const;
 	Control* GetBoundRuntimeControl() const;
 
-	DesignedFormSnapshot CaptureFormSnapshot() const;
-	bool ApplyFormTextProperty(const std::wstring& propertyName, const std::wstring& value) const;
-	bool ApplyFormBoolProperty(const std::wstring& propertyName, bool value) const;
-	bool IsFormEventEnabled(const std::wstring& eventName) const;
+	DesignerModel::DesignFormModel CaptureFormModel() const;
+	bool ApplyFormProperty(
+		const std::wstring& propertyName,
+		const DesignerStyleValue& value,
+		DesignerStyleValue* outEffective = nullptr,
+		std::wstring* outError = nullptr) const;
+	bool ResetFormProperty(
+		const std::wstring& propertyName,
+		DesignerStyleValue* outEffective = nullptr,
+		std::wstring* outError = nullptr) const;
 	::Font* GetDesignedFormSharedFont() const;
+	std::vector<DesignerPropertyRow> GetPropertyRows() const;
+	DesignerPropertyEditResult ApplyControlPropertyValue(
+		const std::wstring& propertyName,
+		const std::wstring& valueText) const;
+	DesignerPropertyEditResult ResetControlPropertyValue(
+		const std::wstring& propertyName) const;
+	bool CaptureControlPropertySnapshot(
+		const std::wstring& propertyName,
+		DesignerPropertyBatchSnapshot& out,
+		std::wstring* outError = nullptr) const;
+	bool RestoreBoundControlPropertySnapshot(
+		const DesignerPropertyBatchSnapshot& snapshot,
+		std::wstring* outError = nullptr) const;
+	DesignerControlPropertyContext CreateControlPropertyContext(
+		const std::shared_ptr<DesignerControl>& target) const;
+
+	std::vector<DesignerControlPropertyDescriptor> GetControlDesignProperties() const;
+	bool CaptureControlDesignProperty(
+		const std::wstring& propertyName,
+		DesignerStyleValue& out,
+		std::wstring* outError = nullptr) const;
+	bool ApplyControlDesignProperty(
+		const std::wstring& propertyName,
+		const DesignerStyleValue& value,
+		DesignerStyleValue* outEffective = nullptr,
+		std::wstring* outError = nullptr) const;
+	bool ApplyControlDesignProperty(
+		const std::shared_ptr<DesignerControl>& target,
+		const std::wstring& propertyName,
+		const DesignerStyleValue& value,
+		DesignerStyleValue* outEffective = nullptr,
+		std::wstring* outError = nullptr) const;
+	bool ResetControlDesignProperty(
+		const std::wstring& propertyName,
+		DesignerStyleValue* outEffective = nullptr,
+		std::wstring* outError = nullptr) const;
+	bool ResetControlDesignProperty(
+		const std::shared_ptr<DesignerControl>& target,
+		const std::wstring& propertyName,
+		DesignerStyleValue* outEffective = nullptr,
+		std::wstring* outError = nullptr) const;
 
 	void NotifyControlChanged(Control* control) const;
 	void ApplyAnchorStylesKeepingBounds(Control* control, uint8_t anchorStyles) const;
@@ -56,6 +87,8 @@ public:
 	void RemoveDesignerControlsInSubtree(Control* root) const;
 
 private:
+	std::vector<DesignerPropertyEditTarget> CreatePropertyEditTargets() const;
 	DesignerCanvas* _canvas = nullptr;
 	std::shared_ptr<DesignerControl> _control;
+	std::vector<std::shared_ptr<DesignerControl>> _controls;
 };

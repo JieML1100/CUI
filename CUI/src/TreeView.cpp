@@ -440,6 +440,58 @@ int TreeNode::UnfoldedCount()
 }
 UIClass TreeView::Type() { return UIClass::UI_TreeView; }
 
+void TreeView::EnsureBindingPropertiesRegistered()
+{
+	Control::EnsureBindingPropertiesRegistered();
+	static const bool registered = []
+	{
+		auto registerColor = [](const wchar_t* name, D2D1_COLOR_F defaultValue,
+			int order, auto getter, auto setter)
+		{
+			ControlPropertyOptions<TreeView, D2D1_COLOR_F> options;
+			options.DefaultValue = defaultValue;
+			options.Flags = ControlPropertyFlags::AffectsRender;
+			options.Equals = [](const D2D1_COLOR_F& left, const D2D1_COLOR_F& right)
+			{
+				return left.r == right.r && left.g == right.g
+					&& left.b == right.b && left.a == right.a;
+			};
+			options.Design.Category = L"Appearance";
+			options.Design.CategoryOrder = 200;
+			options.Design.Order = order;
+			options.Design.Editor = ControlPropertyEditorKind::Color;
+			options.Design.Persistence = ControlPropertyPersistence::Legacy;
+			BindingPropertyRegistry::Register<TreeView, D2D1_COLOR_F>(
+				name, std::move(getter), std::move(setter), {}, std::move(options));
+		};
+		registerColor(L"SelectedBackColor",
+			D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.14f }, 40,
+			[](TreeView& target) { return target.SelectedBackColor; },
+			[](TreeView& target, const D2D1_COLOR_F& value)
+			{
+				target.SelectedBackColor = value;
+				target.InvalidateVisual();
+			});
+		registerColor(L"UnderMouseItemBackColor",
+			D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.08f }, 50,
+			[](TreeView& target) { return target.UnderMouseItemBackColor; },
+			[](TreeView& target, const D2D1_COLOR_F& value)
+			{
+				target.UnderMouseItemBackColor = value;
+				target.InvalidateVisual();
+			});
+		registerColor(L"SelectedForeColor", Colors::Black, 60,
+			[](TreeView& target) { return target.SelectedForeColor; },
+			[](TreeView& target, const D2D1_COLOR_F& value)
+			{
+				target.SelectedForeColor = value;
+				target.InvalidateVisual();
+			});
+		return true;
+	}();
+	(void)registered;
+}
+
 bool TreeView::CanHandleMouseWheel(int delta, int localX, int localY)
 {
 	(void)localX;

@@ -35,6 +35,34 @@ struct DesignFormModel
 	bool operator==(const DesignFormModel& other) const;
 };
 
+/**
+ * Portable association between a design document and its generated/user C++
+ * pair. RelativeBasePath has no extension and is resolved from the design
+ * document directory by the Designer shell; runtime loading does not depend on
+ * it.
+ */
+struct DesignCodeBehindModel
+{
+	std::wstring ClassName;
+	std::wstring RelativeBasePath;
+
+	bool Empty() const noexcept
+	{
+		return ClassName.empty() && RelativeBasePath.empty();
+	}
+	bool Validate(std::wstring* outError = nullptr) const;
+	/** Accepts C++ `::` or XAML-style `.` separators and emits canonical `::`. */
+	static bool TryNormalizeClassName(
+		const std::wstring& value,
+		std::wstring& normalized,
+		std::wstring* outError = nullptr);
+	static bool TryNormalizeRelativeBasePath(
+		const std::wstring& value,
+		std::wstring& normalized,
+		std::wstring* outError = nullptr);
+	bool operator==(const DesignCodeBehindModel& other) const;
+};
+
 struct DesignNode
 {
 	int Id = 0;
@@ -42,6 +70,8 @@ struct DesignNode
 	std::wstring ParentRef;
 	std::wstring Name;
 	UIClass Type = UIClass::UI_Base;
+	DesignerCustomControlType CustomType;
+	std::vector<DesignerCustomEventDescriptor> CustomEvents;
 	int Order = -1;
 	DesignValue Props = DesignValue::object();
 	DesignValue Extra = DesignValue::object();
@@ -53,11 +83,12 @@ struct DesignNode
 
 struct DesignDocument
 {
-	static constexpr int CurrentSchemaVersion = 3;
+	static constexpr int CurrentSchemaVersion = 5;
 	std::string Schema = "cui.designer";
 	int SchemaVersion = CurrentSchemaVersion;
 	int NextStableId = 1;
 	DesignFormModel Form;
+	DesignCodeBehindModel CodeBehind;
 	DesignerDataContextSchema DataContextSchema;
 	DesignerStyleSheet StyleSheet;
 	std::vector<DesignNode> Nodes;

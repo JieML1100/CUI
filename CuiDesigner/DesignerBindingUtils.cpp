@@ -141,16 +141,21 @@ bool IsCompatible(
 			|| metadata.CanObserve());
 }
 
-bool Validate(
-	Control& target,
-	const std::wstring& targetProperty,
+bool IsModeStructurallyCompatible(
+	const TargetMetadata& metadata,
+	BindingMode mode) noexcept
+{
+	return (!IsSourceToTarget(mode) || metadata.CanWrite)
+		&& (!IsTargetToSource(mode) || metadata.CanRead);
+}
+
+bool ValidateTarget(
+	const TargetMetadata& target,
 	const DesignerDataBinding& binding,
-	const BindingPropertyMetadata** outMetadata,
 	std::wstring* outError,
 	const DesignerDataContextSchema* sourceSchema)
 {
-	if (outMetadata) *outMetadata = nullptr;
-	if (targetProperty.empty())
+	if (target.Name.empty())
 	{
 		if (outError) *outError = L"请选择目标属性。";
 		return false;
@@ -161,13 +166,7 @@ bool Validate(
 		return false;
 	}
 
-	const auto* metadata = BindingPropertyRegistry::Find(target, targetProperty);
-	if (!metadata)
-	{
-		if (outError) *outError = L"目标属性不存在：" + targetProperty;
-		return false;
-	}
-	if (!IsModeStructurallyCompatible(*metadata, binding.Mode))
+	if (!IsModeStructurallyCompatible(target, binding.Mode))
 	{
 		if (outError) *outError = L"目标属性的读写能力不支持 "
 			+ std::wstring(BindingModeName(binding.Mode)) + L"。";
@@ -177,7 +176,7 @@ bool Validate(
 		|| binding.Mode == BindingMode::OneWayToSource;
 	if (targetToSource
 		&& binding.UpdateMode != DataSourceUpdateMode::Never
-		&& !metadata->CanObserve())
+		&& !target.CanObserve)
 	{
 		if (outError) *outError = L"该目标属性没有变更通知；请使用 Never 更新策略或改用单向模式。";
 		return false;
@@ -265,7 +264,7 @@ bool Validate(
 				return false;
 			}
 			if (converter->TargetKind != BindingValueKind::Empty
-				&& converter->TargetKind != metadata->ValueKind())
+				&& converter->TargetKind != target.ValueKind)
 			{
 				if (outError) *outError = L"Converter " + converter->Name
 					+ L" 的目标值类型与属性不兼容。";
@@ -280,8 +279,33 @@ bool Validate(
 		}
 	}
 
-	if (outMetadata) *outMetadata = metadata;
 	if (outError) outError->clear();
+	return true;
+}
+
+bool Validate(
+	Control& target,
+	const std::wstring& targetProperty,
+	const DesignerDataBinding& binding,
+	const BindingPropertyMetadata** outMetadata,
+	std::wstring* outError,
+	const DesignerDataContextSchema* sourceSchema)
+{
+	if (outMetadata) *outMetadata = nullptr;
+	const auto* metadata = BindingPropertyRegistry::Find(target, targetProperty);
+	if (!metadata)
+	{
+		if (outError) *outError = targetProperty.empty()
+			? L"请选择目标属性。"
+			: L"目标属性不存在：" + targetProperty;
+		return false;
+	}
+	const TargetMetadata portable{
+		metadata->Name(), metadata->ValueKind(),
+		metadata->CanRead(), metadata->CanWrite(), metadata->CanObserve() };
+	if (!ValidateTarget(portable, binding, outError, sourceSchema))
+		return false;
+	if (outMetadata) *outMetadata = metadata;
 	return true;
 }
 

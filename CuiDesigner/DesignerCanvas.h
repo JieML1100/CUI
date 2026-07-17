@@ -7,26 +7,61 @@
 #include "../CUI/include/Panel.h"
 #include "DesignerTypes.h"
 #include "DesignerStyleSheet.h"
+#include "DesignerModel/DesignDocument.h"
+#include "DesignerCore/DesignerDocumentTransaction.h"
 #include <functional>
 #include <vector>
 #include <memory>
 #include <unordered_map>
 #include <map>
+#include <optional>
 
 struct CodeGenInput;
 class IDesignerCommand;
 class DesignerCommandCoordinator;
 class SelectionService;
 class SplitContainer;
+class ControlPlacementCommand;
+class ControlSubtreeCommand;
+class ControlOwnedCollectionCommand;
+struct DesignerCanvasPlacementInteraction;
+struct DesignerCanvasPropertyInteraction;
 
 namespace DesignerModel
 {
 	struct DesignDocument;
+	class DesignDocumentEventIndex;
+	struct DesignFormModel;
 }
+
+struct DesignerCanvasInteractionTransactionEventArgs
+{
+	std::wstring Operation;
+	std::wstring Message;
+	DesignerDocumentTransactionResult Result;
+};
+
+struct DesignerCanvasCommandEventArgs
+{
+	std::wstring Operation;
+	std::wstring Label;
+	std::wstring Message;
+	DesignerDocumentTransactionResult Result;
+};
+
+struct DesignerCanvasDocumentStateEventArgs
+{
+	uint64_t CurrentStateId = 0;
+	uint64_t SavedStateId = 0;
+	bool IsDirty = false;
+};
 
 class DesignerCanvas : public Panel
 {
 friend class DesignerCommandCoordinator;
+friend class ControlPlacementCommand;
+friend class ControlSubtreeCommand;
+friend class ControlOwnedCollectionCommand;
 
 private:
 	Panel* _designSurface = nullptr;
@@ -50,6 +85,7 @@ private:
 	bool _designedFormVisible = true;
 	std::map<std::wstring, std::wstring> _designedFormEventHandlers;
 	DesignerDataContextSchema _dataContextSchema;
+	DesignerModel::DesignCodeBehindModel _codeBehind;
 	DesignerStyleSheet _documentStyleSheet;
 	std::shared_ptr<ControlStyleSheet> _previewStyleSheet;
 	std::shared_ptr<IBindingSource> _designDataContext;
@@ -112,13 +148,35 @@ private:
 	int _splitterDragStartDistance = 0;
 	SplitContainer* _splitterDragTarget = nullptr;
 	
-	// 待添加的控件类型
-	UIClass _controlToAdd = UIClass::UI_Base;
+	// 待添加的完整控件描述；自定义控件不能退化为单一 UIClass。
+	std::optional<DesignerControlDescriptor> _controlToAdd;
+	// 进程内预览工厂不进入文档，但必须跨 Open/Undo/Redo 材质化保持。
+	std::unordered_map<std::wstring, DesignerControlDescriptor>
+		_customControlDescriptors;
 	std::unordered_map<int, int> _controlTypeCounters;
+	// 单调递增且随文档持久化；删除控件不会回收 ID。
+	int _nextStableControlId = 1;
 	std::unique_ptr<DesignerCommandCoordinator> _commandCoordinator;
+	std::unique_ptr<DesignerCanvasPlacementInteraction>
+		_activePlacementInteraction;
+	std::unique_ptr<DesignerCanvasPropertyInteraction>
+		_activePropertyInteraction;
+	std::wstring _activeInteractionTransaction;
+	std::wstring _lastInteractionTransaction;
+	DesignerDocumentTransactionResult _lastInteractionTransactionResult =
+		DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+	bool _hasInteractionTransactionResult = false;
+	std::wstring _lastCommandOperation;
+	std::wstring _lastCommandLabel;
+	DesignerDocumentTransactionResult _lastCommandResult =
+		DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+	bool _hasCommandResult = false;
 
 	std::wstring GenerateDefaultControlName(UIClass type, const std::wstring& typeName);
 	void UpdateDefaultNameCounterFromName(UIClass type, const std::wstring& name);
+	int AllocateStableControlId();
 	
 	void DrawSelectionHandles(std::shared_ptr<DesignerControl> dc);
 	void DrawGrid();
@@ -136,7 +194,47 @@ private:
 	CursorKind GetSplitContainerSplitterCursor(SplitContainer* split) const;
 	RECT GetSplitContainerSplitterRectInCanvas(SplitContainer* split) const;
 	int ClampSplitContainerDistance(SplitContainer* split, int value) const;
-	void UpdateSplitContainerPreview(SplitContainer* split, int splitterDistance);
+	bool UpdateSplitContainerPreview(
+		SplitContainer* split,
+		int splitterDistance,
+		std::wstring* outError = nullptr);
+	bool HasActiveDeltaInteraction() const noexcept;
+	bool HasVisibleDesignerAncestors(Control* control) const noexcept;
+	bool BeginCanvasInteractionTransaction(const std::wstring& operation);
+	bool BeginPlacementInteraction(const std::wstring& operation);
+	bool BeginControlPropertyInteraction(
+		const std::wstring& operation,
+		const std::shared_ptr<DesignerControl>& target,
+		const std::wstring& propertyName);
+	DesignerDocumentTransactionResult CommitCanvasInteractionTransaction();
+	DesignerDocumentTransactionResult CommitPlacementInteraction();
+	DesignerDocumentTransactionResult CommitControlPropertyInteraction();
+	DesignerDocumentTransactionResult RollbackCanvasInteractionTransaction(
+		std::wstring message = {});
+	DesignerDocumentTransactionResult RollbackPlacementInteraction(
+		std::wstring message = {});
+	DesignerDocumentTransactionResult RollbackControlPropertyInteraction(
+		std::wstring message = {});
+	DesignerDocumentTransactionResult AbortCanvasInteractionTransaction(
+		std::wstring error);
+	DesignerDocumentTransactionResult AbortPlacementInteraction(
+		std::wstring error);
+	DesignerDocumentTransactionResult AbortControlPropertyInteraction(
+		std::wstring error);
+	void PublishCanvasInteractionTransactionResult(
+		const std::wstring& operation,
+		const DesignerDocumentTransactionResult& result,
+		std::wstring message = {});
+	void PublishCanvasCommandResult(
+		const std::wstring& operation,
+		const std::wstring& label,
+		const DesignerDocumentTransactionResult& result,
+		std::wstring message = {});
+	void NotifyDocumentStateChanged();
+	DesignerDocumentTransactionResult ExecuteCommandCore(
+		std::unique_ptr<IDesignerCommand> command);
+	std::wstring CurrentPointerInteractionOperation() const;
+	void ResetPointerInteractionState();
 	void ClearSelection();
 	bool IsSelected(const std::shared_ptr<DesignerControl>& dc) const;
 	void SetPrimarySelection(const std::shared_ptr<DesignerControl>& dc, bool fireEvent);
@@ -157,11 +255,14 @@ private:
 	void ApplyRectToControl(Control* c, const RECT& rectInCanvas);
 	static Thickness GetPaddingOfContainer(Control* container);
 	void RebuildDesignedFormSharedFont();
+	void DetachDesignBindingPreview(DesignerControl& control);
 	
 public:
 	DesignerCanvas(int x, int y, int width, int height);
 	virtual ~DesignerCanvas();
 	bool HitTestChildren() const override { return false; }
+	DesignerModel::DesignFormModel CaptureDesignedFormModel() const;
+	void ApplyDesignedFormModel(const DesignerModel::DesignFormModel& form);
 
 	// 当外部（属性面板）修改 Name 后，同步默认命名计数器（按类型）。
 	void SyncDefaultNameCounter(UIClass type, const std::wstring& name) { UpdateDefaultNameCounterFromName(type, name); }
@@ -190,21 +291,29 @@ public:
 	const std::map<std::wstring, std::wstring>& GetDesignedFormEventHandlers() const { return _designedFormEventHandlers; }
 	const DesignerDataContextSchema& GetDataContextSchema() const { return _dataContextSchema; }
 	bool SetDataContextSchema(DesignerDataContextSchema schema, std::wstring* outError = nullptr);
+	const DesignerModel::DesignCodeBehindModel& GetCodeBehind() const noexcept
+	{
+		return _codeBehind;
+	}
+	bool SetCodeBehind(
+		DesignerModel::DesignCodeBehindModel codeBehind,
+		std::wstring* outError = nullptr);
 	const DesignerStyleSheet& GetDocumentStyleSheet() const { return _documentStyleSheet; }
 	bool SetDocumentStyleSheet(DesignerStyleSheet styleSheet, std::wstring* outError = nullptr);
-	void SetDesignDataContext(std::shared_ptr<IBindingSource> source)
-	{
-		_designDataContext = std::move(source);
-	}
+	void SetDesignDataContext(std::shared_ptr<IBindingSource> source);
+	bool RefreshDesignBindings(
+		DesignerControl& control,
+		std::wstring* outError = nullptr);
+	bool RefreshAllDesignBindings(std::wstring* outError = nullptr);
 	const std::shared_ptr<IBindingSource>& GetDesignDataContext() const
 	{
 		return _designDataContext;
 	}
-	bool GetDesignedFormEventEnabled(const std::wstring& eventName) const { return _designedFormEventHandlers.find(eventName) != _designedFormEventHandlers.end(); }
-	void SetDesignedFormEventEnabled(const std::wstring& eventName, bool enabled)
+	void SetDesignedFormEventHandler(
+		const std::wstring& eventName, const std::wstring& handlerName)
 	{
-		if (enabled) _designedFormEventHandlers[eventName] = L"1";
-		else _designedFormEventHandlers.erase(eventName);
+		if (handlerName.empty()) _designedFormEventHandlers.erase(eventName);
+		else _designedFormEventHandlers[eventName] = handlerName;
 	}
 	SIZE GetDesignedFormSize() const { return _designedFormSize; }
 	void SetDesignedFormSize(SIZE s);
@@ -231,24 +340,99 @@ public:
 	// 设计文件（用于保存/加载设计进度）
 	bool BuildDesignDocument(DesignerModel::DesignDocument& document, std::wstring* outError = nullptr) const;
 	bool ApplyDesignDocument(const DesignerModel::DesignDocument& document, std::wstring* outError = nullptr);
-	bool SaveDesignFile(const std::wstring& filePath, std::wstring* outError = nullptr) const;
-	bool LoadDesignFile(const std::wstring& filePath, std::wstring* outError = nullptr);
+	bool BuildEventHandlerIndex(
+		DesignerModel::DesignDocumentEventIndex& index,
+		std::wstring* outError = nullptr) const;
+	bool RenameEventHandler(
+		const std::wstring& oldName,
+		const std::wstring& newName,
+		size_t* outRenamedReferenceCount = nullptr,
+		std::wstring* outError = nullptr);
+	DesignerDocumentTransactionResult CreateNewDocument();
+	DesignerDocumentTransactionResult SaveDesignFile(
+		const std::wstring& filePath,
+		std::wstring* outError = nullptr);
+	DesignerDocumentTransactionResult LoadDesignFile(
+		const std::wstring& filePath,
+		std::wstring* outError = nullptr);
+	DesignerDocumentTransactionResult RestoreRecoveredDocument(
+		const DesignerModel::DesignDocument& document);
 	
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 	
 	// 控件管理
-	void AddControlToCanvas(UIClass type, POINT canvasPos);
+	DesignerDocumentTransactionResult AddControlToCanvas(
+		UIClass type, POINT canvasPos);
+	DesignerDocumentTransactionResult AddControlToCanvas(
+		const DesignerControlDescriptor& descriptor, POINT canvasPos);
 	void AddControlToCanvasCore(UIClass type, POINT canvasPos);
-	void DeleteSelectedControl();
+	void AddControlToCanvasCore(
+		const DesignerControlDescriptor& descriptor, POINT canvasPos);
+	DesignerDocumentTransactionResult DeleteSelectedControl();
 	void DeleteSelectedControlCore();
-	void ClearCanvas();
 	void RemoveDesignerControlsInSubtree(Control* root);
 	// 设计期 Name：用于保存/加载 parent 引用，必须非空且在当前文档内唯一
 	std::wstring MakeUniqueControlName(const std::shared_ptr<DesignerControl>& target, const std::wstring& desired) const;
-	bool ExecuteCommand(std::unique_ptr<IDesignerCommand> command);
-	bool UndoCommand();
-	bool RedoCommand();
+	DesignerDocumentTransactionResult ExecuteCommand(
+		std::unique_ptr<IDesignerCommand> command);
+	/** Adds an already-applied delta command without publishing a second UI action. */
+	DesignerDocumentTransactionResult CommitAlreadyAppliedCommand(
+		std::unique_ptr<IDesignerCommand> command);
+	DesignerDocumentTransactionResult UndoCommand();
+	DesignerDocumentTransactionResult RedoCommand();
+	bool IsDocumentDirty() const noexcept;
+	uint64_t GetCurrentDocumentStateId() const noexcept;
+	uint64_t GetSavedDocumentStateId() const noexcept;
+	void SetCommandHistoryMemoryLimit(size_t byteLimit);
+	size_t GetCommandHistoryMemoryLimit() const noexcept;
+	size_t GetCommandHistoryMemoryUsage() const noexcept;
+	size_t GetUndoCommandCount() const noexcept;
+	size_t GetRedoCommandCount() const noexcept;
+	DesignerDocumentTransactionResult MarkDocumentSaved();
+	DesignerDocumentTransactionResult ResetDocumentHistoryAsSaved();
+	DesignerDocumentTransactionResult ResetDocumentHistoryAsUnsaved();
+	bool HasActiveDocumentTransaction() const noexcept;
+	/** Strict, result-bearing transaction for document-level edits. */
+	DesignerDocumentTransactionResult ExecuteDocumentEditTransaction(
+		const std::wstring& label,
+		const std::function<bool(std::wstring& error)>& applyChange);
+	DesignerDocumentTransactionResult BeginDocumentEditTransaction(
+		const std::wstring& label);
+	DesignerDocumentTransactionResult CommitDocumentEditTransaction();
+	DesignerDocumentTransactionResult RollbackDocumentEditTransaction();
+	DesignerDocumentTransactionResult CancelDocumentEditTransaction();
+	DesignerDocumentTransactionResult CancelActivePointerInteraction(
+		const std::wstring& reason = L"画布交互已取消。");
+	DesignerDocumentTransactionResult NudgeSelectionBy(int dx, int dy);
+	bool HasInteractionTransactionResult() const noexcept
+	{
+		return _hasInteractionTransactionResult;
+	}
+	const std::wstring& GetLastInteractionTransaction() const noexcept
+	{
+		return _lastInteractionTransaction;
+	}
+	const DesignerDocumentTransactionResult&
+		GetLastInteractionTransactionResult() const noexcept
+	{
+		return _lastInteractionTransactionResult;
+	}
+	void ClearInteractionTransactionResult();
+	bool HasCommandResult() const noexcept { return _hasCommandResult; }
+	const std::wstring& GetLastCommandOperation() const noexcept
+	{
+		return _lastCommandOperation;
+	}
+	const std::wstring& GetLastCommandLabel() const noexcept
+	{
+		return _lastCommandLabel;
+	}
+	const DesignerDocumentTransactionResult& GetLastCommandResult() const noexcept
+	{
+		return _lastCommandResult;
+	}
+	void ClearCommandResult();
 	void RestorePrimarySelectionByName(const std::wstring& name, bool fireEvent = true);
 	void RestoreSelectionByNames(const std::vector<std::wstring>& selectionNames, const std::wstring& primaryName, bool fireEvent = true);
 	std::shared_ptr<DesignerControl> GetSelectedControl() { return _selectedControl; }
@@ -258,11 +442,28 @@ public:
 	std::vector<std::shared_ptr<DesignerControl>> GetAllControlsForExport() const;
 	
 	// 准备添加控件（鼠标模式）
-	void SetControlToAdd(UIClass type) { _controlToAdd = type; }
+	void SetControlDescriptors(
+		const std::vector<DesignerControlDescriptor>& descriptors);
+	void RegisterControlDescriptor(
+		const DesignerControlDescriptor& descriptor);
+	void SetControlToAdd(UIClass type);
+	void SetControlToAdd(const DesignerControlDescriptor& descriptor);
 	
 	Event<void(std::shared_ptr<DesignerControl>)> OnControlSelected;
+	/** WinForms-style request raised when a control or the form is double-clicked. */
+	Event<void(std::shared_ptr<DesignerControl>)> OnDefaultEventRequested;
+	Event<void(const DesignerCanvasInteractionTransactionEventArgs&)>
+		OnInteractionTransactionCompleted;
+	Event<void(const DesignerCanvasCommandEventArgs&)> OnCommandCompleted;
+	Event<void(const DesignerCanvasDocumentStateEventArgs&)>
+		OnDocumentStateChanged;
 
 private:
+	void ClearCanvasCore();
+	DesignerDocumentTransactionResult ReplaceDesignDocument(
+		const DesignerModel::DesignDocument& document,
+		const std::wstring& operation,
+		bool markAsSaved = true);
 	RECT GetControlRectInCanvas(Control* c);
 	std::vector<RECT> GetHandleRectsFromRect(const RECT& r, int handleSize);
 	DesignerControl::ResizeHandle HitTestHandleFromRect(const RECT& r, POINT pt, int handleSize);

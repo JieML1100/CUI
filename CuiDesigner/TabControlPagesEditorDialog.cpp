@@ -1,7 +1,6 @@
 #include "TabControlPagesEditorDialog.h"
 #include <algorithm>
 #include <sstream>
-#include <unordered_set>
 
 namespace
 {
@@ -133,11 +132,7 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 		if (!_target || !_grid) { this->Close(); return; }
 		_grid->ChangeEditionSelected(-1, -1);
 
-		std::vector<std::wstring> titles;
-		std::vector<TabPage*> desiredPages;
-		std::unordered_set<TabPage*> used;
-
-		// 收集目标列表（跳过空标题）
+		Pages.clear();
 		for (size_t i = 0; i < _grid->RowCount(); i++)
 		{
 			auto& row = _grid->RowAt(static_cast<int>(i));
@@ -147,61 +142,11 @@ TabControlPagesEditorDialog::TabControlPagesEditorDialog(TabControl* target)
 
 			TabPage* page = static_cast<TabPage*>(row.Cells[COL_TITLE].GetPointer());
 			if (page && page->Parent != _target) page = nullptr;
-			if (!page)
-			{
-				page = _target->AddPage(title);
-			}
-
-			titles.push_back(title);
-			desiredPages.push_back(page);
-			used.insert(page);
+			Pages.push_back({ page, std::move(title) });
 		}
-		if (desiredPages.empty())
-		{
-			auto* page = _target->AddPage(L"Page 1");
-			titles.push_back(L"Page 1");
-			desiredPages.push_back(page);
-			used.insert(page);
-		}
-
-		// 删除未被引用的旧页（从后往前）
-		for (int i = _target->Count - 1; i >= 0; i--)
-		{
-			auto* page = (TabPage*)_target->operator[](i);
-			if (!page) continue;
-			if (used.find(page) != used.end()) continue;
-			if (OnBeforeDeletePage) OnBeforeDeletePage(page);
-			_target->DeleteControl(page);
-		}
-
-		// 重排页顺序：把 desiredPages 交换到目标位置
-		for (int i = 0; i < (int)desiredPages.size(); i++)
-		{
-			TabPage* want = desiredPages[i];
-			int cur = -1;
-			for (int j = 0; j < _target->Count; j++)
-			{
-				if (_target->operator[](j) == want) { cur = j; break; }
-			}
-			if (cur >= 0 && cur != i)
-			{
-				_target->Children.SwapIndices(
-					static_cast<size_t>(cur), static_cast<size_t>(i));
-			}
-		}
-
-		// 更新标题
-		for (int i = 0; i < (int)titles.size() && i < _target->Count; i++)
-		{
-			_target->operator[](i)->Text = titles[i];
-		}
-
-		if (_target->Count > 0)
-			_target->SelectPage((std::clamp)(
-				_target->SelectedIndex, 0, _target->Count - 1));
+		if (Pages.empty()) Pages.push_back({ nullptr, L"Page 1" });
 
 		Applied = true;
-		_target->InvalidateVisual();
 		this->Close();
 		};
 

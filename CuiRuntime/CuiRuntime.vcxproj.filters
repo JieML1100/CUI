@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Runtime"><UniqueIdentifier>{23C2D24E-6F8A-4CB9-86E8-8FCFB782D7E5}</UniqueIdentifier></Filter>
+    <Filter Include="Runtime\Model"><UniqueIdentifier>{ED5994E3-373C-43A5-B697-D8D83467A859}</UniqueIdentifier></Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp"><Filter>Runtime</Filter></ClCompile>
+    <ClCompile Include="..\CuiDesigner\DesignerDataContextSchemaUtils.cpp"><Filter>Runtime</Filter></ClCompile>
+    <ClCompile Include="..\CuiDesigner\DesignerEventCatalog.cpp"><Filter>Runtime</Filter></ClCompile>
+	<ClCompile Include="..\CuiDesigner\DesignerFormPropertyCatalog.cpp"><Filter>Runtime</Filter></ClCompile>
+    <ClCompile Include="..\CuiDesigner\DesignerPropertyCatalog.cpp"><Filter>Runtime</Filter></ClCompile>
+    <ClCompile Include="..\CuiDesigner\DesignerStyleSheetUtils.cpp"><Filter>Runtime</Filter></ClCompile>
+    <ClCompile Include="..\CuiDesigner\DesignerModel\AtomicFile.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocument.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentCodeGenInputBuilder.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentControlPool.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentGraph.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentMaterializer.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentSerializer.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+    <ClCompile Include="..\CuiDesigner\DesignerModel\RuntimeDocument.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+	<ClCompile Include="..\CuiDesigner\DesignerModel\RuntimeEventHandlerRegistry.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+	<ClCompile Include="..\CuiDesigner\DesignerModel\RuntimeDocumentFileWatcher.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+	<ClCompile Include="..\CuiDesigner\DesignerModel\RuntimeDocumentSession.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+	<ClCompile Include="..\CuiDesigner\DesignerModel\RuntimeDocumentTopologyReloader.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+	<ClCompile Include="..\CuiDesigner\DesignerModel\XamlDocumentParser.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+	<ClCompile Include="..\CuiDesigner\DesignerModel\XamlDocumentSerializer.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+	<ClInclude Include="include\CuiRuntime.h"><Filter>Runtime</Filter></ClInclude>
+	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDocumentFileFormat.h"><Filter>Runtime\Model</Filter></ClInclude>
+	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.h"><Filter>Runtime\Model</Filter></ClInclude>
+	<ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeDocumentFileWatcher.h"><Filter>Runtime\Model</Filter></ClInclude>
+	<ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeDocumentSession.h"><Filter>Runtime\Model</Filter></ClInclude>
+	<ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeEventHandlerRegistry.h"><Filter>Runtime\Model</Filter></ClInclude>
+	<ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeDocumentTopologyReloader.h"><Filter>Runtime\Model</Filter></ClInclude>
+	<ClInclude Include="..\CuiDesigner\DesignerModel\XamlDocumentParser.h"><Filter>Runtime\Model</Filter></ClInclude>
+	<ClInclude Include="..\CuiDesigner\DesignerModel\XamlDocumentSerializer.h"><Filter>Runtime\Model</Filter></ClInclude>
+  </ItemGroup>
+</Project>

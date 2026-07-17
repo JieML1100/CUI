@@ -11,6 +11,17 @@ void DateTimePicker::EnsureBindingPropertiesRegistered()
 	static const bool registered = []
 	{
 		using Handler = BindingPropertyMetadata::ChangeHandler;
+		auto legacyDesign = [](std::wstring category, int categoryOrder,
+			int order, ControlPropertyEditorKind editor)
+		{
+			ControlPropertyDesignMetadata design;
+			design.Category = std::move(category);
+			design.CategoryOrder = categoryOrder;
+			design.Order = order;
+			design.Editor = editor;
+			design.Persistence = ControlPropertyPersistence::Legacy;
+			return design;
+		};
 		BindingPropertyRegistry::Register<DateTimePicker, SYSTEMTIME>(L"Value",
 			[](DateTimePicker& target) { return target.Value; },
 			[](DateTimePicker& target, const SYSTEMTIME& value) { target.Value = value; },
@@ -19,15 +30,64 @@ void DateTimePicker::EnsureBindingPropertiesRegistered()
 				return target.OnSelectionChanged.Subscribe(
 					[handler = std::move(handler)](Control*) { handler(); });
 			});
+		ControlPropertyOptions<DateTimePicker, DateTimePickerMode> modeOptions;
+		modeOptions.DefaultValue = DateTimePickerMode::DateTime;
+		modeOptions.Flags = ControlPropertyFlags::AffectsMeasure
+			| ControlPropertyFlags::AffectsRender;
+		modeOptions.Design = legacyDesign(
+			L"Behavior", 300, 10, ControlPropertyEditorKind::Choice);
+		modeOptions.Design.Choices = {
+			{ L"DateOnly", BindingValue(DateTimePickerMode::DateOnly) },
+			{ L"TimeOnly", BindingValue(DateTimePickerMode::TimeOnly) },
+			{ L"DateTime", BindingValue(DateTimePickerMode::DateTime) }
+		};
 		BindingPropertyRegistry::Register<DateTimePicker, DateTimePickerMode>(L"Mode",
 			[](DateTimePicker& target) { return target.Mode; },
-			[](DateTimePicker& target, const DateTimePickerMode& value) { target.Mode = value; });
+			[](DateTimePicker& target, const DateTimePickerMode& value) { target.Mode = value; },
+			{}, std::move(modeOptions));
+		ControlPropertyOptions<DateTimePicker, bool> allowDate;
+		allowDate.DefaultValue = true;
+		allowDate.Flags = ControlPropertyFlags::AffectsMeasure
+			| ControlPropertyFlags::AffectsRender;
+		allowDate.Design = legacyDesign(
+			L"Behavior", 300, 20, ControlPropertyEditorKind::Boolean);
 		BindingPropertyRegistry::Register<DateTimePicker, bool>(L"AllowDateSelection",
 			[](DateTimePicker& target) { return target.AllowDateSelection; },
-			[](DateTimePicker& target, const bool& value) { target.AllowDateSelection = value; });
+			[](DateTimePicker& target, const bool& value) { target.AllowDateSelection = value; },
+			{}, std::move(allowDate));
+		ControlPropertyOptions<DateTimePicker, bool> allowTime;
+		allowTime.DefaultValue = true;
+		allowTime.Flags = ControlPropertyFlags::AffectsMeasure
+			| ControlPropertyFlags::AffectsRender;
+		allowTime.Design = legacyDesign(
+			L"Behavior", 300, 30, ControlPropertyEditorKind::Boolean);
 		BindingPropertyRegistry::Register<DateTimePicker, bool>(L"AllowTimeSelection",
 			[](DateTimePicker& target) { return target.AllowTimeSelection; },
-			[](DateTimePicker& target, const bool& value) { target.AllowTimeSelection = value; });
+			[](DateTimePicker& target, const bool& value) { target.AllowTimeSelection = value; },
+			{}, std::move(allowTime));
+		ControlPropertyOptions<DateTimePicker, bool> allowModeSwitch;
+		allowModeSwitch.DefaultValue = true;
+		allowModeSwitch.Flags = ControlPropertyFlags::AffectsMeasure
+			| ControlPropertyFlags::AffectsRender;
+		allowModeSwitch.Design = legacyDesign(
+			L"Behavior", 300, 40, ControlPropertyEditorKind::Boolean);
+		BindingPropertyRegistry::Register<DateTimePicker, bool>(L"AllowModeSwitch",
+			[](DateTimePicker& target) { return target.AllowModeSwitch; },
+			[](DateTimePicker& target, const bool& value)
+			{
+				target.AllowModeSwitch = value;
+				target.InvalidateVisual();
+			}, {}, std::move(allowModeSwitch));
+		ControlPropertyOptions<DateTimePicker, bool> expand;
+		expand.DefaultValue = false;
+		expand.Flags = ControlPropertyFlags::AffectsMeasure
+			| ControlPropertyFlags::AffectsRender;
+		expand.Design = legacyDesign(
+			L"Behavior", 300, 50, ControlPropertyEditorKind::Boolean);
+		BindingPropertyRegistry::Register<DateTimePicker, bool>(L"Expand",
+			[](DateTimePicker& target) { return target.Expand; },
+			[](DateTimePicker& target, const bool& value) { target.SetExpanded(value); },
+			{}, std::move(expand));
 		return true;
 	}();
 	(void)registered;

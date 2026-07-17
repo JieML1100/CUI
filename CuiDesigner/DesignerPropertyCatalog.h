@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DesignerStyleSheet.h"
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -35,6 +36,8 @@ struct DesignerPropertyDescriptor
 
 namespace DesignerPropertyCatalog
 {
+	using TrackedPropertyValues = std::map<std::wstring, DesignerStyleValue>;
+
 	/** Maps runtime property metadata to a Designer-serializable literal kind. */
 	bool TryGetStyleValueKind(
 		const BindingPropertyMetadata& metadata,
@@ -45,6 +48,13 @@ namespace DesignerPropertyCatalog
 
 	/** Returns generic PropertyGrid entries after design visibility/persistence filtering. */
 	std::vector<DesignerPropertyDescriptor> GetBrowsableProperties(Control& target);
+
+	/**
+	 * Returns every Designer-browsable scalar property for the ordinary property
+	 * panel. Unlike GetBrowsableProperties, this includes legacy-serialized
+	 * properties; transient runtime state remains excluded.
+	 */
+	std::vector<DesignerPropertyDescriptor> GetPropertyGridProperties(Control& target);
 
 	const DesignerPropertyDescriptor* Find(
 		const std::vector<DesignerPropertyDescriptor>& properties,
@@ -73,6 +83,41 @@ namespace DesignerPropertyCatalog
 		Control& target,
 		const std::wstring& propertyName,
 		const DesignerStyleValue& value,
+		std::wstring* outCanonicalName = nullptr,
+		DesignerStyleValue* outEffective = nullptr,
+		std::wstring* outError = nullptr);
+
+	/** True when a design edit belongs in the generic typed metadata bag. */
+	bool UsesMetadataPersistence(const BindingPropertyMetadata& metadata) noexcept;
+
+	/**
+	 * Captures the effective value and synchronizes the generic metadata bag
+	 * according to the property's persistence metadata. Legacy and transient
+	 * properties are deliberately removed from the bag.
+	 */
+	bool TrackCurrentValue(
+		Control& target,
+		TrackedPropertyValues& trackedValues,
+		const std::wstring& propertyName,
+		std::wstring* outCanonicalName = nullptr,
+		DesignerStyleValue* outEffective = nullptr,
+		std::wstring* outError = nullptr);
+
+	/** Applies a Local value and synchronizes its Designer persistence. */
+	bool ApplyAndTrackValue(
+		Control& target,
+		TrackedPropertyValues& trackedValues,
+		const std::wstring& propertyName,
+		const DesignerStyleValue& value,
+		std::wstring* outCanonicalName = nullptr,
+		DesignerStyleValue* outEffective = nullptr,
+		std::wstring* outError = nullptr);
+
+	/** Clears the Local value, exposes the next value source, and untracks it. */
+	bool ResetAndUntrackValue(
+		Control& target,
+		TrackedPropertyValues& trackedValues,
+		const std::wstring& propertyName,
 		std::wstring* outCanonicalName = nullptr,
 		DesignerStyleValue* outEffective = nullptr,
 		std::wstring* outError = nullptr);

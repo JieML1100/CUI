@@ -9,7 +9,15 @@ enum class PropertyGridValueType
 	Bool,
 	Enum,
 	Color,
-	ReadOnly
+	ReadOnly,
+	/** Invokes OnItemClick without entering a scalar editor. */
+	Action,
+	/** Edits a bounded numeric value directly on a native track. */
+	Slider,
+	/** Edits the four combinable layout anchor edges in a visual popup. */
+	Anchor,
+	/** Free-form text with a drop-down containing compatible suggestions. */
+	EditableEnum
 };
 
 class PropertyGridItem
@@ -24,6 +32,13 @@ public:
 	PropertyGridValueType ValueType = PropertyGridValueType::Text;
 	UINT64 Tag = 0;
 	bool ReadOnly = false;
+	/** Draws an indeterminate value until the user establishes one value. */
+	bool IsMixed = false;
+	/** Exposes the native reset affordance and OnResetRequested event. */
+	bool CanReset = false;
+	double Minimum = 0.0;
+	double Maximum = 1.0;
+	double Step = 0.01;
 
 	PropertyGridItem() = default;
 	PropertyGridItem(std::wstring category, std::wstring name, std::wstring value,
@@ -91,11 +106,18 @@ public:
 
 	PropertyGridItemEvent SelectionChanged;
 	PropertyGridItemEvent OnItemClick;
+	PropertyGridItemEvent OnResetRequested;
+	PropertyGridItemEvent OnEditStarted;
+	PropertyGridItemEvent OnEditCompleted;
+	PropertyGridItemEvent OnEditCanceled;
 	PropertyGridValueChangedEvent OnValueChanged;
 	ScrollChangedEvent ScrollChanged;
 
 	void Clear();
-	/** Replaces the structural item collection and reconciles transient state. */
+	/**
+	 * Atomically replaces the structural item collection. Category collapse and
+	 * scroll state are retained when the corresponding categories/extent remain.
+	 */
 	void SetItems(std::vector<PropertyGridItem> items);
 	int AddItem(const PropertyGridItem& item);
 	int AddProperty(const std::wstring& category, const std::wstring& name, const std::wstring& value,
@@ -106,6 +128,14 @@ public:
 	const PropertyGridItem* SelectedItem() const;
 	bool SelectItem(int index, bool ensureVisible = true);
 	bool ClearSelection();
+	/** Invokes the row's primary action. Useful for keyboard and automation. */
+	bool ActivateItem(int index);
+	/** Requests restoring an editable row to its inherited/default value. */
+	bool RequestReset(int index);
+	/** Customizes the two native header captions without replacing the grid. */
+	void SetHeaderLabels(std::wstring nameCaption, std::wstring valueCaption);
+	const std::wstring& GetNameHeaderLabel() const noexcept { return _nameHeaderLabel; }
+	const std::wstring& GetValueHeaderLabel() const noexcept { return _valueHeaderLabel; }
 	bool SetValue(int index, const std::wstring& value);
 	std::wstring GetValue(int index) const;
 	void CollapseCategory(const std::wstring& category, bool collapsed);
@@ -210,6 +240,8 @@ private:
 	std::vector<CategoryAnimation> _categoryAnimations;
 	bool _dragVScroll = false;
 	bool _dragSplitter = false;
+	bool _dragSlider = false;
+	int _sliderDragIndex = -1;
 	float _scrollThumbGrabOffsetY = 0.0f;
 	bool _editing = false;
 	int _editingIndex = -1;
@@ -223,7 +255,11 @@ private:
 	int _dropDownPopupIndex = -1;
 	class ColorPickerPopup* _colorPicker = nullptr;
 	int _colorPickerIndex = -1;
+	class AnchorPickerPopup* _anchorPicker = nullptr;
+	int _anchorPickerIndex = -1;
 	std::vector<uint32_t> _knownItemIds;
+	std::wstring _nameHeaderLabel = L"Property";
+	std::wstring _valueHeaderLabel = L"Value";
 
 	std::vector<RowInfo> BuildRows() const;
 	Layout CalcLayout(const std::vector<RowInfo>& rows) const;
@@ -231,12 +267,13 @@ private:
 	D2D1_RECT_F GetVisibleRowRect(const RowInfo& row, const Layout& layout) const;
 	D2D1_RECT_F GetNameRect(const D2D1_RECT_F& rowRect) const;
 	D2D1_RECT_F GetValueRect(const D2D1_RECT_F& rowRect) const;
+	D2D1_RECT_F GetResetRect(const D2D1_RECT_F& rowRect) const;
 	void ClampScroll(Layout& layout);
 	void DrawHeader(D2DGraphics* d2d, const Layout& layout);
 	void DrawRows(D2DGraphics* d2d, const std::vector<RowInfo>& rows, const Layout& layout);
 	void DrawCategoryRow(D2DGraphics* d2d, const RowInfo& row, const D2D1_RECT_F& rect);
 	void DrawItemRow(D2DGraphics* d2d, const RowInfo& row, const D2D1_RECT_F& rect, int visibleItemOrdinal);
-	void DrawCheckBox(D2DGraphics* d2d, const D2D1_RECT_F& rect, bool checked);
+	void DrawCheckBox(D2DGraphics* d2d, const D2D1_RECT_F& rect, bool checked, bool indeterminate = false);
 	void DrawScrollBar(D2DGraphics* d2d, const Layout& layout);
 	void UpdateHover(int localX, int localY);
 	void UpdateScrollByThumb(float localY);
@@ -257,12 +294,15 @@ private:
 	std::wstring EditGetSelectedString() const;
 	void EditSetImeCompositionWindow();
 	void ToggleBool(int index);
+	void UpdateSliderFromPoint(int index, float localX, const D2D1_RECT_F& valueRect);
 	void CycleEnum(int index, int direction = 1);
 	void ToggleDropDownEditor(int index, const D2D1_RECT_F& valueRect);
 	void CloseDropDownEditor(bool immediate = false);
 	bool IsDropDownEditorOpenFor(int index) const;
 	void OpenColorPickerEditor(int index, const D2D1_RECT_F& valueRect);
 	void CloseColorPickerEditor();
+	void OpenAnchorPickerEditor(int index, const D2D1_RECT_F& valueRect);
+	void CloseAnchorPickerEditor();
 	bool IsEditableItem(int index) const;
 	bool GetValueRectForItem(int index, const std::vector<RowInfo>& rows, const Layout& layout, D2D1_RECT_F& outRect) const;
 	bool IsValueCell(int localX, int localY, const std::vector<RowInfo>& rows, const Layout& layout, int& itemIndex) const;

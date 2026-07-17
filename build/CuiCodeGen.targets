@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <CuiCodeGenEnabled Condition="'$(CuiCodeGenEnabled)' == ''">true</CuiCodeGenEnabled>
+    <CuiCodeGenExe Condition="'$(CuiCodeGenExe)' == ''">CuiCodeGen.exe</CuiCodeGenExe>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <CuiDesign>
+      <StampFile>$(IntDir)CuiCodeGen\%(Filename).stamp</StampFile>
+    </CuiDesign>
+  </ItemDefinitionGroup>
+
+  <!--
+    Consumer contract:
+
+      <ItemGroup>
+        <CuiDesign Include="MainWindow.cui.xaml">
+          <OutputBase>$(ProjectDir)Generated\MainWindow</OutputBase>
+          <ClassName>Optional.Namespace.Override</ClassName>
+        </CuiDesign>
+      </ItemGroup>
+
+    OutputBase is extensionless. ClassName is normally omitted so x:Class
+    remains authoritative. StampFile may be overridden when a project contains
+    same-stem design files; its default lives under $(IntDir)CuiCodeGen.
+  -->
+  <Target Name="CuiPrepareCodeGeneration"
+          BeforeTargets="CuiGenerateCode"
+          Condition="'$(CuiCodeGenEnabled)' == 'true' and '@(CuiDesign)' != ''">
+    <Delete Files="%(CuiDesign.StampFile)"
+            Condition="!Exists('%(CuiDesign.OutputBase).h')
+                    or !Exists('%(CuiDesign.OutputBase).cpp')
+                    or !Exists('%(CuiDesign.OutputBase).g.h')
+                    or !Exists('%(CuiDesign.OutputBase).g.cpp')
+                    or !Exists('%(CuiDesign.OutputBase).handlers.g.inc')" />
+  </Target>
+
+  <Target Name="CuiGenerateCode"
+          BeforeTargets="ClCompile"
+          DependsOnTargets="CuiPrepareCodeGeneration"
+          Condition="'$(CuiCodeGenEnabled)' == 'true' and '@(CuiDesign)' != ''"
+          Inputs="%(CuiDesign.FullPath)"
+          Outputs="%(CuiDesign.StampFile)">
+    <Error Condition="'%(CuiDesign.OutputBase)' == ''"
+           Text="CuiDesign '%(CuiDesign.Identity)' requires extensionless OutputBase metadata." />
+    <Error Condition="'%(CuiDesign.StampFile)' == ''"
+           Text="CuiDesign '%(CuiDesign.Identity)' requires StampFile metadata." />
+    <Error Condition="!Exists('$(CuiCodeGenExe)')"
+           Text="CuiCodeGen executable was not found: $(CuiCodeGenExe)" />
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName($([System.IO.Path]::GetFullPath('%(CuiDesign.StampFile)'))))" />
+    <Message Importance="High"
+             Text="CUI code generation: %(CuiDesign.Identity) -> %(CuiDesign.OutputBase)" />
+    <Exec Condition="'%(CuiDesign.ClassName)' == ''"
+          Command="&quot;$(CuiCodeGenExe)&quot; generate &quot;%(CuiDesign.FullPath)&quot; --output &quot;%(CuiDesign.OutputBase)&quot; --quiet" />
+    <Exec Condition="'%(CuiDesign.ClassName)' != ''"
+          Command="&quot;$(CuiCodeGenExe)&quot; generate &quot;%(CuiDesign.FullPath)&quot; --output &quot;%(CuiDesign.OutputBase)&quot; --class &quot;%(CuiDesign.ClassName)&quot; --quiet" />
+    <Touch Files="%(CuiDesign.StampFile)" AlwaysCreate="true" />
+  </Target>
+</Project>

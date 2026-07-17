@@ -68,6 +68,11 @@ namespace
 					Dock item{};
 					if (value.TryGet(item)) typed = static_cast<int>(item);
 				}
+				else if (valueType == std::type_index(typeid(ImageSizeMode)))
+				{
+					ImageSizeMode item{};
+					if (value.TryGet(item)) typed = static_cast<int>(item);
+				}
 				else if (valueType == std::type_index(typeid(Orientation)))
 				{
 					Orientation item{};
@@ -152,6 +157,29 @@ namespace
 		return false;
 	}
 
+	void EraseTrackedValues(
+		TrackedPropertyValues& values,
+		const std::wstring& name)
+	{
+		for (auto current = values.begin(); current != values.end();)
+		{
+			if (EqualsName(current->first, name)) current = values.erase(current);
+			else ++current;
+		}
+	}
+
+	void SynchronizeTrackedValue(
+		TrackedPropertyValues& values,
+		const BindingPropertyMetadata& metadata,
+		const std::wstring& canonicalName,
+		const DesignerStyleValue* effectiveValue)
+	{
+		EraseTrackedValues(values, canonicalName);
+		if (!UsesMetadataPersistence(metadata) || !effectiveValue)
+			return;
+		values[canonicalName] = *effectiveValue;
+	}
+
 	ControlPropertyEditorKind ResolveEditor(
 		ControlPropertyEditorKind requested,
 		DesignerStyleValueKind kind,
@@ -216,6 +244,23 @@ namespace
 		out.Editor = ResolveEditor(design.Editor, kind, !out.Choices.empty());
 		return true;
 	}
+
+	void SortBrowsableProperties(std::vector<DesignerPropertyDescriptor>& properties)
+	{
+		std::sort(properties.begin(), properties.end(), [](const auto& left, const auto& right)
+		{
+			if (left.CategoryOrder != right.CategoryOrder)
+				return left.CategoryOrder < right.CategoryOrder;
+			const auto leftCategory = Lower(left.Category);
+			const auto rightCategory = Lower(right.Category);
+			if (leftCategory != rightCategory) return leftCategory < rightCategory;
+			if (left.Order != right.Order) return left.Order < right.Order;
+			const auto leftDisplay = Lower(left.DisplayName);
+			const auto rightDisplay = Lower(right.DisplayName);
+			if (leftDisplay != rightDisplay) return leftDisplay < rightDisplay;
+			return Lower(left.Name) < Lower(right.Name);
+		});
+	}
 }
 
 bool TryGetStyleValueKind(
@@ -249,6 +294,7 @@ bool TryGetStyleValueKind(
 	else if (type == std::type_index(typeid(HorizontalAlignment))
 		|| type == std::type_index(typeid(VerticalAlignment))
 		|| type == std::type_index(typeid(Dock))
+		|| type == std::type_index(typeid(ImageSizeMode))
 		|| type == std::type_index(typeid(Orientation))
 		|| type == std::type_index(typeid(DateTimePickerMode))
 		|| type == std::type_index(typeid(AccessibleRole)))
@@ -284,19 +330,20 @@ std::vector<DesignerPropertyDescriptor> GetBrowsableProperties(Control& target)
 		return property.Persistence == ControlPropertyPersistence::Legacy
 			|| property.Persistence == ControlPropertyPersistence::Transient;
 	}), result.end());
-	std::sort(result.begin(), result.end(), [](const auto& left, const auto& right)
+	SortBrowsableProperties(result);
+	return result;
+}
+
+std::vector<DesignerPropertyDescriptor> GetPropertyGridProperties(Control& target)
+{
+	auto result = GetStyleProperties(target);
+	result.erase(std::remove_if(result.begin(), result.end(), [&](const auto& property)
 	{
-		if (left.CategoryOrder != right.CategoryOrder)
-			return left.CategoryOrder < right.CategoryOrder;
-		const auto leftCategory = Lower(left.Category);
-		const auto rightCategory = Lower(right.Category);
-		if (leftCategory != rightCategory) return leftCategory < rightCategory;
-		if (left.Order != right.Order) return left.Order < right.Order;
-		const auto leftDisplay = Lower(left.DisplayName);
-		const auto rightDisplay = Lower(right.DisplayName);
-		if (leftDisplay != rightDisplay) return leftDisplay < rightDisplay;
-		return Lower(left.Name) < Lower(right.Name);
-	});
+		return !property.Metadata
+			|| !property.Metadata->IsDesignerBrowsable(target)
+			|| property.Persistence == ControlPropertyPersistence::Transient;
+	}), result.end());
+	SortBrowsableProperties(result);
 	return result;
 }
 
@@ -380,6 +427,101 @@ bool ApplyValue(
 		return false;
 	if (outCanonicalName) *outCanonicalName = std::move(canonicalName);
 	if (outEffective) *outEffective = std::move(effective);
+	if (outError) outError->clear();
+	return true;
+}
+
+bool UsesMetadataPersistence(const BindingPropertyMetadata& metadata) noexcept
+{
+	const auto persistence = metadata.Design().Persistence;
+	return persistence == ControlPropertyPersistence::Automatic
+		|| persistence == ControlPropertyPersistence::Metadata;
+}
+
+bool TrackCurrentValue(
+	Control& target,
+	TrackedPropertyValues& trackedValues,
+	const std::wstring& propertyName,
+	std::wstring* outCanonicalName,
+	DesignerStyleValue* outEffective,
+	std::wstring* outError)
+{
+	const auto* metadata = target.FindPropertyMetadata(propertyName);
+	if (!metadata)
+		return Fail(L"目标类型没有可持久化的元数据属性：" + propertyName, outError);
+	DesignerStyleValue effective;
+	std::wstring canonicalName;
+	if (!CaptureValue(
+		target, metadata->Name(), &canonicalName, effective, outError)) return false;
+	SynchronizeTrackedValue(
+		trackedValues, *metadata, canonicalName, &effective);
+	if (outCanonicalName) *outCanonicalName = canonicalName;
+	if (outEffective) *outEffective = effective;
+	if (outError) outError->clear();
+	return true;
+}
+
+bool ApplyAndTrackValue(
+	Control& target,
+	TrackedPropertyValues& trackedValues,
+	const std::wstring& propertyName,
+	const DesignerStyleValue& value,
+	std::wstring* outCanonicalName,
+	DesignerStyleValue* outEffective,
+	std::wstring* outError)
+{
+	std::wstring canonicalName;
+	DesignerStyleValue effective;
+	if (!ApplyValue(
+		target, propertyName, value,
+		&canonicalName, &effective, outError)) return false;
+	const auto* metadata = target.FindPropertyMetadata(canonicalName);
+	if (!metadata)
+		return Fail(L"属性应用后无法解析规范元数据：" + canonicalName, outError);
+	SynchronizeTrackedValue(
+		trackedValues, *metadata, canonicalName, &effective);
+	if (outCanonicalName) *outCanonicalName = canonicalName;
+	if (outEffective) *outEffective = effective;
+	if (outError) outError->clear();
+	return true;
+}
+
+bool ResetAndUntrackValue(
+	Control& target,
+	TrackedPropertyValues& trackedValues,
+	const std::wstring& propertyName,
+	std::wstring* outCanonicalName,
+	DesignerStyleValue* outEffective,
+	std::wstring* outError)
+{
+	const auto* metadata = target.FindPropertyMetadata(propertyName);
+	if (!metadata)
+		return Fail(L"目标类型没有可重置的元数据属性：" + propertyName, outError);
+	if (!metadata->CanWrite())
+		return Fail(L"目标属性不可写：" + propertyName, outError);
+	DesignerStyleValueKind ignored;
+	if (!TryGetStyleValueKind(*metadata, ignored))
+		return Fail(L"Designer 尚不支持属性类型：" + propertyName, outError);
+
+	const bool hadLocalValue = target.HasPropertyValue(
+		metadata->Name(), ControlPropertyValueSource::Local);
+	if (!target.ResetPropertyValue(metadata->Name()) && hadLocalValue)
+		return Fail(L"无法重置元数据属性：" + metadata->Name(), outError);
+	// With no Local value, a Style/Binding/Theme source already represents the
+	// reset state even though Control::ResetPropertyValue has nothing to clear.
+	if (!hadLocalValue
+		&& target.GetPropertyValueSource(metadata->Name())
+			== ControlPropertyValueSource::Default
+		&& !metadata->HasDefaultValue())
+		return Fail(L"属性没有可恢复的默认值：" + metadata->Name(), outError);
+
+	EraseTrackedValues(trackedValues, metadata->Name());
+	DesignerStyleValue effective;
+	std::wstring canonicalName;
+	if (!CaptureValue(
+		target, metadata->Name(), &canonicalName, effective, outError)) return false;
+	if (outCanonicalName) *outCanonicalName = canonicalName;
+	if (outEffective) *outEffective = effective;
 	if (outError) outError->clear();
 	return true;
 }

@@ -25,6 +25,48 @@ namespace
 
 UIClass ProgressRing::Type() { return UIClass::UI_ProgressRing; }
 
+void ProgressRing::EnsureBindingPropertiesRegistered()
+{
+	Control::EnsureBindingPropertiesRegistered();
+	static const bool registered = []
+	{
+		ControlPropertyOptions<ProgressRing, float> percentage;
+		percentage.DefaultValue = 0.5f;
+		percentage.Flags = ControlPropertyFlags::AffectsRender;
+		percentage.Coerce = [](ProgressRing&, const float& value) -> std::optional<float>
+		{
+			return (std::clamp)(value, 0.0f, 1.0f);
+		};
+		percentage.Design.Category = L"Data";
+		percentage.Design.CategoryOrder = 600;
+		percentage.Design.Order = 10;
+		percentage.Design.Editor = ControlPropertyEditorKind::Number;
+		percentage.Design.Minimum = 0.0;
+		percentage.Design.Maximum = 1.0;
+		percentage.Design.Step = 0.01;
+		percentage.Design.Persistence = ControlPropertyPersistence::Legacy;
+		BindingPropertyRegistry::Register<ProgressRing, float>(L"PercentageValue",
+			[](ProgressRing& target) { return target.PercentageValue; },
+			[](ProgressRing& target, const float& value) { target.PercentageValue = value; },
+			{}, std::move(percentage));
+
+		ControlPropertyOptions<ProgressRing, bool> showPercentage;
+		showPercentage.DefaultValue = true;
+		showPercentage.Flags = ControlPropertyFlags::AffectsRender;
+		showPercentage.Design.Category = L"Behavior";
+		showPercentage.Design.CategoryOrder = 300;
+		showPercentage.Design.Order = 10;
+		showPercentage.Design.Editor = ControlPropertyEditorKind::Boolean;
+		showPercentage.Design.Persistence = ControlPropertyPersistence::Legacy;
+		BindingPropertyRegistry::Register<ProgressRing, bool>(L"ShowPercentage",
+			[](ProgressRing& target) { return target.ShowPercentage; },
+			[](ProgressRing& target, const bool& value) { target.ShowPercentage = value; },
+			{}, std::move(showPercentage));
+		return true;
+	}();
+	(void)registered;
+}
+
 GET_CPP(ProgressRing, float, PercentageValue)
 {
 	return this->_percentageValue;

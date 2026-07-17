@@ -27,25 +27,46 @@
 	<ClCompile Include="BindingEditorDialog.cpp">
 	  <Filter>源文件</Filter>
 	</ClCompile>
-	<ClCompile Include="DataContextSchemaEditorDialog.cpp">
+	<ClCompile Include="EventHandlerEditorDialog.cpp">
 	  <Filter>源文件</Filter>
 	</ClCompile>
-	<ClCompile Include="DesignerDataContextSchemaUtils.cpp">
+	<ClCompile Include="DataContextSchemaEditorDialog.cpp">
 	  <Filter>源文件</Filter>
 	</ClCompile>
 	<ClCompile Include="DesignerControlFactory.cpp">
 	  <Filter>源文件</Filter>
 	</ClCompile>
-	<ClCompile Include="DesignerPropertyCatalog.cpp">
+	<ClCompile Include="DesignerControlCatalog.cpp">
 	  <Filter>源文件</Filter>
 	</ClCompile>
-	<ClCompile Include="DesignerStyleSheetUtils.cpp">
+	<ClCompile Include="DesignerCustomEditorCatalog.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="DesignerControlPropertyCatalog.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="DesignerPropertyRowCatalog.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="DesignerPropertyEdit.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="DesignerStructureEdit.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="DesignerPreviewPlugin.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="DesignerPreviewBridge.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="DesignerSelfTest.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="SourceCodeNavigator.cpp">
 	  <Filter>源文件</Filter>
 	</ClCompile>
 	<ClCompile Include="main.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="CodeGenerator.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ComboBoxItemsEditorDialog.cpp">
@@ -56,9 +77,6 @@
     </ClCompile>
 	<ClCompile Include="DesignerCanvas.cpp">
       <Filter>源文件</Filter>
-	</ClCompile>
-	<ClCompile Include="DesignerBindingUtils.cpp">
-	  <Filter>源文件</Filter>
 	</ClCompile>
     <ClCompile Include="DesignerTypes.cpp">
       <Filter>源文件</Filter>
@@ -96,12 +114,6 @@
     <ClCompile Include="FakeWebBrowser.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="DesignerModel\DesignDocument.cpp">
-      <Filter>DesignerModel</Filter>
-    </ClCompile>
-    <ClCompile Include="DesignerModel\DesignDocumentCodeGenInputBuilder.cpp">
-      <Filter>DesignerModel</Filter>
-    </ClCompile>
     <ClCompile Include="DesignerCore\PropertyGridBinder.cpp">
       <Filter>DesignerCore</Filter>
     </ClCompile>
@@ -120,21 +132,33 @@
     <ClCompile Include="DesignerCore\SelectionService.cpp">
       <Filter>DesignerCore</Filter>
     </ClCompile>
-    <ClCompile Include="DesignerCore\Commands\UpdatePropertyCommand.cpp">
-      <Filter>DesignerCore\Commands</Filter>
-    </ClCompile>
     <ClCompile Include="DesignerCore\Commands\DocumentSnapshotCommand.cpp">
       <Filter>DesignerCore\Commands</Filter>
     </ClCompile>
-    <ClCompile Include="DesignerCore\Commands\AddDeleteCommand.cpp">
+    <ClCompile Include="DesignerCore\Commands\ControlPropertyCommand.cpp">
       <Filter>DesignerCore\Commands</Filter>
     </ClCompile>
-    <ClCompile Include="DesignerModel\DesignDocumentSerializer.cpp">
+    <ClCompile Include="DesignerCore\Commands\ControlStructureCommand.cpp">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\Commands\ControlOwnedCollectionCommand.cpp">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\Commands\ControlPlacementCommand.cpp">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClCompile>
+    <ClCompile Include="DesignerCore\Commands\ControlSubtreeCommand.cpp">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClCompile>
+    <ClCompile Include="DesignerModel\DesignRecoveryStore.cpp">
       <Filter>DesignerModel</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
 	<ClInclude Include="BindingEditorDialog.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="EventHandlerEditorDialog.h">
 	  <Filter>头文件</Filter>
 	</ClInclude>
 	<ClInclude Include="DataContextSchemaEditorDialog.h">
@@ -146,10 +170,46 @@
 	<ClInclude Include="DesignerControlFactory.h">
 	  <Filter>头文件</Filter>
 	</ClInclude>
+	<ClInclude Include="DesignerControlCatalog.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerFormPropertyCatalog.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerCustomEditorCatalog.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerControlPropertyCatalog.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerPropertyRowCatalog.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerPropertyEdit.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerStructureEdit.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
 	<ClInclude Include="DesignerPropertyCatalog.h">
 	  <Filter>头文件</Filter>
 	</ClInclude>
+	<ClInclude Include="DesignerSelfTest.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="SourceCodeNavigator.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
 	<ClInclude Include="DesignerPropertyValue.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerPreviewPluginAbi.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerPreviewPlugin.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerPreviewBridge.h">
 	  <Filter>头文件</Filter>
 	</ClInclude>
 	<ClInclude Include="DesignerStyleSheet.h">
@@ -162,6 +222,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="CodeGenerator.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerEventCatalog.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ComboBoxItemsEditorDialog.h">
@@ -215,13 +278,49 @@
     <ClInclude Include="DesignerModel\DesignDocument.h">
       <Filter>DesignerModel</Filter>
     </ClInclude>
+	<ClInclude Include="DesignerModel\DesignDocumentEventIndex.h">
+	  <Filter>DesignerModel</Filter>
+	</ClInclude>
+    <ClInclude Include="DesignerModel\DesignDocumentControlPool.h">
+      <Filter>DesignerModel</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerModel\DesignDocumentGraph.h">
+      <Filter>DesignerModel</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerModel\DesignDocumentMaterializer.h">
+      <Filter>DesignerModel</Filter>
+    </ClInclude>
     <ClInclude Include="DesignerModel\DesignDocumentCodeGenInputBuilder.h">
       <Filter>DesignerModel</Filter>
     </ClInclude>
+	<ClInclude Include="DesignerModel\DesignCodeGenerationService.h">
+	  <Filter>DesignerModel</Filter>
+	</ClInclude>
+    <ClInclude Include="DesignerModel\RuntimeDocument.h">
+      <Filter>DesignerModel</Filter>
+    </ClInclude>
+	<ClInclude Include="DesignerModel\RuntimeDocumentFileWatcher.h">
+	  <Filter>DesignerModel</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerModel\RuntimeDocumentTopologyReloader.h">
+	  <Filter>DesignerModel</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerModel\XamlDocumentParser.h">
+	  <Filter>DesignerModel</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerModel\XamlDocumentSerializer.h">
+		<Filter>DesignerModel</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerModel\DesignDocumentFileFormat.h">
+		<Filter>DesignerModel</Filter>
+	</ClInclude>
     <ClInclude Include="DesignerCore\PropertyGridBinder.h">
       <Filter>DesignerCore</Filter>
     </ClInclude>
     <ClInclude Include="DesignerCore\CommandManager.h">
+      <Filter>DesignerCore</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\DesignerDocumentTransaction.h">
       <Filter>DesignerCore</Filter>
     </ClInclude>
     <ClInclude Include="DesignerCore\DesignerCommandCoordinator.h">
@@ -236,16 +335,31 @@
     <ClInclude Include="DesignerCore\SelectionService.h">
       <Filter>DesignerCore</Filter>
     </ClInclude>
-    <ClInclude Include="DesignerCore\Commands\UpdatePropertyCommand.h">
-      <Filter>DesignerCore\Commands</Filter>
-    </ClInclude>
     <ClInclude Include="DesignerCore\Commands\DocumentSnapshotCommand.h">
       <Filter>DesignerCore\Commands</Filter>
     </ClInclude>
-    <ClInclude Include="DesignerCore\Commands\AddDeleteCommand.h">
+    <ClInclude Include="DesignerCore\Commands\ControlPropertyCommand.h">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\Commands\ControlStructureCommand.h">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\Commands\ControlOwnedCollectionCommand.h">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\Commands\ControlPlacementCommand.h">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\Commands\ControlSubtreeCommand.h">
       <Filter>DesignerCore\Commands</Filter>
     </ClInclude>
     <ClInclude Include="DesignerModel\DesignDocumentSerializer.h">
+      <Filter>DesignerModel</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerModel\AtomicFile.h">
+      <Filter>DesignerModel</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerModel\DesignRecoveryStore.h">
       <Filter>DesignerModel</Filter>
     </ClInclude>
   </ItemGroup>

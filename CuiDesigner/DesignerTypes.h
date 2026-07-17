@@ -6,9 +6,13 @@
  */
 #include "../CUI/include/Control.h"
 #include "DesignerPropertyValue.h"
+#include <functional>
+#include <memory>
 #include <string>
 #include <map>
+#include <optional>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // 设计器中控件的元数据
@@ -32,6 +36,21 @@ struct DesignerDataBinding
 	bool operator==(const DesignerDataBinding&) const = default;
 };
 
+enum class DesignerBindingPreviewStatus : unsigned char
+{
+	Detached,
+	Active,
+	Error
+};
+
+struct DesignerBindingPreviewState
+{
+	DesignerBindingPreviewStatus Status = DesignerBindingPreviewStatus::Detached;
+	std::wstring Message;
+
+	bool operator==(const DesignerBindingPreviewState&) const = default;
+};
+
 /** One discoverable property path on the form's design-time data context. */
 struct DesignerDataContextProperty
 {
@@ -50,16 +69,188 @@ struct DesignerDataContextProperty
  */
 using DesignerDataContextSchema = std::vector<DesignerDataContextProperty>;
 
+enum class DesignerCustomControlConstructor : unsigned char
+{
+	Default,
+	Bounds,
+	TextBounds,
+};
+
+/**
+ * Portable identity of a control implemented outside CUI. Type remains the
+ * built-in metadata/layout base used by the Designer and headless generator;
+ * this descriptor selects the real runtime/C++ type.
+ */
+struct DesignerCustomControlType
+{
+	std::wstring XamlPrefix;
+	std::wstring XamlName;
+	std::wstring XamlNamespace;
+	std::wstring CppType;
+	std::wstring Header;
+	DesignerCustomControlConstructor Constructor =
+		DesignerCustomControlConstructor::Bounds;
+
+	bool Empty() const noexcept
+	{
+		return XamlName.empty() && XamlNamespace.empty()
+			&& CppType.empty() && Header.empty();
+	}
+	std::wstring RegistryKey() const
+	{
+		return XamlNamespace + L"|" + XamlName;
+	}
+	bool operator==(const DesignerCustomControlType&) const = default;
+};
+
+/** Design-time schema for a property declared by an external C++ control. */
+struct DesignerCustomPropertyDescriptor
+{
+	struct Choice
+	{
+		std::wstring DisplayName;
+		std::wstring ValueText;
+
+		bool operator==(const Choice&) const = default;
+	};
+
+	std::wstring Name;
+	std::wstring DisplayName;
+	std::wstring Category = L"Custom";
+	int CategoryOrder = 500;
+	int Order = 0;
+	DesignerStyleValue DefaultValue;
+	ControlPropertyEditorKind Editor = ControlPropertyEditorKind::Auto;
+	std::vector<Choice> Choices;
+	std::optional<double> Minimum;
+	std::optional<double> Maximum;
+	std::optional<double> Step;
+	bool Bindable = true;
+	bool SupportsTwoWayBinding = false;
+
+	bool operator==(const DesignerCustomPropertyDescriptor&) const = default;
+};
+
+/** Stable design-time grouping shared by built-in and manifest events. */
+enum class DesignerEventCategory : unsigned char
+{
+	Action,
+	Value,
+	Mouse,
+	Keyboard,
+	Focus,
+	DragDrop,
+	Layout,
+	Lifecycle,
+	Data,
+	Navigation,
+	Media,
+	Diagnostics,
+	Other
+};
+
+/**
+ * Safe portable event signatures. The sender variants deliberately use
+ * Control* rather than a manifest-provided C++ type string; the runtime
+ * registry verifies the real Event::function_type before subscribing.
+ */
+enum class DesignerCustomEventSignature : unsigned char
+{
+	None,
+	Sender,
+	SenderBool,
+	SenderInt,
+	SenderFloat,
+	SenderDouble,
+	SenderString,
+	SenderIntInt,
+	SenderIntBool,
+	SenderDoubleDouble,
+	SenderStringString,
+};
+
+/** Portable event contract declared by an external-control manifest. */
+struct DesignerCustomEventDescriptor
+{
+	std::wstring Name;
+	std::wstring DisplayName;
+	std::string EventField;
+	DesignerEventCategory Category = DesignerEventCategory::Other;
+	DesignerCustomEventSignature Signature =
+		DesignerCustomEventSignature::Sender;
+	int Order = 0;
+	bool IsDefault = false;
+
+	bool operator==(const DesignerCustomEventDescriptor&) const = default;
+};
+
+/**
+ * One Designer creation/toolbox entry. Built-ins leave CustomType and
+ * PreviewFactory empty; external catalogs retain their portable type identity
+ * while optionally supplying a process-local real preview factory.
+ */
+struct DesignerControlDescriptor
+{
+	UIClass Type = UIClass::UI_Base;
+	std::wstring Name;
+	std::wstring DisplayName;
+	SIZE DefaultSize{ 100, 30 };
+	bool IsContainer = false;
+	std::wstring Category;
+	DesignerCustomControlType CustomType;
+	std::vector<DesignerCustomPropertyDescriptor> CustomProperties;
+	std::vector<DesignerCustomEventDescriptor> CustomEvents;
+	std::function<std::unique_ptr<Control>(int x, int y)> PreviewFactory;
+
+	bool IsCustom() const noexcept { return !CustomType.Empty(); }
+	bool IsValid() const noexcept
+	{
+		if (Type == UIClass::UI_Base || Type == UIClass::UI_TabPage
+			|| Name.empty() || DisplayName.empty()
+			|| DefaultSize.cx <= 0 || DefaultSize.cy <= 0) return false;
+		if (!IsCustom()) return true;
+		return !CustomType.XamlPrefix.empty()
+			&& !CustomType.XamlName.empty()
+			&& !CustomType.XamlNamespace.empty()
+			&& !CustomType.CppType.empty()
+			&& !CustomType.Header.empty();
+	}
+
+	static DesignerControlDescriptor BuiltIn(
+		const ControlMetadata& metadata,
+		std::wstring category = {})
+	{
+		DesignerControlDescriptor result;
+		result.Type = metadata.Type;
+		result.Name = metadata.Name;
+		result.DisplayName = metadata.DisplayName;
+		result.DefaultSize = metadata.DefaultSize;
+		result.IsContainer = metadata.IsContainer;
+		result.Category = std::move(category);
+		return result;
+	}
+};
+
 // 设计器中的控件包装类
 class DesignerControl
 {
 public:
 	Control* ControlInstance;
+	// 文档内稳定身份。重命名、重排和代码重新生成均不得改变该值。
+	int StableId = 0;
 	// 设计器层面的父容器：nullptr 表示直接属于窗体（画布根级）。
 	// 注意：不要与 ControlInstance->Parent 混淆；后者在设计器运行时可能指向 DesignerCanvas。
 	Control* DesignerParent = nullptr;
 	std::wstring Name;
 	UIClass Type;
+	DesignerCustomControlType CustomType;
+	// Process-local schema restored from the matching control catalog.
+	std::vector<DesignerCustomPropertyDescriptor> CustomProperties;
+	// Portable event contracts are persisted so headless codegen stays deterministic.
+	std::vector<DesignerCustomEventDescriptor> CustomEvents;
+	// Optional process-local sink (for example a plugin preview session).
+	std::function<void(
+		const std::wstring&, const DesignerStyleValue&)> PreviewPropertyChanged;
 	bool IsSelected;
 
 	// 事件绑定：key 为事件成员名（如 OnMouseClick/OnTextChanged），value 为类成员函数名
@@ -67,6 +258,9 @@ public:
 	std::map<std::wstring, std::wstring> EventHandlers;
 	// 数据绑定：key 为目标属性名，value 描述统一数据上下文上的源路径与模式。
 	std::map<std::wstring, DesignerDataBinding> DataBindings;
+	// Transient preview state. It is deliberately excluded from persistence.
+	std::map<std::wstring, DesignerBindingPreviewState> BindingPreviewStates;
+	std::map<std::wstring, std::optional<BindingValue>> BindingPreviewLocalValues;
 	// Metadata-backed properties not represented by legacy Props/Extra fields.
 	std::map<std::wstring, DesignerStyleValue> MetadataProperties;
 
@@ -88,8 +282,10 @@ public:
 		Left
 	};
 	
-	DesignerControl(Control* control, std::wstring name, UIClass type, Control* designerParent = nullptr)
-		: ControlInstance(control), DesignerParent(designerParent), Name(name), Type(type), IsSelected(false)
+	DesignerControl(Control* control, std::wstring name, UIClass type,
+		Control* designerParent = nullptr, int stableId = 0)
+		: ControlInstance(control), StableId(stableId),
+		  DesignerParent(designerParent), Name(name), Type(type), IsSelected(false)
 	{
 	}
 	

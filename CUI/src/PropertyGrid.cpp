@@ -1,5 +1,6 @@
 ﻿#define NOMINMAX
 #include "PropertyGrid.h"
+#include "AnchorPickerPopup.h"
 #include "ColorPickerPopup.h"
 #include "DropDownPopup.h"
 #include "Form.h"
@@ -9,6 +10,8 @@
 #include <cmath>
 #include <cstring>
 #include <cwctype>
+#include <iomanip>
+#include <sstream>
 #include <unordered_set>
 #include <utility>
 
@@ -97,6 +100,21 @@ namespace
 		d2d->DrawLine(p2, p3, color, 1.7f);
 	}
 
+	static void DrawResetGlyph(D2DGraphics* d2d, const D2D1_RECT_F& rect, D2D1_COLOR_F color)
+	{
+		const float cx = (rect.left + rect.right) * 0.5f;
+		const float cy = (rect.top + rect.bottom) * 0.5f;
+		const float radius = std::max(2.0f,
+			std::min(RectWidth(rect), RectHeight(rect)) * 0.27f);
+		d2d->DrawArc(D2D1::Point2F(cx, cy), radius,
+			45.0f, 320.0f, color, 1.35f);
+		auto tip = D2D1::Point2F(cx - radius - 0.4f, cy - radius * 0.10f);
+		d2d->DrawLine(tip,
+			D2D1::Point2F(tip.x + 4.0f, tip.y - 2.6f), color, 1.35f);
+		d2d->DrawLine(tip,
+			D2D1::Point2F(tip.x + 2.8f, tip.y + 3.2f), color, 1.35f);
+	}
+
 	static float TextTop(Font* font, const D2D1_RECT_F& rect)
 	{
 		const float fontHeight = font ? font->FontHeight : 16.0f;
@@ -121,6 +139,30 @@ namespace
 	{
 		auto s = Lower(Trim(value));
 		return s == L"true" || s == L"1" || s == L"yes" || s == L"on" || s == L"checked";
+	}
+
+	static bool TryParseDouble(const std::wstring& text, double& value)
+	{
+		try
+		{
+			size_t used = 0;
+			value = std::stod(Trim(text), &used);
+			return used != 0 && std::isfinite(value);
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+
+	static std::wstring FormatSliderValue(double value)
+	{
+		std::wostringstream stream;
+		stream << std::fixed << std::setprecision(6) << value;
+		auto result = stream.str();
+		while (!result.empty() && result.back() == L'0') result.pop_back();
+		if (!result.empty() && result.back() == L'.') result.pop_back();
+		return result.empty() || result == L"-0" ? L"0" : result;
 	}
 
 	static CuiTextEdit::EditOptions PropertyGridEditOptions()
@@ -532,6 +574,7 @@ PropertyGridView::PropertyGridView(int x, int y, int width, int height)
 
 PropertyGridView::~PropertyGridView()
 {
+	CloseAnchorPickerEditor();
 	CloseColorPickerEditor();
 	CloseDropDownEditor(true);
 	if (this->_dropDownPopup)
@@ -546,6 +589,12 @@ PropertyGridView::~PropertyGridView()
 		this->_colorPicker = nullptr;
 	}
 	this->_colorPickerIndex = -1;
+	if (this->_anchorPicker)
+	{
+		delete this->_anchorPicker;
+		this->_anchorPicker = nullptr;
+	}
+	this->_anchorPickerIndex = -1;
 }
 
 static int RemapPropertyGridIndex(
@@ -620,6 +669,7 @@ void PropertyGridView::OnItemsCollectionChanged(
 	const uint32_t editingId = oldIdAt(_editingIndex);
 	const uint32_t dropDownId = oldIdAt(_dropDownPopupIndex);
 	const uint32_t colorPickerId = oldIdAt(_colorPickerIndex);
+	const uint32_t anchorPickerId = oldIdAt(_anchorPickerIndex);
 
 	EnsureItemIds();
 	auto findId = [this](uint32_t id) -> int
@@ -683,6 +733,16 @@ void PropertyGridView::OnItemsCollectionChanged(
 		{
 			CloseColorPickerEditor();
 			_colorPickerIndex = -1;
+		}
+	}
+	if (_anchorPickerIndex >= 0)
+	{
+		const int nextAnchorPicker = findId(anchorPickerId);
+		if (nextAnchorPicker >= 0) _anchorPickerIndex = nextAnchorPicker;
+		else
+		{
+			CloseAnchorPickerEditor();
+			_anchorPickerIndex = -1;
 		}
 	}
 
@@ -755,9 +815,10 @@ bool PropertyGridView::SetValue(int index, const std::wstring& value)
 {
 	if (index < 0 || index >= (int)this->Items.size()) return false;
 	auto& item = this->Items[index];
-	if (item.Value == value) return false;
+	if (item.Value == value && !item.IsMixed) return false;
 	auto oldValue = item.Value;
 	item.Value = value;
+	item.IsMixed = false;
 	this->OnValueChanged(this, index, oldValue, value);
 	this->InvalidateVisual();
 	return true;
@@ -951,6 +1012,18 @@ D2D1_RECT_F PropertyGridView::GetValueRect(const D2D1_RECT_F& rowRect) const
 	return D2D1::RectF(nameRect.right + this->SplitterWidth * 0.5f, rowRect.top, rowRect.right, rowRect.bottom);
 }
 
+D2D1_RECT_F PropertyGridView::GetResetRect(const D2D1_RECT_F& rowRect) const
+{
+	auto nameRect = GetNameRect(rowRect);
+	const float size = std::max(14.0f,
+		std::min(22.0f, RectHeight(nameRect) - 4.0f));
+	return D2D1::RectF(
+		nameRect.right - size - 3.0f,
+		nameRect.top + (RectHeight(nameRect) - size) * 0.5f,
+		nameRect.right - 3.0f,
+		nameRect.top + (RectHeight(nameRect) + size) * 0.5f);
+}
+
 void PropertyGridView::ClampScroll(Layout& layout)
 {
 	float clamped = std::clamp(this->ScrollYOffset, 0.0f, layout.MaxScrollY);
@@ -1087,6 +1160,11 @@ CursorKind PropertyGridView::QueryCursor(int localX, int localY)
 			continue;
 		if (row.IsCategory)
 			return CursorKind::Hand;
+		const auto& item = this->Items[static_cast<size_t>(row.ItemIndex)];
+		if (item.CanReset && PtInRectF(GetResetRect(rect), (float)localX, (float)localY))
+			return CursorKind::Hand;
+		if (item.ValueType == PropertyGridValueType::Action)
+			return CursorKind::Hand;
 
 		auto valueRect = IntersectRectF(GetValueRect(rect), visibleRect);
 		if (!PtInRectF(valueRect, (float)localX, (float)localY))
@@ -1094,14 +1172,19 @@ CursorKind PropertyGridView::QueryCursor(int localX, int localY)
 		if (!IsEditableItem(row.ItemIndex))
 			return CursorKind::Arrow;
 
-		const auto& item = this->Items[static_cast<size_t>(row.ItemIndex)];
 		switch (item.ValueType)
 		{
 		case PropertyGridValueType::Text:
 		case PropertyGridValueType::Number:
 			return CursorKind::IBeam;
+		case PropertyGridValueType::EditableEnum:
+			return localX >= valueRect.right - 24.0f
+				? CursorKind::Hand : CursorKind::IBeam;
 		case PropertyGridValueType::Bool:
 		case PropertyGridValueType::Color:
+		case PropertyGridValueType::Anchor:
+		case PropertyGridValueType::Action:
+		case PropertyGridValueType::Slider:
 			return CursorKind::Hand;
 		case PropertyGridValueType::Enum:
 			return item.Options.empty() ? CursorKind::Arrow : CursorKind::Hand;
@@ -1136,6 +1219,7 @@ bool PropertyGridView::HandlesNavigationKey(WPARAM key) const
 	case VK_ESCAPE:
 	case VK_SPACE:
 	case VK_F2:
+	case VK_F4:
 	case VK_LEFT:
 	case VK_RIGHT:
 	case VK_BACK:
@@ -1221,9 +1305,9 @@ void PropertyGridView::DrawHeader(D2DGraphics* d2d, const Layout& layout)
 	auto nameRect = GetNameRect(layout.HeaderRect);
 	auto valueRect = GetValueRect(layout.HeaderRect);
 	class Font* fontObj = this->Font;
-	d2d->DrawString(L"Property", nameRect.left + this->CellPaddingX, TextTop(fontObj, nameRect),
+	d2d->DrawString(_nameHeaderLabel, nameRect.left + this->CellPaddingX, TextTop(fontObj, nameRect),
 		std::max(1.0f, RectWidth(nameRect) - this->CellPaddingX * 2.0f), RectHeight(nameRect), this->HeaderForeColor, fontObj);
-	d2d->DrawString(L"Value", valueRect.left + this->CellPaddingX, TextTop(fontObj, valueRect),
+	d2d->DrawString(_valueHeaderLabel, valueRect.left + this->CellPaddingX, TextTop(fontObj, valueRect),
 		std::max(1.0f, RectWidth(valueRect) - this->CellPaddingX * 2.0f), RectHeight(valueRect), this->HeaderForeColor, fontObj);
 	d2d->DrawLine(nameRect.right, layout.HeaderRect.top + 5.0f, nameRect.right, layout.HeaderRect.bottom - 5.0f, this->GridLineColor, 1.0f);
 	d2d->DrawLine(layout.HeaderRect.left, layout.HeaderRect.bottom - 0.5f, layout.HeaderRect.right, layout.HeaderRect.bottom - 0.5f, this->GridLineColor, 1.0f);
@@ -1242,11 +1326,24 @@ void PropertyGridView::DrawCategoryRow(D2DGraphics* d2d, const RowInfo& row, con
 		std::max(1.0f, RectWidth(rect) - 32.0f), RectHeight(rect), this->CategoryForeColor, fontObj);
 }
 
-void PropertyGridView::DrawCheckBox(D2DGraphics* d2d, const D2D1_RECT_F& rect, bool checked)
+void PropertyGridView::DrawCheckBox(
+	D2DGraphics* d2d,
+	const D2D1_RECT_F& rect,
+	bool checked,
+	bool indeterminate)
 {
-	d2d->FillRoundRect(rect, checked ? this->AccentColor : this->CheckBackColor, 3.0f);
-	d2d->DrawRoundRect(rect, checked ? this->AccentColor : this->CheckBorderColor, 1.2f, 3.0f);
-	if (checked)
+	const bool active = checked || indeterminate;
+	d2d->FillRoundRect(rect, active ? this->AccentColor : this->CheckBackColor, 3.0f);
+	d2d->DrawRoundRect(rect, active ? this->AccentColor : this->CheckBorderColor, 1.2f, 3.0f);
+	if (indeterminate)
+	{
+		const float cy = (rect.top + rect.bottom) * 0.5f;
+		d2d->DrawLine(
+			D2D1::Point2F(rect.left + RectWidth(rect) * 0.24f, cy),
+			D2D1::Point2F(rect.right - RectWidth(rect) * 0.24f, cy),
+			Colors::White, 1.8f);
+	}
+	else if (checked)
 	{
 		D2D1_COLOR_F mark = Colors::White;
 		auto p1 = D2D1::Point2F(rect.left + RectWidth(rect) * 0.24f, rect.top + RectHeight(rect) * 0.54f);
@@ -1272,8 +1369,19 @@ void PropertyGridView::DrawItemRow(D2DGraphics* d2d, const RowInfo& row, const D
 	auto valueRect = GetValueRect(rect);
 	class Font* fontObj = this->Font;
 	D2D1_COLOR_F nameColor = item.ReadOnly || item.ValueType == PropertyGridValueType::ReadOnly ? this->ReadOnlyForeColor : this->ForeColor;
+	const float nameTextRight = item.CanReset
+		? GetResetRect(rect).left - 2.0f
+		: nameRect.right - this->CellPaddingX;
 	d2d->DrawString(item.Name, nameRect.left + this->CellPaddingX, TextTop(fontObj, nameRect),
-		std::max(1.0f, RectWidth(nameRect) - this->CellPaddingX * 2.0f), RectHeight(nameRect), nameColor, fontObj);
+		std::max(1.0f, nameTextRight - nameRect.left - this->CellPaddingX), RectHeight(nameRect), nameColor, fontObj);
+	if (item.CanReset)
+	{
+		const bool emphasized = row.ItemIndex == this->SelectedIndex
+			|| row.ItemIndex == this->HoveredIndex;
+		DrawResetGlyph(d2d, GetResetRect(rect),
+			item.ReadOnly || !emphasized
+				? this->ReadOnlyForeColor : this->AccentColor);
+	}
 
 	D2D1_COLOR_F valueColor = item.ReadOnly || item.ValueType == PropertyGridValueType::ReadOnly ? this->ReadOnlyForeColor : this->ForeColor;
 	const bool editable = IsEditableItem(row.ItemIndex);
@@ -1374,9 +1482,56 @@ void PropertyGridView::DrawItemRow(D2DGraphics* d2d, const RowInfo& row, const D
 		float box = std::min(15.0f, RectHeight(valueRect) - 8.0f);
 		auto boxRect = D2D1::RectF(valueRect.left + this->CellPaddingX, valueRect.top + (RectHeight(valueRect) - box) * 0.5f,
 			valueRect.left + this->CellPaddingX + box, valueRect.top + (RectHeight(valueRect) + box) * 0.5f);
-		DrawCheckBox(d2d, boxRect, TextToBool(item.Value));
-		d2d->DrawString(TextToBool(item.Value) ? L"True" : L"False", boxRect.right + 7.0f, TextTop(fontObj, valueRect),
+		DrawCheckBox(d2d, boxRect, TextToBool(item.Value), item.IsMixed);
+		const std::wstring boolText = item.IsMixed
+			? (item.Value.empty() ? std::wstring(L"\u2014") : item.Value)
+			: (TextToBool(item.Value) ? std::wstring(L"True") : std::wstring(L"False"));
+		d2d->DrawString(boolText, boxRect.right + 7.0f, TextTop(fontObj, valueRect),
 			std::max(1.0f, valueRect.right - boxRect.right - 12.0f), RectHeight(valueRect), valueColor, fontObj);
+	}
+	else if (item.ValueType == PropertyGridValueType::Slider)
+	{
+		const double minimum = std::isfinite(item.Minimum) ? item.Minimum : 0.0;
+		const double maximum = std::isfinite(item.Maximum) && item.Maximum > minimum
+			? item.Maximum : minimum + 1.0;
+		double current = minimum;
+		TryParseDouble(item.Value, current);
+		current = std::clamp(current, minimum, maximum);
+		const float textWidth = std::min(54.0f,
+			std::max(36.0f, RectWidth(valueRect) * 0.36f));
+		const float trackLeft = valueRect.left + this->CellPaddingX;
+		const float trackRight = std::max(
+			trackLeft + 1.0f, valueRect.right - textWidth - 5.0f);
+		const float trackY = valueRect.top + RectHeight(valueRect) * 0.5f;
+		const float ratio = item.IsMixed ? 0.5f : static_cast<float>(
+			(current - minimum) / (maximum - minimum));
+		d2d->DrawLine(trackLeft, trackY, trackRight, trackY,
+			FadeColor(this->GridLineColor, 1.8f), 3.0f);
+		d2d->DrawLine(trackLeft, trackY,
+			trackLeft + (trackRight - trackLeft) * ratio, trackY,
+			this->AccentColor, 3.0f);
+		const float thumbX = trackLeft + (trackRight - trackLeft) * ratio;
+		d2d->FillEllipse(thumbX, trackY, 4.5f, 4.5f,
+			item.IsMixed ? this->ReadOnlyForeColor : this->AccentColor);
+		d2d->DrawEllipse(thumbX, trackY, 5.3f, 5.3f,
+			this->BackColor, 1.0f);
+		d2d->DrawString(item.Value, trackRight + 6.0f,
+			TextTop(fontObj, valueRect),
+			std::max(1.0f, valueRect.right - trackRight - 8.0f),
+			RectHeight(valueRect), valueColor, fontObj);
+	}
+	else if (item.ValueType == PropertyGridValueType::Action)
+	{
+		auto actionRect = D2D1::RectF(
+			valueRect.left + 4.0f, valueRect.top + 4.0f,
+			valueRect.right - 4.0f, valueRect.bottom - 4.0f);
+		d2d->FillRoundRect(actionRect,
+			FadeColor(this->AccentColor, row.ItemIndex == this->HoveredIndex ? 0.18f : 0.09f), 4.0f);
+		d2d->DrawRoundRect(actionRect, FadeColor(this->AccentColor, 0.75f), 1.0f, 4.0f);
+		d2d->DrawString(item.Value.empty() ? L"\u7f16\u8f91\u2026" : item.Value,
+			actionRect.left + this->CellPaddingX, TextTop(fontObj, actionRect),
+			std::max(1.0f, RectWidth(actionRect) - this->CellPaddingX * 2.0f),
+			RectHeight(actionRect), valueColor, fontObj);
 	}
 	else
 	{
@@ -1384,7 +1539,10 @@ void PropertyGridView::DrawItemRow(D2DGraphics* d2d, const RowInfo& row, const D
 		float textLeft = contentRect.left + this->CellPaddingX;
 		float textRight = contentRect.right - this->CellPaddingX;
 		const bool hasDropArrow = editable &&
-			((item.ValueType == PropertyGridValueType::Enum && !item.Options.empty()) || item.ValueType == PropertyGridValueType::Color);
+			(((item.ValueType == PropertyGridValueType::Enum ||
+				item.ValueType == PropertyGridValueType::EditableEnum) && !item.Options.empty())
+				|| item.ValueType == PropertyGridValueType::Color
+				|| item.ValueType == PropertyGridValueType::Anchor);
 		if (hasDropArrow)
 			textRight -= 18.0f;
 		if (item.ValueType == PropertyGridValueType::Color)
@@ -1399,7 +1557,45 @@ void PropertyGridView::DrawItemRow(D2DGraphics* d2d, const RowInfo& row, const D
 				textLeft = swatchRect.right + 7.0f;
 			}
 		}
-		d2d->DrawString(item.Value, textLeft, TextTop(fontObj, contentRect),
+		std::wstring displayValue = item.Value;
+		if (item.ValueType == PropertyGridValueType::Anchor && !item.IsMixed)
+		{
+			uint8_t anchors = AnchorStyles::None;
+			if (AnchorPickerPopup::TryParseAnchors(item.Value, anchors))
+			{
+				const float iconSize = std::min(18.0f,
+					std::max(12.0f, RectHeight(contentRect) - 10.0f));
+				const auto iconRect = D2D1::RectF(
+					contentRect.left + this->CellPaddingX,
+					contentRect.top + (RectHeight(contentRect) - iconSize) * 0.5f,
+					contentRect.left + this->CellPaddingX + iconSize,
+					contentRect.top + (RectHeight(contentRect) + iconSize) * 0.5f);
+				d2d->DrawRect(iconRect, this->GridLineColor, 1.0f);
+				const auto childRect = D2D1::RectF(
+					iconRect.left + iconSize * 0.31f,
+					iconRect.top + iconSize * 0.31f,
+					iconRect.right - iconSize * 0.31f,
+					iconRect.bottom - iconSize * 0.31f);
+				d2d->FillRect(childRect, FadeColor(this->AccentColor, 0.48f));
+				const float cx = (iconRect.left + iconRect.right) * 0.5f;
+				const float cy = (iconRect.top + iconRect.bottom) * 0.5f;
+				if ((anchors & AnchorStyles::Top) != 0)
+					d2d->DrawLine(cx, iconRect.top, cx, childRect.top,
+						this->AccentColor, 1.6f);
+				if ((anchors & AnchorStyles::Left) != 0)
+					d2d->DrawLine(iconRect.left, cy, childRect.left, cy,
+						this->AccentColor, 1.6f);
+				if ((anchors & AnchorStyles::Right) != 0)
+					d2d->DrawLine(childRect.right, cy, iconRect.right, cy,
+						this->AccentColor, 1.6f);
+				if ((anchors & AnchorStyles::Bottom) != 0)
+					d2d->DrawLine(cx, childRect.bottom, cx, iconRect.bottom,
+						this->AccentColor, 1.6f);
+				textLeft = iconRect.right + 7.0f;
+				displayValue = AnchorPickerPopup::AnchorToString(anchors);
+			}
+		}
+		d2d->DrawString(displayValue, textLeft, TextTop(fontObj, contentRect),
 			std::max(1.0f, textRight - textLeft), RectHeight(contentRect), valueColor, fontObj);
 		if (hasDropArrow)
 		{
@@ -1412,7 +1608,15 @@ void PropertyGridView::DrawItemRow(D2DGraphics* d2d, const RowInfo& row, const D
 			{
 				arrowProgress = this->_colorPicker->CurrentDropProgress();
 			}
-			else if (item.ValueType == PropertyGridValueType::Enum && IsDropDownEditorOpenFor(row.ItemIndex))
+			else if (item.ValueType == PropertyGridValueType::Anchor &&
+				this->_anchorPicker &&
+				this->_anchorPickerIndex == row.ItemIndex)
+			{
+				arrowProgress = this->_anchorPicker->CurrentDropProgress();
+			}
+			else if ((item.ValueType == PropertyGridValueType::Enum ||
+				item.ValueType == PropertyGridValueType::EditableEnum) &&
+				IsDropDownEditorOpenFor(row.ItemIndex))
 			{
 				arrowProgress = this->_dropDownPopup ? this->_dropDownPopup->CurrentDropProgress() : 0.0f;
 			}
@@ -1494,6 +1698,36 @@ bool PropertyGridView::ClearSelection()
 	return true;
 }
 
+bool PropertyGridView::ActivateItem(int index)
+{
+	if (index < 0 || index >= (int)this->Items.size()) return false;
+	SelectItem(index);
+	this->OnItemClick(this, index);
+	return true;
+}
+
+bool PropertyGridView::RequestReset(int index)
+{
+	if (index < 0 || index >= (int)this->Items.size()) return false;
+	const auto& item = this->Items[index];
+	if (!item.CanReset || item.ReadOnly
+		|| item.ValueType == PropertyGridValueType::ReadOnly) return false;
+	SelectItem(index);
+	this->OnResetRequested(this, index);
+	return true;
+}
+
+void PropertyGridView::SetHeaderLabels(
+	std::wstring nameCaption,
+	std::wstring valueCaption)
+{
+	if (_nameHeaderLabel == nameCaption && _valueHeaderLabel == valueCaption)
+		return;
+	_nameHeaderLabel = std::move(nameCaption);
+	_valueHeaderLabel = std::move(valueCaption);
+	InvalidateVisual();
+}
+
 bool PropertyGridView::IsEditableItem(int index) const
 {
 	if (!this->AllowEditing) return false;
@@ -1516,7 +1750,10 @@ bool PropertyGridView::BeginEdit(int index)
 	auto& item = this->Items[index];
 	if (item.ValueType == PropertyGridValueType::Bool ||
 		item.ValueType == PropertyGridValueType::Enum ||
-		item.ValueType == PropertyGridValueType::Color)
+		item.ValueType == PropertyGridValueType::Color ||
+		item.ValueType == PropertyGridValueType::Anchor ||
+		item.ValueType == PropertyGridValueType::Action ||
+		item.ValueType == PropertyGridValueType::Slider)
 		return false;
 	CloseDropDownEditor();
 	_editing = true;
@@ -1779,6 +2016,35 @@ void PropertyGridView::ToggleBool(int index)
 	SetValue(index, TextToBool(this->Items[index].Value) ? L"False" : L"True");
 }
 
+void PropertyGridView::UpdateSliderFromPoint(
+	int index,
+	float localX,
+	const D2D1_RECT_F& valueRect)
+{
+	if (!IsEditableItem(index)
+		|| index < 0 || index >= static_cast<int>(Items.size())) return;
+	auto& item = Items[static_cast<size_t>(index)];
+	if (item.ValueType != PropertyGridValueType::Slider) return;
+	const double minimum = std::isfinite(item.Minimum) ? item.Minimum : 0.0;
+	const double maximum = std::isfinite(item.Maximum) && item.Maximum > minimum
+		? item.Maximum : minimum + 1.0;
+	const double step = std::isfinite(item.Step) && item.Step > 0.0
+		? item.Step : (maximum - minimum) / 100.0;
+	const float textWidth = std::min(54.0f,
+		std::max(36.0f, RectWidth(valueRect) * 0.36f));
+	const float trackLeft = valueRect.left + this->CellPaddingX;
+	const float trackRight = std::max(
+		trackLeft + 1.0f, valueRect.right - textWidth - 5.0f);
+	const double ratio = std::clamp(
+		(static_cast<double>(localX) - trackLeft)
+		/ std::max(1.0, static_cast<double>(trackRight - trackLeft)),
+		0.0, 1.0);
+	double value = minimum + (maximum - minimum) * ratio;
+	value = minimum + std::round((value - minimum) / step) * step;
+	value = std::clamp(value, minimum, maximum);
+	SetValue(index, FormatSliderValue(value));
+}
+
 void PropertyGridView::CycleEnum(int index, int direction)
 {
 	if (!IsEditableItem(index)) return;
@@ -1839,6 +2105,7 @@ void PropertyGridView::OpenColorPickerEditor(int index, const D2D1_RECT_F& value
 
 	CommitEdit();
 	CloseDropDownEditor();
+	CloseAnchorPickerEditor();
 
 	if (!this->_colorPicker)
 		this->_colorPicker = new ColorPickerPopup();
@@ -1878,13 +2145,73 @@ void PropertyGridView::OpenColorPickerEditor(int index, const D2D1_RECT_F& value
 	this->InvalidateVisual();
 }
 
+void PropertyGridView::CloseAnchorPickerEditor()
+{
+	if (!this->_anchorPicker) return;
+	this->_anchorPicker->Hide(false);
+}
+
+void PropertyGridView::OpenAnchorPickerEditor(
+	int index, const D2D1_RECT_F& valueRect)
+{
+	if (index < 0 || index >= static_cast<int>(this->Items.size())) return;
+	if (!this->ParentForm || !IsEditableItem(index)) return;
+	if (this->Items[static_cast<size_t>(index)].ValueType
+		!= PropertyGridValueType::Anchor) return;
+
+	if (this->_anchorPicker
+		&& this->ParentForm->ForegroundControl == this->_anchorPicker
+		&& this->_anchorPicker->Visible
+		&& this->_anchorPickerIndex == index)
+	{
+		CloseAnchorPickerEditor();
+		this->ParentForm->Invalidate(true);
+		this->InvalidateVisual();
+		return;
+	}
+
+	CommitEdit();
+	CloseDropDownEditor();
+	CloseColorPickerEditor();
+
+	if (!this->_anchorPicker)
+		this->_anchorPicker = new AnchorPickerPopup();
+
+	uint8_t initial = AnchorStyles::None;
+	AnchorPickerPopup::TryParseAnchors(
+		this->Items[static_cast<size_t>(index)].Value, initial);
+	this->_anchorPicker->ParentForm = this->ParentForm;
+	this->_anchorPicker->SetFontEx(this->Font, false);
+	this->_anchorPicker->AccentColor = this->AccentColor;
+	this->_anchorPicker->OnAnchorChanged.Clear();
+	this->_anchorPicker->OnAnchorConfirmed.Clear();
+	this->_anchorPicker->OnCancelled.Clear();
+	this->_anchorPicker->OnAnchorConfirmed +=
+		[this, index](AnchorPickerPopup* sender,
+			uint8_t anchors, std::wstring value)
+		{
+			(void)sender;
+			(void)anchors;
+			if (index >= 0 && index < static_cast<int>(this->Items.size()))
+				SetValue(index, value);
+		};
+	this->_anchorPicker->OnCancelled +=
+		[this](AnchorPickerPopup* sender) { (void)sender; };
+
+	this->_anchorPickerIndex = index;
+	SetCurrentSelectedIndex(index);
+	this->_anchorPicker->ShowAt(this, valueRect, initial);
+	this->InvalidateVisual();
+}
+
 void PropertyGridView::ToggleDropDownEditor(int index, const D2D1_RECT_F& valueRect)
 {
 	if (index < 0 || index >= (int)this->Items.size()) return;
 	if (!this->ParentForm) return;
 	if (!IsEditableItem(index)) return;
 	auto& item = this->Items[index];
-	if (item.ValueType != PropertyGridValueType::Enum || item.Options.empty()) return;
+	if ((item.ValueType != PropertyGridValueType::Enum &&
+		item.ValueType != PropertyGridValueType::EditableEnum) || item.Options.empty()) return;
 
 	if (IsDropDownEditorOpenFor(index))
 	{
@@ -1896,6 +2223,7 @@ void PropertyGridView::ToggleDropDownEditor(int index, const D2D1_RECT_F& valueR
 
 	CommitEdit();
 	CloseColorPickerEditor();
+	CloseAnchorPickerEditor();
 
 	if (!this->_dropDownPopup)
 		this->_dropDownPopup = new DropDownPopup();
@@ -1999,6 +2327,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 	case WM_MOUSEWHEEL:
 	{
 		CloseColorPickerEditor();
+		CloseAnchorPickerEditor();
 		CloseDropDownEditor();
 		int delta = GET_WHEEL_DELTA_WPARAM(wParam);
 		if (delta != 0)
@@ -2014,7 +2343,17 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 	{
 		if (this->ParentForm)
 			this->ParentForm->UnderMouse = this;
-		if (_dragEditSelection && _editing)
+		if (_dragSlider && _sliderDragIndex >= 0)
+		{
+			auto rows = BuildRows();
+			auto layout = CalcLayout(rows);
+			D2D1_RECT_F valueRect{};
+			if (GetValueRectForItem(
+				_sliderDragIndex, rows, layout, valueRect))
+				UpdateSliderFromPoint(
+					_sliderDragIndex, static_cast<float>(localX), valueRect);
+		}
+		else if (_dragEditSelection && _editing)
 		{
 			auto rows = BuildRows();
 			auto layout = CalcLayout(rows);
@@ -2028,6 +2367,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 		{
 			CloseDropDownEditor();
 			CloseColorPickerEditor();
+			CloseAnchorPickerEditor();
 			auto rows = BuildRows();
 			auto layout = CalcLayout(rows);
 			SetCurrentNameColumnWidth(std::clamp((float)localX, 48.0f,
@@ -2073,14 +2413,50 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 				CancelEdit();
 				CloseDropDownEditor();
 				CloseColorPickerEditor();
+				CloseAnchorPickerEditor();
 				ToggleCategory(row.Category);
 			}
 			else
 			{
 				int valueIndex = -1;
 				bool inValue = IsValueCell(localX, localY, rows, layout, valueIndex);
-				SelectItem(row.ItemIndex);
-				this->OnItemClick(this, row.ItemIndex);
+				const bool canReset = this->Items[row.ItemIndex].CanReset;
+				const auto itemType = this->Items[row.ItemIndex].ValueType;
+				if (canReset && PtInRectF(
+					GetResetRect(rect), (float)localX, (float)localY))
+				{
+					CancelEdit();
+					CloseDropDownEditor();
+					CloseColorPickerEditor();
+					CloseAnchorPickerEditor();
+					RequestReset(row.ItemIndex);
+					break;
+				}
+				ActivateItem(row.ItemIndex);
+				if (itemType == PropertyGridValueType::Action)
+				{
+					CancelEdit();
+					CloseDropDownEditor();
+					CloseColorPickerEditor();
+					CloseAnchorPickerEditor();
+					break;
+				}
+				if (itemType == PropertyGridValueType::Slider
+					&& inValue && IsEditableItem(row.ItemIndex))
+				{
+					CancelEdit();
+					CloseDropDownEditor();
+					CloseColorPickerEditor();
+					CloseAnchorPickerEditor();
+					_sliderDragIndex = row.ItemIndex;
+					_dragSlider = true;
+					this->OnEditStarted(this, row.ItemIndex);
+					UpdateSliderFromPoint(
+						row.ItemIndex, static_cast<float>(localX), GetValueRect(rect));
+					if (this->ParentForm && this->ParentForm->Handle)
+						SetCapture(this->ParentForm->Handle);
+					break;
+				}
 				if (inValue && IsEditableItem(row.ItemIndex))
 				{
 					auto type = this->Items[row.ItemIndex].ValueType;
@@ -2088,19 +2464,29 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 					{
 						CloseDropDownEditor();
 						CloseColorPickerEditor();
+						CloseAnchorPickerEditor();
 						ToggleBool(row.ItemIndex);
 					}
 					else if (type == PropertyGridValueType::Enum)
+						ToggleDropDownEditor(row.ItemIndex, GetValueRect(rect));
+					else if (type == PropertyGridValueType::EditableEnum &&
+						localX >= GetValueRect(rect).right - 24.0f)
 						ToggleDropDownEditor(row.ItemIndex, GetValueRect(rect));
 					else if (type == PropertyGridValueType::Color)
 					{
 						CloseDropDownEditor();
 						OpenColorPickerEditor(row.ItemIndex, GetValueRect(rect));
 					}
+					else if (type == PropertyGridValueType::Anchor)
+					{
+						CloseDropDownEditor();
+						OpenAnchorPickerEditor(row.ItemIndex, GetValueRect(rect));
+					}
 					else
 					{
 						CloseDropDownEditor();
 						CloseColorPickerEditor();
+						CloseAnchorPickerEditor();
 						if (_editing && _editingIndex == row.ItemIndex)
 						{
 							SetEditingCaretFromMousePoint(localX, localY, GetValueRect(rect));
@@ -2125,6 +2511,8 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 					CloseDropDownEditor();
 				if (!inValue && _colorPickerIndex != row.ItemIndex)
 					CloseColorPickerEditor();
+				if (!inValue && _anchorPickerIndex != row.ItemIndex)
+					CloseAnchorPickerEditor();
 			}
 			break;
 		}
@@ -2134,6 +2522,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 		{
 			CloseDropDownEditor();
 			CloseColorPickerEditor();
+			CloseAnchorPickerEditor();
 		}
 		MouseEventArgs e(MouseButtons::Left, 0, localX, localY, HIWORD(wParam));
 		this->OnMouseDown(this, e);
@@ -2143,6 +2532,21 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 	{
 		_dragVScroll = false;
 		_dragSplitter = false;
+		if (_dragSlider)
+		{
+			const int sliderIndex = _sliderDragIndex;
+			auto rows = BuildRows();
+			auto layout = CalcLayout(rows);
+			D2D1_RECT_F valueRect{};
+			if (GetValueRectForItem(sliderIndex, rows, layout, valueRect))
+				UpdateSliderFromPoint(
+					sliderIndex, static_cast<float>(localX), valueRect);
+			_dragSlider = false;
+			_sliderDragIndex = -1;
+			ReleaseCapture();
+			if (sliderIndex >= 0)
+				this->OnEditCompleted(this, sliderIndex);
+		}
 		if (_dragEditSelection)
 		{
 			_dragEditSelection = false;
@@ -2166,6 +2570,7 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 				IsEditableItem(index) &&
 				type != PropertyGridValueType::Enum &&
 				type != PropertyGridValueType::Color &&
+				type != PropertyGridValueType::Anchor &&
 				type != PropertyGridValueType::Bool)
 			{
 				_editSelectionStart = 0;
@@ -2175,12 +2580,16 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 			}
 			else
 			if (GetValueRectForItem(index, rows, layout, valueRect) && IsEditableItem(index) &&
-				(type == PropertyGridValueType::Enum || type == PropertyGridValueType::Color))
+				(type == PropertyGridValueType::Enum
+					|| type == PropertyGridValueType::Color
+					|| type == PropertyGridValueType::Anchor))
 			{
 				if (type == PropertyGridValueType::Enum)
 					ToggleDropDownEditor(index, valueRect);
-				else
+				else if (type == PropertyGridValueType::Color)
 					OpenColorPickerEditor(index, valueRect);
+				else
+					OpenAnchorPickerEditor(index, valueRect);
 			}
 			else
 				BeginEdit(index);
@@ -2240,7 +2649,8 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 			D2D1_RECT_F valueRect{};
 			if (!GetValueRectForItem(this->SelectedIndex, rows, layout, valueRect)) return false;
 			auto type = this->Items[this->SelectedIndex].ValueType;
-			if (type == PropertyGridValueType::Enum)
+			if (type == PropertyGridValueType::Enum ||
+				type == PropertyGridValueType::EditableEnum)
 			{
 				ToggleDropDownEditor(this->SelectedIndex, valueRect);
 				return true;
@@ -2248,6 +2658,11 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 			if (type == PropertyGridValueType::Color)
 			{
 				OpenColorPickerEditor(this->SelectedIndex, valueRect);
+				return true;
+			}
+			if (type == PropertyGridValueType::Anchor)
+			{
+				OpenAnchorPickerEditor(this->SelectedIndex, valueRect);
 				return true;
 			}
 			return false;
@@ -2262,7 +2677,18 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 		case VK_NEXT: selectVisible(pos < 0 ? 0 : pos + 8); break;
 		case VK_RETURN:
 		case VK_F2:
-			if (this->SelectedIndex >= 0 && !openSelectedDropDown()) BeginEdit(this->SelectedIndex);
+			if (this->SelectedIndex >= 0)
+			{
+				if (this->Items[this->SelectedIndex].ValueType == PropertyGridValueType::Action)
+					ActivateItem(this->SelectedIndex);
+				else if (this->Items[this->SelectedIndex].ValueType == PropertyGridValueType::EditableEnum)
+					BeginEdit(this->SelectedIndex);
+				else if (!openSelectedDropDown())
+					BeginEdit(this->SelectedIndex);
+			}
+			break;
+		case VK_F4:
+			openSelectedDropDown();
 			break;
 		case VK_SPACE:
 			if (this->SelectedIndex >= 0)
@@ -2273,6 +2699,10 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 					openSelectedDropDown();
 				else if (this->Items[this->SelectedIndex].ValueType == PropertyGridValueType::Color)
 					openSelectedDropDown();
+				else if (this->Items[this->SelectedIndex].ValueType == PropertyGridValueType::Anchor)
+					openSelectedDropDown();
+				else if (this->Items[this->SelectedIndex].ValueType == PropertyGridValueType::Action)
+					ActivateItem(this->SelectedIndex);
 			}
 			break;
 		default:
@@ -2289,7 +2719,9 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 		{
 			auto type = this->Items[this->SelectedIndex].ValueType;
 			if (IsEditableItem(this->SelectedIndex) &&
-				(type == PropertyGridValueType::Text || type == PropertyGridValueType::Number))
+				(type == PropertyGridValueType::Text ||
+					type == PropertyGridValueType::Number ||
+					type == PropertyGridValueType::EditableEnum))
 			{
 				BeginEdit(this->SelectedIndex);
 			}
@@ -2333,6 +2765,21 @@ bool PropertyGridView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam
 			// Keep mutations on the same path as TextBox so selection replacement is stable.
 			this->InvalidateVisual();
 		}
+		return true;
+	}
+	case WM_CANCELMODE:
+	case WM_CAPTURECHANGED:
+	{
+		if (_dragSlider)
+		{
+			const int index = _sliderDragIndex;
+			_dragSlider = false;
+			_sliderDragIndex = -1;
+			if (index >= 0) this->OnEditCanceled(this, index);
+		}
+		_dragVScroll = false;
+		_dragSplitter = false;
+		_dragEditSelection = false;
 		return true;
 	}
 	default:

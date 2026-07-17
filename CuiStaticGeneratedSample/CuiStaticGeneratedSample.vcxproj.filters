@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Generated"><UniqueIdentifier>{40B69ED8-00CE-4717-9A66-04684C1AC670}</UniqueIdentifier></Filter>
+    <Filter Include="User"><UniqueIdentifier>{AB441BBF-C00E-449F-AB74-A79234A391FB}</UniqueIdentifier></Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="NamespacedWindow.cpp"><Filter>User</Filter></ClCompile>
+    <ClCompile Include="NamespacedWindow.g.cpp"><Filter>Generated</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+	<ClInclude Include="Controls\StatusBadge.h"><Filter>User</Filter></ClInclude>
+    <ClInclude Include="NamespacedWindow.h"><Filter>User</Filter></ClInclude>
+    <ClInclude Include="NamespacedWindow.g.h"><Filter>Generated</Filter></ClInclude>
+    <ClInclude Include="NamespacedWindow.handlers.g.inc"><Filter>Generated</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="NamespacedWindow.cui.xaml" />
+  </ItemGroup>
+</Project>

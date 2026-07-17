@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<cuiControlCatalog schema="cui.designer.controls" version="1">
+  <control
+    name="StatusBadge"
+    displayName="状态徽标"
+    category="示例控件"
+    baseType="Button"
+    xamlPrefix="sample"
+    xamlName="StatusBadge"
+    xamlNamespace="urn:cui:samples"
+    cppType="Acme.Controls.StatusBadge"
+    header="Controls/StatusBadge.h"
+    constructor="Bounds"
+    width="150"
+	height="30"
+	container="false">
+    <property
+      name="Severity"
+      displayName="严重程度"
+      category="外观"
+      categoryOrder="200"
+      order="10"
+      kind="Int64"
+      default="1"
+      editor="Choice"
+      minimum="0"
+      maximum="2"
+      bindable="true">
+      <choice displayName="信息" value="0" />
+      <choice displayName="正常" value="1" />
+      <choice displayName="警告" value="2" />
+    </property>
+    <event
+      name="OnSeverityInvoked"
+      displayName="严重程度触发"
+      field="OnSeverityInvoked"
+      category="Action"
+      signature="SenderInt"
+      order="5"
+      default="true" />
+  </control>
+</cuiControlCatalog>

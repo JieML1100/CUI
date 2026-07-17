@@ -14,6 +14,7 @@
 #include <array>
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -662,6 +663,7 @@ protected:
 	std::array<std::vector<std::wstring>, 2> _styleSheetProperties;
 	bool _refreshingStyleValues = false;
 	bool _styleRefreshPending = false;
+	std::function<void(Control&, D2DGraphics&)> _renderDecorator;
 
 	friend class BindingCollection;
 	friend class Binding;
@@ -856,6 +858,13 @@ public:
 	bool Checked;
 	/** @brief 用户自定义数据槽（不由框架解释）。 */
 	UINT64 Tag;
+	/**
+	 * @brief 设计文档分配的稳定 ID；0 表示该控件并非来自设计文档。
+	 *
+	 * 该值用于生成代码、动态 UI 加载和名称变更后的可靠索引，不参与
+	 * 控件所有权或可访问性运行时 ID 分配。
+	 */
+	int DesignId = 0;
 	using ChildCollection = ControlCollection;
 	/**
 	 * @brief 可观察的拥有型子控件集合。
@@ -887,6 +896,19 @@ public:
 	 */
 	void BeginRender();
 	void BeginRender(float clipW, float clipH);
+	/**
+	 * @brief 设置一个宿主拥有的最终绘制装饰器。
+	 *
+	 * 回调在控件局部变换/裁剪内、焦点和验证装饰之前执行。
+	 * 回调应直接使用传入的 D2DGraphics，不得再调用 BeginRender/EndRender。
+	 * 设置空回调可清除装饰器。此状态不参与布局或序列化。
+	 */
+	void SetRenderDecorator(
+		std::function<void(Control&, D2DGraphics&)> decorator);
+	bool HasRenderDecorator() const noexcept
+	{
+		return static_cast<bool>(_renderDecorator);
+	}
 	/** @brief 结束局部坐标渲染，恢复之前的变换状态。 */
 	void EndRender();
 	/** @brief 使控件可视区域失效，并请求窗口在下一次绘制中刷新它。 */
@@ -1019,6 +1041,10 @@ public:
 	ControlPropertyValueSource GetPropertyValueSource(
 		const std::wstring& propertyName);
 	bool ResetPropertyValue(const std::wstring& propertyName);
+	/** Updates the value beneath Theme/Style/Binding/Local without creating a source. */
+	bool TrySetPropertyBaseValue(
+		const std::wstring& propertyName,
+		const BindingValue& value);
 	bool IsPropertyValueDefault(const std::wstring& propertyName);
 	const std::wstring& GetStyleId() const noexcept { return _styleId; }
 	void SetStyleId(std::wstring value);
@@ -1057,6 +1083,9 @@ public:
 	GET(int, Count);
 	Control* operator[](int index);
 	Control* GetChild(int index);
+	/** @brief 在当前控件及其后代中按设计文档稳定 ID 查找。 */
+	Control* FindControlByDesignId(int designId) noexcept;
+	const Control* FindControlByDesignId(int designId) const noexcept;
 	virtual std::span<Control* const> GetLayoutChildrenView() noexcept
 	{
 		return std::span<Control* const>{ Children.data(), Children.size() };

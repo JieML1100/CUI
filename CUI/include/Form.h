@@ -54,6 +54,7 @@ class FormUiaProvider;
 typedef Event<void(class Form* sender, int Id, int info)> CommandEvent;
 typedef Event<void(class Form*)> FormClosingEvent;
 typedef Event<void(class Form*)> FormClosedEvent;
+typedef Event<void(class Form*)> FormShownEvent;
 typedef Event<void(class Form*, wchar_t)> FormCharInputEvent;
 typedef Event<void(class Form*)> FormPaintEvent;
 typedef Event<void(class Form*, MouseEventArgs)> FormMouseWheelEvent;
@@ -155,6 +156,7 @@ private:
 	UINT_PTR _animTimerId = 0xC001;
 	UINT _animIntervalMs = 0;
 	bool _hasRenderedOnce = false;
+	bool _shownRaised = false;
 	CursorKind _currentCursor = CursorKind::Arrow;
 
 	bool TryGetCaptionButtonRect(CaptionButtonKind kind, RECT& out);
@@ -163,6 +165,7 @@ private:
 	void UpdateCaptionHover(POINT ptClient);
 	void ExecuteCaptionButton(CaptionButtonKind kind);
 	void ApplyWindowIcon();
+	void RaiseShownOnce();
 	void ClearCaptionStates();
 	void RefreshAnimationTimer();
 	void InvalidateControl(class Control* control, float inflateDip = 2.0f, bool immediate = false);
@@ -286,6 +289,8 @@ public:
 	FormClosingEvent OnFormClosing = FormClosingEvent();
 	/** @brief 已关闭事件。 */
 	FormClosedEvent OnFormClosed = FormClosedEvent();
+	/** @brief 窗体首次显示事件；每个 Form 实例只触发一次。 */
+	FormShownEvent OnShown = FormShownEvent();
 
 	CommandEvent OnCommand;
 
@@ -349,6 +354,11 @@ public:
 	GET(std::wstring, Text);
 	SET(std::wstring, Text);
 	class Font* GetFont();
+	/** Returns the unscaled explicitly configured font, or nullptr for default. */
+	class Font* GetConfiguredFont() noexcept { return _font; }
+	const class Font* GetConfiguredFont() const noexcept { return _font; }
+	bool UsesDefaultFont() const noexcept { return _font == nullptr; }
+	bool OwnsConfiguredFont() const noexcept { return _font && _ownsFont; }
 	void SetFont(class Font* value);
 	// 显式设置是否由 Form 释放 Font（默认：通过属性 Font 设置时视为“拥有”）
 	void SetFontEx(class Font* value, bool takeOwnership);
@@ -432,10 +442,12 @@ public:
 
 
 	template<typename T>
-	T AddControl(T control)
+	T InsertControl(int index, T control)
 	{
 		if (!control)
 			throw std::invalid_argument("不能添加空控件");
+		if (index < 0 || static_cast<size_t>(index) > this->Controls.size())
+			throw std::out_of_range("顶层控件索引超出范围");
 		if (std::find(this->Controls.begin(), this->Controls.end(), control) != this->Controls.end())
 		{
 			return control;
@@ -448,7 +460,7 @@ public:
 		{
 			throw std::logic_error("该控件已属于其他窗口");
 		}
-		this->Controls.push_back(control);
+		this->Controls.insert(this->Controls.begin() + index, control);
 		control->Parent = nullptr;
 		control->ParentForm = this;
 		control->_isFormRoot = true;
@@ -478,6 +490,12 @@ public:
 		return control;
 	}
 
+	template<typename T>
+	T AddControl(T control)
+	{
+		return InsertControl(static_cast<int>(this->Controls.size()), control);
+	}
+
 	/** @brief 安全接收并挂载一个顶层控件，成功后由 Form 接管所有权。 */
 	template<typename T>
 	T* AddOwned(std::unique_ptr<T> control)
@@ -490,6 +508,25 @@ public:
 		control.release();
 		return raw;
 	}
+
+	/**
+	 * @brief 尝试在指定槽位接收顶层控件，失败时把所有权保留给调用方。
+	 *
+	 * 该入口供需要回滚保证的宿主事务使用；它会在挂载后的后续步骤抛出
+	 * 异常时重新分离控件，避免 unique_ptr 被部分提交吞掉。
+	 */
+	bool TryInsertOwned(
+		int index, std::unique_ptr<Control>& control) noexcept;
+	template<typename T>
+	bool TryInsertOwned(int index, std::unique_ptr<T>& control) noexcept
+	{
+		static_assert(std::is_base_of_v<Control, T>, "T must derive from Control");
+		std::unique_ptr<Control> base(control.release());
+		const bool inserted = TryInsertOwned(index, base);
+		control.reset(static_cast<T*>(base.release()));
+		return inserted;
+	}
+	int IndexOfControl(const Control* control) const noexcept;
 
 	/** @brief 原位构造并添加顶层控件。 */
 	template<typename T, typename... Args>

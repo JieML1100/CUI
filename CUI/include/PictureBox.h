@@ -14,6 +14,7 @@ class PictureBox : public Control
 {
 public:
 	virtual UIClass Type();
+	void EnsureBindingPropertiesRegistered() override;
 	/** @brief 边框宽度（像素）。 */
 	float BorderThickness = 1.0f;
 	/** @brief 圆角半径（像素）。 */

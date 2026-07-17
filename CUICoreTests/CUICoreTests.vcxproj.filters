@@ -2,6 +2,12 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
 	<ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerCore\CommandManager.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\AtomicFile.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentGraph.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentControlPool.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignRecoveryStore.cpp" />
 	<ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>

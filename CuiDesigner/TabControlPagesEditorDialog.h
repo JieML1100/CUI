@@ -9,13 +9,19 @@
 #include "../CUI/include/Button.h"
 #include "../CUI/include/TabControl.h"
 #include "../CUI/include/GridView.h"
-#include <functional>
+#include <vector>
 
 class TabControlPagesEditorDialog : public Form
 {
 public:
+	struct PageEdit
+	{
+		TabPage* ExistingPage = nullptr;
+		std::wstring Title;
+	};
+
 	bool Applied = false;
-	std::function<void(Control* page)> OnBeforeDeletePage;
+	std::vector<PageEdit> Pages;
 
 	TabControlPagesEditorDialog(TabControl* target);
 	~TabControlPagesEditorDialog() = default;
