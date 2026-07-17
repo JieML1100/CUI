@@ -4,8 +4,8 @@
 class ScrollView : public Panel
 {
 private:
-	D2D1_COLOR_F _scrollBackColor = Colors::LightGray;
-	D2D1_COLOR_F _scrollForeColor = Colors::DimGrey;
+	D2D1_COLOR_F _scrollBackColor = cui::theme::palette::ScrollTrack;
+	D2D1_COLOR_F _scrollForeColor = cui::theme::palette::ScrollThumb;
 	float _scrollBarThickness = 8.0f;
 	bool _alwaysShowVScroll = false;
 	bool _alwaysShowHScroll = false;

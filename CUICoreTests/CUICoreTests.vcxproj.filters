@@ -1,14 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-	<ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerCore\CommandManager.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerModel\AtomicFile.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentGraph.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentControlPool.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignRecoveryStore.cpp" />
-	<ClCompile Include="main.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerCore\CommandManager.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\AtomicFile.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentGraph.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentControlPool.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignRecoveryStore.cpp" />
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerDataContextSchemaUtils.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerFormPropertyCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerCustomEditorCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerControlPropertyCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerPropertyRowCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerPropertyEdit.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerPropertyCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerStyleSheetUtils.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerEventCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocument.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentSerializer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="TestRunner.h" />

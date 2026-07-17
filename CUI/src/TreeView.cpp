@@ -465,7 +465,7 @@ void TreeView::EnsureBindingPropertiesRegistered()
 				name, std::move(getter), std::move(setter), {}, std::move(options));
 		};
 		registerColor(L"SelectedBackColor",
-			D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.14f }, 40,
+			cui::theme::palette::AccentSelected, 40,
 			[](TreeView& target) { return target.SelectedBackColor; },
 			[](TreeView& target, const D2D1_COLOR_F& value)
 			{
@@ -473,14 +473,14 @@ void TreeView::EnsureBindingPropertiesRegistered()
 				target.InvalidateVisual();
 			});
 		registerColor(L"UnderMouseItemBackColor",
-			D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.08f }, 50,
+			cui::theme::palette::AccentSoft, 50,
 			[](TreeView& target) { return target.UnderMouseItemBackColor; },
 			[](TreeView& target, const D2D1_COLOR_F& value)
 			{
 				target.UnderMouseItemBackColor = value;
 				target.InvalidateVisual();
 			});
-		registerColor(L"SelectedForeColor", Colors::Black, 60,
+		registerColor(L"SelectedForeColor", cui::theme::palette::TextPrimary, 60,
 			[](TreeView& target) { return target.SelectedForeColor; },
 			[](TreeView& target, const D2D1_COLOR_F& value)
 			{

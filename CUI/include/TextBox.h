@@ -14,11 +14,11 @@
 class TextBox : public Control
 {
 private:
-	D2D1_COLOR_F _underMouseColor = Colors::White;
-	D2D1_COLOR_F _selectedBackColor = { 0.f, 0.f, 1.f, 0.5f };
-	D2D1_COLOR_F _selectedForeColor = Colors::White;
-	D2D1_COLOR_F _focusedColor = Colors::White;
-	D2D1_COLOR_F _disabledOverlayColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f };
+	D2D1_COLOR_F _underMouseColor = cui::theme::palette::SurfaceSubtle;
+	D2D1_COLOR_F _selectedBackColor = cui::theme::palette::SelectionBack;
+	D2D1_COLOR_F _selectedForeColor = cui::theme::palette::TextPrimary;
+	D2D1_COLOR_F _focusedColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F _disabledOverlayColor = cui::theme::palette::DisabledOverlay;
 	float _borderThickness = 1.0f;
 	float _cornerRadius = 6.0f;
 	float _focusBorder = 1.6f;
@@ -45,8 +45,8 @@ public:
 	PROPERTY(D2D1_COLOR_F, FocusedColor);
 	GET(D2D1_COLOR_F, FocusedColor);
 	SET(D2D1_COLOR_F, FocusedColor);
-	D2D1_COLOR_F ScrollBackColor = Colors::LightGray;
-	D2D1_COLOR_F ScrollForeColor = Colors::DimGrey;
+	D2D1_COLOR_F ScrollBackColor = cui::theme::palette::ScrollTrack;
+	D2D1_COLOR_F ScrollForeColor = cui::theme::palette::ScrollThumb;
 	PROPERTY(D2D1_COLOR_F, DisabledOverlayColor);
 	GET(D2D1_COLOR_F, DisabledOverlayColor);
 	SET(D2D1_COLOR_F, DisabledOverlayColor);

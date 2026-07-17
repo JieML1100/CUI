@@ -27,6 +27,9 @@
     <ClInclude Include="include\Control.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\ThemePalette.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\Form.h">
       <Filter>include</Filter>
     </ClInclude>

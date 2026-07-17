@@ -32,7 +32,7 @@ LinkLabel::LinkLabel(std::wstring text, int x, int y)
 	: Label(text, x, y)
 {
 	this->BackColor = D2D1_COLOR_F{ 0.f, 0.f, 0.f, 0.f };
-	this->ForeColor = Colors::DeepSkyBlue;
+	this->ForeColor = cui::theme::palette::Accent;
 	this->UnderlineColor = this->ForeColor;
 }
 

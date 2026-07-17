@@ -20,6 +20,8 @@ struct DesignerEventDescriptor
 	std::wstring Name;
 	std::wstring DisplayName;
 	std::string EventField;
+	/** C++ type that declares the real Event member; empty for portable custom events. */
+	std::string EventOwnerTypeName;
 	std::string ParameterList;
 	DesignerEventCategory Category = DesignerEventCategory::Other;
 	int Order = 0;

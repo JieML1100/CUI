@@ -32,17 +32,17 @@ protected:
 public:
 	virtual UIClass Type();
 	/** @brief 鼠标悬停时的高亮色。 */
-	D2D1_COLOR_F UnderMouseColor = Colors::DarkSlateGray;
+	D2D1_COLOR_F UnderMouseColor = cui::theme::palette::AccentSoft;
 	/** @brief 外圈背景色。 */
-	D2D1_COLOR_F CircleBackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.08f };
+	D2D1_COLOR_F CircleBackColor = cui::theme::palette::Surface;
 	/** @brief 外圈边框色。 */
-	D2D1_COLOR_F CircleBorderColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.32f };
+	D2D1_COLOR_F CircleBorderColor = cui::theme::palette::BorderStrong;
 	/** @brief 选中 accent 色。 */
-	D2D1_COLOR_F SelectedColor = D2D1_COLOR_F{ 0.28f, 0.63f, 0.98f, 0.92f };
+	D2D1_COLOR_F SelectedColor = cui::theme::palette::Accent;
 	/** @brief 内部圆点颜色。 */
-	D2D1_COLOR_F DotColor = D2D1_COLOR_F{ 0.98f, 0.99f, 1.0f, 1.0f };
+	D2D1_COLOR_F DotColor = cui::theme::palette::OnAccent;
 	/** @brief 禁用遮罩色。 */
-	D2D1_COLOR_F DisabledOverlayColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f };
+	D2D1_COLOR_F DisabledOverlayColor = cui::theme::palette::DisabledOverlay;
 	/** @brief 文本与圆形控件间距。 */
 	float TextGap = 8.0f;
 	/** @brief 边框宽度（像素）。 */

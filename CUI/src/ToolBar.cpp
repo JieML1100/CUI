@@ -87,9 +87,9 @@ namespace
 		if (!button) return;
 		button->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
 		button->BorderColor = D2D1_COLOR_F{ 0,0,0,0 };
-		button->ForeColor = Colors::WhiteSmoke;
-		button->UnderMouseColor = D2D1_COLOR_F{ 0.28f,0.58f,0.96f,0.26f };
-		button->CheckedColor = D2D1_COLOR_F{ 0.28f,0.58f,0.96f,0.34f };
+		button->ForeColor = cui::theme::palette::TextPrimary;
+		button->UnderMouseColor = cui::theme::palette::AccentSoft;
+		button->CheckedColor = cui::theme::palette::AccentSelected;
 		button->Round = 0.28f;
 		button->BorderThickness = 0.0f;
 	}
@@ -104,7 +104,7 @@ ToolBarSeparator::ToolBarSeparator(int width, int height)
 	this->Size = SIZE{ width,height };
 	this->BackColor = D2D1_COLOR_F{ 0,0,0,0 };
 	this->BorderColor = D2D1_COLOR_F{ 0,0,0,0 };
-	this->LineColor = D2D1_COLOR_F{ 1,1,1,0.18f };
+	this->LineColor = cui::theme::palette::Border;
 	this->Enable = false;
 }
 
@@ -197,12 +197,12 @@ void ToolBar::EnsureBindingPropertiesRegistered()
 			[](ToolBar& target) { return target.SeparatorColor; },
 			[](ToolBar& target, const D2D1_COLOR_F& value) { target.SeparatorColor = value; },
 			ToolBarPropertySubscriber(L"SeparatorColor"),
-			ToolBarColorOptions(D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.18f }, 40));
+			ToolBarColorOptions(cui::theme::palette::Border, 40));
 		BindingPropertyRegistry::Register<ToolBar, D2D1_COLOR_F>(L"BottomLineColor",
 			[](ToolBar& target) { return target.BottomLineColor; },
 			[](ToolBar& target, const D2D1_COLOR_F& value) { target.BottomLineColor = value; },
 			ToolBarPropertySubscriber(L"BottomLineColor"),
-			ToolBarColorOptions(D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.14f }, 50));
+			ToolBarColorOptions(cui::theme::palette::Border, 50));
 		BindingPropertyRegistry::Register<ToolBar, bool>(L"ShowBottomLine",
 			[](ToolBar& target) { return target.ShowBottomLine; },
 			[](ToolBar& target, const bool& value) { target.ShowBottomLine = value; },
@@ -227,8 +227,9 @@ ToolBar::ToolBar(int x, int y, int width, int height)
 	InitializePanelCornerRadiusDefault(8.0f);
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
-	this->BackColor = D2D1_COLOR_F{ 1,1,1,0.12f };
-	this->BorderColor = D2D1_COLOR_F{ 1,1,1,0.12f };
+	this->BackColor = cui::theme::palette::Surface;
+	this->BorderColor = cui::theme::palette::Border;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 	this->BorderThickness = 1.0f;
 }
 
@@ -389,17 +390,17 @@ Button* ToolBar::AddIconButton(std::shared_ptr<BitmapSource> image, int width, s
 ComboBox* ToolBar::AddToolComboBox(std::wstring text, int width)
 {
 	auto combo = std::make_unique<ComboBox>(text, 0, 0, width, ItemHeight);
-	combo->BackColor = D2D1_COLOR_F{ 1,1,1,0.10f };
-	combo->BorderColor = D2D1_COLOR_F{ 1,1,1,0.18f };
-	combo->ForeColor = Colors::WhiteSmoke;
-	combo->ButtonBackColor = D2D1_COLOR_F{ 1,1,1,0.12f };
-	combo->HeaderHoverBackColor = D2D1_COLOR_F{ 1,1,1,0.10f };
-	combo->AccentColor = D2D1_COLOR_F{ 0.28f,0.63f,0.98f,0.92f };
-	combo->SelectedItemBackColor = D2D1_COLOR_F{ 0.28f,0.63f,0.98f,0.18f };
-	combo->UnderMouseBackColor = D2D1_COLOR_F{ 1,1,1,0.10f };
-	combo->UnderMouseForeColor = Colors::White;
-	combo->ScrollBackColor = D2D1_COLOR_F{ 1,1,1,0.16f };
-	combo->ScrollForeColor = D2D1_COLOR_F{ 1,1,1,0.45f };
+	combo->BackColor = cui::theme::palette::Surface;
+	combo->BorderColor = cui::theme::palette::Border;
+	combo->ForeColor = cui::theme::palette::TextPrimary;
+	combo->ButtonBackColor = cui::theme::palette::SurfaceMuted;
+	combo->HeaderHoverBackColor = cui::theme::palette::AccentSoft;
+	combo->AccentColor = cui::theme::palette::Accent;
+	combo->SelectedItemBackColor = cui::theme::palette::AccentSelected;
+	combo->UnderMouseBackColor = cui::theme::palette::AccentSoft;
+	combo->UnderMouseForeColor = cui::theme::palette::TextPrimary;
+	combo->ScrollBackColor = cui::theme::palette::ScrollTrack;
+	combo->ScrollForeColor = cui::theme::palette::ScrollThumb;
 	combo->CornerRadius = 6.0f;
 	combo->DropCornerRadius = 8.0f;
 	combo->DropGap = 5.0f;
@@ -410,8 +411,8 @@ ComboBox* ToolBar::AddToolComboBox(std::wstring text, int width)
 CheckBox* ToolBar::AddToolCheckBox(std::wstring text, int width)
 {
 	auto checkBox = std::make_unique<CheckBox>(text, 0, 0);
-	checkBox->ForeColor = Colors::WhiteSmoke;
-	checkBox->UnderMouseColor = Colors::SkyBlue;
+	checkBox->ForeColor = cui::theme::palette::TextPrimary;
+	checkBox->UnderMouseColor = cui::theme::palette::AccentSoft;
 	if (width > 0)
 	{
 		checkBox->Width = width;

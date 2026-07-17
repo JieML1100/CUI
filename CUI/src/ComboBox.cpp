@@ -244,57 +244,57 @@ void ComboBox::EnsureBindingPropertiesRegistered()
 			[](ComboBox& target) { return target.AccentColor; },
 			[](ComboBox& target, const D2D1_COLOR_F& value) { target.AccentColor = value; },
 			ComboBoxPropertySubscriber(L"AccentColor"),
-			ComboBoxColorOptions(D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 1.0f }, 40));
+			ComboBoxColorOptions(cui::theme::palette::Accent, 40));
 		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"HeaderHoverBackColor",
 			[](ComboBox& target) { return target.HeaderHoverBackColor; },
 			[](ComboBox& target, const D2D1_COLOR_F& value) { target.HeaderHoverBackColor = value; },
 			ComboBoxPropertySubscriber(L"HeaderHoverBackColor"),
-			ComboBoxColorOptions(D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.06f }, 50));
+			ComboBoxColorOptions(cui::theme::palette::AccentSoft, 50));
 		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"DropBackColor",
 			[](ComboBox& target) { return target.DropBackColor; },
 			[](ComboBox& target, const D2D1_COLOR_F& value) { target.DropBackColor = value; },
 			ComboBoxPropertySubscriber(L"DropBackColor"),
-			ComboBoxColorOptions(D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.98f }, 60));
+			ComboBoxColorOptions(cui::theme::palette::Surface, 60));
 		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"DropBorderColor",
 			[](ComboBox& target) { return target.DropBorderColor; },
 			[](ComboBox& target, const D2D1_COLOR_F& value) { target.DropBorderColor = value; },
 			ComboBoxPropertySubscriber(L"DropBorderColor"),
-			ComboBoxColorOptions(D2D1_COLOR_F{ 0.74f, 0.77f, 0.84f, 0.95f }, 70));
+			ComboBoxColorOptions(cui::theme::palette::Border, 70));
 		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"SelectedItemBackColor",
 			[](ComboBox& target) { return target.SelectedItemBackColor; },
 			[](ComboBox& target, const D2D1_COLOR_F& value) { target.SelectedItemBackColor = value; },
 			ComboBoxPropertySubscriber(L"SelectedItemBackColor"),
-			ComboBoxColorOptions(D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.14f }, 80));
+			ComboBoxColorOptions(cui::theme::palette::AccentSelected, 80));
 		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"UnderMouseBackColor",
 			[](ComboBox& target) { return target.UnderMouseBackColor; },
 			[](ComboBox& target, const D2D1_COLOR_F& value) { target.UnderMouseBackColor = value; },
 			ComboBoxPropertySubscriber(L"UnderMouseBackColor"),
-			ComboBoxColorOptions(D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.09f }, 90));
+			ComboBoxColorOptions(cui::theme::palette::AccentSoft, 90));
 		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"SelectedItemForeColor",
 			[](ComboBox& target) { return target.SelectedItemForeColor; },
 			[](ComboBox& target, const D2D1_COLOR_F& value) { target.SelectedItemForeColor = value; },
 			ComboBoxPropertySubscriber(L"SelectedItemForeColor"),
-			ComboBoxColorOptions(Colors::Black, 100));
+			ComboBoxColorOptions(cui::theme::palette::TextPrimary, 100));
 		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"UnderMouseForeColor",
 			[](ComboBox& target) { return target.UnderMouseForeColor; },
 			[](ComboBox& target, const D2D1_COLOR_F& value) { target.UnderMouseForeColor = value; },
 			ComboBoxPropertySubscriber(L"UnderMouseForeColor"),
-			ComboBoxColorOptions(Colors::Black, 110));
+			ComboBoxColorOptions(cui::theme::palette::TextPrimary, 110));
 		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"ScrollBackColor",
 			[](ComboBox& target) { return target.ScrollBackColor; },
 			[](ComboBox& target, const D2D1_COLOR_F& value) { target.ScrollBackColor = value; },
 			ComboBoxPropertySubscriber(L"ScrollBackColor"),
-			ComboBoxColorOptions(Colors::LightGray, 120));
+			ComboBoxColorOptions(cui::theme::palette::ScrollTrack, 120));
 		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"ScrollForeColor",
 			[](ComboBox& target) { return target.ScrollForeColor; },
 			[](ComboBox& target, const D2D1_COLOR_F& value) { target.ScrollForeColor = value; },
 			ComboBoxPropertySubscriber(L"ScrollForeColor"),
-			ComboBoxColorOptions(Colors::DimGrey, 130));
+			ComboBoxColorOptions(cui::theme::palette::ScrollThumb, 130));
 		BindingPropertyRegistry::Register<ComboBox, D2D1_COLOR_F>(L"ButtonBackColor",
 			[](ComboBox& target) { return target.ButtonBackColor; },
 			[](ComboBox& target, const D2D1_COLOR_F& value) { target.ButtonBackColor = value; },
 			ComboBoxPropertySubscriber(L"ButtonBackColor"),
-			ComboBoxColorOptions(Colors::SkyBlue, 140));
+			ComboBoxColorOptions(cui::theme::palette::SurfaceMuted, 140));
 		return true;
 	}();
 	(void)registered;
@@ -808,7 +808,9 @@ ComboBox::ComboBox(std::wstring text, int x, int y, int width, int height)
 	this->Text = text;
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
-	this->BackColor = D2D1_COLOR_F{ 1.0f , 1.0f , 1.0f , 0.98f };
+	this->BackColor = cui::theme::palette::Surface;
+	this->BorderColor = cui::theme::palette::BorderStrong;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 	this->Cursor = CursorKind::Hand;
 }
 

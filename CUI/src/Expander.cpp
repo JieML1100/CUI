@@ -210,13 +210,13 @@ void Expander::EnsureBindingPropertiesRegistered()
 			[](Expander& target, const D2D1_COLOR_F& value) { target.name = value; }, \
 			ExpanderPropertySubscriber(propertyName), ExpanderColorOptions(defaultValue, order))
 
-		CUI_REGISTER_EXPANDER_COLOR(SurfaceColor, L"SurfaceColor", (D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.90f }), 30);
-		CUI_REGISTER_EXPANDER_COLOR(HeaderBackColor, L"HeaderBackColor", (D2D1_COLOR_F{ 0.94f, 0.96f, 0.99f, 0.96f }), 40);
-		CUI_REGISTER_EXPANDER_COLOR(HeaderHoverBackColor, L"HeaderHoverBackColor", (D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.10f }), 50);
-		CUI_REGISTER_EXPANDER_COLOR(ContentBackColor, L"ContentBackColor", (D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f }), 60);
-		CUI_REGISTER_EXPANDER_COLOR(AccentColor, L"AccentColor", (D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.95f }), 70);
-		CUI_REGISTER_EXPANDER_COLOR(MutedTextColor, L"MutedTextColor", Colors::DimGrey, 80);
-		CUI_REGISTER_EXPANDER_COLOR(DisabledOverlayColor, L"DisabledOverlayColor", (D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f }), 90);
+		CUI_REGISTER_EXPANDER_COLOR(SurfaceColor, L"SurfaceColor", cui::theme::palette::Surface, 30);
+		CUI_REGISTER_EXPANDER_COLOR(HeaderBackColor, L"HeaderBackColor", cui::theme::palette::SurfaceMuted, 40);
+		CUI_REGISTER_EXPANDER_COLOR(HeaderHoverBackColor, L"HeaderHoverBackColor", cui::theme::palette::AccentSoft, 50);
+		CUI_REGISTER_EXPANDER_COLOR(ContentBackColor, L"ContentBackColor", cui::theme::palette::SurfaceSubtle, 60);
+		CUI_REGISTER_EXPANDER_COLOR(AccentColor, L"AccentColor", cui::theme::palette::Accent, 70);
+		CUI_REGISTER_EXPANDER_COLOR(MutedTextColor, L"MutedTextColor", cui::theme::palette::TextMuted, 80);
+		CUI_REGISTER_EXPANDER_COLOR(DisabledOverlayColor, L"DisabledOverlayColor", cui::theme::palette::DisabledOverlay, 90);
 
 #undef CUI_REGISTER_EXPANDER_COLOR
 		return true;
@@ -229,11 +229,11 @@ Expander::Expander()
 {
 	InitializePanelCornerRadiusDefault(7.0f);
 	InitializePanelDisabledOverlayColorDefault(
-		D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f });
+		cui::theme::palette::DisabledOverlay);
 	this->Text = L"Expander";
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BorderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.58f };
-	this->ForeColor = Colors::Black;
+	this->BorderColor = cui::theme::palette::Border;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 	this->Cursor = CursorKind::Arrow;
 	this->OnTextChanged += [this](Control* sender, std::wstring oldText, std::wstring newText)
 		{

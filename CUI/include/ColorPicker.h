@@ -59,13 +59,13 @@ public:
 	int PopupWidth = 450;
 	int PopupHeight = 430;
 
-	D2D1_COLOR_F PanelBackColor = Colors::WhiteSmoke;
-	D2D1_COLOR_F PanelHoverColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.08f };
-	D2D1_COLOR_F ButtonBackColor = D2D1_COLOR_F{ 0.92f, 0.94f, 0.98f, 0.95f };
-	D2D1_COLOR_F AccentColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.95f };
-	D2D1_COLOR_F FocusBorderColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.80f };
-	D2D1_COLOR_F MutedTextColor = Colors::DimGrey;
-	D2D1_COLOR_F DisabledOverlayColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f };
+	D2D1_COLOR_F PanelBackColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F PanelHoverColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F ButtonBackColor = cui::theme::palette::SurfaceMuted;
+	D2D1_COLOR_F AccentColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F FocusBorderColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F MutedTextColor = cui::theme::palette::TextMuted;
+	D2D1_COLOR_F DisabledOverlayColor = cui::theme::palette::DisabledOverlay;
 
 	PROPERTY(D2D1_COLOR_F, SelectedColor);
 	GET(D2D1_COLOR_F, SelectedColor);

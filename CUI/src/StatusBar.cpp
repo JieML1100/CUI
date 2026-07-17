@@ -148,13 +148,13 @@ void StatusBar::EnsureBindingPropertiesRegistered()
 			StatusBarColorOptions(defaultValue, order))
 
 		CUI_REGISTER_STATUS_COLOR(SeparatorColor,
-			(D2D1_COLOR_F{ 1, 1, 1, 0.12f }), 40);
+			cui::theme::palette::Border, 40);
 		CUI_REGISTER_STATUS_COLOR(TopLineColor,
-			(D2D1_COLOR_F{ 1, 1, 1, 0.12f }), 50);
+			cui::theme::palette::Border, 50);
 		CUI_REGISTER_STATUS_COLOR(PartBackColor,
-			(D2D1_COLOR_F{ 1, 1, 1, 0.06f }), 60);
+			cui::theme::palette::Surface, 60);
 		CUI_REGISTER_STATUS_COLOR(PartBorderColor,
-			(D2D1_COLOR_F{ 1, 1, 1, 0.10f }), 70);
+			cui::theme::palette::Border, 70);
 
 #undef CUI_REGISTER_STATUS_COLOR
 
@@ -204,10 +204,10 @@ StatusBar::StatusBar(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 
-	this->BackColor = D2D1_COLOR_F{ 1, 1, 1, 0.08f };
-	this->BorderColor = D2D1_COLOR_F{ 1, 1, 1, 0.12f };
+	this->BackColor = cui::theme::palette::SurfaceSubtle;
+	this->BorderColor = cui::theme::palette::Border;
 	this->BorderThickness = 1.0f;
-	this->ForeColor = Colors::WhiteSmoke;
+	this->ForeColor = cui::theme::palette::TextSecondary;
 }
 
 #define CUI_STATUS_BAR_PROPERTY_IMPL(type, name, field, propertyName) \

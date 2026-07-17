@@ -42,11 +42,11 @@ public:
 
 	float Border = 1.0f;
 	int ItemHeight = 28;
-	D2D1_COLOR_F PopupBackColor = D2D1_COLOR_F{ 0.10f, 0.12f, 0.16f, 0.97f };
-	D2D1_COLOR_F PopupBorderColor = D2D1_COLOR_F{ 0.48f, 0.58f, 0.72f, 0.56f };
-	D2D1_COLOR_F PopupHoverColor = D2D1_COLOR_F{ 0.20f, 0.50f, 0.95f, 0.28f };
-	D2D1_COLOR_F PopupTextColor = Colors::WhiteSmoke;
-	D2D1_COLOR_F PopupSeparatorColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.14f };
+	D2D1_COLOR_F PopupBackColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F PopupBorderColor = cui::theme::palette::Border;
+	D2D1_COLOR_F PopupHoverColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F PopupTextColor = cui::theme::palette::TextPrimary;
+	D2D1_COLOR_F PopupSeparatorColor = cui::theme::palette::Border;
 	float PopupCornerRadius = 8.0f;
 	float ItemCornerRadius = 6.0f;
 	float ItemHorizontalInset = 6.0f;

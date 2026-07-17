@@ -11,6 +11,7 @@
 #include "DesignerCore/Commands/ControlPlacementCommand.h"
 #include "DesignerCore/Commands/ControlPropertyCommand.h"
 #include "DesignerCore/Commands/ControlSubtreeCommand.h"
+#include "DesignerCore/Commands/EventHandlerCommand.h"
 #include "DesignerCore/HitTestService.h"
 #include "DesignerCore/LayoutBridge.h"
 #include "DesignerCore/PropertyGridBinder.h"
@@ -6170,59 +6171,231 @@ bool DesignerCanvas::BuildEventHandlerIndex(
 		document, index, outError);
 }
 
-bool DesignerCanvas::RenameEventHandler(
+DesignerDocumentTransactionResult DesignerCanvas::UpdateEventHandler(
+	const std::shared_ptr<DesignerControl>& control,
+	const std::wstring& eventName,
+	const std::wstring& handlerName,
+	std::wstring* outError)
+{
+	if (outError) outError->clear();
+	auto fail = [&](std::wstring error)
+	{
+		if (outError) *outError = error;
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			std::move(error), false);
+	};
+
+	const auto normalizedHandler = TrimWs(handlerName);
+	std::wstring validationError;
+	if (!DesignerEventCatalog::ValidateHandlerName(
+		normalizedHandler, &validationError))
+		return fail(std::move(validationError));
+
+	std::optional<DesignerEventDescriptor> descriptor;
+	if (control)
+	{
+		const auto found = std::find(
+			_designerControls.begin(), _designerControls.end(), control);
+		if (found == _designerControls.end() || control->StableId <= 0)
+			return fail(L"事件目标控件不属于当前设计文档。");
+		descriptor = DesignerEventCatalog::FindControlEvent(
+			control->Type, eventName, control->CustomEvents);
+	}
+	else
+	{
+		descriptor = DesignerEventCatalog::FindFormEvent(eventName);
+	}
+	if (!descriptor)
+		return fail(L"目标不支持事件 " + eventName + L"。");
+
+	DesignerModel::DesignDocumentEventIndex index;
+	if (!BuildEventHandlerIndex(index, &validationError))
+		return fail(validationError.empty()
+			? L"无法建立事件处理函数索引。" : std::move(validationError));
+	if (!normalizedHandler.empty())
+	{
+		if (const auto* existing = index.FindHandler(normalizedHandler);
+			existing && existing->Signature != descriptor->Signature)
+		{
+			return fail(L"处理函数 “" + normalizedHandler
+				+ L"” 已被不同参数签名的事件使用。请换一个函数名。");
+		}
+	}
+
+	const auto& canonicalEventName = descriptor->Name;
+	const auto& handlers = control
+		? control->EventHandlers : _designedFormEventHandlers;
+	DesignerEventHandlerValueSnapshot before;
+	if (const auto found = handlers.find(canonicalEventName);
+		found != handlers.end())
+	{
+		before.Exists = true;
+		before.StoredHandler = found->second;
+	}
+	DesignerEventHandlerValueSnapshot after;
+	after.Exists = !normalizedHandler.empty();
+	after.StoredHandler = normalizedHandler;
+	if (before.EquivalentTo(after))
+		return DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+
+	DesignerEventHandlerDelta delta;
+	delta.IsForm = !control;
+	delta.StableId = control ? control->StableId : 0;
+	delta.ControlType = control ? control->Type : UIClass::UI_Base;
+	delta.SubjectName = control ? control->Name : _designedFormName;
+	delta.EventName = canonicalEventName;
+	delta.Before = std::move(before);
+	delta.After = std::move(after);
+	const auto selectionNames = CaptureSelectionNames();
+	const auto primarySelectionName = _selectedControl
+		? _selectedControl->Name : std::wstring{};
+	auto result = ExecuteCommand(std::make_unique<EventHandlerCommand>(
+		this,
+		std::vector<DesignerEventHandlerDelta>{ std::move(delta) },
+		selectionNames,
+		primarySelectionName,
+		L"UpdateProperty:" + canonicalEventName));
+	if (!result && outError) *outError = result.Error;
+	return result;
+}
+
+DesignerDocumentTransactionResult DesignerCanvas::RenameEventHandler(
 	const std::wstring& oldName,
 	const std::wstring& newName,
 	size_t* outRenamedReferenceCount,
-	std::wstring* outError)
+	std::wstring* outError,
+	const DesignerEventHandlerCodeMigration* codeMigration)
 {
 	if (outRenamedReferenceCount) *outRenamedReferenceCount = 0;
-	DesignerModel::DesignDocument document;
-	if (!BuildDesignDocument(document, outError)) return false;
-	size_t renamed = 0;
-	if (!DesignerModel::DesignDocumentEventIndex::RenameHandler(
-		document, oldName, newName, &renamed, outError)) return false;
-	if (renamed == 0)
-	{
-		if (outError) outError->clear();
-		return true;
-	}
-
-	std::unordered_map<int, const DesignerModel::DesignNode*> nodesById;
-	nodesById.reserve(document.Nodes.size());
-	for (const auto& node : document.Nodes) nodesById.emplace(node.Id, &node);
-	for (const auto& control : _designerControls)
-	{
-		if (!control) continue;
-		const auto found = nodesById.find(control->StableId);
-		if (found == nodesById.end())
-		{
-			if (outError) *outError = L"重命名事件时无法按稳定 ID 找到控件："
-				+ control->Name;
-			return false;
-		}
-		std::map<std::wstring, std::wstring> nextHandlers;
-		const auto& events = found->second->Events;
-		if (events.is_object())
-		{
-			for (const auto& [eventName, value] : events.ObjectItems())
-			{
-				if (value.is_string())
-				{
-					auto handler = FromUtf8(value.get<std::string>());
-					if (!handler.empty())
-						nextHandlers.emplace(FromUtf8(eventName), std::move(handler));
-				}
-				else if (value.is_boolean() && value.get<bool>())
-					nextHandlers.emplace(FromUtf8(eventName), L"1");
-			}
-		}
-		control->EventHandlers = std::move(nextHandlers);
-	}
-	_designedFormEventHandlers = std::move(document.Form.EventHandlers);
-	if (outRenamedReferenceCount) *outRenamedReferenceCount = renamed;
 	if (outError) outError->clear();
-	return true;
+	auto fail = [&](std::wstring error)
+	{
+		if (outError) *outError = error;
+		return DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Rejected,
+			std::move(error), false);
+	};
+	const auto from = TrimWs(oldName);
+	const auto to = TrimWs(newName);
+	std::wstring validationError;
+	if (from.empty() || to.empty())
+		return fail(L"重命名的原函数名和新函数名都不能为空。");
+	if (!DesignerEventCatalog::ValidateHandlerName(from, &validationError)
+		|| !DesignerEventCatalog::ValidateHandlerName(to, &validationError))
+		return fail(std::move(validationError));
+
+	DesignerModel::DesignDocumentEventIndex index;
+	if (!BuildEventHandlerIndex(index, &validationError))
+		return fail(validationError.empty()
+			? L"无法建立事件处理函数索引。" : std::move(validationError));
+	const auto* source = index.FindHandler(from);
+	if (!source)
+		return fail(L"文档中不存在事件处理函数 “" + from + L"”。");
+	if (codeMigration)
+	{
+		if (!codeMigration->Enabled()
+			|| codeMigration->OldName != from
+			|| codeMigration->NewName != to
+			|| codeMigration->ParameterList != source->ParameterList)
+		{
+			return fail(L"用户函数体迁移参数与当前事件处理函数不一致。");
+		}
+		const auto& association = GetCodeBehind();
+		if (association.ClassName.empty()
+			|| association.ClassName != codeMigration->ClassName)
+		{
+			return fail(L"用户函数体迁移目标与当前 x:Class 不一致。");
+		}
+		const auto headerPath = codeMigration->OutputBasePath + L".h";
+		const auto sourcePath = codeMigration->OutputBasePath + L".cpp";
+		if (_wcsicmp(codeMigration->UserCodePath.c_str(), headerPath.c_str()) != 0
+			&& _wcsicmp(codeMigration->UserCodePath.c_str(), sourcePath.c_str()) != 0)
+		{
+			return fail(L"用户函数体迁移文件必须是当前 code-behind 的 .h 或 .cpp。");
+		}
+	}
+	if (from == to)
+		return DesignerDocumentTransactionResult::Success(
+			DesignerDocumentTransactionState::Unchanged);
+	if (const auto* target = index.FindHandler(to);
+		target && target->Signature != source->Signature)
+	{
+		return fail(L"不能重命名为 “" + to
+			+ L"”：该名称已用于不同参数签名。");
+	}
+	if (codeMigration && index.FindHandler(to))
+		return fail(L"合并到已有处理函数时不能迁移用户函数体。");
+
+	std::vector<DesignerEventHandlerDelta> deltas;
+	deltas.reserve(source->ReferenceIndices.size());
+	for (const auto referenceIndex : source->ReferenceIndices)
+	{
+		if (referenceIndex >= index.References().size())
+			return fail(L"事件处理函数索引包含越界引用。");
+		const auto& reference = index.References()[referenceIndex];
+		DesignerEventHandlerDelta delta;
+		delta.IsForm = reference.OwnerKind
+			== DesignerModel::DesignEventOwnerKind::Form;
+		delta.StableId = delta.IsForm ? 0 : reference.OwnerDesignId;
+		delta.ControlType = reference.SubjectType;
+		delta.SubjectName = reference.SubjectName;
+		delta.EventName = reference.EventName;
+		const std::map<std::wstring, std::wstring>* handlers = nullptr;
+		if (delta.IsForm)
+		{
+			handlers = &_designedFormEventHandlers;
+		}
+		else
+		{
+			const auto found = std::find_if(
+				_designerControls.begin(), _designerControls.end(),
+				[&](const std::shared_ptr<DesignerControl>& control)
+				{
+					return control
+						&& control->StableId == reference.OwnerDesignId;
+				});
+			if (found == _designerControls.end() || !*found)
+				return fail(L"重命名事件时无法按稳定 ID 找到控件："
+					+ reference.SubjectName);
+			handlers = &(*found)->EventHandlers;
+		}
+		const auto foundHandler = handlers->find(reference.EventName);
+		if (foundHandler == handlers->end())
+		{
+			return fail(L"事件处理函数索引与当前映射不一致："
+				+ reference.SubjectName + L"." + reference.EventName);
+		}
+		delta.Before.Exists = true;
+		delta.Before.StoredHandler = foundHandler->second;
+		delta.After.Exists = true;
+		delta.After.StoredHandler = to;
+		deltas.push_back(std::move(delta));
+	}
+	if (deltas.size() != source->ReferenceIndices.size())
+		return fail(L"事件处理函数索引在重命名期间发生不一致。");
+
+	const auto selectionNames = CaptureSelectionNames();
+	const auto primarySelectionName = _selectedControl
+		? _selectedControl->Name : std::wstring{};
+	auto result = ExecuteCommand(std::make_unique<EventHandlerCommand>(
+		this,
+		std::move(deltas),
+		selectionNames,
+		primarySelectionName,
+		L"RenameEventHandler",
+		codeMigration ? *codeMigration : DesignerEventHandlerCodeMigration{}));
+	if (result)
+	{
+		if (outRenamedReferenceCount)
+			*outRenamedReferenceCount = source->ReferenceIndices.size();
+	}
+	else if (outError)
+	{
+		*outError = result.Error;
+	}
+	return result;
 }
 
 DesignerDocumentTransactionResult DesignerCanvas::LoadDesignFile(

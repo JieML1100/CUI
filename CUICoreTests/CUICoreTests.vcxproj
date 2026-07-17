@@ -22,8 +22,8 @@
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{9E6D3E1B-FE11-4DA6-85BD-6C4EC5BAA5A2}</ProjectGuid>
-	<RootNamespace>CUICoreTests</RootNamespace>
-	<PreferredToolArchitecture>x64</PreferredToolArchitecture>
+    <RootNamespace>CUICoreTests</RootNamespace>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -87,7 +87,7 @@
       <PreprocessorDefinitions>$(WebView2TestPreprocessorDefinition)WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-	  <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <AdditionalIncludeDirectories>$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -106,7 +106,7 @@
       <PreprocessorDefinitions>$(WebView2TestPreprocessorDefinition)WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-	  <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <AdditionalIncludeDirectories>$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -129,7 +129,7 @@
       <PreprocessorDefinitions>$(WebView2TestPreprocessorDefinition)_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-	  <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <AdditionalIncludeDirectories>$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -148,7 +148,7 @@
       <PreprocessorDefinitions>$(WebView2TestPreprocessorDefinition)NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-	  <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <AdditionalIncludeDirectories>$(ProjectDir)..\CUI\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)..\Utils\include;$(ProjectDir)..\XmlLite\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -165,47 +165,47 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-	<ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerCore\CommandManager.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerDataContextSchemaUtils.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerFormPropertyCatalog.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerCustomEditorCatalog.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerControlPropertyCatalog.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerPropertyRowCatalog.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerPropertyEdit.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerPropertyCatalog.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerStyleSheetUtils.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerEventCatalog.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerModel\AtomicFile.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocument.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentControlPool.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentGraph.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentSerializer.cpp" />
-	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignRecoveryStore.cpp" />
-	<ClCompile Include="main.cpp">
-	  <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
-	</ClCompile>
+    <ClCompile Include="..\CuiDesigner\DesignerBindingUtils.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerCore\CommandManager.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerDataContextSchemaUtils.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerFormPropertyCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerCustomEditorCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerControlPropertyCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerPropertyRowCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerPropertyEdit.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerPropertyCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerStyleSheetUtils.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerEventCatalog.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\AtomicFile.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocument.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentControlPool.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentGraph.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentSerializer.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignRecoveryStore.cpp" />
+    <ClCompile Include="main.cpp">
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="TestRunner.h" />
   </ItemGroup>
   <ItemGroup>
-	<ProjectReference Include="..\CuiCodeGenCore\CuiCodeGenCore.vcxproj">
-	  <Project>{4A2749A7-CA13-4EEA-9E62-BF23B221E934}</Project>
-	</ProjectReference>
-	<ProjectReference Include="..\CuiRuntime\CuiRuntime.vcxproj">
-	  <Project>{A2F2FB5D-7B17-4C41-9C9A-7C0EB68D6A32}</Project>
-	</ProjectReference>
+    <ProjectReference Include="..\CuiCodeGenCore\CuiCodeGenCore.vcxproj">
+      <Project>{4A2749A7-CA13-4EEA-9E62-BF23B221E934}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\CuiRuntime\CuiRuntime.vcxproj">
+      <Project>{A2F2FB5D-7B17-4C41-9C9A-7C0EB68D6A32}</Project>
+    </ProjectReference>
     <ProjectReference Include="..\CUI\CUI.vcxproj">
       <Project>{48316892-3A38-48F2-8C34-4D676304F769}</Project>
     </ProjectReference>
-	<ProjectReference Include="..\Utils\Utils.vcxproj">
-	  <Project>{1DDAEE3C-CAA8-489F-BFBE-84D30C9B4774}</Project>
-	</ProjectReference>
-	<ProjectReference Include="..\XmlLite\XmlLite.vcxproj">
-	  <Project>{B184B7EA-EA4D-4E1E-ABDD-A9A6A91CBBCF}</Project>
-	</ProjectReference>
+    <ProjectReference Include="..\Utils\Utils.vcxproj">
+      <Project>{1DDAEE3C-CAA8-489F-BFBE-84D30C9B4774}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\XmlLite\XmlLite.vcxproj">
+      <Project>{B184B7EA-EA4D-4E1E-ABDD-A9A6A91CBBCF}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

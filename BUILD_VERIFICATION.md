@@ -40,7 +40,9 @@ msbuild CuiCodeGen\CuiCodeGen.vcxproj /m /p:Configuration=Debug /p:Platform=x64 
 
 `--help` / `--version` 返回 0，生成失败返回 1，未知参数或缺值返回 2；成功生成必须原子得到
 `.h/.cpp/.g.h/.g.cpp/.handlers.g.inc` 五个文件。核心测试会让服务分别读取 XAML 和 v5 XML，验证
-`x:Class` 规范化、相对 `d:CodeBehind`、非法扩展名拒绝，并把 XAML 结果与静态样例五文件逐一比较。
+`x:Class` 规范化、相对 `d:CodeBehind`、失败时输出模型不变、非法扩展名拒绝，并把 XAML 结果与静态样例
+五文件逐一比较。交互重复导出须默认复用文档已有的限定 `x:Class`，显式修改类名时给出迁移警告，且完整关联
+预检必须早于代码写入。门禁还需覆盖无子控件但含 Form 事件的代码生成。
 
 `CuiCodeGenCore.lib` 是代码生成实现的唯一链接单元。四配置均须构建该静态库，且下面的清单搜索只能返回
 `CuiCodeGenCore.vcxproj` 中两行；Designer、CLI 与测试工程只能出现项目引用：
@@ -49,11 +51,14 @@ msbuild CuiCodeGen\CuiCodeGen.vcxproj /m /p:Configuration=Debug /p:Platform=x64 
 rg '<ClCompile Include=".*(CodeGenerator|DesignCodeGenerationService)\.cpp"' -g '*.vcxproj'
 ```
 
-`CuiStaticGeneratedSample` 导入 `build/CuiCodeGen.targets`。把设计文件时间戳更新后首次 Build 必须出现
+`CuiStaticGeneratedSample` 导入 `build/CuiCodeGen.targets`。把设计文件或 targets 文件任一时间戳更新后首次
+Build 必须出现
 `CUI code generation`；若解析后的规范输出未变化，五个代码文件时间戳必须保持且样例 C++ 不应重新编译，
 只有 `$(IntDir)\CuiCodeGen` 下的 stamp 更新。不再修改输入立即再次 Build 时必须跳过生成器，stamp 与代码文件
-时间戳均保持不变。删除任一代码文件后准备目标应使 stamp 失效。还须从干净状态构建一次完整解决方案，确认
-项目依赖先生成对应配置/平台的 `CuiCodeGen.exe`。
+时间戳均保持不变。手工漂移 `.g.h/.g.cpp/.handlers.g.inc` 任一个文件后普通 Build 必须启动生成器并恢复规范
+字节；只改变用户 `.h/.cpp` 时也必须重新预检但保留用户扩展。删除任一代码文件后准备目标应使 stamp 失效。还须从干净状态构建一次完整解决方案，确认
+项目依赖先生成对应配置/平台的 `CuiCodeGen.exe`。改变生成输出语义时必须提升契约版本，验证新的 versioned
+stamp 路径使旧输出失效；单纯重新链接相同契约的 exe 不得让后续 Build 重复运行生成器。
 
 ## Designer 无窗口交互冒烟
 
@@ -68,6 +73,25 @@ if ($p.ExitCode -ne 0) { throw "Designer self-test failed: $($p.ExitCode)" }
 ```
 
 该入口必须返回进程码 0；无效属性输入不得创建撤销记录，成功 Reset 必须清除先前错误状态。
+
+## CUITest 动态 XAML 门禁
+
+`CUITest` 的八个页面由 `CUITest/DemoWindow.cui.xaml` 动态构造；项目构建必须把该文件复制到
+`CUITest.exe` 同目录。除正常启动检查外，每种配置都应执行：
+
+```powershell
+$validate = Start-Process .\CUITest\x64\Debug\CUITest.exe `
+    -ArgumentList '--validate-xaml' -Wait -PassThru -WindowStyle Hidden
+if ($validate.ExitCode -ne 0) { throw "CUITest XAML validation failed: $($validate.ExitCode)" }
+
+$smoke = Start-Process .\CUITest\x64\Debug\CUITest.exe `
+    -ArgumentList '--smoke-xaml' -Wait -PassThru -WindowStyle Hidden
+if ($smoke.ExitCode -ne 0) { throw "CUITest XAML smoke failed: $($smoke.ExitCode)" }
+```
+
+`--validate-xaml` 覆盖解析、事件契约和自定义控件工厂；`--smoke-xaml` 还会创建真实 `Form`、
+材质化全部内置/自定义控件、解析命名事件并初始化菜单、表格、图表、Web 和媒体数据，然后安全销毁。
+失败会在 XAML 旁生成 `DemoWindow.cui.xaml.error.txt`，成功必须删除旧诊断并返回 0。
 
 ## WebView2 可选构建与公共 ABI
 
@@ -214,27 +238,51 @@ target->DataBindings.Add(
   Undo/Redo、XML/XAML 往返和新名称的 `std::bind_front` 代码生成；冲突失败不得修改文档。动态注册表门禁应覆盖
   Event 成员的 callable 约束、同签名错误成员拒绝、普通/自定义/继承事件包装器、类型相同但参数名不同的复用、
   同名异签名拒绝、未知函数诊断，以及共享 resolver 在 Reload 前追加路由后生效。事件参数类型文本必须从真实
-  Event 成员自动生成，目录只能提供参数名，避免成员类型与手写声明漂移。
+  Event 成员自动生成，目录只能提供参数名，避免成员类型与手写声明漂移。`RegisterBatch` 门禁必须覆盖中途
+  重复与异常后的完整 route 恢复、既有 resolver 继续可用，以及成功批次一次可见。
 - EventCatalog 必须为每个可设计控件类型提供唯一默认事件和稳定分类，Form 以仅触发一次的 `OnShown` 为默认事件。
   事件行、画布控件及 Form 客户区双击必须汇合到同一激活入口，复用已有函数或经同一可撤销属性事务创建默认
   函数名，并发布处理函数激活事件；Designer
-  只在已有显式代码导出目标时自动重生成/追加用户桩并打开 `.cpp`；显式导出须事务性持久化 `x:Class` 与
+  只在已有显式代码导出目标时自动重生成/追加用户桩并打开实际定义所在的 `.h` 或 `.cpp`；显式导出须事务性持久化 `x:Class` 与
   `d:CodeBehind`，保存并重开后继续解析相对目标，未导出或无关联文档不得猜测代码路径。
   门禁应覆盖已有函数零修改激活、控件/Form 画布双击、默认名单次 Undo 记录、分类展示、`OnShown` 单次触发、
   回调函数名和签名冲突不旁路；删除事件后生成订阅必须消失，但用户声明与函数体继续保留。
 - 重复代码导出判断用户处理函数定义时必须使用 token/函数体边界而非子串；门禁至少覆盖 `Handle` 与
   `HandleSave` 前缀碰撞，以及注释、普通字符串和 raw string 内的 `Class::Handler` 伪文本，四种情况都不得
-  阻止缺失用户桩生成，真实定义仍只能保留一份。以不同 `x:Class` 指向已有用户文件必须在写入前拒绝，并证明
+  阻止缺失用户桩生成，真实定义仍只能保留一份。已有同名定义的空白/参数名调整必须正常复用，参数类型漂移
+  必须在写入前拒绝并保持五文件逐字节不变。以不同 `x:Class` 指向已有用户文件必须在写入前拒绝，并证明
   `.g.*`、声明 include 与用户 `.h/.cpp` 全部逐字节不变。
+- 事件定义检查必须联合用户 `.h/.cpp`：除类外定义外，还要识别精确用户类体内的 `void Handler(...) {}`。
+  头/源合计只允许一个兼容定义；类内定义存在时 `.handlers.g.inc` 必须省略冲突声明，导航、候选发现和显式
+  函数体迁移必须指向实际文件。兼容定义还必须是非静态、非 cv/ref `void` 成员；错误返回类型、`static`、
+  `const`/ref、删除定义与类外不匹配的 `noexcept` 应成为签名错误且保持五文件不变。门禁须覆盖头内实现、
+  头源重复拒绝、缺失源仍为已实现、错误成员形状过滤以及头内迁移 Undo/Redo。
+- 用户头类身份必须与事件/构造函数复用同一 `CppUserCodeIndex`：只接受精确 `x:Class` namespace 中唯一、直接
+  继承预期 `Generated` 基类的活跃类体。门禁应允许导出宏、`final`、访问说明、多基类和全限定基类，并证明
+  `#if 0` 假类、相邻 namespace 同名类、错误基类及重复类体会在五文件写入前阻塞且保持全部文件逐字节不变。
+- 默认构造函数检查必须联合用户头和源文件：类体内联、委托构造、`= default` 与源文件外部定义使用同一
+  token/预处理/namespace 索引，合计只允许一个可用默认构造函数。门禁须证明 `= delete` 与跨文件重复定义
+  阻塞且不改文件；用户源缺失而头中已有构造定义时应只重建 marker/include 与事件桩，不得生成重复构造体。
+- 同一用户代码索引必须屏蔽预处理指令和续行宏中的作用域符号，并按确定的字面量 `#if 0` / `#if 1`、嵌套
+  条件、`#elif` 与 `#else` 排除失活函数体；注释、普通/原始字符串中的伪指令不得改变分支状态。门禁还须证明
+  生成诊断、兼容候选、源码跳转和显式函数体重命名使用同一位置保持索引，重命名只修改活跃定义的名称 token。
 - 代码导出的目标集合必须使用预写入 + flush + 有备份的批次提交。门禁应锁定中间的
   `.handlers.g.inc` 使 rename 真实失败，并证明此前已提交的既有文件逐字节恢复、此前不存在的目标重新消失、
   尚未提交的用户文件不变，且目录中不残留 `.~cui-batch-*` 临时或备份文件。
+  外部 code-behind 提交失败还必须恢复生成前文件集：既有文件逐字节还原、原先不存在的目标删除，结果对象
+  保持空；原子删除后遇到后续锁定目标时也必须恢复被删除文件且不残留 `.~cui-*` 工件。
+- 五文件计划必须保存读取前的存在性与精确内容，并以原子批次前置条件防止 stale plan 覆盖外部编辑。门禁须
+  覆盖已有用户源被修改、原本缺失目标被外部新建、后置目标冲突时前置目标零写入，以及关联回调期间外部修改
+  导致条件回滚拒绝；最后一种情况必须保留外部内容并明确报告恢复不完整。显式事件函数体迁移也必须按读取
+  内容条件写入，Undo/Redo 回滚仅可覆盖仍等于本次迁移/生成结果的文件。
 - `CuiStaticGeneratedSample` 必须作为四配置解决方案项目编译并运行，覆盖限定 `x:Class`、外部自定义控件、生成/用户类分离、
-  强类型 `GetXxx()` 命名控件访问器、`ControlIds` 稳定身份和 `std::bind_front` 事件连接。编译门禁必须至少覆盖
+  强类型 `GetXxx()` 命名控件访问器、`ControlIds` 稳定身份、动态 `ClassReferences<RuntimeDocument>` 的
+  `GetXxx()`/`ReferenceXxx()`、`ClassEventSink` 自动注册控件/Form/自定义事件、失败批次回滚、跨 Reload
+  重新解析/重新连接和 `std::bind_front` 事件连接。编译门禁必须至少覆盖
   鼠标、`std::vector<std::wstring>` 文件拖放、属性变化和无 sender 的校验变化签名。核心测试必须将其五个代码文件
   与同输入的新生成结果规范化比较，并覆盖名称规范化后的全局去重以及同叶类不同 namespace 的身份冲突整批拒绝。
   样例项目必须通过 `CuiDesign` + `build/CuiCodeGen.targets` 在编译前增量生成，而非依赖人工更新；输入未变化时
-  不得启动生成器，语义输出未变化时不得改写生成文件或用户文件。
+  不得启动生成器，用户 `.h/.cpp` 变化时必须重新检查生成计划，语义输出未变化时不得改写生成文件或用户文件。
 - `RuntimeDocumentLoader::Reload*` 对通用标量/元数据属性、Binding/DataContext Schema、文档样式、控件事件和
   窗体显示属性变化应返回 `InPlace`，保持稳定 ID 对应的指针、DataContext 和宿主所有权。门禁必须覆盖属性、
   Binding、样式与事件的复合失败回滚。拓扑/`Extra` 变化应在根仍由文档持有时返回 `Recomposed`，并覆盖普通
@@ -250,6 +298,11 @@ target->DataBindings.Add(
   事件必须失败并恢复精确根槽位，不得静默接受。
 - `FindControlByDesignId` / `FindControlByName` 应由文档索引提供常数时间查询；`RuntimeControlRef<T>` 应在
   `Replaced` 后解析新实例、`Recomposed` 后保持复用实例，并在对应节点删除后返回空，不得持有控件所有权。
+  文档销毁后引用必须安全过期；移动构造应迁移已有引用，Loader/Reload 的目标移动赋值应保留目标引用并让
+  赋值源引用失效，任何路径都不得留下可解引用的悬空 `RuntimeDocument*`。
+- 生成的 `ClassReferences<TDocument>` 必须保存 `document.Reference()` 返回的弱文档视图，不得保存裸
+  `TDocument*`；应提供布尔有效性和 `TryDocument()`，并验证视图的 `GetXxx()` / `ReferenceXxx()` 跨 Reload、
+  文档移动后继续解析，文档销毁后统一返回空。改变该输出时必须同步提升服务、CLI 与 targets 的生成契约版本。
 - `RuntimeDocumentFileWatcher` 必须由宿主线程轮询且不创建后台线程；门禁应覆盖文件 ID 可识别的原子替换、
   防抖窗口、稳定失败签名抑制、下一有效签名自动恢复、格式感知重载，以及失败期间旧实例/事件连接保持。
 - `RuntimeDocumentSession` 必须把文件、Form、共享事件注册表和 watcher 组合为不可移动的显式 UI 线程生命周期；
@@ -566,6 +619,8 @@ panel->DeleteControl(obsoleteLabel);
 3. 在窗口外松开鼠标，再移回窗口，确认控件不会停留在正在拖拽/框选状态。
 4. 对滚动条、分割条、文本选择等已有拖拽控件做一次快速回归，确认窗口外松开也能结束操作。
 5. 在自绘标题栏最小化、最大化、关闭按钮及其周边移动鼠标，确认不会出现窗口缩放光标，也不能从该区域触发边缘/角落缩放。
+6. 在 Button 的 `OnMouseClick` 中同步打开 `OpenFileDialog`，选择文件后确认只提交一次 Click 且对话框不会再次弹出；
+   单独向仍有键盘焦点的 Button/CheckBox 发送无配对 `WM_LBUTTONUP`，不得触发 Click 或翻转 Checked。
 
 ## 滚轮穿透回归
 
@@ -591,6 +646,12 @@ panel->DeleteControl(obsoleteLabel);
 
 ## 已知后续清理项
 
+- `CUITest` 已从约 2400 行手工控件构造迁移为外部 `DemoWindow.cui.xaml` + 轻量 C++ 宿主，保留八个页面、
+  自定义控件、命名事件和运行时数据；`NavigationView`、`SideBar`、`BreadcrumbBar`、`CalendarView`、
+  `DateRangePicker`、`ColorPicker`、`PagedGridView` 已补入统一生产材质化工厂。`Debug/Release × x64/x86`
+  四套 `CUITest --validate-xaml` / `--smoke-xaml` 均返回 0，四套 `CUICoreTests` 均为 159/159，四套
+  `Designer.exe --self-test` 均返回 0。两个 Release 核心增量链接遇到陈旧 LTCG `LNK1103` 后均以完整
+  Rebuild 通过；Release x86 Designer 的依赖 PDB 竞争以 `/m:1` 串行 Rebuild 后通过。
 - 当前 `Debug|x64`、`Release|x64`、`Debug|x86`、`Release|x86` 四套默认启用模式的 `CUICoreTests` 均为 147/147，四套对应 `Designer.exe --self-test` 也全部通过；四套 `CuiRuntime.lib` / `CuiRuntimeSample.exe` 和 `CuiStaticGeneratedSample.exe` 均完成独立链接并运行成功。Designer 门禁已覆盖原生 PropertyGrid 的 Bool/Color/Slider/Anchor/EditableEnum 映射、事件默认名/自定义名/签名冲突校验、事件双击零修改复用与可撤销默认名激活、文档级处理函数索引与同签名安全重命名，以及动态 XML 的稳定索引/生产控件工厂/样式/Binding/事件/失败回滚/所有权转移。XAML 门禁覆盖嵌套树、浮点/Auto 尺寸、Binding、强类型资源、Class/`x:Key` 样式、命名事件、规范 XAML/XML 往返、处理函数重命名与事务回滚，以及非法/大小写重复 `x:Name` 的事务性拒绝；运行时门禁还覆盖由真实 Event 成员生成的类型目录、同签名错误成员拒绝、普通/自定义/继承事件包装器、参数名不同但函数类型相同的处理函数复用、同名异类型/未知函数诊断与共享 resolver 后注册，`Load*IntoForm` 原子首次挂载、缺失 Form 函数/根宿主拒绝回滚、同文档重试、附加输出直接 Load 防护和未来 Form 事件缺失 resolver 回滚，按稳定 `DesignId` 保留实例的 XML/XAML 通用属性与元数据增删、Binding 路径/模式和 DataContext Schema 同步、样式资源、事件与窗体显示属性原位重载，属性/Binding/样式/事件复合失败回滚，Grid/Tab/Split 嵌套结构参数变化、子级重排与增删时的最大未变子树重组，Binding/事件附件重建和失败后的拥有权回滚，活动 Binding 冲突及无可复用子树时的完整替换边界，Form 适配宿主后的原位/重组/替换、显示属性与事件解析器自动延续、借用字体和旧连接失败回滚、精确根槽位与候选提交失败回滚、手动转移路径的安全拒绝，稳定 ID/名称常数时间索引与跨 InPlace/Recomposed/Replaced 的类型化引用，以及原子保存识别、防抖、失败签名抑制和下一有效签名恢复的无线程文件监视；`RuntimeDocumentSession` 门禁覆盖首次缺失处理函数完整回滚、补注册后同实例重试、延迟启动 watcher、跨线程 Poll 防护，以及热重载未知函数失败后晚注册 + RequestRetry 原位恢复。设计器生命周期门禁覆盖 `.cui.xaml` 的原子 Save As/Open、完整模型保真、干净保存点、错误文件拒绝及当前画布保持。其余门禁覆盖命名空间限定 `x:Class` 的 `.`/`::` 规范化、按命名空间生成 C++ 类、导出文件名与类名解耦、生成与用户文件分离后的重复导出保真及错误命名空间防覆盖；静态样例进一步以真实编译验证 `GetXxx()` 强类型命名控件访问、`ControlIds` 稳定身份、名称规范化后的全局去重，以及鼠标/文件拖放/属性变化/校验变化四类 `std::bind_front` 事件连线。门禁也覆盖 Anchor 四边组合解析与数值代码生成、滑块单命令提交、属性值重载后的分类折叠/滚动位置保持、ToolBox 七分类/筛选，以及鼠标 Move/Resize、Reparent、同父重排和 Root/普通/Tab/Split 父级的 placement/tree 差量，还覆盖 SplitterDistance 单属性差量的提交、捕获丢失取消、活动事务隔离、精确 Undo/Redo、实例保持、历史冲突重试、手势不合并和 `<32 KiB` 预算。本轮四套默认输出均完成构建与门禁；`CUIEnableWebView2=false` 的 x64 Release 保留既有 138/138 与 Designer 自检记录。
 - 本轮事件体验增量在同一四配置矩阵上重新完成 `Rebuild`：事件目录对每个 `UIClass` 恰有一个默认项并提供稳定分类，属性栏显示默认项说明；画布控件双击与 Form 客户区双击分别创建控件默认处理函数和 `MainForm_OnShown`，都复用可撤销属性事务与处理函数激活回调。`Form::OnShown` 在 `Visible=true`、`Show()`、`ShowDialog()` 混合调用下每实例只触发一次。解绑后 `.g.cpp` 中对应 `std::bind_front` 订阅消失，而 `.handlers.g.inc` 与用户函数体继续保留。
 - 本轮属性/事件工作流增量再次在 `Debug|x64`、`Release|x64`、`Debug|x86`、`Release|x86` 完成完整 `Rebuild`；四套 `CUICoreTests` 均为 147/147，四套 `Designer.exe --self-test`、`CuiRuntimeSample.exe` 与 `CuiStaticGeneratedSample.exe` 均通过。Designer 门禁新增验证属性/事件视图互斥、动态表头、两套筛选/分类折叠/滚动状态独立保持，以及编辑后回到属性页仍可继续原生 Bool 写入。源码导航门禁覆盖 VS Code、Visual Studio 和自定义编辑器的安全参数计划、带空格及尾反斜杠路径引用，并验证定义定位跳过注释、普通/原始字符串、声明和其他类的同名函数；测试不实际启动外部编辑器。
@@ -631,7 +692,141 @@ panel->DeleteControl(obsoleteLabel);
 - 本轮 `Debug/Release × x64/x86` 四套解决方案均完成完整重建，并在最终修正后复验：四套 `CUICoreTests` 均为
   153/153，四套 `Designer.exe --self-test`、`CuiRuntimeSample.exe`、`CuiStaticGeneratedSample.exe` 与
   `CuiCodeGen.exe --version` 全部返回 0。
+- 代码持久化继续收口：`DesignCodeGenerationService::BuildCodeBehindAssociation` 统一规范类名并在生成前验证
+  无扩展名输出和可移植相对路径，失败不留下半成品关联；Designer 重复导出保留已有命名空间 `x:Class`，仅更新
+  `d:CodeBehind`。用户事件定义按 token 化参数类型匹配，空白/参数名调整可复用，同名类型漂移在五文件写入前
+  拒绝且保持原内容。本轮再次通过 `Debug/Release × x64/x86` 四套解决方案构建、153/153、Designer 自测、
+  动态/静态样例与 CodeGen 版本门禁；两个 Release 的陈旧 LTCG `LNK1103` 均以完整 Rebuild 恢复。
+- Designer 代码导出新增 `DesignCodeExportPlan` 与类名确认对话框：显示当前类、输出基路径和最终相对关联，
+  区分新建/保持/迁移/改变输出四种状态；非法类名禁用提交，显式迁移提示旧用户代码不会被改写。空窗体不再
+  被旧的“无控件”检查阻止，Form-only `OnShown` 已覆盖生成基类、`std::bind_front` 和用户桩三层门禁。
+  最终源码已通过 `Debug/Release × x64/x86` 四套解决方案构建、153/153、Designer 自测、动态/静态样例和
+  CodeGen 版本门禁；两个 Release 使用完整 Rebuild。
+- 交互导出通过 `DesignCodeGenerationService::GenerateAndCommit` 协调五文件与 code-behind 文档事务；关联失败或
+  异常会使用 `AtomicFileBatchSnapshot` 和原子写入/删除批次恢复生成前状态。工具栏新增“重新生成”，只在当前
+  文档可解析到显式目标时启用并复用同一生成服务。核心门禁新增快照存在性/内容恢复、删除后续失败回滚、无临时
+  工件和关联失败注入。最终源码已通过 `Debug/Release × x64/x86` 四套解决方案构建、154/154、Designer 自测、
+  动态/静态样例与 CodeGen 版本门禁；两个 Release 使用完整 Rebuild。
 - Release 配置若沿用历史 LTCG/IPDB/IOBJ 中间产物，增量链接可能报告 `LNK1103`；对对应配置执行一次 `/t:Rebuild` 可重新生成一致的调试信息，本轮 x64/x86 Release 均已通过完整重建。
+- Form/控件事件赋值、默认事件激活和文档级处理函数重命名已从完整文档快照收口为 `EventHandlerCommand`。
+  命令按稳定 ID 验证全部 expected 映射，在副本上构建目标事件表后以 swap 提交；门禁覆盖 legacy 值恢复、
+  Form/多控件 Undo/Redo、实例保持、签名冲突、过期起点拒绝、不消费历史及 `<32 KiB` 预算。最终源码再次通过
+  `Debug/Release × x64/x86` 四套解决方案构建、154/154、Designer 自测、动态/静态样例与 CodeGen 版本门禁；
+  两个 Release 使用完整 Rebuild。
+- 代码生成新增无写入 `BuildFilePlan` 与 `InspectFreshness`：五文件缺失、`.g.*` 手工漂移、新事件缺用户桩和
+  用户类身份阻塞分别归类，合法用户扩展保持 Current；检查不创建输出目录且不改变时间戳。Designer 工具栏以
+  `*` / `!` /“生成受阻”呈现状态，文档提交防抖复核，Undo 回到已生成状态立即恢复，窗口激活复查外部漂移。
+  核心门禁增至 155 项，Designer 自测覆盖真实按钮文字、可访问说明、事件 Undo/Redo、漂移、缺失和阻塞恢复。
+  最终源码已在 `Debug/Release × x64/x86` 四套配置完成构建（两个 Release 使用完整 Rebuild）；四套
+  `CUICoreTests` 均为 155/155，四套 `Designer.exe --self-test`、`CuiRuntimeSample.exe`、
+  `CuiStaticGeneratedSample.exe` 与 `CuiCodeGen.exe --version` 全部返回 0。
+- 生成头新增零所有权 `ClassReferences<TDocument>`：每个正稳定 ID 控件同时得到当前实例 `GetXxx()` 和跨
+  Reload 重新解析的 `ReferenceXxx()`；模板不直接包含 CuiRuntime，静态消费者不会被迫增加运行时依赖。
+  `CuiStaticGeneratedSample` 真实链接 CuiRuntime、加载 XAML，并验证强类型引用跨 InPlace Reload 后继续指向
+  当前控件。生成契约提升为 2，versioned stamp 在语义升级时使旧缓存失效；Debug x64 连续 Build 还验证即使
+  exe 再链接，第二次生成次数仍为 0，stamp 与 `.g.h` 时间戳不变。最终源码在 `Debug/Release × x64/x86`
+  四套配置通过构建、155/155、Designer 自测、动态/混合样例与 `CuiCodeGen 2` 门禁；两个 Release 使用完整
+  Rebuild。
+- 生成头进一步新增 `ClassEventSink`：事件目录公开真实声明类型，生成器据此输出精确成员指针和
+  `std::bind_front`，同时覆盖 Form、通用/专用控件及固定签名的自定义控件事件；静态生成窗体复用同一纯虚
+  接口，动态 XAML 控制器可直接实现该接口并调用 `RegisterDynamicEventHandlers`。运行时 `RegisterBatch`
+  保持共享解析状态并在重复项、显式失败或异常时原子恢复整批路由；混合样例验证注册失败回滚、首次加载和
+  InPlace Reload 后的控件/Form/自定义事件连续性。生成契约提升为 3。最终源码在 `Debug/Release × x64/x86`
+  四套配置通过构建，四套 `CUICoreTests` 均为 156/156，Designer 自测、动态/混合样例与 `CuiCodeGen 3`
+  门禁全部返回 0；两个 Release 使用完整 Rebuild。
+- 动态事件注册新增移动 `RegistrationLease` 与单调路由令牌：`RegisterScopedBatch` 仍在同一共享 State 上原子
+  提交，但租约析构只移除本批令牌范围，保留同名处理函数已有的其他路由；失败、异常和嵌套批次均不泄漏状态。
+  生成的不可复制/移动 `ClassEventSink` 自动把租约与本次注册的弱生命周期令牌共同持有，切换注册表、显式解绑
+  或析构时先使已加载 RuntimeDocument 持有的旧 EventConnection 变为 no-op，再撤销未来 resolver 路由，避免
+  `std::bind_front(this)` 悬空。混合样例真实覆盖重复注册保留旧租约、跨注册表替换、旧控件/Form/自定义事件
+  不再回调、显式解绑和析构回收。生成契约提升为 4；Debug x64 连续 Build 仍为生成 0 次且 v4 stamp/`.g.h`
+  时间戳不变。最终源码在 `Debug/Release × x64/x86` 四套配置通过构建，四套 `CUICoreTests` 均为 156/156，
+  Designer 自测、动态/混合样例与 `CuiCodeGen 4` 门禁全部返回 0；两个 Release 使用完整 Rebuild。
+- Designer 事件页新增逐处理函数代码诊断：未关联、源文件缺失、待生成、已实现、签名错误与重复定义均在
+  属性行直接显示；缺失定义仍走原子生成，已实现项直接打开源码，签名错误和重复定义会绕过必然失败的生成并
+  定位现有定义。生成校验、无写入诊断与源码定位统一复用 `CppUserCodeIndex`，其词法扫描会忽略注释、普通/
+  raw string，并按精确类名和参数类型选择重载；重复的相同签名定义会在写入前拒绝。最终源码在
+  `Debug/Release × x64/x86` 四套配置通过构建，四套 `CUICoreTests` 均为 156/156；四套 Designer 自测、
+  动态/混合样例、静态生成样例与 `CuiCodeGen 4` 门禁全部返回 0，两个 Release 使用完整 Rebuild。
+- 事件 F4/下拉候选从仅复用文档引用扩展为同时发现用户 `.cpp` 中尚未绑定的兼容成员。发现仍复用
+  `CppUserCodeIndex` 的精确参数类型规则，只提供当前 `x:Class` 下唯一兼容定义；构造函数、`operator`、错误
+  签名、重复兼容定义及注释/string/raw string 伪代码均被排除，已被文档中另一事件签名占用的名称也不会显示。
+  核心门禁覆盖源码发现和过滤，Designer 自测验证候选呈现及跨签名冲突隐藏。最终源码在
+  `Debug/Release × x64/x86` 四套配置通过构建，四套 `CUICoreTests` 均为 156/156；四套 Designer 自测、
+  动态/混合样例、静态生成样例与 `CuiCodeGen 4` 门禁全部返回 0，两个 Release 使用完整 Rebuild。
+- `CppUserCodeIndex` 新增 namespace 作用域解析：全限定成员、逐层嵌套 `namespace` 和 C++17
+  `namespace Acme::Views` 内的短类名成员均规范到同一 `x:Class`；相邻/匿名 namespace 及函数体伪定义不会
+  命中。用户默认构造函数身份检查也复用该索引并允许初始化列表，避免事件诊断已识别而重新生成拒绝的分裂
+  语义。核心门禁验证 namespace 内已有事件不会追加重复桩、候选发现和构造函数新鲜度保持 Current；Designer
+  自测验证同一写法可精确导航且错误命名空间返回 0。最终源码在 `Debug/Release × x64/x86` 四套配置通过构建，
+  四套 `CUICoreTests` 均为 156/156；四套 Designer 自测、动态/混合样例、静态生成样例与 `CuiCodeGen 4`
+  门禁全部返回 0，两个 Release 使用完整 Rebuild。
+- 文档级处理函数重命名新增显式“同时迁移用户函数体并重新生成代码”选项：仅在旧名称有唯一兼容定义、目标
+  没有同签名定义且不是合并操作时启用。`CppUserCodeIndex` 只替换成员定义名称 token，函数体、注释和字面量
+  保持原字节；`EventHandlerCommand` 历史只保存路径/类/签名/名称元数据，保持 `<32 KiB`，每次
+  Execute/Undo/Redo 都重新预检源码、捕获五文件快照、迁移并重新生成。Designer 自测真实验证函数体保留、
+  生成代码同步、Undo/Redo 双向迁移、外部源码冲突不消费历史且修复后可重试，以及用户头身份导致的生成失败
+  会同时恢复事件映射和五文件。最终源码在 `Debug/Release × x64/x86` 四套配置通过构建，四套
+  `CUICoreTests` 均为 156/156；四套 Designer 自测、动态/混合样例、静态生成样例与 `CuiCodeGen 4` 门禁
+  全部返回 0，两个 Release 使用完整 Rebuild。
+- `CppUserCodeIndex` 新增位置保持的预处理掩码：所有指令及续行宏都不再向 C++ 作用域扫描贡献 token，确定的
+  `#if 0` / `#if 1`、嵌套条件、`#elif` 和 `#else` 失活分支会被排除；未知宏条件保守保留所有可能分支，注释
+  与 raw string 中的伪指令不会改变状态。核心门禁验证候选发现、生成诊断和显式函数体迁移只命中活跃定义，
+  Designer 自测验证宏花括号和失活同名函数不会改变源码跳转行号。最终源码在 `Debug/Release × x64/x86`
+  四套配置通过构建，四套 `CUICoreTests` 均为 156/156；四套 Designer 自测、动态宿主、静态生成样例与
+  `CuiCodeGen 4` 门禁全部返回 0，两个 Release 使用完整 Rebuild。
+- `RuntimeControlRef<T>` 不再保存可悬空的裸 `RuntimeDocument*`，改为按稳定 ID 通过弱文档生命周期状态解析。
+  目标文档的 Load/Reload/移动赋值仍保留既有引用，移动构造会迁移引用状态；文档销毁或赋值源失效后
+  `Get()` 安全返回空，且引用不拥有文档或控件。核心门禁新增覆盖销毁、移动构造、目标/源移动赋值语义；静态
+  生成样例通过 `ClassReferences::ReferenceXxx()` 验证已附加 Form 的动态文档移动后仍解析当前强类型实例。
+  最终源码在 `Debug/Release × x64/x86` 四套配置通过构建，四套 `CUICoreTests` 均为 157/157；四套 Designer
+  自测、动态宿主、静态生成样例与 `CuiCodeGen 4` 门禁全部返回 0，两个 Release 使用完整 Rebuild。并行清理
+  共享 x64 Release 输出时曾出现一次 `WebView2Loader.dll` 删除竞争警告，随后独立构建 CodeGen 链无警告通过。
+- 新增零所有权 `RuntimeDocumentRef`，并让生成的 `ClassReferences<TDocument>` 保存
+  `document.Reference()` 的弱视图，不再保存裸 `TDocument*`。生成视图提供布尔有效性与 `TryDocument()`；
+  `GetXxx()` / `ReferenceXxx()` 跨 Reload 和文档移动继续解析，文档销毁后统一返回空。核心门禁验证文档视图
+  的移动、销毁及目标/源赋值语义；真实静态样例进一步验证已附加 Form 的视图跨移动和临时文档销毁边界。
+  生成服务、CLI 与 `CuiCodeGen.targets` 契约同步提升为 5，样例五文件已由新 CLI 重新生成。最终源码在
+  `Debug/Release × x64/x86` 四套配置通过构建，四套 `CUICoreTests` 均为 157/157；四套 Designer 自测、动态
+  宿主、静态生成样例与 `CuiCodeGen 5` 门禁全部返回 0，两个 Release 使用完整 Rebuild。
+- 用户头类身份验证移除 `CodeGenerator.cpp` 私有简化 tokenizer，统一复用 `CppUserCodeIndex` 的预处理掩码和
+  namespace 作用域。现在只接受精确 `x:Class` namespace 中唯一、直接继承预期 `Generated` 基类的活跃类体；
+  导出宏、`final`、访问说明、多基类及全限定 Generated 基类保持合法。核心门禁验证 `#if 0` 假类与相邻
+  namespace 同名真类不能伪造身份，阻塞的 Generate 保持五文件逐字节不变，恢复正确头后新鲜度回到 Current。
+  最终源码在 `Debug/Release × x64/x86` 四套配置通过构建，四套 `CUICoreTests` 均为 157/157；四套 Designer
+  自测、动态宿主、静态生成样例与 `CuiCodeGen 5` 门禁全部返回 0，两个 Release 使用完整 Rebuild。
+- 默认构造函数持久化检查从“用户源必须拥有定义”收口为用户头/源联合索引：类体内联、委托构造与
+  `= default` 可直接复用，`= delete`、跨文件重复默认构造及已有源却缺少定义会在首次写入前阻塞。若用户源
+  丢失但头中已有构造定义，重建只补 marker/include 和当前事件桩，不会生成重复构造体；委托初始化列表中的
+  类名调用也不会被误计为第二个定义。最终源码在 `Debug/Release × x64/x86` 四套配置通过构建，四套
+  `CUICoreTests` 均为 157/157；四套 Designer 自测、动态宿主、静态生成样例与 `CuiCodeGen 5` 门禁全部返回 0，
+  两个 Release 使用完整 Rebuild。
+- 五文件代码计划新增乐观并发前置条件：在读取用户代码前捕获全部目标的存在性与字节，原子批次在预写入、
+  逐目标提交和备份后复核，stale plan 遇到 IDE 外部修改或新建文件会整批零写入拒绝。`GenerateAndCommit`
+  改为单次计划/提交，关联失败仅在目标仍等于本次生成结果时条件回滚；回调期间的外部修改会保留并报告恢复
+  冲突。事件函数体迁移及 Undo/Redo 也改用条件写入和条件快照恢复。核心门禁覆盖已有文件修改、缺失目标新建、
+  后置冲突零写入、条件恢复和回调期间外部编辑保留。最终源码在 `Debug/Release × x64/x86` 四套配置通过构建，
+  四套 `CUICoreTests` 均为 157/157；四套 Designer 自测、动态宿主、静态生成样例与 `CuiCodeGen 5` 门禁全部
+  返回 0，两个 Release 使用完整 Rebuild。
+- 事件实现索引从仅识别类外定义扩展为联合用户 `.h/.cpp`：精确用户类体内的 `void Handler(...) {}` 可直接
+  复用，`.handlers.g.inc` 自动省略冲突声明；头源重复、错误签名仍在五文件写入前拒绝。逐事件诊断、同签名
+  候选、源码导航和显式函数体迁移都会记录并使用实际定义文件，Designer 自测覆盖头内函数体重命名及
+  Undo/Redo。索引进一步要求处理函数是可覆盖生成虚函数的非静态、非 cv/ref `void` 成员；错误返回类型、
+  `static`、`const`/ref、删除定义及类外 `noexcept` 会成为可导航的签名错误，并从候选和函数体迁移中排除。
+  静态样例把 `HandleWindowShown` 作为用户头内 `noexcept` 实现，四配置真实编译并运行，证明生成声明省略和
+  `std::bind_front` 覆盖链成立。MSBuild 增量输入同步加入用户 `.h/.cpp`，契约提升为 6；连续第二次 Build 不启动生成器。最终源码
+  在 `Debug/Release × x64/x86` 四套解决方案完成 Rebuild，四套 `CUICoreTests` 均为 157/157；四套 Designer
+  自测、动态宿主、静态生成样例与 `CuiCodeGen 6` 门禁全部返回 0，两个 Release 使用完整 Rebuild。
+- `CuiCodeGen.targets` 的增量输入从设计文件、规则和用户 `.h/.cpp` 扩展为全部五个代码文件。真实门禁向静态
+  样例 `.g.cpp` 写入漂移探针后执行普通 Build，生成器恢复规范字节并刷新 v6 stamp；紧接着的无变化 Build
+  保持 stamp、哈希和时间戳。用户 `.h` 探针则触发预检但原样保留，三个生成文件均未改写。四配置首次 Build
+  都因 targets 变化执行生成，连续第二次 Build 全部跳过；四套 157/157 核心测试、Designer 自测、动态/静态
+  样例与 `CuiCodeGen 6` 门禁再次全部返回 0。
+- `.handlers.g.inc` 现在为当前绑定且由用户源文件实现的处理函数生成 `override`，事件解绑时把保留声明降级为
+  普通成员，重新绑定后恢复覆盖契约；类体内联实现仍省略生成声明。旧声明解析同时接受普通和 `override`
+  形式，保证跨代解绑不会丢失用户函数声明。生成契约提升为 7。最终源码在 `Debug/Release × x64/x86` 四套
+  解决方案完成 Rebuild，四套 `CUICoreTests` 均为 157/157；四套 Designer 自测、动态宿主、静态生成样例与
+  `CuiCodeGen 7` 门禁全部返回 0。紧接着四套普通 Build 均未启动生成器（`codegen=0`）。
 - `TextBox` / `PasswordBox` 的输入、选择、拖放和光标绘制转换 warning 已收敛；`ComboBox` 的索引、滚动和下拉绘制转换 warning 已收敛；`GridView` 的行列索引、组合框单元格、编辑路径和主要绘制转换 warning 已收敛；`TabControl` 的页签绘制和拖放循环转换 warning 已收敛；`RichTextBox` 的滚动、绘制和拖放循环转换 warning 已收敛。
 - `CUITest` Demo 和自定义示例控件的常见转换 warning 已收敛。
 - `Button`、`Label`、`LinkLabel`、`CheckBox`、`RadioBox`、`ProgressBar`、`ProgressRing`、`PictureBox`、`GroupBox`、`LoadingRing`、`Slider`、`RoundTextBox`、`Switch`、`ToolBar`、`SplitContainer`、`StatusBar` 等小控件绘制转换 warning 已收敛。

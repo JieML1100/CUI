@@ -4909,7 +4909,7 @@ Form::Form(std::wstring text, POINT _location, SIZE _size)
 		GetModuleHandleW(0),
 		0);
 	SyncFormWindowStyles(this->Handle, this->_showInTaskBar, this->MinBox, this->MaxBox, this->CloseBox, this->AllowResize);
-	SetWindowLongPtrW(this->Handle, GWLP_USERDATA, (LONG_PTR)this ^ 0xFFFFFFFFFFFFFFFF);
+	SetWindowLongPtrW(this->Handle, GWLP_USERDATA, (LONG_PTR)this);
 
 	DragAcceptFiles(this->Handle, TRUE);
 	EnsureDropTargetRegistered();
@@ -4934,6 +4934,13 @@ void Form::CleanupResources()
 	if (_resourcesCleaned)
 		return;
 	_resourcesCleaned = true;
+	// 窗口可能比 Form 对象活得更久（未显式 DestroyWindow 时窗口会残留）：
+	// 解除 USERDATA 绑定并从注册表注销，残留窗口的后续消息不再进入本对象，避免陈旧指针解引用。
+	if (this->Handle)
+	{
+		SetWindowLongPtrW(this->Handle, GWLP_USERDATA, 0);
+		Application::Forms.erase(this->Handle);
+	}
 	if (_uiaProvider)
 	{
 		_uiaProvider->DetachForm();
@@ -4971,7 +4978,6 @@ void Form::CleanupResources()
 
 	auto isOwnedByRootControls = [&](Control* node) -> bool
 		{
-		SyncFormWindowStyles(this->Handle, this->_showInTaskBar, this->MinBox, this->MaxBox, this->CloseBox, this->AllowResize);
 			if (!node) return false;
 			for (auto c : this->Controls)
 			{
@@ -7108,8 +7114,10 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 	if (NotifyIcon::DispatchWindowMessage(hWnd, message, wParam, lParam))
 		return 0;
 
-	Form* form = (Form*)(GetWindowLongPtrW(hWnd, GWLP_USERDATA) ^ 0xFFFFFFFFFFFFFFFF);
-	if ((ULONG64)form != 0xFFFFFFFFFFFFFFFF && Application::Forms.find(form->Handle) != Application::Forms.end())
+	// USERDATA 可能被第三方改写：仅以消息窗口句柄查注册表并核对指针身份，避免解引用野指针。
+	Form* form = (Form*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+	auto formIt = Application::Forms.find(hWnd);
+	if (form && formIt != Application::Forms.end() && formIt->second == form)
 	{
 		if (message == WM_SETTINGCHANGE || message == WM_THEMECHANGED
 			|| message == WM_SYSCOLORCHANGE)

@@ -11,6 +11,7 @@
 #include "../CUI/include/PropertyGrid.h"
 #include "DesignerTypes.h"
 #include "DesignerEventCatalog.h"
+#include "DesignerModel/DesignCodeGenerationService.h"
 #include "DesignerCore/PropertyGridBinder.h"
 #include "DesignerCore/DesignerDocumentTransaction.h"
 #include <memory>
@@ -36,6 +37,7 @@ class PropertyGrid : public Panel
 {
 private:
 	std::vector<DesignerPropertyRow> _propertyRows;
+	DesignerModel::DesignEventHandlerCodeInspection _eventCodeInspection;
 	std::vector<EventConnection> _diagnosticConnections;
 	PropertyGridView* _nativeGrid = nullptr;
 	enum class NativeGridEntryKind : unsigned char
@@ -175,6 +177,14 @@ public:
 	
 	void SetDesignerCanvas(DesignerCanvas* canvas) { _binding.SetCanvas(canvas); }
 	void SetViewMode(DesignerPropertyGridViewMode mode);
+	/** Updates per-handler source diagnostics without changing selection. */
+	void SetEventHandlerCodeInspection(
+		DesignerModel::DesignEventHandlerCodeInspection inspection);
+	const DesignerModel::DesignEventHandlerCodeInspection&
+		GetEventHandlerCodeInspection() const noexcept
+	{
+		return _eventCodeInspection;
+	}
 	DesignerPropertyGridViewMode GetViewMode() const noexcept
 	{
 		return _viewMode;

@@ -43,6 +43,10 @@
 #include "../../CUI/include/StatusBar.h"
 #include "../../CUI/include/Toast.h"
 #include "../../CUI/include/MediaPlayer.h"
+#include "../../CUI/include/NavigationView.h"
+#include "../../CUI/include/CalendarView.h"
+#include "../../CUI/include/ColorPicker.h"
+#include "../../CUI/include/PagedGridView.h"
 #include "../../CUI/include/SplitContainer.h"
 #include "../../CUI/include/Layout/StackPanel.h"
 #include "../../CUI/include/Layout/GridPanel.h"
@@ -361,6 +365,13 @@ DesignerModel::DesignDocumentMaterializer::CreateRuntimeControl(UIClass type)
 	case UIClass::UI_ToastHost: return std::make_unique<ToastHost>(0, 0, 340, 260);
 	case UIClass::UI_WebBrowser: return std::make_unique<WebBrowser>(0, 0, 500, 360);
 	case UIClass::UI_MediaPlayer: return std::make_unique<MediaPlayer>(0, 0, 640, 360);
+	case UIClass::UI_NavigationView: return std::make_unique<NavigationView>(0, 0, 220, 360);
+	case UIClass::UI_SideBar: return std::make_unique<SideBar>(0, 0, 200, 360);
+	case UIClass::UI_BreadcrumbBar: return std::make_unique<BreadcrumbBar>(0, 0, 320, 32);
+	case UIClass::UI_CalendarView: return std::make_unique<CalendarView>(0, 0, 280, 300);
+	case UIClass::UI_DateRangePicker: return std::make_unique<DateRangePicker>(L"", 0, 0, 240, 30);
+	case UIClass::UI_ColorPicker: return std::make_unique<ColorPicker>(0, 0, 180, 30);
+	case UIClass::UI_PagedGridView: return std::make_unique<PagedGridView>(0, 0, 520, 320);
 	default: return nullptr;
 	}
 }

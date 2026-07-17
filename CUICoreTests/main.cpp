@@ -63,13 +63,16 @@
 #include "../CuiDesigner/CodeGenerator.h"
 #include "../CuiDesigner/DesignerEventCatalog.h"
 #include "../CuiDesigner/DesignerModel/AtomicFile.h"
+#include "../CuiDesigner/DesignerModel/CppUserCodeIndex.h"
 #include "../CuiDesigner/DesignerModel/DesignCodeGenerationService.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentControlPool.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentGraph.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentEventIndex.h"
+#include "../CuiDesigner/DesignerModel/DesignDocumentMaterializer.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentSerializer.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentCodeGenInputBuilder.h"
 #include "../CuiDesigner/DesignerModel/RuntimeDocument.h"
+#include "../CuiDesigner/DesignerModel/RuntimeEventHandlerRegistry.h"
 #include "../CuiDesigner/DesignerModel/XamlDocumentParser.h"
 #include "../CuiDesigner/DesignerModel/XamlDocumentSerializer.h"
 #include "../CuiDesigner/DesignerModel/DesignRecoveryStore.h"
@@ -83,6 +86,7 @@
 #include <memory>
 #include <oleacc.h>
 #include <set>
+#include <stdexcept>
 #include <uiautomationclient.h>
 
 static_assert(std::same_as<
@@ -656,6 +660,125 @@ int main()
 			quarantinedPath, &error));
 		CUI_EXPECT_TRUE(DesignerModel::DesignRecoveryStore::DeleteFile(
 			recoveryPath, &error));
+	});
+
+	runner.Add("Atomic file snapshots restore existence and content transactionally", []
+	{
+		namespace fs = std::filesystem;
+		const auto directory = fs::temp_directory_path()
+			/ (L"cui-atomic-snapshot-"
+				+ std::to_wstring(::GetCurrentProcessId())
+				+ L"-" + std::to_wstring(::GetTickCount64()));
+		fs::create_directories(directory);
+		const auto existingPath = directory / L"existing.cpp";
+		const auto missingPath = directory / L"created.cpp";
+		const auto lockedPath = directory / L"locked.cpp";
+		auto readText = [](const fs::path& path)
+		{
+			std::ifstream stream(path, std::ios::binary);
+			return std::string(
+				std::istreambuf_iterator<char>(stream),
+				std::istreambuf_iterator<char>());
+		};
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			existingPath.wstring(), "old-existing", &error));
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			lockedPath.wstring(), "old-locked", &error));
+
+		DesignerModel::AtomicFileBatchSnapshot snapshot;
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFileBatchSnapshot::Capture(
+			{ existingPath.wstring(), missingPath.wstring() },
+			snapshot, &error));
+		CUI_EXPECT_EQ(2ULL, snapshot.Entries().size());
+		CUI_EXPECT_TRUE(snapshot.Entries()[0].Existed);
+		CUI_EXPECT_FALSE(snapshot.Entries()[1].Existed);
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::WriteBatch({
+			{ existingPath.wstring(), "new-existing" },
+			{ missingPath.wstring(), "new-created" },
+		}, &error));
+		CUI_EXPECT_TRUE(snapshot.Restore(&error));
+		CUI_EXPECT_EQ(std::string("old-existing"), readText(existingPath));
+		CUI_EXPECT_FALSE(fs::exists(missingPath));
+
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			existingPath.wstring(), "external-existing-edit", &error));
+		DesignerModel::AtomicFileWriteEntry staleExisting;
+		staleExisting.FilePath = existingPath.wstring();
+		staleExisting.Content = "planned-existing";
+		staleExisting.RequireExpectedState = true;
+		staleExisting.ExpectedExisted = true;
+		staleExisting.ExpectedContent = "old-existing";
+		CUI_EXPECT_FALSE(DesignerModel::AtomicFile::WriteBatch(
+			{ staleExisting }, &error));
+		CUI_EXPECT_TRUE(error.find(L"changed") != std::wstring::npos);
+		CUI_EXPECT_EQ(std::string("external-existing-edit"),
+			readText(existingPath));
+
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			existingPath.wstring(), "old-existing", &error));
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			missingPath.wstring(), "external-created", &error));
+		DesignerModel::AtomicFileWriteEntry validFirst;
+		validFirst.FilePath = existingPath.wstring();
+		validFirst.Content = "planned-existing";
+		validFirst.RequireExpectedState = true;
+		validFirst.ExpectedExisted = true;
+		validFirst.ExpectedContent = "old-existing";
+		DesignerModel::AtomicFileWriteEntry staleCreated;
+		staleCreated.FilePath = missingPath.wstring();
+		staleCreated.Content = "planned-created";
+		staleCreated.RequireExpectedState = true;
+		staleCreated.ExpectedExisted = false;
+		CUI_EXPECT_FALSE(DesignerModel::AtomicFile::WriteBatch(
+			{ validFirst, staleCreated }, &error));
+		CUI_EXPECT_EQ(std::string("old-existing"), readText(existingPath));
+		CUI_EXPECT_EQ(std::string("external-created"), readText(missingPath));
+		fs::remove(missingPath);
+
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::WriteBatch({
+			{ existingPath.wstring(), "transaction-existing" },
+			{ missingPath.wstring(), "transaction-created" },
+		}, &error));
+		DesignerModel::AtomicFileBatchSnapshot transactionState;
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFileBatchSnapshot::Capture(
+			{ existingPath.wstring(), missingPath.wstring() },
+			transactionState, &error));
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			missingPath.wstring(), "external-after-transaction", &error));
+		CUI_EXPECT_FALSE(snapshot.RestoreIfCurrentMatches(
+			transactionState, &error));
+		CUI_EXPECT_EQ(std::string("transaction-existing"),
+			readText(existingPath));
+		CUI_EXPECT_EQ(std::string("external-after-transaction"),
+			readText(missingPath));
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			existingPath.wstring(), "old-existing", &error));
+		fs::remove(missingPath);
+
+		const HANDLE locked = ::CreateFileW(
+			lockedPath.c_str(), GENERIC_READ,
+			FILE_SHARE_READ | FILE_SHARE_WRITE,
+			nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		CUI_EXPECT_TRUE(locked != INVALID_HANDLE_VALUE);
+		if (locked != INVALID_HANDLE_VALUE)
+		{
+			CUI_EXPECT_FALSE(DesignerModel::AtomicFile::WriteBatch({
+				{ existingPath.wstring(), {}, true },
+				{ lockedPath.wstring(), "new-locked" },
+			}, &error));
+			(void)::CloseHandle(locked);
+		}
+		CUI_EXPECT_TRUE(fs::exists(existingPath));
+		CUI_EXPECT_EQ(std::string("old-existing"), readText(existingPath));
+		CUI_EXPECT_EQ(std::string("old-locked"), readText(lockedPath));
+		bool foundArtifact = false;
+		for (const auto& item : fs::directory_iterator(directory))
+			if (item.path().filename().wstring().find(L".~cui-")
+				!= std::wstring::npos)
+				foundArtifact = true;
+		CUI_EXPECT_FALSE(foundArtifact);
+		fs::remove_all(directory);
 	});
 
 	runner.Add("Designer history coalesces safely and enforces a memory budget", []
@@ -6445,6 +6568,39 @@ int main()
 			!= std::string::npos);
 	});
 
+	runner.Add("Mouse clicks require a matching press and resist modal reentrancy", []
+	{
+		Form form(L"Pointer reentrancy", POINT{ 0, 0 }, SIZE{ 240, 120 });
+		auto* button = form.Add<Button>(L"Open", 0, 0, 80, 30);
+		int clicks = 0;
+		bool injectedNestedMouseUp = false;
+		auto clickConnection = button->OnMouseClick.Subscribe(
+			[&](Control*, MouseEventArgs)
+			{
+				++clicks;
+				if (!injectedNestedMouseUp)
+				{
+					injectedNestedMouseUp = true;
+					button->ProcessMessage(WM_LBUTTONUP, 0, 0, 10, 10);
+				}
+			});
+
+		form.SetSelectedControl(button, false);
+		button->ProcessMessage(WM_LBUTTONUP, 0, 0, 10, 10);
+		CUI_EXPECT_EQ(0, clicks);
+		button->ProcessMessage(WM_LBUTTONDOWN, 0, 0, 10, 10);
+		button->ProcessMessage(WM_LBUTTONUP, 0, 0, 10, 10);
+		CUI_EXPECT_EQ(1, clicks);
+
+		auto* checkBox = form.Add<CheckBox>(L"Loop", 0, 40);
+		form.SetSelectedControl(checkBox, false);
+		checkBox->ProcessMessage(WM_LBUTTONUP, 0, 0, 10, 10);
+		CUI_EXPECT_FALSE(checkBox->Checked);
+		checkBox->ProcessMessage(WM_LBUTTONDOWN, 0, 0, 10, 10);
+		checkBox->ProcessMessage(WM_LBUTTONUP, 0, 0, 10, 10);
+		CUI_EXPECT_TRUE(checkBox->Checked);
+	});
+
 	runner.Add("Form exposes custom controls through a lifetime-safe MSAA bridge", []
 	{
 		Form form(L"Accessibility host", POINT{ 120, 120 }, SIZE{ 320, 200 });
@@ -8171,6 +8327,24 @@ int main()
 		CUI_EXPECT_EQ(0ULL, rejected.PendingCount());
 	});
 
+	runner.Add("Dynamic XAML materializes every public advanced built-in control", []
+	{
+		for (const auto type : {
+			UIClass::UI_NavigationView,
+			UIClass::UI_SideBar,
+			UIClass::UI_BreadcrumbBar,
+			UIClass::UI_CalendarView,
+			UIClass::UI_DateRangePicker,
+			UIClass::UI_ColorPicker,
+			UIClass::UI_PagedGridView })
+		{
+			auto control = DesignerModel::DesignDocumentMaterializer::
+				CreateRuntimeControl(type);
+			CUI_EXPECT_TRUE(control != nullptr);
+			if (control) CUI_EXPECT_EQ(type, control->Type());
+		}
+	});
+
 	runner.Add("Designer XML v5 persists code-behind and upgrades older versions", []
 	{
 		DesignerModel::DesignDocument document;
@@ -8359,6 +8533,7 @@ int main()
 			UIClass::UI_Button, L"OnMouseClick");
 		CUI_EXPECT_TRUE(click.has_value());
 		CUI_EXPECT_EQ(std::string("OnMouseClick"), click->EventField);
+		CUI_EXPECT_EQ(std::string("Control"), click->EventOwnerTypeName);
 		CUI_EXPECT_EQ(std::string("Control* sender, MouseEventArgs e"),
 			click->ParameterList);
 		CUI_EXPECT_TRUE(click->MatchesEventMember(&Control::OnMouseClick));
@@ -8377,6 +8552,7 @@ int main()
 		auto formClose = DesignerEventCatalog::FindFormEvent(L"OnClose");
 		CUI_EXPECT_TRUE(formClose.has_value());
 		CUI_EXPECT_EQ(std::string("OnClosing"), formClose->EventField);
+		CUI_EXPECT_EQ(std::string("Form"), formClose->EventOwnerTypeName);
 		CUI_EXPECT_EQ(std::string("Form* sender, bool& cancel"),
 			formClose->ParameterList);
 		CUI_EXPECT_TRUE(formClose->MatchesEventMember(&Form::OnClosing));
@@ -8409,6 +8585,8 @@ int main()
 		auto gridCombo = DesignerEventCatalog::FindControlEvent(
 			UIClass::UI_GridView, L"OnGridViewComboBoxSelectionChanged");
 		CUI_EXPECT_TRUE(gridCombo.has_value());
+		CUI_EXPECT_EQ(std::string("GridView"),
+			gridCombo->EventOwnerTypeName);
 		CUI_EXPECT_EQ(std::string(
 			"GridView* sender, int c, int r, int selectedIndex, std::wstring selectedText"),
 			gridCombo->ParameterList);
@@ -8483,6 +8661,157 @@ int main()
 		CUI_EXPECT_FALSE(DesignerEventCatalog::ValidateHandlerName(L"bad::name", &error));
 		CUI_EXPECT_FALSE(DesignerEventCatalog::ValidateHandlerName(L"class", &error));
 		CUI_EXPECT_FALSE(DesignerEventCatalog::ValidateHandlerName(L"__reserved", &error));
+	});
+
+	runner.Add("Runtime event registration batches rollback atomically", []
+	{
+		DesignerModel::RuntimeEventHandlerRegistry registry;
+		std::wstring error;
+		int existingInvocations = 0;
+		CUI_EXPECT_TRUE(registry.RegisterControl(
+			L"HandleExisting", UIClass::UI_Base, L"OnMouseClick",
+			&Control::OnMouseClick,
+			[&](Control*, MouseEventArgs) { ++existingInvocations; }, &error));
+		auto resolver = registry.ControlResolver();
+
+		CUI_EXPECT_FALSE(registry.RegisterBatch(
+			[](DesignerModel::RuntimeEventHandlerRegistry& routes,
+				std::wstring& batchError)
+			{
+				if (!routes.RegisterControl(
+					L"HandleTemporary", UIClass::UI_Base, L"OnDropFile",
+					&Control::OnDropFile,
+					[](Control*, std::vector<std::wstring>) {}, &batchError))
+					return false;
+				return routes.RegisterControl(
+					L"HandleExisting", UIClass::UI_Base, L"OnMouseClick",
+					&Control::OnMouseClick,
+					[](Control*, MouseEventArgs) {}, &batchError);
+			}, &error));
+		CUI_EXPECT_EQ(1ULL, registry.HandlerCount());
+		CUI_EXPECT_TRUE(error.find(L"已注册") != std::wstring::npos);
+
+		Button button(L"batch", 0, 0);
+		auto click = DesignerEventCatalog::FindControlEvent(
+			UIClass::UI_Button, L"OnMouseClick");
+		CUI_EXPECT_TRUE(click.has_value());
+		if (click)
+		{
+			DesignerModel::RuntimeControlEventRequest request{
+				button, 1, L"batchButton", UIClass::UI_Button, {},
+				*click, L"HandleExisting" };
+			EventConnection connection;
+			CUI_EXPECT_TRUE(resolver(request, connection, error));
+			button.OnMouseClick.Invoke(&button, MouseEventArgs{});
+			CUI_EXPECT_TRUE(connection.Connected());
+			CUI_EXPECT_EQ(1, existingInvocations);
+		}
+
+		CUI_EXPECT_FALSE(registry.RegisterBatch(
+			[](DesignerModel::RuntimeEventHandlerRegistry& routes,
+				std::wstring& batchError) -> bool
+			{
+				(void)routes.RegisterControl(
+					L"HandleThrow", UIClass::UI_Base, L"OnDropText",
+					&Control::OnDropText,
+					[](Control*, std::wstring) {}, &batchError);
+				throw std::runtime_error("injected registration failure");
+			}, &error));
+		CUI_EXPECT_EQ(1ULL, registry.HandlerCount());
+		CUI_EXPECT_TRUE(error.find(L"抛出异常") != std::wstring::npos);
+
+		CUI_EXPECT_TRUE(registry.RegisterBatch(
+			[](DesignerModel::RuntimeEventHandlerRegistry& routes,
+				std::wstring& batchError)
+			{
+				return routes.RegisterControl(
+					L"HandleCommitted", UIClass::UI_Base, L"OnDropText",
+					&Control::OnDropText,
+					[](Control*, std::wstring) {}, &batchError);
+			}, &error));
+		CUI_EXPECT_EQ(2ULL, registry.HandlerCount());
+
+		int leasedInvocations = 0;
+		auto lease = registry.RegisterScopedBatch(
+			[&](DesignerModel::RuntimeEventHandlerRegistry& routes,
+				std::wstring& batchError)
+			{
+				if (!routes.RegisterControl(
+					L"HandleLeased", UIClass::UI_Base, L"OnDropFile",
+					&Control::OnDropFile,
+					[&](Control*, std::vector<std::wstring>)
+					{
+						++leasedInvocations;
+					}, &batchError))
+					return false;
+				return routes.RegisterControl(
+					L"HandleExisting", UIClass::UI_Base,
+					L"OnMouseDoubleClick", &Control::OnMouseDoubleClick,
+					[&](Control*, MouseEventArgs)
+					{
+						++existingInvocations;
+					}, &batchError);
+			}, &error);
+		CUI_EXPECT_TRUE(lease.Active());
+		CUI_EXPECT_EQ(3ULL, registry.HandlerCount());
+		auto movedLease = std::move(lease);
+		CUI_EXPECT_FALSE(lease.Active());
+		CUI_EXPECT_TRUE(movedLease.Active());
+
+		auto drop = DesignerEventCatalog::FindControlEvent(
+			UIClass::UI_Button, L"OnDropFile");
+		CUI_EXPECT_TRUE(drop.has_value());
+		EventConnection leasedConnection;
+		if (drop)
+		{
+			DesignerModel::RuntimeControlEventRequest request{
+				button, 1, L"batchButton", UIClass::UI_Button, {},
+				*drop, L"HandleLeased" };
+			CUI_EXPECT_TRUE(resolver(request, leasedConnection, error));
+			button.OnDropFile.Invoke(&button,
+				std::vector<std::wstring>{ L"before-reset.txt" });
+			CUI_EXPECT_EQ(1, leasedInvocations);
+			movedLease.Reset();
+			CUI_EXPECT_FALSE(movedLease.Active());
+			CUI_EXPECT_EQ(2ULL, registry.HandlerCount());
+			// Registry ownership and document EventConnection ownership are
+			// intentionally separate; generated sinks add a lifetime guard.
+			button.OnDropFile.Invoke(&button,
+				std::vector<std::wstring>{ L"after-reset.txt" });
+			CUI_EXPECT_EQ(2, leasedInvocations);
+			EventConnection rejected;
+			CUI_EXPECT_FALSE(resolver(request, rejected, error));
+			CUI_EXPECT_TRUE(error.find(L"未注册") != std::wstring::npos);
+			if (click)
+			{
+				DesignerModel::RuntimeControlEventRequest preservedRequest{
+					button, 1, L"batchButton", UIClass::UI_Button, {},
+					*click, L"HandleExisting" };
+				EventConnection preserved;
+				CUI_EXPECT_TRUE(resolver(
+					preservedRequest, preserved, error));
+				button.OnMouseClick.Invoke(&button, MouseEventArgs{});
+				CUI_EXPECT_EQ(2, existingInvocations);
+			}
+		}
+
+		auto nestedLease = registry.RegisterScopedBatch(
+			[](DesignerModel::RuntimeEventHandlerRegistry& routes,
+				std::wstring& batchError)
+			{
+				return routes.RegisterBatch(
+					[](DesignerModel::RuntimeEventHandlerRegistry& nested,
+						std::wstring& nestedError)
+					{
+						return nested.RegisterControl(
+							L"HandleNested", UIClass::UI_Base,
+							L"OnDropText", &Control::OnDropText,
+							[](Control*, std::wstring) {}, &nestedError);
+					}, &batchError);
+			}, &error);
+		CUI_EXPECT_FALSE(nestedLease.Active());
+		CUI_EXPECT_EQ(2ULL, registry.HandlerCount());
+		CUI_EXPECT_TRUE(error.find(L"不能嵌套") != std::wstring::npos);
 	});
 
 	runner.Add("Designer event index validates shares and renames handler references", []
@@ -8622,8 +8951,58 @@ int main()
 		const auto generatedCpp = readText(outputDir / L"PersistedEventForm.g.cpp");
 		const auto generatedHandlerInclude = readText(
 			outputDir / L"PersistedEventForm.handlers.g.inc");
+		CUI_EXPECT_TRUE(generatedHandlerInclude.find(
+			"void HandleShown(Form* sender) override;") != std::string::npos);
+		CUI_EXPECT_TRUE(generatedHandlerInclude.find(
+			"void HandleSave(Control* sender, MouseEventArgs e) override;")
+			!= std::string::npos);
 		const auto userHeader = readText(headerPath);
 		auto userCpp = readText(cppPath);
+		std::vector<CodeGeneratorFileContent> stalePlan;
+		CUI_EXPECT_TRUE(generator.BuildFilePlan(
+			headerPath.wstring(), cppPath.wstring(), stalePlan));
+		CUI_EXPECT_EQ(5ULL, stalePlan.size());
+		const auto plannedUserSource = std::find_if(
+			stalePlan.begin(), stalePlan.end(), [&](const auto& file)
+			{
+				return file.Path == cppPath.wstring();
+			});
+		CUI_EXPECT_TRUE(plannedUserSource != stalePlan.end());
+		if (plannedUserSource != stalePlan.end())
+		{
+			CUI_EXPECT_TRUE(plannedUserSource->ExpectedExisted);
+			CUI_EXPECT_EQ(userCpp, plannedUserSource->ExpectedContent);
+		}
+		const auto externalUserCpp = userCpp
+			+ "\n// EXTERNAL_EDIT_AFTER_CODEGEN_PLAN\n";
+		std::wstring staleCommitError;
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			cppPath.wstring(), externalUserCpp, &staleCommitError));
+		std::vector<DesignerModel::AtomicFileWriteEntry> staleWrites;
+		for (const auto& file : stalePlan)
+		{
+			DesignerModel::AtomicFileWriteEntry write;
+			write.FilePath = file.Path;
+			write.Content = file.Content;
+			write.RequireExpectedState = true;
+			write.ExpectedExisted = file.ExpectedExisted;
+			write.ExpectedContent = file.ExpectedContent;
+			staleWrites.push_back(std::move(write));
+		}
+		CUI_EXPECT_FALSE(DesignerModel::AtomicFile::WriteBatch(
+			staleWrites, &staleCommitError));
+		CUI_EXPECT_TRUE(staleCommitError.find(L"changed")
+			!= std::wstring::npos);
+		CUI_EXPECT_EQ(externalUserCpp, readText(cppPath));
+		CUI_EXPECT_EQ(userHeader, readText(headerPath));
+		CUI_EXPECT_EQ(generatedHeader,
+			readText(outputDir / L"PersistedEventForm.g.h"));
+		CUI_EXPECT_EQ(generatedCpp,
+			readText(outputDir / L"PersistedEventForm.g.cpp"));
+		CUI_EXPECT_EQ(generatedHandlerInclude,
+			readText(outputDir / L"PersistedEventForm.handlers.g.inc"));
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			cppPath.wstring(), userCpp, &staleCommitError));
 		CUI_EXPECT_TRUE(generatedHeader.find(
 			"class PersistedEventFormGenerated : public Form") != std::string::npos);
 		CUI_EXPECT_TRUE(generatedHeader.find("Button* saveButton = nullptr;")
@@ -8637,7 +9016,9 @@ int main()
 			"const Button* GetSaveButton() const noexcept { return saveButton; }")
 			!= std::string::npos);
 		CUI_EXPECT_EQ(1ULL, countText(generatedHeader,
-			"virtual void HandleSave(Control* sender, MouseEventArgs e);"));
+			"virtual void HandleSave(Control* sender, MouseEventArgs e) = 0;"));
+		CUI_EXPECT_EQ(1ULL, countText(generatedHeader,
+			"void HandleSave(Control* sender, MouseEventArgs e) override;"));
 		CUI_EXPECT_EQ(2ULL, countText(generatedCpp,
 			"std::bind_front(&PersistedEventFormGenerated::HandleSave, this)"));
 		CUI_EXPECT_EQ(1ULL, countText(generatedHeader,
@@ -8645,7 +9026,7 @@ int main()
 		CUI_EXPECT_EQ(2ULL, countText(generatedCpp,
 			"std::bind_front(&PersistedEventFormGenerated::HandleFormValueChange, this)"));
 		CUI_EXPECT_TRUE(generatedHeader.find(
-			"virtual void HandleShown(Form* sender);") != std::string::npos);
+			"virtual void HandleShown(Form* sender) = 0;") != std::string::npos);
 		CUI_EXPECT_TRUE(generatedCpp.find(
 			"this->OnShown.Subscribe(std::bind_front(&PersistedEventFormGenerated::HandleShown, this))")
 			!= std::string::npos);
@@ -8667,6 +9048,607 @@ int main()
 			!= std::string::npos);
 		CUI_EXPECT_EQ(1ULL, countText(userCpp,
 			"void PersistedEventForm::HandleSave("));
+		std::vector<CodeGeneratorHandlerDefinitionInspection> codeInspection;
+		CUI_EXPECT_TRUE(generator.InspectUserHandlerDefinitions(
+			userCpp, codeInspection));
+		auto findInspection = [&](const std::string& name)
+			-> const CodeGeneratorHandlerDefinitionInspection*
+		{
+			const auto found = std::find_if(
+				codeInspection.begin(), codeInspection.end(),
+				[&](const auto& item) { return item.Name == name; });
+			return found == codeInspection.end() ? nullptr : &*found;
+		};
+		const auto* implementedSave = findInspection("HandleSave");
+		CUI_EXPECT_TRUE(implementedSave != nullptr);
+		if (implementedSave)
+		{
+			CUI_EXPECT_EQ(CodeGeneratorHandlerDefinitionState::Compatible,
+				implementedSave->State);
+			CUI_EXPECT_EQ(1ULL,
+				implementedSave->CompatibleDefinitionCount);
+		}
+
+		const std::string incompatibleSource = R"cpp(
+// void PersistedEventForm::HandleShown(Form* sender) {}
+const char* fake = R"raw(void PersistedEventForm::HandleCommand(Form*) {})raw";
+#if 0
+void PersistedEventForm::HandleShown(Form* sender) { (void)sender; }
+#endif
+void PersistedEventForm::HandleSave(Control*, KeyEventArgs) {}
+)cpp";
+		CUI_EXPECT_TRUE(generator.InspectUserHandlerDefinitions(
+			incompatibleSource, codeInspection));
+		const auto* incompatibleSave = findInspection("HandleSave");
+		const auto* missingShown = findInspection("HandleShown");
+		CUI_EXPECT_TRUE(incompatibleSave != nullptr && missingShown != nullptr);
+		if (incompatibleSave)
+			CUI_EXPECT_EQ(CodeGeneratorHandlerDefinitionState::Incompatible,
+				incompatibleSave->State);
+		if (missingShown)
+			CUI_EXPECT_EQ(CodeGeneratorHandlerDefinitionState::Missing,
+				missingShown->State);
+
+		const std::string incompatibleShapeSource = R"cpp(
+int PersistedEventForm::HandleShown(Form* sender)
+{
+	(void)sender;
+	return 0;
+}
+)cpp";
+		CUI_EXPECT_TRUE(generator.InspectUserHandlerDefinitions(
+			incompatibleShapeSource, codeInspection));
+		const auto* incompatibleShapeShown = findInspection("HandleShown");
+		CUI_EXPECT_TRUE(incompatibleShapeShown != nullptr);
+		if (incompatibleShapeShown)
+		{
+			CUI_EXPECT_EQ(CodeGeneratorHandlerDefinitionState::Incompatible,
+				incompatibleShapeShown->State);
+			CUI_EXPECT_EQ(1ULL,
+				incompatibleShapeShown->IncompatibleShapeDefinitionCount);
+			CUI_EXPECT_EQ(1ULL,
+				incompatibleShapeShown->SourceIncompatibleShapeDefinitionCount);
+		}
+
+		auto wrongReturnUserCpp = userCpp;
+		const auto wrongReturnPosition = wrongReturnUserCpp.find(
+			"void PersistedEventForm::HandleShown(");
+		CUI_EXPECT_TRUE(wrongReturnPosition != std::string::npos);
+		if (wrongReturnPosition != std::string::npos)
+			wrongReturnUserCpp.replace(wrongReturnPosition, 4, "int ");
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			cppPath.wstring(), wrongReturnUserCpp));
+		std::map<fs::path, std::string> wrongShapeSnapshot;
+		for (const auto& path : {
+			headerPath, cppPath,
+			outputDir / L"PersistedEventForm.g.h",
+			outputDir / L"PersistedEventForm.g.cpp",
+			outputDir / L"PersistedEventForm.handlers.g.inc" })
+			wrongShapeSnapshot.emplace(path, readText(path));
+		CodeGenerator wrongShapeGenerator(L"PersistedEventForm", input);
+		CUI_EXPECT_FALSE(wrongShapeGenerator.GenerateFiles(
+			headerPath.wstring(), cppPath.wstring()));
+		CUI_EXPECT_TRUE(wrongShapeGenerator.GetLastError().find(L"返回类型")
+			!= std::wstring::npos);
+		for (const auto& [path, content] : wrongShapeSnapshot)
+			CUI_EXPECT_EQ(content, readText(path));
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			cppPath.wstring(), userCpp));
+
+		DesignerModel::CppUserCodeIndex discoveryIndex;
+		std::wstring discoveryError;
+		CUI_EXPECT_TRUE(DesignerModel::CppUserCodeIndex::Build(R"cpp(
+PersistedEventForm::PersistedEventForm() {}
+void PersistedEventForm::ReuseMouse(Control*, MouseEventArgs e) { (void)e; }
+void PersistedEventForm::WrongMouse(Control*, KeyEventArgs) {}
+void PersistedEventForm::DuplicateMouse(Control*, MouseEventArgs) {}
+void PersistedEventForm::DuplicateMouse(Control*, MouseEventArgs) {}
+const char* fakeCandidate = R"raw(
+void PersistedEventForm::FromString(Control*, MouseEventArgs) {})raw";
+)cpp", "PersistedEventForm", discoveryIndex, &discoveryError));
+		const auto discoveredMouseHandlers =
+			discoveryIndex.FindCompatibleHandlerNames(
+				"Control* sender, MouseEventArgs e");
+		CUI_EXPECT_EQ(1ULL, discoveredMouseHandlers.size());
+		if (!discoveredMouseHandlers.empty())
+			CUI_EXPECT_EQ(std::string("ReuseMouse"),
+				discoveredMouseHandlers.front());
+		const std::string renameDiscoveryInput = R"cpp(
+PersistedEventForm::PersistedEventForm() {}
+void PersistedEventForm::ReuseMouse(Control*, MouseEventArgs e)
+{
+	// ReuseMouse stays untouched inside the body.
+	const char* value = "ReuseMouse";
+	(void)e; (void)value;
+}
+)cpp";
+		DesignerModel::CppUserCodeIndex renameDiscoveryIndex;
+		CUI_EXPECT_TRUE(DesignerModel::CppUserCodeIndex::Build(
+			renameDiscoveryInput, "PersistedEventForm",
+			renameDiscoveryIndex, &discoveryError));
+		std::string renamedDiscoverySource;
+		CUI_EXPECT_TRUE(renameDiscoveryIndex.TryRenameUniqueCompatibleHandler(
+			renameDiscoveryInput,
+			"ReuseMouse", "RenamedMouse",
+			"Control* sender, MouseEventArgs e",
+			renamedDiscoverySource, &discoveryError));
+		CUI_EXPECT_TRUE(renamedDiscoverySource.find(
+			"PersistedEventForm::RenamedMouse(") != std::string::npos);
+		CUI_EXPECT_TRUE(renamedDiscoverySource.find(
+			"// ReuseMouse stays untouched") != std::string::npos);
+		CUI_EXPECT_TRUE(renamedDiscoverySource.find(
+			"\"ReuseMouse\"") != std::string::npos);
+		const std::string duplicateRenameInput = R"cpp(
+void PersistedEventForm::ReuseMouse(Control*, MouseEventArgs) {}
+void PersistedEventForm::ReuseMouse(Control*, MouseEventArgs) {}
+)cpp";
+		DesignerModel::CppUserCodeIndex duplicateRenameIndex;
+		CUI_EXPECT_TRUE(DesignerModel::CppUserCodeIndex::Build(
+			duplicateRenameInput, "PersistedEventForm",
+			duplicateRenameIndex, &discoveryError));
+		std::string rejectedRenameSource;
+		CUI_EXPECT_FALSE(duplicateRenameIndex.TryRenameUniqueCompatibleHandler(
+			duplicateRenameInput,
+			"ReuseMouse", "AmbiguousMouse",
+			"Control* sender, MouseEventArgs e",
+			rejectedRenameSource, &discoveryError));
+		CUI_EXPECT_TRUE(rejectedRenameSource.empty());
+
+		DesignerModel::CppUserCodeIndex namespaceDiscoveryIndex;
+		CUI_EXPECT_TRUE(DesignerModel::CppUserCodeIndex::Build(R"cpp(
+namespace Acme
+{
+namespace Views
+{
+Window::Window() {}
+void Window::NestedHandler(Control*, MouseEventArgs) {}
+}
+}
+namespace Acme::Views
+{
+void Window::CompactHandler(Control*, MouseEventArgs) {}
+}
+void Acme::Views::Window::QualifiedHandler(Control*, MouseEventArgs) {}
+namespace Acme::Other
+{
+void Window::WrongNamespace(Control*, MouseEventArgs) {}
+}
+namespace
+{
+void Acme::Views::Window::AnonymousHandler(Control*, MouseEventArgs) {}
+}
+void OuterFunction()
+{
+void Acme::Views::Window::NestedInFunction(Control*, MouseEventArgs) {}
+}
+)cpp", "Acme::Views::Window", namespaceDiscoveryIndex, &discoveryError));
+		const auto namespaceHandlers =
+			namespaceDiscoveryIndex.FindCompatibleHandlerNames(
+				"Control* sender, MouseEventArgs e");
+		const auto namespaceConstructor =
+			namespaceDiscoveryIndex.InspectConstructor();
+		CUI_EXPECT_EQ(1ULL,
+			namespaceConstructor.CompatibleDefinitionCount);
+		CUI_EXPECT_EQ(3ULL, namespaceHandlers.size());
+		CUI_EXPECT_TRUE(std::find(namespaceHandlers.begin(),
+			namespaceHandlers.end(), "NestedHandler") != namespaceHandlers.end());
+		CUI_EXPECT_TRUE(std::find(namespaceHandlers.begin(),
+			namespaceHandlers.end(), "CompactHandler") != namespaceHandlers.end());
+		CUI_EXPECT_TRUE(std::find(namespaceHandlers.begin(),
+			namespaceHandlers.end(), "QualifiedHandler") != namespaceHandlers.end());
+		CUI_EXPECT_TRUE(std::find(namespaceHandlers.begin(),
+			namespaceHandlers.end(), "WrongNamespace") == namespaceHandlers.end());
+		CUI_EXPECT_TRUE(std::find(namespaceHandlers.begin(),
+			namespaceHandlers.end(), "AnonymousHandler") == namespaceHandlers.end());
+		CUI_EXPECT_TRUE(std::find(namespaceHandlers.begin(),
+			namespaceHandlers.end(), "NestedInFunction") == namespaceHandlers.end());
+
+		DesignerModel::CppUserCodeIndex classIdentityIndex;
+		CUI_EXPECT_TRUE(DesignerModel::CppUserCodeIndex::Build(R"cpp(
+#define CUI_API
+#if 0
+namespace Acme::Views {
+class Window : public WindowGenerated {};
+}
+#endif
+namespace Acme::Other {
+class Window : public WindowGenerated {};
+}
+namespace Acme::Views {
+class [[nodiscard]] CUI_API Window final
+	: private SupportingBase,
+	  public ::Acme::Views::WindowGenerated {};
+}
+)cpp", "Acme::Views::Window", classIdentityIndex, &discoveryError));
+		const auto classIdentity =
+			classIdentityIndex.InspectGeneratedClassDefinition();
+		CUI_EXPECT_EQ(1ULL, classIdentity.DefinitionCount);
+		CUI_EXPECT_EQ(1ULL,
+			classIdentity.CompatibleGeneratedBaseCount);
+
+		DesignerModel::CppUserCodeIndex wrongBaseIndex;
+		CUI_EXPECT_TRUE(DesignerModel::CppUserCodeIndex::Build(R"cpp(
+namespace Acme::Views {
+class Window : public Other::WindowGenerated {};
+}
+)cpp", "Acme::Views::Window", wrongBaseIndex, &discoveryError));
+		const auto wrongBase =
+			wrongBaseIndex.InspectGeneratedClassDefinition();
+		CUI_EXPECT_EQ(1ULL, wrongBase.DefinitionCount);
+		CUI_EXPECT_EQ(0ULL, wrongBase.CompatibleGeneratedBaseCount);
+
+		DesignerModel::CppUserCodeIndex inlineConstructorIndex;
+		CUI_EXPECT_TRUE(DesignerModel::CppUserCodeIndex::Build(R"cpp(
+namespace Acme::Views {
+class Window : public WindowGenerated {
+public:
+	Window() noexcept : WindowGenerated() {}
+	Window(int value) : Window() { (void)value; }
+	void InlineHandler(Control*, MouseEventArgs) {}
+	int WrongReturnHandler(Control*, MouseEventArgs) { return 0; }
+	static void StaticHandler(Control*, MouseEventArgs) {}
+	void ConstHandler(Control*, MouseEventArgs) const {}
+	void RefHandler(Control*, MouseEventArgs) & {}
+	void NoexceptHandler(Control*, MouseEventArgs) noexcept {}
+	auto TrailingHandler(Control*, MouseEventArgs) -> void {}
+	void DeletedHandler(Control*, MouseEventArgs) = delete;
+	void WrongInlineHandler(Control*, KeyEventArgs) {}
+#if 0
+	void DisabledInlineHandler(Control*, MouseEventArgs) {}
+#endif
+};
+}
+)cpp", "Acme::Views::Window", inlineConstructorIndex, &discoveryError));
+		const auto inlineConstructor =
+			inlineConstructorIndex.InspectConstructor();
+		CUI_EXPECT_EQ(2ULL, inlineConstructor.DefinitionCount);
+		CUI_EXPECT_EQ(1ULL,
+			inlineConstructor.CompatibleDefinitionCount);
+		CUI_EXPECT_EQ(0ULL,
+			inlineConstructor.DeletedCompatibleDefinitionCount);
+		const auto inlineHandler = inlineConstructorIndex.InspectHandler(
+			"InlineHandler", "Control* sender, MouseEventArgs e");
+		CUI_EXPECT_EQ(1ULL, inlineHandler.DefinitionCount);
+		CUI_EXPECT_EQ(1ULL, inlineHandler.CompatibleDefinitionCount);
+		for (const auto invalidShape : {
+			"WrongReturnHandler", "StaticHandler", "ConstHandler", "RefHandler" })
+		{
+			const auto invalid = inlineConstructorIndex.InspectHandler(
+				invalidShape, "Control* sender, MouseEventArgs e");
+			CUI_EXPECT_EQ(1ULL, invalid.DefinitionCount);
+			CUI_EXPECT_EQ(0ULL, invalid.CompatibleDefinitionCount);
+			CUI_EXPECT_EQ(1ULL,
+				invalid.IncompatibleShapeDefinitionCount);
+		}
+		CUI_EXPECT_EQ(1ULL, inlineConstructorIndex.InspectHandler(
+			"NoexceptHandler", "Control* sender, MouseEventArgs e")
+			.CompatibleDefinitionCount);
+		CUI_EXPECT_EQ(1ULL, inlineConstructorIndex.InspectHandler(
+			"TrailingHandler", "Control* sender, MouseEventArgs e")
+			.CompatibleDefinitionCount);
+		const auto deletedHandler = inlineConstructorIndex.InspectHandler(
+			"DeletedHandler", "Control* sender, MouseEventArgs e");
+		CUI_EXPECT_EQ(1ULL, deletedHandler.DefinitionCount);
+		CUI_EXPECT_EQ(0ULL, deletedHandler.CompatibleDefinitionCount);
+		CUI_EXPECT_EQ(1ULL,
+			deletedHandler.DeletedCompatibleDefinitionCount);
+		CUI_EXPECT_EQ(0ULL,
+			inlineConstructorIndex.InspectHandler(
+				"WrongInlineHandler",
+				"Control* sender, MouseEventArgs e")
+				.CompatibleDefinitionCount);
+		CUI_EXPECT_EQ(0ULL,
+			inlineConstructorIndex.InspectHandler(
+				"DisabledInlineHandler",
+				"Control* sender, MouseEventArgs e").DefinitionCount);
+
+		DesignerModel::CppUserCodeIndex outOfClassShapeIndex;
+		CUI_EXPECT_TRUE(DesignerModel::CppUserCodeIndex::Build(R"cpp(
+namespace Acme::Views {
+int Window::WrongReturnSource(Control*, MouseEventArgs) { return 0; }
+static void Window::StaticSource(Control*, MouseEventArgs) {}
+void Window::ConstSource(Control*, MouseEventArgs) const {}
+void Window::NoexceptSource(Control*, MouseEventArgs) noexcept {}
+auto Window::TrailingSource(Control*, MouseEventArgs) -> void {}
+void Window::MixedSource(Control*, MouseEventArgs) {}
+int Window::MixedSource(Control*, MouseEventArgs) { return 0; }
+Window::~Window() {}
+}
+)cpp", "Acme::Views::Window", outOfClassShapeIndex, &discoveryError));
+		for (const auto invalidShape : {
+			"WrongReturnSource", "StaticSource", "ConstSource",
+			"NoexceptSource" })
+		{
+			const auto invalid = outOfClassShapeIndex.InspectHandler(
+				invalidShape, "Control* sender, MouseEventArgs e");
+			CUI_EXPECT_EQ(1ULL, invalid.DefinitionCount);
+			CUI_EXPECT_EQ(0ULL, invalid.CompatibleDefinitionCount);
+			CUI_EXPECT_EQ(1ULL,
+				invalid.IncompatibleShapeDefinitionCount);
+		}
+		CUI_EXPECT_EQ(1ULL, outOfClassShapeIndex.InspectHandler(
+			"TrailingSource", "Control* sender, MouseEventArgs e")
+			.CompatibleDefinitionCount);
+		const auto mixedShape = outOfClassShapeIndex.InspectHandler(
+			"MixedSource", "Control* sender, MouseEventArgs e");
+		CUI_EXPECT_EQ(1ULL, mixedShape.CompatibleDefinitionCount);
+		CUI_EXPECT_EQ(1ULL,
+			mixedShape.IncompatibleShapeDefinitionCount);
+		CUI_EXPECT_EQ(0ULL,
+			outOfClassShapeIndex.InspectConstructor().DefinitionCount);
+		const auto shapeCandidates =
+			outOfClassShapeIndex.FindCompatibleHandlerNames(
+				"Control* sender, MouseEventArgs e");
+		CUI_EXPECT_EQ(1ULL, shapeCandidates.size());
+		if (!shapeCandidates.empty())
+			CUI_EXPECT_EQ(std::string("TrailingSource"),
+				shapeCandidates.front());
+		std::string rejectedShapeRename;
+		CUI_EXPECT_FALSE(
+			outOfClassShapeIndex.TryRenameUniqueCompatibleHandler(
+				"int Acme::Views::Window::WrongReturnSource("
+					"Control*, MouseEventArgs) { return 0; }",
+				"WrongReturnSource", "RenamedWrongReturn",
+				"Control* sender, MouseEventArgs e",
+				rejectedShapeRename, &discoveryError));
+
+		DesignerModel::CppUserCodeIndex defaultedConstructorIndex;
+		CUI_EXPECT_TRUE(DesignerModel::CppUserCodeIndex::Build(R"cpp(
+namespace Acme::Views {
+class Window : public WindowGenerated {
+public:
+	Window() = default;
+};
+}
+)cpp", "Acme::Views::Window", defaultedConstructorIndex, &discoveryError));
+		const auto defaultedConstructor =
+			defaultedConstructorIndex.InspectConstructor();
+		CUI_EXPECT_EQ(1ULL,
+			defaultedConstructor.CompatibleDefinitionCount);
+
+		DesignerModel::CppUserCodeIndex deletedConstructorIndex;
+		CUI_EXPECT_TRUE(DesignerModel::CppUserCodeIndex::Build(R"cpp(
+namespace Acme::Views {
+class Window : public WindowGenerated {
+public:
+	Window() = delete;
+};
+}
+)cpp", "Acme::Views::Window", deletedConstructorIndex, &discoveryError));
+		const auto deletedConstructor =
+			deletedConstructorIndex.InspectConstructor();
+		CUI_EXPECT_EQ(0ULL,
+			deletedConstructor.CompatibleDefinitionCount);
+		CUI_EXPECT_EQ(1ULL,
+			deletedConstructor.DeletedCompatibleDefinitionCount);
+
+		DesignerModel::CppUserCodeIndex declaredConstructorIndex;
+		CUI_EXPECT_TRUE(DesignerModel::CppUserCodeIndex::Build(R"cpp(
+namespace Acme::Views {
+class Window : public WindowGenerated {
+public:
+	Window();
+};
+}
+)cpp", "Acme::Views::Window", declaredConstructorIndex, &discoveryError));
+		const auto declaredConstructor =
+			declaredConstructorIndex.InspectConstructor();
+		CUI_EXPECT_EQ(0ULL, declaredConstructor.DefinitionCount);
+
+		const std::string preprocessorInput = R"cpp(
+#define CUI_FAKE_SCOPE { ignored }
+#define CUI_MULTI_LINE(value) \
+	{ value; }
+const char* directiveText = R"raw(
+#if 0
+void PersistedEventForm::RawFake(Control*, MouseEventArgs) {}
+#endif
+)raw";
+#if 0
+void PersistedEventForm::Disabled(Control*, MouseEventArgs) {}
+#elif 0
+void PersistedEventForm::DisabledElif(Control*, MouseEventArgs) {}
+#else
+void PersistedEventForm::ElseActive(Control*, MouseEventArgs) {}
+#endif
+#if 1
+void PersistedEventForm::IfActive(Control*, MouseEventArgs) {}
+#else
+void PersistedEventForm::DisabledElse(Control*, MouseEventArgs) {}
+#endif
+#if 0
+#if 1
+void PersistedEventForm::NestedDisabled(Control*, MouseEventArgs) {}
+#endif
+#endif
+#if CUI_UNKNOWN_FEATURE
+void PersistedEventForm::UnknownFeatureOn(Control*, MouseEventArgs) {}
+#else
+void PersistedEventForm::UnknownFeatureOff(Control*, MouseEventArgs) {}
+#endif
+// #if 0
+/*
+#else
+#endif
+*/
+void PersistedEventForm::CommentDirectiveSafe(Control*, MouseEventArgs) {}
+void PersistedEventForm::RealHandler(Control*, MouseEventArgs) {}
+)cpp";
+		DesignerModel::CppUserCodeIndex preprocessorIndex;
+		CUI_EXPECT_TRUE(DesignerModel::CppUserCodeIndex::Build(
+			preprocessorInput, "PersistedEventForm",
+			preprocessorIndex, &discoveryError));
+		const auto preprocessorHandlers =
+			preprocessorIndex.FindCompatibleHandlerNames(
+				"Control* sender, MouseEventArgs e");
+		CUI_EXPECT_EQ(6ULL, preprocessorHandlers.size());
+		CUI_EXPECT_TRUE(std::find(preprocessorHandlers.begin(),
+			preprocessorHandlers.end(), "ElseActive")
+			!= preprocessorHandlers.end());
+		CUI_EXPECT_TRUE(std::find(preprocessorHandlers.begin(),
+			preprocessorHandlers.end(), "IfActive")
+			!= preprocessorHandlers.end());
+		CUI_EXPECT_TRUE(std::find(preprocessorHandlers.begin(),
+			preprocessorHandlers.end(), "RealHandler")
+			!= preprocessorHandlers.end());
+		CUI_EXPECT_TRUE(std::find(preprocessorHandlers.begin(),
+			preprocessorHandlers.end(), "UnknownFeatureOn")
+			!= preprocessorHandlers.end());
+		CUI_EXPECT_TRUE(std::find(preprocessorHandlers.begin(),
+			preprocessorHandlers.end(), "UnknownFeatureOff")
+			!= preprocessorHandlers.end());
+		CUI_EXPECT_TRUE(std::find(preprocessorHandlers.begin(),
+			preprocessorHandlers.end(), "CommentDirectiveSafe")
+			!= preprocessorHandlers.end());
+		CUI_EXPECT_EQ(0ULL, preprocessorIndex.InspectHandler(
+			"Disabled", "Control* sender, MouseEventArgs e").DefinitionCount);
+
+		const std::string conditionalRenameInput = R"cpp(
+#if 0
+void PersistedEventForm::ConditionalRename(Control*, MouseEventArgs) {}
+#endif
+void PersistedEventForm::ConditionalRename(Control*, MouseEventArgs) {}
+)cpp";
+		DesignerModel::CppUserCodeIndex conditionalRenameIndex;
+		CUI_EXPECT_TRUE(DesignerModel::CppUserCodeIndex::Build(
+			conditionalRenameInput, "PersistedEventForm",
+			conditionalRenameIndex, &discoveryError));
+		std::string conditionalRenamedSource;
+		CUI_EXPECT_TRUE(
+			conditionalRenameIndex.TryRenameUniqueCompatibleHandler(
+				conditionalRenameInput, "ConditionalRename",
+				"ConditionalRenamed", "Control* sender, MouseEventArgs e",
+				conditionalRenamedSource, &discoveryError));
+		CUI_EXPECT_TRUE(conditionalRenamedSource.find(
+			"#if 0\nvoid PersistedEventForm::ConditionalRename(")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(conditionalRenamedSource.find(
+			"#endif\nvoid PersistedEventForm::ConditionalRenamed(")
+			!= std::string::npos);
+
+		const auto duplicatedUserCpp = userCpp
+			+ "\nvoid PersistedEventForm::HandleSave("
+				"Control* sender, MouseEventArgs e) { (void)sender; (void)e; }\n";
+		CUI_EXPECT_TRUE(generator.InspectUserHandlerDefinitions(
+			duplicatedUserCpp, codeInspection));
+		const auto* duplicateSave = findInspection("HandleSave");
+		CUI_EXPECT_TRUE(duplicateSave != nullptr);
+		if (duplicateSave)
+			CUI_EXPECT_EQ(
+				CodeGeneratorHandlerDefinitionState::DuplicateCompatible,
+				duplicateSave->State);
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			cppPath.wstring(), duplicatedUserCpp));
+		CodeGenerator duplicateGenerator(L"PersistedEventForm", input);
+		CUI_EXPECT_FALSE(duplicateGenerator.GenerateFiles(
+			headerPath.wstring(), cppPath.wstring()));
+		CUI_EXPECT_TRUE(duplicateGenerator.GetLastError().find(L"多个")
+			!= std::wstring::npos);
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			cppPath.wstring(), userCpp));
+
+		auto inlineHandlerHeader = userHeader;
+		const auto inlinePrivate = inlineHandlerHeader.find("private:");
+		CUI_EXPECT_TRUE(inlinePrivate != std::string::npos);
+		if (inlinePrivate != std::string::npos)
+			inlineHandlerHeader.insert(inlinePrivate,
+				"\tvoid HandleShown(Form* sender)"
+				" { (void)sender; }\n\n");
+		auto sourceWithoutInlineHandler = userCpp;
+		const auto inlineSourceBegin = sourceWithoutInlineHandler.find(
+			"void PersistedEventForm::HandleShown(Form* sender)");
+		CUI_EXPECT_TRUE(inlineSourceBegin != std::string::npos);
+		if (inlineSourceBegin != std::string::npos)
+		{
+			const auto inlineSourceEnd = sourceWithoutInlineHandler.find(
+				"\n}\n", inlineSourceBegin);
+			CUI_EXPECT_TRUE(inlineSourceEnd != std::string::npos);
+			if (inlineSourceEnd != std::string::npos)
+				sourceWithoutInlineHandler.erase(inlineSourceBegin,
+					inlineSourceEnd + 3 - inlineSourceBegin);
+		}
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			headerPath.wstring(), inlineHandlerHeader));
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			cppPath.wstring(), sourceWithoutInlineHandler));
+		CodeGenerator inlineHandlerGenerator(L"PersistedEventForm", input);
+		CUI_EXPECT_TRUE(inlineHandlerGenerator.GenerateFiles(
+			headerPath.wstring(), cppPath.wstring()));
+		CUI_EXPECT_TRUE(readText(headerPath).find(
+			"void HandleShown(Form* sender) { (void)sender; }")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(readText(cppPath).find(
+			"PersistedEventForm::HandleShown") == std::string::npos);
+		CUI_EXPECT_TRUE(readText(
+			outputDir / L"PersistedEventForm.handlers.g.inc").find(
+				"void HandleShown(") == std::string::npos);
+		CUI_EXPECT_TRUE(inlineHandlerGenerator.InspectUserHandlerDefinitions(
+			inlineHandlerHeader, sourceWithoutInlineHandler, codeInspection));
+		const auto* inlineShown = findInspection("HandleShown");
+		CUI_EXPECT_TRUE(inlineShown != nullptr);
+		if (inlineShown)
+		{
+			CUI_EXPECT_EQ(CodeGeneratorHandlerDefinitionState::Compatible,
+				inlineShown->State);
+			CUI_EXPECT_EQ(1ULL,
+				inlineShown->HeaderCompatibleDefinitionCount);
+			CUI_EXPECT_EQ(0ULL,
+				inlineShown->SourceCompatibleDefinitionCount);
+			CUI_EXPECT_TRUE(inlineShown->FirstHeaderCompatibleDefinitionLine > 0);
+		}
+
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			cppPath.wstring(), userCpp));
+		std::map<fs::path, std::string> duplicateInlineSnapshot;
+		for (const auto& path : {
+			headerPath, cppPath,
+			outputDir / L"PersistedEventForm.g.h",
+			outputDir / L"PersistedEventForm.g.cpp",
+			outputDir / L"PersistedEventForm.handlers.g.inc" })
+			duplicateInlineSnapshot.emplace(path, readText(path));
+		CodeGenerator duplicateInlineGenerator(L"PersistedEventForm", input);
+		CUI_EXPECT_FALSE(duplicateInlineGenerator.GenerateFiles(
+			headerPath.wstring(), cppPath.wstring()));
+		CUI_EXPECT_TRUE(duplicateInlineGenerator.GetLastError().find(L"多个")
+			!= std::wstring::npos);
+		for (const auto& [path, content] : duplicateInlineSnapshot)
+			CUI_EXPECT_EQ(content, readText(path));
+
+		auto staticInlineHeader = userHeader;
+		const auto staticInlinePrivate = staticInlineHeader.find("private:");
+		CUI_EXPECT_TRUE(staticInlinePrivate != std::string::npos);
+		if (staticInlinePrivate != std::string::npos)
+			staticInlineHeader.insert(staticInlinePrivate,
+				"\tstatic void HandleShown(Form* sender)"
+					" { (void)sender; }\n\n");
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			headerPath.wstring(), staticInlineHeader));
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			cppPath.wstring(), sourceWithoutInlineHandler));
+		std::map<fs::path, std::string> staticInlineSnapshot;
+		for (const auto& path : {
+			headerPath, cppPath,
+			outputDir / L"PersistedEventForm.g.h",
+			outputDir / L"PersistedEventForm.g.cpp",
+			outputDir / L"PersistedEventForm.handlers.g.inc" })
+			staticInlineSnapshot.emplace(path, readText(path));
+		CodeGenerator staticInlineGenerator(L"PersistedEventForm", input);
+		CUI_EXPECT_FALSE(staticInlineGenerator.GenerateFiles(
+			headerPath.wstring(), cppPath.wstring()));
+		CUI_EXPECT_TRUE(staticInlineGenerator.GetLastError().find(L"static")
+			!= std::wstring::npos);
+		for (const auto& [path, content] : staticInlineSnapshot)
+			CUI_EXPECT_EQ(content, readText(path));
+
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			headerPath.wstring(), userHeader));
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			cppPath.wstring(), userCpp));
+		CodeGenerator restoredInlineGenerator(L"PersistedEventForm", input);
+		CUI_EXPECT_TRUE(restoredInlineGenerator.GenerateFiles(
+			headerPath.wstring(), cppPath.wstring()));
+		CUI_EXPECT_EQ(generatedHandlerInclude, readText(
+			outputDir / L"PersistedEventForm.handlers.g.inc"));
 
 		// Sanitized names must remain globally unique even when one source name
 		// already looks like another source name's numeric fallback.
@@ -8788,6 +9770,16 @@ int main()
 			outputDir / L"PersistedEventForm.handlers.g.inc");
 		CUI_EXPECT_TRUE(retained.find("void HandleSave(") != std::string::npos);
 		CUI_EXPECT_TRUE(retained.find("void HandleShown(") != std::string::npos);
+		CUI_EXPECT_TRUE(retained.find(
+			"void HandleSave(Control* sender, MouseEventArgs e);")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(retained.find(
+			"void HandleSave(Control* sender, MouseEventArgs e) override;")
+			== std::string::npos);
+		CUI_EXPECT_TRUE(retained.find(
+			"void HandleShown(Form* sender);") != std::string::npos);
+		CUI_EXPECT_TRUE(retained.find(
+			"void HandleShown(Form* sender) override;") == std::string::npos);
 		const auto afterRemovalGeneratedCpp = readText(
 			outputDir / L"PersistedEventForm.g.cpp");
 		CUI_EXPECT_TRUE(afterRemovalGeneratedCpp.find(
@@ -8797,6 +9789,24 @@ int main()
 			"OnShown.Subscribe(std::bind_front(&PersistedEventFormGenerated::HandleShown")
 			== std::string::npos);
 		CUI_EXPECT_TRUE(readText(cppPath).find("USER_SENTINEL") != std::string::npos);
+
+		CodeGenInput formOnlyInput;
+		formOnlyInput.FormName = L"FormOnlyWindow";
+		formOnlyInput.FormEventHandlers[L"OnShown"] = L"HandleFormOnlyShown";
+		const auto formOnlyHeaderPath = outputDir / L"FormOnlyWindow.h";
+		const auto formOnlyCppPath = outputDir / L"FormOnlyWindow.cpp";
+		CodeGenerator formOnlyGenerator(L"FormOnlyWindow", formOnlyInput);
+		CUI_EXPECT_TRUE(formOnlyGenerator.GenerateFiles(
+			formOnlyHeaderPath.wstring(), formOnlyCppPath.wstring()));
+		CUI_EXPECT_TRUE(readText(outputDir / L"FormOnlyWindow.g.h").find(
+			"virtual void HandleFormOnlyShown(Form* sender) = 0;")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(readText(outputDir / L"FormOnlyWindow.g.cpp").find(
+			"OnShown.Subscribe(std::bind_front(&FormOnlyWindowGenerated::HandleFormOnlyShown")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(readText(formOnlyCppPath).find(
+			"void FormOnlyWindow::HandleFormOnlyShown(Form* sender)")
+			!= std::string::npos);
 
 		// Existing user bodies are matched by parameter types, not only by name.
 		// Formatting and parameter-name changes remain valid, while a type drift
@@ -8897,6 +9907,51 @@ int main()
 		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
 			"Button* GetNamespaceButton() noexcept { return namespaceButton; }")
 			!= std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"template<typename TDocument>\nclass MainWindowReferences final")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"using DocumentReference = decltype(") != std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"std::declval<TDocument&>().Reference()") != std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			": _document(document.Reference())") != std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"TDocument* TryDocument() const noexcept") != std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"_document.template FindControlByDesignId<Button>")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"_document(&document)") == std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"class MainWindowEventSink") != std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"RegisterDynamicEventHandlers(") != std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"registry.RegisterScopedBatch(") != std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"GuardDynamicEventHandler(") != std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"void UnregisterDynamicEventHandlers() noexcept")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"std::shared_ptr<void> _dynamicEventRegistration;")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"MainWindowEventSink(const MainWindowEventSink&) = delete;")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"class MainWindowGenerated : public Form, public MainWindowEventSink")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"Button* GetNamespaceButton() const noexcept")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"ReferenceNamespaceButton() const noexcept")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(namespaceGeneratedHeader.find(
+			"MainWindowGenerated::ControlIds::namespaceButton")
+			!= std::string::npos);
 		CUI_EXPECT_TRUE(namespaceGeneratedCpp.find(
 			"#include \"NamespacedWindow.g.h\"") != std::string::npos);
 		CUI_EXPECT_TRUE(namespaceGeneratedCpp.find(
@@ -8984,12 +10039,194 @@ int main()
 
 		const auto repositoryRoot = findRepositoryRoot();
 		CUI_EXPECT_TRUE(!repositoryRoot.empty());
+		const auto codeGenTargets = readText(
+			repositoryRoot / L"build" / L"CuiCodeGen.targets");
+		const auto contractVersion = std::to_string(
+			DesignerModel::DesignCodeGenerationContractVersion);
+		CUI_EXPECT_TRUE(codeGenTargets.find(
+			"<CuiCodeGenContractVersion Condition=\"'$(CuiCodeGenContractVersion)' == ''\">"
+			+ contractVersion + "</CuiCodeGenContractVersion>")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(codeGenTargets.find(
+			".v$(CuiCodeGenContractVersion).stamp") != std::string::npos);
+		CUI_EXPECT_TRUE(codeGenTargets.find(
+			"Inputs=\"%(CuiDesign.FullPath);$(MSBuildThisFileFullPath);"
+			"%(CuiDesign.OutputBase).h;%(CuiDesign.OutputBase).cpp;"
+			"%(CuiDesign.OutputBase).g.h;%(CuiDesign.OutputBase).g.cpp;"
+			"%(CuiDesign.OutputBase).handlers.g.inc\"")
+			!= std::string::npos);
+		DesignerModel::DesignCodeBehindModel portableAssociation;
+		std::wstring error;
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::BuildCodeBehindAssociation(
+				L"Acme.Views.MainWindow",
+				(outputDir / L"generated" / L"MainWindow").wstring(),
+				(outputDir / L"documents" / L"MainWindow.cui.xaml").wstring(),
+				portableAssociation, &error));
+		CUI_EXPECT_EQ(std::wstring(L"Acme::Views::MainWindow"),
+			portableAssociation.ClassName);
+		CUI_EXPECT_EQ(std::wstring(L"../generated/MainWindow"),
+			portableAssociation.RelativeBasePath);
+		DesignerModel::DesignCodeExportPlan preservedPlan;
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::BuildCodeExportPlan(
+				portableAssociation, L"Acme.Views.MainWindow",
+				(outputDir / L"generated" / L"MainWindow").wstring(),
+				(outputDir / L"documents" / L"MainWindow.cui.xaml").wstring(),
+				preservedPlan, &error));
+		CUI_EXPECT_FALSE(preservedPlan.CreatesAssociation);
+		CUI_EXPECT_FALSE(preservedPlan.MigratesClass);
+		CUI_EXPECT_FALSE(preservedPlan.ChangesRelativeOutput);
+		DesignerModel::DesignCodeExportPlan migrationPlan;
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::BuildCodeExportPlan(
+				portableAssociation, L"Acme.Views.RenamedWindow",
+				(outputDir / L"generated2" / L"RenamedWindow").wstring(),
+				(outputDir / L"documents" / L"MainWindow.cui.xaml").wstring(),
+				migrationPlan, &error));
+		CUI_EXPECT_TRUE(migrationPlan.MigratesClass);
+		CUI_EXPECT_TRUE(migrationPlan.ChangesRelativeOutput);
+		CUI_EXPECT_EQ(std::wstring(L"Acme::Views::RenamedWindow"),
+			migrationPlan.Association.ClassName);
+		DesignerModel::DesignCodeExportPlan newPlan;
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::BuildCodeExportPlan(
+				{}, L"FirstWindow",
+				(outputDir / L"FirstWindow").wstring(), L"",
+				newPlan, &error));
+		CUI_EXPECT_TRUE(newPlan.CreatesAssociation);
+		CUI_EXPECT_FALSE(newPlan.MigratesClass);
+		DesignerModel::DesignCodeBehindModel invalidAssociation;
+		CUI_EXPECT_FALSE(
+			DesignerModel::DesignCodeGenerationService::BuildCodeBehindAssociation(
+				L"Acme::Views::MainWindow",
+				(outputDir / L"generated" / L"MainWindow.cpp").wstring(),
+				(outputDir / L"documents" / L"MainWindow.cui.xaml").wstring(),
+				invalidAssociation, &error));
+		CUI_EXPECT_TRUE(invalidAssociation.Empty());
+		CUI_EXPECT_TRUE(error.find(L"扩展名") != std::wstring::npos);
+		DesignerModel::DesignCodeExportPlan invalidPlan;
+		invalidPlan.CreatesAssociation = true;
+		CUI_EXPECT_FALSE(
+			DesignerModel::DesignCodeGenerationService::BuildCodeExportPlan(
+				portableAssociation, L"bad::class",
+				(outputDir / L"InvalidPlan").wstring(), L"",
+				invalidPlan, &error));
+		CUI_EXPECT_TRUE(invalidPlan.Association.Empty());
+		CUI_EXPECT_FALSE(invalidPlan.CreatesAssociation);
+
+		DesignerModel::DesignDocument transactionalDocument;
+		transactionalDocument.Form.Name = L"TransactionalWindow";
+		transactionalDocument.Form.EventHandlers[L"OnShown"] =
+			L"HandleTransactionalShown";
+		DesignerModel::DesignCodeGenerationOptions transactionalOptions;
+		transactionalOptions.ClassName = L"Acme::TransactionalWindow";
+		const auto transactionalBase = outputDir / L"TransactionalWindow";
+		transactionalOptions.OutputBasePath = transactionalBase.wstring();
+		const auto transactionalGeneratedHeader =
+			outputDir / L"TransactionalWindow.g.h";
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			transactionalGeneratedHeader.wstring(), "pre-export-sentinel", &error));
+		bool rejectedCommitCalled = false;
+		DesignerModel::DesignCodeGenerationResult rejectedCommitResult;
+		rejectedCommitResult.ClassName = L"must-clear";
+		CUI_EXPECT_FALSE(
+			DesignerModel::DesignCodeGenerationService::GenerateAndCommit(
+				transactionalDocument, L"", transactionalOptions,
+				[&](const DesignerModel::DesignCodeGenerationResult& result,
+					std::wstring& commitError)
+				{
+					rejectedCommitCalled = result.OutputFiles().size() == 5;
+					commitError = L"injected association failure";
+					return false;
+				},
+				&rejectedCommitResult, &error));
+		CUI_EXPECT_TRUE(rejectedCommitCalled);
+		CUI_EXPECT_TRUE(rejectedCommitResult.OutputBasePath.empty());
+		CUI_EXPECT_TRUE(error.find(L"injected association failure")
+			!= std::wstring::npos);
+		CUI_EXPECT_EQ(std::string("pre-export-sentinel"),
+			readText(transactionalGeneratedHeader));
+		for (const auto* suffix : {
+			L".h", L".cpp", L".g.cpp", L".handlers.g.inc" })
+			CUI_EXPECT_FALSE(fs::exists(
+				fs::path(transactionalBase.wstring() + suffix)));
+
+		DesignerModel::DesignCodeGenerationResult committedExportResult;
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::GenerateAndCommit(
+				transactionalDocument, L"", transactionalOptions,
+				[](const DesignerModel::DesignCodeGenerationResult&,
+					std::wstring&) { return true; },
+				&committedExportResult, &error));
+		CUI_EXPECT_EQ(std::wstring(L"Acme::TransactionalWindow"),
+			committedExportResult.ClassName);
+		for (const auto& file : committedExportResult.OutputFiles())
+			CUI_EXPECT_TRUE(fs::exists(file));
+		CUI_EXPECT_TRUE(readText(transactionalGeneratedHeader).find(
+			"pre-export-sentinel") == std::string::npos);
+		std::vector<std::string> committedExportContents;
+		for (const auto& file : committedExportResult.OutputFiles())
+			committedExportContents.push_back(readText(file));
+		transactionalDocument.Form.Text = L"Must roll back";
+		DesignerModel::DesignCodeGenerationResult thrownCommitResult;
+		CUI_EXPECT_FALSE(
+			DesignerModel::DesignCodeGenerationService::GenerateAndCommit(
+				transactionalDocument, L"", transactionalOptions,
+				[](const DesignerModel::DesignCodeGenerationResult&,
+					std::wstring&) -> bool
+				{
+					throw std::runtime_error("injected commit exception");
+				},
+				&thrownCommitResult, &error));
+		CUI_EXPECT_TRUE(thrownCommitResult.OutputBasePath.empty());
+		CUI_EXPECT_TRUE(error.find(L"injected commit exception")
+			!= std::wstring::npos);
+		for (size_t index = 0;
+			index < committedExportResult.OutputFiles().size(); ++index)
+			CUI_EXPECT_EQ(committedExportContents[index],
+				readText(committedExportResult.OutputFiles()[index]));
+
+		transactionalDocument.Form.Text = L"Concurrent external edit";
+		std::string concurrentUserSource;
+		DesignerModel::DesignCodeGenerationResult concurrentCommitResult;
+		CUI_EXPECT_FALSE(
+			DesignerModel::DesignCodeGenerationService::GenerateAndCommit(
+				transactionalDocument, L"", transactionalOptions,
+				[&](const DesignerModel::DesignCodeGenerationResult& result,
+					std::wstring& commitError)
+				{
+					concurrentUserSource = readText(result.UserSourcePath)
+						+ "\n// EXTERNAL_EDIT_DURING_ASSOCIATION_COMMIT\n";
+					if (!DesignerModel::AtomicFile::Write(
+						result.UserSourcePath, concurrentUserSource, &commitError))
+						return false;
+					commitError = L"injected failure after external edit";
+					return false;
+				},
+				&concurrentCommitResult, &error));
+		CUI_EXPECT_TRUE(concurrentCommitResult.OutputBasePath.empty());
+		CUI_EXPECT_EQ(concurrentUserSource,
+			readText(committedExportResult.UserSourcePath));
+		CUI_EXPECT_TRUE(error.find(L"恢复不完整") != std::wstring::npos);
+		CUI_EXPECT_TRUE(error.find(L"changed") != std::wstring::npos);
+		for (size_t index = 0;
+			index < committedExportResult.OutputFiles().size(); ++index)
+			CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+				committedExportResult.OutputFiles()[index],
+				committedExportContents[index], &error));
 		const auto xamlPath = repositoryRoot
 			/ L"CuiStaticGeneratedSample" / L"NamespacedWindow.cui.xaml";
+		const auto staticSample = repositoryRoot / L"CuiStaticGeneratedSample";
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			(outputDir / L"NamespacedWindow.h").wstring(),
+			readText(staticSample / L"NamespacedWindow.h"), &error));
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			(outputDir / L"NamespacedWindow.cpp").wstring(),
+			readText(staticSample / L"NamespacedWindow.cpp"), &error));
 		DesignerModel::DesignCodeGenerationOptions xamlOptions;
 		xamlOptions.OutputBasePath = (outputDir / L"NamespacedWindow").wstring();
 		DesignerModel::DesignCodeGenerationResult xamlResult;
-		std::wstring error;
 		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::GenerateFile(
 			xamlPath.wstring(), xamlOptions, &xamlResult, &error));
 		CUI_EXPECT_EQ(std::wstring(L"Acme::Views::MainWindow"),
@@ -9000,7 +10237,13 @@ int main()
 		CUI_EXPECT_TRUE(readText(xamlResult.GeneratedSourcePath).find(
 			"&Acme::Views::MainWindowGenerated::HandleNamespacedClick")
 			!= std::string::npos);
-		const auto staticSample = repositoryRoot / L"CuiStaticGeneratedSample";
+		CUI_EXPECT_TRUE(readText(xamlResult.UserHeaderPath).find(
+			"void HandleWindowShown(Form* sender) noexcept")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(readText(xamlResult.UserSourcePath).find(
+			"MainWindow::HandleWindowShown") == std::string::npos);
+		CUI_EXPECT_TRUE(readText(xamlResult.HandlerDeclarationsPath).find(
+			"HandleWindowShown") == std::string::npos);
 		for (const auto* fileName : {
 			L"NamespacedWindow.g.h", L"NamespacedWindow.g.cpp",
 			L"NamespacedWindow.handlers.g.inc", L"NamespacedWindow.h",
@@ -9063,6 +10306,557 @@ int main()
 		if (GetEnvironmentVariableW(
 			L"CUI_KEEP_CODEGEN_TEST_OUTPUT", nullptr, 0) == 0)
 			fs::remove_all(outputDir);
+	});
+
+	runner.Add("Design code freshness is exact read-only and user-code aware", []
+	{
+		namespace fs = std::filesystem;
+		const fs::path root = fs::temp_directory_path()
+			/ (L"cui-code-freshness-" + std::to_wstring(GetCurrentProcessId())
+				+ L"-" + std::to_wstring(GetTickCount64()));
+		const auto outputBase = root / L"generated" / L"FreshWindow";
+		auto readText = [](const fs::path& path)
+		{
+			std::ifstream stream(path, std::ios::binary);
+			return std::string(
+				std::istreambuf_iterator<char>(stream),
+				std::istreambuf_iterator<char>());
+		};
+
+		DesignerModel::DesignDocument unassociated;
+		DesignerModel::DesignCodeFreshnessResult freshness;
+		std::wstring error;
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				unassociated, L"", {}, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Unassociated,
+			freshness.State);
+		DesignerModel::DesignEventHandlerCodeInspection eventInspection;
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectEventHandlers(
+				unassociated, L"", {}, eventInspection, &error));
+		CUI_EXPECT_FALSE(eventInspection.Associated);
+
+		DesignerModel::DesignDocument document;
+		document.Form.Name = L"FreshWindow";
+		document.Form.Text = L"Fresh";
+		DesignerModel::DesignCodeGenerationOptions options;
+		options.ClassName = L"Acme::FreshWindow";
+		options.OutputBasePath = outputBase.wstring();
+		auto missingEventDocument = document;
+		missingEventDocument.Form.EventHandlers[L"OnShown"] = L"HandleShown";
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectEventHandlers(
+				missingEventDocument, L"", options, eventInspection, &error));
+		CUI_EXPECT_TRUE(eventInspection.Associated);
+		CUI_EXPECT_EQ(DesignerModel::DesignEventHandlerCodeState::SourceMissing,
+			eventInspection.Handlers.at(L"HandleShown").State);
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Missing,
+			freshness.State);
+		CUI_EXPECT_EQ(5ULL, freshness.MissingFiles.size());
+		CUI_EXPECT_FALSE(fs::exists(root));
+
+		DesignerModel::DesignCodeGenerationResult generated;
+		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::Generate(
+			document, L"", options, &generated, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Current,
+			freshness.State);
+		CUI_EXPECT_TRUE(freshness.MissingFiles.empty());
+		CUI_EXPECT_TRUE(freshness.ChangedFiles.empty());
+
+		const fs::path userSource = generated.UserSourcePath;
+		auto namespaceConstructorSource = readText(userSource);
+		const std::string constructorPrefix =
+			"Acme::FreshWindow::FreshWindow()";
+		const auto constructorPosition =
+			namespaceConstructorSource.find(constructorPrefix);
+		CUI_EXPECT_TRUE(constructorPosition != std::string::npos);
+		if (constructorPosition != std::string::npos)
+		{
+			namespaceConstructorSource.replace(constructorPosition,
+				constructorPrefix.size(),
+				"namespace Acme {\nFreshWindow::FreshWindow()");
+			namespaceConstructorSource += "\n}\n";
+		}
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userSource.wstring(), namespaceConstructorSource, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Current,
+			freshness.State);
+		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::Generate(
+			document, L"", options, &generated, &error));
+		CUI_EXPECT_TRUE(readText(userSource).find(
+			"namespace Acme {\nFreshWindow::FreshWindow()")
+			!= std::string::npos);
+
+		const auto oldTime = fs::file_time_type::clock::now()
+			- std::chrono::hours(3);
+		std::vector<fs::file_time_type> times;
+		for (const auto& file : generated.OutputFiles())
+		{
+			fs::last_write_time(file, oldTime);
+			times.push_back(fs::last_write_time(file));
+		}
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		for (size_t index = 0; index < generated.OutputFiles().size(); ++index)
+			CUI_EXPECT_EQ(times[index],
+				fs::last_write_time(generated.OutputFiles()[index]));
+
+		auto customizedSource = readText(userSource);
+		customizedSource += R"cpp(
+static void UserHelper() {}
+namespace Acme {
+void FreshWindow::ReuseShown(Form* sender) { (void)sender; }
+void FreshWindow::WrongShown(KeyEventArgs sender) { (void)sender; }
+}
+)cpp";
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userSource.wstring(), customizedSource, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Current,
+			freshness.State);
+
+		document.Form.EventHandlers[L"OnShown"] = L"HandleShown";
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectEventHandlers(
+				document, L"", options, eventInspection, &error));
+		CUI_EXPECT_EQ(
+			DesignerModel::DesignEventHandlerCodeState::DefinitionMissing,
+			eventInspection.Handlers.at(L"HandleShown").State);
+		const auto shownCandidates =
+			eventInspection.CompatibleUserHandlers.find("Form* sender");
+		CUI_EXPECT_TRUE(shownCandidates
+			!= eventInspection.CompatibleUserHandlers.end());
+		if (shownCandidates != eventInspection.CompatibleUserHandlers.end())
+		{
+			CUI_EXPECT_TRUE(std::find(shownCandidates->second.begin(),
+				shownCandidates->second.end(), L"ReuseShown")
+				!= shownCandidates->second.end());
+			CUI_EXPECT_TRUE(std::find(shownCandidates->second.begin(),
+				shownCandidates->second.end(), L"WrongShown")
+				== shownCandidates->second.end());
+			CUI_EXPECT_TRUE(std::find(shownCandidates->second.begin(),
+				shownCandidates->second.end(), L"FreshWindow")
+				== shownCandidates->second.end());
+		}
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Stale,
+			freshness.State);
+		CUI_EXPECT_TRUE(std::find(
+			freshness.ChangedFiles.begin(), freshness.ChangedFiles.end(),
+			generated.UserSourcePath) != freshness.ChangedFiles.end());
+		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::Generate(
+			document, L"", options, &generated, &error));
+		CUI_EXPECT_TRUE(readText(userSource).find("UserHelper")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(readText(userSource).find("HandleShown")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectEventHandlers(
+				document, L"", options, eventInspection, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignEventHandlerCodeState::Current,
+			eventInspection.Handlers.at(L"HandleShown").State);
+
+		const auto validEventSource = readText(userSource);
+		auto namespaceEventSource = validEventSource;
+		const std::string qualifiedShownPrefix =
+			"void Acme::FreshWindow::HandleShown";
+		const auto qualifiedShownPosition =
+			namespaceEventSource.find(qualifiedShownPrefix);
+		CUI_EXPECT_TRUE(qualifiedShownPosition != std::string::npos);
+		if (qualifiedShownPosition != std::string::npos)
+		{
+			namespaceEventSource.replace(qualifiedShownPosition,
+				qualifiedShownPrefix.size(),
+				"namespace Acme {\nvoid FreshWindow::HandleShown");
+			namespaceEventSource += "\n}\n";
+		}
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userSource.wstring(), namespaceEventSource, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectEventHandlers(
+				document, L"", options, eventInspection, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignEventHandlerCodeState::Current,
+			eventInspection.Handlers.at(L"HandleShown").State);
+		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::Generate(
+			document, L"", options, &generated, &error));
+		CUI_EXPECT_TRUE(readText(userSource).find(
+			"namespace Acme {\nvoid FreshWindow::HandleShown")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(readText(userSource).find(qualifiedShownPrefix)
+			== std::string::npos);
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userSource.wstring(), validEventSource, &error));
+
+		auto wrongEventSignature = validEventSource;
+		const std::string shownSignature =
+			"void Acme::FreshWindow::HandleShown(Form* sender)";
+		const auto shownPosition = wrongEventSignature.find(shownSignature);
+		CUI_EXPECT_TRUE(shownPosition != std::string::npos);
+		if (shownPosition != std::string::npos)
+			wrongEventSignature.replace(shownPosition, shownSignature.size(),
+				"void Acme::FreshWindow::HandleShown(KeyEventArgs sender)");
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userSource.wstring(), wrongEventSignature, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectEventHandlers(
+				document, L"", options, eventInspection, &error));
+		CUI_EXPECT_EQ(
+			DesignerModel::DesignEventHandlerCodeState::SignatureMismatch,
+			eventInspection.Handlers.at(L"HandleShown").State);
+
+		auto wrongEventShape = validEventSource;
+		const auto shownShapePosition = wrongEventShape.find(shownSignature);
+		CUI_EXPECT_TRUE(shownShapePosition != std::string::npos);
+		if (shownShapePosition != std::string::npos)
+			wrongEventShape.replace(
+				shownShapePosition, std::string("void").size(), "int");
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userSource.wstring(), wrongEventShape, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectEventHandlers(
+				document, L"", options, eventInspection, &error));
+		const auto& wrongShapeEntry =
+			eventInspection.Handlers.at(L"HandleShown");
+		CUI_EXPECT_EQ(
+			DesignerModel::DesignEventHandlerCodeState::SignatureMismatch,
+			wrongShapeEntry.State);
+		CUI_EXPECT_TRUE(wrongShapeEntry.Diagnostic.find(L"返回类型")
+			!= std::wstring::npos);
+
+		const auto duplicatedEventSource = validEventSource
+			+ "\nvoid Acme::FreshWindow::HandleShown(Form* sender)"
+				" { (void)sender; }\n";
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userSource.wstring(), duplicatedEventSource, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectEventHandlers(
+				document, L"", options, eventInspection, &error));
+		CUI_EXPECT_EQ(
+			DesignerModel::DesignEventHandlerCodeState::DuplicateDefinition,
+			eventInspection.Handlers.at(L"HandleShown").State);
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userSource.wstring(), validEventSource, &error));
+
+		const fs::path generatedHeader = generated.GeneratedHeaderPath;
+		auto driftedHeader = readText(generatedHeader);
+		driftedHeader += "\n// MANUAL_GENERATED_DRIFT\n";
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			generatedHeader.wstring(), driftedHeader, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Stale,
+			freshness.State);
+		CUI_EXPECT_TRUE(std::find(
+			freshness.ChangedFiles.begin(), freshness.ChangedFiles.end(),
+			generated.GeneratedHeaderPath) != freshness.ChangedFiles.end());
+		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::Generate(
+			document, L"", options, &generated, &error));
+
+		const fs::path generatedSource = generated.GeneratedSourcePath;
+		fs::remove(generatedSource);
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Missing,
+			freshness.State);
+		CUI_EXPECT_EQ(1ULL, freshness.MissingFiles.size());
+		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::Generate(
+			document, L"", options, &generated, &error));
+
+		const fs::path userHeader = generated.UserHeaderPath;
+		const auto validUserHeader = readText(userHeader);
+		auto wrongIdentity = validUserHeader;
+		const auto identity = wrongIdentity.find("Acme::FreshWindow");
+		CUI_EXPECT_TRUE(identity != std::string::npos);
+		if (identity != std::string::npos)
+			wrongIdentity.replace(identity,
+				std::string("Acme::FreshWindow").size(), "Other::FreshWindow");
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userHeader.wstring(), wrongIdentity, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Blocked,
+			freshness.State);
+		CUI_EXPECT_TRUE(!freshness.Diagnostic.empty());
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userHeader.wstring(), validUserHeader, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Current,
+			freshness.State);
+
+		auto inlineEventHeader = validUserHeader;
+		const auto inlineEventPrivate = inlineEventHeader.find("private:");
+		CUI_EXPECT_TRUE(inlineEventPrivate != std::string::npos);
+		if (inlineEventPrivate != std::string::npos)
+			inlineEventHeader.insert(inlineEventPrivate,
+				"\tvoid HandleShown(Form* sender)"
+				" { (void)sender; }\n\n");
+		auto sourceWithoutShown = validEventSource;
+		const auto shownDefinitionBegin = sourceWithoutShown.find(
+			"void Acme::FreshWindow::HandleShown(Form* sender)");
+		CUI_EXPECT_TRUE(shownDefinitionBegin != std::string::npos);
+		if (shownDefinitionBegin != std::string::npos)
+		{
+			const auto shownDefinitionEnd = sourceWithoutShown.find(
+				"\n}\n", shownDefinitionBegin);
+			CUI_EXPECT_TRUE(shownDefinitionEnd != std::string::npos);
+			if (shownDefinitionEnd != std::string::npos)
+				sourceWithoutShown.erase(shownDefinitionBegin,
+					shownDefinitionEnd + 3 - shownDefinitionBegin);
+		}
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userHeader.wstring(), inlineEventHeader, &error));
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userSource.wstring(), sourceWithoutShown, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Stale,
+			freshness.State);
+		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::Generate(
+			document, L"", options, &generated, &error));
+		CUI_EXPECT_TRUE(readText(generated.HandlerDeclarationsPath).find(
+			"void HandleShown(") == std::string::npos);
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectEventHandlers(
+				document, L"", options, eventInspection, &error));
+		const auto inlineShownInspection =
+			eventInspection.Handlers.find(L"HandleShown");
+		CUI_EXPECT_TRUE(inlineShownInspection
+			!= eventInspection.Handlers.end());
+		if (inlineShownInspection != eventInspection.Handlers.end())
+		{
+			CUI_EXPECT_EQ(DesignerModel::DesignEventHandlerCodeState::Current,
+				inlineShownInspection->second.State);
+			CUI_EXPECT_EQ(userHeader.wstring(),
+				inlineShownInspection->second.DefinitionFilePath);
+			CUI_EXPECT_TRUE(
+				inlineShownInspection->second.DefinitionLine > 0);
+		}
+		const auto inlineShownCandidates =
+			eventInspection.CompatibleUserHandlers.find("Form* sender");
+		CUI_EXPECT_TRUE(inlineShownCandidates
+			!= eventInspection.CompatibleUserHandlers.end());
+		if (inlineShownCandidates
+			!= eventInspection.CompatibleUserHandlers.end())
+			CUI_EXPECT_TRUE(std::find(
+				inlineShownCandidates->second.begin(),
+				inlineShownCandidates->second.end(), L"HandleShown")
+				!= inlineShownCandidates->second.end());
+
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userSource.wstring(), validEventSource, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectEventHandlers(
+				document, L"", options, eventInspection, &error));
+		CUI_EXPECT_EQ(
+			DesignerModel::DesignEventHandlerCodeState::DuplicateDefinition,
+			eventInspection.Handlers.at(L"HandleShown").State);
+		std::map<std::wstring, std::string> inlineDuplicateSnapshot;
+		for (const auto& file : generated.OutputFiles())
+			inlineDuplicateSnapshot.emplace(file, readText(file));
+		CUI_EXPECT_FALSE(DesignerModel::DesignCodeGenerationService::Generate(
+			document, L"", options, nullptr, &error));
+		for (const auto& [file, content] : inlineDuplicateSnapshot)
+			CUI_EXPECT_EQ(content, readText(file));
+
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userHeader.wstring(), validUserHeader, &error));
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userSource.wstring(), validEventSource, &error));
+		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::Generate(
+			document, L"", options, &generated, &error));
+		CUI_EXPECT_TRUE(readText(generated.HandlerDeclarationsPath).find(
+			"void HandleShown(") != std::string::npos);
+
+		auto decoratedUserHeader = validUserHeader;
+		decoratedUserHeader.insert(0, "#define CUI_TEST_EXPORT\n");
+		const std::string plainClass =
+			"class FreshWindow : public FreshWindowGenerated";
+		const auto plainClassPosition = decoratedUserHeader.find(plainClass);
+		CUI_EXPECT_TRUE(plainClassPosition != std::string::npos);
+		if (plainClassPosition != std::string::npos)
+			decoratedUserHeader.replace(plainClassPosition, plainClass.size(),
+				"class CUI_TEST_EXPORT FreshWindow final "
+				": public FreshWindowGenerated");
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userHeader.wstring(), decoratedUserHeader, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Current,
+			freshness.State);
+
+		auto wrongScopeHeader = validUserHeader;
+		const auto namespacePosition = wrongScopeHeader.find("namespace Acme");
+		CUI_EXPECT_TRUE(namespacePosition != std::string::npos);
+		if (namespacePosition != std::string::npos)
+			wrongScopeHeader.replace(namespacePosition,
+				std::string("namespace Acme").size(), "namespace Other");
+		wrongScopeHeader.insert(0, R"cpp(#if 0
+namespace Acme {
+class FreshWindow : public FreshWindowGenerated {};
+}
+#endif
+)cpp");
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userHeader.wstring(), wrongScopeHeader, &error));
+		std::map<std::wstring, std::string> blockedSnapshot;
+		for (const auto& file : generated.OutputFiles())
+			blockedSnapshot.emplace(file, readText(file));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Blocked,
+			freshness.State);
+		CUI_EXPECT_FALSE(DesignerModel::DesignCodeGenerationService::Generate(
+			document, L"", options, nullptr, &error));
+		for (const auto& [file, content] : blockedSnapshot)
+			CUI_EXPECT_EQ(content, readText(file));
+
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userHeader.wstring(), validUserHeader, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Current,
+			freshness.State);
+
+		auto sourceWithoutDefaultConstructor = validEventSource;
+		const auto sourceConstructorBegin =
+			sourceWithoutDefaultConstructor.find("FreshWindow::FreshWindow()");
+		CUI_EXPECT_TRUE(sourceConstructorBegin != std::string::npos);
+		if (sourceConstructorBegin != std::string::npos)
+		{
+			const auto sourceConstructorEnd =
+				sourceWithoutDefaultConstructor.find("\n}\n", sourceConstructorBegin);
+			CUI_EXPECT_TRUE(sourceConstructorEnd != std::string::npos);
+			if (sourceConstructorEnd != std::string::npos)
+				sourceWithoutDefaultConstructor.erase(sourceConstructorBegin,
+					sourceConstructorEnd + 3 - sourceConstructorBegin);
+		}
+
+		auto inlineConstructorHeader = validUserHeader;
+		const std::string constructorDeclaration = "\tFreshWindow();";
+		const auto constructorDeclarationPosition =
+			inlineConstructorHeader.find(constructorDeclaration);
+		CUI_EXPECT_TRUE(constructorDeclarationPosition != std::string::npos);
+		if (constructorDeclarationPosition != std::string::npos)
+			inlineConstructorHeader.replace(constructorDeclarationPosition,
+				constructorDeclaration.size(),
+				"\tFreshWindow() : FreshWindowGenerated()"
+				" { /* inline user initialization */ }");
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userHeader.wstring(), inlineConstructorHeader, &error));
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userSource.wstring(), sourceWithoutDefaultConstructor, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Current,
+			freshness.State);
+		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::Generate(
+			document, L"", options, &generated, &error));
+		CUI_EXPECT_TRUE(readText(userHeader).find(
+			"inline user initialization") != std::string::npos);
+
+		fs::remove(userSource);
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Missing,
+			freshness.State);
+		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::Generate(
+			document, L"", options, &generated, &error));
+		const auto recreatedInlineSource = readText(userSource);
+		CUI_EXPECT_TRUE(recreatedInlineSource.find(
+			"FreshWindow::FreshWindow()") == std::string::npos);
+		CUI_EXPECT_TRUE(recreatedInlineSource.find("HandleShown")
+			!= std::string::npos);
+
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userSource.wstring(), validEventSource, &error));
+		std::map<std::wstring, std::string> duplicateConstructorSnapshot;
+		for (const auto& file : generated.OutputFiles())
+			duplicateConstructorSnapshot.emplace(file, readText(file));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Blocked,
+			freshness.State);
+		CUI_EXPECT_FALSE(DesignerModel::DesignCodeGenerationService::Generate(
+			document, L"", options, nullptr, &error));
+		for (const auto& [file, content] : duplicateConstructorSnapshot)
+			CUI_EXPECT_EQ(content, readText(file));
+
+		auto defaultedConstructorHeader = validUserHeader;
+		const auto defaultedDeclarationPosition =
+			defaultedConstructorHeader.find(constructorDeclaration);
+		CUI_EXPECT_TRUE(defaultedDeclarationPosition != std::string::npos);
+		if (defaultedDeclarationPosition != std::string::npos)
+			defaultedConstructorHeader.replace(defaultedDeclarationPosition,
+				constructorDeclaration.size(),
+				"\tFreshWindow() = default;");
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userHeader.wstring(), defaultedConstructorHeader, &error));
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userSource.wstring(), sourceWithoutDefaultConstructor, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Current,
+			freshness.State);
+		CUI_EXPECT_TRUE(DesignerModel::DesignCodeGenerationService::Generate(
+			document, L"", options, &generated, &error));
+
+		auto deletedConstructorHeader = validUserHeader;
+		const auto deletedDeclarationPosition =
+			deletedConstructorHeader.find(constructorDeclaration);
+		CUI_EXPECT_TRUE(deletedDeclarationPosition != std::string::npos);
+		if (deletedDeclarationPosition != std::string::npos)
+			deletedConstructorHeader.replace(deletedDeclarationPosition,
+				constructorDeclaration.size(),
+				"\tFreshWindow() = delete;");
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userHeader.wstring(), deletedConstructorHeader, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Blocked,
+			freshness.State);
+
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userHeader.wstring(), validUserHeader, &error));
+		CUI_EXPECT_TRUE(DesignerModel::AtomicFile::Write(
+			userSource.wstring(), validEventSource, &error));
+		CUI_EXPECT_TRUE(
+			DesignerModel::DesignCodeGenerationService::InspectFreshness(
+				document, L"", options, freshness, &error));
+		CUI_EXPECT_EQ(DesignerModel::DesignCodeFreshnessState::Current,
+			freshness.State);
+
+		if (GetEnvironmentVariableW(
+			L"CUI_KEEP_CODEGEN_TEST_OUTPUT", nullptr, 0) == 0)
+			fs::remove_all(root);
 	});
 
 	runner.Add("Designer code generation emits document style resources and rules", []
@@ -10258,6 +12052,84 @@ int main()
 			proxy.Controls().front()->CustomType.CppType);
 	});
 
+	runner.Add("Runtime typed references expire safely and preserve document identity", []
+	{
+		auto makeDocument = [](std::string text)
+		{
+			DesignerModel::DesignDocument document;
+			document.Form.Name = L"ReferenceForm";
+			DesignerModel::DesignNode node;
+			node.Id = 17;
+			node.Name = L"referenceButton";
+			node.Type = UIClass::UI_Button;
+			node.Props["metadata"]["Text"] = {
+				{ "kind", "String" },
+				{ "value", std::move(text) } };
+			document.Nodes.push_back(std::move(node));
+			document.NextStableId = 18;
+			return document;
+		};
+
+		std::wstring error;
+		auto firstDocument = makeDocument("First");
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			firstDocument, runtime, {}, &error));
+		auto movingDocumentReference = runtime.Reference();
+		auto movingReference = runtime.ReferenceByDesignId<Button>(17);
+		CUI_EXPECT_EQ(std::wstring(L"First"), movingReference->Text);
+		CUI_EXPECT_TRUE(movingDocumentReference.Get() == &runtime);
+		CUI_EXPECT_TRUE(movingDocumentReference.FindControlByDesignId<Button>(17)
+			== movingReference.Get());
+		CUI_EXPECT_TRUE(movingDocumentReference.ReferenceByDesignId<Button>(17)
+			.Get() == movingReference.Get());
+
+		DesignerModel::RuntimeDocument moved(std::move(runtime));
+		CUI_EXPECT_TRUE(movingDocumentReference.Get() == &moved);
+		CUI_EXPECT_TRUE(movingReference.Get()
+			== moved.FindControlByDesignId<Button>(17));
+		CUI_EXPECT_TRUE(runtime.ReferenceByDesignId<Button>(17).Get() == nullptr);
+
+		DesignerModel::RuntimeDocumentRef expiredDocumentReference;
+		DesignerModel::RuntimeControlRef<Button> expiredReference;
+		{
+			DesignerModel::RuntimeDocument scoped;
+			CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+				firstDocument, scoped, {}, &error));
+			expiredDocumentReference = scoped.Reference();
+			expiredReference = scoped.ReferenceByDesignId<Button>(17);
+			CUI_EXPECT_TRUE(expiredDocumentReference.Get() == &scoped);
+			CUI_EXPECT_TRUE(expiredReference.Get() != nullptr);
+		}
+		CUI_EXPECT_FALSE(static_cast<bool>(expiredDocumentReference));
+		CUI_EXPECT_TRUE(expiredDocumentReference
+			.FindControlByDesignId<Button>(17) == nullptr);
+		CUI_EXPECT_TRUE(expiredDocumentReference
+			.ReferenceByDesignId<Button>(17).Get() == nullptr);
+		CUI_EXPECT_TRUE(expiredReference.Get() == nullptr);
+
+		DesignerModel::RuntimeDocument destination;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			firstDocument, destination, {}, &error));
+		auto destinationDocumentReference = destination.Reference();
+		auto destinationReference =
+			destination.ReferenceByDesignId<Button>(17);
+		auto secondDocument = makeDocument("Second");
+		DesignerModel::RuntimeDocument replacement;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			secondDocument, replacement, {}, &error));
+		auto replacementDocumentReference = replacement.Reference();
+		auto replacementReference =
+			replacement.ReferenceByDesignId<Button>(17);
+		destination = std::move(replacement);
+		CUI_EXPECT_TRUE(destinationDocumentReference.Get() == &destination);
+		CUI_EXPECT_TRUE(destinationReference.Get()
+			== destination.FindControlByDesignId<Button>(17));
+		CUI_EXPECT_EQ(std::wstring(L"Second"), destinationReference->Text);
+		CUI_EXPECT_FALSE(static_cast<bool>(replacementDocumentReference));
+		CUI_EXPECT_TRUE(replacementReference.Get() == nullptr);
+	});
+
 	runner.Add("Custom control code generation uses declared include type and constructor", []
 	{
 		DesignerModel::DesignDocument document;
@@ -10341,8 +12213,10 @@ int main()
 			"fancy->TrySetPropertyValue(L\"Severity\", BindingValue(4))")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(header.find(
-			"virtual void HandleSeverityInvoked(Control* sender, int value);")
+			"virtual void HandleSeverityInvoked(Control* sender, int value) = 0;")
 			!= std::string::npos);
+		CUI_EXPECT_TRUE(header.find(
+			"RegisterGeneratedCustomControl(") != std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find(
 			"fancy->OnSeverityInvoked.Subscribe(std::bind_front(&CustomCodeFormGenerated::HandleSeverityInvoked, this))")
 			!= std::string::npos);

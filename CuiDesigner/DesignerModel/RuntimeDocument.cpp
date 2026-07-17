@@ -933,8 +933,21 @@ namespace
 
 }
 
+RuntimeDocument::RuntimeDocument()
+	: _referenceState(
+		std::make_shared<Detail::RuntimeDocumentReferenceState>())
+{
+	_referenceState->Document = this;
+}
+
+RuntimeDocument::RuntimeDocument(RuntimeDocument&& other) noexcept
+{
+	*this = std::move(other);
+}
+
 RuntimeDocument::~RuntimeDocument()
 {
+	if (_referenceState) _referenceState->Document = nullptr;
 	ClearFormEvents();
 	ClearControlEvents();
 	ClearDataBindings();
@@ -943,6 +956,12 @@ RuntimeDocument::~RuntimeDocument()
 RuntimeDocument& RuntimeDocument::operator=(RuntimeDocument&& other) noexcept
 {
 	if (this == &other) return *this;
+	auto referenceState = _referenceState;
+	if (!referenceState)
+		referenceState = std::move(other._referenceState);
+	else if (other._referenceState)
+		other._referenceState->Document = nullptr;
+
 	ClearFormEvents();
 	ClearControlEvents();
 	ClearDataBindings();
@@ -968,6 +987,8 @@ RuntimeDocument& RuntimeDocument::operator=(RuntimeDocument&& other) noexcept
 	_allowCustomControlProxy = other._allowCustomControlProxy;
 	_sourceDocument = std::move(other._sourceDocument);
 	_rootsReleased = other._rootsReleased;
+	_referenceState = std::move(referenceState);
+	if (_referenceState) _referenceState->Document = this;
 	return *this;
 }
 

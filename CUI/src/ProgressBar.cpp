@@ -96,8 +96,8 @@ ProgressBar::ProgressBar(int x, int y, int width, int height)
 {
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
-	this->BackColor = D2D1_COLOR_F{ 0.65f, 0.65f, 0.65f, 0.34f };
-	this->ForeColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.92f };
+	this->BackColor = cui::theme::palette::ScrollTrack;
+	this->ForeColor = cui::theme::palette::Accent;
 }
 
 void ProgressBar::Update()

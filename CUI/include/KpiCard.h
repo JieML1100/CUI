@@ -33,15 +33,15 @@ public:
 	float Border = 1.0f;
 	float CornerRadius = 8.0f;
 
-	D2D1_COLOR_F SurfaceColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.055f };
-	D2D1_COLOR_F ActiveBackColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.16f };
-	D2D1_COLOR_F HoverColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.10f };
-	D2D1_COLOR_F AccentColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.95f };
-	D2D1_COLOR_F MutedTextColor = D2D1_COLOR_F{ 0.72f, 0.76f, 0.82f, 1.0f };
-	D2D1_COLOR_F PositiveColor = D2D1_COLOR_F{ 0.14f, 0.70f, 0.50f, 1.0f };
-	D2D1_COLOR_F NegativeColor = D2D1_COLOR_F{ 0.92f, 0.28f, 0.34f, 1.0f };
-	D2D1_COLOR_F NeutralColor = D2D1_COLOR_F{ 0.66f, 0.70f, 0.78f, 1.0f };
-	D2D1_COLOR_F SparklineFillColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.12f };
+	D2D1_COLOR_F SurfaceColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F ActiveBackColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F HoverColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F AccentColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F MutedTextColor = cui::theme::palette::TextMuted;
+	D2D1_COLOR_F PositiveColor = cui::theme::palette::Positive;
+	D2D1_COLOR_F NegativeColor = cui::theme::palette::Negative;
+	D2D1_COLOR_F NeutralColor = cui::theme::palette::TextMuted;
+	D2D1_COLOR_F SparklineFillColor = cui::theme::palette::AccentSoft;
 
 	KpiCardEvent OnCardClick;
 

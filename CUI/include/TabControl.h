@@ -55,10 +55,10 @@ class TabControl : public Control
 {
 private:
 	D2D1_COLOR_F _titleBackColor = D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.0f };
-	D2D1_COLOR_F _selectedTitleBackColor = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.14f };
-	D2D1_COLOR_F _titleHoverBackColor = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.08f };
-	D2D1_COLOR_F _accentColor = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 1.0f };
-	D2D1_COLOR_F _titleMutedForeColor = Colors::DimGrey;
+	D2D1_COLOR_F _selectedTitleBackColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F _titleHoverBackColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F _accentColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F _titleMutedForeColor = cui::theme::palette::TextMuted;
 	float _titleCornerRadius = 7.0f;
 	float _titleGap = 3.0f;
 	float _titleInset = 2.0f;
@@ -67,10 +67,10 @@ private:
 	float _titleScrollOffset = 0.0f;
 	float _titleScrollMouseWheelStep = 64.0f;
 	float _titleScrollButtonSize = 24.0f;
-	D2D1_COLOR_F _titleScrollTrackColor = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.12f };
-	D2D1_COLOR_F _titleScrollThumbColor = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.58f };
-	D2D1_COLOR_F _titleScrollButtonBackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.76f };
-	D2D1_COLOR_F _titleScrollButtonHoverBackColor = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.18f };
+	D2D1_COLOR_F _titleScrollTrackColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F _titleScrollThumbColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F _titleScrollButtonBackColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F _titleScrollButtonHoverBackColor = cui::theme::palette::AccentSelected;
 	int _animationMode = static_cast<int>(TabControlAnimationMode::DirectReplace);
 	int _titlePosition = static_cast<int>(TabControlTitlePosition::Top);
 	int _selectedIndex = 0;

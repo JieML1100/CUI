@@ -11,10 +11,52 @@
 #include <memory>
 #include <fstream>
 #include <sstream>
+#include <string_view>
 #include <unordered_map>
 #include <map>
 
 struct CodeGenInput;
+
+struct CodeGeneratorFileContent
+{
+	std::wstring Path;
+	std::string Content;
+	/** Exact target state observed before this plan read any user files. */
+	bool ExpectedExisted = false;
+	std::string ExpectedContent;
+};
+
+enum class CodeGeneratorHandlerDefinitionState : unsigned char
+{
+	Missing,
+	Compatible,
+	Incompatible,
+	DuplicateCompatible,
+};
+
+struct CodeGeneratorHandlerDefinitionInspection
+{
+	std::string Name;
+	std::string ParameterList;
+	CodeGeneratorHandlerDefinitionState State =
+		CodeGeneratorHandlerDefinitionState::Missing;
+	size_t DefinitionCount = 0;
+	size_t CompatibleDefinitionCount = 0;
+	size_t IncompatibleShapeDefinitionCount = 0;
+	size_t DeletedCompatibleDefinitionCount = 0;
+	size_t HeaderDefinitionCount = 0;
+	size_t HeaderCompatibleDefinitionCount = 0;
+	size_t HeaderIncompatibleShapeDefinitionCount = 0;
+	size_t HeaderDeletedCompatibleDefinitionCount = 0;
+	size_t SourceDefinitionCount = 0;
+	size_t SourceCompatibleDefinitionCount = 0;
+	size_t SourceIncompatibleShapeDefinitionCount = 0;
+	size_t SourceDeletedCompatibleDefinitionCount = 0;
+	size_t FirstHeaderDefinitionLine = 0;
+	size_t FirstHeaderCompatibleDefinitionLine = 0;
+	size_t FirstSourceDefinitionLine = 0;
+	size_t FirstSourceCompatibleDefinitionLine = 0;
+};
 
 class CodeGenerator
 {
@@ -90,6 +132,20 @@ public:
 		std::wstring formFontName = L"", float formFontSize = 18.0f);
 	
 	bool GenerateFiles(std::wstring headerPath, std::wstring cppPath);
+	/** Builds the exact five-file result without creating or modifying files. */
+	bool BuildFilePlan(
+		std::wstring headerPath,
+		std::wstring cppPath,
+		std::vector<CodeGeneratorFileContent>& files);
+	/** Uses the same token/signature rules as generation without writing files. */
+	bool InspectUserHandlerDefinitions(
+		std::string_view userSource,
+		std::vector<CodeGeneratorHandlerDefinitionInspection>& inspections);
+	/** Jointly inspects inline header and out-of-class source definitions. */
+	bool InspectUserHandlerDefinitions(
+		std::string_view userHeader,
+		std::string_view userSource,
+		std::vector<CodeGeneratorHandlerDefinitionInspection>& inspections);
 	std::string GenerateHeader();
 	std::string GenerateCpp();
 	const std::wstring& GetLastError() const noexcept { return _lastError; }

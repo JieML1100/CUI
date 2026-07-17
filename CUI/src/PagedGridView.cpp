@@ -179,18 +179,18 @@ void PagedGridView::EnsureBindingPropertiesRegistered()
 			PagedGridColorOptions(defaultValue, order))
 
 		CUI_REGISTER_PAGED_COLOR(PagerBackColor, L"PagerBackColor",
-			(D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.72f }), 10);
+			cui::theme::palette::SurfaceSubtle, 10);
 		CUI_REGISTER_PAGED_COLOR(PagerBorderColor, L"PagerBorderColor",
-			(D2D1_COLOR_F{ 0.72f, 0.75f, 0.82f, 0.55f }), 20);
+			cui::theme::palette::Border, 20);
 		CUI_REGISTER_PAGED_COLOR(PagerButtonBackColor, L"PagerButtonBackColor",
-			(D2D1_COLOR_F{ 0.97f, 0.98f, 0.99f, 1.0f }), 30);
+			cui::theme::palette::Surface, 30);
 		CUI_REGISTER_PAGED_COLOR(PagerButtonHoverColor, L"PagerButtonHoverColor",
-			(D2D1_COLOR_F{ 0.20f, 0.46f, 0.90f, 0.16f }), 40);
+			cui::theme::palette::AccentSoft, 40);
 		CUI_REGISTER_PAGED_COLOR(PagerButtonCheckedColor, L"PagerButtonCheckedColor",
-			(D2D1_COLOR_F{ 0.20f, 0.46f, 0.90f, 0.28f }), 50);
-		CUI_REGISTER_PAGED_COLOR(PagerTextColor, L"PagerTextColor", Colors::Black, 60);
+			cui::theme::palette::AccentSelected, 50);
+		CUI_REGISTER_PAGED_COLOR(PagerTextColor, L"PagerTextColor", cui::theme::palette::TextPrimary, 60);
 		CUI_REGISTER_PAGED_COLOR(AccentColor, L"AccentColor",
-			(D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.95f }), 70);
+			cui::theme::palette::Accent, 70);
 
 #undef CUI_REGISTER_PAGED_COLOR
 		return true;

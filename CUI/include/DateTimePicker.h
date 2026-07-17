@@ -136,25 +136,25 @@ public:
 	/** @brief 选择变化事件。 */
 	SelectionChangedEvent OnSelectionChanged;
 	/** @brief 背景色。 */
-	D2D1_COLOR_F PanelBackColor = Colors::WhiteSmoke;
+	D2D1_COLOR_F PanelBackColor = cui::theme::palette::Surface;
 	/** @brief 下拉面板背景色。 */
-	D2D1_COLOR_F DropBackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.98f };
+	D2D1_COLOR_F DropBackColor = cui::theme::palette::Surface;
 	/** @brief 下拉面板边框色。 */
-	D2D1_COLOR_F DropBorderColor = Colors::LightGray;
+	D2D1_COLOR_F DropBorderColor = cui::theme::palette::Border;
 	/** @brief 输入框悬停背景色。 */
-	D2D1_COLOR_F HeaderHoverBackColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.06f };
+	D2D1_COLOR_F HeaderHoverBackColor = cui::theme::palette::AccentSoft;
 	/** @brief 悬停高亮色。 */
-	D2D1_COLOR_F HoverColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.10f };
+	D2D1_COLOR_F HoverColor = cui::theme::palette::AccentSoft;
 	/** @brief 选中高亮色。 */
-	D2D1_COLOR_F AccentColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.95f };
+	D2D1_COLOR_F AccentColor = cui::theme::palette::Accent;
 	/** @brief 柔和选中背景色。 */
-	D2D1_COLOR_F SelectedBackColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.16f };
+	D2D1_COLOR_F SelectedBackColor = cui::theme::palette::AccentSelected;
 	/** @brief 选中项文本颜色。 */
-	D2D1_COLOR_F SelectedForeColor = Colors::Black;
+	D2D1_COLOR_F SelectedForeColor = cui::theme::palette::TextPrimary;
 	/** @brief 次要文本颜色。 */
-	D2D1_COLOR_F SecondaryTextColor = Colors::DimGrey;
+	D2D1_COLOR_F SecondaryTextColor = cui::theme::palette::TextMuted;
 	/** @brief 焦点边框色。 */
-	D2D1_COLOR_F FocusBorderColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.8f };
+	D2D1_COLOR_F FocusBorderColor = cui::theme::palette::Accent;
 
 	/** @brief 是否允许在下拉中切换日期/时间。 */
 	bool AllowModeSwitch = true;

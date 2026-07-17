@@ -66,18 +66,18 @@ public:
 	/** @brief 当前文本测量尺寸缓存（供渲染/布局使用）。 */
 	D2D1_SIZE_F textSize = { 0,0 };
 	/** @brief 鼠标悬停时背景色（实现可能会用到）。 */
-	D2D1_COLOR_F UnderMouseColor = Colors::White;
+	D2D1_COLOR_F UnderMouseColor = cui::theme::palette::SurfaceSubtle;
 	/** @brief 选区背景色。 */
-	D2D1_COLOR_F SelectedBackColor = { 0.f , 0.f , 1.f , 0.5f };
+	D2D1_COLOR_F SelectedBackColor = cui::theme::palette::SelectionBack;
 	/** @brief 选区前景色。 */
-	D2D1_COLOR_F SelectedForeColor = Colors::White;
+	D2D1_COLOR_F SelectedForeColor = cui::theme::palette::TextPrimary;
 	/** @brief 获得焦点时高亮色。 */
-	D2D1_COLOR_F FocusedColor = Colors::White;
+	D2D1_COLOR_F FocusedColor = cui::theme::palette::Surface;
 	/** @brief 滚动条背景色。 */
-	D2D1_COLOR_F ScrollBackColor = Colors::LightGray;
+	D2D1_COLOR_F ScrollBackColor = cui::theme::palette::ScrollTrack;
 	/** @brief 滚动条前景色。 */
-	D2D1_COLOR_F ScrollForeColor = Colors::DimGrey;
-	D2D1_COLOR_F DisabledOverlayColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f };
+	D2D1_COLOR_F ScrollForeColor = cui::theme::palette::ScrollThumb;
+	D2D1_COLOR_F DisabledOverlayColor = cui::theme::palette::DisabledOverlay;
 	/** @brief 是否允许多行输入。 */
 	bool AllowMultiLine = false;
 	/** @brief 是否允许输入 Tab 字符。 */

@@ -19,7 +19,7 @@
 class ToolBarSeparator : public Control
 {
 public:
-	D2D1_COLOR_F LineColor = D2D1_COLOR_F{ 1,1,1,0.28f };
+	D2D1_COLOR_F LineColor = cui::theme::palette::BorderStrong;
 
 	virtual UIClass Type() override;
 	ToolBarSeparator(int width = 1, int height = 20);
@@ -50,9 +50,9 @@ private:
 	int _itemHeight = 26;
 	float _itemCornerRatio = 0.28f;
 	D2D1_COLOR_F _separatorColor =
-		D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.18f };
+		cui::theme::palette::Border;
 	D2D1_COLOR_F _bottomLineColor =
-		D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.14f };
+		cui::theme::palette::Border;
 	bool _showBottomLine = true;
 
 public:

@@ -38,5 +38,8 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
+    <None Include="DemoWindow.cui.xaml">
+      <Filter>资源文件</Filter>
+    </None>
   </ItemGroup>
 </Project>

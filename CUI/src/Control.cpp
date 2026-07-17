@@ -262,6 +262,7 @@ Control::Control()
 	_styleStateConnections.push_back(OnLostFocus.Subscribe(
 		[this](Control*)
 		{
+			_defaultLeftButtonPressActive = false;
 			SetStyleState(ControlStyleState::Focused, false);
 			SetStyleState(ControlStyleState::Pressed, false);
 		}));
@@ -2022,7 +2023,7 @@ void Control::EnsureBindingPropertiesRegistered()
 			[](Control& target, const D2D1_COLOR_F& value) { target.BackColor = value; },
 			{},
 			WithPropertyDesign(ControlPropertyOptions<Control, D2D1_COLOR_F>{
-				Colors::gray91,
+				cui::theme::palette::Surface,
 				ControlPropertyFlags::AffectsRender,
 				{}, {},
 				[](const D2D1_COLOR_F& left, const D2D1_COLOR_F& right)
@@ -2036,7 +2037,7 @@ void Control::EnsureBindingPropertiesRegistered()
 			[](Control& target, const D2D1_COLOR_F& value) { target.ForeColor = value; },
 			{},
 			WithPropertyDesign(ControlPropertyOptions<Control, D2D1_COLOR_F>{
-				Colors::Black,
+				cui::theme::palette::TextPrimary,
 				ControlPropertyFlags::AffectsRender,
 				{}, {},
 				[](const D2D1_COLOR_F& left, const D2D1_COLOR_F& right)
@@ -2050,7 +2051,7 @@ void Control::EnsureBindingPropertiesRegistered()
 			[](Control& target, const D2D1_COLOR_F& value) { target.BorderColor = value; },
 			{},
 			WithPropertyDesign(ControlPropertyOptions<Control, D2D1_COLOR_F>{
-				Colors::Black,
+				cui::theme::palette::Border,
 				ControlPropertyFlags::AffectsRender,
 				{}, {},
 				[](const D2D1_COLOR_F& left, const D2D1_COLOR_F& right)
@@ -2699,6 +2700,8 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int loc
 	case WM_RBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 	{
+		if (WM_LBUTTONDOWN == message)
+			_defaultLeftButtonPressActive = true;
 		if (WM_LBUTTONDOWN == message && this->ParentForm && this->DefaultSelectOnLeftButtonDown())
 		{
 			this->ParentForm->SetSelectedControl(this, false);
@@ -2715,14 +2718,19 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int loc
 	case WM_MBUTTONUP:
 	{
 		bool wasSelected = this->ParentForm && this->ParentForm->Selected == this;
+		const bool hasMatchingPress = message != WM_LBUTTONUP
+			|| _defaultLeftButtonPressActive;
+		if (message == WM_LBUTTONUP)
+			_defaultLeftButtonPressActive = false;
+		const bool selectedForDefaultAction = wasSelected && hasMatchingPress;
 		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
-		this->BeforeDefaultMouseUp(message, eventArgs, wasSelected);
-		if (WM_LBUTTONUP == message && wasSelected && this->DefaultRaiseClickOnLeftButtonUp())
+		this->BeforeDefaultMouseUp(message, eventArgs, selectedForDefaultAction);
+		if (WM_LBUTTONUP == message && selectedForDefaultAction && this->DefaultRaiseClickOnLeftButtonUp())
 		{
 			this->BeforeDefaultClick(message, eventArgs);
 			this->OnMouseClick(this, eventArgs);
 		}
-		if (wasSelected && this->DefaultClearSelectionOnMouseUp() && this->ParentForm && this->ParentForm->Selected == this)
+		if (selectedForDefaultAction && this->DefaultClearSelectionOnMouseUp() && this->ParentForm && this->ParentForm->Selected == this)
 		{
 			this->ParentForm->SetSelectedControl(nullptr, false);
 		}
@@ -2733,6 +2741,7 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int loc
 	break;
 	case WM_LBUTTONDBLCLK:
 	{
+		_defaultLeftButtonPressActive = true;
 		bool wasSelected = this->ParentForm && this->ParentForm->Selected == this;
 		if (this->ParentForm && this->DefaultSelectOnLeftButtonDoubleClick())
 		{
@@ -2746,6 +2755,11 @@ bool Control::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int loc
 			this->InvalidateVisual();
 	}
 	break;
+	case WM_CANCELMODE:
+	case WM_CAPTURECHANGED:
+		_defaultLeftButtonPressActive = false;
+		SetStyleState(ControlStyleState::Pressed, false);
+		break;
 	case WM_KEYDOWN:
 	{
 		KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));

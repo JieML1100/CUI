@@ -100,5 +100,6 @@ dkms.conf
 *.log
 *.recipe
 *.txt
+*.cui.v*.stamp
 *.iobj
 *.ipdb

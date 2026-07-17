@@ -31,13 +31,13 @@ private:
 	bool _syncGridEditsOnPageChange = true;
 	std::vector<uint32_t> _sourceColumnIds;
 	EventConnection _columnsChangedConnection;
-	D2D1_COLOR_F _pagerBackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.72f };
-	D2D1_COLOR_F _pagerBorderColor = D2D1_COLOR_F{ 0.72f, 0.75f, 0.82f, 0.55f };
-	D2D1_COLOR_F _pagerButtonBackColor = D2D1_COLOR_F{ 0.97f, 0.98f, 0.99f, 1.0f };
-	D2D1_COLOR_F _pagerButtonHoverColor = D2D1_COLOR_F{ 0.20f, 0.46f, 0.90f, 0.16f };
-	D2D1_COLOR_F _pagerButtonCheckedColor = D2D1_COLOR_F{ 0.20f, 0.46f, 0.90f, 0.28f };
-	D2D1_COLOR_F _pagerTextColor = Colors::Black;
-	D2D1_COLOR_F _accentColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.95f };
+	D2D1_COLOR_F _pagerBackColor = cui::theme::palette::SurfaceSubtle;
+	D2D1_COLOR_F _pagerBorderColor = cui::theme::palette::Border;
+	D2D1_COLOR_F _pagerButtonBackColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F _pagerButtonHoverColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F _pagerButtonCheckedColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F _pagerTextColor = cui::theme::palette::TextPrimary;
+	D2D1_COLOR_F _accentColor = cui::theme::palette::Accent;
 
 	Button* _firstButton = nullptr;
 	Button* _prevButton = nullptr;

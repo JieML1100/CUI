@@ -81,19 +81,19 @@ public:
 	int FocusedIndex = -1;
 	float ScrollYOffset = 0.0f;
 
-	D2D1_COLOR_F SurfaceColor = D2D1_COLOR_F{ 0.98f, 0.985f, 0.995f, 0.96f };
-	D2D1_COLOR_F HeaderBackColor = D2D1_COLOR_F{ 0.92f, 0.94f, 0.98f, 0.72f };
-	D2D1_COLOR_F MutedTextColor = D2D1_COLOR_F{ 0.42f, 0.47f, 0.56f, 1.0f };
-	D2D1_COLOR_F SelectedItemBackColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.16f };
-	D2D1_COLOR_F SelectedItemForeColor = Colors::Black;
-	D2D1_COLOR_F UnderMouseItemBackColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.10f };
-	D2D1_COLOR_F AccentColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.95f };
-	D2D1_COLOR_F IconPlaceholderColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.18f };
-	D2D1_COLOR_F BadgeBackColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.86f };
-	D2D1_COLOR_F BadgeForeColor = Colors::White;
-	D2D1_COLOR_F SeparatorColor = D2D1_COLOR_F{ 0.52f, 0.58f, 0.68f, 0.32f };
-	D2D1_COLOR_F ScrollBackColor = Colors::LightGray;
-	D2D1_COLOR_F ScrollForeColor = Colors::DimGrey;
+	D2D1_COLOR_F SurfaceColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F HeaderBackColor = cui::theme::palette::SurfaceMuted;
+	D2D1_COLOR_F MutedTextColor = cui::theme::palette::TextMuted;
+	D2D1_COLOR_F SelectedItemBackColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F SelectedItemForeColor = cui::theme::palette::TextPrimary;
+	D2D1_COLOR_F UnderMouseItemBackColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F AccentColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F IconPlaceholderColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F BadgeBackColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F BadgeForeColor = cui::theme::palette::OnAccent;
+	D2D1_COLOR_F SeparatorColor = cui::theme::palette::Border;
+	D2D1_COLOR_F ScrollBackColor = cui::theme::palette::ScrollTrack;
+	D2D1_COLOR_F ScrollForeColor = cui::theme::palette::ScrollThumb;
 
 	NavigationViewItemEvent OnItemClick;
 	NavigationViewItemEvent OnItemDoubleClick;
@@ -200,11 +200,11 @@ public:
 	float ItemGap = 4.0f;
 	float SeparatorWidth = 18.0f;
 
-	D2D1_COLOR_F SurfaceColor = D2D1_COLOR_F{ 0.98f, 0.985f, 0.995f, 0.86f };
-	D2D1_COLOR_F HoverBackColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.10f };
-	D2D1_COLOR_F SelectedBackColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.16f };
-	D2D1_COLOR_F MutedTextColor = D2D1_COLOR_F{ 0.42f, 0.47f, 0.56f, 1.0f };
-	D2D1_COLOR_F AccentColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.95f };
+	D2D1_COLOR_F SurfaceColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F HoverBackColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F SelectedBackColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F MutedTextColor = cui::theme::palette::TextMuted;
+	D2D1_COLOR_F AccentColor = cui::theme::palette::Accent;
 
 	BreadcrumbBarItemEvent OnItemClick;
 	SelectionChangedEvent SelectionChanged;

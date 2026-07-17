@@ -394,20 +394,20 @@ void ListView::EnsureBindingPropertiesRegistered()
 			ListViewPropertySubscriber(propertyName), \
 			ListViewColorOptions(defaultValue, order))
 
-		CUI_REGISTER_LIST_COLOR(HeaderBackColor, L"HeaderBackColor", (D2D1_COLOR_F{ 0.18f, 0.22f, 0.28f, 0.95f }), 10);
-		CUI_REGISTER_LIST_COLOR(HeaderForeColor, L"HeaderForeColor", (D2D1_COLOR_F{ 0.90f, 0.93f, 0.98f, 1.0f }), 20);
-		CUI_REGISTER_LIST_COLOR(GridLineColor, L"GridLineColor", (D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.24f }), 30);
-		CUI_REGISTER_LIST_COLOR(AlternateItemBackColor, L"AlternateItemBackColor", (D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.04f }), 40);
-		CUI_REGISTER_LIST_COLOR(SelectedItemBackColor, L"SelectedItemBackColor", (D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.32f }), 50);
-		CUI_REGISTER_LIST_COLOR(SelectedItemForeColor, L"SelectedItemForeColor", Colors::Black, 60);
-		CUI_REGISTER_LIST_COLOR(UnderMouseItemBackColor, L"UnderMouseItemBackColor", (D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.12f }), 70);
-		CUI_REGISTER_LIST_COLOR(DisabledItemForeColor, L"DisabledItemForeColor", (D2D1_COLOR_F{ 0.50f, 0.52f, 0.58f, 1.0f }), 80);
-		CUI_REGISTER_LIST_COLOR(MutedTextColor, L"MutedTextColor", (D2D1_COLOR_F{ 0.58f, 0.62f, 0.70f, 1.0f }), 90);
-		CUI_REGISTER_LIST_COLOR(AccentColor, L"AccentColor", (D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.95f }), 100);
-		CUI_REGISTER_LIST_COLOR(CheckBackColor, L"CheckBackColor", Colors::White, 110);
-		CUI_REGISTER_LIST_COLOR(CheckBorderColor, L"CheckBorderColor", (D2D1_COLOR_F{ 0.45f, 0.48f, 0.55f, 1.0f }), 120);
-		CUI_REGISTER_LIST_COLOR(ScrollBackColor, L"ScrollBackColor", Colors::LightGray, 130);
-		CUI_REGISTER_LIST_COLOR(ScrollForeColor, L"ScrollForeColor", Colors::DimGrey, 140);
+		CUI_REGISTER_LIST_COLOR(HeaderBackColor, L"HeaderBackColor", cui::theme::palette::SurfaceMuted, 10);
+		CUI_REGISTER_LIST_COLOR(HeaderForeColor, L"HeaderForeColor", cui::theme::palette::TextPrimary, 20);
+		CUI_REGISTER_LIST_COLOR(GridLineColor, L"GridLineColor", cui::theme::palette::Border, 30);
+		CUI_REGISTER_LIST_COLOR(AlternateItemBackColor, L"AlternateItemBackColor", cui::theme::palette::SurfaceSubtle, 40);
+		CUI_REGISTER_LIST_COLOR(SelectedItemBackColor, L"SelectedItemBackColor", cui::theme::palette::AccentSelected, 50);
+		CUI_REGISTER_LIST_COLOR(SelectedItemForeColor, L"SelectedItemForeColor", cui::theme::palette::TextPrimary, 60);
+		CUI_REGISTER_LIST_COLOR(UnderMouseItemBackColor, L"UnderMouseItemBackColor", cui::theme::palette::AccentSoft, 70);
+		CUI_REGISTER_LIST_COLOR(DisabledItemForeColor, L"DisabledItemForeColor", cui::theme::palette::TextMuted, 80);
+		CUI_REGISTER_LIST_COLOR(MutedTextColor, L"MutedTextColor", cui::theme::palette::TextMuted, 90);
+		CUI_REGISTER_LIST_COLOR(AccentColor, L"AccentColor", cui::theme::palette::Accent, 100);
+		CUI_REGISTER_LIST_COLOR(CheckBackColor, L"CheckBackColor", cui::theme::palette::Surface, 110);
+		CUI_REGISTER_LIST_COLOR(CheckBorderColor, L"CheckBorderColor", cui::theme::palette::BorderStrong, 120);
+		CUI_REGISTER_LIST_COLOR(ScrollBackColor, L"ScrollBackColor", cui::theme::palette::ScrollTrack, 130);
+		CUI_REGISTER_LIST_COLOR(ScrollForeColor, L"ScrollForeColor", cui::theme::palette::ScrollThumb, 140);
 
 #undef CUI_REGISTER_LIST_COLOR
 		return true;
@@ -526,8 +526,9 @@ ListView::ListView(int x, int y, int width, int height)
 		{ OnColumnsCollectionChanged(change); });
 	this->Location = { x, y };
 	this->Size = { width, height };
-	this->BackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.0f };
-	this->BorderColor = D2D1_COLOR_F{ 0.45f, 0.48f, 0.55f, 0.72f };
+	this->BackColor = cui::theme::palette::Surface;
+	this->BorderColor = cui::theme::palette::Border;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 }
 
 void ListView::BeginUpdate() noexcept

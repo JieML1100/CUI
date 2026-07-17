@@ -480,35 +480,35 @@ void PropertyGridView::EnsureBindingPropertiesRegistered()
 			PropertyGridColorOptions(defaultValue, order))
 
 		CUI_REGISTER_PROPERTY_GRID_COLOR(HeaderBackColor, L"HeaderBackColor",
-			(D2D1_COLOR_F{ 0.18f, 0.22f, 0.28f, 0.95f }), 10);
+			cui::theme::palette::SurfaceMuted, 10);
 		CUI_REGISTER_PROPERTY_GRID_COLOR(HeaderForeColor, L"HeaderForeColor",
-			(D2D1_COLOR_F{ 0.90f, 0.93f, 0.98f, 1.0f }), 20);
+			cui::theme::palette::TextPrimary, 20);
 		CUI_REGISTER_PROPERTY_GRID_COLOR(CategoryBackColor, L"CategoryBackColor",
-			(D2D1_COLOR_F{ 0.20f, 0.23f, 0.29f, 0.82f }), 30);
+			cui::theme::palette::SurfaceSubtle, 30);
 		CUI_REGISTER_PROPERTY_GRID_COLOR(CategoryForeColor, L"CategoryForeColor",
-			(D2D1_COLOR_F{ 0.92f, 0.94f, 0.98f, 1.0f }), 40);
+			cui::theme::palette::TextSecondary, 40);
 		CUI_REGISTER_PROPERTY_GRID_COLOR(GridLineColor, L"GridLineColor",
-			(D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.28f }), 50);
+			cui::theme::palette::Border, 50);
 		CUI_REGISTER_PROPERTY_GRID_COLOR(AlternateRowBackColor, L"AlternateRowBackColor",
-			(D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.04f }), 60);
+			cui::theme::palette::SurfaceSubtle, 60);
 		CUI_REGISTER_PROPERTY_GRID_COLOR(SelectedItemBackColor, L"SelectedItemBackColor",
-			(D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.28f }), 70);
+			cui::theme::palette::AccentSelected, 70);
 		CUI_REGISTER_PROPERTY_GRID_COLOR(UnderMouseItemBackColor, L"UnderMouseItemBackColor",
-			(D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.12f }), 80);
+			cui::theme::palette::AccentSoft, 80);
 		CUI_REGISTER_PROPERTY_GRID_COLOR(ReadOnlyForeColor, L"ReadOnlyForeColor",
-			(D2D1_COLOR_F{ 0.58f, 0.62f, 0.70f, 1.0f }), 90);
+			cui::theme::palette::TextMuted, 90);
 		CUI_REGISTER_PROPERTY_GRID_COLOR(AccentColor, L"AccentColor",
-			(D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.95f }), 100);
-		CUI_REGISTER_PROPERTY_GRID_COLOR(EditBackColor, L"EditBackColor", Colors::White, 110);
-		CUI_REGISTER_PROPERTY_GRID_COLOR(EditForeColor, L"EditForeColor", Colors::Black, 120);
+			cui::theme::palette::Accent, 100);
+		CUI_REGISTER_PROPERTY_GRID_COLOR(EditBackColor, L"EditBackColor", cui::theme::palette::Surface, 110);
+		CUI_REGISTER_PROPERTY_GRID_COLOR(EditForeColor, L"EditForeColor", cui::theme::palette::TextPrimary, 120);
 		CUI_REGISTER_PROPERTY_GRID_COLOR(EditSelectedBackColor, L"EditSelectedBackColor",
-			(D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.30f }), 130);
-		CUI_REGISTER_PROPERTY_GRID_COLOR(EditSelectedForeColor, L"EditSelectedForeColor", Colors::Black, 140);
-		CUI_REGISTER_PROPERTY_GRID_COLOR(CheckBackColor, L"CheckBackColor", Colors::White, 150);
+			cui::theme::palette::SelectionBack, 130);
+		CUI_REGISTER_PROPERTY_GRID_COLOR(EditSelectedForeColor, L"EditSelectedForeColor", cui::theme::palette::TextPrimary, 140);
+		CUI_REGISTER_PROPERTY_GRID_COLOR(CheckBackColor, L"CheckBackColor", cui::theme::palette::Surface, 150);
 		CUI_REGISTER_PROPERTY_GRID_COLOR(CheckBorderColor, L"CheckBorderColor",
-			(D2D1_COLOR_F{ 0.45f, 0.48f, 0.55f, 1.0f }), 160);
-		CUI_REGISTER_PROPERTY_GRID_COLOR(ScrollBackColor, L"ScrollBackColor", Colors::LightGray, 170);
-		CUI_REGISTER_PROPERTY_GRID_COLOR(ScrollForeColor, L"ScrollForeColor", Colors::DimGrey, 180);
+			cui::theme::palette::BorderStrong, 160);
+		CUI_REGISTER_PROPERTY_GRID_COLOR(ScrollBackColor, L"ScrollBackColor", cui::theme::palette::ScrollTrack, 170);
+		CUI_REGISTER_PROPERTY_GRID_COLOR(ScrollForeColor, L"ScrollForeColor", cui::theme::palette::ScrollThumb, 180);
 
 #undef CUI_REGISTER_PROPERTY_GRID_COLOR
 
@@ -568,8 +568,9 @@ PropertyGridView::PropertyGridView(int x, int y, int width, int height)
 		{ OnItemsCollectionChanged(change); });
 	this->Location = { x, y };
 	this->Size = { width, height };
-	this->BackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.0f };
-	this->BorderColor = D2D1_COLOR_F{ 0.45f, 0.48f, 0.55f, 0.72f };
+	this->BackColor = cui::theme::palette::Surface;
+	this->BorderColor = cui::theme::palette::Border;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 }
 
 PropertyGridView::~PropertyGridView()

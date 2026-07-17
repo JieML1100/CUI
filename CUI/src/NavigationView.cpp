@@ -143,8 +143,8 @@ NavigationView::NavigationView(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BorderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.48f };
-	this->ForeColor = Colors::Black;
+	this->BorderColor = cui::theme::palette::Border;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 }
 
 bool NavigationView::IsCompactMode() const
@@ -803,8 +803,8 @@ BreadcrumbBar::BreadcrumbBar(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BorderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.40f };
-	this->ForeColor = Colors::Black;
+	this->BorderColor = cui::theme::palette::Border;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 }
 
 int BreadcrumbBar::AddItem(const BreadcrumbBarItem& item)

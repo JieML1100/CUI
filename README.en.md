@@ -9,7 +9,7 @@ CUI is a modern native Windows GUI framework based on **Direct2D** and **DirectC
 This repository mainly contains:
 - `CUI/`: runtime GUI framework and controls
 - `CuiDesigner/`: visual UI designer
-- `CUITest/`: samples and test program
+- `CUITest/`: complete dynamic UI control gallery driven by external `DemoWindow.cui.xaml`
 - `D2DGraphics/`: low-level graphics wrapper
 - `Utils/`: general utilities still used by the designer and related projects
 
@@ -265,8 +265,11 @@ preserve their exact Local and tracked states. Simple Add/Delete subtree entries
 estimate. All eight modal structural editors now use local deltas: six store typed value
 collections, while TabControl pages and ToolBar buttons transfer live subtree ownership,
 Designer wrappers, stable IDs, selection, and attachment metadata without rebuilding instances.
-Form, event, and Binding edits retain the full-document transaction fallback; gestures in an unidentifiable custom parent
-also fall back safely.
+Single Form/control event edits and document-wide handler renames use stable-ID event
+deltas. Remaining Form-property and Binding edits retain the full-document transaction
+fallback; gestures in an unidentifiable custom parent also fall back safely. Event deltas
+verify every expected mapping, build replacement maps off-document, and commit them with
+non-throwing swaps, so a stale command cannot overwrite newer handlers or rebuild controls.
 
 Changes to the same property on the same selection, and consecutive keyboard nudges, merge
 the original before state with the newest after state when commits are at most one second
@@ -289,13 +292,15 @@ Accessible descriptions and inline summaries refresh after validation or style c
 making precedence issues visible. Event rows are editable C++ member-function
 names rather than Boolean switches: empty unbinds, legacy `1/true` values resolve to a
 conventional default, and F4/the drop-down lists handlers with the same parameter
-signature. Events are grouped as action, value, mouse, keyboard, focus, drag/drop,
+signature from both the document and the user `.h/.cpp`. A source candidate must be a unique
+real member definition of the current `x:Class`; constructors, wrong signatures, duplicate
+definitions, and comment/string/raw-string lookalikes are omitted. Events are grouped as action, value, mouse, keyboard, focus, drag/drop,
 layout, lifecycle, data, navigation, media, or diagnostics, and the catalog declares one
 default event per control type. Double-clicking either an event row or a control on the
 canvas reuses an existing handler or writes the conventional default through the normal
 undoable transaction; double-clicking the Form client surface activates its one-shot
 `OnShown` event. After one explicit code export, activation also safely regenerates `.g.*`,
-appends a missing user stub, and opens the user `.cpp`. Source lookup ignores comments,
+appends a missing user stub to `.cpp`, and opens the actual `.h` or `.cpp` definition. Source lookup ignores comments,
 ordinary/raw strings, and declarations. The Designer detects VS Code or Visual Studio and
 requests the exact definition line without sending paths through a shell. Hosts may override
 the executable with `CUI_CODE_EDITOR` and provide a `CUI_CODE_EDITOR_ARGS` template containing
@@ -307,31 +312,80 @@ the first export it only asks the user to establish a target and never guesses a
 path. `x:Class` accepts `Acme.Views.MainWindow` or `Acme::Views::MainWindow` and canonicalizes
 to C++ `::`; generated headers declare the leaf type inside that namespace, independently of
 the output file stem. Invalid class segments/handlers and cross-signature reuse are rejected.
+Once associated, Regenerate also reports exact freshness: `*` means the design and code
+differ, `!` means one or more files are missing, and “generation blocked” means an existing
+user-file identity or handler signature prevents a safe update. No suffix means the five-file
+plan is byte-for-byte current. Document commits mark the target stale immediately and debounce
+an exact recheck; Undo can return immediately to a known generated state, and reactivating the
+app detects external file drift.
 
 Code export separates regenerated and user-owned files. `FormName.g.h/.g.cpp` contains
 the generated base class, protected typed control references, virtual event hooks, and
 RAII-owned `Subscribe(std::bind_front(...))` connections. `FormName.h/.cpp` is created
-once; later exports only append missing handler stubs. `FormName.handlers.g.inc` retains
-old declarations after unbinding so existing user definitions keep compiling. A small C++
-token scan recognizes actual `Class::Handler(...) {}` definitions while ignoring comments,
+once; later exports only append missing handler stubs to the user source. A handler may also
+be defined inline as `void Handler(...) {}` in the exact user class body. In that case
+`FormName.handlers.g.inc` omits the conflicting in-class declaration. A currently bound handler
+defined in the user `.cpp` is declared with `override`, making the generated virtual contract
+compiler-visible. After unbinding, that retained declaration becomes an ordinary member so the
+existing user definition still compiles; rebinding restores `override`. A shared C++ token index jointly recognizes inline and
+out-of-class definitions in `.h/.cpp` while ignoring comments,
 ordinary/raw strings, and prefix collisions such as `Handle` versus `HandleSave`; fake text
-therefore cannot suppress a required stub. Before writing, the same token surface verifies
-that an existing user header derives the current generated base and that the user source owns
-the matching constructor, preventing a manually changed `x:Class` from mixing class generations.
+therefore cannot suppress a required stub. It also compares parameter types for an existing
+same-name definition and requires a non-static, non-cv/ref `void` member that can really
+override the generated virtual hook. Parameter names and whitespace may change, but return
+type, `static`/`const`/ref qualifiers, or parameter-type drift is rejected before any target
+is replaced and is excluded from candidates and body migration. Inline `noexcept` and the
+equivalent trailing `auto ... -> void` remain supported. Preprocessor directives and continued macro bodies never
+contribute scope tokens; inactive branches selected by definite `#if 0` / `#if 1` conditions
+are ignored, while unknown macro conditions are retained conservatively. Masking preserves
+the original offsets and line numbers so diagnostics, navigation, and body migration share
+the same positions. Fully qualified definitions, traditional nested namespace
+blocks, and C++17 `namespace Acme::Views` blocks resolve to the same `x:Class`; a similarly
+named class in a neighboring namespace does not match. Before writing, the same token surface verifies
+that an existing user header contains exactly one class body in the precise `x:Class` namespace,
+derives the current generated base, and that the user header and source jointly contain exactly
+one usable default constructor, preventing a manually changed `x:Class` from mixing class
+generations. The constructor may be out of class, inline, or `= default`; `= delete` and duplicate
+cross-file definitions block before any write. If the user source is missing while the header owns
+the constructor, source recreation does not emit a duplicate body. Export macros, `final`,
+access specifiers, and multiple direct bases remain valid; a same-leaf class in a definitely
+inactive branch or neighboring namespace no longer proves identity.
 Export refuses same-name files with missing markers or mismatched class identity. Every target in one export is staged and flushed beside
 its destination before batch commit. If a target is locked or replacement fails, previously
 committed existing files are restored from backups in reverse order and newly created targets
 are removed, preventing mixed generations across `.g.h`, `.g.cpp`, `.handlers.g.inc`, and the
-user source.
-Only an explicit export creates or changes the code-behind association. An unsaved design
-first records the class identity, then computes the portable relative path when the design
-file is first saved. The association participates in normal document transactions and
-Undo/Redo; absolute machine-specific paths are never persisted.
+user source. A plan also captures the existence and exact bytes of all five targets before it
+reads user code, then rechecks them before staging, before each mutation, and through the backup.
+If an IDE or another process changes or creates any target after planning, the entire commit is
+rejected instead of overwriting that edit. Interactive export additionally uses `GenerateAndCommit` across the file and
+document transactions: if generation succeeds but the code-behind association cannot commit,
+all five paths recover their exact pre-export existence and bytes through another rollback-safe,
+conditional batch. An external edit made during the association callback is preserved and reported
+as an incomplete rollback rather than being overwritten by the old snapshot. Explicit handler-body
+migration and its Undo/Redo path use the same conditional commit and rollback semantics.
+write/delete batch.
+Only an explicit export creates or changes the code-behind association. After an output is
+selected, the Designer shows the current `x:Class`, target base, and resulting `d:CodeBehind`,
+and accepts a qualified C++ class name. It preserves the existing identity by default; a class
+migration occurs only when the user explicitly edits that field. Migration never rewrites old
+user bodies, and the five-file identity guard rejects a target that still belongs to the old
+class. An unsaved design first records the identity, then computes the portable relative path
+when the design file is first saved. The complete class, extensionless output, and relative
+association are validated before generation starts. The association participates in normal
+document transactions and Undo/Redo; absolute machine-specific paths are never persisted.
+A Form with no child controls is also exportable, so Form-only events such as `OnShown` and
+`OnClose` still receive generated user handlers. Once associated, the toolbar's Regenerate
+action reuses the current target without reopening the file/class dialogs; open, recovery, and
+code-behind Undo/Redo keep its enabled state synchronized.
 
 The Designer window and build tooling now call the same HWND-free
 `DesignCodeGenerationService`, so interactive export, CI, and local builds cannot drift into
-separate generation rules. `CuiCodeGenCore/CuiCodeGenCore.vcxproj` is the sole compilation
-owner of `CodeGenerator.cpp` and the service implementation and emits `CuiCodeGenCore.lib`;
+separate generation rules. `CodeGenerator::BuildFilePlan` first constructs the exact five-file
+result, then the normal path atomically commits it. `InspectFreshness` reuses that plan strictly
+read-only: it creates no directories and preserves timestamps. Arbitrary valid user additions
+in `.h/.cpp` remain part of the plan, while missing event stubs, managed/declaration drift, or
+missing targets are detected precisely. `CuiCodeGenCore/CuiCodeGenCore.vcxproj` is the sole compilation
+owner of `CodeGenerator.cpp`, shared `CppUserCodeIndex.cpp`, and the service implementation and emits `CuiCodeGenCore.lib`;
 the Designer, `CuiCodeGen.exe`, and `CUICoreTests` only link that library instead of compiling
 parallel copies. `CuiCodeGen.exe` accepts `.xml` and `.xaml`; by default it reads
 `x:Class` and `d:CodeBehind`, while explicit class and extensionless output-base overrides are
@@ -360,9 +414,14 @@ more `CuiDesign` items, and import `build/CuiCodeGen.targets` after
 <Import Project="..\build\CuiCodeGen.targets" />
 ```
 
-The target records design-file freshness with a stamp under `$(IntDir)\CuiCodeGen` and verifies
-that all five code files exist before accepting that stamp. An unchanged input does not launch
-the generator. Even when the input timestamp changes, byte-identical canonical output keeps
+The target records freshness for the design file, imported targets rules, and all five code
+files with a contract-versioned stamp under `$(IntDir)\CuiCodeGen`. User `.h/.cpp` extensions
+remain intact, while an external edit to `.g.h`, `.g.cpp`, or `.handlers.g.inc` makes an ordinary
+Build restore canonical generated content. All five files must exist before the stamp is accepted,
+and unchanged inputs do not launch the generator.
+The current generation contract is 7. A generator
+output-semantic change bumps the contract version so the old stamp path cannot be accepted,
+while an ordinary executable relink does not cause needless generation. Even when an input timestamp changes, byte-identical canonical output keeps
 the code files and their timestamps intact, avoiding a needless C++ rebuild.
 `CuiStaticGeneratedSample` uses this build path instead of relying on a manual pre-generation
 step.
@@ -386,15 +445,91 @@ and replaced reloads can refresh presentation and rebuild Form connections. Stat
 now comes from that same `RuntimeDocument`, and generated document styles are attached
 to every root tree instead of calling the nonexistent `Form::SetStyleSheet`.
 
+The same `.g.h` also emits a `ClassReferences<TDocument>` dynamic reference view for every
+named control with a stable `DesignId`. It is a zero-owning template, so a static-only consumer
+does not acquire a `CuiRuntime` dependency merely by including the header. A dynamic host passes
+its `RuntimeDocument` or `session.Document()` and then uses the same typed `GetXxx()` shape as
+the static class, or retains a `ReferenceXxx()` handle that resolves the stable ID on every
+access and therefore follows InPlace, Recomposed, and Replaced reloads. The view stores the
+weak lifetime view returned by `document.Reference()`, not a raw document pointer: it follows
+document moves, and after destruction its boolean conversion is false while `TryDocument()`
+and `GetXxx()` return null:
+
+```cpp
+Acme::Views::MainWindowReferences<DesignerModel::RuntimeDocument>
+    ui{session.Document()};
+auto namespaceButton = ui.ReferenceNamespaceButton();
+if (namespaceButton) namespaceButton->Text = L"Save";
+```
+
+A raw pointer returned by `GetXxx()` represents the current instance only and should not be
+retained across a reload that may replace topology; use `ReferenceXxx()` for long-lived access.
+`Document()` remains as the compatibility reference accessor and requires a live view; use
+`TryDocument()` when lifetime is uncertain.
+Static construction, dynamic XAML, and hot reload now share names, types, and stable identities
+without hand-written ID lookup or casts.
+
+When the document has named events, the generated header also emits a `ClassEventSink`. Every
+unique handler becomes a pure virtual function, while
+`RegisterDynamicEventHandlers(registry)` generates and registers all ordinary-control, Form,
+and restricted custom-event routes in one call, binding member callbacks to the sink instance
+with `std::bind_front`. A dynamic controller only derives from the sink and implements the
+functions (overrides may remain private); missing handlers or signature drift fail at C++ compile
+time. `RuntimeEventHandlerRegistry::RegisterScopedBatch` snapshots the complete route set and
+returns a move-only lease, so a duplicate, signature conflict, or exception restores the exact
+pre-call registry instead of leaving a partial resolver. The sink owns that lease: registering
+against another registry, explicitly calling `UnregisterDynamicEventHandlers()`, or destroying
+the sink removes only its generated routes. A loaded RuntimeDocument still owns its existing
+EventConnections, so generated callbacks also carry a weak lifetime gate; after lease release,
+those old subscriptions safely become no-ops instead of calling a destroyed controller. The
+generated static Form inherits the same sink, preserving one virtual-handler contract for both
+deployment paths. Event sinks are non-copyable/non-movable and retain the registry's UI-thread
+lifetime rule.
+
+```cpp
+class MainWindowController final : public Acme::Views::MainWindowEventSink {
+private:
+    void HandleSave(Control*, MouseEventArgs) override { /* ... */ }
+    // The compiler requires the remaining handlers currently referenced by XAML.
+};
+
+MainWindowController controller;
+DesignerModel::RuntimeEventHandlerRegistry handlers;
+if (!controller.RegisterDynamicEventHandlers(handlers, &error)) {
+    // The whole batch failed and the registry still has its previous state.
+}
+options.ControlEventResolver = handlers.ControlResolver();
+auto formResolver = handlers.FormResolver();
+// controller.UnregisterDynamicEventHandlers(); // optional; destruction also releases it
+```
+
 `DesignDocumentEventIndex` resolves every form/control event reference into a handler
 name plus its exact C++ Event function type. It centrally rejects unknown events, invalid
 identifiers, and cross-signature name reuse. Event rows remain editable and offer
 same-signature handlers; the document-wide Rename Handler action updates every shared
-reference as one undoable transaction. XML, XAML, dynamic loading, and static generation
-therefore use the same contract. Static output still emits
-`Subscribe(std::bind_front(&GeneratedClass::Handler, this))`. Renaming deliberately does
-not rewrite arbitrary user C++ bodies; regeneration preserves the old user code and
-creates a missing safe stub for the new name.
+reference as one compact `EventHandlerCommand`. It checks Form/stable-control identity and
+all expected mappings before committing replacement maps, so Undo/Redo preserves live
+control instances. XML, XAML, dynamic loading, and static generation therefore use the same
+contract. Static output still emits
+`Subscribe(std::bind_front(&GeneratedClass::Handler, this))`. By default, renaming deliberately
+does not rewrite arbitrary user C++ bodies; regeneration preserves the old user code and
+creates a missing safe stub for the new name. When the old handler has exactly one compatible
+definition in the user `.cpp` and the target has no same-signature body, the dialog offers an
+explicit “migrate user body and regenerate” option. It replaces only the member-name token,
+preserves the body/comments/literals byte-for-byte, and commits the five code files together
+with the event-map command. Undo/Redo performs the inverse migration and regeneration; an
+external source conflict or generation failure leaves history retryable and restores the
+pre-operation document and file snapshot.
+
+Once code-behind is associated, every event row also shows `[checking]`, `[implemented]`,
+`[pending generation]`, `[source missing]`, `[signature error]`, or `[duplicate definition]`.
+The scan uses the same token and parameter-type index as generation, ignoring comments,
+ordinary/raw strings, whitespace, and parameter-name changes. Document commits, completed
+generation, and app reactivation refresh the badges without losing event-group expansion or
+scroll position. Double-clicking a current implementation navigates directly; a missing body is
+generated first; a signature error or duplicate definition opens the existing bad body instead
+of stopping at the expected generation failure. When overloads share a name, navigation selects
+the definition compatible with the event's exact parameter types.
 
 Dynamic hosts no longer need a handler-name `if/switch` for every load.
 `RuntimeEventHandlerRegistry` registers a handler name, Designer event descriptor, real
@@ -669,9 +804,14 @@ presentation, Form-event connections, and the root forest as one transaction. Re
 or host rejection preserves the old presentation/font semantics, connections, and root slots.
 
 `FindControlByDesignId` and `FindControlByName` use document-owned O(1) indexes.
-`RuntimeControlRef<T>` is non-owning and resolves its stable ID on every access, so it
-follows `InPlace`, `Recomposed`, and `Replaced` reloads. Keep the same
-`RuntimeDocument` object alive and at a stable address while references are in use.
+`RuntimeControlRef<T>` owns neither the control nor the document. It resolves its stable
+ID through a weak document-lifetime state on every access, so it follows `InPlace`,
+`Recomposed`, and `Replaced` reloads; after document destruction `Get()` safely returns
+null instead of touching a dangling address. Move construction transfers that state to the
+new document. Loading, reloading, or move-assigning into an existing destination preserves
+references issued by that destination, while references issued by the assignment source expire.
+`RuntimeDocument::Reference()` exposes the same state as a storable `RuntimeDocumentRef`;
+its typed find/reference operations also return null after the document expires.
 
 For a lower-level host that composes monitoring itself, use the threadless
 `RuntimeDocumentFileWatcher`. The host calls
@@ -721,6 +861,25 @@ Applications include only
 msbuild CuiRuntimeSample\CuiRuntimeSample.vcxproj /m /p:Configuration=Debug /p:Platform=x64
 .\CuiRuntimeSample\x64\Debug\CuiRuntimeSample.exe
 ```
+
+`CUITest` has migrated all eight pages that were previously constructed manually in
+`DemoWindow.cpp` to the external `DemoWindow.cui.xaml`. XAML owns the control tree,
+layout, resources, styles, and named events. The reduced C++ host retains collection
+data, chart series, HTML/media content, system services, and business handlers.
+Custom controls are registered through `RuntimeCustomControlRegistry`, while named
+events are routed to member functions through `RuntimeEventHandlerRegistry`. This makes
+the application a direct comparison between hand-built C++ and dynamic XAML rather
+than a parser-only sample. The build copies the XAML beside the executable and exposes
+two non-interactive gates:
+
+```powershell
+.\CUITest\x64\Debug\CUITest.exe --validate-xaml
+.\CUITest\x64\Debug\CUITest.exe --smoke-xaml
+```
+
+The first validates parsing, event contracts, and custom-control factories. The second
+also materializes the complete form and initializes its runtime data. Both return zero
+on success.
 
 `CuiStaticGeneratedSample` adds the Designer's namespaced `x:Class` and external custom-control output to the solution as
 real `.g.h/.g.cpp` and user `.h/.cpp` translation units, then runs it. The generated base exposes

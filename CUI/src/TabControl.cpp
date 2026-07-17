@@ -338,14 +338,14 @@ void TabControl::EnsureBindingPropertiesRegistered()
 			TabControlPropertySubscriber(propertyName), TabControlColorOptions(defaultValue, order))
 
 		CUI_REGISTER_TAB_COLOR(TitleBackColor, L"TitleBackColor", (D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.0f }), 10);
-		CUI_REGISTER_TAB_COLOR(SelectedTitleBackColor, L"SelectedTitleBackColor", (D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.14f }), 20);
-		CUI_REGISTER_TAB_COLOR(TitleHoverBackColor, L"TitleHoverBackColor", (D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.08f }), 30);
-		CUI_REGISTER_TAB_COLOR(AccentColor, L"AccentColor", (D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 1.0f }), 40);
-		CUI_REGISTER_TAB_COLOR(TitleMutedForeColor, L"TitleMutedForeColor", Colors::DimGrey, 50);
-		CUI_REGISTER_TAB_COLOR(TitleScrollTrackColor, L"TitleScrollTrackColor", (D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.12f }), 60);
-		CUI_REGISTER_TAB_COLOR(TitleScrollThumbColor, L"TitleScrollThumbColor", (D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.58f }), 70);
-		CUI_REGISTER_TAB_COLOR(TitleScrollButtonBackColor, L"TitleScrollButtonBackColor", (D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.76f }), 80);
-		CUI_REGISTER_TAB_COLOR(TitleScrollButtonHoverBackColor, L"TitleScrollButtonHoverBackColor", (D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.18f }), 90);
+		CUI_REGISTER_TAB_COLOR(SelectedTitleBackColor, L"SelectedTitleBackColor", cui::theme::palette::AccentSelected, 20);
+		CUI_REGISTER_TAB_COLOR(TitleHoverBackColor, L"TitleHoverBackColor", cui::theme::palette::AccentSoft, 30);
+		CUI_REGISTER_TAB_COLOR(AccentColor, L"AccentColor", cui::theme::palette::Accent, 40);
+		CUI_REGISTER_TAB_COLOR(TitleMutedForeColor, L"TitleMutedForeColor", cui::theme::palette::TextMuted, 50);
+		CUI_REGISTER_TAB_COLOR(TitleScrollTrackColor, L"TitleScrollTrackColor", cui::theme::palette::AccentSoft, 60);
+		CUI_REGISTER_TAB_COLOR(TitleScrollThumbColor, L"TitleScrollThumbColor", cui::theme::palette::Accent, 70);
+		CUI_REGISTER_TAB_COLOR(TitleScrollButtonBackColor, L"TitleScrollButtonBackColor", cui::theme::palette::Surface, 80);
+		CUI_REGISTER_TAB_COLOR(TitleScrollButtonHoverBackColor, L"TitleScrollButtonHoverBackColor", cui::theme::palette::AccentSelected, 90);
 
 #undef CUI_REGISTER_TAB_COLOR
 		return true;

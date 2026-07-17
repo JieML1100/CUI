@@ -54,15 +54,15 @@ public:
 	float CellPadding = 3.0f;
 	float NavButtonSize = 28.0f;
 
-	D2D1_COLOR_F SurfaceColor = D2D1_COLOR_F{ 0.98f, 0.985f, 0.995f, 0.96f };
-	D2D1_COLOR_F HeaderBackColor = D2D1_COLOR_F{ 0.92f, 0.94f, 0.98f, 0.72f };
-	D2D1_COLOR_F MutedTextColor = D2D1_COLOR_F{ 0.42f, 0.47f, 0.56f, 1.0f };
-	D2D1_COLOR_F TrailingTextColor = D2D1_COLOR_F{ 0.56f, 0.60f, 0.68f, 0.66f };
-	D2D1_COLOR_F HoverColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.10f };
-	D2D1_COLOR_F SelectedBackColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.20f };
-	D2D1_COLOR_F RangeBackColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.11f };
-	D2D1_COLOR_F AccentColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.95f };
-	D2D1_COLOR_F SelectedForeColor = Colors::Black;
+	D2D1_COLOR_F SurfaceColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F HeaderBackColor = cui::theme::palette::SurfaceMuted;
+	D2D1_COLOR_F MutedTextColor = cui::theme::palette::TextMuted;
+	D2D1_COLOR_F TrailingTextColor = cui::theme::palette::TextMuted;
+	D2D1_COLOR_F HoverColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F SelectedBackColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F RangeBackColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F AccentColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F SelectedForeColor = cui::theme::palette::TextPrimary;
 
 	CalendarViewEvent OnSelectionChanged;
 	SelectionChangedEvent SelectionChanged;
@@ -131,19 +131,19 @@ public:
 	float FooterHeight = 36.0f;
 	float ChevronSize = 10.0f;
 
-	D2D1_COLOR_F PanelBackColor = Colors::WhiteSmoke;
-	D2D1_COLOR_F DropBackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.98f };
-	D2D1_COLOR_F DropBorderColor = Colors::LightGray;
-	D2D1_COLOR_F HeaderHoverBackColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.06f };
-	D2D1_COLOR_F HoverColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.10f };
-	D2D1_COLOR_F SelectedBackColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.18f };
-	D2D1_COLOR_F RangeBackColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.10f };
-	D2D1_COLOR_F AccentColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.95f };
-	D2D1_COLOR_F SelectedForeColor = Colors::Black;
-	D2D1_COLOR_F SecondaryTextColor = Colors::DimGrey;
-	D2D1_COLOR_F FocusBorderColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.8f };
-	D2D1_COLOR_F ButtonBackColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.86f };
-	D2D1_COLOR_F ButtonTextColor = Colors::White;
+	D2D1_COLOR_F PanelBackColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F DropBackColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F DropBorderColor = cui::theme::palette::Border;
+	D2D1_COLOR_F HeaderHoverBackColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F HoverColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F SelectedBackColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F RangeBackColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F AccentColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F SelectedForeColor = cui::theme::palette::TextPrimary;
+	D2D1_COLOR_F SecondaryTextColor = cui::theme::palette::TextMuted;
+	D2D1_COLOR_F FocusBorderColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F ButtonBackColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F ButtonTextColor = cui::theme::palette::OnAccent;
 
 	DateRangePickerEvent OnRangeChanged;
 	SelectionChangedEvent SelectionChanged;

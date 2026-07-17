@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "Core/EventConnection.h"
 #include <Windows.h>
 #include <algorithm>
@@ -345,7 +345,7 @@ public:
 		this->Y = y;
 	}
 };
-class KeyEventArgs : EventArgs {
+class KeyEventArgs : public EventArgs {
 public:
 	Keys	KeyData;
 	bool	EventHandled;

@@ -36,8 +36,8 @@ FilterBar::FilterBar(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BorderColor = D2D1_COLOR_F{ 0.60f, 0.66f, 0.76f, 0.42f };
-	this->ForeColor = D2D1_COLOR_F{ 0.90f, 0.92f, 0.96f, 1.0f };
+	this->BorderColor = cui::theme::palette::Border;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 	this->Cursor = CursorKind::Arrow;
 }
 

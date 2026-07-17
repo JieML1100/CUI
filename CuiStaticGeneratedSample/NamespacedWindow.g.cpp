@@ -57,6 +57,8 @@ Acme::Views::MainWindowGenerated::MainWindowGenerated()
 
 	// 绑定事件
 	_generatedEventConnections.emplace_back(
+		this->OnShown.Subscribe(std::bind_front(&Acme::Views::MainWindowGenerated::HandleWindowShown, this)));
+	_generatedEventConnections.emplace_back(
 		namespaceButton->OnDropFile.Subscribe(std::bind_front(&Acme::Views::MainWindowGenerated::HandleNamespacedDrop, this)));
 	_generatedEventConnections.emplace_back(
 		namespaceButton->OnMouseClick.Subscribe(std::bind_front(&Acme::Views::MainWindowGenerated::HandleNamespacedClick, this)));
@@ -78,6 +80,11 @@ Acme::Views::MainWindowGenerated::MainWindowGenerated()
 
 Acme::Views::MainWindowGenerated::~MainWindowGenerated()
 {
+}
+
+void Acme::Views::MainWindowGenerated::HandleWindowShown(Form* sender)
+{
+	(void)sender;
 }
 
 void Acme::Views::MainWindowGenerated::HandleNamespacedDrop(Control* sender, std::vector<std::wstring> files)

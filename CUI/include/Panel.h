@@ -23,7 +23,7 @@ private:
 	float _borderThickness = 1.5f;
 	float _cornerRadius = 0.0f;
 	D2D1_COLOR_F _disabledOverlayColor =
-		D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.5f };
+		cui::theme::palette::DisabledOverlay;
 
 protected:
 	std::unique_ptr<class LayoutEngine> _layoutEngine;

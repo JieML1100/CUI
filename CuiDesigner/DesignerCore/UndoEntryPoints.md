@@ -69,7 +69,7 @@
 
 - UpdatePropertyFromTextBox
   位置：PropertyGrid.cpp
-  当前命令：普通控件属性使用 `ControlPropertyCommand`；窗体、事件和不支持差量的入口回退完整文档事务
+  当前命令：普通控件属性使用 `ControlPropertyCommand`；Form/控件事件使用 `EventHandlerCommand`；其余窗体属性和不支持差量的入口回退完整文档事务
   说明：Text、尺寸、位置、枚举、颜色、复合属性字符串和事件处理函数名都经过这里；事件名校验与同名签名冲突在提交前完成，Legacy 恢复基值，Metadata 恢复 Local/跟踪条目
 
 - UpdatePropertyFromBool
@@ -130,7 +130,10 @@
 普通控件属性、SplitterDistance 连续预览、键盘微调、鼠标 Move/Resize/Reparent/容器重排以及 Add/Delete 已经使用安全差量。
 Add/Delete 的 `ControlSubtreeCommand` 在缺席期间拥有分离根，保存规范化子树、可重建父级定位器、同级顺序、ToolBar 覆盖和选择，并对 expected 起点做精确验证。
 ComboBox Items、TreeView 节点、递归 Menu Items、GridView 列、GridPanel 行列定义和 StatusBar 分段已经使用 `ControlStructureCommand`：
-历史只保存单控件强类型集合、目标身份与选择，原位 Undo/Redo 不重建控件。Schema/样式/Binding 仍保留统一完整文档事务兜底。
+历史只保存单控件强类型集合、目标身份与选择，原位 Undo/Redo 不重建控件。单事件编辑与批量处理函数重命名也已
+使用稳定 ID + expected 映射的 `EventHandlerCommand`；Schema/样式/Binding 仍保留统一完整文档事务兜底。
+显式选择源码迁移时，同一命令额外保存紧凑的类/路径/签名/名称元数据；Execute/Undo/Redo 重新预检用户源码、
+迁移唯一兼容定义并重新生成五文件，失败时同时恢复事件映射和文件快照，历史项保持可重试。
 TabControl/ToolBar 已使用 `ControlOwnedCollectionCommand`，不会把拥有型子树错误地压成仅含文本的值集合，也不再保留完整文档。
 
 Canvas 手势完成结果由 `OnInteractionTransactionCompleted` 发布，并保存在最后结果查询接口中；捕获丢失、
@@ -143,6 +146,6 @@ label；空历史仍发布 `Unchanged`，恢复失败发布原始错误和真实
 
 ### 3.2 继续减少剩余完整快照
 
-- Schema、样式、Binding 与窗体级编辑可继续按收益拆成文档局部差量。
+- Schema、样式、Binding 与其余窗体级属性编辑可继续按收益拆成文档局部差量。
 
 任何替换仍须先实现 expected 起点验证、重建后解析、部分失败回滚和历史内存估算，再移除完整事务兜底。

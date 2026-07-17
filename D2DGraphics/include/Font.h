@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -12,7 +12,7 @@
 #define WRITEONLY_PROPERTY(t,n) __declspec( property (put = Set##n) ) t n
 #define GET(t,n) t Get##n() 
 #define SET(t,n) void Set##n(t value)
-#define PROPERTY_CPP(t,n) __declspec( property (put = Set##n, get = Get##n)); t nt Get##n();t Get##n();
+#define PROPERTY_CPP(t,n) PROPERTY(t,n);GET(t,n);SET(t,n)
 #define GET_CPP(c,t,n) t c::Get##n() 
 #define SET_CPP(c,t,n) void c::Set##n(t value)
 #define EPROPERTY_R(t,n)READONLY_PROPERTY(t, n);GET(t, n)

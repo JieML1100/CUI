@@ -5,6 +5,7 @@
       x:Name="NamespacedRuntimeForm"
       x:Class="Acme.Views.MainWindow"
       d:CodeBehind="NamespacedWindow"
+      OnShown="HandleWindowShown"
       Text="Acme::Views::MainWindow"
       Width="800" Height="600">
   <Button x:Name="namespaceButton"

@@ -99,7 +99,8 @@ int wmain(int argc, wchar_t** argv)
 	}
 	if (argc == 2 && std::wstring_view(argv[1]) == L"--version")
 	{
-		WriteLine(standardOutput, L"CuiCodeGen 1");
+		WriteLine(standardOutput, L"CuiCodeGen " + std::to_wstring(
+			DesignerModel::DesignCodeGenerationContractVersion));
 		return ExitSuccess;
 	}
 	if (argc < 3 || std::wstring_view(argv[1]) != L"generate")

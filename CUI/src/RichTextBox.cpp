@@ -132,7 +132,9 @@ RichTextBox::RichTextBox(std::wstring text, int x, int y, int width, int height)
 	this->bufferSyncedFromControl = true;
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
-	this->BackColor = Colors::LightGray;
+	this->BackColor = cui::theme::palette::Surface;
+	this->BorderColor = cui::theme::palette::BorderStrong;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 	UpdateLayout();
 }
 

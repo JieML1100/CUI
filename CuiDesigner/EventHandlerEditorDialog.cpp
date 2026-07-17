@@ -16,9 +16,12 @@ std::wstring EventHandlerEditorDialog::Trim(const std::wstring& value)
 
 EventHandlerEditorDialog::EventHandlerEditorDialog(
 	const DesignerModel::DesignDocumentEventIndex& index,
-	const std::wstring& preferredHandler)
-	: Form(L"重命名事件处理函数", POINT{ 240, 180 }, SIZE{ 640, 300 }),
-	  _handlers(index.Handlers())
+	const std::wstring& preferredHandler,
+	const DesignerModel::DesignEventHandlerCodeInspection* codeInspection)
+	: Form(L"重命名事件处理函数", POINT{ 240, 180 }, SIZE{ 640, 390 }),
+	  _handlers(index.Handlers()),
+	  _codeInspection(codeInspection ? *codeInspection
+		: DesignerModel::DesignEventHandlerCodeInspection{})
 {
 	VisibleHead = true;
 	MinBox = false;
@@ -42,18 +45,29 @@ EventHandlerEditorDialog::EventHandlerEditorDialog(
 
 	_details = AddControl(new Label(L"", 20, 146));
 	_details->Size = { 590, 42 };
-	_validation = AddControl(new Label(L"", 20, 190));
+	_migrateCode = AddControl(new CheckBox(
+		L"同时迁移用户函数体并重新生成代码", 20, 194));
+	_migrateCode->Size = { 590, 26 };
+	_migrationHint = AddControl(new Label(L"", 42, 224));
+	_migrationHint->Size = { 568, 34 };
+	_migrationHint->ForeColor = Colors::DimGrey;
+
+	_validation = AddControl(new Label(L"", 20, 266));
 	_validation->Size = { 590, 34 };
 	_validation->ForeColor = Colors::IndianRed;
 
-	_ok = AddControl(new Button(L"重命名", 20, 238, 120, 34));
-	_cancel = AddControl(new Button(L"取消", 152, 238, 120, 34));
+	_ok = AddControl(new Button(L"重命名", 20, 326, 120, 34));
+	_cancel = AddControl(new Button(L"取消", 152, 326, 120, 34));
 
 	_source->OnSelectionChanged += [this](Control*)
 	{
 		if (!_loading) LoadSelectedHandler();
 	};
 	_target->OnTextChanged += [this](Control*, std::wstring, std::wstring)
+	{
+		if (!_loading) RefreshValidation();
+	};
+	_migrateCode->OnChecked += [this](Control*)
 	{
 		if (!_loading) RefreshValidation();
 	};
@@ -110,11 +124,16 @@ void EventHandlerEditorDialog::LoadSelectedHandler()
 void EventHandlerEditorDialog::RefreshValidation()
 {
 	_validation->ForeColor = Colors::IndianRed;
+	_migrateCode->Enable = false;
+	_migrationHint->Text = L"输入有效的新函数名后将检查源码迁移条件。";
 	const auto* handler = SelectedHandler();
 	if (!handler)
 	{
 		_details->Text.clear();
 		_validation->Text = L"请选择文档中已有的事件处理函数。";
+		_migrateCode->Enable = false;
+		_migrateCode->Checked = false;
+		_migrationHint->Text.clear();
 		_ok->Enable = false;
 		return;
 	}
@@ -150,9 +169,41 @@ void EventHandlerEditorDialog::RefreshValidation()
 		_ok->Enable = false;
 		return;
 	}
-	_validation->Text = existing == _handlers.end()
-		? L"将更新所有引用；用户 C++ 函数体不会被自动改写。"
-		: L"将把引用合并到同签名的已有处理函数。";
+	const auto codeEntry = _codeInspection.Handlers.find(handler->Name);
+	const bool hasCurrentBody = _codeInspection.Associated
+		&& !_codeInspection.Pending
+		&& !_codeInspection.Target.OutputBasePath.empty()
+		&& !_codeInspection.Target.ClassName.empty()
+		&& codeEntry != _codeInspection.Handlers.end()
+		&& codeEntry->second.State
+			== DesignerModel::DesignEventHandlerCodeState::Current;
+	bool targetBodyExists = false;
+	if (const auto candidates = _codeInspection.CompatibleUserHandlers.find(
+		handler->ParameterList);
+		candidates != _codeInspection.CompatibleUserHandlers.end())
+	{
+		targetBodyExists = std::find(
+			candidates->second.begin(), candidates->second.end(), targetName)
+			!= candidates->second.end();
+	}
+	const bool mergingDocumentHandler = existing != _handlers.end();
+	const bool canMigrate = hasCurrentBody
+		&& !mergingDocumentHandler && !targetBodyExists;
+	_migrateCode->Enable = canMigrate;
+	if (!canMigrate) _migrateCode->Checked = false;
+	if (!hasCurrentBody)
+		_migrationHint->Text = L"仅当用户头或源文件中存在唯一兼容定义时可迁移函数体。";
+	else if (mergingDocumentHandler)
+		_migrationHint->Text = L"合并到已有文档处理函数时保留两个用户函数体。";
+	else if (targetBodyExists)
+		_migrationHint->Text = L"用户头或源文件中已存在目标同签名定义，不能迁移。";
+	else
+		_migrationHint->Text = L"迁移会原子更新源码和生成文件，并随 Undo/Redo 往返。";
+	_validation->Text = _migrateCode->Checked
+		? L"将更新所有引用、迁移现有函数体并重新生成代码。"
+		: existing == _handlers.end()
+			? L"将更新所有引用；现有用户 C++ 函数体保持原名。"
+			: L"将把引用合并到同签名的已有处理函数。";
 	_validation->ForeColor = Colors::DimGrey;
 	_ok->Enable = true;
 }
@@ -165,6 +216,8 @@ bool EventHandlerEditorDialog::TryAccept()
 	if (!_ok->Enable) return false;
 	OldName = handler->Name;
 	NewName = Trim(_target->Text);
+	MigrateUserCode = _migrateCode && _migrateCode->Checked
+		&& _migrateCode->Enable;
 	Applied = true;
 	return true;
 }

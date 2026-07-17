@@ -19,8 +19,19 @@ class Form;
 
 namespace DesignerModel
 {
+class RuntimeDocument;
+
+namespace Detail
+{
+struct RuntimeDocumentReferenceState final
+{
+	RuntimeDocument* Document = nullptr;
+};
+}
+
 template<typename T>
 class RuntimeControlRef;
+class RuntimeDocumentRef;
 
 /** Thread-safe registry used to materialize custom XAML controls. */
 class RuntimeCustomControlRegistry final
@@ -155,12 +166,12 @@ enum class RuntimeDocumentReloadMode
 class RuntimeDocument final
 {
 public:
-	RuntimeDocument() = default;
+	RuntimeDocument();
 	~RuntimeDocument();
 
 	RuntimeDocument(const RuntimeDocument&) = delete;
 	RuntimeDocument& operator=(const RuntimeDocument&) = delete;
-	RuntimeDocument(RuntimeDocument&&) noexcept = default;
+	RuntimeDocument(RuntimeDocument&& other) noexcept;
 	RuntimeDocument& operator=(RuntimeDocument&& other) noexcept;
 
 	const DesignFormModel& FormModel() const noexcept { return _form; }
@@ -197,10 +208,19 @@ public:
 	/**
 	 * Creates a lightweight typed reference resolved through the stable ID index
 	 * on every access. It follows in-place, recomposed, and replaced reloads as
-	 * long as this RuntimeDocument object itself remains alive and is not moved.
+	 * well as move construction. Destroying the document expires the reference;
+	 * Get() then returns nullptr without retaining document or control ownership.
 	 */
 	template<typename T = Control>
 	RuntimeControlRef<T> ReferenceByDesignId(int stableId) noexcept;
+
+	/**
+	 * Creates a non-owning document view backed by the same weak lifetime state
+	 * as RuntimeControlRef. Generated ClassReferences views use this so their
+	 * GetXxx methods return nullptr after document destruction instead of
+	 * dereferencing a stale RuntimeDocument address.
+	 */
+	RuntimeDocumentRef Reference() noexcept;
 
 	/**
 	 * Atomically replaces bindings installed by this RuntimeDocument. Existing
@@ -306,6 +326,7 @@ private:
 	bool _allowCustomControlProxy = false;
 	std::optional<DesignDocument> _sourceDocument;
 	bool _rootsReleased = false;
+	std::shared_ptr<Detail::RuntimeDocumentReferenceState> _referenceState;
 
 	bool InstallDataBindings(
 		const std::shared_ptr<IBindingSource>& source,
@@ -330,8 +351,9 @@ public:
 	int StableId() const noexcept { return _stableId; }
 	T* Get() const noexcept
 	{
-		return _document
-			? _document->FindControlByDesignId<T>(_stableId) : nullptr;
+		const auto state = _referenceState.lock();
+		return state && state->Document
+			? state->Document->FindControlByDesignId<T>(_stableId) : nullptr;
 	}
 	explicit operator bool() const noexcept { return Get() != nullptr; }
 	T* operator->() const noexcept { return Get(); }
@@ -339,13 +361,56 @@ public:
 
 private:
 	friend class RuntimeDocument;
-	RuntimeControlRef(RuntimeDocument& document, int stableId) noexcept
-		: _document(&document), _stableId(stableId)
+	RuntimeControlRef(
+		const std::shared_ptr<Detail::RuntimeDocumentReferenceState>& state,
+		int stableId) noexcept
+		: _referenceState(state), _stableId(stableId)
 	{
 	}
 
-	RuntimeDocument* _document = nullptr;
+	std::weak_ptr<Detail::RuntimeDocumentReferenceState> _referenceState;
 	int _stableId = 0;
+};
+
+/** Non-owning, move-aware weak view of one RuntimeDocument object identity. */
+class RuntimeDocumentRef final
+{
+public:
+	RuntimeDocumentRef() = default;
+
+	RuntimeDocument* Get() const noexcept
+	{
+		const auto state = _referenceState.lock();
+		return state ? state->Document : nullptr;
+	}
+	explicit operator bool() const noexcept { return Get() != nullptr; }
+
+	template<typename T = Control>
+	T* FindControlByDesignId(int stableId) const noexcept
+	{
+		const auto document = Get();
+		return document
+			? document->FindControlByDesignId<T>(stableId) : nullptr;
+	}
+
+	template<typename T = Control>
+	RuntimeControlRef<T> ReferenceByDesignId(int stableId) const noexcept
+	{
+		const auto document = Get();
+		return document
+			? document->ReferenceByDesignId<T>(stableId)
+			: RuntimeControlRef<T>{};
+	}
+
+private:
+	friend class RuntimeDocument;
+	explicit RuntimeDocumentRef(
+		const std::shared_ptr<Detail::RuntimeDocumentReferenceState>& state)
+		noexcept : _referenceState(state)
+	{
+	}
+
+	std::weak_ptr<Detail::RuntimeDocumentReferenceState> _referenceState;
 };
 
 template<typename T>
@@ -354,7 +419,12 @@ RuntimeControlRef<T> RuntimeDocument::ReferenceByDesignId(
 {
 	static_assert(std::is_base_of_v<Control, T>,
 		"RuntimeControlRef<T> requires a Control-derived type");
-	return RuntimeControlRef<T>(*this, stableId);
+	return RuntimeControlRef<T>(_referenceState, stableId);
+}
+
+inline RuntimeDocumentRef RuntimeDocument::Reference() noexcept
+{
+	return RuntimeDocumentRef(_referenceState);
 }
 
 /**

@@ -20,18 +20,18 @@ public:
 	bool IsAnimationRunning() override { return IsCaretBlinkAnimating(); }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
 	/** @brief 鼠标悬停时背景色（实现可能会用到）。 */
-	D2D1_COLOR_F UnderMouseColor = Colors::White;
+	D2D1_COLOR_F UnderMouseColor = cui::theme::palette::SurfaceSubtle;
 	/** @brief 选区背景色。 */
-	D2D1_COLOR_F SelectedBackColor = { 0.f , 0.f , 1.f , 0.5f };
+	D2D1_COLOR_F SelectedBackColor = cui::theme::palette::SelectionBack;
 	/** @brief 选区前景色。 */
-	D2D1_COLOR_F SelectedForeColor = Colors::White;
+	D2D1_COLOR_F SelectedForeColor = cui::theme::palette::TextPrimary;
 	/** @brief 获得焦点时高亮色。 */
-	D2D1_COLOR_F FocusedColor = Colors::White;
+	D2D1_COLOR_F FocusedColor = cui::theme::palette::Surface;
 	/** @brief 滚动条背景色（如实现启用）。 */
-	D2D1_COLOR_F ScrollBackColor = Colors::LightGray;
+	D2D1_COLOR_F ScrollBackColor = cui::theme::palette::ScrollTrack;
 	/** @brief 滚动条前景色（如实现启用）。 */
-	D2D1_COLOR_F ScrollForeColor = Colors::DimGrey;
-	D2D1_COLOR_F DisabledOverlayColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f };
+	D2D1_COLOR_F ScrollForeColor = cui::theme::palette::ScrollThumb;
+	D2D1_COLOR_F DisabledOverlayColor = cui::theme::palette::DisabledOverlay;
 	/** @brief 当前文本测量尺寸缓存。 */
 	D2D1_SIZE_F textSize = { 0,0 };
 	/** @brief 选择起始索引（基于字符）。 */

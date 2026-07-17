@@ -85,7 +85,7 @@ void Panel::EnsureBindingPropertiesRegistered()
 		RegisterPanelCornerRadiusMetadata<Panel>(0.0f);
 
 		auto disabledOptions = PanelPropertyOptions(
-			D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.5f },
+			cui::theme::palette::DisabledOverlay,
 			30,
 			ControlPropertyEditorKind::Color);
 		disabledOptions.Equals = PanelColorsEqual;

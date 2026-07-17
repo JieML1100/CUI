@@ -39,15 +39,17 @@ struct SourceCodeNavigationResult
 class SourceCodeNavigator final
 {
 public:
-	/** Finds an out-of-class member definition while ignoring comments/literals. */
+	/** Finds an inline or out-of-class member definition, ignoring comments/literals. */
 	static size_t FindMemberDefinitionLineInText(
 		std::string_view source,
 		std::string_view handlerName,
-		std::string_view qualifiedClassName = {});
+		std::string_view qualifiedClassName = {},
+		std::string_view generatedParameterList = {});
 	static size_t FindMemberDefinitionLine(
 		const std::wstring& sourcePath,
 		const std::wstring& handlerName,
-		const std::wstring& qualifiedClassName = {});
+		const std::wstring& qualifiedClassName = {},
+		const std::string& generatedParameterList = {});
 	static std::wstring QuoteArgument(const std::wstring& value);
 	static SourceCodeNavigationPlan BuildPlan(
 		SourceCodeEditorKind editor,

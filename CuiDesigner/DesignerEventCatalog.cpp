@@ -50,8 +50,11 @@ namespace
 	{ static constexpr std::string_view Value = "std::vector<std::wstring>"; };
 	CUI_CPP_EVENT_TYPE(Control, "Control");
 	CUI_CPP_EVENT_TYPE(Form, "Form");
+	CUI_CPP_EVENT_TYPE(ComboBox, "ComboBox");
+	CUI_CPP_EVENT_TYPE(DateTimePicker, "DateTimePicker");
 	CUI_CPP_EVENT_TYPE(GridView, "GridView");
 	CUI_CPP_EVENT_TYPE(ListView, "ListView");
+	CUI_CPP_EVENT_TYPE(Menu, "Menu");
 	CUI_CPP_EVENT_TYPE(PropertyGridView, "PropertyGridView");
 	CUI_CPP_EVENT_TYPE(ChartView, "ChartView");
 	CUI_CPP_EVENT_TYPE(ReportView, "ReportView");
@@ -60,6 +63,8 @@ namespace
 	CUI_CPP_EVENT_TYPE(ToastHost, "ToastHost");
 	CUI_CPP_EVENT_TYPE(NumericUpDown, "NumericUpDown");
 	CUI_CPP_EVENT_TYPE(Expander, "Expander");
+	CUI_CPP_EVENT_TYPE(Slider, "Slider");
+	CUI_CPP_EVENT_TYPE(TreeView, "TreeView");
 	CUI_CPP_EVENT_TYPE(WebBrowser, "WebBrowser");
 	CUI_CPP_EVENT_TYPE(MediaPlayer, "MediaPlayer");
 	CUI_CPP_EVENT_TYPE(MouseEventArgs, "MouseEventArgs");
@@ -285,6 +290,7 @@ namespace
 		auto result = D::FromEventMember(
 			std::move(name), std::move(eventField),
 			EventParameterList<Function>::Build(parameterNames), eventMember);
+		result.EventOwnerTypeName = CppTypeName<Owner>();
 		result.Category = ClassifyEvent(result.Name);
 		return result;
 	}

@@ -282,8 +282,8 @@ CalendarView::CalendarView(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BorderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.48f };
-	this->ForeColor = Colors::Black;
+	this->BorderColor = cui::theme::palette::Border;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 	this->SelectedDate = TodayDate();
 	this->DisplayYear = (int)this->SelectedDate.wYear;
 	this->DisplayMonth = (int)this->SelectedDate.wMonth;
@@ -677,9 +677,9 @@ DateRangePicker::DateRangePicker(std::wstring text, int x, int y, int width, int
 		this->Placeholder = std::move(text);
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
-	this->BackColor = Colors::LightGray;
-	this->BorderColor = Colors::DimGrey;
-	this->ForeColor = Colors::Black;
+	this->BackColor = cui::theme::palette::Surface;
+	this->BorderColor = cui::theme::palette::BorderStrong;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 	this->Cursor = CursorKind::Hand;
 	SYSTEMTIME today = TodayDate();
 	_viewYear = (int)today.wYear;

@@ -27,6 +27,9 @@
 	<ClCompile Include="BindingEditorDialog.cpp">
 	  <Filter>源文件</Filter>
 	</ClCompile>
+	<ClCompile Include="CodeBehindExportDialog.cpp">
+	  <Filter>源文件</Filter>
+	</ClCompile>
 	<ClCompile Include="EventHandlerEditorDialog.cpp">
 	  <Filter>源文件</Filter>
 	</ClCompile>
@@ -138,6 +141,9 @@
     <ClCompile Include="DesignerCore\Commands\ControlPropertyCommand.cpp">
       <Filter>DesignerCore\Commands</Filter>
     </ClCompile>
+    <ClCompile Include="DesignerCore\Commands\EventHandlerCommand.cpp">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClCompile>
     <ClCompile Include="DesignerCore\Commands\ControlStructureCommand.cpp">
       <Filter>DesignerCore\Commands</Filter>
     </ClCompile>
@@ -156,6 +162,9 @@
   </ItemGroup>
   <ItemGroup>
 	<ClInclude Include="BindingEditorDialog.h">
+	  <Filter>头文件</Filter>
+	</ClInclude>
+	<ClInclude Include="CodeBehindExportDialog.h">
 	  <Filter>头文件</Filter>
 	</ClInclude>
 	<ClInclude Include="EventHandlerEditorDialog.h">
@@ -248,7 +257,7 @@
     <ClInclude Include="GridViewColumnsEditorDialog.h">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="PropertyGrid.h">
+	<ClInclude Include="PropertyGrid.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="TabControlPagesEditorDialog.h">
@@ -339,6 +348,12 @@
       <Filter>DesignerCore\Commands</Filter>
     </ClInclude>
     <ClInclude Include="DesignerCore\Commands\ControlPropertyCommand.h">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\Commands\EventHandlerCommand.h">
+      <Filter>DesignerCore\Commands</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerCore\Commands\EventHandlerCodeMigration.h">
       <Filter>DesignerCore\Commands</Filter>
     </ClInclude>
     <ClInclude Include="DesignerCore\Commands\ControlStructureCommand.h">

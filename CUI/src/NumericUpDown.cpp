@@ -391,16 +391,16 @@ void NumericUpDown::EnsureBindingPropertiesRegistered()
 			[](NumericUpDown& target, const D2D1_COLOR_F& value) { target.name = value; }, \
 			NumericPropertySubscriber(propertyName), NumericColorOptions(defaultValue, order))
 
-		CUI_REGISTER_NUMERIC_COLOR(PanelBackColor, L"PanelBackColor", Colors::WhiteSmoke, 60);
-		CUI_REGISTER_NUMERIC_COLOR(ButtonBackColor, L"ButtonBackColor", (D2D1_COLOR_F{ 0.92f, 0.94f, 0.98f, 0.95f }), 70);
-		CUI_REGISTER_NUMERIC_COLOR(ButtonHoverColor, L"ButtonHoverColor", (D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.12f }), 80);
-		CUI_REGISTER_NUMERIC_COLOR(ButtonPressedColor, L"ButtonPressedColor", (D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.20f }), 90);
-		CUI_REGISTER_NUMERIC_COLOR(AccentColor, L"AccentColor", (D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.95f }), 100);
-		CUI_REGISTER_NUMERIC_COLOR(FocusBorderColor, L"FocusBorderColor", (D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.80f }), 110);
-		CUI_REGISTER_NUMERIC_COLOR(SelectedBackColor, L"SelectedBackColor", (D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.34f }), 120);
-		CUI_REGISTER_NUMERIC_COLOR(SelectedForeColor, L"SelectedForeColor", Colors::White, 130);
-		CUI_REGISTER_NUMERIC_COLOR(MutedTextColor, L"MutedTextColor", Colors::DimGrey, 140);
-		CUI_REGISTER_NUMERIC_COLOR(DisabledOverlayColor, L"DisabledOverlayColor", (D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f }), 150);
+		CUI_REGISTER_NUMERIC_COLOR(PanelBackColor, L"PanelBackColor", cui::theme::palette::Surface, 60);
+		CUI_REGISTER_NUMERIC_COLOR(ButtonBackColor, L"ButtonBackColor", cui::theme::palette::SurfaceMuted, 70);
+		CUI_REGISTER_NUMERIC_COLOR(ButtonHoverColor, L"ButtonHoverColor", cui::theme::palette::AccentSoft, 80);
+		CUI_REGISTER_NUMERIC_COLOR(ButtonPressedColor, L"ButtonPressedColor", cui::theme::palette::AccentSelected, 90);
+		CUI_REGISTER_NUMERIC_COLOR(AccentColor, L"AccentColor", cui::theme::palette::Accent, 100);
+		CUI_REGISTER_NUMERIC_COLOR(FocusBorderColor, L"FocusBorderColor", cui::theme::palette::Accent, 110);
+		CUI_REGISTER_NUMERIC_COLOR(SelectedBackColor, L"SelectedBackColor", cui::theme::palette::SelectionBack, 120);
+		CUI_REGISTER_NUMERIC_COLOR(SelectedForeColor, L"SelectedForeColor", cui::theme::palette::TextPrimary, 130);
+		CUI_REGISTER_NUMERIC_COLOR(MutedTextColor, L"MutedTextColor", cui::theme::palette::TextMuted, 140);
+		CUI_REGISTER_NUMERIC_COLOR(DisabledOverlayColor, L"DisabledOverlayColor", cui::theme::palette::DisabledOverlay, 150);
 
 #undef CUI_REGISTER_NUMERIC_COLOR
 		return true;
@@ -412,9 +412,9 @@ NumericUpDown::NumericUpDown(int x, int y, int width, int height)
 {
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
-	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BorderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.70f };
-	this->ForeColor = Colors::Black;
+	this->BackColor = cui::theme::palette::Surface;
+	this->BorderColor = cui::theme::palette::BorderStrong;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 	this->Cursor = CursorKind::IBeam;
 	SyncTextFromValue();
 

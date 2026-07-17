@@ -106,8 +106,8 @@ ColorPicker::ColorPicker(int x, int y, int width, int height)
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
-	this->BorderColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.75f };
-	this->ForeColor = Colors::Black;
+	this->BorderColor = cui::theme::palette::BorderStrong;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 	this->Cursor = CursorKind::Hand;
 }
 

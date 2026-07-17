@@ -3,7 +3,10 @@
 #include "RuntimeDocument.h"
 #include "../../CUI/include/Form.h"
 
+#include <cstdint>
+#include <functional>
 #include <memory>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -20,8 +23,67 @@ namespace DesignerModel
  */
 class RuntimeEventHandlerRegistry final
 {
+private:
+	struct State;
+
 public:
+	using RegistrationBatch = std::function<bool(
+		RuntimeEventHandlerRegistry& registry,
+		std::wstring& error)>;
+
+	/**
+	 * Move-only ownership of every route committed by one scoped batch.
+	 * Reset/destruction removes only those routes. EventConnections already
+	 * created from them remain owned by their RuntimeDocument.
+	 */
+	class RegistrationLease final
+	{
+	public:
+		RegistrationLease() = default;
+		~RegistrationLease() { Reset(); }
+
+		RegistrationLease(const RegistrationLease&) = delete;
+		RegistrationLease& operator=(const RegistrationLease&) = delete;
+
+		RegistrationLease(RegistrationLease&& other) noexcept;
+		RegistrationLease& operator=(RegistrationLease&& other) noexcept;
+
+		void Reset() noexcept;
+		[[nodiscard]] bool Active() const noexcept;
+		explicit operator bool() const noexcept { return Active(); }
+
+	private:
+		friend class RuntimeEventHandlerRegistry;
+
+		RegistrationLease(
+			std::weak_ptr<State> state,
+			std::uint64_t firstToken,
+			std::uint64_t endToken) noexcept;
+
+		std::weak_ptr<State> _state;
+		std::uint64_t _firstToken = 0;
+		std::uint64_t _endToken = 0;
+	};
+
 	RuntimeEventHandlerRegistry();
+
+	/**
+	 * Applies a group of route registrations atomically. A false result or
+	 * exception restores the exact pre-batch route set while existing resolver
+	 * objects keep observing the same shared state. The callback may register
+	 * routes only; it must not remove routes or reset another active lease.
+	 */
+	bool RegisterBatch(
+		const RegistrationBatch& registration,
+		std::wstring* outError = nullptr);
+
+	/**
+	 * Atomically registers a group and returns exclusive route ownership.
+	 * An empty lease means the whole batch failed and was rolled back.
+	 */
+	[[nodiscard]] RegistrationLease RegisterScopedBatch(
+		const RegistrationBatch& registration,
+		std::wstring* outError = nullptr);
 
 	/**
 	 * Registers one control event route. UI_Base is a wildcard for common
@@ -186,6 +248,44 @@ public:
 		}
 	}
 
+	/**
+	 * Restricted bridge used by generated event sinks. Portable strings are
+	 * converted back into the same fixed custom-event contract before the real
+	 * C++ Event member and callable are type-checked by RegisterCustomControl.
+	 */
+	template<typename Owner, typename RuntimeEvent, typename Handler>
+	bool RegisterGeneratedCustomControl(
+		std::wstring handlerName,
+		std::wstring xamlNamespace,
+		std::wstring xamlName,
+		std::wstring eventName,
+		std::string eventField,
+		std::wstring signatureName,
+		RuntimeEvent Owner::* eventMember,
+		Handler&& handler,
+		std::wstring* outError = nullptr)
+	{
+		DesignerCustomEventSignature signature{};
+		if (!DesignerEventCatalog::TryParseCustomSignature(
+			signatureName, signature))
+		{
+			SetError(outError,
+				L"生成的自定义事件签名预设无效：" + signatureName);
+			return false;
+		}
+		DesignerCustomControlType customType;
+		customType.XamlNamespace = std::move(xamlNamespace);
+		customType.XamlName = std::move(xamlName);
+		DesignerCustomEventDescriptor customEvent;
+		customEvent.Name = std::move(eventName);
+		customEvent.EventField = std::move(eventField);
+		customEvent.Signature = signature;
+		return RegisterCustomControl(
+			std::move(handlerName), std::move(customType),
+			std::move(customEvent), eventMember,
+			std::forward<Handler>(handler), outError);
+	}
+
 	template<typename Owner, typename RuntimeEvent, typename Handler>
 	bool RegisterForm(
 		std::wstring handlerName,
@@ -265,8 +365,6 @@ private:
 		EventConnection&,
 		std::wstring&)>;
 
-	struct State;
-
 	std::shared_ptr<State> _state;
 
 	static void SetError(std::wstring* output, std::wstring value);
@@ -284,6 +382,21 @@ private:
 		DesignerEventDescriptor descriptor,
 		FormBinder binder,
 		std::wstring* outError);
+
+	bool ApplyBatch(
+		const RegistrationBatch& registration,
+		std::uint64_t* firstToken,
+		std::uint64_t* endToken,
+		std::wstring* outError);
+
+	static void RemoveRoutes(
+		State& state,
+		std::uint64_t firstToken,
+		std::uint64_t endToken) noexcept;
+	static bool ContainsRoutes(
+		const State& state,
+		std::uint64_t firstToken,
+		std::uint64_t endToken) noexcept;
 
 	static bool ResolveControl(
 		State& state,

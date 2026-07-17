@@ -57,9 +57,9 @@
   <PropertyGroup Label="WebView2Package">
     <WebView2PackageVersion>1.0.3712-prerelease</WebView2PackageVersion>
     <WebView2PackageDir>$(SolutionDir)packages\Microsoft.Web.WebView2.$(WebView2PackageVersion)</WebView2PackageDir>
-	<CUIEnableWebView2 Condition="'$(CUIEnableWebView2)'==''">true</CUIEnableWebView2>
-	<WebView2PreprocessorDefinition Condition="'$(CUIEnableWebView2)'=='true'">CUI_ENABLE_WEBVIEW2;</WebView2PreprocessorDefinition>
-	<WebView2LoaderDependency Condition="'$(CUIEnableWebView2)'=='true'">WebView2LoaderStatic.lib;</WebView2LoaderDependency>
+    <CUIEnableWebView2 Condition="'$(CUIEnableWebView2)'==''">true</CUIEnableWebView2>
+    <WebView2PreprocessorDefinition Condition="'$(CUIEnableWebView2)'=='true'">CUI_ENABLE_WEBVIEW2;</WebView2PreprocessorDefinition>
+    <WebView2LoaderDependency Condition="'$(CUIEnableWebView2)'=='true'">WebView2LoaderStatic.lib;</WebView2LoaderDependency>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Platform)'=='Win32'" Label="WebView2Arch">
     <WebView2ArchDir>x86</WebView2ArchDir>
@@ -105,16 +105,16 @@
       <PreprocessorDefinitions>$(WebView2PreprocessorDefinition)WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
-		<MultiProcessorCompilation>true</MultiProcessorCompilation>
-		<AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
-		<LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeaderFile />
       <PrecompiledHeaderOutputFile />
       <EnableModules>false</EnableModules>
       <BuildStlModules>true</BuildStlModules>
-		<RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-		<DebugInformationFormat>OldStyle</DebugInformationFormat>
-		<AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -133,9 +133,9 @@
       <PreprocessorDefinitions>$(WebView2PreprocessorDefinition)WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
-		<MultiProcessorCompilation>true</MultiProcessorCompilation>
-		<AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
-		<LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeaderFile />
       <PrecompiledHeaderOutputFile />
       <EnableModules>false</EnableModules>
@@ -160,16 +160,16 @@
       <PreprocessorDefinitions>$(WebView2PreprocessorDefinition)_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
-		<MultiProcessorCompilation>true</MultiProcessorCompilation>
-		<AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
-		<LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeaderFile />
       <PrecompiledHeaderOutputFile />
       <EnableModules>false</EnableModules>
       <BuildStlModules>true</BuildStlModules>
-		<RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-		<DebugInformationFormat>OldStyle</DebugInformationFormat>
-		<AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <AdditionalIncludeDirectories>$(WebView2PackageDir)\build\native\include;$(ProjectDir)..\D2DGraphics\include;$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -188,9 +188,9 @@
       <PreprocessorDefinitions>$(WebView2PreprocessorDefinition)NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <EnableParallelCodeGeneration>true</EnableParallelCodeGeneration>
-		<MultiProcessorCompilation>true</MultiProcessorCompilation>
-		<AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
-		<LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <LanguageStandard>stdcpp20</LanguageStandard>
       <MinimalRebuild>false</MinimalRebuild>
       <PrecompiledHeaderFile />
       <PrecompiledHeaderOutputFile />
@@ -222,9 +222,9 @@
     <ClInclude Include="include\Core\EventConnection.h" />
     <ClInclude Include="include\Core\Geometry.h" />
     <ClInclude Include="include\Application.h" />
-	<ClInclude Include="include\AnchorPickerPopup.h" />
+    <ClInclude Include="include\AnchorPickerPopup.h" />
     <ClInclude Include="include\Binding.h" />
-	<ClInclude Include="include\Style.h" />
+    <ClInclude Include="include\Style.h" />
     <ClInclude Include="include\Button.h" />
     <ClInclude Include="include\CalendarView.h" />
     <ClInclude Include="include\ChartView.h" />
@@ -236,6 +236,7 @@
     <ClInclude Include="include\DateTimePicker.h" />
     <ClInclude Include="include\FilterBar.h" />
     <ClInclude Include="include\Control.h" />
+    <ClInclude Include="include\ThemePalette.h" />
     <ClInclude Include="include\DCompLayeredHost.h" />
     <ClInclude Include="include\DropDownPopup.h" />
     <ClInclude Include="include\Event.h" />
@@ -282,7 +283,7 @@
     <ClInclude Include="include\MediaPlayer.h" />
     <ClInclude Include="include\Layout\LayoutTypes.h" />
     <ClInclude Include="include\Layout\LayoutState.h" />
-	<ClInclude Include="include\Layout\LayoutDeferral.h" />
+    <ClInclude Include="include\Layout\LayoutDeferral.h" />
     <ClInclude Include="include\Layout\LegacyCanvasLayout.h" />
     <ClInclude Include="include\Layout\LegacyCanvasAdapter.h" />
     <ClInclude Include="include\Layout\LayoutEngine.h" />
@@ -295,9 +296,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Application.cpp" />
-	<ClCompile Include="src\AnchorPickerPopup.cpp" />
+    <ClCompile Include="src\AnchorPickerPopup.cpp" />
     <ClCompile Include="src\Binding.cpp" />
-	<ClCompile Include="src\Style.cpp" />
+    <ClCompile Include="src\Style.cpp" />
     <ClCompile Include="src\Button.cpp" />
     <ClCompile Include="src\CalendarView.cpp" />
     <ClCompile Include="src\ChartView.cpp" />

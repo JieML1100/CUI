@@ -24,8 +24,10 @@ class SplitContainer;
 class ControlPlacementCommand;
 class ControlSubtreeCommand;
 class ControlOwnedCollectionCommand;
+class EventHandlerCommand;
 struct DesignerCanvasPlacementInteraction;
 struct DesignerCanvasPropertyInteraction;
+struct DesignerEventHandlerCodeMigration;
 
 namespace DesignerModel
 {
@@ -62,6 +64,7 @@ friend class DesignerCommandCoordinator;
 friend class ControlPlacementCommand;
 friend class ControlSubtreeCommand;
 friend class ControlOwnedCollectionCommand;
+friend class EventHandlerCommand;
 
 private:
 	Panel* _designSurface = nullptr;
@@ -343,11 +346,19 @@ public:
 	bool BuildEventHandlerIndex(
 		DesignerModel::DesignDocumentEventIndex& index,
 		std::wstring* outError = nullptr) const;
-	bool RenameEventHandler(
+	/** Applies one Form/control event mapping through a stable-ID delta command. */
+	DesignerDocumentTransactionResult UpdateEventHandler(
+		const std::shared_ptr<DesignerControl>& control,
+		const std::wstring& eventName,
+		const std::wstring& handlerName,
+		std::wstring* outError = nullptr);
+	/** Renames every compatible reference as one batch event delta command. */
+	DesignerDocumentTransactionResult RenameEventHandler(
 		const std::wstring& oldName,
 		const std::wstring& newName,
 		size_t* outRenamedReferenceCount = nullptr,
-		std::wstring* outError = nullptr);
+		std::wstring* outError = nullptr,
+		const DesignerEventHandlerCodeMigration* codeMigration = nullptr);
 	DesignerDocumentTransactionResult CreateNewDocument();
 	DesignerDocumentTransactionResult SaveDesignFile(
 		const std::wstring& filePath,

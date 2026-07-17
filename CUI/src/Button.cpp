@@ -61,11 +61,11 @@ void Button::EnsureBindingPropertiesRegistered()
 		BindingPropertyRegistry::Register<Button, D2D1_COLOR_F>(L"UnderMouseColor",
 			[](Button& target) { return target.UnderMouseColor; },
 			[](Button& target, const D2D1_COLOR_F& value) { target.UnderMouseColor = value; },
-			{}, ButtonColorOptions(D2D1_COLOR_F{ 0.20f, 0.46f, 0.90f, 0.16f }, 10));
+			{}, ButtonColorOptions(cui::theme::palette::AccentSoft, 10));
 		BindingPropertyRegistry::Register<Button, D2D1_COLOR_F>(L"CheckedColor",
 			[](Button& target) { return target.CheckedColor; },
 			[](Button& target, const D2D1_COLOR_F& value) { target.CheckedColor = value; },
-			{}, ButtonColorOptions(D2D1_COLOR_F{ 0.20f, 0.46f, 0.90f, 0.28f }, 20));
+			{}, ButtonColorOptions(cui::theme::palette::AccentSelected, 20));
 		BindingPropertyRegistry::Register<Button, D2D1_COLOR_F>(L"HighlightColor",
 			[](Button& target) { return target.HighlightColor; },
 			[](Button& target, const D2D1_COLOR_F& value) { target.HighlightColor = value; },
@@ -73,11 +73,11 @@ void Button::EnsureBindingPropertiesRegistered()
 		BindingPropertyRegistry::Register<Button, D2D1_COLOR_F>(L"ShadowColor",
 			[](Button& target) { return target.ShadowColor; },
 			[](Button& target, const D2D1_COLOR_F& value) { target.ShadowColor = value; },
-			{}, ButtonColorOptions(D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.06f }, 40));
+			{}, ButtonColorOptions(cui::theme::palette::Shadow, 40));
 		BindingPropertyRegistry::Register<Button, D2D1_COLOR_F>(L"DisabledOverlayColor",
 			[](Button& target) { return target.DisabledOverlayColor; },
 			[](Button& target, const D2D1_COLOR_F& value) { target.DisabledOverlayColor = value; },
-			{}, ButtonColorOptions(D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f }, 50));
+			{}, ButtonColorOptions(cui::theme::palette::DisabledOverlay, 50));
 		BindingPropertyRegistry::Register<Button, bool>(L"Raised",
 			[](Button& target) { return target.Raised; },
 			[](Button& target, const bool& value) { target.Raised = value; },
@@ -128,9 +128,9 @@ Button::Button(std::wstring text, int x, int y, int width, int height)
 	this->Text = text;
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
-	this->BackColor = D2D1_COLOR_F{ 0.97f, 0.98f, 0.99f, 1.0f };
-	this->BorderColor = D2D1_COLOR_F{ 0.70f, 0.76f, 0.86f, 1.0f };
-	this->ForeColor = D2D1_COLOR_F{ 0.12f, 0.16f, 0.22f, 1.0f };
+	this->BackColor = cui::theme::palette::Surface;
+	this->BorderColor = cui::theme::palette::BorderStrong;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 	this->Cursor = CursorKind::Hand;
 }
 

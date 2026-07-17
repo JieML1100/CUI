@@ -17,11 +17,11 @@ protected:
 	bool DefaultSelectOnLeftButtonDoubleClick() const override { return true; }
 	bool DefaultInvalidateVisualOnMouseDoubleClick(UINT message, bool wasSelected) const override { (void)message; (void)wasSelected; return true; }
 private:
-	D2D1_COLOR_F _underMouseColor = D2D1_COLOR_F{ 0.20f, 0.46f, 0.90f, 0.16f };
-	D2D1_COLOR_F _checkedColor = D2D1_COLOR_F{ 0.20f, 0.46f, 0.90f, 0.28f };
-	D2D1_COLOR_F _highlightColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.04f };
-	D2D1_COLOR_F _shadowColor = D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.06f };
-	D2D1_COLOR_F _disabledOverlayColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f };
+	D2D1_COLOR_F _underMouseColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F _checkedColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F _highlightColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.45f };
+	D2D1_COLOR_F _shadowColor = cui::theme::palette::Shadow;
+	D2D1_COLOR_F _disabledOverlayColor = cui::theme::palette::DisabledOverlay;
 	bool _raised = false;
 	float _borderThickness = 1.5f;
 	float _round = 7.0f;

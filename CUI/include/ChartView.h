@@ -67,18 +67,18 @@ public:
 	int SelectedSeriesIndex = -1;
 	int SelectedPointIndex = -1;
 
-	D2D1_COLOR_F PlotBackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.06f };
-	D2D1_COLOR_F GridLineColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.28f };
-	D2D1_COLOR_F AxisColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.70f };
-	D2D1_COLOR_F AccentColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.92f };
-	D2D1_COLOR_F HoverColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.28f };
-	D2D1_COLOR_F SelectedColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.48f };
-	D2D1_COLOR_F TooltipBackColor = D2D1_COLOR_F{ 0.08f, 0.10f, 0.13f, 0.94f };
-	D2D1_COLOR_F TooltipBorderColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.24f };
-	D2D1_COLOR_F TooltipTextColor = Colors::White;
-	D2D1_COLOR_F LegendTextColor = D2D1_COLOR_F{ 0.78f, 0.82f, 0.88f, 1.0f };
-	D2D1_COLOR_F ScrollBackColor = D2D1_COLOR_F{ 0.45f, 0.49f, 0.56f, 0.26f };
-	D2D1_COLOR_F ScrollForeColor = D2D1_COLOR_F{ 0.76f, 0.81f, 0.90f, 0.88f };
+	D2D1_COLOR_F PlotBackColor = cui::theme::palette::SurfaceSubtle;
+	D2D1_COLOR_F GridLineColor = cui::theme::palette::Border;
+	D2D1_COLOR_F AxisColor = cui::theme::palette::BorderStrong;
+	D2D1_COLOR_F AccentColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F HoverColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F SelectedColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F TooltipBackColor = cui::theme::palette::TooltipSurface;
+	D2D1_COLOR_F TooltipBorderColor = cui::theme::palette::BorderStrong;
+	D2D1_COLOR_F TooltipTextColor = cui::theme::palette::OnAccent;
+	D2D1_COLOR_F LegendTextColor = cui::theme::palette::TextSecondary;
+	D2D1_COLOR_F ScrollBackColor = cui::theme::palette::ScrollTrack;
+	D2D1_COLOR_F ScrollForeColor = cui::theme::palette::ScrollThumb;
 	float ScrollBarSize = 8.0f;
 
 	ChartPointEvent OnPointClick;

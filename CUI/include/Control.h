@@ -4,6 +4,7 @@
 #include "Binding.h"
 #include "ObservableCollection.h"
 #include <Colors.h>
+#include "ThemePalette.h"
 #include <Font.h>
 #include <Factory.h>
 #include <Graphics.h>
@@ -561,9 +562,9 @@ class Control
 protected:
 	std::vector<Control*> _observedChildren;
 	SIZE _size = { 120,20 };
-	D2D1_COLOR_F _backcolor = Colors::gray91;
-	D2D1_COLOR_F _forecolor = Colors::Black;
-	D2D1_COLOR_F _bordercolor = Colors::Black;
+	D2D1_COLOR_F _backcolor = cui::theme::palette::Surface;
+	D2D1_COLOR_F _forecolor = cui::theme::palette::TextPrimary;
+	D2D1_COLOR_F _bordercolor = cui::theme::palette::Border;
 	std::shared_ptr<BitmapSource> _imageSource;
 	Microsoft::WRL::ComPtr<ID2D1Bitmap> _imageCache;
 	ID2D1RenderTarget* _imageCacheTarget = nullptr;
@@ -664,6 +665,10 @@ protected:
 	bool _refreshingStyleValues = false;
 	bool _styleRefreshPending = false;
 	std::function<void(Control&, D2DGraphics&)> _renderDecorator;
+	// Keyboard focus may remain on a button after a click. Keep the physical
+	// press lifecycle separate so a modal nested message loop cannot turn a
+	// stray WM_LBUTTONUP into another click.
+	bool _defaultLeftButtonPressActive = false;
 
 	friend class BindingCollection;
 	friend class Binding;

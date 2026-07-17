@@ -26,10 +26,10 @@ public:
 	float ShadowOffsetY = 3.0f;
 	UINT PopupAnimationDurationMs = 90;
 
-	D2D1_COLOR_F PopupBackColor = D2D1_COLOR_F{ 0.10f, 0.10f, 0.10f, 0.94f };
+	D2D1_COLOR_F PopupBackColor = cui::theme::palette::TooltipSurface;
 	D2D1_COLOR_F PopupBorderColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.18f };
-	D2D1_COLOR_F PopupTextColor = Colors::WhiteSmoke;
-	D2D1_COLOR_F PopupShadowColor = D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.18f };
+	D2D1_COLOR_F PopupTextColor = cui::theme::palette::OnAccent;
+	D2D1_COLOR_F PopupShadowColor = cui::theme::palette::Shadow;
 
 	ToolTip(std::wstring text = L"");
 	virtual UIClass Type() override;

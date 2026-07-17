@@ -66,7 +66,9 @@ PasswordBox::PasswordBox(std::wstring text, int x, int y, int width, int height)
 	this->Text = text;
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
-	this->BackColor = D2D1_COLOR_F{ 0.75f , 0.75f , 0.75f , 0.75f };
+	this->BackColor = cui::theme::palette::Surface;
+	this->BorderColor = cui::theme::palette::BorderStrong;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 }
 void PasswordBox::InputText(std::wstring input)
 {

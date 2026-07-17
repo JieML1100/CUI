@@ -126,12 +126,12 @@ public:
 	float SelectedAccentWidth = 3.0f;
 	float ChevronSize = 10.0f;
 	float TextLeftSpacing = 7.0f;
-	D2D1_COLOR_F ScrollBackColor = Colors::LightGray;
-	D2D1_COLOR_F ScrollForeColor = Colors::DimGrey;
-	D2D1_COLOR_F AccentColor = { 0.3882f, 0.4000f, 0.9451f, 1.0f };
-	D2D1_COLOR_F SelectedBackColor = { 0.3882f, 0.4000f, 0.9451f, 0.14f };
-	D2D1_COLOR_F UnderMouseItemBackColor = { 0.3882f, 0.4000f, 0.9451f, 0.08f };
-	D2D1_COLOR_F SelectedForeColor = Colors::Black;
+	D2D1_COLOR_F ScrollBackColor = cui::theme::palette::ScrollTrack;
+	D2D1_COLOR_F ScrollForeColor = cui::theme::palette::ScrollThumb;
+	D2D1_COLOR_F AccentColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F SelectedBackColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F UnderMouseItemBackColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F SelectedForeColor = cui::theme::palette::TextPrimary;
 	ScrollChangedEvent ScrollChanged;
 	SelectionChangedEvent SelectionChanged;
 	TreeView(int x, int y, int width = 120, int height = 24);

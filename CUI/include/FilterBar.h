@@ -37,15 +37,15 @@ public:
 	float SearchBoxWidth = 220.0f;
 	float ChipHeight = 28.0f;
 
-	D2D1_COLOR_F SurfaceColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.055f };
-	D2D1_COLOR_F InputBackColor = D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.16f };
-	D2D1_COLOR_F ChipBackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.08f };
-	D2D1_COLOR_F ChipSelectedBackColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.34f };
-	D2D1_COLOR_F HoverColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.12f };
-	D2D1_COLOR_F AccentColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.95f };
-	D2D1_COLOR_F MutedTextColor = D2D1_COLOR_F{ 0.72f, 0.76f, 0.82f, 1.0f };
-	D2D1_COLOR_F ButtonBackColor = D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.88f };
-	D2D1_COLOR_F ButtonTextColor = Colors::White;
+	D2D1_COLOR_F SurfaceColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F InputBackColor = cui::theme::palette::SurfaceSubtle;
+	D2D1_COLOR_F ChipBackColor = cui::theme::palette::SurfaceMuted;
+	D2D1_COLOR_F ChipSelectedBackColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F HoverColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F AccentColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F MutedTextColor = cui::theme::palette::TextMuted;
+	D2D1_COLOR_F ButtonBackColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F ButtonTextColor = cui::theme::palette::OnAccent;
 
 	FilterBarQueryEvent OnQueryChanged;
 	FilterBarItemEvent OnFilterChanged;

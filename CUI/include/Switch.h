@@ -33,19 +33,19 @@ protected:
 public:
 	virtual UIClass Type();
 	/** @brief 鼠标悬停时的高亮色。 */
-	D2D1_COLOR_F UnderMouseColor = Colors::DarkSlateGray;
+	D2D1_COLOR_F UnderMouseColor = cui::theme::palette::AccentSoft;
 	/** @brief 关闭状态轨道色。 */
-	D2D1_COLOR_F TrackOffColor = D2D1_COLOR_F{ 0.42f, 0.46f, 0.52f, 0.38f };
+	D2D1_COLOR_F TrackOffColor = cui::theme::palette::SurfaceMuted;
 	/** @brief 开启状态轨道色。 */
-	D2D1_COLOR_F TrackOnColor = D2D1_COLOR_F{ 0.28f, 0.63f, 0.98f, 0.92f };
+	D2D1_COLOR_F TrackOnColor = cui::theme::palette::Accent;
 	/** @brief 轨道边框色。 */
-	D2D1_COLOR_F TrackBorderColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.18f };
+	D2D1_COLOR_F TrackBorderColor = cui::theme::palette::BorderStrong;
 	/** @brief 拇指颜色。 */
-	D2D1_COLOR_F ThumbColor = D2D1_COLOR_F{ 0.98f, 0.99f, 1.0f, 1.0f };
+	D2D1_COLOR_F ThumbColor = cui::theme::palette::Surface;
 	/** @brief 拇指阴影色。 */
-	D2D1_COLOR_F ThumbShadowColor = D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.24f };
+	D2D1_COLOR_F ThumbShadowColor = cui::theme::palette::Shadow;
 	/** @brief 禁用遮罩色。 */
-	D2D1_COLOR_F DisabledOverlayColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f };
+	D2D1_COLOR_F DisabledOverlayColor = cui::theme::palette::DisabledOverlay;
 	/** @brief 轨道内边距，影响拇指大小。 */
 	float TrackPadding = 3.0f;
 	/** @brief 边框宽度（像素）。 */

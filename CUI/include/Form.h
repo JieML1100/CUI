@@ -76,20 +76,20 @@ typedef Event<void(class Form*,bool&)> FormCloseEvent;
 
 struct FormThemeFrame
 {
-	D2D1_COLOR_F WindowBackColor = Colors::WhiteSmoke;
-	D2D1_COLOR_F WindowForeColor = Colors::Black;
-	D2D1_COLOR_F WindowBorderLightColor = Colors::White;
-	D2D1_COLOR_F WindowBorderDarkColor = Colors::Black;
-	D2D1_COLOR_F TitleBarBackColor = D2D1_COLOR_F{ 0.5f ,0.5f ,0.5f ,0.25f };
-	D2D1_COLOR_F CaptionHoverColor = D2D1_COLOR_F{ 1.f, 1.f, 1.f, 0.15f };
-	D2D1_COLOR_F CaptionPressedColor = D2D1_COLOR_F{ 1.f, 1.f, 1.f, 0.25f };
+	D2D1_COLOR_F WindowBackColor = cui::theme::palette::Window;
+	D2D1_COLOR_F WindowForeColor = cui::theme::palette::TextPrimary;
+	D2D1_COLOR_F WindowBorderLightColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F WindowBorderDarkColor = cui::theme::palette::BorderStrong;
+	D2D1_COLOR_F TitleBarBackColor = cui::theme::palette::SurfaceMuted;
+	D2D1_COLOR_F CaptionHoverColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F CaptionPressedColor = cui::theme::palette::AccentSelected;
 	D2D1_COLOR_F CloseHoverColor = D2D1_COLOR_F{ 0.90f, 0.20f, 0.20f, 0.50f };
 	D2D1_COLOR_F ClosePressedColor = D2D1_COLOR_F{ 0.90f, 0.20f, 0.20f, 0.70f };
 	D2D1_COLOR_F ValidationErrorColor = D2D1_COLOR_F{ 0.90f, 0.20f, 0.24f, 1.0f };
 	D2D1_COLOR_F ValidationWarningColor = D2D1_COLOR_F{ 0.95f, 0.62f, 0.12f, 1.0f };
 	D2D1_COLOR_F ValidationInfoColor = D2D1_COLOR_F{ 0.12f, 0.52f, 0.88f, 1.0f };
-	D2D1_COLOR_F ValidationToolTipBackColor = D2D1_COLOR_F{ 0.10f, 0.10f, 0.12f, 0.96f };
-	D2D1_COLOR_F ValidationToolTipTextColor = Colors::WhiteSmoke;
+	D2D1_COLOR_F ValidationToolTipBackColor = cui::theme::palette::TooltipSurface;
+	D2D1_COLOR_F ValidationToolTipTextColor = cui::theme::palette::OnAccent;
 };
 
 /**
@@ -139,18 +139,18 @@ private:
 	CaptionButtonKind _capPressedKind = CaptionButtonKind::Close;
 	bool _capTracking = false;
 
-	D2D1_COLOR_F HeadBackColor = { 0.5f ,0.5f ,0.5f ,0.25f };
-	D2D1_COLOR_F CaptionHoverColor = { 1.f, 1.f, 1.f, 0.15f };
-	D2D1_COLOR_F CaptionPressedColor = { 1.f, 1.f, 1.f, 0.25f };
+	D2D1_COLOR_F HeadBackColor = cui::theme::palette::SurfaceMuted;
+	D2D1_COLOR_F CaptionHoverColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F CaptionPressedColor = cui::theme::palette::AccentSelected;
 	D2D1_COLOR_F CloseHoverColor = { 0.90f, 0.20f, 0.20f, 0.50f };
 	D2D1_COLOR_F ClosePressedColor = { 0.90f, 0.20f, 0.20f, 0.70f };
-	D2D1_COLOR_F BorderLightColor = Colors::White;
-	D2D1_COLOR_F BorderDarkColor = Colors::Black;
+	D2D1_COLOR_F BorderLightColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F BorderDarkColor = cui::theme::palette::BorderStrong;
 	D2D1_COLOR_F ValidationErrorColor = D2D1_COLOR_F{ 0.90f, 0.20f, 0.24f, 1.0f };
 	D2D1_COLOR_F ValidationWarningColor = D2D1_COLOR_F{ 0.95f, 0.62f, 0.12f, 1.0f };
 	D2D1_COLOR_F ValidationInfoColor = D2D1_COLOR_F{ 0.12f, 0.52f, 0.88f, 1.0f };
-	D2D1_COLOR_F ValidationToolTipBackColor = D2D1_COLOR_F{ 0.10f, 0.10f, 0.12f, 0.96f };
-	D2D1_COLOR_F ValidationToolTipTextColor = Colors::WhiteSmoke;
+	D2D1_COLOR_F ValidationToolTipBackColor = cui::theme::palette::TooltipSurface;
+	D2D1_COLOR_F ValidationToolTipTextColor = cui::theme::palette::OnAccent;
 	std::wstring _themeName = L"default";
 	bool _showInTaskBar = true;
 	UINT_PTR _animTimerId = 0xC001;
@@ -331,8 +331,8 @@ public:
 	 */
 	RECT ContentDipRectToClientPixels(const D2D1_RECT_F& contentRect, float inflateDip = 0.0f) const;
 	void SetImeCompositionWindowFromLogicalRect(const D2D1_RECT_F& logicalRect);
-	D2D1_COLOR_F BackColor = Colors::WhiteSmoke;
-	D2D1_COLOR_F ForeColor = Colors::Black;
+	D2D1_COLOR_F BackColor = cui::theme::palette::Window;
+	D2D1_COLOR_F ForeColor = cui::theme::palette::TextPrimary;
 	PROPERTY(std::shared_ptr<BitmapSource>, Image);
 	GET(std::shared_ptr<BitmapSource>, Image);
 	SET(std::shared_ptr<BitmapSource>, Image);

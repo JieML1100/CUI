@@ -17,6 +17,10 @@ public:
     DCompLayeredHost();
     ~DCompLayeredHost();
 
+    // 裸 Impl* PIMPL：按值拷贝会双重释放，禁止拷贝（移动操作也随之隐式抑制）。
+    DCompLayeredHost(const DCompLayeredHost&) = delete;
+    DCompLayeredHost& operator=(const DCompLayeredHost&) = delete;
+
     bool Initialize(HWND hwnd, UINT width, UINT height);
     void Resize(UINT width, UINT height);
     void UpdateD2DLayerSize(UINT width, UINT height);

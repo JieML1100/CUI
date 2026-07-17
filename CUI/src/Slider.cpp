@@ -177,47 +177,47 @@ void Slider::EnsureBindingPropertiesRegistered()
 			[](Slider& target) { return target.TrackBackColor; },
 			[](Slider& target, const D2D1_COLOR_F& value) { target.TrackBackColor = value; },
 			SliderPropertySubscriber(L"TrackBackColor"),
-			SliderColorOptions(D2D1_COLOR_F{ 0.65f, 0.65f, 0.65f, 0.60f }, 10));
+			SliderColorOptions(cui::theme::palette::ScrollTrack, 10));
 		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"TrackForeColor",
 			[](Slider& target) { return target.TrackForeColor; },
 			[](Slider& target, const D2D1_COLOR_F& value) { target.TrackForeColor = value; },
 			SliderPropertySubscriber(L"TrackForeColor"),
-			SliderColorOptions(D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.85f }, 20));
+			SliderColorOptions(cui::theme::palette::Accent, 20));
 		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"TrackHoverColor",
 			[](Slider& target) { return target.TrackHoverColor; },
 			[](Slider& target, const D2D1_COLOR_F& value) { target.TrackHoverColor = value; },
 			SliderPropertySubscriber(L"TrackHoverColor"),
-			SliderColorOptions(D2D1_COLOR_F{ 0.20f, 0.55f, 0.95f, 0.12f }, 30));
+			SliderColorOptions(cui::theme::palette::AccentSoft, 30));
 		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"TrackBorderColor",
 			[](Slider& target) { return target.TrackBorderColor; },
 			[](Slider& target, const D2D1_COLOR_F& value) { target.TrackBorderColor = value; },
 			SliderPropertySubscriber(L"TrackBorderColor"),
-			SliderColorOptions(D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.12f }, 40));
+			SliderColorOptions(cui::theme::palette::Border, 40));
 		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"ThumbColor",
 			[](Slider& target) { return target.ThumbColor; },
 			[](Slider& target, const D2D1_COLOR_F& value) { target.ThumbColor = value; },
 			SliderPropertySubscriber(L"ThumbColor"),
-			SliderColorOptions(D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.95f }, 50));
+			SliderColorOptions(cui::theme::palette::Surface, 50));
 		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"ThumbHoverColor",
 			[](Slider& target) { return target.ThumbHoverColor; },
 			[](Slider& target, const D2D1_COLOR_F& value) { target.ThumbHoverColor = value; },
 			SliderPropertySubscriber(L"ThumbHoverColor"),
-			SliderColorOptions(D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 1.0f }, 60));
+			SliderColorOptions(cui::theme::palette::Surface, 60));
 		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"ThumbBorderColor",
 			[](Slider& target) { return target.ThumbBorderColor; },
 			[](Slider& target, const D2D1_COLOR_F& value) { target.ThumbBorderColor = value; },
 			SliderPropertySubscriber(L"ThumbBorderColor"),
-			SliderColorOptions(D2D1_COLOR_F{ 0.10f, 0.10f, 0.10f, 0.35f }, 70));
+			SliderColorOptions(cui::theme::palette::BorderStrong, 70));
 		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"ThumbShadowColor",
 			[](Slider& target) { return target.ThumbShadowColor; },
 			[](Slider& target, const D2D1_COLOR_F& value) { target.ThumbShadowColor = value; },
 			SliderPropertySubscriber(L"ThumbShadowColor"),
-			SliderColorOptions(D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.22f }, 80));
+			SliderColorOptions(cui::theme::palette::Shadow, 80));
 		BindingPropertyRegistry::Register<Slider, D2D1_COLOR_F>(L"DisabledOverlayColor",
 			[](Slider& target) { return target.DisabledOverlayColor; },
 			[](Slider& target, const D2D1_COLOR_F& value) { target.DisabledOverlayColor = value; },
 			SliderPropertySubscriber(L"DisabledOverlayColor"),
-			SliderColorOptions(D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f }, 90));
+			SliderColorOptions(cui::theme::palette::DisabledOverlay, 90));
 
 		BindingPropertyRegistry::Register<Slider, float>(L"TrackHeight",
 			[](Slider& target) { return target.TrackHeight; },

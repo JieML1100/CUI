@@ -157,23 +157,23 @@ void TextBox::EnsureBindingPropertiesRegistered()
 		BindingPropertyRegistry::Register<TextBox, D2D1_COLOR_F>(L"UnderMouseColor",
 			[](TextBox& target) { return target.UnderMouseColor; },
 			[](TextBox& target, const D2D1_COLOR_F& value) { target.UnderMouseColor = value; },
-			{}, TextBoxColorOptions(Colors::White, 10));
+			{}, TextBoxColorOptions(cui::theme::palette::SurfaceSubtle, 10));
 		BindingPropertyRegistry::Register<TextBox, D2D1_COLOR_F>(L"SelectedBackColor",
 			[](TextBox& target) { return target.SelectedBackColor; },
 			[](TextBox& target, const D2D1_COLOR_F& value) { target.SelectedBackColor = value; },
-			{}, TextBoxColorOptions(D2D1_COLOR_F{ 0.f, 0.f, 1.f, 0.5f }, 20));
+			{}, TextBoxColorOptions(cui::theme::palette::SelectionBack, 20));
 		BindingPropertyRegistry::Register<TextBox, D2D1_COLOR_F>(L"SelectedForeColor",
 			[](TextBox& target) { return target.SelectedForeColor; },
 			[](TextBox& target, const D2D1_COLOR_F& value) { target.SelectedForeColor = value; },
-			{}, TextBoxColorOptions(Colors::White, 30));
+			{}, TextBoxColorOptions(cui::theme::palette::TextPrimary, 30));
 		BindingPropertyRegistry::Register<TextBox, D2D1_COLOR_F>(L"FocusedColor",
 			[](TextBox& target) { return target.FocusedColor; },
 			[](TextBox& target, const D2D1_COLOR_F& value) { target.FocusedColor = value; },
-			{}, TextBoxColorOptions(Colors::White, 40));
+			{}, TextBoxColorOptions(cui::theme::palette::Surface, 40));
 		BindingPropertyRegistry::Register<TextBox, D2D1_COLOR_F>(L"DisabledOverlayColor",
 			[](TextBox& target) { return target.DisabledOverlayColor; },
 			[](TextBox& target, const D2D1_COLOR_F& value) { target.DisabledOverlayColor = value; },
-			{}, TextBoxColorOptions(D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f }, 50));
+			{}, TextBoxColorOptions(cui::theme::palette::DisabledOverlay, 50));
 		BindingPropertyRegistry::Register<TextBox, float>(L"BorderThickness",
 			[](TextBox& target) { return target.BorderThickness; },
 			[](TextBox& target, const float& value) { target.BorderThickness = value; },
@@ -232,7 +232,9 @@ TextBox::TextBox(std::wstring text, int x, int y, int width, int height)
 	this->Text = text;
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
-	this->BackColor = Colors::LightGray;
+	this->BackColor = cui::theme::palette::Surface;
+	this->BorderColor = cui::theme::palette::BorderStrong;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 }
 void TextBox::InputText(std::wstring input)
 {

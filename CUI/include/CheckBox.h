@@ -31,17 +31,17 @@ protected:
 public:
 	virtual UIClass Type();
 	/** @brief 鼠标悬停时的高亮色。 */
-	D2D1_COLOR_F UnderMouseColor = Colors::DarkSlateGray;
+	D2D1_COLOR_F UnderMouseColor = cui::theme::palette::AccentSoft;
 	/** @brief 未选中框背景色。 */
-	D2D1_COLOR_F BoxBackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.08f };
+	D2D1_COLOR_F BoxBackColor = cui::theme::palette::Surface;
 	/** @brief 未选中框边框色。 */
-	D2D1_COLOR_F BoxBorderColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.32f };
+	D2D1_COLOR_F BoxBorderColor = cui::theme::palette::BorderStrong;
 	/** @brief 选中框背景色。 */
-	D2D1_COLOR_F CheckedBackColor = D2D1_COLOR_F{ 0.28f, 0.63f, 0.98f, 0.92f };
+	D2D1_COLOR_F CheckedBackColor = cui::theme::palette::Accent;
 	/** @brief 勾选标记颜色。 */
-	D2D1_COLOR_F CheckMarkColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 1.0f };
+	D2D1_COLOR_F CheckMarkColor = cui::theme::palette::OnAccent;
 	/** @brief 禁用遮罩色。 */
-	D2D1_COLOR_F DisabledOverlayColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f };
+	D2D1_COLOR_F DisabledOverlayColor = cui::theme::palette::DisabledOverlay;
 	/** @brief 勾选框圆角。 */
 	float BoxCornerRadius = 4.0f;
 	/** @brief 文本与勾选框间距。 */

@@ -1,4 +1,5 @@
 #include "SourceCodeNavigator.h"
+#include "DesignerModel/CppUserCodeIndex.h"
 
 #include <shellapi.h>
 
@@ -12,122 +13,6 @@
 
 namespace
 {
-	struct CppToken
-	{
-		std::string Text;
-		size_t Position = 0;
-	};
-
-	bool StartsWithAt(
-		std::string_view text,
-		size_t position,
-		std::string_view value) noexcept
-	{
-		return position <= text.size()
-			&& value.size() <= text.size() - position
-			&& text.compare(position, value.size(), value) == 0;
-	}
-
-	bool IsCppIdentifierStart(unsigned char value) noexcept
-	{
-		return std::isalpha(value) || value == '_';
-	}
-
-	bool IsCppIdentifierPart(unsigned char value) noexcept
-	{
-		return std::isalnum(value) || value == '_';
-	}
-
-	std::vector<CppToken> TokenizeCpp(std::string_view source)
-	{
-		std::vector<CppToken> tokens;
-		for (size_t position = 0; position < source.size();)
-		{
-			const auto current = static_cast<unsigned char>(source[position]);
-			if (std::isspace(current))
-			{
-				++position;
-				continue;
-			}
-			if (StartsWithAt(source, position, "//"))
-			{
-				const auto end = source.find('\n', position + 2);
-				position = end == std::string_view::npos
-					? source.size() : end + 1;
-				continue;
-			}
-			if (StartsWithAt(source, position, "/*"))
-			{
-				const auto end = source.find("*/", position + 2);
-				position = end == std::string_view::npos
-					? source.size() : end + 2;
-				continue;
-			}
-
-			constexpr std::string_view rawPrefixes[]{
-				"R\"", "u8R\"", "uR\"", "UR\"", "LR\"" };
-			bool rawString = false;
-			for (const auto prefix : rawPrefixes)
-			{
-				if (!StartsWithAt(source, position, prefix)) continue;
-				if (position > 0 && IsCppIdentifierPart(
-					static_cast<unsigned char>(source[position - 1]))) continue;
-				const auto delimiterBegin = position + prefix.size();
-				const auto open = source.find('(', delimiterBegin);
-				if (open == std::string_view::npos
-					|| open - delimiterBegin > 16) continue;
-				const std::string delimiter(
-					source.substr(delimiterBegin, open - delimiterBegin));
-				const auto terminator = ")" + delimiter + "\"";
-				const auto end = source.find(terminator, open + 1);
-				position = end == std::string_view::npos
-					? source.size() : end + terminator.size();
-				rawString = true;
-				break;
-			}
-			if (rawString) continue;
-
-			if (current == '"' || current == '\'')
-			{
-				const auto quote = current;
-				++position;
-				while (position < source.size())
-				{
-					if (source[position] == '\\')
-					{
-						position += position + 1 < source.size() ? 2 : 1;
-						continue;
-					}
-					if (static_cast<unsigned char>(source[position]) == quote)
-					{
-						++position;
-						break;
-					}
-					++position;
-				}
-				continue;
-			}
-			if (IsCppIdentifierStart(current))
-			{
-				const auto begin = position++;
-				while (position < source.size() && IsCppIdentifierPart(
-					static_cast<unsigned char>(source[position]))) ++position;
-				tokens.push_back({
-					std::string(source.substr(begin, position - begin)), begin });
-				continue;
-			}
-			if (StartsWithAt(source, position, "::"))
-			{
-				tokens.push_back({ "::", position });
-				position += 2;
-				continue;
-			}
-			tokens.push_back({ std::string(1, source[position]), position });
-			++position;
-		}
-		return tokens;
-	}
-
 	std::string WideToUtf8(const std::wstring& value)
 	{
 		if (value.empty()) return {};
@@ -139,23 +24,6 @@ namespace
 		::WideCharToMultiByte(
 			CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()),
 			result.data(), required, nullptr, nullptr);
-		return result;
-	}
-
-	std::vector<std::string> SplitQualifiedName(std::string_view value)
-	{
-		std::vector<std::string> result;
-		for (size_t begin = 0; begin <= value.size();)
-		{
-			const auto end = value.find("::", begin);
-			const auto segment = value.substr(begin,
-				end == std::string_view::npos
-					? std::string_view::npos : end - begin);
-			if (segment.empty()) return {};
-			result.emplace_back(segment);
-			if (end == std::string_view::npos) break;
-			begin = end + 2;
-		}
 		return result;
 	}
 
@@ -351,59 +219,26 @@ namespace
 size_t SourceCodeNavigator::FindMemberDefinitionLineInText(
 	std::string_view source,
 	std::string_view handlerName,
-	std::string_view qualifiedClassName)
+	std::string_view qualifiedClassName,
+	std::string_view generatedParameterList)
 {
 	if (source.empty() || handlerName.empty()) return 0;
-	const auto tokens = TokenizeCpp(source);
-	const auto classSegments = SplitQualifiedName(qualifiedClassName);
-	if (!qualifiedClassName.empty() && classSegments.empty()) return 0;
-	for (size_t index = 0; index + 3 < tokens.size(); ++index)
-	{
-		if (tokens[index].Text != "::"
-			|| tokens[index + 1].Text != handlerName
-			|| tokens[index + 2].Text != "(") continue;
-		if (!classSegments.empty())
-		{
-			const size_t requiredTokens = classSegments.size() * 2 - 1;
-			if (index < requiredTokens) continue;
-			size_t classCursor = index - requiredTokens;
-			bool classMatches = true;
-			for (size_t segment = 0;
-				segment < classSegments.size(); ++segment)
-			{
-				if (tokens[classCursor++].Text != classSegments[segment])
-				{
-					classMatches = false;
-					break;
-				}
-				if (segment + 1 < classSegments.size()
-					&& tokens[classCursor++].Text != "::")
-				{
-					classMatches = false;
-					break;
-				}
-			}
-			if (!classMatches) continue;
-		}
-		int depth = 1;
-		size_t cursor = index + 3;
-		for (; cursor < tokens.size() && depth > 0; ++cursor)
-		{
-			if (tokens[cursor].Text == "(") ++depth;
-			else if (tokens[cursor].Text == ")") --depth;
-		}
-		if (depth != 0 || cursor >= tokens.size()
-			|| tokens[cursor].Text != "{") continue;
-		return 1 + static_cast<size_t>(std::count(
-			source.begin(), source.begin() + tokens[index + 1].Position, '\n'));
-	}
-	return 0;
+	DesignerModel::CppUserCodeIndex index;
+	if (!DesignerModel::CppUserCodeIndex::Build(
+		source, qualifiedClassName, index, nullptr)) return 0;
+	const auto inspection = index.InspectHandler(
+		handlerName, generatedParameterList);
+	if (!generatedParameterList.empty()
+		&& inspection.FirstCompatibleDefinitionLine > 0)
+		return inspection.FirstCompatibleDefinitionLine;
+	return inspection.FirstDefinitionLine;
 }
 
 size_t SourceCodeNavigator::FindMemberDefinitionLine(
 	const std::wstring& sourcePath,
 	const std::wstring& handlerName,
-	const std::wstring& qualifiedClassName)
+	const std::wstring& qualifiedClassName,
+	const std::string& generatedParameterList)
 {
 	std::ifstream stream(
 		std::filesystem::path(sourcePath), std::ios::binary);
@@ -412,7 +247,8 @@ size_t SourceCodeNavigator::FindMemberDefinitionLine(
 		std::istreambuf_iterator<char>(stream),
 		std::istreambuf_iterator<char>() };
 	return FindMemberDefinitionLineInText(
-		source, WideToUtf8(handlerName), WideToUtf8(qualifiedClassName));
+		source, WideToUtf8(handlerName), WideToUtf8(qualifiedClassName),
+		generatedParameterList);
 }
 
 std::wstring SourceCodeNavigator::QuoteArgument(const std::wstring& value)

@@ -13,6 +13,11 @@ public:
 	~MainWindow() override = default;
 
 private:
+	void HandleWindowShown(Form* sender) noexcept
+	{
+		(void)sender;
+	}
+
 #include "NamespacedWindow.handlers.g.inc"
 };
 

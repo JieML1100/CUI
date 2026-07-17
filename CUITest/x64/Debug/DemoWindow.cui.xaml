@@ -1,0 +1,428 @@
+<Form xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:d="urn:cui:designer"
+      xmlns:test="urn:cui:test"
+      x:Name="CuiXamlDemo"
+      Text="CUI XAML Component Gallery"
+      Width="1400" Height="800"
+      BackColor="#FFF4F7FB"
+      ForeColor="#FF172033"
+      Shown="HandleShown"
+      Closing="HandleClosing">
+  <Form.Resources>
+    <Color x:Key="Accent">#FF2F6FE4</Color>
+    <Color x:Key="Surface">#FFFFFFFF</Color>
+    <Color x:Key="SurfaceSoft">#FFF7F9FC</Color>
+    <Color x:Key="Border">#FFD3DCE8</Color>
+    <Color x:Key="TextPrimary">#FF172033</Color>
+    <Color x:Key="TextMuted">#FF748399</Color>
+    <Color x:Key="OnAccent">#FFFFFFFF</Color>
+    <Color x:Key="Success">#FF15966A</Color>
+
+    <Style x:Key="SurfacePanel" TargetType="Panel">
+      <Setter Property="BackColor" Value="{StaticResource Surface}" />
+      <Setter Property="BorderColor" Value="{StaticResource Border}" />
+      <Setter Property="Padding" Value="10" />
+    </Style>
+    <Style x:Key="PrimaryButton" TargetType="Button">
+      <Setter Property="BackColor" Value="{StaticResource Accent}" />
+      <Setter Property="ForeColor" Value="{StaticResource OnAccent}" />
+      <Setter Property="Round" Value="7" />
+    </Style>
+    <Style x:Key="MutedLabel" TargetType="Label">
+      <Setter Property="ForeColor" Value="{StaticResource TextMuted}" />
+    </Style>
+  </Form.Resources>
+
+  <!-- The entire visual shell is declarative. C++ only supplies data and behavior. -->
+  <Menu x:Name="mainMenu" DesignId="1"
+        Canvas.Left="0" Canvas.Top="0" Width="1400" Height="28"
+        OnMenuCommand="HandleMenuCommand" />
+  <ToolBar x:Name="mainToolBar" DesignId="2"
+           Canvas.Left="0" Canvas.Top="28" Width="1400" Height="40" />
+  <Slider x:Name="globalProgress" DesignId="3"
+          Canvas.Left="12" Canvas.Top="74" Width="310" Height="28"
+          Min="0" Max="1000" Value="250"
+          ValueChanged="HandleGlobalProgress" />
+  <Label x:Name="statusText" DesignId="4"
+         Canvas.Left="342" Canvas.Top="79" Width="500" Height="24"
+         Style="{StaticResource MutedLabel}"
+         Text="布局来自 DemoWindow.cui.xaml，C++ 仅保留数据和业务"
+         OnMouseWheel="HandleMouseWheel" />
+  <Label x:Name="runtimeBadge" DesignId="5"
+         Canvas.Left="1050" Canvas.Top="76" Width="330" Height="26"
+         ForeColor="#FF15966A"
+         Text="Dynamic XAML · RuntimeDocumentSession" />
+
+  <TabControl x:Name="mainTabs" DesignId="10"
+              Canvas.Left="10" Canvas.Top="108" Width="1380" Height="650"
+              BackColor="#00000000" AnimationMode="SlideHorizontal">
+    <TabPage Header="基础控件" d:DesignKey="mainTabs#page0">
+      <Panel x:Name="basicSurface" DesignId="100"
+             Canvas.Left="10" Canvas.Top="36" Width="1325" Height="520"
+             Style="{StaticResource SurfacePanel}">
+        <Label x:Name="basicTitle" DesignId="101"
+               Canvas.Left="12" Canvas.Top="10" Width="600" Height="26"
+               ForeColor="#FF172033" FontSize="18"
+               Text="基础输入与事件：声明在 XAML，处理函数注册在 C++" />
+        <Button x:Name="basicButton" DesignId="102"
+                Canvas.Left="14" Canvas.Top="54" Width="150" Height="34"
+                Style="{StaticResource PrimaryButton}"
+                Text="点击计数" Click="HandleBasicClick" />
+        <CheckBox x:Name="enableInput" DesignId="103"
+                  Canvas.Left="185" Canvas.Top="60" Width="150" Height="26"
+                  Text="启用输入框" Checked="true"
+                  OnChecked="HandleEnableInput" />
+        <RadioBox x:Name="radioA" DesignId="104"
+                  Canvas.Left="14" Canvas.Top="108" Width="110" Height="26"
+                  Text="方案 A" Checked="true" OnChecked="HandleRadio" />
+        <RadioBox x:Name="radioB" DesignId="105"
+                  Canvas.Left="130" Canvas.Top="108" Width="110" Height="26"
+                  Text="方案 B" OnChecked="HandleRadio" />
+        <TextBox x:Name="nameInput" DesignId="106"
+                 Canvas.Left="14" Canvas.Top="154" Width="260" Height="30"
+                 Text="可编辑文本" />
+        <PasswordBox x:Name="passwordInput" DesignId="107"
+                     Canvas.Left="14" Canvas.Top="196" Width="260" Height="30"
+                     Text="cui-xaml" />
+        <ComboBox x:Name="basicCombo" DesignId="108"
+                  Canvas.Left="14" Canvas.Top="238" Width="260" Height="30"
+                  Text="选择运行模式" SelectionChanged="HandleComboSelection" />
+        <DateTimePicker x:Name="datePicker" DesignId="109"
+                        Canvas.Left="14" Canvas.Top="280" Width="260" Height="30" />
+        <NumericUpDown x:Name="numberInput" DesignId="110"
+                       Canvas.Left="14" Canvas.Top="322" Width="160" Height="30"
+                       Min="0" Max="100" Value="42"
+                       ValueChanged="HandleNumericValue" />
+        <LinkLabel x:Name="docsLink" DesignId="111"
+                   Canvas.Left="14" Canvas.Top="368" Width="300" Height="26"
+                   Text="CUI XAML 运行时文档" Click="HandleDocsLink" />
+
+        <test:GradientInput x:Name="gradientInput" DesignId="112"
+             d:CppType="CustomTextBox1" d:Header="CustomControls.h"
+             d:BaseType="TextBox" d:Constructor="TextBounds"
+             Canvas.Left="370" Canvas.Top="54" Width="360" Height="42"
+             Text="注册式自定义控件：GradientInput" />
+        <test:GradientLabel x:Name="gradientLabel" DesignId="113"
+             d:CppType="CustomLabel1" d:Header="CustomControls.h"
+             d:BaseType="Label" d:Constructor="TextBounds"
+             Canvas.Left="370" Canvas.Top="112" Width="440" Height="34"
+             Text="自定义控件也由 XAML 工厂构造" />
+
+        <GroupBox x:Name="basicGroup" DesignId="114"
+                  Canvas.Left="850" Canvas.Top="48" Width="430" Height="180"
+                  Text="GroupBox · 用户设置">
+          <Label x:Name="groupHint" DesignId="115"
+                 Canvas.Left="18" Canvas.Top="28" Width="350" Height="24"
+                 Text="这些子控件的所有权同样来自 XAML 层级" />
+          <TextBox x:Name="groupName" DesignId="116"
+                   Canvas.Left="18" Canvas.Top="66" Width="260" Height="28"
+                   Text="XAML User" />
+          <CheckBox x:Name="groupEnabled" DesignId="117"
+                    Canvas.Left="18" Canvas.Top="108" Width="220" Height="26"
+                    Text="启用高级选项" Checked="true" />
+        </GroupBox>
+        <Expander x:Name="basicExpander" DesignId="118"
+                  Canvas.Left="850" Canvas.Top="250" Width="430" Height="180"
+                  Text="展开：运行时能力说明"
+                  ExpandedChanged="HandleExpander">
+          <Label x:Name="expanderText" DesignId="119"
+                 Canvas.Left="16" Canvas.Top="24" Width="380" Height="80"
+                 Text="XAML 负责结构、属性、样式和事件名；C++ 负责真实业务对象与函数实现。" />
+        </Expander>
+      </Panel>
+    </TabPage>
+
+    <TabPage Header="容器与图像" d:DesignKey="mainTabs#page1">
+      <Panel x:Name="containerSurface" DesignId="200"
+             Canvas.Left="10" Canvas.Top="36" Width="1325" Height="520"
+             Style="{StaticResource SurfacePanel}">
+        <Button x:Name="openImageButton" DesignId="201"
+                Canvas.Left="14" Canvas.Top="14" Width="150" Height="32"
+                Style="{StaticResource PrimaryButton}"
+                Text="打开图片" Click="HandleOpenImage" />
+        <PictureBox x:Name="demoPicture" DesignId="202"
+                    Canvas.Left="14" Canvas.Top="60" Width="430" Height="300"
+                    SizeMode="Zoom" OnDropFile="HandleDropImage" />
+        <ProgressBar x:Name="demoProgress" DesignId="203"
+                     Canvas.Left="14" Canvas.Top="384" Width="430" Height="26"
+                     PercentageValue="0.25" />
+        <LoadingRing x:Name="loadingRing" DesignId="204"
+                     Canvas.Left="480" Canvas.Top="52" Width="64" Height="64" />
+        <ProgressRing x:Name="progressRing" DesignId="205"
+                      Canvas.Left="570" Canvas.Top="38" Width="96" Height="96"
+                      PercentageValue="0.25" />
+        <Switch x:Name="pictureVisible" DesignId="206"
+                Canvas.Left="480" Canvas.Top="154" Width="64" Height="30"
+                Checked="true" OnChecked="HandlePictureVisibility" />
+        <Label x:Name="pictureVisibleLabel" DesignId="207"
+               Canvas.Left="552" Canvas.Top="158" Width="190" Height="24"
+               Text="PictureBox 可见" />
+        <SplitContainer x:Name="demoSplit" DesignId="208"
+                        Canvas.Left="720" Canvas.Top="14" Width="570" Height="270"
+                        SplitterDistance="190" SplitterWidth="8">
+          <SplitContainer.FirstPanel>
+            <SideBar x:Name="sideBar" DesignId="209"
+                     Canvas.Left="10" Canvas.Top="12" Width="165" Height="230" />
+          </SplitContainer.FirstPanel>
+          <SplitContainer.SecondPanel>
+            <BreadcrumbBar x:Name="breadcrumb" DesignId="210"
+                           Canvas.Left="14" Canvas.Top="16" Width="320" Height="30" />
+            <RichTextBox x:Name="splitNotes" DesignId="211"
+                         Canvas.Left="14" Canvas.Top="62" Width="320" Height="160"
+                         Text="SplitContainer、SideBar 与 BreadcrumbBar 全部来自 XAML 控件树。" />
+          </SplitContainer.SecondPanel>
+        </SplitContainer>
+        <GroupBox x:Name="containerGroup" DesignId="212"
+                  Canvas.Left="720" Canvas.Top="310" Width="570" Height="150"
+                  Text="组合容器">
+          <Label x:Name="containerGroupText" DesignId="213"
+                 Canvas.Left="18" Canvas.Top="32" Width="500" Height="50"
+                 Text="编辑 DemoWindow.cui.xaml 后重新启动，即可比较声明式布局与旧 C++ BuildTab_*。" />
+        </GroupBox>
+      </Panel>
+    </TabPage>
+
+    <TabPage Header="数据控件" d:DesignKey="mainTabs#page2">
+      <Panel x:Name="dataSurface" DesignId="300"
+             Canvas.Left="10" Canvas.Top="36" Width="1325" Height="520"
+             Style="{StaticResource SurfacePanel}">
+        <TreeView x:Name="demoTree" DesignId="301"
+                  Canvas.Left="12" Canvas.Top="14" Width="210" Height="210" />
+        <ListBox x:Name="demoListBox" DesignId="302"
+                 Canvas.Left="238" Canvas.Top="14" Width="210" Height="210"
+                 ItemClick="HandleListItem" />
+        <ListView x:Name="demoList" DesignId="303"
+                  Canvas.Left="12" Canvas.Top="242" Width="436" Height="230"
+                  ItemClick="HandleListItem" ViewMode="Details"
+                  SelectionMode="Multiple" ShowCheckBoxes="true" />
+        <Switch x:Name="gridEnabled" DesignId="304"
+                Canvas.Left="478" Canvas.Top="14" Width="64" Height="30"
+                Checked="true" OnChecked="HandleGridEnabled" />
+        <Label x:Name="gridEnabledLabel" DesignId="305"
+               Canvas.Left="548" Canvas.Top="18" Width="100" Height="24"
+               Text="Enable" />
+        <Switch x:Name="gridVisible" DesignId="306"
+                Canvas.Left="650" Canvas.Top="14" Width="64" Height="30"
+                Checked="true" OnChecked="HandleGridVisible" />
+        <Label x:Name="gridVisibleLabel" DesignId="307"
+               Canvas.Left="720" Canvas.Top="18" Width="100" Height="24"
+               Text="Visible" />
+        <PagedGridView x:Name="pagedGrid" DesignId="308"
+                       Canvas.Left="478" Canvas.Top="54" Width="560" Height="418"
+                       PageSize="45" />
+        <PropertyGrid x:Name="propertyGrid" DesignId="309"
+                      Canvas.Left="1054" Canvas.Top="14" Width="250" Height="458"
+                      OnValueChanged="HandlePropertyValue" />
+      </Panel>
+    </TabPage>
+
+    <TabPage Header="数据可视化" d:DesignKey="mainTabs#page3">
+      <Panel x:Name="analyticsSurface" DesignId="400"
+             Canvas.Left="10" Canvas.Top="36" Width="1325" Height="520"
+             Style="{StaticResource SurfacePanel}">
+        <FilterBar x:Name="analyticsFilter" DesignId="401"
+                   Canvas.Left="12" Canvas.Top="12" Width="1280" Height="48"
+                   OnApply="HandleFilterApply" OnReset="HandleFilterReset" />
+        <KpiCard x:Name="kpiRevenue" DesignId="402"
+                 Canvas.Left="12" Canvas.Top="76" Width="200" Height="100"
+                 OnCardClick="HandleKpiClick" />
+        <KpiCard x:Name="kpiDeals" DesignId="403"
+                 Canvas.Left="226" Canvas.Top="76" Width="200" Height="100"
+                 OnCardClick="HandleKpiClick" />
+        <KpiCard x:Name="kpiMargin" DesignId="404"
+                 Canvas.Left="440" Canvas.Top="76" Width="200" Height="100"
+                 OnCardClick="HandleKpiClick" />
+        <Button x:Name="chartBar" DesignId="405"
+                Canvas.Left="12" Canvas.Top="194" Width="80" Height="28"
+                Text="柱状图" Click="HandleChartKind" />
+        <Button x:Name="chartPie" DesignId="406"
+                Canvas.Left="102" Canvas.Top="194" Width="80" Height="28"
+                Text="饼形图" Click="HandleChartKind" />
+        <Button x:Name="chartLine" DesignId="407"
+                Canvas.Left="192" Canvas.Top="194" Width="80" Height="28"
+                Text="曲线图" Click="HandleChartKind" />
+        <ChartView x:Name="salesChart" DesignId="408"
+                   Canvas.Left="12" Canvas.Top="232" Width="620" Height="250"
+                   OnPointClick="HandleChartPoint" />
+        <ReportView x:Name="salesReport" DesignId="409"
+                    Canvas.Left="650" Canvas.Top="76" Width="642" Height="406"
+                    OnRowClick="HandleReportRow" />
+      </Panel>
+    </TabPage>
+
+    <TabPage Header="布局容器" d:DesignKey="mainTabs#page4">
+      <Panel x:Name="layoutSurface" DesignId="500"
+             Canvas.Left="10" Canvas.Top="36" Width="1325" Height="520"
+             Style="{StaticResource SurfacePanel}">
+        <Label x:Name="layoutTitle" DesignId="501"
+               Canvas.Left="12" Canvas.Top="8" Width="800" Height="24"
+               Text="StackPanel / GridPanel / DockPanel / WrapPanel / RelativePanel / ScrollView" />
+        <StackPanel x:Name="demoStack" DesignId="502"
+                    Canvas.Left="12" Canvas.Top="42" Width="240" Height="200"
+                    Orientation="Vertical" Spacing="8">
+          <Button x:Name="stackA" DesignId="503" Width="180" Height="28" Text="Stack A" />
+          <Button x:Name="stackB" DesignId="504" Width="200" Height="28" Text="Stack B" />
+          <Button x:Name="stackC" DesignId="505" Width="160" Height="28" Text="Stack C" />
+        </StackPanel>
+        <GridPanel x:Name="demoGridPanel" DesignId="506"
+                   Canvas.Left="270" Canvas.Top="42" Width="320" Height="200">
+          <GridPanel.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="34" />
+          </GridPanel.RowDefinitions>
+          <GridPanel.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="2*" />
+          </GridPanel.ColumnDefinitions>
+          <Button x:Name="gridHeader" DesignId="507"
+                  Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
+                  Height="30" Text="Grid Header" />
+          <Label x:Name="gridLeft" DesignId="508"
+                 Grid.Row="1" Grid.Column="0" Text="Auto / Star" />
+          <TextBox x:Name="gridEditor" DesignId="509"
+                   Grid.Row="1" Grid.Column="1" Text="Grid cell" />
+          <Button x:Name="gridFooter" DesignId="510"
+                  Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
+                  Text="Grid Footer" />
+        </GridPanel>
+        <DockPanel x:Name="demoDock" DesignId="511"
+                   Canvas.Left="610" Canvas.Top="42" Width="300" Height="200"
+                   LastChildFill="true">
+          <Button x:Name="dockTop" DesignId="512" DockPanel.Dock="Top" Height="30" Text="Top" />
+          <Button x:Name="dockLeft" DesignId="513" DockPanel.Dock="Left" Width="70" Text="Left" />
+          <Label x:Name="dockFill" DesignId="514" Text="Fill" />
+        </DockPanel>
+        <WrapPanel x:Name="demoWrap" DesignId="515"
+                   Canvas.Left="930" Canvas.Top="42" Width="360" Height="200"
+                   Orientation="Horizontal" ItemWidth="80" ItemHeight="32">
+          <Button x:Name="wrap1" DesignId="516" Text="One" />
+          <Button x:Name="wrap2" DesignId="517" Text="Two" />
+          <Button x:Name="wrap3" DesignId="518" Text="Three" />
+          <Button x:Name="wrap4" DesignId="519" Text="Four" />
+          <Button x:Name="wrap5" DesignId="520" Text="Five" />
+          <Button x:Name="wrap6" DesignId="521" Text="Six" />
+        </WrapPanel>
+        <RelativePanel x:Name="demoRelative" DesignId="522"
+                       Canvas.Left="12" Canvas.Top="270" Width="500" Height="190">
+          <Button x:Name="relativeCenter" DesignId="523"
+                  Width="140" Height="32" Text="运行时居中约束" />
+        </RelativePanel>
+        <ScrollView x:Name="demoScroll" DesignId="524"
+                    Canvas.Left="532" Canvas.Top="270" Width="758" Height="190"
+                    ContentSize="1100,360">
+          <Panel x:Name="scrollCard1" DesignId="525"
+                 Canvas.Left="16" Canvas.Top="16" Width="220" Height="90"
+                 Style="{StaticResource SurfacePanel}">
+            <Label x:Name="scrollCard1Text" DesignId="526" Text="Card 1 · XAML child" />
+          </Panel>
+          <Panel x:Name="scrollCard2" DesignId="527"
+                 Canvas.Left="270" Canvas.Top="16" Width="220" Height="90"
+                 Style="{StaticResource SurfacePanel}">
+            <Label x:Name="scrollCard2Text" DesignId="528" Text="Card 2 · XAML child" />
+          </Panel>
+          <Button x:Name="farButton" DesignId="529"
+                  Canvas.Left="920" Canvas.Top="280" Width="140" Height="32"
+                  Text="Far Button" Click="HandleFarButton" />
+        </ScrollView>
+      </Panel>
+    </TabPage>
+
+    <TabPage Header="系统集成" d:DesignKey="mainTabs#page5">
+      <Panel x:Name="systemSurface" DesignId="600"
+             Canvas.Left="10" Canvas.Top="36" Width="1325" Height="520"
+             Style="{StaticResource SurfacePanel}" OnMouseUp="HandleSystemSurfaceMouseUp">
+        <Label x:Name="systemTitle" DesignId="601"
+               Canvas.Left="14" Canvas.Top="14" Width="900" Height="26"
+               Text="NotifyIcon / Taskbar / ContextMenu / MessageDialog / ToastHost" />
+        <Button x:Name="notifyToggle" DesignId="602"
+                Canvas.Left="14" Canvas.Top="62" Width="180" Height="32"
+                Text="显示/隐藏托盘图标" Click="HandleSystemAction" />
+        <Button x:Name="notifyBalloon" DesignId="603"
+                Canvas.Left="206" Canvas.Top="62" Width="130" Height="32"
+                Text="气泡提示" Click="HandleSystemAction" />
+        <Button x:Name="showDialog" DesignId="604"
+                Canvas.Left="348" Canvas.Top="62" Width="130" Height="32"
+                Text="CUI 对话框" Click="HandleSystemAction" />
+        <Button x:Name="showToast" DesignId="605"
+                Canvas.Left="490" Canvas.Top="62" Width="130" Height="32"
+                Style="{StaticResource PrimaryButton}"
+                Text="显示 Toast" Click="HandleSystemAction" />
+        <Label x:Name="systemHint" DesignId="606"
+               Canvas.Left="14" Canvas.Top="116" Width="850" Height="54"
+               Text="在页面空白区域单击右键显示 ContextMenu。系统对象本身由 C++ 创建，但触发它们的 UI 来自 XAML。" />
+        <ToastHost x:Name="toastHost" DesignId="607"
+                   Canvas.Left="850" Canvas.Top="40" Width="430" Height="300"
+                   OnToastClick="HandleToastClick" />
+      </Panel>
+    </TabPage>
+
+    <TabPage Header="WebBrowser" d:DesignKey="mainTabs#page6">
+      <Panel x:Name="webSurface" DesignId="700"
+             Canvas.Left="10" Canvas.Top="36" Width="1325" Height="520"
+             Style="{StaticResource SurfacePanel}">
+        <Button x:Name="invokeWeb" DesignId="701"
+                Canvas.Left="14" Canvas.Top="12" Width="280" Height="30"
+                Style="{StaticResource PrimaryButton}"
+                Text="C++ 调用 JavaScript" Click="HandleInvokeWeb" />
+        <Label x:Name="webHint" DesignId="702"
+               Canvas.Left="320" Canvas.Top="16" Width="760" Height="24"
+               Text="WebBrowser 的位置与大小来自 XAML，HTML 与 JS bridge 属于运行时业务数据" />
+        <WebBrowser x:Name="webBrowser" DesignId="703"
+                    Canvas.Left="14" Canvas.Top="56" Width="1270" Height="420" />
+      </Panel>
+    </TabPage>
+
+    <TabPage Header="MediaPlayer" d:DesignKey="mainTabs#page7">
+      <Panel x:Name="mediaSurface" DesignId="800"
+             Canvas.Left="10" Canvas.Top="36" Width="1325" Height="520"
+             Style="{StaticResource SurfacePanel}">
+        <MediaPlayer x:Name="mediaPlayer" DesignId="801"
+                     Canvas.Left="14" Canvas.Top="14" Width="1270" Height="340"
+                     AutoPlay="true" Loop="false"
+                     OnMediaOpened="HandleMediaOpened"
+                     OnMediaEnded="HandleMediaEnded"
+                     OnMediaFailed="HandleMediaFailed"
+                     OnPositionChanged="HandleMediaPosition" />
+        <Button x:Name="mediaOpen" DesignId="802"
+                Canvas.Left="14" Canvas.Top="370" Width="86" Height="32"
+                Style="{StaticResource PrimaryButton}"
+                Text="打开" Click="HandleMediaCommand" />
+        <Button x:Name="mediaPlay" DesignId="803"
+                Canvas.Left="110" Canvas.Top="370" Width="76" Height="32"
+                Text="播放" Click="HandleMediaCommand" />
+        <Button x:Name="mediaPause" DesignId="804"
+                Canvas.Left="196" Canvas.Top="370" Width="76" Height="32"
+                Text="暂停" Click="HandleMediaCommand" />
+        <Button x:Name="mediaStop" DesignId="805"
+                Canvas.Left="282" Canvas.Top="370" Width="76" Height="32"
+                Text="停止" Click="HandleMediaCommand" />
+        <Label x:Name="volumeLabel" DesignId="806"
+               Canvas.Left="380" Canvas.Top="376" Width="50" Height="24" Text="音量" />
+        <Slider x:Name="mediaVolume" DesignId="807"
+                Canvas.Left="430" Canvas.Top="370" Width="170" Height="30"
+                Min="0" Max="100" Value="80" ValueChanged="HandleMediaVolume" />
+        <Label x:Name="speedTitle" DesignId="808"
+               Canvas.Left="620" Canvas.Top="376" Width="50" Height="24" Text="速度" />
+        <Slider x:Name="mediaSpeed" DesignId="809"
+                Canvas.Left="670" Canvas.Top="370" Width="170" Height="30"
+                Min="10" Max="400" Value="100" ValueChanged="HandleMediaSpeed" />
+        <Label x:Name="mediaSpeedText" DesignId="810"
+               Canvas.Left="850" Canvas.Top="376" Width="80" Height="24" Text="1.00x" />
+        <CheckBox x:Name="mediaLoop" DesignId="811"
+                  Canvas.Left="950" Canvas.Top="376" Width="90" Height="24"
+                  Text="循环" OnChecked="HandleMediaLoop" />
+        <Slider x:Name="mediaProgress" DesignId="812"
+                Canvas.Left="14" Canvas.Top="426" Width="1040" Height="30"
+                Min="0" Max="1000" Value="0" ValueChanged="HandleMediaSeek" />
+        <Label x:Name="mediaTime" DesignId="813"
+               Canvas.Left="1070" Canvas.Top="432" Width="210" Height="24"
+               Text="00:00 / 00:00" />
+      </Panel>
+    </TabPage>
+  </TabControl>
+
+  <StatusBar x:Name="mainStatusBar" DesignId="900"
+             Canvas.Left="0" Canvas.Top="768" Width="1400" Height="26" />
+</Form>

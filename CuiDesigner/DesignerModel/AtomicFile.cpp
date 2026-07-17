@@ -187,6 +187,94 @@ namespace
 		(void)::CloseHandle(file);
 		return matches;
 	}
+
+	bool ReadFileSnapshot(
+		const std::wstring& filePath,
+		AtomicFileSnapshotEntry& entry,
+		std::wstring& error)
+	{
+		entry = {};
+		entry.FilePath = filePath;
+		const DWORD attributes = ::GetFileAttributesW(filePath.c_str());
+		if (attributes == INVALID_FILE_ATTRIBUTES)
+		{
+			const auto attributeError = ::GetLastError();
+			if (attributeError == ERROR_FILE_NOT_FOUND
+				|| attributeError == ERROR_PATH_NOT_FOUND)
+				return true;
+			error = FormatFileError(
+				L"Failed to inspect snapshot target “" + filePath + L"”.",
+				attributeError);
+			return false;
+		}
+		if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+		{
+			error = L"Snapshot target is a directory: " + filePath;
+			return false;
+		}
+
+		const HANDLE file = ::CreateFileW(
+			filePath.c_str(), GENERIC_READ,
+			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			nullptr, OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+		if (file == INVALID_HANDLE_VALUE)
+		{
+			error = FormatFileError(
+				L"Failed to open snapshot target “" + filePath + L"”.",
+				::GetLastError());
+			return false;
+		}
+
+		LARGE_INTEGER size{};
+		const bool sizeRead = ::GetFileSizeEx(file, &size) != FALSE;
+		DWORD readError = sizeRead ? ERROR_SUCCESS : ::GetLastError();
+		bool succeeded = sizeRead && size.QuadPart >= 0
+			&& static_cast<unsigned long long>(size.QuadPart)
+				<= static_cast<unsigned long long>(
+					(std::numeric_limits<size_t>::max)());
+		if (sizeRead && !succeeded) readError = ERROR_FILE_TOO_LARGE;
+		if (succeeded)
+		{
+			try
+			{
+				entry.Content.resize(static_cast<size_t>(size.QuadPart));
+			}
+			catch (...)
+			{
+				succeeded = false;
+				readError = ERROR_NOT_ENOUGH_MEMORY;
+			}
+		}
+		size_t offset = 0;
+		while (succeeded && offset < entry.Content.size())
+		{
+			const DWORD chunk = static_cast<DWORD>((std::min)(
+				entry.Content.size() - offset,
+				static_cast<size_t>(64 * 1024)));
+			DWORD read = 0;
+			if (!::ReadFile(file, entry.Content.data() + offset,
+				chunk, &read, nullptr) || read != chunk)
+			{
+				succeeded = false;
+				readError = ::GetLastError();
+				if (readError == ERROR_SUCCESS) readError = ERROR_READ_FAULT;
+				break;
+			}
+			offset += read;
+		}
+		(void)::CloseHandle(file);
+		if (!succeeded)
+		{
+			entry.Content.clear();
+			error = FormatFileError(
+				L"Failed to read snapshot target “" + filePath + L"”.",
+				readError);
+			return false;
+		}
+		entry.Existed = true;
+		return true;
+	}
 }
 
 bool AtomicFile::Write(
@@ -264,29 +352,61 @@ bool AtomicFile::WriteBatch(
 			}
 			normalizedPaths.push_back(std::move(normalized));
 
-			const DWORD attributes = ::GetFileAttributesW(entry.FilePath.c_str());
-			bool existed = attributes != INVALID_FILE_ATTRIBUTES;
-			if (!existed)
+			bool existed = false;
+			bool unchanged = false;
+			if (entry.RequireExpectedState)
 			{
-				const auto attributeError = ::GetLastError();
-				if (attributeError != ERROR_FILE_NOT_FOUND
-					&& attributeError != ERROR_PATH_NOT_FOUND)
+				AtomicFileSnapshotEntry current;
+				std::wstring snapshotError;
+				if (!ReadFileSnapshot(entry.FilePath, current, snapshotError))
 				{
-					if (outError) *outError = FormatFileError(
-						L"Failed to inspect batch target “"
-						+ entry.FilePath + L"”.", attributeError);
+					if (outError) *outError = std::move(snapshotError);
 					return false;
 				}
+				if (current.Existed != entry.ExpectedExisted
+					|| (current.Existed
+						&& current.Content != entry.ExpectedContent))
+				{
+					if (outError) *outError =
+						L"Batch target changed after its plan was created: "
+						+ entry.FilePath;
+					return false;
+				}
+				existed = current.Existed;
+				unchanged = entry.RemoveTarget
+					? !existed
+					: existed && current.Content == entry.Content;
 			}
-			else if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+			else
 			{
-				if (outError) *outError =
-					L"Batch target is a directory: " + entry.FilePath;
-				return false;
+				const DWORD attributes =
+					::GetFileAttributesW(entry.FilePath.c_str());
+				existed = attributes != INVALID_FILE_ATTRIBUTES;
+				if (!existed)
+				{
+					const auto attributeError = ::GetLastError();
+					if (attributeError != ERROR_FILE_NOT_FOUND
+						&& attributeError != ERROR_PATH_NOT_FOUND)
+					{
+						if (outError) *outError = FormatFileError(
+							L"Failed to inspect batch target “"
+							+ entry.FilePath + L"”.", attributeError);
+						return false;
+					}
+				}
+				else if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+				{
+					if (outError) *outError =
+						L"Batch target is a directory: " + entry.FilePath;
+					return false;
+				}
+				unchanged = entry.RemoveTarget
+					? !existed
+					: existed && FileContentMatches(
+						entry.FilePath, entry.Content);
 			}
 			states.push_back(State{
-				&entry, {}, {}, existed,
-				existed && FileContentMatches(entry.FilePath, entry.Content) });
+				&entry, {}, {}, existed, unchanged });
 		}
 	}
 	catch (...)
@@ -310,7 +430,7 @@ bool AtomicFile::WriteBatch(
 	{
 		for (auto& state : states)
 		{
-			if (state.Unchanged) continue;
+			if (state.Unchanged || state.Entry->RemoveTarget) continue;
 			if (!WriteSiblingTemporary(
 				state.Entry->FilePath,
 				state.Entry->Content,
@@ -387,6 +507,32 @@ bool AtomicFile::WriteBatch(
 	{
 		for (auto& state : states)
 		{
+			if (state.Entry->RequireExpectedState)
+			{
+				AtomicFileSnapshotEntry current;
+				std::wstring snapshotError;
+				if (!ReadFileSnapshot(
+					state.Entry->FilePath, current, snapshotError))
+				{
+					failure = std::move(snapshotError);
+					const auto rollbackError = rollback();
+					AppendFailure(failure, rollbackError);
+					if (outError) *outError = std::move(failure);
+					return false;
+				}
+				if (current.Existed != state.Entry->ExpectedExisted
+					|| (current.Existed
+						&& current.Content != state.Entry->ExpectedContent))
+				{
+					failure =
+						L"Batch target changed while the plan was being committed: "
+						+ state.Entry->FilePath;
+					const auto rollbackError = rollback();
+					AppendFailure(failure, rollbackError);
+					if (outError) *outError = std::move(failure);
+					return false;
+				}
+			}
 			if (state.Unchanged) continue;
 			if (state.Existed)
 			{
@@ -417,7 +563,23 @@ bool AtomicFile::WriteBatch(
 					if (outError) *outError = std::move(failure);
 					return false;
 				}
+				if (state.Entry->RequireExpectedState
+					&& state.Entry->ExpectedExisted
+					&& !FileContentMatches(
+						state.BackupPath,
+						state.Entry->ExpectedContent))
+				{
+					failure =
+						L"Batch target changed during atomic preservation: "
+						+ state.Entry->FilePath;
+					const auto rollbackError = rollback();
+					AppendFailure(failure, rollbackError);
+					if (outError) *outError = std::move(failure);
+					return false;
+				}
 			}
+
+			if (state.Entry->RemoveTarget) continue;
 
 			if (!::MoveFileExW(
 				state.TemporaryPath.c_str(),
@@ -455,6 +617,127 @@ bool AtomicFile::WriteBatch(
 			if (outError) *outError = std::move(failure);
 		}
 		catch (...) {}
+		return false;
+	}
+}
+
+bool AtomicFileBatchSnapshot::Capture(
+	const std::vector<std::wstring>& filePaths,
+	AtomicFileBatchSnapshot& snapshot,
+	std::wstring* outError)
+{
+	snapshot = {};
+	if (outError) outError->clear();
+	try
+	{
+		AtomicFileBatchSnapshot candidate;
+		candidate._entries.reserve(filePaths.size());
+		std::vector<std::wstring> normalizedPaths;
+		normalizedPaths.reserve(filePaths.size());
+		for (const auto& filePath : filePaths)
+		{
+			if (filePath.empty())
+			{
+				if (outError) *outError = L"Snapshot file path is empty.";
+				return false;
+			}
+			auto normalized = NormalizePathForComparison(filePath);
+			if (std::find(normalizedPaths.begin(), normalizedPaths.end(),
+				normalized) != normalizedPaths.end())
+			{
+				if (outError) *outError =
+					L"Snapshot contains a duplicate target: " + filePath;
+				return false;
+			}
+			normalizedPaths.push_back(std::move(normalized));
+
+			AtomicFileSnapshotEntry entry;
+			std::wstring error;
+			if (!ReadFileSnapshot(filePath, entry, error))
+			{
+				if (outError) *outError = std::move(error);
+				return false;
+			}
+			candidate._entries.push_back(std::move(entry));
+		}
+		snapshot = std::move(candidate);
+		return true;
+	}
+	catch (...)
+	{
+		if (outError) *outError = L"Failed to capture atomic file batch snapshot.";
+		return false;
+	}
+}
+
+bool AtomicFileBatchSnapshot::Restore(std::wstring* outError) const
+{
+	if (outError) outError->clear();
+	try
+	{
+		std::vector<AtomicFileWriteEntry> writes;
+		writes.reserve(_entries.size());
+		for (const auto& entry : _entries)
+			writes.push_back({
+				entry.FilePath, entry.Content, !entry.Existed });
+		return AtomicFile::WriteBatch(writes, outError);
+	}
+	catch (...)
+	{
+		if (outError) *outError = L"Failed to restore atomic file batch snapshot.";
+		return false;
+	}
+}
+
+bool AtomicFileBatchSnapshot::RestoreIfCurrentMatches(
+	const AtomicFileBatchSnapshot& expectedCurrent,
+	std::wstring* outError) const
+{
+	if (outError) outError->clear();
+	try
+	{
+		if (_entries.size() != expectedCurrent._entries.size())
+		{
+			if (outError) *outError =
+				L"Conditional snapshot restore target count does not match.";
+			return false;
+		}
+		std::vector<AtomicFileWriteEntry> writes;
+		writes.reserve(_entries.size());
+		for (const auto& original : _entries)
+		{
+			const auto normalized =
+				NormalizePathForComparison(original.FilePath);
+			const auto expected = std::find_if(
+				expectedCurrent._entries.begin(),
+				expectedCurrent._entries.end(),
+				[&](const auto& entry)
+				{
+					return NormalizePathForComparison(entry.FilePath)
+						== normalized;
+				});
+			if (expected == expectedCurrent._entries.end())
+			{
+				if (outError) *outError =
+					L"Conditional snapshot restore is missing target: "
+					+ original.FilePath;
+				return false;
+			}
+			AtomicFileWriteEntry write;
+			write.FilePath = original.FilePath;
+			write.Content = original.Content;
+			write.RemoveTarget = !original.Existed;
+			write.RequireExpectedState = true;
+			write.ExpectedExisted = expected->Existed;
+			write.ExpectedContent = expected->Content;
+			writes.push_back(std::move(write));
+		}
+		return AtomicFile::WriteBatch(writes, outError);
+	}
+	catch (...)
+	{
+		if (outError) *outError =
+			L"Failed to prepare conditional atomic snapshot restore.";
 		return false;
 	}
 }

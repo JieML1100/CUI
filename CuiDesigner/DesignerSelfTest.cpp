@@ -1,5 +1,7 @@
 #include "DesignerSelfTest.h"
 #include "CodeGenerator.h"
+#include "CodeBehindExportDialog.h"
+#include "Designer.h"
 #include "DesignerCanvas.h"
 #include "DesignerControlCatalog.h"
 #include "DesignerPreviewPlugin.h"
@@ -7,9 +9,11 @@
 #include "DesignerCore/Commands/ControlStructureCommand.h"
 #include "DesignerCore/Commands/ControlOwnedCollectionCommand.h"
 #include "DesignerCore/Commands/DocumentSnapshotCommand.h"
+#include "DesignerCore/Commands/EventHandlerCommand.h"
 #include "DesignerStructureEdit.h"
 #include "DesignerModel/AtomicFile.h"
 #include "DesignerModel/DesignDocument.h"
+#include "DesignerModel/DesignCodeGenerationService.h"
 #include "DesignerModel/DesignDocumentEventIndex.h"
 #include "DesignerModel/DesignDocumentCodeGenInputBuilder.h"
 #include "DesignerModel/DesignDocumentSerializer.h"
@@ -36,6 +40,8 @@
 #include "../CUI/include/Layout/StackPanel.h"
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <limits>
 #include <vector>
@@ -1576,8 +1582,10 @@ bool RunDesignerSelfTest(std::wstring& report)
 	{
 		for (const auto& item : nativeFalseGrid->Items)
 		{
-			if (item.Name == L"OnMouseClick") nativeEventItem = &item;
-			if (item.Name == L"OnChecked") nativeDefaultEventItem = &item;
+			if (item.Name.rfind(L"OnMouseClick", 0) == 0)
+				nativeEventItem = &item;
+			if (item.Name.rfind(L"OnChecked", 0) == 0)
+				nativeDefaultEventItem = &item;
 			if (item.Name == L"重命名处理函数")
 				nativeEventManagerItem = &item;
 			if (!checkedDisplayName.empty()
@@ -1592,6 +1600,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 		nativeEventItem
 		&& nativeEventItem->ValueType == PropertyGridValueType::EditableEnum
 		&& nativeEventItem->Value == defaultEventName
+		&& nativeEventItem->Name.find(L"[未关联代码]") != std::wstring::npos
 		&& std::find(nativeEventItem->Options.begin(), nativeEventItem->Options.end(),
 			defaultEventName) != nativeEventItem->Options.end(),
 		L"native property grid: legacy event mapping did not expose an editable default handler");
@@ -1612,8 +1621,22 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& nativeFalseGrid->GetValueHeaderLabel() == L"处理函数"
 		&& !eventViewContainedProperty,
 		L"property/event views: event mode still mixed property rows into events");
+	const auto eventControlBeforeDelta = falseBooleanCanvas.GetSelectedControl();
+	const auto eventHistoryMemoryBefore =
+		falseBooleanCanvas.GetCommandHistoryMemoryUsage();
+	const auto eventUndoCountBefore = falseBooleanCanvas.GetUndoCommandCount();
 	const auto namedEventEdit = falseBooleanGrid.ApplyPropertyValue(
 		L"OnMouseClick", L"HandleCheckClick");
+	const auto eventHistoryMemoryAfter =
+		falseBooleanCanvas.GetCommandHistoryMemoryUsage();
+	const auto eventUndoCountAfter = falseBooleanCanvas.GetUndoCommandCount();
+	const auto undoNamedEvent = falseBooleanCanvas.UndoCommand();
+	const bool restoredLegacyEvent = eventControlBeforeDelta
+		&& eventControlBeforeDelta->EventHandlers[L"OnMouseClick"] == L"1";
+	const auto redoNamedEvent = falseBooleanCanvas.RedoCommand();
+	const bool restoredNamedEvent = eventControlBeforeDelta
+		&& eventControlBeforeDelta->EventHandlers[L"OnMouseClick"]
+			== L"HandleCheckClick";
 	const auto conflictingEventEdit = falseBooleanGrid.ApplyPropertyValue(
 		L"OnChecked", L"HandleCheckClick");
 	const auto invalidEventEdit = falseBooleanGrid.ApplyPropertyValue(
@@ -1645,13 +1668,21 @@ bool RunDesignerSelfTest(std::wstring& report)
 		: std::wstring{};
 	AppendFailure(failures,
 		namedEventEdit
+		&& eventUndoCountAfter == eventUndoCountBefore + 1
+		&& eventHistoryMemoryAfter > eventHistoryMemoryBefore
+		&& eventHistoryMemoryAfter - eventHistoryMemoryBefore < 32 * 1024
+		&& undoNamedEvent.HasChanges()
+		&& restoredLegacyEvent
+		&& redoNamedEvent.HasChanges()
+		&& restoredNamedEvent
+		&& falseBooleanCanvas.GetSelectedControl() == eventControlBeforeDelta
 		&& !conflictingEventEdit
 		&& !conflictingEventEdit.Error.empty()
 		&& !invalidEventEdit
 		&& currentEventControl
 		&& currentEventControl->EventHandlers[L"OnMouseClick"]
 			== L"HandleCheckClick",
-		L"native property grid: event names or signature conflicts bypassed validation");
+		L"native property grid: event delta, identity, or signature validation failed");
 	AppendFailure(failures,
 		existingEventActivation
 		&& existingEventActivation.AppliedCount == 0
@@ -1672,13 +1703,49 @@ bool RunDesignerSelfTest(std::wstring& report)
 			== expectedCheckedHandler,
 		L"native property grid: event activation did not reuse or create an undoable handler");
 
+	DesignerModel::DesignEventHandlerCodeInspection eventCodeInspection;
+	eventCodeInspection.Associated = true;
+	DesignerModel::DesignEventHandlerCodeEntry eventCodeEntry;
+	eventCodeEntry.HandlerName = L"HandleCheckClick";
+	eventCodeEntry.ParameterList = L"Control* sender, MouseEventArgs e";
+	eventCodeEntry.State =
+		DesignerModel::DesignEventHandlerCodeState::SignatureMismatch;
+	eventCodeEntry.Diagnostic = L"现有定义参数签名不匹配；双击定位后修正。";
+	eventCodeInspection.Handlers.emplace(
+		eventCodeEntry.HandlerName, std::move(eventCodeEntry));
+	eventCodeInspection.CompatibleUserHandlers[
+		"Control* sender, MouseEventArgs e"] = {
+			L"ReusableMouseHandler", expectedCheckedHandler };
+	falseBooleanGrid.SetEventHandlerCodeInspection(
+		std::move(eventCodeInspection));
 	ReloadCurrentSelection(falseBooleanGrid, falseBooleanCanvas);
+	const PropertyGridItem* signatureDiagnosticItem = nullptr;
+	if (nativeFalseGrid)
+		for (const auto& item : nativeFalseGrid->Items)
+			if (item.Name.rfind(L"OnMouseClick", 0) == 0)
+			{
+				signatureDiagnosticItem = &item;
+				break;
+			}
+	AppendFailure(failures,
+		signatureDiagnosticItem
+		&& signatureDiagnosticItem->Name.find(L"[签名错误]")
+			!= std::wstring::npos
+		&& signatureDiagnosticItem->Description.find(L"参数签名不匹配")
+			!= std::wstring::npos
+		&& std::find(signatureDiagnosticItem->Options.begin(),
+			signatureDiagnosticItem->Options.end(), L"ReusableMouseHandler")
+			!= signatureDiagnosticItem->Options.end()
+		&& std::find(signatureDiagnosticItem->Options.begin(),
+			signatureDiagnosticItem->Options.end(), expectedCheckedHandler)
+			== signatureDiagnosticItem->Options.end(),
+		L"native property grid: event source diagnostic was not visible on the row");
 	std::wstring eventModeCategory;
 	if (nativeFalseGrid)
 	{
 		for (const auto& item : nativeFalseGrid->Items)
 		{
-			if (item.Name == L"OnMouseClick")
+			if (item.Name.rfind(L"OnMouseClick", 0) == 0)
 			{
 				eventModeCategory = item.Category;
 				break;
@@ -1795,6 +1862,50 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& SourceCodeNavigator::FindMemberDefinitionLineInText(
 			locatorSource, "MissingHandler", "Acme::Window") == 0,
 		L"source navigation: comments, literals, declarations, or another class produced a false target line");
+	constexpr std::string_view overloadedLocatorSource =
+		"void Acme::Window::HandleClick(Control*, KeyEventArgs) {}\n"
+		"void Acme::Window::HandleClick(Control*, MouseEventArgs) {}\n";
+	constexpr std::string_view namespaceLocatorSource =
+		"namespace Acme::Views {\n"
+		"void Window::HandleClick(Control*, MouseEventArgs) {}\n"
+		"}\n";
+	constexpr std::string_view conditionalLocatorSource =
+		"#define FAKE_SCOPE { ignored }\n"
+		"#if 0\n"
+		"void Acme::Window::HandleClick(Control*, MouseEventArgs) {}\n"
+		"#endif\n"
+		"void Acme::Window::HandleClick(Control*, MouseEventArgs) {}\n";
+	constexpr std::string_view inlineLocatorSource =
+		"namespace Acme {\n"
+		"class Window {\n"
+		"public:\n"
+		"    void HandleClick(Control*, MouseEventArgs) {}\n"
+		"};\n"
+		"}\n";
+	AppendFailure(failures,
+		SourceCodeNavigator::FindMemberDefinitionLineInText(
+			overloadedLocatorSource, "HandleClick", "Acme::Window",
+			"Control* sender, MouseEventArgs e") == 2
+		&& SourceCodeNavigator::FindMemberDefinitionLineInText(
+			overloadedLocatorSource, "HandleClick", "Acme::Window") == 1,
+		L"source navigation: signature-aware lookup did not select the compatible overload");
+	AppendFailure(failures,
+		SourceCodeNavigator::FindMemberDefinitionLineInText(
+			namespaceLocatorSource, "HandleClick", "Acme::Views::Window",
+			"Control* sender, MouseEventArgs e") == 2
+		&& SourceCodeNavigator::FindMemberDefinitionLineInText(
+			namespaceLocatorSource, "HandleClick", "Acme::Other::Window") == 0,
+		L"source navigation: namespace-scoped member definition was not resolved exactly");
+	AppendFailure(failures,
+		SourceCodeNavigator::FindMemberDefinitionLineInText(
+			conditionalLocatorSource, "HandleClick", "Acme::Window",
+			"Control* sender, MouseEventArgs e") == 5,
+		L"source navigation: disabled preprocessor branch or macro body produced a false definition");
+	AppendFailure(failures,
+		SourceCodeNavigator::FindMemberDefinitionLineInText(
+			inlineLocatorSource, "HandleClick", "Acme::Window",
+			"Control* sender, MouseEventArgs e") == 4,
+		L"source navigation: inline class member definition was not located");
 
 	DesignerCanvas canvasDefaultEventCanvas(0, 0, 800, 640);
 	canvasDefaultEventCanvas.AddControlToCanvasCore(
@@ -1866,11 +1977,27 @@ bool RunDesignerSelfTest(std::wstring& report)
 	const auto& formDefaultHandlers =
 		formDefaultEventCanvas.GetDesignedFormEventHandlers();
 	const auto shownHandler = formDefaultHandlers.find(L"OnShown");
+	const bool createdFormDefault = shownHandler != formDefaultHandlers.end()
+		&& shownHandler->second == L"MainForm_OnShown";
+	const auto formEventMemory =
+		formDefaultEventCanvas.GetCommandHistoryMemoryUsage();
+	const auto undoFormDefault = formDefaultEventCanvas.UndoCommand();
+	const bool removedFormDefault =
+		formDefaultEventCanvas.GetDesignedFormEventHandlers().find(L"OnShown")
+			== formDefaultEventCanvas.GetDesignedFormEventHandlers().end();
+	const auto redoFormDefault = formDefaultEventCanvas.RedoCommand();
+	const auto restoredFormDefault =
+		formDefaultEventCanvas.GetDesignedFormEventHandlers().find(L"OnShown");
 	AppendFailure(failures,
 		formDefaultRequestCount == 1
 		&& formDefaultResult
-		&& shownHandler != formDefaultHandlers.end()
-		&& shownHandler->second == L"MainForm_OnShown",
+		&& createdFormDefault
+		&& formEventMemory > 0 && formEventMemory < 32 * 1024
+		&& undoFormDefault.HasChanges() && removedFormDefault
+		&& redoFormDefault.HasChanges()
+		&& restoredFormDefault
+			!= formDefaultEventCanvas.GetDesignedFormEventHandlers().end()
+		&& restoredFormDefault->second == L"MainForm_OnShown",
 		L"canvas default event: form double-click did not create OnShown");
 
 	DesignerCanvas eventRenameCanvas(0, 0, 800, 640);
@@ -1887,16 +2014,18 @@ bool RunDesignerSelfTest(std::wstring& report)
 	}
 	eventRenameCanvas.SetDesignedFormEventHandler(
 		L"OnCommand", L"HandleCommand");
+	const auto renameHistoryMemoryBefore =
+		eventRenameCanvas.GetCommandHistoryMemoryUsage();
+	const auto renameUndoCountBefore = eventRenameCanvas.GetUndoCommandCount();
+	const auto firstRenameInstance = renameControls.size() == 2
+		? renameControls[0]->ControlInstance : nullptr;
+	const auto secondRenameInstance = renameControls.size() == 2
+		? renameControls[1]->ControlInstance : nullptr;
 	size_t renamedEventReferences = 0;
-	auto renamedEventTransaction =
-		eventRenameCanvas.ExecuteDocumentEditTransaction(
-			L"RenameEventHandler",
-			[&](std::wstring& error)
-			{
-				return eventRenameCanvas.RenameEventHandler(
-					L"HandleSharedClick", L"HandleClick",
-					&renamedEventReferences, &error);
-			});
+	std::wstring renameCommandError;
+	auto renamedEventTransaction = eventRenameCanvas.RenameEventHandler(
+		L"HandleSharedClick", L"HandleClick",
+		&renamedEventReferences, &renameCommandError);
 	const bool renamedLiveReferences = renameControls.size() == 2
 		&& renameControls[0]->EventHandlers[L"OnMouseClick"] == L"HandleClick"
 		&& renameControls[0]->EventHandlers[L"OnMouseDoubleClick"] == L"HandleClick"
@@ -1906,6 +2035,41 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& renameControls[0]->EventHandlers[L"OnMouseClick"] == L"HandleSharedClick"
 		&& renameControls[1]->EventHandlers[L"OnMouseClick"] == L"HandleSharedClick";
 	auto redoEventRename = eventRenameCanvas.RedoCommand();
+	const auto renameHistoryMemoryAfter =
+		eventRenameCanvas.GetCommandHistoryMemoryUsage();
+	const bool renameUsedCompactDelta =
+		eventRenameCanvas.GetUndoCommandCount() == renameUndoCountBefore + 1
+		&& renameHistoryMemoryAfter > renameHistoryMemoryBefore
+		&& renameHistoryMemoryAfter - renameHistoryMemoryBefore < 32 * 1024
+		&& renameControls.size() == 2
+		&& renameControls[0]->ControlInstance == firstRenameInstance
+		&& renameControls[1]->ControlInstance == secondRenameInstance;
+
+	DesignerEventHandlerDelta staleEventDelta;
+	if (renameControls.size() == 2)
+	{
+		staleEventDelta.StableId = renameControls[0]->StableId;
+		staleEventDelta.ControlType = renameControls[0]->Type;
+		staleEventDelta.SubjectName = renameControls[0]->Name;
+		staleEventDelta.EventName = L"OnMouseClick";
+		staleEventDelta.Before = { true, L"HandleClick" };
+		staleEventDelta.After = { true, L"GuardedClick" };
+	}
+	const auto staleHistoryCount = eventRenameCanvas.GetUndoCommandCount();
+	if (renameControls.size() == 2)
+		renameControls[0]->EventHandlers[L"OnMouseClick"] = L"ExternalClick";
+	auto staleEventResult = eventRenameCanvas.ExecuteCommand(
+		std::make_unique<EventHandlerCommand>(
+			&eventRenameCanvas,
+			std::vector<DesignerEventHandlerDelta>{ staleEventDelta },
+			std::vector<std::wstring>{}, L"", L"GuardedEventEdit"));
+	const bool staleEventWasRejected = !staleEventResult
+		&& eventRenameCanvas.GetUndoCommandCount() == staleHistoryCount
+		&& renameControls.size() == 2
+		&& renameControls[0]->EventHandlers[L"OnMouseClick"]
+			== L"ExternalClick";
+	if (renameControls.size() == 2)
+		renameControls[0]->EventHandlers[L"OnMouseClick"] = L"HandleClick";
 
 	DesignerModel::DesignDocument renamedEventDocument;
 	std::wstring renamedEventError;
@@ -1955,14 +2119,8 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& renamedEventCpp.find("::HandleClick, this)") != std::string::npos
 		&& renamedEventCpp.find("HandleSharedClick") == std::string::npos;
 	const auto beforeConflictingRename = renamedEventDocument;
-	auto conflictingRenameTransaction =
-		eventRenameCanvas.ExecuteDocumentEditTransaction(
-			L"RenameEventHandler",
-			[&](std::wstring& error)
-			{
-				return eventRenameCanvas.RenameEventHandler(
-					L"HandleClick", L"HandleCommand", nullptr, &error);
-			});
+	auto conflictingRenameTransaction = eventRenameCanvas.RenameEventHandler(
+		L"HandleClick", L"HandleCommand", nullptr, &renameCommandError);
 	DesignerModel::DesignDocument afterConflictingRename;
 	const bool capturedAfterConflict = eventRenameCanvas.BuildDesignDocument(
 		afterConflictingRename, &renamedEventError);
@@ -1973,6 +2131,8 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& undoEventRename.HasChanges()
 		&& restoredOldEventReferences
 		&& redoEventRename.HasChanges()
+		&& renameUsedCompactDelta
+		&& staleEventWasRejected
 		&& indexedRenamedEvents
 		&& renamedEventIndex.FindHandler(L"HandleClick")
 		&& renamedEventIndex.FindHandler(L"HandleClick")
@@ -2001,6 +2161,291 @@ bool RunDesignerSelfTest(std::wstring& report)
 		+ L", restored=" + (capturedAfterConflict
 			&& afterConflictingRename == beforeConflictingRename ? L"1" : L"0")
 		+ L", error=" + renamedEventError + L"]");
+
+	namespace fs = std::filesystem;
+	const auto migrationDirectory = fs::temp_directory_path()
+		/ (L"cui-handler-migration-"
+			+ std::to_wstring(::GetCurrentProcessId())
+			+ L"-" + std::to_wstring(::GetTickCount64()));
+	fs::create_directories(migrationDirectory);
+	const auto migrationBase = migrationDirectory / L"MigrationForm";
+	auto readMigrationText = [](const fs::path& path)
+	{
+		std::ifstream stream(path, std::ios::binary);
+		return std::string(std::istreambuf_iterator<char>(stream),
+			std::istreambuf_iterator<char>());
+	};
+	DesignerCanvas migrationCanvas(0, 0, 800, 640);
+	migrationCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 140, 140 });
+	const auto migrationControl = migrationCanvas.GetAllControls().empty()
+		? std::shared_ptr<DesignerControl>{}
+		: migrationCanvas.GetAllControls().front();
+	if (migrationControl)
+		migrationControl->EventHandlers[L"OnMouseClick"] = L"HandleOriginal";
+	DesignerModel::DesignCodeBehindModel migrationAssociation;
+	migrationAssociation.ClassName = L"Acme::MigrationForm";
+	migrationAssociation.RelativeBasePath = L"MigrationForm";
+	std::wstring migrationError;
+	const bool setMigrationAssociation = migrationCanvas.SetCodeBehind(
+		migrationAssociation, &migrationError);
+	DesignerModel::DesignDocument migrationDocument;
+	const bool capturedMigrationDocument = setMigrationAssociation
+		&& migrationCanvas.BuildDesignDocument(
+			migrationDocument, &migrationError);
+	DesignerModel::DesignCodeGenerationOptions migrationOptions;
+	migrationOptions.OutputBasePath = migrationBase.wstring();
+	migrationOptions.ClassName = migrationAssociation.ClassName;
+	DesignerModel::DesignCodeGenerationResult migrationGenerated;
+	const bool generatedMigrationFiles = capturedMigrationDocument
+		&& DesignerModel::DesignCodeGenerationService::Generate(
+			migrationDocument, L"", migrationOptions,
+			&migrationGenerated, &migrationError);
+	const fs::path migrationSource = migrationBase.wstring() + L".cpp";
+	const fs::path migrationGeneratedSource =
+		migrationBase.wstring() + L".g.cpp";
+	const fs::path migrationUserHeader = migrationBase.wstring() + L".h";
+	std::string originalMigrationSource = generatedMigrationFiles
+		? readMigrationText(migrationSource) : std::string{};
+	const auto unusedLine = originalMigrationSource.find("\t(void)e;");
+	if (unusedLine != std::string::npos)
+		originalMigrationSource.insert(unusedLine + std::string("\t(void)e;").size(),
+			"\n\tint preservedBody = 7; (void)preservedBody;");
+	const bool customizedMigrationBody = generatedMigrationFiles
+		&& unusedLine != std::string::npos
+		&& DesignerModel::AtomicFile::Write(
+			migrationSource.wstring(), originalMigrationSource, &migrationError);
+
+	DesignerEventHandlerCodeMigration migrationRequest;
+	migrationRequest.OutputBasePath = migrationBase.wstring();
+	migrationRequest.ClassName = migrationAssociation.ClassName;
+	migrationRequest.UserCodePath = migrationSource.wstring();
+	migrationRequest.ParameterList = "Control* sender, MouseEventArgs e";
+	migrationRequest.OldName = L"HandleOriginal";
+	migrationRequest.NewName = L"HandleRenamed";
+	const auto migrationMemoryBefore =
+		migrationCanvas.GetCommandHistoryMemoryUsage();
+	size_t migratedReferenceCount = 0;
+	auto migrationResult = customizedMigrationBody
+		? migrationCanvas.RenameEventHandler(
+			L"HandleOriginal", L"HandleRenamed", &migratedReferenceCount,
+			&migrationError, &migrationRequest)
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"migration setup failed");
+	const auto migratedSource = generatedMigrationFiles
+		? readMigrationText(migrationSource) : std::string{};
+	const auto migratedGeneratedSource = generatedMigrationFiles
+		? readMigrationText(migrationGeneratedSource) : std::string{};
+	const bool migratedBodyAndCode = migrationResult.HasChanges()
+		&& migratedReferenceCount == 1
+		&& migrationControl
+		&& migrationControl->EventHandlers[L"OnMouseClick"] == L"HandleRenamed"
+		&& migratedSource.find("::HandleRenamed(") != std::string::npos
+		&& migratedSource.find("::HandleOriginal(") == std::string::npos
+		&& migratedSource.find("preservedBody = 7") != std::string::npos
+		&& migratedGeneratedSource.find("::HandleRenamed, this)")
+			!= std::string::npos
+		&& migrationCanvas.GetCommandHistoryMemoryUsage()
+			- migrationMemoryBefore < 32 * 1024;
+
+	const auto undoMigration = migrationCanvas.UndoCommand();
+	const auto undoMigrationSource = readMigrationText(migrationSource);
+	const auto undoMigrationGeneratedSource =
+		readMigrationText(migrationGeneratedSource);
+	const bool undidBodyAndCode = undoMigration.HasChanges()
+		&& migrationControl
+		&& migrationControl->EventHandlers[L"OnMouseClick"] == L"HandleOriginal"
+		&& undoMigrationSource.find("::HandleOriginal(") != std::string::npos
+		&& undoMigrationSource.find("::HandleRenamed(") == std::string::npos
+		&& undoMigrationSource.find("preservedBody = 7") != std::string::npos
+		&& undoMigrationGeneratedSource.find("::HandleOriginal, this)")
+			!= std::string::npos;
+	const auto redoMigration = migrationCanvas.RedoCommand();
+	const auto redoMigrationSource = readMigrationText(migrationSource);
+	const bool redidBodyAndCode = redoMigration.HasChanges()
+		&& migrationControl
+		&& migrationControl->EventHandlers[L"OnMouseClick"] == L"HandleRenamed"
+		&& redoMigrationSource.find("::HandleRenamed(") != std::string::npos;
+
+	auto externallyChangedMigrationSource = redoMigrationSource;
+	const auto externalName = externallyChangedMigrationSource.find(
+		"::HandleRenamed(");
+	if (externalName != std::string::npos)
+		externallyChangedMigrationSource.replace(
+			externalName, std::string("::HandleRenamed(").size(),
+			"::ExternallyChanged(");
+	const bool wroteExternalMigrationConflict = externalName != std::string::npos
+		&& DesignerModel::AtomicFile::Write(
+			migrationSource.wstring(), externallyChangedMigrationSource,
+			&migrationError);
+	const auto failedUndoCount = migrationCanvas.GetUndoCommandCount();
+	const auto rejectedMigrationUndo = migrationCanvas.UndoCommand();
+	const bool rejectedExternalMigration = wroteExternalMigrationConflict
+		&& !rejectedMigrationUndo
+		&& migrationCanvas.GetUndoCommandCount() == failedUndoCount
+		&& migrationControl
+		&& migrationControl->EventHandlers[L"OnMouseClick"] == L"HandleRenamed"
+		&& readMigrationText(migrationSource) == externallyChangedMigrationSource;
+	const bool restoredRedoSource = DesignerModel::AtomicFile::Write(
+		migrationSource.wstring(), redoMigrationSource, &migrationError);
+	const auto retriedMigrationUndo = restoredRedoSource
+		? migrationCanvas.UndoCommand()
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed, L"restore failed");
+	const bool retriedExternalMigration = retriedMigrationUndo.HasChanges()
+		&& migrationControl
+		&& migrationControl->EventHandlers[L"OnMouseClick"] == L"HandleOriginal"
+		&& readMigrationText(migrationSource).find("::HandleOriginal(")
+			!= std::string::npos;
+
+	const auto validMigrationHeader = readMigrationText(migrationUserHeader);
+	auto invalidMigrationHeader = validMigrationHeader;
+	const auto migrationIdentity = invalidMigrationHeader.find(
+		"Acme::MigrationForm");
+	if (migrationIdentity != std::string::npos)
+		invalidMigrationHeader.replace(migrationIdentity,
+			std::string("Acme::MigrationForm").size(),
+			"Other::MigrationForm");
+	const bool wroteInvalidMigrationHeader =
+		migrationIdentity != std::string::npos
+		&& DesignerModel::AtomicFile::Write(
+			migrationUserHeader.wstring(), invalidMigrationHeader,
+			&migrationError);
+	const auto beforeFailedMigrationSource = readMigrationText(migrationSource);
+	const auto beforeFailedGeneratedSource =
+		readMigrationText(migrationGeneratedSource);
+	DesignerEventHandlerCodeMigration failingMigrationRequest = migrationRequest;
+	failingMigrationRequest.NewName = L"HandleRollback";
+	const auto failedMigrationHistoryCount =
+		migrationCanvas.GetUndoCommandCount();
+	auto failedMigration = wroteInvalidMigrationHeader
+		? migrationCanvas.RenameEventHandler(
+			L"HandleOriginal", L"HandleRollback", nullptr,
+			&migrationError, &failingMigrationRequest)
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed, L"setup failed");
+	const bool rolledBackFailedMigration = wroteInvalidMigrationHeader
+		&& !failedMigration && failedMigration.DocumentRestored
+		&& migrationCanvas.GetUndoCommandCount() == failedMigrationHistoryCount
+		&& migrationControl
+		&& migrationControl->EventHandlers[L"OnMouseClick"] == L"HandleOriginal"
+		&& readMigrationText(migrationSource) == beforeFailedMigrationSource
+		&& readMigrationText(migrationGeneratedSource)
+			== beforeFailedGeneratedSource
+		&& readMigrationText(migrationUserHeader) == invalidMigrationHeader;
+	const bool restoredValidMigrationHeader = DesignerModel::AtomicFile::Write(
+		migrationUserHeader.wstring(), validMigrationHeader, &migrationError);
+	auto inlineMigrationHeader = validMigrationHeader;
+	const auto inlineMigrationInclude = inlineMigrationHeader.find(
+		"#include \"MigrationForm.handlers.g.inc\"");
+	if (inlineMigrationInclude != std::string::npos)
+		inlineMigrationHeader.insert(inlineMigrationInclude,
+			"\tvoid HandleOriginal(Control* sender, MouseEventArgs e)\n"
+			"\t{\n"
+			"\t\t(void)sender; (void)e;\n"
+			"\t\tint inlineBody = 11; (void)inlineBody;\n"
+			"\t}\n");
+	auto inlineMigrationSource = beforeFailedMigrationSource;
+	const auto inlineSourceBegin = inlineMigrationSource.find(
+		"void Acme::MigrationForm::HandleOriginal(");
+	const auto inlineSourceEnd = inlineSourceBegin == std::string::npos
+		? std::string::npos
+		: inlineMigrationSource.find("\n}\n", inlineSourceBegin);
+	if (inlineSourceEnd != std::string::npos)
+		inlineMigrationSource.erase(inlineSourceBegin,
+			inlineSourceEnd + 3 - inlineSourceBegin);
+	const bool wroteInlineMigrationFiles = restoredValidMigrationHeader
+		&& inlineMigrationInclude != std::string::npos
+		&& inlineSourceBegin != std::string::npos
+		&& inlineSourceEnd != std::string::npos
+		&& DesignerModel::AtomicFile::Write(
+			migrationUserHeader.wstring(), inlineMigrationHeader,
+			&migrationError)
+		&& DesignerModel::AtomicFile::Write(
+			migrationSource.wstring(), inlineMigrationSource,
+			&migrationError);
+	const bool generatedInlineMigration = wroteInlineMigrationFiles
+		&& DesignerModel::DesignCodeGenerationService::Generate(
+			migrationDocument, L"", migrationOptions,
+			&migrationGenerated, &migrationError);
+	DesignerEventHandlerCodeMigration inlineMigrationRequest = migrationRequest;
+	inlineMigrationRequest.UserCodePath = migrationUserHeader.wstring();
+	inlineMigrationRequest.NewName = L"HandleInlineRenamed";
+	size_t inlineMigrationReferenceCount = 0;
+	const auto inlineMigrationResult = generatedInlineMigration
+		? migrationCanvas.RenameEventHandler(
+			L"HandleOriginal", L"HandleInlineRenamed",
+			&inlineMigrationReferenceCount, &migrationError,
+			&inlineMigrationRequest)
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"inline migration setup failed");
+	const auto renamedInlineHeader = readMigrationText(migrationUserHeader);
+	const auto renamedInlineSource = readMigrationText(migrationSource);
+	const auto renamedInlineGenerated = readMigrationText(
+		migrationGeneratedSource);
+	const auto renamedInlineDeclarations = readMigrationText(
+		fs::path(migrationBase.wstring() + L".handlers.g.inc"));
+	const bool migratedInlineBody = inlineMigrationResult.HasChanges()
+		&& inlineMigrationReferenceCount == 1
+		&& migrationControl
+		&& migrationControl->EventHandlers[L"OnMouseClick"]
+			== L"HandleInlineRenamed"
+		&& renamedInlineHeader.find("void HandleInlineRenamed(")
+			!= std::string::npos
+		&& renamedInlineHeader.find("inlineBody = 11")
+			!= std::string::npos
+		&& renamedInlineHeader.find("void HandleOriginal(")
+			== std::string::npos
+		&& renamedInlineSource.find("::HandleOriginal(")
+			== std::string::npos
+		&& renamedInlineSource.find("::HandleInlineRenamed(")
+			== std::string::npos
+		&& renamedInlineGenerated.find("::HandleInlineRenamed, this)")
+			!= std::string::npos
+		&& renamedInlineDeclarations.find("HandleInlineRenamed")
+			== std::string::npos;
+	const auto undoInlineMigration = migrationCanvas.UndoCommand();
+	const auto undoInlineHeader = readMigrationText(migrationUserHeader);
+	const bool undidInlineBody = undoInlineMigration.HasChanges()
+		&& migrationControl
+		&& migrationControl->EventHandlers[L"OnMouseClick"]
+			== L"HandleOriginal"
+		&& undoInlineHeader.find("void HandleOriginal(")
+			!= std::string::npos
+		&& undoInlineHeader.find("void HandleInlineRenamed(")
+			== std::string::npos
+		&& undoInlineHeader.find("inlineBody = 11") != std::string::npos;
+	const auto redoInlineMigration = migrationCanvas.RedoCommand();
+	const auto redoInlineHeader = readMigrationText(migrationUserHeader);
+	const bool redidInlineBody = redoInlineMigration.HasChanges()
+		&& migrationControl
+		&& migrationControl->EventHandlers[L"OnMouseClick"]
+			== L"HandleInlineRenamed"
+		&& redoInlineHeader.find("void HandleInlineRenamed(")
+			!= std::string::npos
+		&& redoInlineHeader.find("inlineBody = 11") != std::string::npos;
+	fs::remove_all(migrationDirectory);
+	AppendFailure(failures,
+		migratedBodyAndCode && undidBodyAndCode && redidBodyAndCode
+		&& rejectedExternalMigration && retriedExternalMigration
+		&& rolledBackFailedMigration && migratedInlineBody
+		&& undidInlineBody && redidInlineBody,
+		L"event handler code migration: body, generation, Undo/Redo, conflict, or rollback failed"
+		+ std::wstring(L" [generated=")
+		+ (generatedMigrationFiles ? L"1" : L"0")
+		+ L", customized=" + (customizedMigrationBody ? L"1" : L"0")
+		+ L", migrated=" + (migratedBodyAndCode ? L"1" : L"0")
+		+ L", undo=" + (undidBodyAndCode ? L"1" : L"0")
+		+ L", redo=" + (redidBodyAndCode ? L"1" : L"0")
+		+ L", conflict=" + (rejectedExternalMigration ? L"1" : L"0")
+		+ L", retry=" + (retriedExternalMigration ? L"1" : L"0")
+		+ L", rollback=" + (rolledBackFailedMigration ? L"1" : L"0")
+		+ L", inline=" + (migratedInlineBody ? L"1" : L"0")
+		+ L", inlineUndo=" + (undidInlineBody ? L"1" : L"0")
+		+ L", inlineRedo=" + (redidInlineBody ? L"1" : L"0")
+		+ L", error=" + migrationError + L"]");
 	std::wstring preservedCategory;
 	if (nativeFalseGrid)
 	{
@@ -2347,6 +2792,35 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& rejectedInvalidCodeBehind
 		&& codeBehindCanvas.GetCodeBehind() == codeBehindAssociation,
 		L"document transaction: code-behind association did not validate or round-trip through undo/redo");
+
+	const std::wstring exportDesignPath =
+		L"C:\\CuiDesignerSelfTest\\document\\PersistentWindow.cui.xaml";
+	const std::wstring preservedExportBase =
+		L"C:\\CuiDesignerSelfTest\\document\\generated\\PersistentWindow";
+	CodeBehindExportDialog preservedExportDialog(
+		codeBehindAssociation, L"PersistentWindow",
+		preservedExportBase, exportDesignPath);
+	CodeBehindExportDialog migratedExportDialog(
+		codeBehindAssociation, L"Acme.Views.RenamedWindow",
+		L"C:\\CuiDesignerSelfTest\\document\\generated\\RenamedWindow",
+		exportDesignPath);
+	CodeBehindExportDialog invalidExportDialog(
+		codeBehindAssociation, L"bad::class",
+		preservedExportBase, exportDesignPath);
+	AppendFailure(failures,
+		preservedExportDialog.CanApply()
+		&& !preservedExportDialog.Plan.CreatesAssociation
+		&& !preservedExportDialog.Plan.MigratesClass
+		&& !preservedExportDialog.Plan.ChangesRelativeOutput
+		&& migratedExportDialog.CanApply()
+		&& migratedExportDialog.Plan.MigratesClass
+		&& migratedExportDialog.Plan.ChangesRelativeOutput
+		&& migratedExportDialog.ValidationMessage().find(L"迁移")
+			!= std::wstring::npos
+		&& !invalidExportDialog.CanApply()
+		&& invalidExportDialog.Plan.Association.Empty()
+		&& !invalidExportDialog.ValidationMessage().empty(),
+		L"code-behind export dialog: preserve, migrate, or invalid class state was not projected");
 
 	DesignerCanvas coalescedPropertyCanvas(0, 0, 800, 640);
 	coalescedPropertyCanvas.AddControlToCanvasCore(
@@ -4807,6 +5281,136 @@ bool RunDesignerSelfTest(std::wstring& report)
 			failedRestoreCanvas.GetAllControls().size() == 1
 				&& failedRestoreCanvas.GetAllControls().front()->Name == controlName,
 			L"failed undo: repeated failure did not preserve current document");
+	}
+
+	{
+		namespace fs = std::filesystem;
+		const auto freshnessRoot = fs::temp_directory_path()
+			/ (L"cui-designer-freshness-"
+				+ std::to_wstring(::GetCurrentProcessId()) + L"-"
+				+ std::to_wstring(::GetTickCount64()));
+		const auto freshnessBase = freshnessRoot / L"FreshDesignerWindow";
+		auto readText = [](const fs::path& path)
+		{
+			std::ifstream stream(path, std::ios::binary);
+			return std::string(
+				std::istreambuf_iterator<char>(stream),
+				std::istreambuf_iterator<char>());
+		};
+
+		Designer freshnessDesigner;
+		freshnessDesigner.InitializeComponents();
+		DesignerModel::DesignCodeBehindModel association;
+		association.ClassName = L"Acme::FreshDesignerWindow";
+		std::wstring freshnessError;
+		const bool associated = freshnessDesigner._canvas
+			&& freshnessDesigner._canvas->SetCodeBehind(
+				association, &freshnessError);
+		freshnessDesigner._lastExportBasePath = freshnessBase.wstring();
+		const bool initiallyGenerated = associated
+			&& freshnessDesigner.GenerateCodeFiles(
+				freshnessBase.wstring(), &freshnessError);
+		const bool initiallyCurrent = initiallyGenerated
+			&& freshnessDesigner._codeFreshness.State
+				== DesignerModel::DesignCodeFreshnessState::Current
+			&& freshnessDesigner._btnRegenerate
+			&& freshnessDesigner._btnRegenerate->Enable
+			&& freshnessDesigner._btnRegenerate->Text == L"重新生成";
+
+		auto eventEdit = freshnessDesigner._canvas
+			? freshnessDesigner._canvas->UpdateEventHandler(
+				nullptr, L"OnShown", L"HandleShown", &freshnessError)
+			: DesignerDocumentTransactionResult::Failure(
+				DesignerDocumentTransactionState::Failed,
+				L"missing freshness canvas");
+		const bool eventMarkedStale = eventEdit.HasChanges()
+			&& freshnessDesigner._codeFreshness.State
+				== DesignerModel::DesignCodeFreshnessState::Stale
+			&& freshnessDesigner._btnRegenerate->Text == L"重新生成 *";
+		auto freshnessUndo = freshnessDesigner._canvas
+			? freshnessDesigner._canvas->UndoCommand()
+			: DesignerDocumentTransactionResult{};
+		const bool undoRestoredCurrent = freshnessUndo.HasChanges()
+			&& freshnessDesigner._codeFreshness.State
+				== DesignerModel::DesignCodeFreshnessState::Current
+			&& freshnessDesigner._btnRegenerate->Text == L"重新生成";
+		auto freshnessRedo = freshnessDesigner._canvas
+			? freshnessDesigner._canvas->RedoCommand()
+			: DesignerDocumentTransactionResult{};
+		const bool redoRestoredStale = freshnessRedo.HasChanges()
+			&& freshnessDesigner._codeFreshness.State
+				== DesignerModel::DesignCodeFreshnessState::Stale;
+		const bool regenerated = freshnessDesigner.GenerateCodeFiles(
+			freshnessBase.wstring(), &freshnessError);
+
+		const auto generatedHeader = fs::path(
+			freshnessBase.wstring() + L".g.h");
+		auto driftedHeader = readText(generatedHeader);
+		driftedHeader += "\n// EXTERNAL_DRIFT\n";
+		const bool driftWritten = DesignerModel::AtomicFile::Write(
+			generatedHeader.wstring(), driftedHeader, &freshnessError);
+		freshnessDesigner.RefreshCodeFreshnessFromFiles();
+		freshnessDesigner.UpdateDocumentPresentation();
+		const bool externalDriftDetected = driftWritten
+			&& freshnessDesigner._codeFreshness.State
+				== DesignerModel::DesignCodeFreshnessState::Stale
+			&& freshnessDesigner._btnRegenerate->Text == L"重新生成 *";
+
+		const bool repairedDrift = freshnessDesigner.GenerateCodeFiles(
+			freshnessBase.wstring(), &freshnessError);
+		const auto generatedSource = fs::path(
+			freshnessBase.wstring() + L".g.cpp");
+		std::error_code removeError;
+		const bool sourceRemoved = fs::remove(generatedSource, removeError);
+		freshnessDesigner.RefreshCodeFreshnessFromFiles();
+		freshnessDesigner.UpdateDocumentPresentation();
+		const bool missingDetected = sourceRemoved && !removeError
+			&& freshnessDesigner._codeFreshness.State
+				== DesignerModel::DesignCodeFreshnessState::Missing
+			&& freshnessDesigner._codeFreshness.MissingFiles.size() == 1
+			&& freshnessDesigner._btnRegenerate->Text == L"重新生成 !";
+
+		const bool repairedMissing = freshnessDesigner.GenerateCodeFiles(
+			freshnessBase.wstring(), &freshnessError);
+		const auto userHeaderPath = fs::path(
+			freshnessBase.wstring() + L".h");
+		const auto validUserHeader = readText(userHeaderPath);
+		auto wrongUserHeader = validUserHeader;
+		const auto classMarker = wrongUserHeader.find(
+			"Acme::FreshDesignerWindow");
+		if (classMarker != std::string::npos)
+			wrongUserHeader.replace(
+				classMarker,
+				std::string("Acme::FreshDesignerWindow").size(),
+				"Other::FreshDesignerWindow");
+		const bool wrongHeaderWritten = classMarker != std::string::npos
+			&& DesignerModel::AtomicFile::Write(
+				userHeaderPath.wstring(), wrongUserHeader, &freshnessError);
+		freshnessDesigner.RefreshCodeFreshnessFromFiles();
+		freshnessDesigner.UpdateDocumentPresentation();
+		const bool blockedDetected = wrongHeaderWritten
+			&& freshnessDesigner._codeFreshness.State
+				== DesignerModel::DesignCodeFreshnessState::Blocked
+			&& freshnessDesigner._btnRegenerate->Text == L"生成受阻 !"
+			&& !freshnessDesigner._btnRegenerate->AccessibleDescription.empty();
+		const bool validHeaderRestored = DesignerModel::AtomicFile::Write(
+			userHeaderPath.wstring(), validUserHeader, &freshnessError);
+		freshnessDesigner.RefreshCodeFreshnessFromFiles();
+		freshnessDesigner.UpdateDocumentPresentation();
+		const bool restoredCurrent = validHeaderRestored
+			&& freshnessDesigner._codeFreshness.State
+				== DesignerModel::DesignCodeFreshnessState::Current;
+
+		AppendFailure(failures,
+			initiallyCurrent && eventMarkedStale
+			&& undoRestoredCurrent && redoRestoredStale
+			&& regenerated && externalDriftDetected && repairedDrift
+			&& missingDetected && repairedMissing
+			&& blockedDetected && restoredCurrent,
+			L"code freshness: toolbar state, Undo/Redo, drift, missing, or blocked detection failed");
+		if (::GetEnvironmentVariableW(
+			L"CUI_KEEP_CODEGEN_TEST_OUTPUT", nullptr, 0) == 0)
+			fs::remove_all(freshnessRoot, removeError);
 	}
 
 	if (failures.empty())

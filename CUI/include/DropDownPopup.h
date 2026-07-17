@@ -25,15 +25,15 @@ public:
 	float ScrollBarWidth = 6.0f;
 	float ScrollTrackPadding = 5.0f;
 
-	D2D1_COLOR_F DropBackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.98f };
-	D2D1_COLOR_F DropBorderColor = D2D1_COLOR_F{ 0.74f, 0.77f, 0.84f, 0.95f };
-	D2D1_COLOR_F AccentColor = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 1.0f };
-	D2D1_COLOR_F SelectedItemBackColor = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.14f };
-	D2D1_COLOR_F SelectedItemForeColor = Colors::Black;
-	D2D1_COLOR_F UnderMouseBackColor = D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.09f };
-	D2D1_COLOR_F UnderMouseForeColor = Colors::Black;
-	D2D1_COLOR_F ScrollBackColor = Colors::LightGray;
-	D2D1_COLOR_F ScrollForeColor = Colors::DimGrey;
+	D2D1_COLOR_F DropBackColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F DropBorderColor = cui::theme::palette::Border;
+	D2D1_COLOR_F AccentColor = cui::theme::palette::Accent;
+	D2D1_COLOR_F SelectedItemBackColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F SelectedItemForeColor = cui::theme::palette::TextPrimary;
+	D2D1_COLOR_F UnderMouseBackColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F UnderMouseForeColor = cui::theme::palette::TextPrimary;
+	D2D1_COLOR_F ScrollBackColor = cui::theme::palette::ScrollTrack;
+	D2D1_COLOR_F ScrollForeColor = cui::theme::palette::ScrollThumb;
 
 	DropDownPopupSelectionChangedEvent SelectionChanged;
 	DropDownPopupClosedEvent Closed;

@@ -38,7 +38,8 @@ PictureBox::PictureBox(int x, int y, int width, int height)
 {
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
-	this->BackColor = D2D1_COLOR_F{ 0.75f , 0.75f , 0.75f , 0.75f };
+	this->BackColor = cui::theme::palette::SurfaceMuted;
+	this->BorderColor = cui::theme::palette::Border;
 }
 void PictureBox::Update()
 {

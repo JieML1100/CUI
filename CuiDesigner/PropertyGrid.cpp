@@ -14,6 +14,7 @@
 #include "DesignerCustomEditorCatalog.h"
 #include "DesignerEventCatalog.h"
 #include "EventHandlerEditorDialog.h"
+#include "DesignerCore/Commands/EventHandlerCodeMigration.h"
 #include "StyleSheetEditorDialog.h"
 #include "MenuItemsEditorDialog.h"
 #include "StatusBarPartsEditorDialog.h"
@@ -176,18 +177,37 @@ namespace
 		const DesignerCanvas* canvas,
 		const DesignerEventDescriptor& requested,
 		const std::wstring& defaultName,
-		const std::wstring& currentName)
+		const std::wstring& currentName,
+		const DesignerModel::DesignEventHandlerCodeInspection& codeInspection)
 	{
 		std::set<std::wstring> compatible;
 		if (!defaultName.empty()) compatible.insert(defaultName);
 		if (!currentName.empty()) compatible.insert(currentName);
+		DesignerModel::DesignDocumentEventIndex documentIndex;
+		bool hasDocumentIndex = false;
 		if (canvas)
 		{
-			DesignerModel::DesignDocumentEventIndex index;
-			if (canvas->BuildEventHandlerIndex(index, nullptr))
-				for (const auto& handler : index.Handlers())
+			hasDocumentIndex = canvas->BuildEventHandlerIndex(
+				documentIndex, nullptr);
+			if (hasDocumentIndex)
+				for (const auto& handler : documentIndex.Handlers())
 					if (handler.Signature == requested.Signature)
 						compatible.insert(handler.Name);
+		}
+		if (const auto source = codeInspection.CompatibleUserHandlers.find(
+			requested.ParameterList);
+			source != codeInspection.CompatibleUserHandlers.end())
+		{
+			for (const auto& name : source->second)
+			{
+				std::wstring validationError;
+				if (!DesignerEventCatalog::ValidateHandlerName(
+					name, &validationError)) continue;
+				const auto* used = hasDocumentIndex
+					? documentIndex.FindHandler(name) : nullptr;
+				if (used && used->Signature != requested.Signature) continue;
+				compatible.insert(name);
+			}
 		}
 
 		std::vector<std::wstring> result;
@@ -204,24 +224,46 @@ namespace
 		return result;
 	}
 
-	static bool HasConflictingHandlerSignature(
-		const DesignerCanvas* canvas,
-		const std::wstring& handlerName,
-		const DesignerEventDescriptor& requested,
-		std::wstring& error)
+	struct EventCodePresentation
 	{
-		if (!canvas || handlerName.empty()) return false;
-		DesignerModel::DesignDocumentEventIndex index;
-		if (!canvas->BuildEventHandlerIndex(index, &error)) return true;
-		if (const auto* existing = index.FindHandler(handlerName);
-			existing && existing->Signature != requested.Signature)
+		std::wstring Badge;
+		std::wstring Diagnostic;
+	};
+
+	static EventCodePresentation GetEventCodePresentation(
+		const DesignerModel::DesignEventHandlerCodeInspection& inspection,
+		const std::wstring& handlerName)
+	{
+		if (handlerName.empty()) return {};
+		if (inspection.Pending)
+			return { L"检查中", L"正在检查用户头/源文件中的处理函数。" };
+		if (!inspection.Associated)
+			return { L"未关联代码",
+				L"首次导出代码后可检查并定位处理函数。" };
+		const auto found = inspection.Handlers.find(handlerName);
+		if (found == inspection.Handlers.end())
 		{
-			error = L"处理函数 “" + handlerName
-				+ L"” 已被不同参数签名的事件使用。请换一个函数名。";
-			return true;
+			if (!inspection.Diagnostic.empty())
+				return { L"诊断失败", inspection.Diagnostic };
+			return { L"待检查", L"当前代码检查结果尚未包含该处理函数。" };
 		}
-		return false;
+		const auto& entry = found->second;
+		switch (entry.State)
+		{
+		case DesignerModel::DesignEventHandlerCodeState::Current:
+			return { L"已实现", entry.Diagnostic };
+		case DesignerModel::DesignEventHandlerCodeState::SourceMissing:
+			return { L"源文件缺失", entry.Diagnostic };
+		case DesignerModel::DesignEventHandlerCodeState::SignatureMismatch:
+			return { L"签名错误", entry.Diagnostic };
+		case DesignerModel::DesignEventHandlerCodeState::DuplicateDefinition:
+			return { L"重复定义", entry.Diagnostic };
+		case DesignerModel::DesignEventHandlerCodeState::DefinitionMissing:
+		default:
+			return { L"待生成", entry.Diagnostic };
+		}
 	}
+
 }
 
 PropertyGrid::PropertyGrid(int x, int y, int width, int height)
@@ -492,6 +534,14 @@ void PropertyGrid::SetViewMode(DesignerPropertyGridViewMode mode)
 	InvalidateVisual();
 }
 
+void PropertyGrid::SetEventHandlerCodeInspection(
+	DesignerModel::DesignEventHandlerCodeInspection inspection)
+{
+	_eventCodeInspection = std::move(inspection);
+	if (_viewMode == DesignerPropertyGridViewMode::Events)
+		_reloadRequested = true;
+}
+
 void PropertyGrid::SetFilterText(std::wstring value)
 {
 	if (_propertyFilter == value) return;
@@ -669,17 +719,27 @@ void PropertyGrid::AddNativeEventRow(
 		storedHandler, subjectName, event.Name);
 	const auto defaultName = DesignerEventCatalog::MakeDefaultHandlerName(
 		subjectName, event.Name);
+	const auto code = GetEventCodePresentation(
+		_eventCodeInspection, currentName);
 	PropertyGridItem item(
 		category,
 		event.DisplayName.empty() ? event.Name : event.DisplayName,
 		currentName,
 		PropertyGridValueType::EditableEnum);
+	if (!code.Badge.empty()) item.Name += L"  [" + code.Badge + L"]";
 	item.Options = GetCompatibleHandlerNames(
-		_binding.GetCanvas(), event, defaultName, currentName);
+		_binding.GetCanvas(), event, defaultName, currentName,
+		_eventCodeInspection);
 	item.Description = event.IsDefault ? L"默认事件。" : L"";
+	if (!code.Diagnostic.empty())
+	{
+		if (!item.Description.empty()) item.Description += L" ";
+		item.Description += L"代码状态：" + code.Diagnostic;
+	}
 	item.Description += L"签名：void Handler("
 		+ std::wstring(event.ParameterList.begin(), event.ParameterList.end())
-		+ L")。留空表示不绑定；F4 可复用同签名函数；双击生成或定位处理函数。";
+		+ L")。留空表示不绑定；F4 可复用文档或用户源码中的同签名函数；"
+			L"双击生成或定位处理函数。";
 	_nativeItemBuffer.push_back(std::move(item));
 	NativeGridEntry entry;
 	entry.Kind = NativeGridEntryKind::Event;
@@ -704,9 +764,12 @@ void PropertyGrid::PopulateNativeEventRows(
 			it == handlers.end() ? L"" : it->second;
 		const auto currentHandler = DesignerEventCatalog::ResolveHandlerName(
 			storedHandler, subjectName, event.Name);
+		const auto code = GetEventCodePresentation(
+			_eventCodeInspection, currentHandler);
 		if (!MatchesCurrentFilter(event.Name + L" " + event.DisplayName
 			+ L" Event 事件 "
 			+ category + L" " + currentHandler + L" "
+			+ code.Badge + L" " + code.Diagnostic + L" "
 			+ std::wstring(event.ParameterList.begin(),
 				event.ParameterList.end()))) continue;
 		AddNativeEventRow(
@@ -756,7 +819,7 @@ void PropertyGrid::AddNativeEventHandlerManagerRow(
 		category,
 		L"重命名处理函数",
 		L"管理 (" + std::to_wstring(index.Handlers().size()) + L")…",
-		L"按签名索引文档中的函数名，并一次更新所有同名事件引用。",
+		L"按签名索引文档中的函数名；可选择同步迁移唯一兼容的用户函数体。",
 		[this, preferred]()
 		{
 			auto* currentCanvas = _binding.GetCanvas();
@@ -769,23 +832,56 @@ void PropertyGrid::AddNativeEventHandlerManagerRow(
 				ShowPropertyEditError(L"重命名处理函数", indexError);
 				return;
 			}
-			EventHandlerEditorDialog dialog(currentIndex, preferred);
+			EventHandlerEditorDialog dialog(
+				currentIndex, preferred, &_eventCodeInspection);
 			dialog.ShowDialog(ParentForm->Handle);
 			if (!dialog.Applied) return;
 
 			size_t renamed = 0;
-			auto transaction = ExecutePropertyCommand(
-				L"RenameEventHandler",
-				[currentCanvas, oldName = dialog.OldName,
-					newName = dialog.NewName, &renamed](std::wstring& error)
+			std::wstring renameError;
+			DesignerEventHandlerCodeMigration migration;
+			const DesignerEventHandlerCodeMigration* migrationRequest = nullptr;
+			if (dialog.MigrateUserCode)
+			{
+				const auto* source = currentIndex.FindHandler(dialog.OldName);
+				if (!source)
 				{
-					return currentCanvas->RenameEventHandler(
-						oldName, newName, &renamed, &error);
-				});
+					ShowPropertyEditError(L"重命名处理函数",
+						L"重命名确认后事件索引已变化，请重试。");
+					return;
+				}
+				migration.OutputBasePath =
+					_eventCodeInspection.Target.OutputBasePath;
+				migration.ClassName = _eventCodeInspection.Target.ClassName;
+				const auto codeEntry =
+					_eventCodeInspection.Handlers.find(dialog.OldName);
+				if (codeEntry == _eventCodeInspection.Handlers.end()
+					|| codeEntry->second.DefinitionFilePath.empty())
+				{
+					ShowPropertyEditError(L"重命名处理函数",
+						L"无法确定用户函数体所在文件，请刷新代码状态后重试。");
+					return;
+				}
+				migration.UserCodePath =
+					codeEntry->second.DefinitionFilePath;
+				migration.ParameterList = source->ParameterList;
+				migration.OldName = dialog.OldName;
+				migration.NewName = dialog.NewName;
+				migrationRequest = &migration;
+			}
+			auto transaction = currentCanvas->RenameEventHandler(
+				dialog.OldName, dialog.NewName, &renamed, &renameError,
+				migrationRequest);
 			if (transaction)
 			{
 				_reloadRequested = true;
 				ClearPropertyEditError();
+			}
+			else
+			{
+				ShowPropertyEditError(
+					L"RenameEventHandler",
+					renameError.empty() ? transaction.Error : renameError);
 			}
 		});
 }
@@ -1270,42 +1366,40 @@ DesignerPropertyEditResult PropertyGrid::UpdatePropertyFromTextBox(
 	std::wstring propertyName,
 	std::wstring value)
 {
+	std::optional<DesignerEventDescriptor> currentEvent;
+	std::shared_ptr<DesignerControl> eventControl;
+	if (_binding.IsFormBinding())
+		currentEvent = DesignerEventCatalog::FindFormEvent(propertyName);
+	else if ((eventControl = _binding.GetBoundControl()))
+		currentEvent = DesignerEventCatalog::FindControlEvent(
+			eventControl->Type, propertyName, eventControl->CustomEvents);
+	if (currentEvent)
+	{
+		auto* canvas = _binding.GetCanvas();
+		if (!canvas)
+		{
+			auto failure = DesignerPropertyEditResult::Failure(
+				L"设计画布不可用。");
+			ShowPropertyEditError(propertyName, failure.Error);
+			return failure;
+		}
+		std::wstring error;
+		auto transaction = canvas->UpdateEventHandler(
+			eventControl, currentEvent->Name, TrimWs(value), &error);
+		if (!transaction)
+		{
+			auto failure = DesignerPropertyEditResult::Failure(
+				error.empty() ? transaction.Error : std::move(error));
+			ShowPropertyEditError(propertyName, failure.Error);
+			return failure;
+		}
+		ClearPropertyEditError();
+		return DesignerPropertyEditResult::Success(
+			transaction.HasChanges() ? 1 : 0);
+	}
+
 	auto result = ExecutePropertyEditCommand(propertyName, [this, propertyName, value]()
 	{
-		std::optional<DesignerEventDescriptor> currentEvent;
-		if (_binding.IsFormBinding())
-			currentEvent = DesignerEventCatalog::FindFormEvent(propertyName);
-		else if (auto currentControl = _binding.GetBoundControl())
-			currentEvent = DesignerEventCatalog::FindControlEvent(
-				currentControl->Type, propertyName,
-				currentControl->CustomEvents);
-		if (currentEvent)
-		{
-			auto* canvas = _binding.GetCanvas();
-			if (!canvas)
-				return DesignerPropertyEditResult::Failure(L"设计画布不可用。");
-			auto handler = TrimWs(value);
-			std::wstring error;
-			if (!DesignerEventCatalog::ValidateHandlerName(handler, &error))
-				return DesignerPropertyEditResult::Failure(error);
-
-			if (HasConflictingHandlerSignature(
-				canvas, handler, *currentEvent, error))
-				return DesignerPropertyEditResult::Failure(error);
-
-			if (_binding.IsFormBinding())
-			{
-				canvas->SetDesignedFormEventHandler(propertyName, handler);
-				return DesignerPropertyEditResult::Success(1);
-			}
-			auto currentControl = _binding.GetBoundControl();
-			if (!currentControl)
-				return DesignerPropertyEditResult::Failure(L"没有目标控件。");
-			if (handler.empty()) currentControl->EventHandlers.erase(propertyName);
-			else currentControl->EventHandlers[propertyName] = std::move(handler);
-			return DesignerPropertyEditResult::Success(1);
-		}
-
 		if (_binding.IsFormBinding())
 		{
 			const auto* property = DesignerFormPropertyCatalog::Find(propertyName);

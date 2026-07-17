@@ -165,12 +165,12 @@ void ScrollView::EnsureBindingPropertiesRegistered()
 			[](ScrollView& target) { return target.ScrollBackColor; },
 			[](ScrollView& target, const D2D1_COLOR_F& value) { target.ScrollBackColor = value; },
 			ScrollViewPropertySubscriber(L"ScrollBackColor"),
-			ScrollViewColorOptions(Colors::LightGray, 20));
+			ScrollViewColorOptions(cui::theme::palette::ScrollTrack, 20));
 		BindingPropertyRegistry::Register<ScrollView, D2D1_COLOR_F>(L"ScrollForeColor",
 			[](ScrollView& target) { return target.ScrollForeColor; },
 			[](ScrollView& target, const D2D1_COLOR_F& value) { target.ScrollForeColor = value; },
 			ScrollViewPropertySubscriber(L"ScrollForeColor"),
-			ScrollViewColorOptions(Colors::DimGrey, 30));
+			ScrollViewColorOptions(cui::theme::palette::ScrollThumb, 30));
 
 		using Handler = BindingPropertyMetadata::ChangeHandler;
 		auto subscriber = [](ScrollView& target, Handler handler, DataSourceUpdateMode)

@@ -21,11 +21,11 @@ public:
 	/** @brief 边框宽度（像素）。 */
 	float BorderThickness = 1.5f;
 	/** @brief 轨道边框色。 */
-	D2D1_COLOR_F TrackBorderColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.18f };
+	D2D1_COLOR_F TrackBorderColor = cui::theme::palette::Border;
 	/** @brief 进度填充的顶部高光。 */
 	D2D1_COLOR_F FillHighlightColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.14f };
 	/** @brief 禁用遮罩色。 */
-	D2D1_COLOR_F DisabledOverlayColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.42f };
+	D2D1_COLOR_F DisabledOverlayColor = cui::theme::palette::DisabledOverlay;
 	/** @brief 进度条圆角；小于 0 时自动使用胶囊圆角。 */
 	float CornerRadius = -1.0f;
 	/** @brief 填充与外框之间的内边距。 */

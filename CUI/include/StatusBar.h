@@ -37,10 +37,10 @@ private:
 	int _horizontalPadding = 6;
 	int _gap = 10;
 	float _partCornerRadius = 8.0f;
-	D2D1_COLOR_F _separatorColor = D2D1_COLOR_F{ 1, 1, 1, 0.12f };
-	D2D1_COLOR_F _topLineColor = D2D1_COLOR_F{ 1, 1, 1, 0.12f };
-	D2D1_COLOR_F _partBackColor = D2D1_COLOR_F{ 1, 1, 1, 0.06f };
-	D2D1_COLOR_F _partBorderColor = D2D1_COLOR_F{ 1, 1, 1, 0.10f };
+	D2D1_COLOR_F _separatorColor = cui::theme::palette::Border;
+	D2D1_COLOR_F _topLineColor = cui::theme::palette::Border;
+	D2D1_COLOR_F _partBackColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F _partBorderColor = cui::theme::palette::Border;
 	bool _showTopLine = true;
 	bool _showBorder = false;
 	bool _usePartPills = false;

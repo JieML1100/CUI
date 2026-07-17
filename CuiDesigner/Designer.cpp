@@ -1,4 +1,5 @@
 ﻿#include "Designer.h"
+#include "CodeBehindExportDialog.h"
 #include "DesignerModel/DesignDocument.h"
 #include "DesignerModel/DesignCodeGenerationService.h"
 #include "DesignerModel/DesignDocumentFileFormat.h"
@@ -9,6 +10,8 @@
 #include <commdlg.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <algorithm>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -119,6 +122,7 @@ Designer::Designer(std::vector<DesignerControlDescriptor> controlDescriptors)
 
 Designer::~Designer()
 {
+	ResetCodeFreshnessTracking();
 	DiscardSessionRecoverySnapshot();
 }
 
@@ -178,6 +182,15 @@ void Designer::InitializeComponents()
 		OnExportClick();
 	};
 	this->AddControl(_btnExport);
+	btnX += btnWidth + 30;
+
+	_btnRegenerate = new Button(L"重新生成", btnX, btnY, btnWidth + 20, btnHeight);
+	_btnRegenerate->Round = 0.5f;
+	_btnRegenerate->Enable = false;
+	_btnRegenerate->OnMouseClick += [this](Control*, MouseEventArgs) {
+		OnRegenerateCodeClick();
+	};
+	this->AddControl(_btnRegenerate);
 	btnX += btnWidth + 30;
 	
 	_btnDelete = new Button(L"删除", btnX, btnY, btnWidth, btnHeight);
@@ -361,6 +374,7 @@ void Designer::OnCanvasDocumentStateChanged(
 	const DesignerCanvasDocumentStateEventArgs& args)
 {
 	RestoreCodeBehindAssociation();
+	UpdateCodeFreshnessForDocumentState();
 	UpdateDocumentPresentation();
 	if (args.IsDirty) ScheduleRecoverySnapshot();
 	else DiscardSessionRecoverySnapshot();
@@ -447,6 +461,20 @@ bool Designer::ProcessMessage(
 		}
 		return true;
 	}
+	if (message == WM_TIMER && wParam == CodeFreshnessTimerId)
+	{
+		(void)::KillTimer(this->Handle, CodeFreshnessTimerId);
+		if (!_codeFreshnessInspectionPending) return true;
+		_codeFreshnessInspectionPending = false;
+		RefreshCodeFreshnessFromFiles();
+		UpdateDocumentPresentation();
+		return true;
+	}
+	if (message == WM_ACTIVATEAPP && wParam == TRUE)
+	{
+		RefreshCodeFreshnessFromFiles();
+		UpdateDocumentPresentation();
+	}
 	const bool captureLost = message == WM_CAPTURECHANGED
 		&& reinterpret_cast<HWND>(lParam) != this->Handle;
 	const bool interactionCanceled = message == WM_CANCELMODE
@@ -477,6 +505,7 @@ void Designer::OnNewClick()
 	_currentFileName.clear();
 	_lastExportBasePath.clear();
 	_sessionExportBasePaths.clear();
+	ResetCodeFreshnessTracking();
 	UpdateDocumentPresentation();
 	_lblInfo->Text = L"已新建空白文档";
 }
@@ -509,8 +538,10 @@ void Designer::OnOpenClick()
 	if (result)
 	{
 		_sessionExportBasePaths.clear();
+		ResetCodeFreshnessTracking();
 		_currentFileName = path;
 		RestoreCodeBehindAssociation();
+		RefreshCodeFreshnessFromFiles();
 		_propertyGrid->LoadControl(nullptr);
 		UpdateDocumentPresentation();
 		_lblInfo->Text = L"已打开: " + path;
@@ -546,6 +577,7 @@ void Designer::OnReloadClick()
 		return;
 	}
 	RestoreCodeBehindAssociation();
+	RefreshCodeFreshnessFromFiles();
 	_propertyGrid->LoadControl(nullptr);
 	UpdateDocumentPresentation();
 	_lblInfo->Text = L"已重新加载: " + path;
@@ -602,6 +634,7 @@ bool Designer::SaveDocumentInteractive()
 	{
 		_currentFileName = path;
 		RestoreCodeBehindAssociation();
+		RefreshCodeFreshnessFromFiles();
 		UpdateDocumentPresentation();
 		_lblInfo->Text = L"已保存: " + path;
 		return true;
@@ -641,6 +674,49 @@ void Designer::UpdateDocumentPresentation()
 	if (dirty) title += L" *";
 	this->Text = title;
 	if (_btnReload) _btnReload->Enable = !_currentFileName.empty();
+	if (_btnRegenerate)
+	{
+		const bool available = !_lastExportBasePath.empty()
+			&& _canvas && !_canvas->GetCodeBehind().ClassName.empty();
+		_btnRegenerate->Enable = available;
+		std::wstring caption = L"重新生成";
+		std::wstring description = available
+			? L"重新生成当前文档的 code-behind 文件。"
+			: L"当前文档尚未建立 code-behind 目标。";
+		if (available)
+		{
+			switch (_codeFreshness.State)
+			{
+			case DesignerModel::DesignCodeFreshnessState::Current:
+				description = L"生成代码与当前设计完全一致。";
+				break;
+			case DesignerModel::DesignCodeFreshnessState::Stale:
+				caption += L" *";
+				description = L"设计内容已变化，需要重新生成代码。";
+				break;
+			case DesignerModel::DesignCodeFreshnessState::Missing:
+				caption += L" !";
+				description = L"代码文件不完整，需要重新生成；缺少 "
+					+ std::to_wstring(_codeFreshness.MissingFiles.size())
+					+ L" 个文件。";
+				break;
+			case DesignerModel::DesignCodeFreshnessState::Blocked:
+				caption = L"生成受阻 !";
+				description = _codeFreshness.Diagnostic.empty()
+					? L"当前用户代码或生成目标阻止了安全重新生成。"
+					: _codeFreshness.Diagnostic;
+				break;
+			default:
+				caption += L" ?";
+				description = L"尚未检查生成代码状态。";
+				break;
+			}
+		}
+		_btnRegenerate->Text = std::move(caption);
+		_btnRegenerate->AccessibleName = L"重新生成代码";
+		_btnRegenerate->AccessibleDescription = std::move(description);
+		_btnRegenerate->InvalidateVisual();
+	}
 	if (this->Handle && ::IsWindow(this->Handle))
 		::SetWindowTextW(this->Handle, title.c_str());
 }
@@ -745,7 +821,9 @@ void Designer::TryRestoreRecoveryOnStartup()
 
 		_currentFileName = snapshot.OriginalFilePath;
 		_sessionExportBasePaths.clear();
+		ResetCodeFreshnessTracking();
 		RestoreCodeBehindAssociation();
+		RefreshCodeFreshnessFromFiles();
 		_propertyGrid->LoadControl(nullptr);
 		UpdateDocumentPresentation();
 		std::wstring snapshotError;
@@ -868,11 +946,66 @@ bool Designer::GenerateCodeFiles(
 		}
 		_lastExportBasePath = result.OutputBasePath;
 		_sessionExportBasePaths[result.ClassName] = result.OutputBasePath;
+		RecordGeneratedCodeState(result);
 		return true;
 	}
 	catch (...)
 	{
 		if (outError) *outError = L"准备代码导出时发生未知错误。";
+		return false;
+	}
+}
+
+bool Designer::GenerateAndAssociateCodeFiles(
+	const std::wstring& basePath,
+	const std::wstring& className,
+	std::wstring* outError)
+{
+	if (outError) outError->clear();
+	if (!_canvas || basePath.empty() || className.empty())
+	{
+		if (outError) *outError = L"代码导出事务参数无效。";
+		return false;
+	}
+	try
+	{
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!_canvas->BuildDesignDocument(document, &error))
+		{
+			if (outError) *outError = error.empty()
+				? L"无法构建设计文档。" : std::move(error);
+			return false;
+		}
+
+		DesignerModel::DesignCodeGenerationOptions options;
+		options.OutputBasePath = basePath;
+		options.ClassName = className;
+		DesignerModel::DesignCodeGenerationResult result;
+		if (!DesignerModel::DesignCodeGenerationService::GenerateAndCommit(
+			document, _currentFileName, options,
+			[this, className, basePath](
+				const DesignerModel::DesignCodeGenerationResult&,
+				std::wstring& commitError)
+			{
+				return AssociateCodeBehind(
+					className, basePath, _currentFileName, &commitError);
+			},
+			&result, &error))
+		{
+			if (outError) *outError = error.empty()
+				? L"代码导出事务失败。" : std::move(error);
+			return false;
+		}
+
+		_lastExportBasePath = result.OutputBasePath;
+		_sessionExportBasePaths[result.ClassName] = result.OutputBasePath;
+		RecordGeneratedCodeState(result);
+		return true;
+	}
+	catch (...)
+	{
+		if (outError) *outError = L"准备代码导出事务时发生未知错误。";
 		return false;
 	}
 }
@@ -884,44 +1017,16 @@ bool Designer::AssociateCodeBehind(
 	std::wstring* outError)
 {
 	if (outError) outError->clear();
-	if (!_canvas || className.empty() || basePath.empty())
+	if (!_canvas)
 	{
-		if (outError) *outError = L"code-behind 关联参数无效。";
+		if (outError) *outError = L"设计画布不可用。";
 		return false;
 	}
 
 	DesignerModel::DesignCodeBehindModel association;
-	association.ClassName = className;
-	try
-	{
-		if (!designFilePath.empty())
-		{
-			const auto designDirectory = std::filesystem::absolute(
-				std::filesystem::path(designFilePath)).parent_path();
-			const auto absoluteBase = std::filesystem::absolute(
-				std::filesystem::path(basePath));
-			const auto relative = std::filesystem::relative(
-				absoluteBase, designDirectory);
-			if (relative.empty())
-			{
-				if (outError) *outError =
-					L"代码导出位置无法表示为相对于设计文件的路径。";
-				return false;
-			}
-			association.RelativeBasePath = relative.generic_wstring();
-		}
-	}
-	catch (...)
-	{
-		if (outError) *outError = L"无法计算可移植的 code-behind 相对路径。";
+	if (!DesignerModel::DesignCodeGenerationService::BuildCodeBehindAssociation(
+		className, basePath, designFilePath, association, outError))
 		return false;
-	}
-	std::wstring validation;
-	if (!association.Validate(&validation))
-	{
-		if (outError) *outError = std::move(validation);
-		return false;
-	}
 
 	if (_canvas->GetCodeBehind() == association) return true;
 	auto result = _canvas->ExecuteDocumentEditTransaction(
@@ -968,15 +1073,224 @@ void Designer::RestoreCodeBehindAssociation()
 	}
 }
 
+void Designer::PublishEventHandlerCodeInspection(
+	DesignerModel::DesignEventHandlerCodeInspection inspection)
+{
+	_eventCodeInspection = std::move(inspection);
+	if (_propertyGrid)
+		_propertyGrid->SetEventHandlerCodeInspection(_eventCodeInspection);
+}
+
+void Designer::RefreshEventHandlerCodeInspection(
+	const DesignerModel::DesignDocument& document,
+	const DesignerModel::DesignCodeGenerationOptions& options)
+{
+	DesignerModel::DesignEventHandlerCodeInspection inspection;
+	std::wstring error;
+	if (!DesignerModel::DesignCodeGenerationService::InspectEventHandlers(
+		document, _currentFileName, options, inspection, &error))
+	{
+		inspection = {};
+		inspection.Associated = !options.ClassName.empty()
+			&& !options.OutputBasePath.empty();
+		inspection.Target.ClassName = options.ClassName;
+		inspection.Target.OutputBasePath = options.OutputBasePath;
+		if (!options.OutputBasePath.empty())
+		{
+			inspection.Target.UserHeaderPath =
+				options.OutputBasePath + L".h";
+			inspection.Target.UserSourcePath =
+				options.OutputBasePath + L".cpp";
+		}
+		inspection.Diagnostic = error.empty()
+			? L"事件处理函数代码检查失败。" : std::move(error);
+	}
+	PublishEventHandlerCodeInspection(std::move(inspection));
+}
+
+std::wstring Designer::CurrentCodeFreshnessTargetKey() const
+{
+	if (!_canvas || _lastExportBasePath.empty()) return {};
+	const auto& association = _canvas->GetCodeBehind();
+	if (association.ClassName.empty()) return {};
+	std::wstring path = _lastExportBasePath;
+	std::replace(path.begin(), path.end(), L'/', L'\\');
+	std::transform(path.begin(), path.end(), path.begin(), [](wchar_t value)
+	{
+		return static_cast<wchar_t>(std::towlower(value));
+	});
+	return association.ClassName + L"\n" + path;
+}
+
+void Designer::ResetCodeFreshnessTracking()
+{
+	if (this->Handle && ::IsWindow(this->Handle))
+		(void)::KillTimer(this->Handle, CodeFreshnessTimerId);
+	_codeFreshnessInspectionPending = false;
+	_codeFreshness = {};
+	_codeFreshnessTargetKey.clear();
+	_currentCodeStateIds.clear();
+	PublishEventHandlerCodeInspection({});
+}
+
+void Designer::ScheduleCodeFreshnessInspection()
+{
+	const auto targetKey = CurrentCodeFreshnessTargetKey();
+	if (targetKey.empty())
+	{
+		if (this->Handle && ::IsWindow(this->Handle))
+			(void)::KillTimer(this->Handle, CodeFreshnessTimerId);
+		_codeFreshnessInspectionPending = false;
+		_codeFreshness = {};
+		_codeFreshnessTargetKey.clear();
+		PublishEventHandlerCodeInspection({});
+		return;
+	}
+	_codeFreshnessInspectionPending = true;
+	if (!this->Handle || !::IsWindow(this->Handle)
+		|| ::SetTimer(this->Handle, CodeFreshnessTimerId,
+			CodeFreshnessDelayMilliseconds, nullptr) == 0)
+	{
+		_codeFreshnessInspectionPending = false;
+		RefreshCodeFreshnessFromFiles();
+	}
+}
+
+void Designer::RefreshCodeFreshnessFromFiles()
+{
+	if (this->Handle && ::IsWindow(this->Handle))
+		(void)::KillTimer(this->Handle, CodeFreshnessTimerId);
+	_codeFreshnessInspectionPending = false;
+	const auto targetKey = CurrentCodeFreshnessTargetKey();
+	if (!_canvas || targetKey.empty())
+	{
+		_codeFreshness = {};
+		_codeFreshnessTargetKey.clear();
+		PublishEventHandlerCodeInspection({});
+		return;
+	}
+
+	DesignerModel::DesignDocument document;
+	std::wstring error;
+	if (!_canvas->BuildDesignDocument(document, &error))
+	{
+		_codeFreshness = {};
+		_codeFreshness.State =
+			DesignerModel::DesignCodeFreshnessState::Blocked;
+		_codeFreshness.Diagnostic = error.empty()
+			? L"无法构建用于新鲜度检查的设计文档。" : std::move(error);
+		_codeFreshnessTargetKey = targetKey;
+		DesignerModel::DesignEventHandlerCodeInspection inspection;
+		inspection.Associated = true;
+		inspection.Pending = false;
+		inspection.Target.ClassName = _canvas->GetCodeBehind().ClassName;
+		inspection.Target.OutputBasePath = _lastExportBasePath;
+		inspection.Target.UserHeaderPath = _lastExportBasePath + L".h";
+		inspection.Target.UserSourcePath = _lastExportBasePath + L".cpp";
+		inspection.Diagnostic = _codeFreshness.Diagnostic;
+		PublishEventHandlerCodeInspection(std::move(inspection));
+		return;
+	}
+
+	DesignerModel::DesignCodeGenerationOptions options;
+	options.ClassName = _canvas->GetCodeBehind().ClassName;
+	options.OutputBasePath = _lastExportBasePath;
+	DesignerModel::DesignCodeFreshnessResult freshness;
+	if (!DesignerModel::DesignCodeGenerationService::InspectFreshness(
+		document, _currentFileName, options, freshness, &error))
+	{
+		freshness = {};
+		freshness.State = DesignerModel::DesignCodeFreshnessState::Blocked;
+		freshness.Diagnostic = error.empty()
+			? L"代码生成新鲜度检查失败。" : std::move(error);
+	}
+	_codeFreshness = std::move(freshness);
+	_codeFreshnessTargetKey = targetKey;
+	RefreshEventHandlerCodeInspection(document, options);
+	if (_codeFreshness.State
+		== DesignerModel::DesignCodeFreshnessState::Current)
+	{
+		auto& states = _currentCodeStateIds[targetKey];
+		states.insert(_canvas->GetCurrentDocumentStateId());
+		while (states.size() > 256) states.erase(states.begin());
+	}
+}
+
+void Designer::UpdateCodeFreshnessForDocumentState()
+{
+	const auto targetKey = CurrentCodeFreshnessTargetKey();
+	if (!_canvas || targetKey.empty())
+	{
+		_codeFreshness = {};
+		_codeFreshnessTargetKey.clear();
+		PublishEventHandlerCodeInspection({});
+		return;
+	}
+
+	_codeFreshness = {};
+	_codeFreshnessTargetKey = targetKey;
+	const auto knownTarget = _currentCodeStateIds.find(targetKey);
+	const bool knownCurrent = knownTarget != _currentCodeStateIds.end()
+		&& knownTarget->second.find(_canvas->GetCurrentDocumentStateId())
+			!= knownTarget->second.end();
+	_codeFreshness.State = knownCurrent
+		? DesignerModel::DesignCodeFreshnessState::Current
+		: DesignerModel::DesignCodeFreshnessState::Stale;
+	DesignerModel::DesignEventHandlerCodeInspection pending;
+	pending.Associated = true;
+	pending.Pending = true;
+	pending.Target.ClassName = _canvas->GetCodeBehind().ClassName;
+	pending.Target.OutputBasePath = _lastExportBasePath;
+	pending.Target.UserHeaderPath = _lastExportBasePath + L".h";
+	pending.Target.UserSourcePath = _lastExportBasePath + L".cpp";
+	PublishEventHandlerCodeInspection(std::move(pending));
+	ScheduleCodeFreshnessInspection();
+}
+
+void Designer::RecordGeneratedCodeState(
+	const DesignerModel::DesignCodeGenerationResult& result)
+{
+	if (this->Handle && ::IsWindow(this->Handle))
+		(void)::KillTimer(this->Handle, CodeFreshnessTimerId);
+	_codeFreshnessInspectionPending = false;
+	_codeFreshness = {};
+	_codeFreshness.State = DesignerModel::DesignCodeFreshnessState::Current;
+	_codeFreshness.Target = result;
+	_codeFreshnessTargetKey = CurrentCodeFreshnessTargetKey();
+	if (_canvas && !_codeFreshnessTargetKey.empty())
+	{
+		auto& states = _currentCodeStateIds[_codeFreshnessTargetKey];
+		states.insert(_canvas->GetCurrentDocumentStateId());
+		while (states.size() > 256) states.erase(states.begin());
+	}
+	if (_canvas)
+	{
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (_canvas->BuildDesignDocument(document, &error))
+		{
+			DesignerModel::DesignCodeGenerationOptions options;
+			options.ClassName = result.ClassName;
+			options.OutputBasePath = result.OutputBasePath;
+			RefreshEventHandlerCodeInspection(document, options);
+		}
+		else
+		{
+			DesignerModel::DesignEventHandlerCodeInspection inspection;
+			inspection.Associated = true;
+			inspection.Target = result;
+			inspection.Diagnostic = error.empty()
+				? L"生成后无法重建事件代码检查文档。" : std::move(error);
+			PublishEventHandlerCodeInspection(std::move(inspection));
+		}
+	}
+	UpdateDocumentPresentation();
+}
+
 void Designer::OnExportClick()
 {
 	PrepareDocumentLifecycle();
 	auto controls = _canvas->GetAllControlsForExport();
-	if (controls.empty())
-	{
-		ShowModalMessage(this, L"提示", L"画布上没有控件，无法导出！");
-		return;
-	}
 
 	int exportCount = (int)controls.size();
 	int buttonCount = 0;
@@ -1042,22 +1356,24 @@ void Designer::OnExportClick()
 			fileName = fileName.substr(lastSlash + 1);
 		
 		std::wstring exportError;
-		DesignerModel::DesignCodeBehindModel proposedAssociation;
-		proposedAssociation.ClassName = fileName;
-		if (!proposedAssociation.Validate(&exportError))
-		{
-			_lblInfo->Text = L"导出失败";
-			ShowModalMessage(this, L"错误", exportError);
-			return;
-		}
-		if (GenerateCodeFiles(basePath, &exportError, fileName)
-			&& AssociateCodeBehind(
-				fileName, basePath, _currentFileName, &exportError))
+		const auto& existingAssociation = _canvas->GetCodeBehind();
+		const std::wstring suggestedClassName = existingAssociation.ClassName.empty()
+			? fileName : existingAssociation.ClassName;
+		CodeBehindExportDialog exportDialog(
+			existingAssociation, suggestedClassName,
+			basePath, _currentFileName);
+		exportDialog.ShowDialog(this->Handle);
+		if (!exportDialog.Applied) return;
+		const auto className = exportDialog.ClassName;
+		const bool exported = GenerateAndAssociateCodeFiles(
+			basePath, className, &exportError);
+		if (exported)
 		{
 			const std::wstring generatedHeaderPath = basePath + L".g.h";
 			const std::wstring generatedCppPath = basePath + L".g.cpp";
 			const std::wstring handlerIncludePath = basePath + L".handlers.g.inc";
-			_lblInfo->Text = L"代码导出成功: " + fileName + L" (控件:" + std::to_wstring(exportCount)
+			UpdateDocumentPresentation();
+			_lblInfo->Text = L"代码导出成功: " + className + L" (控件:" + std::to_wstring(exportCount)
 				+ L", GridPanel:" + std::to_wstring(gridPanelCount)
 				+ L", Button:" + std::to_wstring(buttonCount) + L")";
 			ShowModalMessage(this, L"导出成功", (L"代码已成功导出到:\n"
@@ -1077,6 +1393,37 @@ void Designer::OnExportClick()
 	}
 }
 
+void Designer::OnRegenerateCodeClick()
+{
+	PrepareDocumentLifecycle();
+	if (!_canvas || _lastExportBasePath.empty()
+		|| _canvas->GetCodeBehind().ClassName.empty())
+	{
+		if (_lblInfo)
+		{
+			_lblInfo->Text = L"当前文档尚未建立可重新生成的 code-behind 目标。";
+			_lblInfo->AccessibleDescription = _lblInfo->Text;
+			_lblInfo->InvalidateVisual();
+		}
+		return;
+	}
+
+	std::wstring error;
+	if (!GenerateCodeFiles(_lastExportBasePath, &error))
+	{
+		_lblInfo->Text = L"代码重新生成失败："
+			+ (error.empty() ? L"未知错误。" : error);
+		_lblInfo->AccessibleDescription = _lblInfo->Text;
+		_lblInfo->InvalidateVisual();
+		return;
+	}
+
+	UpdateDocumentPresentation();
+	_lblInfo->Text = L"代码已重新生成：" + _lastExportBasePath;
+	_lblInfo->AccessibleDescription = _lblInfo->Text;
+	_lblInfo->InvalidateVisual();
+}
+
 void Designer::OnEventHandlerActivated(const std::wstring& handlerName)
 {
 	if (handlerName.empty() || !_lblInfo) return;
@@ -1089,8 +1436,31 @@ void Designer::OnEventHandlerActivated(const std::wstring& handlerName)
 		return;
 	}
 
+	const auto inspected = _eventCodeInspection.Handlers.find(handlerName);
+	const auto inspectedState = inspected == _eventCodeInspection.Handlers.end()
+		? DesignerModel::DesignEventHandlerCodeState::DefinitionMissing
+		: inspected->second.State;
+	const bool signatureMismatch = !_eventCodeInspection.Pending
+		&& inspected != _eventCodeInspection.Handlers.end()
+		&& inspectedState
+			== DesignerModel::DesignEventHandlerCodeState::SignatureMismatch;
+	const bool duplicateDefinition = !_eventCodeInspection.Pending
+		&& inspected != _eventCodeInspection.Handlers.end()
+		&& inspectedState
+			== DesignerModel::DesignEventHandlerCodeState::DuplicateDefinition;
+	const bool currentDefinition = !_eventCodeInspection.Pending
+		&& inspected != _eventCodeInspection.Handlers.end()
+		&& inspectedState == DesignerModel::DesignEventHandlerCodeState::Current;
+	const bool generatedCodeCurrent = _codeFreshness.State
+		== DesignerModel::DesignCodeFreshnessState::Current
+		&& _codeFreshnessTargetKey == CurrentCodeFreshnessTargetKey();
+	const bool navigateWithoutGeneration = signatureMismatch
+		|| duplicateDefinition || (currentDefinition && generatedCodeCurrent);
+
+	bool generated = false;
 	std::wstring error;
-	if (!GenerateCodeFiles(_lastExportBasePath, &error))
+	if (!navigateWithoutGeneration
+		&& !GenerateCodeFiles(_lastExportBasePath, &error))
 	{
 		_lblInfo->Text = L"处理函数代码更新失败: "
 			+ (error.empty() ? handlerName : error);
@@ -1098,26 +1468,65 @@ void Designer::OnEventHandlerActivated(const std::wstring& handlerName)
 		_lblInfo->InvalidateVisual();
 		return;
 	}
+	generated = !navigateWithoutGeneration;
 
-	const auto sourcePath = _lastExportBasePath + L".cpp";
-	const auto line = SourceCodeNavigator::FindMemberDefinitionLine(
-		sourcePath, handlerName,
-		_canvas ? _canvas->GetCodeBehind().ClassName : std::wstring{});
+	const auto definitionPath = inspected != _eventCodeInspection.Handlers.end()
+		? inspected->second.DefinitionFilePath : std::wstring{};
+	const auto sourcePath = !definitionPath.empty()
+		? definitionPath
+		: !_eventCodeInspection.Target.UserSourcePath.empty()
+			? _eventCodeInspection.Target.UserSourcePath
+			: _lastExportBasePath + L".cpp";
+	const std::string parameterList = inspected == _eventCodeInspection.Handlers.end()
+		? std::string{}
+		: std::string(inspected->second.ParameterList.begin(),
+			inspected->second.ParameterList.end());
+	const auto inspectedLine = inspected != _eventCodeInspection.Handlers.end()
+		&& inspected->second.DefinitionFilePath == sourcePath
+		? inspected->second.DefinitionLine : 0;
+	const auto line = inspectedLine > 0
+		? inspectedLine
+		: SourceCodeNavigator::FindMemberDefinitionLine(
+			sourcePath, handlerName,
+			_canvas ? _canvas->GetCodeBehind().ClassName : std::wstring{},
+			parameterList);
 	SourceCodeNavigationResult navigation;
 	std::wstring navigationError;
 	if (!SourceCodeNavigator::Open(
 		this->Handle, sourcePath, line, &navigation, &navigationError))
 	{
-		_lblInfo->Text = L"处理函数已生成，但无法打开用户源文件："
-			+ (navigationError.empty() ? sourcePath : navigationError);
+		_lblInfo->Text = generated
+			? L"处理函数已生成，但无法打开用户代码文件："
+			: signatureMismatch || duplicateDefinition
+				? L"已发现处理函数代码错误，但无法打开用户代码文件："
+				: L"无法打开处理函数用户代码文件：";
+		_lblInfo->Text += navigationError.empty()
+			? sourcePath : navigationError;
 	}
 	else
 	{
 		const bool exact = line > 0 && navigation.Plan.RequestsExactLine;
-		_lblInfo->Text = exact
-			? L"已更新并定位处理函数 " + handlerName
-			: L"已更新并打开处理函数 " + handlerName;
+		if (signatureMismatch)
+			_lblInfo->Text = exact
+				? L"已定位签名错误的处理函数 " + handlerName
+				: L"已打开签名错误的处理函数 " + handlerName;
+		else if (duplicateDefinition)
+			_lblInfo->Text = exact
+				? L"已定位重复定义的处理函数 " + handlerName
+				: L"已打开重复定义的处理函数 " + handlerName;
+		else if (generated)
+			_lblInfo->Text = exact
+				? L"已更新并定位处理函数 " + handlerName
+				: L"已更新并打开处理函数 " + handlerName;
+		else
+			_lblInfo->Text = exact
+				? L"已定位处理函数 " + handlerName
+				: L"已打开处理函数 " + handlerName;
 		_lblInfo->Text += L"：" + sourcePath;
+		if (signatureMismatch)
+			_lblInfo->Text += L"（请修正参数签名后重新生成）";
+		else if (duplicateDefinition)
+			_lblInfo->Text += L"（请仅保留一个相同签名定义）";
 		if (line > 0 && !exact)
 			_lblInfo->Text += L"（目标第 " + std::to_wstring(line)
 				+ L" 行；当前编辑器未提供精确定位）";

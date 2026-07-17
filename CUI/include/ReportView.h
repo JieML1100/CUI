@@ -85,18 +85,18 @@ public:
 	int SortedColumnIndex = -1;
 	bool SortAscending = true;
 
-	D2D1_COLOR_F HeaderBackColor = D2D1_COLOR_F{ 0.18f, 0.22f, 0.28f, 0.95f };
-	D2D1_COLOR_F HeaderForeColor = D2D1_COLOR_F{ 0.90f, 0.93f, 0.98f, 1.0f };
-	D2D1_COLOR_F RowBackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.035f };
-	D2D1_COLOR_F AlternateRowBackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.065f };
-	D2D1_COLOR_F GroupBackColor = D2D1_COLOR_F{ 0.20f, 0.48f, 0.82f, 0.20f };
-	D2D1_COLOR_F SummaryBackColor = D2D1_COLOR_F{ 0.90f, 0.68f, 0.22f, 0.18f };
-	D2D1_COLOR_F SelectedRowBackColor = D2D1_COLOR_F{ 0.20f, 0.52f, 0.95f, 0.36f };
-	D2D1_COLOR_F UnderMouseRowBackColor = D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 0.14f };
-	D2D1_COLOR_F GridLineColor = D2D1_COLOR_F{ 0.55f, 0.60f, 0.68f, 0.24f };
-	D2D1_COLOR_F MutedTextColor = D2D1_COLOR_F{ 0.72f, 0.76f, 0.82f, 1.0f };
-	D2D1_COLOR_F ScrollBackColor = D2D1_COLOR_F{ 0.45f, 0.49f, 0.56f, 0.28f };
-	D2D1_COLOR_F ScrollForeColor = D2D1_COLOR_F{ 0.76f, 0.81f, 0.90f, 0.86f };
+	D2D1_COLOR_F HeaderBackColor = cui::theme::palette::SurfaceMuted;
+	D2D1_COLOR_F HeaderForeColor = cui::theme::palette::TextPrimary;
+	D2D1_COLOR_F RowBackColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F AlternateRowBackColor = cui::theme::palette::SurfaceSubtle;
+	D2D1_COLOR_F GroupBackColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F SummaryBackColor = D2D1_COLOR_F{ 0.820f, 0.541f, 0.071f, 0.14f };
+	D2D1_COLOR_F SelectedRowBackColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F UnderMouseRowBackColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F GridLineColor = cui::theme::palette::Border;
+	D2D1_COLOR_F MutedTextColor = cui::theme::palette::TextMuted;
+	D2D1_COLOR_F ScrollBackColor = cui::theme::palette::ScrollTrack;
+	D2D1_COLOR_F ScrollForeColor = cui::theme::palette::ScrollThumb;
 
 	ReportRowEvent OnRowClick;
 	ReportGroupToggledEvent OnGroupToggled;

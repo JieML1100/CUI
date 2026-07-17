@@ -44,8 +44,8 @@ MessageDialog::MessageDialog(std::wstring title, std::wstring message, MessageDi
 	this->MaxBox = false;
 	this->ShowInTaskBar = false;
 	this->CenterTitle = false;
-	this->BackColor = D2D1_COLOR_F{ 0.965f, 0.972f, 0.985f, 1.0f };
-	this->ForeColor = D2D1_COLOR_F{ 0.08f, 0.10f, 0.14f, 1.0f };
+	this->BackColor = cui::theme::palette::Window;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 	BuildContent();
 }
 

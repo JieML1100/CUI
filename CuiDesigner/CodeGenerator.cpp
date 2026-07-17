@@ -2,6 +2,7 @@
 #include "CodeGenInput.h"
 #include "DesignerEventCatalog.h"
 #include "DesignerModel/AtomicFile.h"
+#include "DesignerModel/CppUserCodeIndex.h"
 #include "DesignerBindingUtils.h"
 #include "DesignerPropertyCatalog.h"
 #include "DesignerStyleSheetUtils.h"
@@ -180,6 +181,22 @@ namespace
 		std::string ParamList; // "Control* sender" ...
 	};
 
+	struct GeneratedRuntimeEventRoute
+	{
+		std::string HandlerName;
+		std::string ParameterList;
+		std::wstring EventName;
+		std::string EventField;
+		std::string EventOwnerType;
+		bool IsForm = false;
+		UIClass ControlType = UIClass::UI_Base;
+		bool IsCustom = false;
+		std::wstring CustomXamlNamespace;
+		std::wstring CustomXamlName;
+		std::string CustomCppType;
+		std::string CustomSignatureName;
+	};
+
 	static std::string LocalSanitizeCppIdentifier(const std::string& raw)
 	{
 		std::string out;
@@ -313,106 +330,6 @@ namespace
 		return std::isalnum(value) || value == '_';
 	}
 
-	static bool StartsWithAt(
-		std::string_view text,
-		size_t position,
-		std::string_view value) noexcept
-	{
-		return position <= text.size()
-			&& value.size() <= text.size() - position
-			&& text.compare(position, value.size(), value) == 0;
-	}
-
-	/** Tokenizes only the C++ surface needed to recognize out-of-class bodies. */
-	static std::vector<std::string> TokenizeUserCpp(std::string_view source)
-	{
-		std::vector<std::string> tokens;
-		for (size_t position = 0; position < source.size();)
-		{
-			const auto current = static_cast<unsigned char>(source[position]);
-			if (std::isspace(current))
-			{
-				++position;
-				continue;
-			}
-			if (StartsWithAt(source, position, "//"))
-			{
-				const auto end = source.find('\n', position + 2);
-				position = end == std::string_view::npos
-					? source.size() : end + 1;
-				continue;
-			}
-			if (StartsWithAt(source, position, "/*"))
-			{
-				const auto end = source.find("*/", position + 2);
-				position = end == std::string_view::npos
-					? source.size() : end + 2;
-				continue;
-			}
-
-			const std::string_view rawPrefixes[]{
-				"R\"", "u8R\"", "uR\"", "UR\"", "LR\"" };
-			bool rawString = false;
-			for (const auto prefix : rawPrefixes)
-			{
-				if (!StartsWithAt(source, position, prefix)) continue;
-				if (position > 0 && IsCppIdentifierPart(
-					static_cast<unsigned char>(source[position - 1]))) continue;
-				const auto delimiterBegin = position + prefix.size();
-				const auto open = source.find('(', delimiterBegin);
-				if (open == std::string_view::npos
-					|| open - delimiterBegin > 16) continue;
-				const std::string delimiter(
-					source.substr(delimiterBegin, open - delimiterBegin));
-				const std::string terminator = ")" + delimiter + "\"";
-				const auto end = source.find(terminator, open + 1);
-				position = end == std::string_view::npos
-					? source.size() : end + terminator.size();
-				rawString = true;
-				break;
-			}
-			if (rawString) continue;
-
-			if (current == '"' || current == '\'')
-			{
-				const auto quote = current;
-				++position;
-				while (position < source.size())
-				{
-					if (source[position] == '\\')
-					{
-						position += position + 1 < source.size() ? 2 : 1;
-						continue;
-					}
-					if (static_cast<unsigned char>(source[position]) == quote)
-					{
-						++position;
-						break;
-					}
-					++position;
-				}
-				continue;
-			}
-			if (IsCppIdentifierStart(current))
-			{
-				const auto begin = position++;
-				while (position < source.size() && IsCppIdentifierPart(
-					static_cast<unsigned char>(source[position]))) ++position;
-				tokens.emplace_back(source.substr(begin, position - begin));
-				continue;
-			}
-			if (StartsWithAt(source, position, "::"))
-			{
-				tokens.emplace_back("::");
-				position += 2;
-				continue;
-			}
-			tokens.emplace_back(1, source[position]);
-			++position;
-		}
-		return tokens;
-	}
-
 	struct QualifiedCppClassName
 	{
 		std::vector<std::string> Segments;
@@ -460,172 +377,6 @@ namespace
 			? result.GeneratedLeaf
 			: result.NamespaceName + "::" + result.GeneratedLeaf;
 		return result;
-	}
-
-	static size_t MatchQualifiedName(
-		const std::vector<std::string>& tokens,
-		size_t index,
-		const std::vector<std::string>& segments)
-	{
-		for (size_t segment = 0; segment < segments.size(); ++segment)
-		{
-			if (index >= tokens.size() || tokens[index++] != segments[segment])
-				return std::string::npos;
-			if (segment + 1 < segments.size()
-				&& (index >= tokens.size() || tokens[index++] != "::"))
-				return std::string::npos;
-		}
-		return index;
-	}
-
-	using CppParameterTokens = std::vector<std::vector<std::string>>;
-
-	static CppParameterTokens SplitCppParameterTokens(
-		const std::vector<std::string>& tokens,
-		size_t begin,
-		size_t end)
-	{
-		CppParameterTokens parameters;
-		std::vector<std::string> current;
-		int parenthesisDepth = 0;
-		int angleDepth = 0;
-		int bracketDepth = 0;
-		for (size_t index = begin; index < end; ++index)
-		{
-			const auto& token = tokens[index];
-			if (token == "(" ) ++parenthesisDepth;
-			else if (token == ")" && parenthesisDepth > 0) --parenthesisDepth;
-			else if (token == "<") ++angleDepth;
-			else if (token == ">" && angleDepth > 0) --angleDepth;
-			else if (token == "[") ++bracketDepth;
-			else if (token == "]" && bracketDepth > 0) --bracketDepth;
-
-			if (token == "," && parenthesisDepth == 0
-				&& angleDepth == 0 && bracketDepth == 0)
-			{
-				parameters.push_back(std::move(current));
-				current.clear();
-				continue;
-			}
-			current.push_back(token);
-		}
-		if (!current.empty()) parameters.push_back(std::move(current));
-		if (parameters.size() == 1 && parameters.front().size() == 1
-			&& parameters.front().front() == "void")
-			parameters.clear();
-		return parameters;
-	}
-
-	static CppParameterTokens GeneratedParameterTypeTokens(
-		std::string_view parameterList)
-	{
-		const auto tokens = TokenizeUserCpp(parameterList);
-		auto parameters = SplitCppParameterTokens(tokens, 0, tokens.size());
-		for (auto& parameter : parameters)
-		{
-			// DesignerEventCatalog always emits a readable identifier after
-			// every parameter type. Keep only the tokens that form the type.
-			if (!parameter.empty()) parameter.pop_back();
-		}
-		return parameters;
-	}
-
-	static bool MatchesGeneratedParameterTypes(
-		const CppParameterTokens& definition,
-		const CppParameterTokens& generatedTypes)
-	{
-		if (definition.size() != generatedTypes.size()) return false;
-		for (size_t index = 0; index < definition.size(); ++index)
-		{
-			auto actual = definition[index];
-			const auto& expected = generatedTypes[index];
-			if (actual == expected) continue; // unnamed definition parameter
-			if (actual.size() != expected.size() + 1 || actual.empty()) return false;
-			const auto& name = actual.back();
-			if (name.empty() || !IsCppIdentifierStart(
-				static_cast<unsigned char>(name.front()))
-				|| !std::equal(expected.begin(), expected.end(), actual.begin()))
-				return false;
-		}
-		return true;
-	}
-
-	using UserHandlerDefinitions =
-		std::unordered_map<std::string, std::vector<CppParameterTokens>>;
-
-	static UserHandlerDefinitions CollectUserHandlerDefinitions(
-		std::string_view source,
-		const QualifiedCppClassName& identity)
-	{
-		UserHandlerDefinitions result;
-		const auto tokens = TokenizeUserCpp(source);
-		for (size_t index = 0; index < tokens.size(); ++index)
-		{
-			auto cursor = MatchQualifiedName(
-				tokens, index, identity.Segments);
-			if (cursor == std::string::npos
-				|| cursor + 2 >= tokens.size()
-				|| tokens[cursor] != "::"
-				|| !IsCppIdentifierStart(static_cast<unsigned char>(
-					tokens[cursor + 1].empty() ? '\0' : tokens[cursor + 1][0]))
-				|| tokens[cursor + 2] != "(") continue;
-			const auto handlerName = tokens[cursor + 1];
-			const auto parameterBegin = cursor + 3;
-			int depth = 1;
-			cursor = parameterBegin;
-			for (; cursor < tokens.size() && depth > 0; ++cursor)
-			{
-				if (tokens[cursor] == "(") ++depth;
-				else if (tokens[cursor] == ")") --depth;
-			}
-			if (depth == 0 && cursor < tokens.size()
-				&& tokens[cursor] == "{")
-			{
-				result[handlerName].push_back(SplitCppParameterTokens(
-					tokens, parameterBegin, cursor - 1));
-			}
-		}
-		return result;
-	}
-
-	static bool ContainsUserClassDefinition(
-		std::string_view source,
-		const std::string& className,
-		const std::string& generatedClassName)
-	{
-		const auto tokens = TokenizeUserCpp(source);
-		for (size_t index = 0; index + 2 < tokens.size(); ++index)
-		{
-			if ((tokens[index] != "class" && tokens[index] != "struct")
-				|| tokens[index + 1] != className) continue;
-			bool generatedBase = false;
-			for (size_t cursor = index + 2; cursor < tokens.size(); ++cursor)
-			{
-				if (tokens[cursor] == ";") break;
-				if (tokens[cursor] == "{") return generatedBase;
-				if (tokens[cursor] == generatedClassName)
-					generatedBase = true;
-			}
-		}
-		return false;
-	}
-
-	static bool ContainsUserConstructorDefinition(
-		std::string_view source,
-		const QualifiedCppClassName& identity)
-	{
-		const auto tokens = TokenizeUserCpp(source);
-		for (size_t index = 0; index < tokens.size(); ++index)
-		{
-			const auto cursor = MatchQualifiedName(
-				tokens, index, identity.Segments);
-			if (cursor != std::string::npos
-				&& cursor + 2 < tokens.size()
-				&& tokens[cursor] == "::"
-				&& tokens[cursor + 1] == identity.UserLeaf
-				&& tokens[cursor + 2] == "(") return true;
-		}
-		return false;
 	}
 
 	static std::optional<std::string> ReadUserClassIdentityMarker(
@@ -699,6 +450,128 @@ CodeGenerator::CodeGenerator(std::wstring className, const std::vector<std::shar
 	if (_formLocation.x > 10000) _formLocation.x = 10000;
 	if (_formLocation.y > 10000) _formLocation.y = 10000;
 	BuildVarNameMap();
+}
+
+bool CodeGenerator::InspectUserHandlerDefinitions(
+	std::string_view userSource,
+	std::vector<CodeGeneratorHandlerDefinitionInspection>& inspections)
+
+{
+	return InspectUserHandlerDefinitions({}, userSource, inspections);
+}
+
+bool CodeGenerator::InspectUserHandlerDefinitions(
+	std::string_view userHeader,
+	std::string_view userSource,
+	std::vector<CodeGeneratorHandlerDefinitionInspection>& inspections)
+{
+	inspections.clear();
+	_lastError.clear();
+	try
+	{
+		std::vector<std::pair<std::string, std::string>> handlers;
+		std::wstring error;
+		if (!CollectEventHandlers(handlers, &error))
+		{
+			_lastError = error.empty()
+				? L"无法建立事件处理函数索引。" : std::move(error);
+			return false;
+		}
+		const auto identity = ParseQualifiedCppClassName(
+			WStringToString(_className));
+		DesignerModel::CppUserCodeIndex headerIndex;
+		DesignerModel::CppUserCodeIndex sourceIndex;
+		if (!DesignerModel::CppUserCodeIndex::Build(
+			userHeader, identity.QualifiedUser, headerIndex, &error))
+		{
+			_lastError = error.empty()
+				? L"无法建立用户头文件事件代码索引。" : std::move(error);
+			return false;
+		}
+		if (!DesignerModel::CppUserCodeIndex::Build(
+			userSource, identity.QualifiedUser, sourceIndex, &error))
+		{
+			_lastError = error.empty()
+				? L"无法建立用户源文件事件代码索引。" : std::move(error);
+			return false;
+		}
+		inspections.reserve(handlers.size());
+		for (const auto& [name, parameterList] : handlers)
+		{
+			CodeGeneratorHandlerDefinitionInspection inspection;
+			inspection.Name = name;
+			inspection.ParameterList = parameterList;
+			const auto headerDefinitions = headerIndex.InspectHandler(
+				name, parameterList);
+			const auto sourceDefinitions = sourceIndex.InspectHandler(
+				name, parameterList);
+			inspection.HeaderDefinitionCount =
+				headerDefinitions.DefinitionCount;
+			inspection.HeaderCompatibleDefinitionCount =
+				headerDefinitions.CompatibleDefinitionCount;
+			inspection.HeaderIncompatibleShapeDefinitionCount =
+				headerDefinitions.IncompatibleShapeDefinitionCount;
+			inspection.HeaderDeletedCompatibleDefinitionCount =
+				headerDefinitions.DeletedCompatibleDefinitionCount;
+			inspection.SourceDefinitionCount =
+				sourceDefinitions.DefinitionCount;
+			inspection.SourceCompatibleDefinitionCount =
+				sourceDefinitions.CompatibleDefinitionCount;
+			inspection.SourceIncompatibleShapeDefinitionCount =
+				sourceDefinitions.IncompatibleShapeDefinitionCount;
+			inspection.SourceDeletedCompatibleDefinitionCount =
+				sourceDefinitions.DeletedCompatibleDefinitionCount;
+			inspection.FirstHeaderDefinitionLine =
+				headerDefinitions.FirstDefinitionLine;
+			inspection.FirstHeaderCompatibleDefinitionLine =
+				headerDefinitions.FirstCompatibleDefinitionLine;
+			inspection.FirstSourceDefinitionLine =
+				sourceDefinitions.FirstDefinitionLine;
+			inspection.FirstSourceCompatibleDefinitionLine =
+				sourceDefinitions.FirstCompatibleDefinitionLine;
+			inspection.DefinitionCount =
+				inspection.HeaderDefinitionCount
+				+ inspection.SourceDefinitionCount;
+			inspection.CompatibleDefinitionCount =
+				inspection.HeaderCompatibleDefinitionCount
+				+ inspection.SourceCompatibleDefinitionCount;
+			inspection.IncompatibleShapeDefinitionCount =
+				inspection.HeaderIncompatibleShapeDefinitionCount
+				+ inspection.SourceIncompatibleShapeDefinitionCount;
+			inspection.DeletedCompatibleDefinitionCount =
+				inspection.HeaderDeletedCompatibleDefinitionCount
+				+ inspection.SourceDeletedCompatibleDefinitionCount;
+			if (inspection.DefinitionCount == 0)
+				inspection.State =
+					CodeGeneratorHandlerDefinitionState::Missing;
+			else if (inspection.CompatibleDefinitionCount > 1)
+				inspection.State =
+					CodeGeneratorHandlerDefinitionState::DuplicateCompatible;
+			else if (inspection.IncompatibleShapeDefinitionCount != 0
+				|| inspection.DeletedCompatibleDefinitionCount != 0)
+				inspection.State =
+					CodeGeneratorHandlerDefinitionState::Incompatible;
+			else if (inspection.CompatibleDefinitionCount == 1)
+				inspection.State =
+					CodeGeneratorHandlerDefinitionState::Compatible;
+			else
+				inspection.State =
+					CodeGeneratorHandlerDefinitionState::Incompatible;
+			inspections.push_back(std::move(inspection));
+		}
+		return true;
+	}
+	catch (const std::exception& error)
+	{
+		_lastError = L"无法检查用户事件处理函数："
+			+ StringToWString(error.what());
+	}
+	catch (...)
+	{
+		_lastError = L"无法检查用户事件处理函数：发生未知异常。";
+	}
+	inspections.clear();
+	return false;
 }
 
 static bool IsCppKeyword(const std::string& s)
@@ -1992,6 +1865,89 @@ std::string CodeGenerator::GenerateHeader()
 	const auto identity = ParseQualifiedCppClassName(
 		WStringToString(_className));
 	const auto& className = identity.GeneratedLeaf;
+	std::vector<std::pair<std::string, std::string>> eventHandlers;
+	std::wstring eventError;
+	if (!CollectEventHandlers(eventHandlers, &eventError))
+		throw std::invalid_argument(WStringToString(eventError));
+
+	std::vector<GeneratedRuntimeEventRoute> runtimeRoutes;
+	std::set<std::string> runtimeRouteKeys;
+	auto appendBuiltInRoute = [&](bool isForm,
+		UIClass controlType,
+		const std::wstring& eventName,
+		const std::wstring& storedHandler,
+		const std::string& subject,
+		const DesignerEventDescriptor& descriptor)
+	{
+		const auto handler = ResolveHandlerName(
+			storedHandler, subject, eventName);
+		if (handler.empty()) return;
+		const bool wildcard = !isForm
+			&& descriptor.EventOwnerTypeName == "Control";
+		const auto effectiveType = wildcard ? UIClass::UI_Base : controlType;
+		const auto key = std::string(isForm ? "F|" : "B|") + handler
+			+ "|" + WStringToString(eventName)
+			+ "|" + descriptor.EventOwnerTypeName
+			+ "|" + descriptor.EventField
+			+ "|" + std::to_string(static_cast<int>(effectiveType));
+		if (!runtimeRouteKeys.insert(key).second) return;
+		GeneratedRuntimeEventRoute route;
+		route.HandlerName = handler;
+		route.ParameterList = descriptor.ParameterList;
+		route.EventName = eventName;
+		route.EventField = descriptor.EventField;
+		route.EventOwnerType = descriptor.EventOwnerTypeName;
+		route.IsForm = isForm;
+		route.ControlType = effectiveType;
+		runtimeRoutes.push_back(std::move(route));
+	};
+
+	const auto formSubject = SanitizeCppIdentifier(WStringToString(_formName));
+	for (const auto& [eventName, storedHandler] : _formEventHandlers)
+		if (const auto descriptor = DesignerEventCatalog::FindFormEvent(eventName))
+			appendBuiltInRoute(true, UIClass::UI_Base, eventName,
+				storedHandler, formSubject, *descriptor);
+	for (const auto& control : _controls)
+	{
+		if (!control) continue;
+		const auto subject = GetVarName(control);
+		for (const auto& [eventName, storedHandler] : control->EventHandlers)
+		{
+			const auto descriptor = DesignerEventCatalog::FindControlEvent(
+				control->Type, eventName, control->CustomEvents);
+			if (!descriptor) continue;
+			const auto custom = std::find_if(
+				control->CustomEvents.begin(), control->CustomEvents.end(),
+				[&](const auto& value) { return value.Name == eventName; });
+			if (custom == control->CustomEvents.end())
+			{
+				appendBuiltInRoute(false, control->Type, eventName,
+					storedHandler, subject, *descriptor);
+				continue;
+			}
+
+			const auto handler = ResolveHandlerName(
+				storedHandler, subject, eventName);
+			if (handler.empty()) continue;
+			const auto key = std::string("C|") + handler
+				+ "|" + WStringToString(control->CustomType.RegistryKey())
+				+ "|" + WStringToString(eventName)
+				+ "|" + custom->EventField;
+			if (!runtimeRouteKeys.insert(key).second) continue;
+			GeneratedRuntimeEventRoute route;
+			route.HandlerName = handler;
+			route.ParameterList = descriptor->ParameterList;
+			route.EventName = eventName;
+			route.EventField = custom->EventField;
+			route.IsCustom = true;
+			route.CustomXamlNamespace = control->CustomType.XamlNamespace;
+			route.CustomXamlName = control->CustomType.XamlName;
+			route.CustomCppType = GetControlTypeName(*control);
+			route.CustomSignatureName =
+				DesignerEventCatalog::GetCustomSignatureName(custom->Signature);
+			runtimeRoutes.push_back(std::move(route));
+		}
+	}
 	
 	// 收集需要的头文件
 	std::set<std::string> includes;
@@ -2023,12 +1979,147 @@ std::string CodeGenerator::GenerateHeader()
 	{
 		header << "#include \"" << inc << "\"\n";
 	}
+	header << "#include <functional>\n";
+	header << "#include <memory>\n";
+	header << "#include <string>\n";
+	header << "#include <utility>\n";
 	header << "#include <vector>\n";
 	header << "\n";
 	if (!identity.NamespaceName.empty())
 		header << "namespace " << identity.NamespaceName << "\n{\n\n";
+
+	if (!eventHandlers.empty())
+	{
+		const auto eventSinkName = identity.UserLeaf + "EventSink";
+		header << "class " << eventSinkName << "\n{\n";
+		header << "public:\n";
+		header << "\t" << eventSinkName << "() = default;\n";
+		header << "\tvirtual ~" << eventSinkName
+			<< "() { UnregisterDynamicEventHandlers(); }\n";
+		header << "\t" << eventSinkName << "(const " << eventSinkName
+			<< "&) = delete;\n";
+		header << "\t" << eventSinkName << "& operator=(const "
+			<< eventSinkName << "&) = delete;\n";
+		header << "\t" << eventSinkName << "(" << eventSinkName
+			<< "&&) = delete;\n";
+		header << "\t" << eventSinkName << "& operator=("
+			<< eventSinkName << "&&) = delete;\n\n";
+		header << "\ttemplate<typename TRegistry>\n";
+		header << "\tbool RegisterDynamicEventHandlers(\n";
+		header << "\t\tTRegistry& registry, std::wstring* outError = nullptr)\n";
+		header << "\t{\n";
+		header << "\t\ttry\n";
+		header << "\t\t{\n";
+		header << "\t\t\tauto lifetime = std::make_shared<int>(0);\n";
+		header << "\t\t\tauto registration = registry.RegisterScopedBatch(\n";
+		header << "\t\t\t[this, lifetime = std::weak_ptr<void>(lifetime)](\n";
+		header << "\t\t\t\tauto& routes, std::wstring& error)\n";
+		header << "\t\t\t{\n";
+		for (const auto& route : runtimeRoutes)
+		{
+			const auto parameterTypes = CanonicalGeneratedParameterTypes(
+				route.ParameterList);
+			header << "\t\t\t\tif (!routes.";
+			if (route.IsCustom)
+			{
+				header << "RegisterGeneratedCustomControl(\n";
+				header << "\t\t\t\t\tL\""
+					<< EscapeWStringLiteral(StringToWString(route.HandlerName))
+					<< "\", L\""
+					<< EscapeWStringLiteral(route.CustomXamlNamespace)
+					<< "\", L\""
+					<< EscapeWStringLiteral(route.CustomXamlName)
+					<< "\", L\"" << EscapeWStringLiteral(route.EventName)
+					<< "\", \"" << route.EventField << "\", L\""
+					<< route.CustomSignatureName << "\",\n";
+				header << "\t\t\t\t\t&" << route.CustomCppType
+					<< "::" << route.EventField << ",\n";
+			}
+			else if (route.IsForm)
+			{
+				header << "RegisterForm(\n";
+				header << "\t\t\t\t\tL\""
+					<< EscapeWStringLiteral(StringToWString(route.HandlerName))
+					<< "\", L\"" << EscapeWStringLiteral(route.EventName)
+					<< "\", &" << route.EventOwnerType << "::"
+					<< route.EventField << ",\n";
+			}
+			else
+			{
+				header << "RegisterControl(\n";
+				header << "\t\t\t\t\tL\""
+					<< EscapeWStringLiteral(StringToWString(route.HandlerName))
+					<< "\", UIClass::UI_"
+					<< WStringToString(DesignerStyleSheetUtils::UIClassName(
+						route.ControlType))
+					<< ", L\"" << EscapeWStringLiteral(route.EventName)
+					<< "\", &" << route.EventOwnerType << "::"
+					<< route.EventField << ",\n";
+			}
+			header << "\t\t\t\t\tGuardDynamicEventHandler(\n";
+			header << "\t\t\t\t\t\tlifetime, std::bind_front(\n";
+			header << "\t\t\t\t\t\t\tstatic_cast<void (" << eventSinkName
+				<< "::*)(" << parameterTypes << ")>(\n";
+			header << "\t\t\t\t\t\t\t\t&" << eventSinkName << "::"
+				<< route.HandlerName << "), this)), &error))\n";
+			header << "\t\t\t\t\treturn false;\n";
+		}
+		header << "\t\t\t\treturn true;\n";
+		header << "\t\t\t}, outError);\n";
+		header << "\t\t\tif (!registration) return false;\n";
+		header << "\t\t\tstruct DynamicEventRegistration final\n";
+		header << "\t\t\t{\n";
+		header << "\t\t\t\tdecltype(registration) Lease;\n";
+		header << "\t\t\t\tstd::shared_ptr<void> Lifetime;\n";
+		header << "\t\t\t\tDynamicEventRegistration(\n";
+		header << "\t\t\t\t\tdecltype(registration)&& lease,\n";
+		header << "\t\t\t\t\tstd::shared_ptr<void> lifetime) noexcept\n";
+		header << "\t\t\t\t\t: Lease(std::move(lease)),\n";
+		header << "\t\t\t\t\tLifetime(std::move(lifetime)) {}\n";
+		header << "\t\t\t};\n";
+		header << "\t\t\tauto owned = std::make_shared<DynamicEventRegistration>(\n";
+		header << "\t\t\t\tstd::move(registration), std::move(lifetime));\n";
+		header << "\t\t\t_dynamicEventRegistration = std::move(owned);\n";
+		header << "\t\t\tif (outError) outError->clear();\n";
+		header << "\t\t\treturn true;\n";
+		header << "\t\t}\n";
+		header << "\t\tcatch (...)\n";
+		header << "\t\t{\n";
+		header << "\t\t\tif (outError) *outError =\n";
+		header << "\t\t\t\tL\"无法保存动态事件注册租约。\";\n";
+		header << "\t\t\treturn false;\n";
+		header << "\t\t}\n";
+		header << "\t}\n\n";
+		header << "\tvoid UnregisterDynamicEventHandlers() noexcept\n";
+		header << "\t{\n";
+		header << "\t\t_dynamicEventRegistration.reset();\n";
+		header << "\t}\n\n";
+		header << "private:\n";
+		header << "\ttemplate<typename TCallback>\n";
+		header << "\tstatic auto GuardDynamicEventHandler(\n";
+		header << "\t\tstd::weak_ptr<void> lifetime, TCallback callback)\n";
+		header << "\t{\n";
+		header << "\t\treturn [lifetime = std::move(lifetime),\n";
+		header << "\t\t\tcallback = std::move(callback)](auto&&... args) mutable\n";
+		header << "\t\t{\n";
+		header << "\t\t\tauto alive = lifetime.lock();\n";
+		header << "\t\t\tif (!alive) return;\n";
+		header << "\t\t\tstd::invoke(callback,\n";
+		header << "\t\t\t\tstd::forward<decltype(args)>(args)...);\n";
+		header << "\t\t};\n";
+		header << "\t}\n\n";
+		header << "\tstd::shared_ptr<void> _dynamicEventRegistration;\n\n";
+		header << "protected:\n";
+		for (const auto& handler : eventHandlers)
+			header << "\tvirtual void " << handler.first << "("
+				<< handler.second << ") = 0;\n";
+		header << "};\n\n";
+	}
 	
-	header << "class " << className << " : public Form\n";
+	header << "class " << className << " : public Form";
+	if (!eventHandlers.empty())
+		header << ", public " << identity.UserLeaf << "EventSink";
+	header << "\n";
 	header << "{\n";
 	header << "protected:\n";
 	
@@ -2042,17 +2133,12 @@ std::string CodeGenerator::GenerateHeader()
 	header << "\tstd::vector<EventConnection> _generatedEventConnections;\n";
 
 	// Generated virtual hooks are overridden by declarations in the user class.
+	if (!eventHandlers.empty())
 	{
-		std::vector<std::pair<std::string, std::string>> decls;
-		std::wstring eventError;
-		if (!CollectEventHandlers(decls, &eventError))
-			throw std::invalid_argument(WStringToString(eventError));
-		if (!decls.empty())
-		{
-			header << "\n";
-			for (const auto& d : decls)
-				header << "\tvirtual void " << d.first << "(" << d.second << ");\n";
-		}
+		header << "\n";
+		for (const auto& handler : eventHandlers)
+			header << "\tvoid " << handler.first << "("
+				<< handler.second << ") override;\n";
 	}
 	
 	header << "\n";
@@ -2100,6 +2186,54 @@ std::string CodeGenerator::GenerateHeader()
 	header << "\tvirtual ~" << className << "();\n";
 	if (hasDataBindings)
 		header << "\tbool BindData(IBindingSource& dataContext);\n";
+	header << "};\n";
+
+	// A zero-owning typed view over the dynamic RuntimeDocument contract. Keep
+	// this template independent of CuiRuntime headers so static-only consumers
+	// do not acquire a runtime link dependency merely by including the .g.h.
+	header << "\n";
+	header << "// Non-owning typed access for a dynamically loaded document.\n";
+	header << "// GetXxx resolves the current instance; ReferenceXxx follows reloads.\n";
+	header << "template<typename TDocument>\n";
+	header << "class " << identity.UserLeaf << "References final\n";
+	header << "{\n";
+	header << "public:\n";
+	header << "\tusing DocumentReference = decltype(\n";
+	header << "\t\tstd::declval<TDocument&>().Reference());\n\n";
+	header << "\texplicit " << identity.UserLeaf
+		<< "References(TDocument& document) noexcept\n";
+	header << "\t\t: _document(document.Reference()) {}\n\n";
+	header << "\t[[nodiscard]] explicit operator bool() const noexcept\n";
+	header << "\t{\n\t\treturn static_cast<bool>(_document);\n\t}\n";
+	header << "\t[[nodiscard]] TDocument* TryDocument() const noexcept\n";
+	header << "\t{\n\t\treturn _document.Get();\n\t}\n";
+	header << "\t// Precondition: the view is still alive; prefer TryDocument() when uncertain.\n";
+	header << "\t[[nodiscard]] TDocument& Document() const noexcept"
+		" { return *_document.Get(); }\n";
+	for (const auto& dc : _controls)
+	{
+		if (!dc || dc->StableId <= 0) continue;
+		auto accessorName = GetVarName(dc);
+		if (!accessorName.empty() && accessorName.front() >= 'a'
+			&& accessorName.front() <= 'z')
+			accessorName.front() = static_cast<char>(
+				accessorName.front() - 'a' + 'A');
+		const auto typeName = GetControlTypeName(*dc);
+		header << "\t[[nodiscard]] " << typeName << "* Get"
+			<< accessorName << "() const noexcept\n\t{\n";
+		header << "\t\treturn _document.template FindControlByDesignId<"
+			<< typeName << ">(\n";
+		header << "\t\t\t" << className << "::ControlIds::"
+			<< GetVarName(dc) << ");\n\t}\n";
+		header << "\t[[nodiscard]] auto Reference" << accessorName
+			<< "() const noexcept\n\t{\n";
+		header << "\t\treturn _document.template ReferenceByDesignId<"
+			<< typeName << ">(\n";
+		header << "\t\t\t" << className << "::ControlIds::"
+			<< GetVarName(dc) << ");\n\t}\n";
+	}
+	header << "\nprivate:\n";
+	header << "\tDocumentReference _document;\n";
 	header << "};\n";
 	if (!identity.NamespaceName.empty())
 		header << "\n}\n";
@@ -2572,8 +2706,12 @@ std::string CodeGenerator::GenerateCppForBaseName(
 	return cpp.str();
 }
 
-bool CodeGenerator::GenerateFiles(std::wstring headerPath, std::wstring cppPath)
+bool CodeGenerator::BuildFilePlan(
+	std::wstring headerPath,
+	std::wstring cppPath,
+	std::vector<CodeGeneratorFileContent>& files)
 {
+	files.clear();
 	_lastError.clear();
 	try
 	{
@@ -2600,27 +2738,37 @@ bool CodeGenerator::GenerateFiles(std::wstring headerPath, std::wstring cppPath)
 		const auto handlerIncludePath = userHeaderPath.parent_path()
 			/ fs::path(baseName + L".handlers.g.inc");
 
-		auto readText = [](const fs::path& path, std::string& content) -> bool
+		DesignerModel::AtomicFileBatchSnapshot inputSnapshot;
+		std::wstring snapshotError;
+		if (!DesignerModel::AtomicFileBatchSnapshot::Capture({
+			userHeaderPath.wstring(),
+			userCppPath.wstring(),
+			generatedHeaderPath.wstring(),
+			generatedCppPath.wstring(),
+			handlerIncludePath.wstring(),
+		}, inputSnapshot, &snapshotError))
 		{
-			std::ifstream stream(path, std::ios::binary);
-			if (!stream) return false;
-			content.assign(
-				std::istreambuf_iterator<char>(stream),
-				std::istreambuf_iterator<char>());
-			return stream.good() || stream.eof();
-		};
-		auto requireRecognizedUserFile = [&](const fs::path& path,
+			_lastError = snapshotError.empty()
+				? L"无法捕获代码生成输入文件快照。"
+				: std::move(snapshotError);
+			return false;
+		}
+		const auto& existingFiles = inputSnapshot.Entries();
+		if (existingFiles.size() != 5)
+		{
+			_lastError = L"代码生成输入文件快照不完整。";
+			return false;
+		}
+		auto requireRecognizedUserFile = [&](
+			const DesignerModel::AtomicFileSnapshotEntry& snapshot,
 			const char* marker, std::string& content) -> bool
 		{
-			if (!fs::exists(path)) return true;
-			if (!readText(path, content))
-			{
-				_lastError = L"无法读取用户文件：" + path.wstring();
-				return false;
-			}
+			if (!snapshot.Existed) return true;
+			content = snapshot.Content;
 			if (content.find(marker) == std::string::npos)
 			{
-				_lastError = L"为避免覆盖已有代码，未修改文件：" + path.wstring()
+				_lastError = L"为避免覆盖已有代码，未修改文件："
+					+ snapshot.FilePath
 					+ L"。请选择新的导出文件名，或手动迁移到生成基类结构。";
 				return false;
 			}
@@ -2629,9 +2777,9 @@ bool CodeGenerator::GenerateFiles(std::wstring headerPath, std::wstring cppPath)
 
 		std::string existingUserHeader;
 		std::string existingUserCpp;
-		if (!requireRecognizedUserFile(userHeaderPath,
+		if (!requireRecognizedUserFile(existingFiles[0],
 			"<cui-designer-user-header>", existingUserHeader) ||
-			!requireRecognizedUserFile(userCppPath,
+			!requireRecognizedUserFile(existingFiles[1],
 			"<cui-designer-user-source>", existingUserCpp))
 			return false;
 		auto matchesIdentityMarker = [&](const std::string& content)
@@ -2641,13 +2789,9 @@ bool CodeGenerator::GenerateFiles(std::wstring headerPath, std::wstring cppPath)
 			return identity.Segments.size() == 1;
 		};
 		if ((!existingUserHeader.empty()
-				&& (!matchesIdentityMarker(existingUserHeader)
-					|| !ContainsUserClassDefinition(existingUserHeader,
-						identity.UserLeaf, identity.GeneratedLeaf)))
+				&& !matchesIdentityMarker(existingUserHeader))
 			|| (!existingUserCpp.empty()
-				&& (!matchesIdentityMarker(existingUserCpp)
-					|| !ContainsUserConstructorDefinition(
-						existingUserCpp, identity))))
+				&& !matchesIdentityMarker(existingUserCpp)))
 		{
 			_lastError = L"现有 Designer 用户文件属于不同的 C++ 类；"
 				L"为避免生成基类与用户类身份混用，请选择新的导出基路径，"
@@ -2655,22 +2799,79 @@ bool CodeGenerator::GenerateFiles(std::wstring headerPath, std::wstring cppPath)
 			return false;
 		}
 
-		std::map<std::string, std::string> retainedHandlers;
-		std::string oldHandlerInclude;
-		if (fs::exists(handlerIncludePath) &&
-			!readText(handlerIncludePath, oldHandlerInclude))
+		DesignerModel::CppUserCodeIndex userHeaderIndex;
+		DesignerModel::CppUserCodeIndex userSourceIndex;
+		DesignerModel::CppUserHandlerDefinitionInspection headerConstructor;
+		DesignerModel::CppUserHandlerDefinitionInspection sourceConstructor;
+		std::wstring constructorIndexError;
+		if (!existingUserHeader.empty())
 		{
-			_lastError = L"无法读取事件声明文件：" + handlerIncludePath.wstring();
+			if (!DesignerModel::CppUserCodeIndex::Build(
+				existingUserHeader, identity.QualifiedUser,
+				userHeaderIndex, &constructorIndexError))
+			{
+				_lastError = constructorIndexError.empty()
+					? L"无法建立用户头文件代码索引。"
+					: std::move(constructorIndexError);
+				return false;
+			}
+			const auto classDefinition =
+				userHeaderIndex.InspectGeneratedClassDefinition();
+			if (classDefinition.DefinitionCount != 1
+				|| classDefinition.CompatibleGeneratedBaseCount != 1)
+			{
+				_lastError = L"用户头文件必须在当前 x:Class namespace 中"
+					L"恰好定义一个用户类，并直接继承对应的 Generated 基类。";
+				return false;
+			}
+			headerConstructor = userHeaderIndex.InspectConstructor();
+		}
+		if (!existingUserCpp.empty())
+		{
+			if (!DesignerModel::CppUserCodeIndex::Build(
+				existingUserCpp, identity.QualifiedUser,
+				userSourceIndex, &constructorIndexError))
+			{
+				_lastError = constructorIndexError.empty()
+					? L"无法建立用户源文件代码索引。"
+					: std::move(constructorIndexError);
+				return false;
+			}
+			sourceConstructor = userSourceIndex.InspectConstructor();
+		}
+		const auto compatibleConstructorCount =
+			headerConstructor.CompatibleDefinitionCount
+			+ sourceConstructor.CompatibleDefinitionCount;
+		const auto deletedConstructorCount =
+			headerConstructor.DeletedCompatibleDefinitionCount
+			+ sourceConstructor.DeletedCompatibleDefinitionCount;
+		if (deletedConstructorCount != 0
+			|| compatibleConstructorCount > 1
+			|| (!existingUserCpp.empty()
+				&& compatibleConstructorCount != 1))
+		{
+			_lastError = deletedConstructorCount != 0
+				? L"用户类的默认构造函数已被删除，无法实例化生成窗体。"
+				: compatibleConstructorCount > 1
+					? L"用户类的默认构造函数在头文件或源文件中存在多个定义。"
+					: L"用户类缺少默认构造函数定义；可在头文件中内联，"
+						L"或在用户源文件中定义。";
 			return false;
 		}
+
+		std::map<std::string, std::string> retainedHandlers;
+		const auto& oldHandlerInclude = existingFiles[4].Content;
 		std::istringstream oldLines(oldHandlerInclude);
 		for (std::string line; std::getline(oldLines, line);)
 		{
 			const auto first = line.find_first_not_of(" \t");
 			if (first == std::string::npos || line.compare(first, 5, "void ") != 0) continue;
 			const auto open = line.find('(', first + 5);
-			const auto close = line.rfind(");");
-			if (open == std::string::npos || close == std::string::npos || close < open) continue;
+			const auto semicolon = line.rfind(';');
+			const auto close = semicolon == std::string::npos
+				? std::string::npos : line.rfind(')', semicolon);
+			if (open == std::string::npos || close == std::string::npos
+				|| semicolon == std::string::npos || close < open) continue;
 			const auto name = line.substr(first + 5, open - (first + 5));
 			const auto params = line.substr(open + 1, close - open - 1);
 			if (!name.empty()) retainedHandlers[name] = params;
@@ -2694,7 +2895,29 @@ bool CodeGenerator::GenerateFiles(std::wstring headerPath, std::wstring cppPath)
 		handlerInclude << "// Generated by CUI Designer. Do not edit.\n";
 		handlerInclude << "// Declarations are retained after unbinding so existing user definitions keep compiling.\n";
 		for (const auto& [name, params] : retainedHandlers)
-			handlerInclude << "\tvoid " << name << "(" << params << ");\n";
+		{
+			const auto inlineDefinitions =
+				userHeaderIndex.InspectHandler(name, params);
+			if (inlineDefinitions.CompatibleDefinitionCount > 1)
+			{
+				_lastError = L"用户头文件中的处理函数 “"
+					+ StringToWString(name)
+					+ L"” 存在多个相同签名的内联定义。";
+				return false;
+			}
+			// A second declaration in the generated include would conflict with
+			// an in-class definition of the same member.
+			if (inlineDefinitions.CompatibleDefinitionCount == 1) continue;
+			const auto active = std::any_of(currentHandlers.begin(), currentHandlers.end(),
+				[&](const auto& handler)
+				{
+					return handler.first == name
+						&& CanonicalGeneratedParameterTypes(handler.second)
+							== CanonicalGeneratedParameterTypes(params);
+				});
+			handlerInclude << "\tvoid " << name << "(" << params << ")"
+				<< (active ? " override" : "") << ";\n";
+		}
 
 		std::ostringstream newUserHeader;
 		newUserHeader
@@ -2724,12 +2947,14 @@ bool CodeGenerator::GenerateFiles(std::wstring headerPath, std::wstring cppPath)
 				<< "// <cui-designer-user-source> Created once; safe for user edits.\n"
 				<< "// <cui-designer-class>" << identity.QualifiedUser
 				<< "</cui-designer-class>\n"
-				<< "#include \"" << baseNameUtf8 << ".h\"\n\n"
-				<< identity.QualifiedUser << "::" << identity.UserLeaf << "()\n"
-				<< "\t: " << identity.QualifiedGenerated << "()\n"
-				<< "{\n"
-				<< "\t// User initialization belongs here.\n"
-				<< "}\n";
+				<< "#include \"" << baseNameUtf8 << ".h\"\n\n";
+			if (headerConstructor.CompatibleDefinitionCount == 0)
+				newUserCpp
+					<< identity.QualifiedUser << "::" << identity.UserLeaf << "()\n"
+					<< "\t: " << identity.QualifiedGenerated << "()\n"
+					<< "{\n"
+					<< "\t// User initialization belongs here.\n"
+					<< "}\n";
 		}
 		else
 			newUserCpp << existingUserCpp;
@@ -2757,25 +2982,40 @@ bool CodeGenerator::GenerateFiles(std::wstring headerPath, std::wstring cppPath)
 				begin = comma + 1;
 			}
 		};
-		auto definedUserHandlers = CollectUserHandlerDefinitions(
-			newUserCpp.str(), identity);
 		for (const auto& [name, params] : currentHandlers)
 		{
-			const auto definitions = definedUserHandlers.find(name);
-			if (definitions != definedUserHandlers.end())
+			const auto headerDefinitions =
+				userHeaderIndex.InspectHandler(name, params);
+			const auto sourceDefinitions =
+				userSourceIndex.InspectHandler(name, params);
+			const auto definitionCount =
+				headerDefinitions.DefinitionCount
+				+ sourceDefinitions.DefinitionCount;
+			const auto compatibleDefinitions =
+				headerDefinitions.CompatibleDefinitionCount
+				+ sourceDefinitions.CompatibleDefinitionCount;
+			const auto incompatibleShapes =
+				headerDefinitions.IncompatibleShapeDefinitionCount
+				+ sourceDefinitions.IncompatibleShapeDefinitionCount;
+			const auto deletedDefinitions =
+				headerDefinitions.DeletedCompatibleDefinitionCount
+				+ sourceDefinitions.DeletedCompatibleDefinitionCount;
+			if (definitionCount != 0)
 			{
-				const auto expectedTypes = GeneratedParameterTypeTokens(params);
-				const bool hasCompatibleDefinition = std::any_of(
-					definitions->second.begin(), definitions->second.end(),
-					[&](const CppParameterTokens& definition)
-					{
-						return MatchesGeneratedParameterTypes(
-							definition, expectedTypes);
-					});
-				if (hasCompatibleDefinition) continue;
-				_lastError = L"用户源文件中的处理函数 “"
+				if (compatibleDefinitions > 1)
+				{
+					_lastError = L"用户头文件或源文件中的处理函数 “"
+						+ StringToWString(name)
+						+ L"” 存在多个相同签名的定义。"
+							L"请仅保留一个定义后重新生成。";
+					return false;
+				}
+				if (incompatibleShapes == 0 && deletedDefinitions == 0
+					&& compatibleDefinitions == 1) continue;
+				_lastError = L"用户头文件或源文件中的处理函数 “"
 					+ StringToWString(name)
-					+ L"” 参数签名与设计事件不兼容。"
+					+ L"” 的返回类型、static/cv/ref 限定或参数签名"
+						L"与设计事件不兼容。"
 						L"请修正该定义，或在设计器中改用新的函数名。";
 				return false;
 			}
@@ -2783,21 +3023,59 @@ bool CodeGenerator::GenerateFiles(std::wstring headerPath, std::wstring cppPath)
 				<< "(" << params << ")\n{\n";
 			appendUnusedParameters(newUserCpp, params);
 			newUserCpp << "}\n";
-			definedUserHandlers[name].push_back(
-				GeneratedParameterTypeTokens(params));
 		}
 
-		std::vector<DesignerModel::AtomicFileWriteEntry> writes;
-		writes.push_back({ generatedHeaderPath.wstring(), GenerateHeader() });
-		writes.push_back({ generatedCppPath.wstring(),
-			GenerateCppForBaseName(baseNameUtf8) });
-		writes.push_back({ handlerIncludePath.wstring(), handlerInclude.str() });
-		if (existingUserHeader.empty())
-			writes.push_back({ userHeaderPath.wstring(), newUserHeader.str() });
-		const auto nextUserCpp = newUserCpp.str();
-		if (existingUserCpp.empty() || nextUserCpp != existingUserCpp)
-			writes.push_back({ userCppPath.wstring(), nextUserCpp });
+		files.reserve(5);
+		auto appendPlannedFile = [&](size_t snapshotIndex,
+			const fs::path& path, std::string content)
+		{
+			const auto& expected = existingFiles[snapshotIndex];
+			files.push_back({ path.wstring(), std::move(content),
+				expected.Existed, expected.Content });
+		};
+		appendPlannedFile(0, userHeaderPath,
+			existingUserHeader.empty()
+				? newUserHeader.str() : existingUserHeader);
+		appendPlannedFile(1, userCppPath, newUserCpp.str());
+		appendPlannedFile(2, generatedHeaderPath, GenerateHeader());
+		appendPlannedFile(3, generatedCppPath,
+			GenerateCppForBaseName(baseNameUtf8));
+		appendPlannedFile(4, handlerIncludePath, handlerInclude.str());
+		return true;
+	}
+	catch (const std::exception& error)
+	{
+		files.clear();
+		_lastError = L"准备代码生成计划失败：" + StringToWString(error.what());
+		return false;
+	}
+	catch (...)
+	{
+		files.clear();
+		_lastError = L"准备代码生成计划时发生未知错误。";
+		return false;
+	}
+}
 
+bool CodeGenerator::GenerateFiles(std::wstring headerPath, std::wstring cppPath)
+{
+	std::vector<CodeGeneratorFileContent> files;
+	if (!BuildFilePlan(std::move(headerPath), std::move(cppPath), files))
+		return false;
+	try
+	{
+		std::vector<DesignerModel::AtomicFileWriteEntry> writes;
+		writes.reserve(files.size());
+		for (auto& file : files)
+		{
+			DesignerModel::AtomicFileWriteEntry write;
+			write.FilePath = std::move(file.Path);
+			write.Content = std::move(file.Content);
+			write.RequireExpectedState = true;
+			write.ExpectedExisted = file.ExpectedExisted;
+			write.ExpectedContent = std::move(file.ExpectedContent);
+			writes.push_back(std::move(write));
+		}
 		std::wstring writeError;
 		if (!DesignerModel::AtomicFile::WriteBatch(writes, &writeError))
 		{
@@ -2809,12 +3087,12 @@ bool CodeGenerator::GenerateFiles(std::wstring headerPath, std::wstring cppPath)
 	}
 	catch (const std::exception& error)
 	{
-		_lastError = L"导出失败：" + StringToWString(error.what());
+		_lastError = L"提交代码生成计划失败：" + StringToWString(error.what());
 		return false;
 	}
 	catch (...)
 	{
-		_lastError = L"导出时发生未知错误。";
+		_lastError = L"提交代码生成计划时发生未知错误。";
 		return false;
 	}
 }

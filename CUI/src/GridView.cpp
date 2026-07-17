@@ -440,32 +440,32 @@ void GridView::EnsureBindingPropertiesRegistered()
 			GridViewPropertySubscriber(propertyName), \
 			GridViewColorOptions(defaultValue, order))
 
-		CUI_REGISTER_GRID_COLOR(HeadBackColor, L"HeadBackColor", Colors::Snow3, 10);
-		CUI_REGISTER_GRID_COLOR(HeadForeColor, L"HeadForeColor", Colors::Black, 20);
-		CUI_REGISTER_GRID_COLOR(HeadHoverBackColor, L"HeadHoverBackColor", (D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.08f }), 30);
-		CUI_REGISTER_GRID_COLOR(GridLineColor, L"GridLineColor", (D2D1_COLOR_F{ 0.72f, 0.75f, 0.82f, 0.55f }), 40);
-		CUI_REGISTER_GRID_COLOR(AccentColor, L"AccentColor", (D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 1.0f }), 50);
-		CUI_REGISTER_GRID_COLOR(ButtonBackColor, L"ButtonBackColor", Colors::GhostWhite, 60);
-		CUI_REGISTER_GRID_COLOR(ButtonCheckedColor, L"ButtonCheckedColor", Colors::White, 70);
-		CUI_REGISTER_GRID_COLOR(ButtonHoverBackColor, L"ButtonHoverBackColor", Colors::WhiteSmoke, 80);
-		CUI_REGISTER_GRID_COLOR(ButtonPressedBackColor, L"ButtonPressedBackColor", Colors::LightGray, 90);
-		CUI_REGISTER_GRID_COLOR(ButtonBorderDarkColor, L"ButtonBorderDarkColor", Colors::DimGrey, 100);
-		CUI_REGISTER_GRID_COLOR(ButtonBorderLightColor, L"ButtonBorderLightColor", Colors::White, 110);
-		CUI_REGISTER_GRID_COLOR(SelectedItemBackColor, L"SelectedItemBackColor", (D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.14f }), 120);
-		CUI_REGISTER_GRID_COLOR(SelectedItemForeColor, L"SelectedItemForeColor", Colors::Black, 130);
-		CUI_REGISTER_GRID_COLOR(UnderMouseItemBackColor, L"UnderMouseItemBackColor", (D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.08f }), 140);
-		CUI_REGISTER_GRID_COLOR(UnderMouseItemForeColor, L"UnderMouseItemForeColor", Colors::Black, 150);
-		CUI_REGISTER_GRID_COLOR(LinkedTextColor, L"LinkedTextColor", Colors::DeepSkyBlue, 160);
-		CUI_REGISTER_GRID_COLOR(LinkedTextHoverColor, L"LinkedTextHoverColor", Colors::SlateBlue, 170);
-		CUI_REGISTER_GRID_COLOR(ScrollBackColor, L"ScrollBackColor", Colors::LightGray, 180);
-		CUI_REGISTER_GRID_COLOR(ScrollForeColor, L"ScrollForeColor", Colors::DimGrey, 190);
-		CUI_REGISTER_GRID_COLOR(EditBackColor, L"EditBackColor", Colors::White, 200);
-		CUI_REGISTER_GRID_COLOR(EditForeColor, L"EditForeColor", Colors::Black, 210);
-		CUI_REGISTER_GRID_COLOR(EditSelectedBackColor, L"EditSelectedBackColor", (D2D1_COLOR_F{ 0.3882f, 0.4000f, 0.9451f, 0.30f }), 220);
-		CUI_REGISTER_GRID_COLOR(EditSelectedForeColor, L"EditSelectedForeColor", Colors::Black, 230);
-		CUI_REGISTER_GRID_COLOR(NewRowBackColor, L"NewRowBackColor", (D2D1_COLOR_F{ 0.95f, 0.95f, 0.95f, 1.0f }), 240);
-		CUI_REGISTER_GRID_COLOR(NewRowForeColor, L"NewRowForeColor", Colors::gray81, 250);
-		CUI_REGISTER_GRID_COLOR(NewRowIndicatorColor, L"NewRowIndicatorColor", Colors::RoyalBlue, 260);
+		CUI_REGISTER_GRID_COLOR(HeadBackColor, L"HeadBackColor", cui::theme::palette::SurfaceMuted, 10);
+		CUI_REGISTER_GRID_COLOR(HeadForeColor, L"HeadForeColor", cui::theme::palette::TextPrimary, 20);
+		CUI_REGISTER_GRID_COLOR(HeadHoverBackColor, L"HeadHoverBackColor", cui::theme::palette::AccentSoft, 30);
+		CUI_REGISTER_GRID_COLOR(GridLineColor, L"GridLineColor", cui::theme::palette::Border, 40);
+		CUI_REGISTER_GRID_COLOR(AccentColor, L"AccentColor", cui::theme::palette::Accent, 50);
+		CUI_REGISTER_GRID_COLOR(ButtonBackColor, L"ButtonBackColor", cui::theme::palette::Surface, 60);
+		CUI_REGISTER_GRID_COLOR(ButtonCheckedColor, L"ButtonCheckedColor", cui::theme::palette::AccentSelected, 70);
+		CUI_REGISTER_GRID_COLOR(ButtonHoverBackColor, L"ButtonHoverBackColor", cui::theme::palette::AccentSoft, 80);
+		CUI_REGISTER_GRID_COLOR(ButtonPressedBackColor, L"ButtonPressedBackColor", cui::theme::palette::AccentSelected, 90);
+		CUI_REGISTER_GRID_COLOR(ButtonBorderDarkColor, L"ButtonBorderDarkColor", cui::theme::palette::BorderStrong, 100);
+		CUI_REGISTER_GRID_COLOR(ButtonBorderLightColor, L"ButtonBorderLightColor", cui::theme::palette::Surface, 110);
+		CUI_REGISTER_GRID_COLOR(SelectedItemBackColor, L"SelectedItemBackColor", cui::theme::palette::AccentSelected, 120);
+		CUI_REGISTER_GRID_COLOR(SelectedItemForeColor, L"SelectedItemForeColor", cui::theme::palette::TextPrimary, 130);
+		CUI_REGISTER_GRID_COLOR(UnderMouseItemBackColor, L"UnderMouseItemBackColor", cui::theme::palette::AccentSoft, 140);
+		CUI_REGISTER_GRID_COLOR(UnderMouseItemForeColor, L"UnderMouseItemForeColor", cui::theme::palette::TextPrimary, 150);
+		CUI_REGISTER_GRID_COLOR(LinkedTextColor, L"LinkedTextColor", cui::theme::palette::Accent, 160);
+		CUI_REGISTER_GRID_COLOR(LinkedTextHoverColor, L"LinkedTextHoverColor", cui::theme::palette::AccentHover, 170);
+		CUI_REGISTER_GRID_COLOR(ScrollBackColor, L"ScrollBackColor", cui::theme::palette::ScrollTrack, 180);
+		CUI_REGISTER_GRID_COLOR(ScrollForeColor, L"ScrollForeColor", cui::theme::palette::ScrollThumb, 190);
+		CUI_REGISTER_GRID_COLOR(EditBackColor, L"EditBackColor", cui::theme::palette::Surface, 200);
+		CUI_REGISTER_GRID_COLOR(EditForeColor, L"EditForeColor", cui::theme::palette::TextPrimary, 210);
+		CUI_REGISTER_GRID_COLOR(EditSelectedBackColor, L"EditSelectedBackColor", cui::theme::palette::SelectionBack, 220);
+		CUI_REGISTER_GRID_COLOR(EditSelectedForeColor, L"EditSelectedForeColor", cui::theme::palette::TextPrimary, 230);
+		CUI_REGISTER_GRID_COLOR(NewRowBackColor, L"NewRowBackColor", cui::theme::palette::SurfaceSubtle, 240);
+		CUI_REGISTER_GRID_COLOR(NewRowForeColor, L"NewRowForeColor", cui::theme::palette::TextMuted, 250);
+		CUI_REGISTER_GRID_COLOR(NewRowIndicatorColor, L"NewRowIndicatorColor", cui::theme::palette::Accent, 260);
 
 #undef CUI_REGISTER_GRID_COLOR
 		return true;
@@ -682,6 +682,9 @@ GridView::GridView(int x, int y, int width, int height)
 		{ OnColumnsCollectionChanged(change); });
 	this->Location = POINT{ x,y };
 	this->Size = SIZE{ width,height };
+	this->BackColor = cui::theme::palette::Surface;
+	this->BorderColor = cui::theme::palette::Border;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 }
 
 GridView::~GridView()

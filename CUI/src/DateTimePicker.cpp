@@ -142,8 +142,9 @@ DateTimePicker::DateTimePicker(std::wstring text, int x, int y, int width, int h
 	this->Text = text;
 	this->Location = POINT{ x, y };
 	this->Size = SIZE{ width, height };
-	this->BackColor = Colors::LightGray;
-	this->BorderColor = Colors::DimGrey;
+	this->BackColor = cui::theme::palette::Surface;
+	this->BorderColor = cui::theme::palette::BorderStrong;
+	this->ForeColor = cui::theme::palette::TextPrimary;
 	this->Cursor = CursorKind::Hand;
 
 	SYSTEMTIME st{};

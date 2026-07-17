@@ -141,15 +141,15 @@ public:
 	int DropItemHeight = 26;
 	float BorderThickness = 1.0f;
 
-	D2D1_COLOR_F BarBackColor = D2D1_COLOR_F{ 0.98f,0.99f,1.0f,0.78f };
-	D2D1_COLOR_F BarBorderColor = D2D1_COLOR_F{ 0.64f,0.71f,0.82f,0.95f };
-	D2D1_COLOR_F BarItemHoverColor = D2D1_COLOR_F{ 0.20f,0.46f,0.90f,0.18f };
-	D2D1_COLOR_F BarItemActiveColor = D2D1_COLOR_F{ 0.20f,0.46f,0.90f,0.28f };
-	D2D1_COLOR_F DropBackColor = D2D1_COLOR_F{ 0.10f,0.12f,0.16f,0.97f };
-	D2D1_COLOR_F DropBorderColor = D2D1_COLOR_F{ 0.48f,0.58f,0.72f,0.58f };
-	D2D1_COLOR_F DropHoverColor = D2D1_COLOR_F{ 0.20f,0.50f,0.95f,0.28f };
-	D2D1_COLOR_F DropTextColor = Colors::WhiteSmoke;
-	D2D1_COLOR_F DropSeparatorColor = D2D1_COLOR_F{ 1,1,1,0.16f };
+	D2D1_COLOR_F BarBackColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F BarBorderColor = cui::theme::palette::Border;
+	D2D1_COLOR_F BarItemHoverColor = cui::theme::palette::AccentSoft;
+	D2D1_COLOR_F BarItemActiveColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F DropBackColor = cui::theme::palette::Surface;
+	D2D1_COLOR_F DropBorderColor = cui::theme::palette::Border;
+	D2D1_COLOR_F DropHoverColor = cui::theme::palette::AccentSelected;
+	D2D1_COLOR_F DropTextColor = cui::theme::palette::TextPrimary;
+	D2D1_COLOR_F DropSeparatorColor = cui::theme::palette::Border;
 	float BarItemCornerRadius = 6.0f;
 	float DropCornerRadius = 8.0f;
 	float DropItemCornerRadius = 6.0f;
