@@ -137,6 +137,27 @@ public:
 	bool SelectItem(int index);
 	/** @brief 通过交互语义滚动指定条目数，并保留现有 Binding 值来源。 */
 	void ScrollBy(int itemDelta);
+
+	// ---- 项操作便捷方法（对 Items 可观察集合的薄封装） ----
+	// 注： ComboBox 的 SelectedIndex getter（SET/GET 宏生成）非常量，
+	// 为与该类现有风格一致（GetItems()/SelectItem() 均非常量），这些便捷
+	// 方法也不加 const 限定。
+	/** @brief 项数。 */
+	int GetItemCount();
+	__declspec(property(get = GetItemCount)) int ItemCount;
+	/** @brief 当前选中项文本；无选中或越界时返回空串。 */
+	std::wstring GetSelectedItem();
+	// 注：SetSelectedIndex(int) 由 SelectedIndex 属性的 SET 宏提供。
+	/** @brief 查找首个匹配项索引，未找到返回 -1。 */
+	int FindItem(const std::wstring& text);
+	/** @brief 追加一项。 */
+	void AddItem(const std::wstring& text);
+	/** @brief 在指定位置插入一项。 */
+	void InsertItem(int index, const std::wstring& text);
+	/** @brief 移除指定位置项。 */
+	void RemoveItemAt(int index);
+	/** @brief 清空所有项。 */
+	void ClearItems();
 	void GetAccessibilityVirtualChildren(
 		uint32_t parentId, std::vector<uint32_t>& result) override;
 	bool TryGetAccessibilityVirtualNode(

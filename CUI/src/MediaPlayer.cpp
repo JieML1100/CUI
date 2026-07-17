@@ -2,6 +2,7 @@
 
 #include "MediaPlayer.h"
 #include "Form.h"
+#include "Core/Threading.h"
 #include <d3d11_1.h>
 #include <d2d1helper.h>
 #include <algorithm>
@@ -1408,8 +1409,15 @@ void MediaPlayer::SetPlayState(PlayState value)
 {
 	const PlayState oldValue = _playState.exchange(value);
 	if (oldValue == value) return;
-	OnStateChanged(this, oldValue, value);
-	InvalidateVisual();
+	// 状态变更可能来自播放工作线程；事件必须在 UI 线程上 invoke，
+	// 避免用户处理器在错误线程触碰其他 UI 控件。
+	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
+	cui::InvokeOnUIThread([this, oldValue, value, weakLifetime]() {
+		auto lifetime = weakLifetime.lock();
+		if (!lifetime || !*lifetime) return;
+		OnStateChanged(this, oldValue, value);
+		InvalidateVisual();
+	});
 }
 
 void MediaPlayer::SetObservedPosition(
@@ -1420,7 +1428,15 @@ void MediaPlayer::SetObservedPosition(
 	if (_duration > 0.0) value = (std::min)(value, _duration);
 	const double oldValue = _position.exchange(value);
 	const bool changed = std::fabs(value - oldValue) > 1e-9;
-	if (notify && (changed || forceEvent)) OnPositionChanged(this, value);
+	if (notify && (changed || forceEvent))
+	{
+		std::weak_ptr<bool> weakLifetime = _lifetimeToken;
+		cui::InvokeOnUIThread([this, value, weakLifetime]() {
+			auto lifetime = weakLifetime.lock();
+			if (!lifetime || !*lifetime) return;
+			OnPositionChanged(this, value);
+		});
+	}
 }
 
 void MediaPlayer::ReportMediaFailure(HRESULT error)
@@ -1428,9 +1444,55 @@ void MediaPlayer::ReportMediaFailure(HRESULT error)
 	if (SUCCEEDED(error)) error = E_FAIL;
 	_lastMfError.store(error);
 	SetPlayState(PlayState::Stopped);
-	OnMediaFailed(this);
-	OnMediaError(this, error);
-	InvalidateVisual();
+	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
+	cui::InvokeOnUIThread([this, error, weakLifetime]() {
+		auto lifetime = weakLifetime.lock();
+		if (!lifetime || !*lifetime) return;
+		OnMediaFailed(this);
+		OnMediaError(this, error);
+		InvalidateVisual();
+	});
+}
+
+// ========== 跨线程事件封送助手 ==========
+void MediaPlayer::FireMediaOpened()
+{
+	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
+	cui::InvokeOnUIThread([this, weakLifetime]() {
+		auto lifetime = weakLifetime.lock();
+		if (!lifetime || !*lifetime) return;
+		OnMediaOpened(this);
+	});
+}
+
+void MediaPlayer::FireMediaEnded()
+{
+	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
+	cui::InvokeOnUIThread([this, weakLifetime]() {
+		auto lifetime = weakLifetime.lock();
+		if (!lifetime || !*lifetime) return;
+		OnMediaEnded(this);
+	});
+}
+
+void MediaPlayer::FirePositionChanged(double value)
+{
+	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
+	cui::InvokeOnUIThread([this, value, weakLifetime]() {
+		auto lifetime = weakLifetime.lock();
+		if (!lifetime || !*lifetime) return;
+		OnPositionChanged(this, value);
+	});
+}
+
+void MediaPlayer::FireMediaError(HRESULT error)
+{
+	std::weak_ptr<bool> weakLifetime = _lifetimeToken;
+	cui::InvokeOnUIThread([this, error, weakLifetime]() {
+		auto lifetime = weakLifetime.lock();
+		if (!lifetime || !*lifetime) return;
+		OnMediaError(this, error);
+	});
 }
 
 MediaPlayer::MediaPlayer(int x, int y, int width, int height)
@@ -2369,7 +2431,7 @@ void MediaPlayer::PlaybackThreadMain()
 		if (lastPositionEventQpc == 0 || (positionNow.QuadPart - lastPositionEventQpc) >= (freq.QuadPart / 20))
 		{
 			lastPositionEventQpc = positionNow.QuadPart;
-			OnPositionChanged(this, _position.load());
+			FirePositionChanged(_position.load());
 		}
 
 		ComPtr<IMFMediaBuffer> buf;
@@ -3212,7 +3274,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 
 			_mediaLoaded = true;
 			SetPlayState(PlayState::Stopped);
-			OnMediaOpened(this);
+			FireMediaOpened();
 			this->InvalidateVisual();
 
 			if (_autoPlay)
@@ -3223,7 +3285,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 		{
 		_mediaLoaded = true;
 			SetPlayState(PlayState::Stopped);
-		OnMediaOpened(this);
+		FireMediaOpened();
 		this->InvalidateVisual();
 
 		// AutoPlay
@@ -3284,7 +3346,7 @@ bool MediaPlayer::Load(const std::wstring& mediaFile)
 	// 完全自渲染：不使用 EVR，不需要 VideoDisplayControl
 
 	_mediaLoaded = true;
-	OnMediaOpened(this);
+	FireMediaOpened();
 
 	// 获取时长
 	ComPtr<IMFPresentationDescriptor> pSourcePD;
@@ -3427,7 +3489,7 @@ bool MediaPlayer::Load(const void* data, size_t size, const std::wstring& nameHi
 
 	_mediaLoaded = true;
 	SetPlayState(PlayState::Stopped);
-	OnMediaOpened(this);
+	FireMediaOpened();
 	this->InvalidateVisual();
 
 	if (_autoPlay)
@@ -3464,7 +3526,7 @@ bool MediaPlayer::TryPlay()
 				if (FAILED(hr))
 				{
 					_lastMfError.store(hr);
-					OnMediaError(this, hr);
+					FireMediaError(hr);
 				}
 			}
 		}
@@ -3485,7 +3547,7 @@ bool MediaPlayer::TryPlay()
 	}
 	_pendingStart = false;
 	_lastMfError.store(hr);
-	OnMediaError(this, hr);
+	FireMediaError(hr);
 	DebugOutputHr(L"Play Start failed", hr);
 	return false;
 }
@@ -3506,7 +3568,7 @@ bool MediaPlayer::TryPause()
 			if (FAILED(hr))
 			{
 				_lastMfError.store(hr);
-				OnMediaError(this, hr);
+				FireMediaError(hr);
 			}
 		}
 		return true;
@@ -3516,7 +3578,7 @@ bool MediaPlayer::TryPause()
 	if (FAILED(hr))
 	{
 		_lastMfError.store(hr);
-		OnMediaError(this, hr);
+		FireMediaError(hr);
 		return false;
 	}
 	SetPlayState(PlayState::Paused);
@@ -3547,7 +3609,7 @@ bool MediaPlayer::TryStop()
 			if (FAILED(hr))
 			{
 				_lastMfError.store(hr);
-				OnMediaError(this, hr);
+				FireMediaError(hr);
 				return false;
 			}
 		}
@@ -3559,7 +3621,7 @@ bool MediaPlayer::TryStop()
 	if (FAILED(hr))
 	{
 		_lastMfError.store(hr);
-		OnMediaError(this, hr);
+		FireMediaError(hr);
 		return false;
 	}
 	SetPlayState(PlayState::Stopped);
@@ -3594,7 +3656,7 @@ bool MediaPlayer::TrySeek(double seconds)
 		if (FAILED(hr))
 		{
 			_lastMfError.store(hr);
-			OnMediaError(this, hr);
+			FireMediaError(hr);
 			DebugOutputHr(L"SourceReader: SetCurrentPosition failed", hr);
 			return false;
 		}
@@ -3629,7 +3691,7 @@ bool MediaPlayer::TrySeek(double seconds)
 	if (FAILED(hr))
 	{
 		_lastMfError.store(hr);
-		OnMediaError(this, hr);
+		FireMediaError(hr);
 		DebugOutputHr(L"SetPositionImpl failed", hr);
 		return false;
 	}

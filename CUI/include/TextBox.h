@@ -54,6 +54,33 @@ public:
 	int SelectionStart = 0;
 	/** @brief 选择终点（不含/或实现定义，需结合实现使用）。 */
 	int SelectionEnd = 0;
+
+	// ---- 公共选择/编辑 API（薄封装，复用内部编辑与 Undo 路径） ----
+	/** @brief 当前选中长度。 */
+	int GetSelectionLength();
+	__declspec(property(get = GetSelectionLength)) int SelectionLength;
+	/** @brief 是否存在选区。 */
+	bool HasSelection();
+	/** @brief 选中 [start, start+length)。 */
+	void Select(int start, int length);
+	/** @brief 全选。 */
+	void SelectAll();
+	/** @brief 清除选区（光标折叠到选择起点）。 */
+	void ClearSelection();
+	/** @brief 清空文本（可撤销）。 */
+	void Clear();
+	/** @brief 在当前光标处插入文本（替换选区，可撤销）。 */
+	void InsertText(const std::wstring& text);
+	/** @brief 复制选区到剪贴板。 */
+	bool Copy();
+	/** @brief 剪切选区到剪贴板（可撤销）。 */
+	bool Cut();
+	/** @brief 从剪贴板粘贴（替换选区，可撤销）。 */
+	bool Paste();
+	/** @brief 撤销。 */
+	void Undo();
+	/** @brief 重做。 */
+	void Redo();
 	PROPERTY(float, BorderThickness);
 	GET(float, BorderThickness);
 	SET(float, BorderThickness);
@@ -95,8 +122,6 @@ private:
 	void InputDelete();
 	void UpdateScroll(bool arrival = false);
 	void ApplyUndoRecord(const UndoRecord& rec, bool isUndo);
-	void Undo();
-	void Redo();
 public:
 	/** @brief 返回当前选中的文本片段。 */
 	std::wstring GetSelectedString();

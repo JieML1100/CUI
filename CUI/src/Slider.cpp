@@ -337,6 +337,38 @@ CUI_SLIDER_PROPERTY_IMPL(float, ThumbDragRadiusDelta, _thumbDragRadiusDelta, L"T
 
 #undef CUI_SLIDER_PROPERTY_IMPL
 
+void Slider::SetRange(float minValue, float maxValue)
+{
+	// 先设 Min 再设 Max；两个 setter 都会 ReevaluateValue 保证一致性。
+	this->Min = minValue;
+	this->Max = (std::max)(maxValue, minValue);
+}
+
+void Slider::Increment(float delta)
+{
+	this->Value = this->_value + delta;
+}
+
+void Slider::Increment()
+{
+	Increment(_step > 0.0f ? _step : 1.0f);
+}
+
+void Slider::Decrement(float delta)
+{
+	this->Value = this->_value - delta;
+}
+
+void Slider::Decrement()
+{
+	Decrement(_step > 0.0f ? _step : 1.0f);
+}
+
+void Slider::Reset()
+{
+	this->Value = this->_min;
+}
+
 CursorKind Slider::QueryCursor(int localX, int localY)
 {
 	(void)localY;

@@ -75,7 +75,15 @@ GET_CPP(ProgressBar, float, Value)
 
 SET_CPP(ProgressBar, float, Value)
 {
-	this->_currentValue = (std::clamp)(value, 0.0f, this->_maxValue);
+	const float newValue = (std::clamp)(value, 0.0f, this->_maxValue);
+	const float oldValue = this->_currentValue;
+	if (oldValue == newValue)
+	{
+		this->InvalidateVisual();
+		return;
+	}
+	this->_currentValue = newValue;
+	this->OnValueChanged(this, oldValue, newValue);
 	this->InvalidateVisual();
 }
 
@@ -88,8 +96,8 @@ GET_CPP(ProgressBar, float, PercentageValue)
 
 SET_CPP(ProgressBar, float, PercentageValue)
 {
-	this->_currentValue = this->_maxValue * (std::clamp)(value, 0.0f, 1.0f);
-	this->InvalidateVisual();
+	// 走 Value 属性路径，保证钳制与 OnValueChanged 事件一致。
+	this->Value = this->_maxValue * (std::clamp)(value, 0.0f, 1.0f);
 }
 
 ProgressBar::ProgressBar(int x, int y, int width, int height)
@@ -98,6 +106,24 @@ ProgressBar::ProgressBar(int x, int y, int width, int height)
 	this->Size = SIZE{ width,height };
 	this->BackColor = cui::theme::palette::ScrollTrack;
 	this->ForeColor = cui::theme::palette::Accent;
+}
+
+void ProgressBar::SetRange(float maxValue)
+{
+	if (maxValue <= 0.0f) maxValue = 1.0f;
+	this->MaxValue = maxValue;
+	// MaxValue setter 已钳制当前值，但未必触发事件；确保值合法性经 Value 路径。
+	this->Value = this->_currentValue;
+}
+
+void ProgressBar::Increment(float delta)
+{
+	this->Value = this->_currentValue + delta;
+}
+
+void ProgressBar::Reset()
+{
+	this->Value = 0.0f;
 }
 
 void ProgressBar::Update()

@@ -277,6 +277,35 @@ public:
 		});
 	}
 
+	/**
+	 * @brief 以弱引用方式订阅：仅当 target 仍存活时才会调用其成员/operator()。
+	 *
+	 * 用于打破"控件持有事件 → 事件持有处理器 → 处理器持有控件"的循环引用。
+	 * T 必须能以 std::weak_ptr<T> 构造（即由 shared_ptr 管理）。返回的连接仍可用
+	 * EventConnection 手动断开；target 销毁后处理器自动不再触发。
+	 *
+	 * 用法：event.SubscribeWeak(shared_from_this(), &MyClass::OnEvent);
+	 */
+	template<typename T, typename Method>
+	EventConnection SubscribeWeak(const std::shared_ptr<T>& target, Method method) {
+		std::weak_ptr<T> weakTarget = target;
+		return Subscribe([weakTarget, method](auto&&... args) {
+			if (auto strong = weakTarget.lock()) {
+				(strong->*method)(std::forward<decltype(args)>(args)...);
+			}
+		});
+	}
+
+	/// 重载：针对可调用对象（lambda/函数对象）的弱订阅。
+	template<typename T, typename Callable>
+	EventConnection SubscribeWeak(const std::weak_ptr<T>& weakTarget, Callable&& callable) {
+		return Subscribe([weakTarget, fn = std::forward<Callable>(callable)](auto&&... args) mutable {
+			if (auto strong = weakTarget.lock()) {
+				fn(*strong, std::forward<decltype(args)>(args)...);
+			}
+		});
+	}
+
 	template<typename F>
 	void operator+=(F&& fn) {
 		std_function_type func(std::forward<F>(fn));
@@ -294,6 +323,13 @@ public:
 
 	template<typename F>
 	void operator-=(F&& fn) {
+		// 退订只对"函数指针"有效：lambda / std::function / 函数对象无法被可靠
+		// 匹配，过去这里是静默 no-op，导致"+= 了 lambda 之后 -= 不掉"的经典陷阱。
+		// 现在改为编译期报错，引导改用 Subscribe() 返回的 EventConnection 来退订。
+		static_assert(std::is_pointer_v<std::decay_t<F>>,
+			"Event::operator-= only supports function pointers. "
+			"For lambdas/functors, use EventConnection returned by Subscribe() to unsubscribe.");
+
 		if (!_state || _state->Entries.empty()) return;
 
 		std_function_type func(std::forward<F>(fn));

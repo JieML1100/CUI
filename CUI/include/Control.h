@@ -653,6 +653,9 @@ protected:
 	float _focusVisualThickness = 1.5f;
 	unsigned long long _propertyChangeVersion = 0;
 	bool _isDestroying = false;
+	// 跨线程失效回调使用的生命周期令牌：析构时置空，使已入队但尚未执行的
+	// 失效回调在 UI 线程上安全地发现控件已销毁而跳过。
+	std::shared_ptr<bool> _lifetimeToken = std::make_shared<bool>(true);
 	std::wstring _styleId;
 	std::vector<std::wstring> _styleClasses;
 	ControlStyleState _styleState = ControlStyleState::None;

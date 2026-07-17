@@ -120,6 +120,37 @@ int main()
 - 示例工程使用 `main()`，也可以按宿主工程的入口约定封装，但消息泵语义不变
 - `Form` 构造时会兜底处理 DPI；推荐仍显式先调用 `EnsureDpiAwareness()`
 
+### 4.1 线程模型与跨线程回调
+
+CUI 控件具有**线程亲和性**：第一个创建 `Form` 的线程被登记为 UI 线程，控件属性、
+布局、失效与事件都应在该线程上访问。框架现在提供了显式的封送设施（`CUI/include/Core/Threading.h`）：
+
+- `cui::InitializeUIThread()`：`Form` 构造时自动调用，登记 UI 线程并建立封送 dispatcher。
+- `cui::IsUIThread()` / `cui::GetUIThreadId()`：判断当前线程。
+- `cui::AssertUIThread(reason)`：Debug 构建下对跨线程 UI 访问触发断言。
+- `cui::PostToUIThread(fn)`：把工作线程的回调**异步**封送到 UI 线程执行（经消息泵驱动）。
+- `cui::InvokeOnUIThread(fn)`：已在 UI 线程则**同步立即执行**，否则走 `PostToUIThread`。
+
+封送的回调由 `Form::DoEvent()` / `WaitEvent()` / 模态消息循环在每轮自动排空。
+
+**关键规则**：在工作线程（如 `MediaPlayer` 播放线程、自建的 `std::thread`、线程池）里，
+**不要直接读写控件属性或调用控件方法**。应当把这类操作包进 `cui::PostToUIThread(...)`：
+
+```cpp
+std::thread([this, label] {
+    auto text = ComputeSomething();
+    cui::PostToUIThread([this, label, text] {
+        label->Text = text;              // 安全：在 UI 线程上执行
+        label->InvalidateVisual();
+    });
+}).detach();
+```
+
+框架内部已遵循这一规则：`Control::InvalidateVisualRect` 在非 UI 线程被调用时会自动封送回
+UI 线程（并用生命周期令牌防止控件先销毁导致的悬空访问）；`MediaPlayer` 的
+`OnStateChanged` / `OnPositionChanged` / `OnMediaOpened` / `OnMediaEnded` / `OnMediaError`
+事件已统一封送到 UI 线程 invoke，因此这些事件的处理器可以安全地操作其他控件。
+
 ## 5. 控件树怎么搭
 
 ### 5.1 顶层控件
@@ -261,6 +292,19 @@ EventConnection connection = button->OnMouseClick.Subscribe(
 
 `+=` 注册的是持久处理器，适合处理器与事件发布者同寿命的场景。Binding 的
 属性元数据订阅必须使用并返回 `EventConnection`，不要用无法自动解绑的 `+=`。
+
+退订规则（重要）：
+
+- `operator-=` **只支持函数指针**。对 lambda / `std::function` / 函数对象使用 `-=`
+  会在**编译期报错**（过去是静默无效的陷阱）。需要退订时必须改用 `Subscribe()`
+  拿到的 `EventConnection`。
+- 当处理器捕获了"持有该事件的对象"的 `shared_ptr` 时会形成循环引用。此时用
+  `SubscribeWeak(...)` 以弱引用订阅，目标销毁后处理器自动不再触发：
+
+```cpp
+// 防止 控件->事件->处理器->shared_ptr<控件> 循环引用
+button->OnMouseClick.SubscribeWeak(shared_from_this(), &MyPanel::HandleClick);
+```
 
 常见控件事件：
 
@@ -474,6 +518,16 @@ XML 或生成代码。校验呈现配置和 `AccessibleDescription` 则是控件
 - `ListBox`
 - `PropertyGridView`
 - `GridView`
+
+`GridView` 常用能力：
+
+- **行级多选**：设 `grid->MultiSelect = true` 后，Ctrl+点击切换单行、Shift+点击从锚点扩展范围；
+  程序侧用 `GetSelectedRows()` / `SetRowSelected(row, bool)` / `SelectRowRange(a, b)` / `SelectAllRows()`。
+  单选 API（`SelectedRowIndex`/`SelectRow`）在多选下仍表示焦点/锚点行，完全兼容。
+- **运行时列管理**：`SetColumnVisible(col, bool)` 隐藏/显示列（保留数据与原始索引），
+  `MoveColumn(from, to)` 重排列（各行单元格同步移动，选中/排序列自动重映射）。
+- **批量加载**：`SetRows(...)` 原子替换全部行，内部一次批量更新只触发一次重排/重绘，
+  远比逐行 `AddRow` 高效；配合 `DeferUpdates()` 可进一步合并多次结构变更。
 
 ### 8.4 媒体与内容嵌入
 

@@ -190,3 +190,11 @@ bool RadioBox::Invoke()
 	InvalidateVisual();
 	return true;
 }
+
+void RadioBox::SetChecked(bool checked)
+{
+	if (!Enable || Checked == checked) return;
+	StartSelectionAnimation(checked);
+	OnChecked(this);
+	InvalidateVisual();
+}

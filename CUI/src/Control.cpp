@@ -2,6 +2,7 @@
 #include "Binding.h"
 #include "Form.h"
 #include "Panel.h"
+#include "Core/Threading.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -288,6 +289,8 @@ Control::Control()
 Control::~Control()
 {
 	_isDestroying = true;
+	// 使任何已封送但尚未执行的跨线程回调失效。
+	if (_lifetimeToken) *_lifetimeToken = false;
 	Children.SetOwnerChangedHandler({});
 	_dataBindings.reset();
 	this->_imageCache.Reset();
@@ -524,6 +527,22 @@ void Control::InvalidateVisual()
 
 void Control::InvalidateVisualRect(const D2D1_RECT_F& contentRect)
 {
+	// 线程亲和防护：失效会读写 _layoutState/ParentForm/_lastInvalidatedClientRect
+	// 等 UI 线程私有状态。工作线程（如 MediaPlayer 播放线程）直接调用会造成
+	// 数据竞争，因此封送回 UI 线程再真正执行。控件可能在工作线程回调时已被
+	// 部分销毁，这里通过 PostToUIThread 的异步性避免在工作线程上触碰任何状态。
+	if (!cui::IsUIThread())
+	{
+		D2D1_RECT_F rectCopy = contentRect;
+		// 以弱引用捕获生命周期令牌：控件若在回调执行前销毁，令牌失效，跳过。
+		std::weak_ptr<bool> weakLifetime = _lifetimeToken;
+		cui::PostToUIThread([this, rectCopy, weakLifetime]() {
+			auto lifetime = weakLifetime.lock();
+			if (!lifetime || !*lifetime) return; // 控件已销毁
+			this->InvalidateVisualRect(rectCopy);
+		});
+		return;
+	}
 	this->_layoutState.InvalidatePaint();
 	if (!this->IsVisual || !this->ParentForm) return;
 	const RECT currentClientPixels = this->ParentForm->ContentDipRectToClientPixels(contentRect);
@@ -2416,14 +2435,22 @@ GET_CPP(Control, POINT, Location)
 }
 SET_CPP(Control, POINT, Location)
 {
-	POINT oldConfiguredLocation = this->_location;
-	POINT oldLocation = this->_runtimeLocation;
+	// 收敛几何写路径：_location 是用户配置，_runtimeLocation/_layoutState 是
+	// 运行时投影。过去这里同时直写两份，与 ApplyLayout 的布局回写并存，是
+	// 漂移源。现在统一经由 SetRuntimeLocation->ApplyLayout 更新运行时投影，
+	// 让 _layoutState 成为运行时几何的唯一权威，兼容字段仅作为其投影。
+	const POINT oldConfiguredLocation = this->_location;
+	const bool configuredChanged =
+		oldConfiguredLocation.x != value.x || oldConfiguredLocation.y != value.y;
+	const POINT oldRuntimeLocation = this->_runtimeLocation;
 	_location = value;
-	_runtimeLocation = value;
-	this->SyncComputedLayoutFromCompatibilityGeometry();
+	this->SetRuntimeLocation(value);
 	this->RequestLayout();
-	if (oldConfiguredLocation.x != _location.x || oldConfiguredLocation.y != _location.y ||
-		oldLocation.x != _runtimeLocation.x || oldLocation.y != _runtimeLocation.y)
+	// 仅当配置变化但运行时坐标未变（布局被锁定/覆盖）时补发 OnMoved，
+	// 避免与 ApplyLayout 内部的事件重复。
+	const bool runtimeChanged =
+		oldRuntimeLocation.x != _runtimeLocation.x || oldRuntimeLocation.y != _runtimeLocation.y;
+	if (configuredChanged && !runtimeChanged)
 	{
 		this->OnMoved(this);
 	}

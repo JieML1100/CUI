@@ -2,7 +2,9 @@
 #include "Control.h"
 #include "ObservableCollection.h"
 #include <functional>
+#include <set>
 #include <unordered_map>
+#include <vector>
 #pragma comment(lib, "Imm32.lib")
 typedef Event<void(class GridView*, int c, int r, bool v) > OnGridViewCheckStateChangedEvent;
 typedef Event<void(class GridView*, int c, int r)> OnGridViewButtonClickEvent;
@@ -165,6 +167,8 @@ public:
 	CUI_GRID_VIEW_PROPERTY(bool, SortAscending);
 	CUI_GRID_VIEW_PROPERTY(int, UnderMouseColumnIndex);
 	CUI_GRID_VIEW_PROPERTY(int, UnderMouseRowIndex);
+	/** @brief 是否启用行级多选（Ctrl 切换 / Shift 范围）。 */
+	CUI_GRID_VIEW_PROPERTY(bool, MultiSelect);
 
 	CUI_GRID_VIEW_PROPERTY(D2D1_COLOR_F, HeadBackColor);
 	CUI_GRID_VIEW_PROPERTY(D2D1_COLOR_F, HeadForeColor);
@@ -212,6 +216,12 @@ public:
 	void ClearColumns();
 	/** @brief 添加一行（设计器兼容 API）。 */
 	void AddRow(const GridViewRow& row);
+	/**
+	 * @brief 原子替换全部行；内部用一次批量更新，仅触发一次重排/重绘，
+	 * 适合一次性加载大量数据（比逐行 AddRow 高效得多）。
+	 */
+	void SetRows(const std::vector<GridViewRow>& rows);
+	void SetRows(std::vector<GridViewRow>&& rows);
 	/** @brief 添加一列（设计器兼容 API）。 */
 	void AddColumn(const GridViewColumn& column);
 	/** @brief 行数（设计器兼容 API）。 */
@@ -241,6 +251,20 @@ public:
 	bool SelectRow(int row, bool ensureVisible = true);
 	/** @brief 清除当前选择；返回选择是否发生变化。 */
 	bool ClearSelection();
+
+	// ---- 多选 API（MultiSelect 启用时有效；单选时等价于仅焦点行） ----
+	/** @brief 返回所有选中行索引（升序）。单选模式下返回焦点行（若有）。 */
+	std::vector<int> GetSelectedRows() const;
+	/** @brief 选中行数。 */
+	int GetSelectedRowCount() const;
+	/** @brief 指定行是否处于选中状态。 */
+	bool IsRowSelected(int row) const;
+	/** @brief 程序方式设置某行选中/取消（不改变焦点行），MultiSelect 下可用。 */
+	bool SetRowSelected(int row, bool selected, bool ensureVisible = false);
+	/** @brief 选中 [startRow, endRow] 范围（含端点），MultiSelect 下可用。 */
+	bool SelectRowRange(int startRow, int endRow, bool ensureVisible = false);
+	/** @brief 全选所有行，MultiSelect 下可用。 */
+	void SelectAllRows();
 	/** @brief 开始、提交或取消文本单元格编辑。 */
 	bool BeginEdit(int col, int row);
 	bool CommitEdit();
@@ -300,6 +324,14 @@ public:
 	/** @brief 按指定列排序。 */
 	void SortByColumn(int col, bool ascending = true);
 
+	// ---- 运行时列管理 ----
+	/** @brief 设置列可见性；隐藏列不参与渲染与命中，但保留数据与索引。 */
+	bool SetColumnVisible(int col, bool visible);
+	/** @brief 查询列可见性。 */
+	bool IsColumnVisible(int col) const;
+	/** @brief 将列从 fromIndex 移动到 toIndex，各行单元格同步移动。 */
+	bool MoveColumn(int fromIndex, int toIndex);
+
 protected:
 	void OnComputedLayoutSizeChanged() override;
 
@@ -336,6 +368,12 @@ private:
 	bool _sortAscending = true;
 	int _underMouseColumnIndex = -1;
 	int _underMouseRowIndex = -1;
+	bool _multiSelect = false;
+	// 多选集合：行索引。焦点/锚点行仍由 _selectedRowIndex 表达（用于范围选择与编辑）。
+	std::set<int> _selectedRows;
+	int _selectionAnchorRow = -1;
+	// 列可见性：隐藏列索引集合（保留数据与原始索引）。
+	std::set<int> _hiddenColumns;
 	D2D1_COLOR_F _headBackColor = cui::theme::palette::SurfaceMuted;
 	D2D1_COLOR_F _headForeColor = cui::theme::palette::TextPrimary;
 	D2D1_COLOR_F _headHoverBackColor = cui::theme::palette::AccentSoft;

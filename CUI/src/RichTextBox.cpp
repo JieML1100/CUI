@@ -775,6 +775,85 @@ std::wstring RichTextBox::GetSelectedString()
 		return L"";
 	return this->buffer.substr(static_cast<size_t>(span.start), static_cast<size_t>(span.Length()));
 }
+
+// ---- 公共选择/编辑 API ----
+int RichTextBox::GetSelectionLength()
+{
+	auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->buffer.size());
+	return span.HasSelection() ? static_cast<int>(span.Length()) : 0;
+}
+
+bool RichTextBox::HasSelection()
+{
+	return GetSelectionLength() > 0;
+}
+
+void RichTextBox::Select(int start, int length)
+{
+	SyncBufferFromControlIfNeeded();
+	const int textLen = static_cast<int>(this->buffer.size());
+	start = (std::clamp)(start, 0, textLen);
+	length = (std::clamp)(length, 0, textLen - start);
+	this->SelectionStart = start;
+	this->SelectionEnd = start + length;
+	this->selRangeDirty = true;
+	this->InvalidateVisual();
+}
+
+void RichTextBox::SelectAll()
+{
+	Select(0, static_cast<int>(this->Text.size()));
+}
+
+void RichTextBox::ClearSelection()
+{
+	this->SelectionEnd = this->SelectionStart;
+	this->selRangeDirty = true;
+	this->InvalidateVisual();
+}
+
+void RichTextBox::Clear()
+{
+	if (this->ReadOnly) return;
+	this->SelectAll();
+	this->InputBack();
+}
+
+void RichTextBox::InsertText(const std::wstring& text)
+{
+	if (this->ReadOnly || text.empty()) return;
+	this->InputText(text);
+}
+
+bool RichTextBox::Copy()
+{
+	const std::wstring selected = this->GetSelectedString();
+	if (selected.empty()) return false;
+	return WriteClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, selected);
+}
+
+bool RichTextBox::Cut()
+{
+	if (this->ReadOnly) return false;
+	const std::wstring selected = this->GetSelectedString();
+	if (selected.empty()) return false;
+	if (!WriteClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, selected))
+		return false;
+	this->InputBack();
+	return true;
+}
+
+bool RichTextBox::Paste()
+{
+	if (this->ReadOnly) return false;
+	std::wstring clipboardText;
+	if (!TryReadClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, clipboardText))
+		return false;
+	if (clipboardText.empty()) return false;
+	this->InputText(clipboardText);
+	return true;
+}
+
 void RichTextBox::Update()
 {
 	if (this->IsVisual == false)return;

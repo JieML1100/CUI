@@ -50,6 +50,10 @@ public:
 	float Border = 1.5f;
 	/** @brief 创建复选框。 */
 	CheckBox(std::wstring text, int x, int y);
+	/** @brief 以程序方式设置勾选状态，带动画并触发 OnChecked。 */
+	void SetChecked(bool checked);
+	/** @brief 切换勾选状态，带动画并触发 OnChecked。 */
+	void Toggle();
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;

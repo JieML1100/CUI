@@ -861,6 +861,53 @@ void ComboBox::ScrollBy(int itemDelta)
 		SetCurrentExpandScroll(target);
 }
 
+// ---- 项操作便捷方法 ----
+int ComboBox::GetItemCount()
+{
+	return static_cast<int>(this->values.size());
+}
+
+std::wstring ComboBox::GetSelectedItem()
+{
+	const int index = this->GetSelectedIndex();
+	if (index < 0 || static_cast<size_t>(index) >= this->values.size())
+		return L"";
+	return this->values[static_cast<size_t>(index)];
+}
+
+int ComboBox::FindItem(const std::wstring& text)
+{
+	for (size_t i = 0; i < this->values.size(); ++i)
+	{
+		if (this->values[i] == text)
+			return static_cast<int>(i);
+	}
+	return -1;
+}
+
+void ComboBox::AddItem(const std::wstring& text)
+{
+	this->values.push_back(text);
+}
+
+void ComboBox::InsertItem(int index, const std::wstring& text)
+{
+	index = (std::clamp)(index, 0, static_cast<int>(this->values.size()));
+	this->values.insert(this->values.begin() + index, text);
+}
+
+void ComboBox::RemoveItemAt(int index)
+{
+	if (index < 0 || static_cast<size_t>(index) >= this->values.size())
+		return;
+	this->values.erase(this->values.begin() + index);
+}
+
+void ComboBox::ClearItems()
+{
+	this->values.clear();
+}
+
 void ComboBox::ReconcileAccessibilityItemIds()
 {
 	std::unordered_map<std::wstring, std::vector<uint32_t>> reusableIds;

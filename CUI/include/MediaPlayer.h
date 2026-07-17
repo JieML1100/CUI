@@ -304,6 +304,15 @@ private:
 		double value, bool notify = true, bool forceEvent = false);
 	void ReportMediaFailure(HRESULT error);
 
+	// ---- 跨线程事件封送助手 ----
+	// 播放/解码工作线程上触发的事件统一经这些助手封送回 UI 线程 invoke，
+	// 避免用户事件处理器在错误线程触碰其他 UI 控件。已用 _lifetimeToken 防护
+	// 控件在回调执行前销毁的悬空访问。
+	void FireMediaOpened();
+	void FireMediaEnded();
+	void FirePositionChanged(double value);
+	void FireMediaError(HRESULT error);
+
 public:
 	// ========== 构造/析构 ==========
 	/// <summary>

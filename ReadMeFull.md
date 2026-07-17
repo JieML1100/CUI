@@ -302,7 +302,7 @@ Control
 ### 创建第一个应用
 
 ```cpp
-#include "CUI/GUI/Form.h"
+#include "CUI/include/Form.h"
 
 class MainWindow : public Form
 {
@@ -1302,8 +1302,8 @@ public:
 ```cpp
 // CustomControls.h
 #pragma once
-#include "CUI/GUI/Button.h"
-#include "CUI/GUI/TextBox.h"
+#include "CUI/include/Button.h"
+#include "CUI/include/TextBox.h"
 
 // 通过订阅 OnPaint 事件实现自定义绘制效果
 auto customPanel = AddControl(new Panel(20, 20, 200, 100));

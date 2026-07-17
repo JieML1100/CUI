@@ -2,6 +2,7 @@
 #include "NotifyIcon.h"
 #include "DCompLayeredHost.h"
 #include "Layout/LegacyCanvasAdapter.h"
+#include "Core/Threading.h"
 #include <algorithm>
 #include <functional>
 #include <cmath>
@@ -4858,6 +4859,8 @@ SET_CPP(Form, bool, ShowInTaskBar)
 Form::Form(std::wstring text, POINT _location, SIZE _size)
 {
 	Application::EnsureDpiAwareness();
+	// 首个创建 Form 的线程登记为 UI 线程，并建立跨线程封送 dispatcher。
+	cui::InitializeUIThread();
 	this->_systemVisualPreferences =
 		Application::QuerySystemVisualPreferences();
 	this->_keyboardFocusVisualRequested =
@@ -5895,6 +5898,7 @@ void Form::ShowDialog(HWND parent)
 		if (r <= 0) break;
 		TranslateMessage(&messageRecord);
 		DispatchMessageW(&messageRecord);
+		cui::PumpUIThreadCallbacks();
 	}
 
 	if (owner && IsWindow(owner))
@@ -5922,6 +5926,8 @@ bool Form::DoEvent()
 		DispatchMessage(&messageRecord);
 		hasMessage = true;
 	}
+	// 排空工作线程封送来的回调（如 MediaPlayer 状态/位置事件）。
+	cui::PumpUIThreadCallbacks();
 	if (!hasMessage && Application::Forms.size() > 0)
 	{
 		WaitMessage();
@@ -5935,6 +5941,7 @@ bool Form::WaitEvent()
 	{
 		TranslateMessage(&messageRecord);
 		DispatchMessageW(&messageRecord);
+		cui::PumpUIThreadCallbacks();
 		return true;
 	}
 	return false;

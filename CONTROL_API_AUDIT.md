@@ -90,6 +90,9 @@ This note tracks the "production-useful" control APIs that should exist beyond t
   - Added explicit `BeginEdit`, `SetEditingText`, `CommitEdit`, and `CancelEdit` session APIs that also work without a parent Form.
   - Moved layout, behavior, appearance, selection, sort, and scroll state onto shared property metadata; interaction state remains transient and binding-safe.
   - Its virtual UIA container exposes horizontal and vertical Scroll Pattern metrics and actions alongside Grid/Table.
+  - Added row-level multi-select via the `MultiSelect` property: Ctrl+click toggles a row, Shift+click extends a range from the anchor, and the programmatic surface offers `GetSelectedRows`, `GetSelectedRowCount`, `IsRowSelected`, `SetRowSelected`, `SelectRowRange`, and `SelectAllRows`. Single-selection APIs (`SelectedRowIndex`, `SelectRow`) remain the focus/anchor row and stay fully compatible.
+  - Added runtime column management: `SetColumnVisible`/`IsColumnVisible` hide or show a column while preserving its data and original index, and `MoveColumn` reorders a column while moving every row's cell and remapping selection/sort/hidden-column state.
+  - Added atomic `SetRows` for one-shot bulk loads: a single batched update triggers only one arrange/render pass, far more efficient than per-row `AddRow` for large data. Note: GridView keeps an in-memory `Rows` collection — it does not yet virtualize row data by demand; use `SetRows`/`DeferUpdates` and `PagedGridView` for large datasets.
 - PagedGridView
   - Added atomic `SetRows` / `SetColumns` plus nested `BeginUpdate` / `EndUpdate` and RAII `DeferUpdates` batching.
   - Added const row/column accessors and safe boolean row/column removal results.

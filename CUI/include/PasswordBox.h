@@ -48,6 +48,10 @@ public:
 	float HorizontalScrollOffset = 0.0f;
 	/** @brief 文本内边距（像素）。 */
 	float TextMargin = 5.0f;
+	/** @brief 掩码字符（默认 '*'）。 */
+	wchar_t PasswordChar = L'*';
+	/** @brief 为 true 时显示明文（临时查看密码）。 */
+	bool RevealPassword = false;
 protected:
 	D2D1_RECT_F _caretRectCache = { 0,0,0,0 };
 	bool _caretRectCacheValid = false;
@@ -59,9 +63,24 @@ private:
 	void InputBack();
 	void InputDelete();
 	void UpdateScroll(bool arrival = false);
+	/** @brief 返回用于渲染/命中测试的文本（掩码或明文）。 */
+	std::wstring GetDisplayText();
 public:
 	/** @brief 获取当前选择文本。 */
 	std::wstring GetSelectedString();
+
+	// ---- 公共选择/编辑 API（不暴露 Copy/Cut，避免密码进入剪贴板） ----
+	// 注：框架的 PROPERTY/GET 宏生成的 getter 均非常量，故这些方法也不加 const。
+	int GetSelectionLength();
+	__declspec(property(get = GetSelectionLength)) int SelectionLength;
+	bool HasSelection();
+	void Select(int start, int length);
+	void SelectAll();
+	void ClearSelection();
+	void Clear();
+	void InsertText(const std::wstring& text);
+	bool Paste();
+
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

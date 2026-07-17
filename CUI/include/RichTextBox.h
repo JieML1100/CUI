@@ -136,8 +136,6 @@ private:
 	void InputBack();
 	void InputDelete();
 	void ApplyUndoRecord(const UndoRecord& rec, bool isUndo);
-	void Undo();
-	void Redo();
 	void UpdateScroll(bool arrival = false);
 	void UpdateLayout();
 	void UpdateSelRange();
@@ -148,6 +146,22 @@ public:
 	void AppendLine(std::wstring str);
 	/** @brief 获取当前选择文本。 */
 	std::wstring GetSelectedString();
+
+	// ---- 公共选择/编辑 API（薄封装，复用内部编辑与 Undo 路径） ----
+	int GetSelectionLength();
+	__declspec(property(get = GetSelectionLength)) int SelectionLength;
+	bool HasSelection();
+	void Select(int start, int length);
+	void SelectAll();
+	void ClearSelection();
+	void Clear();
+	void InsertText(const std::wstring& text);
+	bool Copy();
+	bool Cut();
+	bool Paste();
+	void Undo();
+	void Redo();
+
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 	/** @brief 滚动到末尾。 */

@@ -2,6 +2,9 @@
 #include "Control.h"
 #pragma comment(lib, "Imm32.lib")
 
+/** @brief 进度值变化事件。 */
+typedef Event<void(class Control*, float oldValue, float newValue)> ProgressValueChangedEvent;
+
 /**
  * @file ProgressBar.h
  * @brief ProgressBar：进度条控件。
@@ -16,6 +19,8 @@ private:
 	float _maxValue = 1.0f;
 	float _currentValue = 0.5f;
 public:
+	/** @brief 进度值变化事件。 */
+	ProgressValueChangedEvent OnValueChanged;
 	virtual UIClass Type();
 	void EnsureBindingPropertiesRegistered() override;
 	/** @brief 边框宽度（像素）。 */
@@ -53,5 +58,14 @@ public:
 	SET(float, PercentageValue);
 	/** @brief 创建进度条。 */
 	ProgressBar(int x, int y, int width = 120, int height = 24);
+	/**
+	 * @brief 同时设置进度范围（最小值固定为 0）。
+	 * 当前值会被钳制到新范围内。
+	 */
+	void SetRange(float maxValue);
+	/** @brief 在当前值上递增 delta（可为负），并触发 OnValueChanged。 */
+	void Increment(float delta);
+	/** @brief 将当前值重置为 0，并触发 OnValueChanged。 */
+	void Reset();
 	void Update() override;
 };

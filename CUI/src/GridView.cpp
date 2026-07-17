@@ -236,6 +236,7 @@ void GridView::EnsureBindingPropertiesRegistered()
 				GridViewPropertySubscriber(L"AllowUserToAddRows"), std::move(options));
 		}
 		CUI_REGISTER_GRID_BOOL(AllowUserToDeleteRows, L"AllowUserToDeleteRows", true, 30);
+		CUI_REGISTER_GRID_BOOL(MultiSelect, L"MultiSelect", false, 40);
 
 #undef CUI_REGISTER_GRID_BOOL
 
@@ -498,6 +499,24 @@ CUI_GRID_VIEW_PROPERTY_IMPL(int, SortedColumnIndex, _sortedColumnIndex, L"Sorted
 CUI_GRID_VIEW_PROPERTY_IMPL(bool, SortAscending, _sortAscending, L"SortAscending")
 CUI_GRID_VIEW_PROPERTY_IMPL(int, UnderMouseColumnIndex, _underMouseColumnIndex, L"UnderMouseColumnIndex")
 CUI_GRID_VIEW_PROPERTY_IMPL(int, UnderMouseRowIndex, _underMouseRowIndex, L"UnderMouseRowIndex")
+GET_CPP(GridView, bool, MultiSelect) { return _multiSelect; }
+SET_CPP(GridView, bool, MultiSelect)
+{
+	if (!SetPropertyField(L"MultiSelect", _multiSelect, value)) return;
+	if (!value)
+	{
+		// 关闭多选：收敛为仅焦点行，避免集合与单选语义漂移。
+		_selectedRows.clear();
+		_selectionAnchorRow = -1;
+	}
+	else if (_selectedRowIndex >= 0)
+	{
+		// 开启多选：将当前焦点行并入集合，保持视觉连续。
+		_selectedRows.insert(_selectedRowIndex);
+		_selectionAnchorRow = _selectedRowIndex;
+	}
+	RequestRefresh(false);
+}
 CUI_GRID_VIEW_PROPERTY_IMPL(D2D1_COLOR_F, HeadBackColor, _headBackColor, L"HeadBackColor")
 CUI_GRID_VIEW_PROPERTY_IMPL(D2D1_COLOR_F, HeadForeColor, _headForeColor, L"HeadForeColor")
 CUI_GRID_VIEW_PROPERTY_IMPL(D2D1_COLOR_F, HeadHoverBackColor, _headHoverBackColor, L"HeadHoverBackColor")
@@ -710,8 +729,83 @@ float GridView::GetTotalColumnsWidth() const
 {
 	float sum = 0.0f;
 	for (int i = 0; i < (int)this->Columns.size(); i++)
+	{
+		if (_hiddenColumns.find(i) != _hiddenColumns.end()) continue;
 		sum += this->Columns[i].Width;
+	}
 	return sum;
+}
+
+// ---- 运行时列管理 ----
+bool GridView::IsColumnVisible(int col) const
+{
+	if (col < 0 || col >= static_cast<int>(Columns.size())) return false;
+	return _hiddenColumns.find(col) == _hiddenColumns.end();
+}
+
+bool GridView::SetColumnVisible(int col, bool visible)
+{
+	if (col < 0 || col >= static_cast<int>(Columns.size())) return false;
+	bool changed = false;
+	if (visible)
+		changed = _hiddenColumns.erase(col) > 0;
+	else
+		changed = _hiddenColumns.insert(col).second;
+	if (!changed) return false;
+	// 隐藏当前编辑/选中列时，先提交编辑以免悬空。
+	if (!visible && Editing && EditingColumnIndex == col)
+		CommitEdit();
+	RequestRefresh(true);
+	return true;
+}
+
+bool GridView::MoveColumn(int fromIndex, int toIndex)
+{
+	const int count = static_cast<int>(Columns.size());
+	if (fromIndex < 0 || fromIndex >= count || toIndex < 0 || toIndex >= count)
+		return false;
+	if (fromIndex == toIndex) return false;
+
+	CommitEdit();
+	// 移动列定义。
+	GridViewColumn column = std::move(Columns[fromIndex]);
+	Columns.erase(Columns.begin() + fromIndex);
+	Columns.insert(Columns.begin() + toIndex, std::move(column));
+	// 同步移动每一行对应单元格。
+	for (size_t r = 0; r < Rows.size(); ++r)
+	{
+		auto& cells = Rows[r].Cells;
+		if (fromIndex < static_cast<int>(cells.size()))
+		{
+			CellValue cell = std::move(cells[fromIndex]);
+			cells.erase(cells.begin() + fromIndex);
+			const int insertAt = (std::min)(toIndex, static_cast<int>(cells.size()));
+			cells.insert(cells.begin() + insertAt, std::move(cell));
+		}
+	}
+	// 重映射隐藏列索引。
+	std::set<int> remapped;
+	for (int hidden : _hiddenColumns)
+	{
+		int idx = hidden;
+		if (idx == fromIndex) idx = toIndex;
+		else if (fromIndex < toIndex && idx > fromIndex && idx <= toIndex) --idx;
+		else if (toIndex < fromIndex && idx >= toIndex && idx < fromIndex) ++idx;
+		remapped.insert(idx);
+	}
+	_hiddenColumns = std::move(remapped);
+	// 重映射选中/排序列。
+	auto remap = [&](int idx) -> int
+	{
+		if (idx == fromIndex) return toIndex;
+		if (fromIndex < toIndex && idx > fromIndex && idx <= toIndex) return idx - 1;
+		if (toIndex < fromIndex && idx >= toIndex && idx < fromIndex) return idx + 1;
+		return idx;
+	};
+	if (_selectedColumnIndex >= 0) SetCurrentSelectedColumnIndex(remap(_selectedColumnIndex));
+	if (_sortedColumnIndex >= 0) SetCurrentSortedColumnIndex(remap(_sortedColumnIndex));
+	RequestRefresh(true);
+	return true;
 }
 
 GridView::ScrollLayout GridView::CalcScrollLayout() const
@@ -1013,6 +1107,26 @@ void GridView::AddRow(const GridViewRow& row)
 	this->Rows.push_back(row);
 }
 
+void GridView::SetRows(const std::vector<GridViewRow>& rows)
+{
+	std::vector<GridViewRow> copy = rows;
+	SetRows(std::move(copy));
+}
+
+void GridView::SetRows(std::vector<GridViewRow>&& rows)
+{
+	CommitEdit();
+	// 一次批量更新：整个替换只触发最外层的一次重排/重绘/可访问性通知。
+	auto scope = DeferUpdates();
+	this->Rows.clear();
+	this->Rows.reserve(rows.size());
+	for (auto& row : rows)
+		this->Rows.push_back(std::move(row));
+	// 清空选择锚点，避免指向已失效的行索引。
+	_selectedRows.clear();
+	_selectionAnchorRow = -1;
+}
+
 void GridView::AddColumn(const GridViewColumn& column)
 {
 	this->Columns.push_back(column);
@@ -1140,9 +1254,121 @@ bool GridView::SelectRow(int row, bool ensureVisible)
 bool GridView::ClearSelection()
 {
 	CommitEdit();
-	if (SelectedColumnIndex < 0 && SelectedRowIndex < 0) return false;
+	const bool hadMulti = !_selectedRows.empty();
+	_selectedRows.clear();
+	_selectionAnchorRow = -1;
+	if (SelectedColumnIndex < 0 && SelectedRowIndex < 0)
+	{
+		if (hadMulti) { SelectionChanged(this); RequestRefresh(false); return true; }
+		return false;
+	}
 	SetCurrentSelection(-1, -1, false);
 	return true;
+}
+
+// ---- 多选 API ----
+std::vector<int> GridView::GetSelectedRows() const
+{
+	if (!_multiSelect)
+	{
+		std::vector<int> result;
+		if (_selectedRowIndex >= 0 && _selectedRowIndex < static_cast<int>(Rows.size()))
+			result.push_back(_selectedRowIndex);
+		return result;
+	}
+	return std::vector<int>(_selectedRows.begin(), _selectedRows.end());
+}
+
+int GridView::GetSelectedRowCount() const
+{
+	if (!_multiSelect)
+		return (_selectedRowIndex >= 0 && _selectedRowIndex < static_cast<int>(Rows.size())) ? 1 : 0;
+	return static_cast<int>(_selectedRows.size());
+}
+
+bool GridView::IsRowSelected(int row) const
+{
+	if (row < 0 || row >= static_cast<int>(Rows.size())) return false;
+	if (!_multiSelect)
+		return row == _selectedRowIndex;
+	return _selectedRows.find(row) != _selectedRows.end();
+}
+
+bool GridView::SetRowSelected(int row, bool selected, bool ensureVisible)
+{
+	if (row < 0 || row >= static_cast<int>(Rows.size())) return false;
+	if (!_multiSelect)
+	{
+		if (selected) return SelectRow(row, ensureVisible);
+		if (row == _selectedRowIndex) { ClearSelection(); return true; }
+		return false;
+	}
+
+	bool changed = false;
+	if (selected)
+		changed = _selectedRows.insert(row).second;
+	else
+		changed = _selectedRows.erase(row) > 0;
+	if (!changed) return false;
+
+	// 保持焦点行与集合一致：选中时聚焦到该行，取消时若焦点被移除则迁移。
+	if (selected)
+	{
+		SetCurrentSelectedRowIndex(row);
+		_selectionAnchorRow = row;
+		if (SelectedColumnIndex < 0 && !Columns.empty())
+			SetCurrentSelectedColumnIndex(0);
+	}
+	else if (_selectedRowIndex == row)
+	{
+		const int next = _selectedRows.empty() ? -1 : *_selectedRows.begin();
+		SetCurrentSelectedRowIndex(next);
+		_selectionAnchorRow = next;
+	}
+	if (ensureVisible) AdjustScrollPosition();
+	SelectionChanged(this);
+	RequestRefresh(false);
+	return true;
+}
+
+bool GridView::SelectRowRange(int startRow, int endRow, bool ensureVisible)
+{
+	if (Rows.empty()) return false;
+	const int maxRow = static_cast<int>(Rows.size()) - 1;
+	startRow = (std::clamp)(startRow, 0, maxRow);
+	endRow = (std::clamp)(endRow, 0, maxRow);
+	if (startRow > endRow) std::swap(startRow, endRow);
+	if (!_multiSelect)
+		return SelectRow(endRow, ensureVisible);
+
+	bool changed = false;
+	for (int r = startRow; r <= endRow; ++r)
+		changed = _selectedRows.insert(r).second || changed;
+	if (changed)
+	{
+		SetCurrentSelectedRowIndex(endRow);
+		if (SelectedColumnIndex < 0 && !Columns.empty())
+			SetCurrentSelectedColumnIndex(0);
+		if (ensureVisible) AdjustScrollPosition();
+		SelectionChanged(this);
+		RequestRefresh(false);
+	}
+	return changed;
+}
+
+void GridView::SelectAllRows()
+{
+	if (Rows.empty()) return;
+	if (!_multiSelect) { SelectRow(0, false); return; }
+	bool changed = false;
+	const int count = static_cast<int>(Rows.size());
+	for (int r = 0; r < count; ++r)
+		changed = _selectedRows.insert(r).second || changed;
+	if (changed)
+	{
+		SelectionChanged(this);
+		RequestRefresh(false);
+	}
 }
 
 GridViewRow& GridView::SelectedRow()
@@ -1241,6 +1467,8 @@ POINT GridView::GetGridViewUnderMouseItem(int x, int y, GridView* ct)
 	float columnLeft = 0.0f;
 	for (unsigned int column = 0; column < ct->Columns.size(); column++)
 	{
+		if (ct->_hiddenColumns.find(static_cast<int>(column)) != ct->_hiddenColumns.end())
+			continue;
 		float cellWidth = ct->Columns[column].Width;
 		if (virtualX >= columnLeft && virtualX < columnLeft + cellWidth)
 		{
@@ -1270,6 +1498,7 @@ int GridView::HitTestHeaderColumn(int x, int y)
 	float xf = 0.0f;
 	for (int i = 0; i < static_cast<int>(this->Columns.size()); i++)
 	{
+		if (_hiddenColumns.find(i) != _hiddenColumns.end()) continue;
 		float cWidth = this->Columns[static_cast<size_t>(i)].Width;
 		if (virtualX >= xf && virtualX < xf + cWidth)
 			return i;
@@ -1291,6 +1520,7 @@ int GridView::HitTestHeaderDivider(int x, int y)
 	float xf = 0.0f;
 	for (int i = 0; i < static_cast<int>(this->Columns.size()); i++)
 	{
+		if (_hiddenColumns.find(i) != _hiddenColumns.end()) continue;
 		const float cWidth = this->Columns[static_cast<size_t>(i)].Width;
 		const float rightEdge = xf + cWidth;
 		if (std::abs(virtualX - rightEdge) <= hitPx)
@@ -1448,7 +1678,11 @@ void GridView::SetScrollByPos(float localY)
 
 static bool IsGridCellSelected(GridView* grid, int col, int row)
 {
-	if (!grid || row != grid->SelectedRowIndex) return false;
+	if (!grid) return false;
+	// 多选：整行按集合判定。
+	if (grid->MultiSelect)
+		return grid->IsRowSelected(row) && (grid->FullRowSelect || col == grid->SelectedColumnIndex);
+	if (row != grid->SelectedRowIndex) return false;
 	return grid->FullRowSelect || col == grid->SelectedColumnIndex;
 }
 
@@ -1518,6 +1752,7 @@ void GridView::Update()
 			int i = startColumn;
 			for (; i < static_cast<int>(this->Columns.size()); i++)
 			{
+				if (_hiddenColumns.find(i) != _hiddenColumns.end()) continue;
 				float colW = this->Columns[i].Width;
 				if (xf >= renderWidth) break;
 				if (xf + colW <= 0.0f) { xf += colW; continue; }
@@ -1586,6 +1821,7 @@ void GridView::Update()
 				float xf = -this->ScrollXOffset;
 		for (int c = startColumn; c < static_cast<int>(this->Columns.size()); c++)
 		{
+			if (_hiddenColumns.find(c) != _hiddenColumns.end()) continue;
 			float colW = this->Columns[static_cast<size_t>(c)].Width;
 					if (xf >= renderWidth) break;
 					if (xf + colW <= 0.0f) { xf += colW; continue; }
@@ -1946,6 +2182,7 @@ void GridView::Update()
 						float xf = -this->ScrollXOffset;
 						for (int c = 0; c < static_cast<int>(this->Columns.size()); c++)
 						{
+							if (_hiddenColumns.find(c) != _hiddenColumns.end()) continue;
 							float colW = this->Columns[static_cast<size_t>(c)].Width;
 							if (xf >= renderWidth) break;
 							if (xf + colW <= 0.0f) { xf += colW; continue; }
@@ -3122,7 +3359,10 @@ bool GridView::ScrollAccessibilityVirtualNodeIntoView(uint32_t id)
 	{
 		float columnLeft = 0.0f;
 		for (int column = 0; column < node.Column; ++column)
+		{
+			if (_hiddenColumns.find(column) != _hiddenColumns.end()) continue;
 			columnLeft += Columns[static_cast<size_t>(column)].Width;
+		}
 		const float columnRight = columnLeft
 			+ Columns[static_cast<size_t>(node.Column)].Width;
 		float nextX = ScrollXOffset;
@@ -3996,6 +4236,48 @@ void GridView::HandleImeComposition(LPARAM lParam)
 }
 void GridView::HandleCellClick(int col, int row)
 {
+	// 多选交互：Ctrl 切换单行，Shift 从锚点扩展范围。仅文本/可编辑单元格路径
+	// 会走到这里；Check/Button/ComboBox 列有自己的点击语义，不参与多选。
+	const bool isTextLike =
+		this->Columns[col].Type != ColumnType::Check &&
+		this->Columns[col].Type != ColumnType::Button &&
+		this->Columns[col].Type != ColumnType::ComboBox;
+	if (_multiSelect && isTextLike)
+	{
+		const bool ctrlDown = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+		const bool shiftDown = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+		if (ctrlDown || shiftDown)
+		{
+			CommitEdit();
+			if (shiftDown)
+			{
+				const int anchor = (_selectionAnchorRow >= 0) ? _selectionAnchorRow
+					: (_selectedRowIndex >= 0 ? _selectedRowIndex : row);
+				if (!ctrlDown) _selectedRows.clear();
+				const int lo = (std::min)(anchor, row);
+				const int hi = (std::max)(anchor, row);
+				for (int r = lo; r <= hi; ++r) _selectedRows.insert(r);
+				SetCurrentSelectedColumnIndex(col);
+				SetCurrentSelectedRowIndex(row);
+			}
+			else // Ctrl：切换单行
+			{
+				if (_selectedRows.erase(row) == 0)
+					_selectedRows.insert(row);
+				_selectionAnchorRow = row;
+				SetCurrentSelectedColumnIndex(col);
+				SetCurrentSelectedRowIndex(row);
+			}
+			SelectionChanged(this);
+			RequestRefresh(false);
+			return;
+		}
+		// 无修饰键：收敛为单选该行，并把它设为锚点。
+		_selectedRows.clear();
+		_selectedRows.insert(row);
+		_selectionAnchorRow = row;
+	}
+
 	if (this->Columns[col].Type == ColumnType::Check)
 	{
 		ToggleCheckState(col, row);
@@ -4101,7 +4383,11 @@ bool GridView::TryGetCellRectLocal(int col, int row, D2D1_RECT_F& outRect)
 	if (bottom <= headHeight || top >= l.RenderHeight) return false;
 
 	float left = -this->ScrollXOffset;
-	for (int i = 0; i < col; i++) left += this->Columns[static_cast<size_t>(i)].Width;
+	for (int i = 0; i < col; i++)
+	{
+		if (_hiddenColumns.find(i) != _hiddenColumns.end()) continue;
+		left += this->Columns[static_cast<size_t>(i)].Width;
+	}
 	float width = this->Columns[static_cast<size_t>(col)].Width;
 	const float clipLeft = std::max(0.0f, left);
 	const float clipRight = std::min(renderWidth, left + width);

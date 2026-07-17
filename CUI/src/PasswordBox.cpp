@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #define NOMINMAX
 #include "PasswordBox.h"
 #include "Form.h"
@@ -95,7 +95,7 @@ void PasswordBox::UpdateScroll(bool arrival)
 {
 	float renderWidth = this->Width - (TextMargin * 2.0f);
 	auto font = this->Font;
-	std::wstring maskedText(this->Text.size(), L'*');
+	std::wstring maskedText = this->GetDisplayText();
 	auto lastSelect = font->HitTestTextRange(maskedText, (UINT32)SelectionEnd, (UINT32)0)[0];
 	if ((lastSelect.left + lastSelect.width) - HorizontalScrollOffset > renderWidth)
 	{
@@ -113,6 +113,71 @@ std::wstring PasswordBox::GetSelectedString()
 		return L"";
 	return this->Text.substr(static_cast<size_t>(span.start), static_cast<size_t>(span.Length()));
 }
+
+std::wstring PasswordBox::GetDisplayText()
+{
+	if (this->RevealPassword)
+		return this->Text;
+	return std::wstring(this->Text.size(), this->PasswordChar);
+}
+
+// ---- 公共选择/编辑 API ----
+int PasswordBox::GetSelectionLength()
+{
+	auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->Text.size());
+	return span.HasSelection() ? static_cast<int>(span.Length()) : 0;
+}
+
+bool PasswordBox::HasSelection()
+{
+	return GetSelectionLength() > 0;
+}
+
+void PasswordBox::Select(int start, int length)
+{
+	const int textLen = static_cast<int>(this->Text.size());
+	start = (std::clamp)(start, 0, textLen);
+	length = (std::clamp)(length, 0, textLen - start);
+	this->SelectionStart = start;
+	this->SelectionEnd = start + length;
+	this->InvalidateVisual();
+}
+
+void PasswordBox::SelectAll()
+{
+	this->SelectionStart = 0;
+	this->SelectionEnd = static_cast<int>(this->Text.size());
+	this->InvalidateVisual();
+}
+
+void PasswordBox::ClearSelection()
+{
+	this->SelectionEnd = this->SelectionStart;
+	this->InvalidateVisual();
+}
+
+void PasswordBox::Clear()
+{
+	this->SelectAll();
+	this->InputBack();
+}
+
+void PasswordBox::InsertText(const std::wstring& text)
+{
+	if (text.empty()) return;
+	this->InputText(text);
+}
+
+bool PasswordBox::Paste()
+{
+	std::wstring clipboardText;
+	if (!TryReadClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, clipboardText))
+		return false;
+	if (clipboardText.empty()) return false;
+	this->InputText(clipboardText);
+	return true;
+}
+
 void PasswordBox::Update()
 {
 	if (this->IsVisual == false)return;
@@ -120,7 +185,7 @@ void PasswordBox::Update()
 	auto d2d = this->ParentForm->Render;
 	auto font = this->Font;
 	float renderHeight = this->Height - (TextMargin * 2.0f);
-	std::wstring maskedText(this->Text.size(), L'*');
+	std::wstring maskedText = this->GetDisplayText();
 	textSize = font->GetTextSize(maskedText, FLT_MAX, renderHeight);
 	float textOffsetY = (this->Height - textSize.height) * 0.5f;
 	if (textOffsetY < 0.0f) textOffsetY = 0.0f;
@@ -271,7 +336,7 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		{
 			auto font = this->Font;
 			float renderHeight = this->Height - (TextMargin * 2.0f);
-			std::wstring maskedText(this->Text.size(), L'*');
+			std::wstring maskedText = this->GetDisplayText();
 			SelectionEnd = font->HitTestTextPosition(maskedText, FLT_MAX, renderHeight, (localX - TextMargin) + this->HorizontalScrollOffset, localY - TextMargin);
 			UpdateScroll();
 			this->InvalidateVisual();
@@ -294,7 +359,7 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			}
 			auto font = this->Font;
 			float renderHeight = this->Height - (TextMargin * 2.0f);
-			std::wstring maskedText(this->Text.size(), L'*');
+			std::wstring maskedText = this->GetDisplayText();
 			this->SelectionStart = this->SelectionEnd = font->HitTestTextPosition(maskedText, FLT_MAX, renderHeight, (localX - TextMargin) + this->HorizontalScrollOffset, localY - TextMargin);
 		}
 		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
@@ -310,7 +375,7 @@ bool PasswordBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		{
 			float renderHeight = this->Height - (TextMargin * 2.0f);
 			auto font = this->Font;
-			std::wstring maskedText(this->Text.size(), L'*');
+			std::wstring maskedText = this->GetDisplayText();
 			SelectionEnd = font->HitTestTextPosition(maskedText, FLT_MAX, renderHeight, (localX - TextMargin) + this->HorizontalScrollOffset, localY - TextMargin);
 		}
 		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));

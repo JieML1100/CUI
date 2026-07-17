@@ -302,7 +302,7 @@ Control
 ### Creating Your First Application
 
 ```cpp
-#include "CUI/GUI/Form.h"
+#include "CUI/include/Form.h"
 
 class MainWindow : public Form
 {

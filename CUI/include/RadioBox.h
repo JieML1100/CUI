@@ -49,6 +49,8 @@ public:
 	float BorderThickness = 1.5f;
 	/** @brief 创建单选框。 */
 	RadioBox(std::wstring text, int x, int y);
+	/** @brief 以程序方式设置选中状态，带动画并触发 OnChecked。 */
+	void SetChecked(bool checked);
 	bool IsAnimationRunning() override;
 	UINT GetAnimationIntervalMs() override { return 16; }
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;

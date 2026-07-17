@@ -114,6 +114,17 @@ public:
 
 #undef CUI_SLIDER_PROPERTY
 
+	/** @brief 同时设置 Min/Max，保持 Value 在新范围内一致。 */
+	void SetRange(float minValue, float maxValue);
+	/** @brief 在当前值上递增一个 Step（或指定 delta），经 Value 属性路径。 */
+	void Increment(float delta);
+	void Increment();
+	/** @brief 在当前值上递减一个 Step（或指定 delta），经 Value 属性路径。 */
+	void Decrement(float delta);
+	void Decrement();
+	/** @brief 将 Value 重置为 Min，经 Value 属性路径。 */
+	void Reset();
+
 	CursorKind QueryCursor(int localX, int localY) override;
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;

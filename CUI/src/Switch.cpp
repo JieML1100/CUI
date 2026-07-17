@@ -172,6 +172,19 @@ void Switch::BeforeDefaultMouseDoubleClick(UINT message, MouseEventArgs& e, bool
 	}
 }
 
+void Switch::SetChecked(bool checked)
+{
+	if (!Enable || Checked == checked) return;
+	StartToggleAnimation(checked);
+	OnChecked(this);
+	InvalidateVisual();
+}
+
+void Switch::Toggle()
+{
+	SetChecked(!Checked);
+}
+
 bool Switch::Invoke()
 {
 	if (!Enable || !Visible) return false;

@@ -193,3 +193,16 @@ bool CheckBox::Invoke()
 	InvalidateVisual();
 	return true;
 }
+
+void CheckBox::SetChecked(bool checked)
+{
+	if (!Enable || Checked == checked) return;
+	StartCheckAnimation(checked);
+	OnChecked(this);
+	InvalidateVisual();
+}
+
+void CheckBox::Toggle()
+{
+	SetChecked(!Checked);
+}

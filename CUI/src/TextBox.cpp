@@ -378,6 +378,81 @@ std::wstring TextBox::GetSelectedString()
 		return L"";
 	return this->Text.substr(static_cast<size_t>(span.start), static_cast<size_t>(span.Length()));
 }
+
+// ---- 公共选择/编辑 API ----
+int TextBox::GetSelectionLength()
+{
+	auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->Text.size());
+	return span.HasSelection() ? static_cast<int>(span.Length()) : 0;
+}
+
+bool TextBox::HasSelection()
+{
+	return GetSelectionLength() > 0;
+}
+
+void TextBox::Select(int start, int length)
+{
+	const int textLen = static_cast<int>(this->Text.size());
+	start = (std::clamp)(start, 0, textLen);
+	length = (std::clamp)(length, 0, textLen - start);
+	this->SelectionStart = start;
+	this->SelectionEnd = start + length;
+	this->InvalidateVisual();
+}
+
+void TextBox::SelectAll()
+{
+	this->SelectionStart = 0;
+	this->SelectionEnd = static_cast<int>(this->Text.size());
+	this->InvalidateVisual();
+}
+
+void TextBox::ClearSelection()
+{
+	this->SelectionEnd = this->SelectionStart;
+	this->InvalidateVisual();
+}
+
+void TextBox::Clear()
+{
+	this->SelectAll();
+	this->InputBack();
+}
+
+void TextBox::InsertText(const std::wstring& text)
+{
+	if (text.empty()) return;
+	this->InputText(text);
+}
+
+bool TextBox::Copy()
+{
+	const std::wstring selected = this->GetSelectedString();
+	if (selected.empty()) return false;
+	return WriteClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, selected);
+}
+
+bool TextBox::Cut()
+{
+	const std::wstring selected = this->GetSelectedString();
+	if (selected.empty()) return false;
+	if (!WriteClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, selected))
+		return false;
+	this->InputBack();
+	return true;
+}
+
+bool TextBox::Paste()
+{
+	std::wstring clipboardText;
+	if (!TryReadClipboardText(this->ParentForm ? this->ParentForm->Handle : nullptr, clipboardText))
+		return false;
+	if (clipboardText.empty()) return false;
+	this->InputText(clipboardText);
+	return true;
+}
+
 void TextBox::Update()
 {
 	if (this->IsVisual == false)return;
