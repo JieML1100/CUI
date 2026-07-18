@@ -1,12 +1,17 @@
 #include "DesignerStyleSheetUtils.h"
+#include "DesignerBindingUtils.h"
 #include "DesignerPropertyCatalog.h"
+#include <Application.h>
+#include <Convert.h>
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cwchar>
 #include <cwctype>
+#include <filesystem>
 #include <limits>
 #include <unordered_set>
+#include "../D2DGraphics/include/BitmapSource.h"
 
 namespace DesignerStyleSheetUtils
 {
@@ -173,6 +178,338 @@ namespace
 		if (outError) *outError = std::move(message);
 		return false;
 	}
+
+	D2D1_COLOR_F ColorFromValue(
+		const DesignerModel::DesignValue& value,
+		const D2D1_COLOR_F& fallback)
+	{
+		if (!value.is_object()) return fallback;
+		return D2D1_COLOR_F{
+			static_cast<float>(value.value("r", static_cast<double>(fallback.r))),
+			static_cast<float>(value.value("g", static_cast<double>(fallback.g))),
+			static_cast<float>(value.value("b", static_cast<double>(fallback.b))),
+			static_cast<float>(value.value("a", static_cast<double>(fallback.a))) };
+	}
+
+	std::shared_ptr<ResourceLoadContext> EffectiveResources(
+		const std::shared_ptr<ResourceLoadContext>& resources)
+	{
+		return resources ? resources
+			: std::make_shared<ResourceLoadContext>(
+				Application::GetResourceResolver());
+	}
+
+	bool TryConvertBrush(
+		const DesignerModel::DesignValue& value,
+		cui::drawing::Brush& output,
+		std::wstring* outError,
+		const std::wstring& resourceBasePath,
+		const std::shared_ptr<ResourceLoadContext>& resources)
+	{
+		if (!value.is_object()) return Fail(L"画刷必须是对象。", outError);
+		const auto type = value.value("type", std::string{});
+		if (type == "solid") output.Kind = cui::drawing::BrushKind::Solid;
+		else if (type == "linear") output.Kind = cui::drawing::BrushKind::LinearGradient;
+		else if (type == "radial") output.Kind = cui::drawing::BrushKind::RadialGradient;
+		else if (type == "image") output.Kind = cui::drawing::BrushKind::Image;
+		else return Fail(L"画刷类型无效。", outError);
+
+		output.Opacity = static_cast<float>(value.value("opacity", 1.0));
+		if (!std::isfinite(output.Opacity)
+			|| output.Opacity < 0.0f || output.Opacity > 1.0f)
+			return Fail(L"画刷 Opacity 必须位于 0 到 1。", outError);
+		const auto mapping = value.value("mapping", std::string("relative"));
+		if (mapping == "absolute")
+			output.MappingMode = cui::drawing::BrushMappingMode::Absolute;
+		else if (mapping == "relative")
+			output.MappingMode = cui::drawing::BrushMappingMode::RelativeToBoundingBox;
+		else return Fail(L"画刷 MappingMode 无效。", outError);
+		output.Color = ColorFromValue(
+			value.contains("color") ? value["color"] : DesignerModel::DesignValue(),
+			output.Color);
+		output.StartPoint = D2D1::Point2F(
+			static_cast<float>(value.value("startX", 0.0)),
+			static_cast<float>(value.value("startY", 0.0)));
+		output.EndPoint = D2D1::Point2F(
+			static_cast<float>(value.value("endX", 1.0)),
+			static_cast<float>(value.value("endY", 1.0)));
+		output.Center = D2D1::Point2F(
+			static_cast<float>(value.value("centerX", 0.5)),
+			static_cast<float>(value.value("centerY", 0.5)));
+		output.GradientOrigin = D2D1::Point2F(
+			static_cast<float>(value.value("originX", 0.5)),
+			static_cast<float>(value.value("originY", 0.5)));
+		output.RadiusX = static_cast<float>(value.value("radiusX", 0.5));
+		output.RadiusY = static_cast<float>(value.value("radiusY", 0.5));
+		if (output.Kind == cui::drawing::BrushKind::Image)
+		{
+			const auto source = Trim(Convert::Utf8ToUnicode(
+				value.value("source", std::string{})));
+			if (source.empty()) return Fail(L"ImageBrush 缺少 ImageSource。", outError);
+			ResolvedResource resolved;
+			if (!EffectiveResources(resources)->Resolve(
+				source, resourceBasePath, resolved, outError)) return false;
+			output.ImageSource = BitmapSource::FromBuffer(
+				resolved.Bytes.data(), resolved.Bytes.size(), source);
+			if (!output.ImageSource)
+				return Fail(L"无法解码 ImageBrush：" + resolved.Identity, outError);
+			const auto stretch = value.value("stretch", std::string("fill"));
+			if (stretch == "none") output.Stretch = cui::drawing::ImageBrushStretch::None;
+			else if (stretch == "fill") output.Stretch = cui::drawing::ImageBrushStretch::Fill;
+			else if (stretch == "uniform") output.Stretch = cui::drawing::ImageBrushStretch::Uniform;
+			else if (stretch == "uniformToFill")
+				output.Stretch = cui::drawing::ImageBrushStretch::UniformToFill;
+			else return Fail(L"ImageBrush Stretch 无效。", outError);
+			const auto alignmentX = value.value("alignmentX", std::string("center"));
+			if (alignmentX == "left") output.AlignmentX = cui::drawing::ImageBrushAlignmentX::Left;
+			else if (alignmentX == "center") output.AlignmentX = cui::drawing::ImageBrushAlignmentX::Center;
+			else if (alignmentX == "right") output.AlignmentX = cui::drawing::ImageBrushAlignmentX::Right;
+			else return Fail(L"ImageBrush AlignmentX 无效。", outError);
+			const auto alignmentY = value.value("alignmentY", std::string("center"));
+			if (alignmentY == "top") output.AlignmentY = cui::drawing::ImageBrushAlignmentY::Top;
+			else if (alignmentY == "center") output.AlignmentY = cui::drawing::ImageBrushAlignmentY::Center;
+			else if (alignmentY == "bottom") output.AlignmentY = cui::drawing::ImageBrushAlignmentY::Bottom;
+			else return Fail(L"ImageBrush AlignmentY 无效。", outError);
+			return true;
+		}
+		if (output.Kind == cui::drawing::BrushKind::Solid) return true;
+		if (!value.contains("stops") || !value["stops"].is_array())
+			return Fail(L"渐变画刷缺少 GradientStops。", outError);
+		output.GradientStops.clear();
+		for (const auto& item : value["stops"])
+		{
+			if (!item.is_object() || !item.contains("color"))
+				return Fail(L"GradientStop 格式无效。", outError);
+			const auto offset = static_cast<float>(item.value("offset", 0.0));
+			if (!std::isfinite(offset) || offset < 0.0f || offset > 1.0f)
+				return Fail(L"GradientStop Offset 必须位于 0 到 1。", outError);
+			output.GradientStops.push_back({ offset,
+				ColorFromValue(item["color"], D2D1::ColorF(D2D1::ColorF::Black)) });
+		}
+		if (output.GradientStops.size() < 2)
+			return Fail(L"渐变画刷至少需要两个 GradientStop。", outError);
+		return true;
+	}
+
+	bool TryConvertTransform(
+		const DesignerModel::DesignValue& value,
+		cui::drawing::Transform& output,
+		std::wstring* outError)
+	{
+		if (!value.is_array() || value.empty())
+			return Fail(L"Transform 必须是非空数组。", outError);
+		output.Operations.clear();
+		auto finite = [](std::initializer_list<float> values)
+		{
+			return std::all_of(values.begin(), values.end(), [](float item)
+				{ return std::isfinite(item); });
+		};
+		for (const auto& item : value.ArrayItems())
+		{
+			if (!item.is_object())
+				return Fail(L"Transform 操作格式无效。", outError);
+			cui::drawing::TransformOperation operation;
+			const auto type = item.value("type", std::string{});
+			if (type == "matrix")
+			{
+				operation.Kind = cui::drawing::TransformKind::Matrix;
+				operation.Matrix = D2D1::Matrix3x2F(
+					static_cast<float>(item.value("m11", 1.0)),
+					static_cast<float>(item.value("m12", 0.0)),
+					static_cast<float>(item.value("m21", 0.0)),
+					static_cast<float>(item.value("m22", 1.0)),
+					static_cast<float>(item.value("dx", 0.0)),
+					static_cast<float>(item.value("dy", 0.0)));
+				if (!finite({ operation.Matrix._11, operation.Matrix._12,
+					operation.Matrix._21, operation.Matrix._22,
+					operation.Matrix._31, operation.Matrix._32 }))
+					return Fail(L"MatrixTransform 数值无效。", outError);
+			}
+			else if (type == "translate")
+			{
+				operation.Kind = cui::drawing::TransformKind::Translate;
+				operation.X = static_cast<float>(item.value("x", 0.0));
+				operation.Y = static_cast<float>(item.value("y", 0.0));
+			}
+			else if (type == "scale")
+			{
+				operation.Kind = cui::drawing::TransformKind::Scale;
+				operation.ScaleX = static_cast<float>(item.value("scaleX", 1.0));
+				operation.ScaleY = static_cast<float>(item.value("scaleY", 1.0));
+			}
+			else if (type == "rotate")
+			{
+				operation.Kind = cui::drawing::TransformKind::Rotate;
+				operation.Angle = static_cast<float>(item.value("angle", 0.0));
+			}
+			else if (type == "skew")
+			{
+				operation.Kind = cui::drawing::TransformKind::Skew;
+				operation.AngleX = static_cast<float>(item.value("angleX", 0.0));
+				operation.AngleY = static_cast<float>(item.value("angleY", 0.0));
+			}
+			else return Fail(L"Transform 操作类型无效。", outError);
+			operation.CenterX = static_cast<float>(item.value("centerX", 0.0));
+			operation.CenterY = static_cast<float>(item.value("centerY", 0.0));
+			if (!finite({ operation.X, operation.Y, operation.ScaleX,
+				operation.ScaleY, operation.Angle, operation.AngleX,
+				operation.AngleY, operation.CenterX, operation.CenterY }))
+				return Fail(L"Transform 数值无效。", outError);
+			output.Operations.push_back(operation);
+		}
+		return true;
+	}
+
+	bool TryConvertGeometry(
+		const DesignerModel::DesignValue& value,
+		cui::drawing::Geometry& output,
+		std::wstring* outError)
+	{
+		if (!value.is_object()) return Fail(L"Geometry 必须是对象。", outError);
+		output = cui::drawing::Geometry{};
+		auto finite = [](std::initializer_list<float> values)
+		{
+			return std::all_of(values.begin(), values.end(), [](float item)
+				{ return std::isfinite(item); });
+		};
+		auto finish = [&]() -> bool
+		{
+			if (!value.contains("transform")) return true;
+			cui::drawing::Transform transform;
+			std::wstring transformError;
+			if (!TryConvertTransform(value["transform"], transform, &transformError))
+				return Fail(L"Geometry.Transform：" + transformError, outError);
+			output.LocalTransform = std::move(transform);
+			return true;
+		};
+		const auto type = value.value("type", std::string{});
+		if (type == "rectangle")
+		{
+			const float x = static_cast<float>(value.value("x", 0.0));
+			const float y = static_cast<float>(value.value("y", 0.0));
+			const float width = static_cast<float>(value.value("width", 0.0));
+			const float height = static_cast<float>(value.value("height", 0.0));
+			const float radiusX = static_cast<float>(value.value("radiusX", 0.0));
+			const float radiusY = static_cast<float>(value.value("radiusY", 0.0));
+			if (!finite({ x, y, width, height, radiusX, radiusY })
+				|| width < 0.0f || height < 0.0f
+				|| radiusX < 0.0f || radiusY < 0.0f)
+				return Fail(L"RectangleGeometry 数值无效。", outError);
+			output.Kind = cui::drawing::GeometryKind::Rectangle;
+			output.Rect = D2D1::RectF(x, y, x + width, y + height);
+			output.RadiusX = radiusX;
+			output.RadiusY = radiusY;
+			return finish();
+		}
+		if (type == "ellipse")
+		{
+			const float centerX = static_cast<float>(value.value("centerX", 0.0));
+			const float centerY = static_cast<float>(value.value("centerY", 0.0));
+			const float radiusX = static_cast<float>(value.value("radiusX", 0.0));
+			const float radiusY = static_cast<float>(value.value("radiusY", 0.0));
+			if (!finite({ centerX, centerY, radiusX, radiusY })
+				|| radiusX < 0.0f || radiusY < 0.0f)
+				return Fail(L"EllipseGeometry 数值无效。", outError);
+			output.Kind = cui::drawing::GeometryKind::Ellipse;
+			output.Center = D2D1::Point2F(centerX, centerY);
+			output.RadiusX = radiusX;
+			output.RadiusY = radiusY;
+			return finish();
+		}
+		if (type == "path")
+		{
+			output.Kind = cui::drawing::GeometryKind::Path;
+			const auto fillRule = value.value("fillRule", std::string("evenodd"));
+			if (fillRule == "nonzero")
+				output.FillRule = cui::drawing::GeometryFillRule::Nonzero;
+			else if (fillRule != "evenodd")
+				return Fail(L"PathGeometry FillRule 无效。", outError);
+			if (!value.contains("figures") || !value["figures"].is_array())
+				return Fail(L"PathGeometry 缺少 Figures。", outError);
+			for (const auto& figureValue : value["figures"].ArrayItems())
+			{
+				if (!figureValue.is_object() || !figureValue.contains("segments")
+					|| !figureValue["segments"].is_array())
+					return Fail(L"PathFigure 格式无效。", outError);
+				cui::drawing::PathFigure figure;
+				figure.StartPoint = D2D1::Point2F(
+					static_cast<float>(figureValue.value("startX", 0.0)),
+					static_cast<float>(figureValue.value("startY", 0.0)));
+				figure.IsClosed = figureValue.value("closed", false);
+				figure.IsFilled = figureValue.value("filled", true);
+				if (!finite({ figure.StartPoint.x, figure.StartPoint.y }))
+					return Fail(L"PathFigure.StartPoint 数值无效。", outError);
+				for (const auto& segmentValue : figureValue["segments"].ArrayItems())
+				{
+					if (!segmentValue.is_object())
+						return Fail(L"PathSegment 格式无效。", outError);
+					cui::drawing::PathSegment segment;
+					const auto segmentType = segmentValue.value("type", std::string{});
+					if (segmentType == "line")
+						segment.Kind = cui::drawing::PathSegmentKind::Line;
+					else if (segmentType == "bezier")
+						segment.Kind = cui::drawing::PathSegmentKind::Bezier;
+					else if (segmentType == "quadratic")
+						segment.Kind = cui::drawing::PathSegmentKind::QuadraticBezier;
+					else if (segmentType == "arc")
+						segment.Kind = cui::drawing::PathSegmentKind::Arc;
+					else return Fail(L"PathSegment 类型无效。", outError);
+					segment.Point = D2D1::Point2F(
+						static_cast<float>(segmentValue.value("x", 0.0)),
+						static_cast<float>(segmentValue.value("y", 0.0)));
+					segment.Point1 = D2D1::Point2F(
+						static_cast<float>(segmentValue.value("x1", 0.0)),
+						static_cast<float>(segmentValue.value("y1", 0.0)));
+					segment.Point2 = D2D1::Point2F(
+						static_cast<float>(segmentValue.value("x2", 0.0)),
+						static_cast<float>(segmentValue.value("y2", 0.0)));
+					segment.Point3 = D2D1::Point2F(
+						static_cast<float>(segmentValue.value("x3", 0.0)),
+						static_cast<float>(segmentValue.value("y3", 0.0)));
+					segment.Size = D2D1::SizeF(
+						static_cast<float>(segmentValue.value("width", 0.0)),
+						static_cast<float>(segmentValue.value("height", 0.0)));
+					segment.RotationAngle = static_cast<float>(
+						segmentValue.value("rotation", 0.0));
+					segment.IsLargeArc = segmentValue.value("large", false);
+					const auto sweep = segmentValue.value(
+						"sweep", std::string("counterclockwise"));
+					if (sweep == "clockwise")
+						segment.Sweep = cui::drawing::SweepDirection::Clockwise;
+					else if (sweep != "counterclockwise")
+						return Fail(L"ArcSegment SweepDirection 无效。", outError);
+					if (!finite({ segment.Point.x, segment.Point.y,
+						segment.Point1.x, segment.Point1.y,
+						segment.Point2.x, segment.Point2.y,
+						segment.Point3.x, segment.Point3.y,
+						segment.Size.width, segment.Size.height,
+						segment.RotationAngle })
+						|| segment.Size.width < 0.0f || segment.Size.height < 0.0f)
+						return Fail(L"PathSegment 数值无效。", outError);
+					figure.Segments.push_back(segment);
+				}
+				output.Figures.push_back(std::move(figure));
+			}
+			return finish();
+		}
+		if (type != "group") return Fail(L"Geometry 类型无效。", outError);
+		output.Kind = cui::drawing::GeometryKind::Group;
+		const auto fillRule = value.value("fillRule", std::string("evenodd"));
+		if (fillRule == "nonzero")
+			output.FillRule = cui::drawing::GeometryFillRule::Nonzero;
+		else if (fillRule != "evenodd")
+			return Fail(L"GeometryGroup FillRule 无效。", outError);
+		if (!value.contains("children") || !value["children"].is_array())
+			return Fail(L"GeometryGroup 缺少 Children。", outError);
+		for (const auto& childValue : value["children"].ArrayItems())
+		{
+			cui::drawing::Geometry child;
+			if (!TryConvertGeometry(childValue, child, outError)) return false;
+			output.Children.push_back(std::move(child));
+		}
+		return finish();
+	}
+
 }
 
 std::wstring Trim(const std::wstring& value)
@@ -198,6 +535,10 @@ std::wstring ValueKindName(DesignerStyleValueKind kind)
 	case DesignerStyleValueKind::Thickness: return L"Thickness";
 	case DesignerStyleValueKind::Size: return L"Size";
 	case DesignerStyleValueKind::Length: return L"Length";
+	case DesignerStyleValueKind::ImageSource: return L"ImageSource";
+	case DesignerStyleValueKind::Brush: return L"Brush";
+	case DesignerStyleValueKind::Geometry: return L"Geometry";
+	case DesignerStyleValueKind::Transform: return L"Transform";
 	}
 	return L"String";
 }
@@ -208,7 +549,9 @@ bool TryParseValueKind(const std::wstring& value, DesignerStyleValueKind& out)
 		DesignerStyleValueKind::Int64, DesignerStyleValueKind::Float,
 		DesignerStyleValueKind::Double, DesignerStyleValueKind::String,
 		DesignerStyleValueKind::Color, DesignerStyleValueKind::Thickness,
-		DesignerStyleValueKind::Size, DesignerStyleValueKind::Length })
+		DesignerStyleValueKind::Size, DesignerStyleValueKind::Length,
+		DesignerStyleValueKind::ImageSource, DesignerStyleValueKind::Brush,
+		DesignerStyleValueKind::Geometry, DesignerStyleValueKind::Transform })
 	{
 		if (EqualsName(Trim(value), ValueKindName(kind)))
 		{
@@ -222,7 +565,8 @@ bool TryParseValueKind(const std::wstring& value, DesignerStyleValueKind& out)
 std::vector<std::wstring> ValueKindNames()
 {
 	return { L"Bool", L"Int", L"Int64", L"Float", L"Double", L"String",
-		L"Color", L"Thickness", L"Size", L"Length" };
+		L"Color", L"Thickness", L"Size", L"Length", L"ImageSource", L"Brush",
+		L"Geometry", L"Transform" };
 }
 
 std::wstring UIClassName(UIClass type)
@@ -338,10 +682,54 @@ std::wstring JoinClasses(const std::vector<std::wstring>& classes)
 	return result;
 }
 
+std::wstring CanonicalTriggerProperty(const std::wstring& property)
+{
+	const auto value = Lower(Trim(property));
+	if (value == L"ismouseover" || value == L"hovered") return L"IsMouseOver";
+	if (value == L"iskeyboardfocused" || value == L"isfocused"
+		|| value == L"focused") return L"IsKeyboardFocused";
+	if (value == L"ispressed" || value == L"pressed") return L"IsPressed";
+	if (value == L"isenabled" || value == L"enable"
+		|| value == L"enabled") return L"IsEnabled";
+	if (value == L"ischecked" || value == L"checked") return L"IsChecked";
+	if (value == L"isselected" || value == L"selected") return L"IsSelected";
+	return {};
+}
+
+bool TryGetTriggerStates(
+	const std::wstring& property,
+	bool value,
+	ControlStyleState& required,
+	ControlStyleState& excluded)
+{
+	required = ControlStyleState::None;
+	excluded = ControlStyleState::None;
+	const auto canonical = CanonicalTriggerProperty(property);
+	ControlStyleState state = ControlStyleState::None;
+	bool inverted = false;
+	if (canonical == L"IsMouseOver") state = ControlStyleState::Hovered;
+	else if (canonical == L"IsKeyboardFocused") state = ControlStyleState::Focused;
+	else if (canonical == L"IsPressed") state = ControlStyleState::Pressed;
+	else if (canonical == L"IsEnabled")
+	{
+		state = ControlStyleState::Disabled;
+		inverted = true;
+	}
+	else if (canonical == L"IsChecked") state = ControlStyleState::Checked;
+	else if (canonical == L"IsSelected") state = ControlStyleState::Selected;
+	else return false;
+	const bool requireState = inverted ? !value : value;
+	if (requireState) required = state;
+	else excluded = state;
+	return true;
+}
+
 bool TryConvertValue(
 	const DesignerStyleValue& value,
 	BindingValue& out,
-	std::wstring* outError)
+	std::wstring* outError,
+	const std::wstring& resourceBasePath,
+	const std::shared_ptr<ResourceLoadContext>& resources)
 {
 	const auto invalid = [&]()
 	{
@@ -435,21 +823,73 @@ bool TryConvertValue(
 		out = BindingValue(cui::layout::Length::Fixed(parsed));
 		return true;
 	}
+	case DesignerStyleValueKind::ImageSource:
+	{
+		const auto uri = Trim(value.Text);
+		if (uri.empty())
+		{
+			out = BindingValue(std::shared_ptr<BitmapSource>{});
+			return true;
+		}
+		ResolvedResource resolved;
+		if (!EffectiveResources(resources)->Resolve(
+			uri, resourceBasePath, resolved, outError)) return false;
+		auto bitmap = BitmapSource::FromBuffer(
+			resolved.Bytes.data(), resolved.Bytes.size(), uri);
+		if (!bitmap)
+			return Fail(L"无法解码 ImageSource：" + resolved.Identity, outError);
+		out = BindingValue(std::move(bitmap));
+		return true;
+	}
+	case DesignerStyleValueKind::Brush:
+	{
+		cui::drawing::Brush brush;
+		if (!TryConvertBrush(
+			value.ObjectValue, brush, outError, resourceBasePath, resources)) return false;
+		out = BindingValue(std::move(brush));
+		return true;
+	}
+	case DesignerStyleValueKind::Geometry:
+	{
+		cui::drawing::Geometry geometry;
+		if (!TryConvertGeometry(value.ObjectValue, geometry, outError)) return false;
+		out = BindingValue(std::move(geometry));
+		return true;
+	}
+	case DesignerStyleValueKind::Transform:
+	{
+		cui::drawing::Transform transform;
+		if (!TryConvertTransform(value.ObjectValue, transform, outError)) return false;
+		out = BindingValue(std::move(transform));
+		return true;
+	}
 	}
 	return invalid();
 }
 
 void Canonicalize(DesignerStyleSheet& styleSheet)
 {
+	auto dictionaries = styleSheet.MergedDictionaries;
+	styleSheet.MergedDictionaries.clear();
+	for (auto& dictionary : dictionaries)
+	{
+		dictionary = Trim(dictionary);
+		if (!dictionary.empty()
+			&& !ContainsName(styleSheet.MergedDictionaries, dictionary))
+			styleSheet.MergedDictionaries.push_back(std::move(dictionary));
+	}
 	for (auto& resource : styleSheet.Resources)
 	{
 		resource.Key = Trim(resource.Key);
+		resource.SourceDictionary = Trim(resource.SourceDictionary);
 		if (resource.Value.Kind != DesignerStyleValueKind::String)
 			resource.Value.Text = Trim(resource.Value.Text);
 	}
 	for (auto& rule : styleSheet.Rules)
 	{
 		rule.Id = Trim(rule.Id);
+		rule.BasedOn = Trim(rule.BasedOn);
+		rule.SourceDictionary = Trim(rule.SourceDictionary);
 		auto classes = rule.Classes;
 		rule.Classes.clear();
 		for (auto& value : classes)
@@ -458,82 +898,407 @@ void Canonicalize(DesignerStyleSheet& styleSheet)
 			if (!value.empty() && !ContainsName(rule.Classes, value))
 				rule.Classes.push_back(std::move(value));
 		}
-		for (auto& setter : rule.Setters)
+		auto canonicalizeSetter = [](DesignerStyleSetter& setter)
 		{
 			setter.PropertyName = Trim(setter.PropertyName);
 			setter.ResourceKey = Trim(setter.ResourceKey);
 			if (setter.Literal.Kind != DesignerStyleValueKind::String)
 				setter.Literal.Text = Trim(setter.Literal.Text);
+		};
+		auto canonicalizeDataCondition = [](DesignerStyleDataCondition& condition)
+		{
+			condition.SourceProperty = DesignerBindingUtils::Trim(
+				condition.SourceProperty);
+			if (condition.Value.Kind != DesignerStyleValueKind::String)
+				condition.Value.Text = Trim(condition.Value.Text);
+			switch (condition.Value.Kind)
+			{
+			case DesignerStyleValueKind::Bool:
+			case DesignerStyleValueKind::Int:
+			case DesignerStyleValueKind::Int64:
+			case DesignerStyleValueKind::Float:
+			case DesignerStyleValueKind::Double:
+			case DesignerStyleValueKind::String:
+				condition.Value.Kind = DesignerStyleValueKind::String;
+				break;
+			default:
+				break;
+			}
+		};
+		for (auto& setter : rule.Setters) canonicalizeSetter(setter);
+		for (auto& condition : rule.DataConditions)
+			canonicalizeDataCondition(condition);
+		for (auto& trigger : rule.Triggers)
+		{
+			for (auto& condition : trigger.Conditions)
+			{
+				const auto property = CanonicalTriggerProperty(condition.Property);
+				condition.Property = property.empty()
+					? Trim(condition.Property) : property;
+			}
+			for (auto& condition : trigger.DataConditions)
+				canonicalizeDataCondition(condition);
+			for (auto& setter : trigger.Setters) canonicalizeSetter(setter);
 		}
 	}
 }
 
-bool Validate(const DesignerStyleSheet& styleSheet, std::wstring* outError)
+bool ResolveInheritance(
+	const DesignerStyleSheet& source,
+	DesignerStyleSheet& out,
+	std::wstring* outError)
+{
+	out = source;
+	Canonicalize(out);
+	if (outError) outError->clear();
+
+	auto parseTypeKey = [](const std::wstring& key, UIClass& type)
+	{
+		auto text = Trim(key);
+		if (text.size() < 3 || text.front() != L'{' || text.back() != L'}')
+			return false;
+		text = Trim(text.substr(1, text.size() - 2));
+		if (!Lower(text).starts_with(L"x:type")) return false;
+		text = Trim(text.substr(6));
+		const auto separator = text.find(L':');
+		if (separator != std::wstring::npos)
+			text = Trim(text.substr(separator + 1));
+		return TryParseUIClass(text, type);
+	};
+	auto unqualified = [](const DesignerStyleRule& rule)
+	{
+		return rule.Classes.empty()
+			&& rule.RequiredStates == ControlStyleState::None
+			&& rule.ExcludedStates == ControlStyleState::None
+			&& rule.DataConditions.empty();
+	};
+	auto findBase = [&](size_t owner, size_t& baseIndex)
+	{
+		const auto& rule = out.Rules[owner];
+		UIClass typeKey = UIClass::UI_Base;
+		const bool usesTypeKey = parseTypeKey(rule.BasedOn, typeKey);
+		std::vector<size_t> candidates;
+		for (size_t index = 0; index < out.Rules.size(); ++index)
+		{
+			const auto& candidate = out.Rules[index];
+			if (usesTypeKey)
+			{
+				if (candidate.Id.empty() && candidate.HasType
+					&& candidate.Type == typeKey && unqualified(candidate))
+					candidates.push_back(index);
+			}
+			else if (!rule.BasedOn.empty()
+				&& EqualsName(candidate.Id, rule.BasedOn))
+				candidates.push_back(index);
+		}
+		if (!usesTypeKey && rule.BasedOn.starts_with(L"{"))
+			return Fail(L"BasedOn 仅支持命名样式或 {x:Type TypeName}："
+				+ rule.BasedOn, outError);
+		if (candidates.empty())
+			return Fail(L"BasedOn 引用了不存在的样式："
+				+ rule.BasedOn, outError);
+		if (candidates.size() > 1 && !usesTypeKey)
+		{
+			std::vector<size_t> declarations;
+			for (const auto index : candidates)
+				if (unqualified(out.Rules[index])) declarations.push_back(index);
+			if (!declarations.empty()) candidates = std::move(declarations);
+			else
+				return Fail(L"BasedOn 样式键只对应到多个状态/Class 规则，无法确定基样式："
+					+ rule.BasedOn, outError);
+		}
+		// Resource dictionaries follow source order: later/local declarations
+		// shadow earlier merged declarations for BasedOn lookup.
+		baseIndex = candidates.back();
+		return true;
+	};
+
+	std::vector<unsigned char> states(out.Rules.size(), 0);
+	std::function<bool(size_t)> resolve = [&](size_t index)
+	{
+		if (states[index] == 2) return true;
+		if (states[index] == 1)
+			return Fail(L"检测到循环 Style.BasedOn："
+				+ (out.Rules[index].Id.empty()
+					? out.Rules[index].BasedOn : out.Rules[index].Id), outError);
+		states[index] = 1;
+		auto derived = out.Rules[index];
+		if (!derived.BasedOn.empty())
+		{
+			size_t baseIndex = 0;
+			if (!findBase(index, baseIndex) || !resolve(baseIndex)) return false;
+			const auto& base = out.Rules[baseIndex];
+			if (!derived.HasType && base.HasType)
+			{
+				derived.HasType = true;
+				derived.Type = base.Type;
+			}
+			auto setters = base.Setters;
+			for (const auto& setter : derived.Setters)
+			{
+				auto existing = std::find_if(setters.begin(), setters.end(),
+					[&](const DesignerStyleSetter& current)
+					{
+						return EqualsName(current.PropertyName, setter.PropertyName);
+					});
+				if (existing == setters.end()) setters.push_back(setter);
+				else *existing = setter;
+			}
+			derived.Setters = std::move(setters);
+			auto triggers = base.Triggers;
+			triggers.insert(triggers.end(),
+				derived.Triggers.begin(), derived.Triggers.end());
+			derived.Triggers = std::move(triggers);
+			derived.BasedOn.clear();
+		}
+		out.Rules[index] = std::move(derived);
+		states[index] = 2;
+		return true;
+	};
+	for (size_t index = 0; index < out.Rules.size(); ++index)
+		if (!resolve(index)) return false;
+	return true;
+}
+
+bool ExpandRuntimeRules(
+	const DesignerStyleSheet& source,
+	DesignerStyleSheet& out,
+	std::wstring* outError)
+{
+	DesignerStyleSheet inherited;
+	if (!ResolveInheritance(source, inherited, outError)) return false;
+	out = inherited;
+	out.Rules.clear();
+	for (const auto& rule : inherited.Rules)
+	{
+		if (!rule.Setters.empty())
+		{
+			auto normal = rule;
+			normal.Triggers.clear();
+			out.Rules.push_back(std::move(normal));
+		}
+		for (const auto& trigger : rule.Triggers)
+		{
+			ControlStyleState required = ControlStyleState::None;
+			ControlStyleState excluded = ControlStyleState::None;
+			if (!trigger.DataConditions.empty() && !trigger.Conditions.empty())
+				return Fail(L"数据 Trigger 不能同时包含状态 Condition。", outError);
+			if (trigger.DataConditions.empty() && trigger.Conditions.empty())
+				return Fail(L"Style Trigger 至少需要一个 Condition。", outError);
+			for (const auto& condition : trigger.Conditions)
+			{
+				ControlStyleState conditionRequired = ControlStyleState::None;
+				ControlStyleState conditionExcluded = ControlStyleState::None;
+				if (!TryGetTriggerStates(condition.Property, condition.Value,
+					conditionRequired, conditionExcluded))
+					return Fail(L"Style Trigger 不支持条件属性："
+						+ condition.Property, outError);
+				required |= conditionRequired;
+				excluded |= conditionExcluded;
+			}
+			auto lowered = rule;
+			lowered.BasedOn.clear();
+			lowered.Triggers.clear();
+			lowered.Setters = trigger.Setters;
+			lowered.DataConditions.insert(lowered.DataConditions.end(),
+				trigger.DataConditions.begin(), trigger.DataConditions.end());
+			lowered.RequiredStates |= required;
+			lowered.ExcludedStates |= excluded;
+			if ((lowered.RequiredStates & lowered.ExcludedStates)
+				!= ControlStyleState::None)
+				return Fail(L"Style Trigger 条件彼此冲突或与样式状态选择器冲突。",
+					outError);
+			out.Rules.push_back(std::move(lowered));
+		}
+	}
+	return true;
+}
+
+bool Validate(
+	const DesignerStyleSheet& styleSheet,
+	std::wstring* outError,
+	const std::wstring& resourceBasePath,
+	const std::shared_ptr<ResourceLoadContext>& resources)
 {
 	if (outError) outError->clear();
+	std::vector<std::wstring> dictionaryUris;
+	for (const auto& dictionary : styleSheet.MergedDictionaries)
+	{
+		const auto uri = Trim(dictionary);
+		if (uri.empty()) return Fail(L"合并资源字典 Source 不能为空。", outError);
+		if (ContainsName(dictionaryUris, uri))
+			return Fail(L"合并资源字典重复：" + uri, outError);
+		dictionaryUris.push_back(uri);
+	}
+	auto validOrigin = [&](const std::wstring& origin)
+	{
+		return origin.empty() || ContainsName(dictionaryUris, Trim(origin));
+	};
 	std::vector<std::wstring> resourceKeys;
 	for (const auto& resource : styleSheet.Resources)
 	{
+		if (!validOrigin(resource.SourceDictionary))
+			return Fail(L"样式资源包含未知的来源字典："
+				+ resource.SourceDictionary, outError);
 		const auto key = Trim(resource.Key);
 		if (key.empty()) return Fail(L"样式资源键不能为空。", outError);
 		if (ContainsName(resourceKeys, key))
 			return Fail(L"样式资源键重复：" + key, outError);
 		BindingValue value;
-		if (!TryConvertValue(resource.Value, value, outError)) return false;
+		if (!TryConvertValue(
+			resource.Value, value, outError, resourceBasePath, resources)) return false;
 		resourceKeys.push_back(key);
 	}
 
 	for (size_t ruleIndex = 0; ruleIndex < styleSheet.Rules.size(); ++ruleIndex)
 	{
 		const auto& rule = styleSheet.Rules[ruleIndex];
+		if (!validOrigin(rule.SourceDictionary))
+			return Fail(L"样式规则包含未知的来源字典："
+				+ rule.SourceDictionary, outError);
 		const auto required = static_cast<uint32_t>(rule.RequiredStates);
 		const auto excluded = static_cast<uint32_t>(rule.ExcludedStates);
 		if ((required & ~KnownStateMask) != 0 || (excluded & ~KnownStateMask) != 0)
 			return Fail(L"样式规则包含未知状态。", outError);
 		if ((required & excluded) != 0)
 			return Fail(L"同一状态不能同时出现在规则的必需和排除状态中。", outError);
-		if (rule.Setters.empty())
-			return Fail(L"样式规则 " + std::to_wstring(ruleIndex + 1) + L" 没有 Setter。", outError);
+		if (rule.Setters.empty() && rule.Triggers.empty()
+			&& Trim(rule.BasedOn).empty())
+			return Fail(L"样式规则 " + std::to_wstring(ruleIndex + 1)
+				+ L" 没有 Setter 或 Trigger。", outError);
 
-		std::vector<std::wstring> properties;
-		for (const auto& setter : rule.Setters)
+		auto validateSetters = [&](const std::vector<DesignerStyleSetter>& setters,
+			const std::wstring& context)
 		{
-			const auto property = Trim(setter.PropertyName);
-			if (property.empty()) return Fail(L"样式 Setter 属性名不能为空。", outError);
-			if (ContainsName(properties, property))
-				return Fail(L"同一规则中的 Setter 属性重复：" + property, outError);
-			properties.push_back(property);
-			if (setter.UsesResource)
+			std::vector<std::wstring> properties;
+			for (const auto& setter : setters)
 			{
-				const auto key = Trim(setter.ResourceKey);
-				if (key.empty() || !ContainsName(resourceKeys, key))
-					return Fail(L"样式 Setter 引用了不存在的资源：" + key, outError);
+				const auto property = Trim(setter.PropertyName);
+				if (property.empty())
+					return Fail(context + L" Setter 属性名不能为空。", outError);
+				if (ContainsName(properties, property))
+					return Fail(context + L" 中的 Setter 属性重复：" + property, outError);
+				properties.push_back(property);
+				if (setter.UsesResource)
+				{
+					const auto key = Trim(setter.ResourceKey);
+					if (key.empty() || !ContainsName(resourceKeys, key))
+						return Fail(L"样式 Setter 引用了不存在的资源：" + key, outError);
+				}
+				else
+				{
+					BindingValue value;
+					if (!TryConvertValue(setter.Literal, value, outError,
+						resourceBasePath, resources)) return false;
+				}
 			}
-			else
+			return true;
+		};
+		auto validateDataConditions = [&](const auto& conditions,
+			const std::wstring& context)
+		{
+			std::vector<std::wstring> paths;
+			for (const auto& condition : conditions)
 			{
+				const auto path = DesignerBindingUtils::Trim(condition.SourceProperty);
+				if (!DesignerBindingUtils::IsValidSourcePath(path))
+					return Fail(context + L" Binding 路径无效：" + path, outError);
+				if (ContainsName(paths, path))
+					return Fail(context + L" Binding 路径重复：" + path, outError);
+				paths.push_back(path);
 				BindingValue value;
-				if (!TryConvertValue(setter.Literal, value, outError)) return false;
+				if (!TryConvertValue(condition.Value, value, outError,
+					resourceBasePath, resources)) return false;
+				if (value.Empty() || value.Kind() == BindingValueKind::Object)
+					return Fail(context
+						+ L" Value 只支持 Bool、数字或 String 字面值。", outError);
 			}
+			return true;
+		};
+		if (!validateSetters(rule.Setters,
+			L"样式规则 " + std::to_wstring(ruleIndex + 1))) return false;
+		if (!validateDataConditions(rule.DataConditions,
+			L"样式规则 " + std::to_wstring(ruleIndex + 1)
+				+ L" 的 DataTrigger")) return false;
+		if (!rule.DataConditions.empty() && !rule.Triggers.empty())
+			return Fail(L"已降低的 DataTrigger 规则不能再包含嵌套 Trigger。",
+				outError);
+		for (size_t triggerIndex = 0;
+			triggerIndex < rule.Triggers.size(); ++triggerIndex)
+		{
+			const auto& trigger = rule.Triggers[triggerIndex];
+			ControlStyleState triggerRequired = ControlStyleState::None;
+			ControlStyleState triggerExcluded = ControlStyleState::None;
+			if (!trigger.DataConditions.empty() && !trigger.Conditions.empty())
+				return Fail(L"数据 Trigger 不能同时包含状态 Condition。", outError);
+			if (trigger.DataConditions.empty() && trigger.Conditions.empty())
+				return Fail(L"Style Trigger 至少需要一个 Condition。", outError);
+			std::vector<std::wstring> conditionProperties;
+			for (const auto& condition : trigger.Conditions)
+			{
+				const auto property = CanonicalTriggerProperty(condition.Property);
+				if (property.empty())
+					return Fail(L"Style Trigger 不支持条件属性："
+						+ Trim(condition.Property), outError);
+				if (ContainsName(conditionProperties, property))
+					return Fail(L"Style MultiTrigger 的 Condition 属性重复："
+						+ property, outError);
+				conditionProperties.push_back(property);
+				ControlStyleState conditionRequired = ControlStyleState::None;
+				ControlStyleState conditionExcluded = ControlStyleState::None;
+				if (!TryGetTriggerStates(property, condition.Value,
+					conditionRequired, conditionExcluded))
+					return Fail(L"Style Trigger 不支持条件属性："
+						+ property, outError);
+				triggerRequired |= conditionRequired;
+				triggerExcluded |= conditionExcluded;
+			}
+			if (trigger.Setters.empty())
+				return Fail(L"Style Trigger 没有 Setter。", outError);
+			if (!validateDataConditions(trigger.DataConditions,
+				trigger.DataConditions.size() > 1
+					? L"Style.MultiDataTrigger" : L"Style.DataTrigger")) return false;
+			if (((rule.RequiredStates | triggerRequired)
+				& (rule.ExcludedStates | triggerExcluded))
+				!= ControlStyleState::None)
+				return Fail(L"Style Trigger 条件彼此冲突或与样式状态选择器冲突。",
+					outError);
+			if (!validateSetters(trigger.Setters,
+				L"样式规则 " + std::to_wstring(ruleIndex + 1)
+				+ L" 的 Trigger " + std::to_wstring(triggerIndex + 1))) return false;
 		}
 	}
+	DesignerStyleSheet resolved;
+	if (!ResolveInheritance(styleSheet, resolved, outError)) return false;
+	for (size_t ruleIndex = 0; ruleIndex < resolved.Rules.size(); ++ruleIndex)
+		if (resolved.Rules[ruleIndex].Setters.empty()
+			&& resolved.Rules[ruleIndex].Triggers.empty())
+			return Fail(L"样式规则 " + std::to_wstring(ruleIndex + 1)
+				+ L" 的 BasedOn 链没有提供 Setter 或 Trigger。", outError);
+	DesignerStyleSheet lowered;
+	if (!ExpandRuntimeRules(styleSheet, lowered, outError)) return false;
 	return true;
 }
 
 bool ValidateAgainstPropertyMetadata(
 	const DesignerStyleSheet& styleSheet,
 	const ControlFactory& controlFactory,
-	std::wstring* outError)
+	std::wstring* outError,
+	const std::wstring& resourceBasePath,
+	const std::shared_ptr<ResourceLoadContext>& resources)
 {
-	if (!Validate(styleSheet, outError)) return false;
+	if (!Validate(styleSheet, outError, resourceBasePath, resources)) return false;
 	if (!controlFactory)
 	{
 		if (outError) outError->clear();
 		return true;
 	}
 
-	for (size_t ruleIndex = 0; ruleIndex < styleSheet.Rules.size(); ++ruleIndex)
+	DesignerStyleSheet resolved;
+	if (!ExpandRuntimeRules(styleSheet, resolved, outError)) return false;
+	for (size_t ruleIndex = 0; ruleIndex < resolved.Rules.size(); ++ruleIndex)
 	{
-		const auto& rule = styleSheet.Rules[ruleIndex];
+		const auto& rule = resolved.Rules[ruleIndex];
 		auto target = controlFactory(rule.HasType ? rule.Type : UIClass::UI_Base);
 		// Unknown/custom runtime types may not have a Designer probe. Keep their
 		// structurally valid declarations for forward compatibility.
@@ -553,12 +1318,12 @@ bool ValidateAgainstPropertyMetadata(
 			if (setter.UsesResource)
 			{
 				const auto resource = std::find_if(
-					styleSheet.Resources.begin(), styleSheet.Resources.end(),
+					resolved.Resources.begin(), resolved.Resources.end(),
 					[&](const DesignerStyleResource& item)
 					{
 						return EqualsName(item.Key, setter.ResourceKey);
 					});
-				if (resource == styleSheet.Resources.end())
+				if (resource == resolved.Resources.end())
 					return Fail(L"样式 Setter 引用了不存在的资源："
 						+ setter.ResourceKey, outError);
 				value = &resource->Value;
@@ -566,7 +1331,8 @@ bool ValidateAgainstPropertyMetadata(
 
 			std::wstring validationError;
 			if (!DesignerPropertyCatalog::ValidateStyleValue(
-				*target, setter.PropertyName, *value, &validationError))
+				*target, setter.PropertyName, *value, &validationError,
+				resourceBasePath, resources))
 				return Fail(L"样式规则 " + std::to_wstring(ruleIndex + 1)
 					+ L"：" + validationError, outError);
 		}
@@ -578,17 +1344,23 @@ bool ValidateAgainstPropertyMetadata(
 bool BuildRuntimeStyleSheet(
 	const DesignerStyleSheet& source,
 	std::shared_ptr<ControlStyleSheet>& out,
-	std::wstring* outError)
+	std::wstring* outError,
+	const std::wstring& resourceBasePath,
+	const std::shared_ptr<ResourceLoadContext>& resources)
 {
 	auto styleSheet = source;
 	Canonicalize(styleSheet);
-	if (!Validate(styleSheet, outError)) return false;
+	if (!Validate(styleSheet, outError, resourceBasePath, resources)) return false;
+	DesignerStyleSheet resolved;
+	if (!ExpandRuntimeRules(styleSheet, resolved, outError)) return false;
+	styleSheet = std::move(resolved);
 
 	auto runtime = std::make_shared<ControlStyleSheet>();
 	for (const auto& resource : styleSheet.Resources)
 	{
 		BindingValue value;
-		if (!TryConvertValue(resource.Value, value, outError)) return false;
+		if (!TryConvertValue(
+			resource.Value, value, outError, resourceBasePath, resources)) return false;
 		if (!runtime->SetResource(resource.Key, std::move(value)))
 			return Fail(L"无法创建样式资源：" + resource.Key, outError);
 	}
@@ -600,6 +1372,14 @@ bool BuildRuntimeStyleSheet(
 		selector.Classes = rule.Classes;
 		selector.RequiredStates = rule.RequiredStates;
 		selector.ExcludedStates = rule.ExcludedStates;
+		for (const auto& condition : rule.DataConditions)
+		{
+			BindingValue value;
+			if (!TryConvertValue(condition.Value, value, outError,
+				resourceBasePath, resources)) return false;
+			selector.DataConditions.push_back({
+				condition.SourceProperty, std::move(value) });
+		}
 		std::vector<ControlStyleSetter> setters;
 		setters.reserve(rule.Setters.size());
 		for (const auto& setter : rule.Setters)
@@ -610,7 +1390,8 @@ bool BuildRuntimeStyleSheet(
 			else
 			{
 				BindingValue value;
-				if (!TryConvertValue(setter.Literal, value, outError)) return false;
+				if (!TryConvertValue(
+					setter.Literal, value, outError, resourceBasePath, resources)) return false;
 				setters.emplace_back(setter.PropertyName, std::move(value));
 			}
 		}

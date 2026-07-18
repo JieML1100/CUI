@@ -365,7 +365,7 @@ void PropertyGridBinder::NotifyControlChanged(Control* control) const
 	if (auto* panel = dynamic_cast<Panel*>(control->Parent))
 	{
 		panel->InvalidateLayout();
-		panel->PerformLayout();
+		panel->UpdateLayout();
 	}
 	if (auto* split = dynamic_cast<SplitContainer*>(control))
 	{
@@ -374,7 +374,7 @@ void PropertyGridBinder::NotifyControlChanged(Control* control) const
 	else if (auto* panel = dynamic_cast<Panel*>(control))
 	{
 		panel->InvalidateLayout();
-		panel->PerformLayout();
+		panel->UpdateLayout();
 	}
 	if (_canvas)
 	{

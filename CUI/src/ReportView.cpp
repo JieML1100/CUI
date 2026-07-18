@@ -1,5 +1,6 @@
 ﻿#include "ReportView.h"
 #include "Form.h"
+#include "AdvancedControlPropertyRegistration.h"
 #include <algorithm>
 #include <cmath>
 #include <cwchar>
@@ -162,6 +163,69 @@ bool ReportRow::IsAnimationRunning()
 UIClass ReportView::Type()
 {
 	return UIClass::UI_ReportView;
+}
+
+void ReportView::EnsureBindingPropertiesRegistered()
+{
+	Control::EnsureBindingPropertiesRegistered();
+	static const bool registered = []
+	{
+		using namespace cui::advanced_properties;
+		RegisterField(L"Title", &ReportView::Title, std::wstring(L"Report"),
+			L"Data", 600, 10, ControlPropertyEditorKind::Text);
+		RegisterField(L"Subtitle", &ReportView::Subtitle, std::wstring{},
+			L"Data", 600, 20, ControlPropertyEditorKind::Text);
+		RegisterField(L"FooterText", &ReportView::FooterText, std::wstring{},
+			L"Data", 600, 30, ControlPropertyEditorKind::Text);
+		RegisterMetric(L"HeaderHeight", &ReportView::HeaderHeight, 32.0f,
+			L"Layout", 100, 10);
+		RegisterMetric(L"RowHeight", &ReportView::RowHeight, 30.0f,
+			L"Layout", 100, 20);
+		RegisterMetric(L"GroupHeight", &ReportView::GroupHeight, 30.0f,
+			L"Layout", 100, 30);
+		RegisterMetric(L"SummaryHeight", &ReportView::SummaryHeight, 30.0f,
+			L"Layout", 100, 40);
+		RegisterMetric(L"ScrollBarSize", &ReportView::ScrollBarSize, 8.0f,
+			L"Layout", 100, 50);
+		RegisterMetric(L"Border", &ReportView::Border, 1.0f,
+			L"Appearance", 200, 10);
+		RegisterMetric(L"CornerRadius", &ReportView::CornerRadius, 8.0f,
+			L"Appearance", 200, 20);
+		RegisterField(L"ShowTitle", &ReportView::ShowTitle, true,
+			L"Behavior", 110, 10, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"ShowFooter", &ReportView::ShowFooter, true,
+			L"Behavior", 110, 20, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"AllowSorting", &ReportView::AllowSorting, true,
+			L"Behavior", 110, 30, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"AlternatingRows", &ReportView::AlternatingRows, true,
+			L"Behavior", 110, 40, ControlPropertyEditorKind::Boolean);
+		RegisterColor(L"HeaderBackColor", &ReportView::HeaderBackColor,
+			cui::theme::palette::SurfaceMuted, 100);
+		RegisterColor(L"HeaderForeColor", &ReportView::HeaderForeColor,
+			cui::theme::palette::TextPrimary, 110);
+		RegisterColor(L"RowBackColor", &ReportView::RowBackColor,
+			cui::theme::palette::Surface, 120);
+		RegisterColor(L"AlternateRowBackColor", &ReportView::AlternateRowBackColor,
+			cui::theme::palette::SurfaceSubtle, 130);
+		RegisterColor(L"GroupBackColor", &ReportView::GroupBackColor,
+			cui::theme::palette::AccentSelected, 140);
+		RegisterColor(L"SummaryBackColor", &ReportView::SummaryBackColor,
+			D2D1_COLOR_F{ 0.820f, 0.541f, 0.071f, 0.14f }, 150);
+		RegisterColor(L"SelectedRowBackColor", &ReportView::SelectedRowBackColor,
+			cui::theme::palette::AccentSelected, 160);
+		RegisterColor(L"UnderMouseRowBackColor", &ReportView::UnderMouseRowBackColor,
+			cui::theme::palette::AccentSoft, 170);
+		RegisterColor(L"GridLineColor", &ReportView::GridLineColor,
+			cui::theme::palette::Border, 180);
+		RegisterColor(L"MutedTextColor", &ReportView::MutedTextColor,
+			cui::theme::palette::TextMuted, 190);
+		RegisterColor(L"ScrollBackColor", &ReportView::ScrollBackColor,
+			cui::theme::palette::ScrollTrack, 200);
+		RegisterColor(L"ScrollForeColor", &ReportView::ScrollForeColor,
+			cui::theme::palette::ScrollThumb, 210);
+		return true;
+	}();
+	(void)registered;
 }
 
 ReportView::ReportView(int x, int y, int width, int height)

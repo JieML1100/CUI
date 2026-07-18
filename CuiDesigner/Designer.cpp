@@ -3176,9 +3176,7 @@ void Designer::OnXamlClick()
 		return;
 	}
 
-	XamlEditorDialog dialog(
-		_canvas, std::move(xaml),
-		_eventCodeInspection.CompatibleUserHandlers);
+	XamlEditorDialog dialog(_canvas, std::move(xaml));
 	dialog.ShowDialog(this->Handle);
 	auto result = !_canvas->HasActiveDocumentTransaction()
 		? DesignerDocumentTransactionResult::Success(
@@ -3186,29 +3184,9 @@ void Designer::OnXamlClick()
 		: dialog.Applied
 			? _canvas->CommitDocumentEditTransaction()
 			: _canvas->RollbackDocumentEditTransaction();
-	std::wstring completionMessage;
-	if (dialog.Applied)
-	{
-		completionMessage = dialog.GetAppliedCheckpointCount() > 0
-			? L"XAML 编辑已提交；此前应用的 "
-				+ std::to_wstring(dialog.GetAppliedCheckpointCount())
-				+ L" 个检查点保留为独立撤销步骤。"
-			: L"XAML 编辑已提交。";
-	}
-	else if (dialog.GetAppliedCheckpointCount() > 0)
-	{
-		completionMessage = L"已取消最后一次应用后的 XAML 草稿；此前应用的 "
-			+ std::to_wstring(dialog.GetAppliedCheckpointCount())
-			+ L" 个检查点已保留。";
-	}
-	else
-	{
-		completionMessage = L"XAML 编辑已取消并恢复画布。";
-	}
-	// An Apply checkpoint commits history and immediately opens the next live
-	// transaction.  Closing with Cancel rolls that final transaction back, which
-	// intentionally emits no document-state change.  Refresh explicitly so the
-	// newly committed checkpoint(s) become undoable in the toolbar right away.
+	const std::wstring completionMessage = dialog.Applied
+		? L"XAML 编辑已提交。"
+		: L"XAML 编辑已取消并恢复画布。";
 	RefreshCommandAvailability();
 	UpdateCanvasOperationStatus(
 		L"EditXaml", L"EditXaml",

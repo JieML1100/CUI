@@ -1,5 +1,6 @@
 ﻿#include "ChartView.h"
 #include "Form.h"
+#include "AdvancedControlPropertyRegistration.h"
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -92,6 +93,70 @@ ChartSeries::ChartSeries(std::wstring name, D2D1_COLOR_F color)
 UIClass ChartView::Type()
 {
 	return UIClass::UI_ChartView;
+}
+
+void ChartView::EnsureBindingPropertiesRegistered()
+{
+	Control::EnsureBindingPropertiesRegistered();
+	static const bool registered = []
+	{
+		using namespace cui::advanced_properties;
+		RegisterField(L"Title", &ChartView::Title, std::wstring(L"Chart"),
+			L"Data", 600, 10, ControlPropertyEditorKind::Text);
+		RegisterField(L"Subtitle", &ChartView::Subtitle, std::wstring{},
+			L"Data", 600, 20, ControlPropertyEditorKind::Text);
+		RegisterEnumField(L"ChartKind", &ChartView::ChartKind,
+			ChartViewKind::Bar, L"Data", 600, 30,
+			{ { L"Bar", ChartViewKind::Bar },
+			  { L"Pie", ChartViewKind::Pie },
+			  { L"Line", ChartViewKind::Line } });
+		RegisterIntMetric(L"ValuePrecision", &ChartView::ValuePrecision, 0,
+			L"Data", 600, 40, 0, 8);
+		RegisterField(L"ShowLegend", &ChartView::ShowLegend, true,
+			L"Behavior", 110, 10, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"ShowTooltip", &ChartView::ShowTooltip, true,
+			L"Behavior", 110, 20, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"ShowValueLabels", &ChartView::ShowValueLabels, false,
+			L"Behavior", 110, 30, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"ShowGridLines", &ChartView::ShowGridLines, true,
+			L"Behavior", 110, 40, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"ShowMarkers", &ChartView::ShowMarkers, true,
+			L"Behavior", 110, 50, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"EnablePanZoom", &ChartView::EnablePanZoom, true,
+			L"Behavior", 110, 60, ControlPropertyEditorKind::Boolean);
+		RegisterMetric(L"Border", &ChartView::Border, 1.0f,
+			L"Appearance", 200, 10);
+		RegisterMetric(L"CornerRadius", &ChartView::CornerRadius, 8.0f,
+			L"Appearance", 200, 20);
+		RegisterMetric(L"ScrollBarSize", &ChartView::ScrollBarSize, 8.0f,
+			L"Layout", 100, 10);
+		RegisterColor(L"PlotBackColor", &ChartView::PlotBackColor,
+			cui::theme::palette::SurfaceSubtle, 100);
+		RegisterColor(L"GridLineColor", &ChartView::GridLineColor,
+			cui::theme::palette::Border, 110);
+		RegisterColor(L"AxisColor", &ChartView::AxisColor,
+			cui::theme::palette::BorderStrong, 120);
+		RegisterColor(L"AccentColor", &ChartView::AccentColor,
+			cui::theme::palette::Accent, 130);
+		RegisterColor(L"HoverColor", &ChartView::HoverColor,
+			cui::theme::palette::AccentSoft, 140);
+		RegisterColor(L"SelectedColor", &ChartView::SelectedColor,
+			cui::theme::palette::AccentSelected, 150);
+		RegisterColor(L"TooltipBackColor", &ChartView::TooltipBackColor,
+			cui::theme::palette::TooltipSurface, 160);
+		RegisterColor(L"TooltipBorderColor", &ChartView::TooltipBorderColor,
+			cui::theme::palette::BorderStrong, 170);
+		RegisterColor(L"TooltipTextColor", &ChartView::TooltipTextColor,
+			cui::theme::palette::OnAccent, 180);
+		RegisterColor(L"LegendTextColor", &ChartView::LegendTextColor,
+			cui::theme::palette::TextSecondary, 190);
+		RegisterColor(L"ScrollBackColor", &ChartView::ScrollBackColor,
+			cui::theme::palette::ScrollTrack, 200);
+		RegisterColor(L"ScrollForeColor", &ChartView::ScrollForeColor,
+			cui::theme::palette::ScrollThumb, 210);
+		return true;
+	}();
+	(void)registered;
 }
 
 ChartView::ChartView(int x, int y, int width, int height)

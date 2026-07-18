@@ -2,6 +2,10 @@
 #include <Windows.h>
 #include <string>
 #include <unordered_map>
+#include <memory>
+#include <vector>
+
+class ResourceResolver;
 
 /** Windows accessibility and visual-effect preferences used by CUI rendering. */
 struct SystemVisualPreferences
@@ -55,6 +59,17 @@ public:
 	 * @brief 返回漫游（Roaming）用户数据目录。
 	 */
 	static std::string UserAppDataPath();
+
+	// ---- Application resources ----
+	/** Returns the configured resolver; defaults to file/directory sources. */
+	static std::shared_ptr<const ResourceResolver> GetResourceResolver();
+	/** Installs the resolver snapshot used by subsequent resource loads. */
+	static void SetResourceResolver(std::shared_ptr<const ResourceResolver> resolver);
+	/** Startup convenience for the built-in file resource source. */
+	static void ConfigureResourceDirectories(
+		const std::vector<std::wstring>& directories);
+	/** Restores startup/current-directory file lookup. */
+	static void ResetResourceResolver();
 
 	// ---- DPI helpers ----
 	/**

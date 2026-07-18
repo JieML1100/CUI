@@ -29,7 +29,74 @@ namespace
 		return static_cast<uint32_t>(
 			std::popcount(static_cast<uint32_t>(value)));
 	}
+
+	bool TryParseDataPath(
+		const std::wstring& value,
+		std::vector<std::wstring>& segments)
+	{
+		segments.clear();
+		size_t start = 0;
+		while (start <= value.size())
+		{
+			const auto separator = value.find(L'.', start);
+			const auto end = separator == std::wstring::npos
+				? value.size() : separator;
+			auto segment = value.substr(start, end - start);
+			segment.erase(segment.begin(), std::find_if(segment.begin(), segment.end(),
+				[](wchar_t ch) { return std::iswspace(ch) == 0; }));
+			segment.erase(std::find_if(segment.rbegin(), segment.rend(),
+				[](wchar_t ch) { return std::iswspace(ch) == 0; }).base(), segment.end());
+			if (segment.empty())
+			{
+				segments.clear();
+				return false;
+			}
+			segments.push_back(std::move(segment));
+			if (separator == std::wstring::npos) break;
+			start = separator + 1;
+		}
+		return !segments.empty();
+	}
+
+	bool TryReadDataPath(
+		IBindingSource& source,
+		const std::vector<std::wstring>& path,
+		BindingValue& value)
+	{
+		if (path.empty()) return false;
+		IBindingSource* current = &source;
+		std::vector<std::shared_ptr<IBindingSource>> owners;
+		for (size_t index = 0; index + 1 < path.size(); ++index)
+		{
+			BindingValue intermediate;
+			BindingSourceReference reference;
+			if (!current->TryGetValue(path[index], intermediate)
+				|| !intermediate.TryGet(reference) || !reference)
+				return false;
+			owners.push_back(reference.Shared());
+			current = reference.Get();
+		}
+		return current->TryGetValue(path.back(), value);
+	}
 }
+
+struct ControlStyleSheet::DataContextState
+{
+	struct ObservedPath
+	{
+		std::wstring Path;
+		std::vector<std::wstring> Segments;
+		std::vector<EventConnection> Connections;
+		std::vector<std::shared_ptr<IBindingSource>> Owners;
+	};
+
+	IBindingSource* Source = nullptr;
+	std::weak_ptr<const void> Lifetime;
+	std::vector<ObservedPath> Paths;
+};
+
+ControlStyleSheet::ControlStyleSheet() = default;
+ControlStyleSheet::~ControlStyleSheet() = default;
 
 bool ControlStyleSelector::Matches(Control& target) const
 {
@@ -54,7 +121,8 @@ uint32_t ControlStyleSelector::Specificity() const noexcept
 	const uint32_t id = Id.empty() ? 0u : 1u;
 	const uint32_t qualifiers = static_cast<uint32_t>(Classes.size())
 		+ StyleStateCount(RequiredStates)
-		+ StyleStateCount(ExcludedStates);
+		+ StyleStateCount(ExcludedStates)
+		+ static_cast<uint32_t>(DataConditions.size());
 	const uint32_t exactType = Type.has_value() && *Type != UIClass::UI_Base
 		? 1u
 		: 0u;
@@ -85,6 +153,7 @@ size_t ControlStyleSheet::AddRule(
 	const size_t id = _nextRuleId++;
 	_rules.push_back(ControlStyleRule{
 		id, std::move(selector), std::move(normalized) });
+	RebuildDataContextSubscriptions();
 	NotifyChanged();
 	return id;
 }
@@ -95,6 +164,7 @@ bool ControlStyleSheet::RemoveRule(size_t ruleId)
 		[ruleId](const auto& rule) { return rule.Id == ruleId; });
 	if (position == _rules.end()) return false;
 	_rules.erase(position);
+	RebuildDataContextSubscriptions();
 	NotifyChanged();
 	return true;
 }
@@ -103,6 +173,7 @@ void ControlStyleSheet::ClearRules()
 {
 	if (_rules.empty()) return;
 	_rules.clear();
+	RebuildDataContextSubscriptions();
 	NotifyChanged();
 }
 
@@ -160,7 +231,8 @@ ControlStyleResolution ControlStyleSheet::Resolve(Control& target) const
 	for (size_t ruleOrder = 0; ruleOrder < _rules.size(); ++ruleOrder)
 	{
 		const auto& rule = _rules[ruleOrder];
-		if (!rule.Selector.Matches(target)) continue;
+		if (!rule.Selector.Matches(target)
+			|| !MatchesDataConditions(rule.Selector)) continue;
 		const uint32_t specificity = rule.Selector.Specificity();
 		for (const auto& setter : rule.Setters)
 		{
@@ -249,7 +321,97 @@ EventConnection ControlStyleSheet::SubscribeChanged(
 	return _changed.Subscribe(std::move(handler));
 }
 
-void ControlStyleSheet::NotifyChanged()
+void ControlStyleSheet::SetDataContext(IBindingSource* source) const
+{
+	if (source && _dataContextState
+		&& _dataContextState->Source == source
+		&& !_dataContextState->Lifetime.expired()) return;
+	if (!source)
+	{
+		if (!_dataContextState) return;
+		_dataContextState.reset();
+		NotifyChanged();
+		return;
+	}
+	if (!_dataContextState)
+		_dataContextState = std::make_unique<DataContextState>();
+	_dataContextState->Source = source;
+	_dataContextState->Lifetime = source->BindingLifetime();
+	RebuildDataContextSubscriptions();
+	NotifyChanged();
+}
+
+IBindingSource* ControlStyleSheet::DataContext() const noexcept
+{
+	if (!_dataContextState || _dataContextState->Lifetime.expired()) return nullptr;
+	return _dataContextState->Source;
+}
+
+bool ControlStyleSheet::MatchesDataConditions(
+	const ControlStyleSelector& selector) const
+{
+	if (selector.DataConditions.empty()) return true;
+	auto* source = DataContext();
+	if (!source) return false;
+	for (const auto& condition : selector.DataConditions)
+	{
+		std::vector<std::wstring> path;
+		BindingValue actual;
+		if (!TryParseDataPath(condition.SourceProperty, path)
+			|| !TryReadDataPath(*source, path, actual)
+			|| actual.Empty()) return false;
+		BindingValue expected;
+		if (!TryConvertBindingValue(condition.Value, actual.Kind(), expected)
+			|| !BindingValuesEqual(actual, expected)) return false;
+	}
+	return true;
+}
+
+void ControlStyleSheet::RebuildDataContextSubscriptions() const
+{
+	if (!_dataContextState) return;
+	_dataContextState->Paths.clear();
+	auto* source = DataContext();
+	if (!source) return;
+	std::vector<std::wstring> uniquePaths;
+	for (const auto& rule : _rules)
+		for (const auto& condition : rule.Selector.DataConditions)
+			if (!condition.SourceProperty.empty()
+				&& !ContainsStyleName(uniquePaths, condition.SourceProperty))
+				uniquePaths.push_back(condition.SourceProperty);
+
+	for (const auto& pathText : uniquePaths)
+	{
+		DataContextState::ObservedPath observed;
+		observed.Path = pathText;
+		if (!TryParseDataPath(pathText, observed.Segments)) continue;
+		IBindingSource* current = source;
+		for (size_t index = 0; index < observed.Segments.size(); ++index)
+		{
+			const auto expectedProperty = observed.Segments[index];
+			auto connection = current->PropertyChanged().Subscribe(
+				[this, expectedProperty](const PropertyChangedEventArgs& args)
+				{
+					if (!args.PropertyName.empty()
+						&& !StyleNameEquals(args.PropertyName, expectedProperty)) return;
+					RebuildDataContextSubscriptions();
+					NotifyChanged();
+				});
+			if (connection.Connected())
+				observed.Connections.push_back(std::move(connection));
+			if (index + 1 == observed.Segments.size()) break;
+			BindingValue intermediate;
+			BindingSourceReference reference;
+			if (!current->TryGetValue(expectedProperty, intermediate)
+				|| !intermediate.TryGet(reference) || !reference) break;
+			observed.Owners.push_back(reference.Shared());
+			current = reference.Get();
+		}
+		_dataContextState->Paths.push_back(std::move(observed));
+	}
+}
+
+void ControlStyleSheet::NotifyChanged() const
 {
 	++_revision;
 	_changed();

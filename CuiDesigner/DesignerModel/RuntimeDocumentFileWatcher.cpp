@@ -91,7 +91,7 @@ std::wstring RuntimeDocumentFileWatcher::DescribeObservationFailure(
 	uint32_t errorCode)
 {
 	auto message = FormatWindowsError(errorCode);
-	std::wstring result = L"无法读取动态文档文件状态：“" + filePath + L"”";
+	std::wstring result = L"无法读取动态文档或资源依赖状态：“" + filePath + L"”";
 	if (!message.empty()) result += L"：" + message;
 	result += L"（错误 " + std::to_wstring(errorCode) + L"）";
 	return result;
@@ -115,10 +115,11 @@ bool RuntimeDocumentFileWatcher::Start(
 	}
 
 	_filePath = filePath;
-	_observed = signature;
+	_watchedFiles = { WatchedFile{ filePath, signature } };
 	_changedAt = Clock::now();
 	_pending = false;
 	_failed = false;
+	_resourceChangePending = false;
 	_lastError.clear();
 	if (outError) outError->clear();
 	return true;
@@ -127,9 +128,10 @@ bool RuntimeDocumentFileWatcher::Start(
 void RuntimeDocumentFileWatcher::Stop() noexcept
 {
 	_filePath.clear();
-	_observed.reset();
+	_watchedFiles.clear();
 	_pending = false;
 	_failed = false;
+	_resourceChangePending = false;
 	_lastError.clear();
 }
 
@@ -146,16 +148,25 @@ RuntimeDocumentWatchResult RuntimeDocumentFileWatcher::PollAt(
 	TimePoint now)
 {
 	RuntimeDocumentWatchResult result;
-	if (!IsWatching() || !_observed)
+	if (!IsWatching() || _watchedFiles.empty())
 	{
 		result.State = RuntimeDocumentWatchState::Stopped;
 		return result;
 	}
 
-	const auto signature = Observe(_filePath);
-	if (signature != *_observed)
+	SyncDocumentDependencies(document);
+	bool changed = false;
+	for (auto& watched : _watchedFiles)
 	{
-		_observed = signature;
+		const auto signature = Observe(watched.Path);
+		if (signature == watched.Signature) continue;
+		watched.Signature = signature;
+		if (_wcsicmp(watched.Path.c_str(), _filePath.c_str()) != 0)
+			_resourceChangePending = true;
+		changed = true;
+	}
+	if (changed)
+	{
 		_changedAt = now;
 		_pending = true;
 		_failed = false;
@@ -183,18 +194,25 @@ RuntimeDocumentWatchResult RuntimeDocumentFileWatcher::PollAt(
 
 	_pending = false;
 	result.ReloadAttempted = true;
-	if (!signature.Available)
+	const auto unavailable = std::find_if(
+		_watchedFiles.begin(), _watchedFiles.end(),
+		[](const auto& watched) { return !watched.Signature.Available; });
+	if (unavailable != _watchedFiles.end())
 	{
 		_failed = true;
-		_lastError = DescribeObservationFailure(_filePath, signature.ErrorCode);
+		_lastError = DescribeObservationFailure(
+			unavailable->Path, unavailable->Signature.ErrorCode);
 		result.State = RuntimeDocumentWatchState::Failed;
 		result.Error = _lastError;
 		return result;
 	}
 
 	std::wstring error;
+	auto reloadOptions = options;
+	reloadOptions.ForceResourceRefresh =
+		reloadOptions.ForceResourceRefresh || _resourceChangePending;
 	if (!RuntimeDocumentLoader::ReloadFile(
-		_filePath, document, options, &result.ReloadMode, &error))
+		_filePath, document, reloadOptions, &result.ReloadMode, &error))
 	{
 		_failed = true;
 		_lastError = std::move(error);
@@ -204,7 +222,9 @@ RuntimeDocumentWatchResult RuntimeDocumentFileWatcher::PollAt(
 	}
 
 	_failed = false;
+	_resourceChangePending = false;
 	_lastError.clear();
+	SyncDocumentDependencies(document);
 	result.State = result.ReloadMode == RuntimeDocumentReloadMode::Unchanged
 		? RuntimeDocumentWatchState::Unchanged
 		: RuntimeDocumentWatchState::Reloaded;
@@ -218,10 +238,57 @@ void RuntimeDocumentFileWatcher::RequestRetry()
 
 void RuntimeDocumentFileWatcher::RequestRetryAt(TimePoint now) noexcept
 {
-	if (!IsWatching() || !_observed) return;
+	if (!IsWatching() || _watchedFiles.empty()) return;
 	_pending = true;
 	_failed = false;
 	_lastError.clear();
 	_changedAt = now;
+}
+
+void RuntimeDocumentFileWatcher::SetDependencies(
+	const std::vector<ResourceDependency>& dependencies)
+{
+	if (!IsWatching()) return;
+	std::vector<std::wstring> paths{ _filePath };
+	for (const auto& dependency : dependencies)
+	{
+		if (dependency.WatchPath.empty()) continue;
+		if (std::none_of(paths.begin(), paths.end(),
+			[&](const auto& current)
+			{
+				return _wcsicmp(current.c_str(), dependency.WatchPath.c_str()) == 0;
+			}))
+			paths.push_back(dependency.WatchPath);
+	}
+
+	std::vector<WatchedFile> next;
+	next.reserve(paths.size());
+	for (auto& path : paths)
+	{
+		const auto existing = std::find_if(
+			_watchedFiles.begin(), _watchedFiles.end(),
+			[&](const auto& watched)
+			{
+				return _wcsicmp(watched.Path.c_str(), path.c_str()) == 0;
+			});
+		next.push_back(existing == _watchedFiles.end()
+			? WatchedFile{ path, Observe(path) }
+			: *existing);
+	}
+	_watchedFiles = std::move(next);
+}
+
+std::vector<std::wstring> RuntimeDocumentFileWatcher::WatchedFiles() const
+{
+	std::vector<std::wstring> result;
+	result.reserve(_watchedFiles.size());
+	for (const auto& watched : _watchedFiles) result.push_back(watched.Path);
+	return result;
+}
+
+void RuntimeDocumentFileWatcher::SyncDocumentDependencies(
+	const RuntimeDocument& document)
+{
+	SetDependencies(document.ResourceDependencies());
 }
 }

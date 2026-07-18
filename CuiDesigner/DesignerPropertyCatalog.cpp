@@ -1,6 +1,8 @@
 #include "DesignerPropertyCatalog.h"
 #include "DesignerStyleSheetUtils.h"
 #include "../CUI/include/DateTimePicker.h"
+#include "../D2DGraphics/include/BitmapSource.h"
+#include <Convert.h>
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
@@ -147,8 +149,80 @@ namespace
 			if (!value.TryGet(typed) || typed.IsAuto()) return L"Auto";
 			return NumberText(typed.value);
 		}
+		case DesignerStyleValueKind::ImageSource:
+		{
+			std::shared_ptr<BitmapSource> typed;
+			return value.TryGet(typed) && typed ? typed->GetSourceUri() : L"";
+		}
+		case DesignerStyleValueKind::Brush:
+			return L"{Brush}";
+		case DesignerStyleValueKind::Geometry:
+			return L"{Geometry}";
+		case DesignerStyleValueKind::Transform:
+			return L"{Transform}";
 		}
 		return L"";
+	}
+
+	DesignerModel::DesignValue ColorToValue(const D2D1_COLOR_F& color)
+	{
+		return DesignerModel::DesignValue{
+			{ "r", color.r }, { "g", color.g },
+			{ "b", color.b }, { "a", color.a } };
+	}
+
+	DesignerModel::DesignValue BrushToValue(const cui::drawing::Brush& brush)
+	{
+		DesignerModel::DesignValue value = DesignerModel::DesignValue::object();
+		value["type"] = brush.Kind == cui::drawing::BrushKind::Solid ? "solid"
+			: brush.Kind == cui::drawing::BrushKind::LinearGradient ? "linear"
+			: brush.Kind == cui::drawing::BrushKind::RadialGradient ? "radial"
+			: "image";
+		value["mapping"] = brush.MappingMode
+			== cui::drawing::BrushMappingMode::Absolute ? "absolute" : "relative";
+		value["opacity"] = brush.Opacity;
+		if (brush.Kind == cui::drawing::BrushKind::Solid)
+			value["color"] = ColorToValue(brush.Color);
+		else if (brush.Kind == cui::drawing::BrushKind::Image)
+		{
+			value["source"] = brush.ImageSource
+				? Convert::UnicodeToUtf8(brush.ImageSource->GetSourceUri()) : std::string{};
+			value["stretch"] = brush.Stretch == cui::drawing::ImageBrushStretch::None
+				? "none" : brush.Stretch == cui::drawing::ImageBrushStretch::Uniform
+					? "uniform" : brush.Stretch == cui::drawing::ImageBrushStretch::UniformToFill
+						? "uniformToFill" : "fill";
+			value["alignmentX"] = brush.AlignmentX == cui::drawing::ImageBrushAlignmentX::Left
+				? "left" : brush.AlignmentX == cui::drawing::ImageBrushAlignmentX::Right
+					? "right" : "center";
+			value["alignmentY"] = brush.AlignmentY == cui::drawing::ImageBrushAlignmentY::Top
+				? "top" : brush.AlignmentY == cui::drawing::ImageBrushAlignmentY::Bottom
+					? "bottom" : "center";
+		}
+		else
+		{
+			if (brush.Kind == cui::drawing::BrushKind::LinearGradient)
+			{
+				value["startX"] = brush.StartPoint.x;
+				value["startY"] = brush.StartPoint.y;
+				value["endX"] = brush.EndPoint.x;
+				value["endY"] = brush.EndPoint.y;
+			}
+			else
+			{
+				value["centerX"] = brush.Center.x;
+				value["centerY"] = brush.Center.y;
+				value["originX"] = brush.GradientOrigin.x;
+				value["originY"] = brush.GradientOrigin.y;
+				value["radiusX"] = brush.RadiusX;
+				value["radiusY"] = brush.RadiusY;
+			}
+			DesignerModel::DesignValue stops = DesignerModel::DesignValue::array();
+			for (const auto& stop : brush.GradientStops)
+				stops.push_back(DesignerModel::DesignValue{
+					{ "offset", stop.Offset }, { "color", ColorToValue(stop.Color) } });
+			value["stops"] = std::move(stops);
+		}
+		return value;
 	}
 
 	bool Fail(std::wstring message, std::wstring* outError)
@@ -200,6 +274,10 @@ namespace
 		case DesignerStyleValueKind::Size: return ControlPropertyEditorKind::Size;
 		case DesignerStyleValueKind::Length: return ControlPropertyEditorKind::Length;
 		case DesignerStyleValueKind::String:
+		case DesignerStyleValueKind::ImageSource:
+		case DesignerStyleValueKind::Brush:
+		case DesignerStyleValueKind::Geometry:
+		case DesignerStyleValueKind::Transform:
 		default:
 			return ControlPropertyEditorKind::Text;
 		}
@@ -291,6 +369,14 @@ bool TryGetStyleValueKind(
 		out = DesignerStyleValueKind::Size;
 	else if (type == std::type_index(typeid(cui::layout::Length)))
 		out = DesignerStyleValueKind::Length;
+	else if (type == std::type_index(typeid(std::shared_ptr<BitmapSource>)))
+		out = DesignerStyleValueKind::ImageSource;
+	else if (type == std::type_index(typeid(cui::drawing::Brush)))
+		out = DesignerStyleValueKind::Brush;
+	else if (type == std::type_index(typeid(cui::drawing::Geometry)))
+		out = DesignerStyleValueKind::Geometry;
+	else if (type == std::type_index(typeid(cui::drawing::Transform)))
+		out = DesignerStyleValueKind::Transform;
 	else if (type == std::type_index(typeid(HorizontalAlignment))
 		|| type == std::type_index(typeid(VerticalAlignment))
 		|| type == std::type_index(typeid(Dock))
@@ -363,7 +449,9 @@ bool ValidateStyleValue(
 	Control& target,
 	const std::wstring& propertyName,
 	const DesignerStyleValue& value,
-	std::wstring* outError)
+	std::wstring* outError,
+	const std::wstring& resourceBasePath,
+	const std::shared_ptr<ResourceLoadContext>& resources)
 {
 	const auto* metadata = target.FindPropertyMetadata(propertyName);
 	if (!metadata)
@@ -378,7 +466,8 @@ bool ValidateStyleValue(
 			+ DesignerStyleSheetUtils::ValueKindName(expected) + L" 值。", outError);
 
 	BindingValue parsed;
-	if (!DesignerStyleSheetUtils::TryConvertValue(value, parsed, outError)) return false;
+	if (!DesignerStyleSheetUtils::TryConvertValue(
+		value, parsed, outError, resourceBasePath, resources)) return false;
 	BindingValue converted;
 	BindingValue effective;
 	if (!metadata->TryConvert(parsed, converted)
@@ -400,6 +489,15 @@ bool CaptureValue(
 	if (!property)
 		return Fail(L"目标类型没有可持久化的元数据属性：" + propertyName, outError);
 	out = DesignerStyleValue{ property->ValueKind, property->SampleValue };
+	if (property->ValueKind == DesignerStyleValueKind::Brush)
+	{
+		BindingValue runtimeValue;
+		cui::drawing::Brush brush;
+		if (property->Metadata
+			&& property->Metadata->TryGet(target, runtimeValue)
+			&& runtimeValue.TryGet(brush))
+			out.ObjectValue = BrushToValue(brush);
+	}
 	if (outCanonicalName) *outCanonicalName = property->Name;
 	if (outError) outError->clear();
 	return true;
@@ -411,11 +509,14 @@ bool ApplyValue(
 	const DesignerStyleValue& value,
 	std::wstring* outCanonicalName,
 	DesignerStyleValue* outEffective,
-	std::wstring* outError)
+	std::wstring* outError,
+	const std::wstring& resourceBasePath)
 {
-	if (!ValidateStyleValue(target, propertyName, value, outError)) return false;
+	if (!ValidateStyleValue(
+		target, propertyName, value, outError, resourceBasePath)) return false;
 	BindingValue parsed;
-	if (!DesignerStyleSheetUtils::TryConvertValue(value, parsed, outError)) return false;
+	if (!DesignerStyleSheetUtils::TryConvertValue(
+		value, parsed, outError, resourceBasePath)) return false;
 	const auto* metadata = target.FindPropertyMetadata(propertyName);
 	if (!metadata || !target.TrySetPropertyValue(metadata->Name(), parsed))
 		return Fail(L"无法设置元数据属性；它可能正被 Binding 占用："
@@ -468,13 +569,14 @@ bool ApplyAndTrackValue(
 	const DesignerStyleValue& value,
 	std::wstring* outCanonicalName,
 	DesignerStyleValue* outEffective,
-	std::wstring* outError)
+	std::wstring* outError,
+	const std::wstring& resourceBasePath)
 {
 	std::wstring canonicalName;
 	DesignerStyleValue effective;
 	if (!ApplyValue(
 		target, propertyName, value,
-		&canonicalName, &effective, outError)) return false;
+		&canonicalName, &effective, outError, resourceBasePath)) return false;
 	const auto* metadata = target.FindPropertyMetadata(canonicalName);
 	if (!metadata)
 		return Fail(L"属性应用后无法解析规范元数据：" + canonicalName, outError);

@@ -1,8 +1,36 @@
 ﻿#include "Application.h"
 #include <shlobj_core.h>
 #include <algorithm>
+#include "Resource.h"
+#include <filesystem>
+#include <mutex>
 namespace
 {
+	std::mutex resourceResolverMutex;
+	std::shared_ptr<const ResourceResolver> resourceResolver;
+
+	std::wstring ExecutableDirectoryW()
+	{
+		std::wstring path(32768, L'\0');
+		const DWORD length = GetModuleFileNameW(
+			nullptr, path.data(), static_cast<DWORD>(path.size()));
+		if (!length || length >= path.size())
+			return std::filesystem::current_path().wstring();
+		path.resize(length);
+		return std::filesystem::path(path).parent_path().wstring();
+	}
+
+	std::shared_ptr<const ResourceResolver> CreateDefaultResourceResolver()
+	{
+		auto resolver = std::make_shared<ResourceResolver>();
+		std::vector<std::wstring> roots{ ExecutableDirectoryW() };
+		const auto current = std::filesystem::current_path().wstring();
+		if (_wcsicmp(roots.front().c_str(), current.c_str()) != 0)
+			roots.push_back(current);
+		resolver->AddSource(std::make_shared<FileResourceSource>(std::move(roots)));
+		return resolver;
+	}
+
 	static UINT GetSystemDpiFallback()
 	{
 		HDC hdc = GetDC(nullptr);
@@ -117,6 +145,35 @@ std::string Application::UserAppDataPath()
 	char path[MAX_PATH];
 	SHGetSpecialFolderPathA(nullptr, path, CSIDL_APPDATA, FALSE);
 	return std::string(path);
+}
+
+std::shared_ptr<const ResourceResolver> Application::GetResourceResolver()
+{
+	std::scoped_lock lock(resourceResolverMutex);
+	if (!resourceResolver) resourceResolver = CreateDefaultResourceResolver();
+	return resourceResolver;
+}
+
+void Application::SetResourceResolver(
+	std::shared_ptr<const ResourceResolver> resolver)
+{
+	std::scoped_lock lock(resourceResolverMutex);
+	resourceResolver = resolver ? std::move(resolver)
+		: CreateDefaultResourceResolver();
+}
+
+void Application::ConfigureResourceDirectories(
+	const std::vector<std::wstring>& directories)
+{
+	auto resolver = std::make_shared<ResourceResolver>();
+	resolver->AddSource(std::make_shared<FileResourceSource>(directories));
+	SetResourceResolver(std::move(resolver));
+}
+
+void Application::ResetResourceResolver()
+{
+	std::scoped_lock lock(resourceResolverMutex);
+	resourceResolver = CreateDefaultResourceResolver();
 }
 
 void Application::EnsureDpiAwareness()

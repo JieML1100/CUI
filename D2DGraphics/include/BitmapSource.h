@@ -11,8 +11,13 @@
 class BitmapSource : public std::enable_shared_from_this<BitmapSource> {
 public:
 	static std::shared_ptr<BitmapSource> FromWicBitmap(IWICBitmap* bitmap, bool takeOwnership = false);
-	static std::shared_ptr<BitmapSource> FromFile(const std::wstring& path);
-	static std::shared_ptr<BitmapSource> FromBuffer(const void* data, size_t size);
+	static std::shared_ptr<BitmapSource> FromFile(
+		const std::wstring& path,
+		const std::wstring& sourceUri = {});
+	static std::shared_ptr<BitmapSource> FromBuffer(
+		const void* data,
+		size_t size,
+		const std::wstring& sourceUri = {});
 	static std::shared_ptr<BitmapSource> FromHBitmap(HBITMAP bitmap);
 	static std::shared_ptr<BitmapSource> FromHIcon(HICON icon);
 	static std::shared_ptr<BitmapSource> CreateEmpty(int width, int height);
@@ -27,6 +32,11 @@ public:
 	[[nodiscard]] FLOAT GetDpiX() const;
 	[[nodiscard]] FLOAT GetDpiY() const;
 	[[nodiscard]] DXGI_FORMAT GetDxgiFormat() const;
+	/** Original authoring URI when this bitmap was loaded from a file. */
+	[[nodiscard]] const std::wstring& GetSourceUri() const noexcept
+	{
+		return sourceUri;
+	}
 	[[nodiscard]] std::vector<uint8_t> CopyPixels(UINT* stride = nullptr) const;
 
 	[[nodiscard]] Microsoft::WRL::ComPtr<ID2D1Bitmap> CreateD2DBitmap(ID2D1RenderTarget* target, D2D1_BITMAP_PROPERTIES* bitmapProperties = nullptr) const;
@@ -43,5 +53,6 @@ private:
 	static Microsoft::WRL::ComPtr<IWICBitmap> EnsureBitmapFormat(IWICBitmap* bitmap);
 
 	Microsoft::WRL::ComPtr<IWICBitmap> wicBitmap;
+	std::wstring sourceUri;
 };
 

@@ -42,4 +42,12 @@
       <Filter>资源文件</Filter>
     </None>
   </ItemGroup>
+  <ItemGroup>
+    <CuiTestAsset Include="Assets\*.svg">
+      <Filter>资源文件</Filter>
+    </CuiTestAsset>
+    <CuiTestAsset Include="Assets\*.xaml">
+      <Filter>资源文件</Filter>
+    </CuiTestAsset>
+  </ItemGroup>
 </Project>

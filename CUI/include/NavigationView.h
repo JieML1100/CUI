@@ -188,6 +188,7 @@ class BreadcrumbBar : public Control
 {
 public:
 	UIClass Type() override;
+	void EnsureBindingPropertiesRegistered() override;
 	BreadcrumbBar(int x = 0, int y = 0, int width = 320, int height = 32);
 
 	std::vector<BreadcrumbBarItem> Items;

@@ -142,6 +142,8 @@ private:
 	DesignerDataContextSchema _dataContextSchema;
 	DesignerModel::DesignCodeBehindModel _codeBehind;
 	DesignerStyleSheet _documentStyleSheet;
+	std::wstring _documentResourceBasePath;
+	std::shared_ptr<ResourceLoadContext> _documentResources;
 	std::shared_ptr<ControlStyleSheet> _previewStyleSheet;
 	std::shared_ptr<IBindingSource> _designDataContext;
 	bool _designedFormVisibleHead = true;
@@ -261,6 +263,7 @@ private:
 	
 	void DrawSelectionHandles(std::shared_ptr<DesignerControl> dc);
 	void DrawGrid();
+	D2D1_MATRIX_3X2_F GetViewRenderTransform() const;
 	void ClampViewOffset();
 	void RecalculateFitView(bool notify);
 	void NotifyViewChanged();
@@ -270,11 +273,13 @@ private:
 	int GetSelectionHandleSizeInCanvas() const;
 	RECT GetDesignSurfaceRectInCanvas() const;
 	RECT GetClientSurfaceRectInCanvas() const;
+	RECT GetViewportRectInCanvas() const;
 	bool IsPointInDesignSurface(POINT ptCanvas) const;
 	RECT ClampRectToBounds(RECT r, const RECT& bounds, bool keepSize) const;
 	bool TryHandleTabHeaderClick(POINT ptCanvas);
 	int DesignedClientTop() const { return (_designedFormVisibleHead && _designedFormHeadHeight > 0) ? _designedFormHeadHeight : 0; }
 	void UpdateClientSurfaceLayout();
+	void UpdateRootChromePreviewLayout();
 	
 	std::shared_ptr<DesignerControl> HitTestControl(POINT pt);
 	std::shared_ptr<DesignerControl> HitTestSplitContainerSplitter(POINT pt) const;
@@ -358,6 +363,8 @@ public:
 	DesignerCanvas(int x, int y, int width, int height);
 	virtual ~DesignerCanvas();
 	bool HitTestChildren() const override { return false; }
+	bool TryGetDescendantRenderTransform(
+		D2D1_MATRIX_3X2_F& transform) const override;
 	DesignerModel::DesignFormModel CaptureDesignedFormModel() const;
 	void ApplyDesignedFormModel(const DesignerModel::DesignFormModel& form);
 
@@ -396,6 +403,10 @@ public:
 		DesignerModel::DesignCodeBehindModel codeBehind,
 		std::wstring* outError = nullptr);
 	const DesignerStyleSheet& GetDocumentStyleSheet() const { return _documentStyleSheet; }
+	const std::wstring& GetDocumentResourceBasePath() const noexcept
+	{
+		return _documentResourceBasePath;
+	}
 	bool SetDocumentStyleSheet(DesignerStyleSheet styleSheet, std::wstring* outError = nullptr);
 	void SetDesignDataContext(std::shared_ptr<IBindingSource> source);
 	bool RefreshDesignBindings(
@@ -476,16 +487,7 @@ public:
 	bool BuildXamlDocumentText(
 		std::wstring& xamlText,
 		std::wstring* outError = nullptr) const;
-	/** Metadata-backed suggestions consumed by the live XAML editor. */
-	std::vector<std::wstring> GetXamlCompletionElementNames() const;
-	std::vector<std::wstring> GetXamlCompletionAttributeNames(
-		const std::wstring& elementName) const;
-	std::vector<std::wstring> GetXamlCompletionAttributeValues(
-		const std::wstring& elementName,
-		const std::wstring& attributeName,
-		const std::map<std::string, std::vector<std::wstring>>&
-			compatibleUserHandlers = {}) const;
-	/** Shared same-signature handler candidates for the event grid and XAML editor. */
+	/** Shared same-signature handler candidates for the event property grid. */
 	std::vector<std::wstring> GetCompatibleEventHandlerNames(
 		const DesignerEventDescriptor& requested,
 		const std::wstring& defaultName,
@@ -728,6 +730,7 @@ private:
 	bool IsDescendantOf(Control* ancestor, Control* node);
 	Control* NormalizeContainerForDrop(Control* container);
 	POINT CanvasToContainerPoint(POINT ptCanvas, Control* container);
+	POINT CanvasToChildLayoutPoint(POINT ptCanvas, Control* container);
 	void TryReparentSelectedAfterDrag();
 	void DeleteControlRecursive(Control* c);
 };

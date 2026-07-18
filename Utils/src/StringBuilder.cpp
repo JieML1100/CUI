@@ -4,10 +4,10 @@ StringBuilder::StringBuilder():buffer() {}
 StringBuilder::~StringBuilder() {
 }
 
-GET_CPP(StringBuilder, uint32_t, Lenght) {
+GET_CPP(StringBuilder, uint32_t, Length) {
 	return static_cast<uint32_t>(this->buffer.str().size());
 }
-SET_CPP(StringBuilder, uint32_t, Lenght) {
+SET_CPP(StringBuilder, uint32_t, Length) {
 	if (value < this->buffer.str().size()) {
 		this->buffer.str(this->buffer.str().substr(0, value));
 	}

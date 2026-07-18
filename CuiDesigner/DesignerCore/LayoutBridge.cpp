@@ -265,6 +265,6 @@ void LayoutBridge::RefreshContainerLayout(Control* container)
 	if (auto* panel = dynamic_cast<Panel*>(container))
 	{
 		panel->InvalidateLayout();
-		panel->PerformLayout();
+		panel->UpdateLayout();
 	}
 }

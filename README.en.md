@@ -279,42 +279,15 @@ Cut/Copy/Paste, Duplicate, Delete, every arrangement command, Select All in Curr
 Container, and XAML editing. The keyboard menu key or `Shift+F10` opens the same surface;
 `Ctrl+N`, `Ctrl+O`, and `Ctrl+S` invoke New, Open, and Save.
 
-The live XAML editor reports both XML syntax failures and semantic failures such as invalid
-property values, unknown controls, and duplicate names with 1-based line/column diagnostics.
-Semantic diagnostics prefer the failing attribute name and fall back to the corresponding element
-name. Clicking **Locate Error** or pressing `F8` selects that character and scrolls long documents
-to its line. A new edit immediately clears the stale target, while a valid preview disables the
-command again. Locations use UTF-16 editor offsets, so errors after CJK or other non-ASCII text are
-not shifted by the parser's original UTF-8 byte columns; every failure preserves the last valid preview.
-Processing instructions, element names, attribute names and values, comments, CDATA, declarations, and
-entity references are colored live. The tolerant scanner remains stable for incomplete quotes and tags or
-`>` inside a value. Coloring is a non-editing foreground layer, so it does not rewrite text or add Undo
-entries; real selection foreground and tag-match backgrounds remain authoritative, and long virtualized
-XAML keeps the same colors across text-block boundaries.
-The always-visible find/replace strip supports `Ctrl+F`, `Ctrl+H`, `F3`, and `Shift+F3`, optional
-case matching, current/all replacement, and live user-facing line/column feedback. Replace All is
-recorded as one editor undo unit, so one `Ctrl+Z` restores the complete batch. `Tab` / `Shift+Tab`
-indent or outdent every touched line in a multi-line selection instead of replacing the source with
-one tab; the selection survives the edit and Undo/Redo, and the batch remains one editor history
-unit. Right-click exposes dynamically enabled Undo/Redo, Cut/Copy/Paste/Delete, Select All,
-indentation, and formatting without collapsing an existing selection. The keyboard menu key or
-`Shift+F10` opens the same popup at the caret, and `Ctrl+Shift+F` formats the document. Context-aware XAML
-completion projects elements, properties, enum/Boolean values, and events from the existing built-in
-and custom-control metadata. Suggestions filter while typing or open with `Ctrl+Space`; arrow keys
-navigate and `Tab` / `Enter` commit. Attribute completion inserts `Name=""` with the caret inside.
-`Enter` preserves indentation and expands a caret between paired tags, while entering a complete tag
-highlights both matching tag names. Event-value completion offers `Auto` plus same-signature handlers
-from the current document and associated user `.h/.cpp`; names already used by another signature are
-excluded. **Locate Selection** maps the Canvas selection to its XAML element by stable ID, while
-**Select Control** maps the element under the caret back to the design selection. A source rename
-therefore retains selection, and Format restores the same element instead of jumping to the top.
-The canonical rewrite is one Undo unit: Undo restores the pre-format source and selection,
-while Redo restores the canonical source and the mapped element selection. **Apply** or `Ctrl+S`
-commits the current valid source as an independent Designer Undo checkpoint without closing the
-editor, then immediately starts the next live-preview segment. A no-change Apply adds no history;
-Cancel later discards only the draft after the most recent checkpoint, preserves earlier applied
-checkpoints and selection, and restores the main-window Undo affordance immediately.
-
+The built-in XAML editor is intentionally a thin shell. It provides multiline text input,
+300 ms debounced validation, synchronization of valid documents, diagnostic navigation,
+restore-last-valid, and transactional OK/Cancel. XML syntax failures and semantic failures
+such as invalid properties, unknown controls, or duplicate names report 1-based line/column
+coordinates and UTF-16 offsets. Only **Locate Error** or `F8` moves the caret; new input and
+successful previews clear stale diagnostics. OK commits the whole editor session as one
+Designer Undo entry, while Cancel restores the document and selection from before the dialog.
+Completion, syntax coloring, find/replace, formatting, tag matching, and multi-checkpoint
+history are intentionally left to the future Visual Studio/COM host.
 A persistent strip below the Canvas exposes zoom out, the current percentage, zoom in,
 and Fit; the Canvas View menu exposes the same commands. `Ctrl+wheel` zooms around the
 design point under the pointer, `Ctrl++` / `Ctrl+-` step the zoom, `Ctrl+0` fits, and
@@ -809,9 +782,23 @@ undeclared dotted source paths are added to the DataContext schema with an unkno
 kind. Event attributes accept either a handler such as `Click="HandleSave"` or
 `Click="Auto"`, and are ultimately connected by generated `std::bind_front` code or a
 dynamic host's name resolver. Resources and styles support typed values, setters,
-class/state selectors, and WPF-like `x:Key` plus `Style="{StaticResource ...}"`.
-Runtime property metadata remains authoritative, so a newly exposed generic property
-does not need a dedicated XAML setter.
+class/state selectors, implicit styles that only declare `TargetType`, and WPF-like
+`x:Key`, `Style="{StaticResource ...}"`, and `Style.BasedOn`. `BasedOn` can reference
+either a named style or an implicit `{x:Type Button}` key; base setters are applied first,
+derived setters replace them by property name, and missing or cyclic references are rejected.
+`Style.Triggers` initially supports boolean conditions for `IsMouseOver`,
+`IsKeyboardFocused`, `IsPressed`, `IsEnabled`, `IsChecked`, and `IsSelected`.
+`MultiTrigger` combines two or more entries in `MultiTrigger.Conditions` with AND
+semantics. Trigger setters use the same resource, property-metadata, coercion, and cascade
+validation and are inherited through `BasedOn`; duplicate or contradictory MultiTrigger
+conditions are rejected while loading. A `DataTrigger` compares one DataContext value from
+`Binding="{Binding Path}"` with a literal `Value`. `MultiDataTrigger.Conditions` accepts two
+or more equivalent `Condition` entries and matches them with AND semantics. Dotted paths
+observe every reachable source and reconnect when an intermediate object is replaced. Data
+conditions currently support only Path plus a literal value; Converter, Mode/UpdateMode, and
+StaticResource values are not accepted.
+Runtime property metadata remains authoritative, so a newly exposed generic property does
+not need a dedicated XAML setter.
 
 ```cpp
 const std::string_view xaml = R"(
@@ -820,7 +807,33 @@ const std::string_view xaml = R"(
       x:Name="MainForm" Text="CUI XAML" Width="480" Height="240">
   <Form.Resources>
     <Color x:Key="Accent">#FF0078D4</Color>
-    <Style x:Key="PrimaryButton" TargetType="Button" Class="primary">
+    <Style TargetType="Button">
+      <Setter Property="Raised" Value="false" />
+      <Style.Triggers>
+        <Trigger Property="IsMouseOver" Value="true">
+          <Setter Property="BorderThickness" Value="2.5" />
+        </Trigger>
+        <MultiTrigger>
+          <MultiTrigger.Conditions>
+            <Condition Property="IsMouseOver" Value="true" />
+            <Condition Property="IsChecked" Value="true" />
+          </MultiTrigger.Conditions>
+          <Setter Property="Round" Value="12" />
+        </MultiTrigger>
+        <DataTrigger Binding="{Binding User.Status}" Value="Ready">
+          <Setter Property="Visible" Value="true" />
+        </DataTrigger>
+        <MultiDataTrigger>
+          <MultiDataTrigger.Conditions>
+            <Condition Binding="{Binding User.Status}" Value="Ready" />
+            <Condition Binding="{Binding User.IsAdmin}" Value="true" />
+          </MultiDataTrigger.Conditions>
+          <Setter Property="Raised" Value="true" />
+        </MultiDataTrigger>
+      </Style.Triggers>
+    </Style>
+    <Style x:Key="PrimaryButton" TargetType="Button" Class="primary"
+           BasedOn="{StaticResource {x:Type Button}}">
       <Setter Property="BackColor" Value="{StaticResource Accent}" />
       <Setter Property="Round" Value="8" />
     </Style>
@@ -838,6 +851,135 @@ if (!DesignerModel::RuntimeDocumentLoader::LoadXaml(
         std::string(xaml), document, options, &error)) {
     // Parse/materialization failed; document still owns its previous tree.
 }
+```
+
+Collection data can be written directly as control content: `ComboBoxItem`, `ListBoxItem`, and
+`ListViewItem` do not require an extra `*.Items` wrapper. Controls with multiple collections keep
+explicit property elements. `GridView` and `PagedGridView` share `GridViewColumn`, `GridViewRow`,
+and `GridViewCell`; cells support `Value`, `IsChecked`, `Tag`, and `SelectedIndex`. The same data
+round-trips through dynamic loading, Designer saves, and static C++ generation:
+
+```xml
+<ComboBox x:Name="mode">
+  <ComboBoxItem Content="Debug" />
+  <ComboBoxItem Content="Release" />
+</ComboBox>
+
+<PagedGridView x:Name="jobs">
+  <PagedGridView.Columns>
+    <GridViewColumn Header="Name" Width="180" />
+    <GridViewColumn Header="Ready" Type="Check" />
+  </PagedGridView.Columns>
+  <PagedGridView.Rows>
+    <GridViewRow>
+      <GridViewCell Value="Compile" />
+      <GridViewCell IsChecked="true" />
+    </GridViewRow>
+  </PagedGridView.Rows>
+</PagedGridView>
+```
+
+`Control.Foreground` accepts device-independent `SolidColorBrush`, `LinearGradientBrush`,
+`RadialGradientBrush`, and `ImageBrush` objects. The built-in file source supports `ImageSource`
+(including SVG), `Stretch="None|Fill|Uniform|UniformToFill"`, horizontal/vertical alignment,
+and `Opacity`. `Label`, `TextBox`, and their derived controls currently use this
+brush for text rendering, so a custom type no longer needs to copy an entire `Update()` just to
+draw gradient text. See `CUITest/CustomControls` and `DemoWindow.cui.xaml` for the complete sample:
+
+```xml
+<Label Text="Declarative paint">
+  <Control.Foreground>
+    <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+      <GradientStop Color="#E30940" Offset="0" />
+      <GradientStop Color="#1373E8" Offset="1" />
+    </LinearGradientBrush>
+  </Control.Foreground>
+</Label>
+```
+
+Resources can remain in the main document or be split into WPF-like merged dictionaries.
+Later merged dictionaries override earlier ones, and local entries in the current dictionary
+override all merged entries. Relative image URIs in an external dictionary resolve from that
+dictionary's directory. Designer round-trips preserve `Source` instead of expanding imported
+entries into the main XAML:
+
+```xml
+<Form.Resources>
+  <ResourceDictionary>
+    <ResourceDictionary.MergedDictionaries>
+      <ResourceDictionary Source="Themes/Dark.xaml" />
+    </ResourceDictionary.MergedDictionaries>
+    <Color x:Key="Accent">#FF2F6FE4</Color>
+  </ResourceDictionary>
+</Form.Resources>
+```
+
+Resource lookup is no longer hard-coded as path concatenation in the XAML parser. Configure
+search directories through `Application` before creating windows or loading documents. Without
+configuration, document-relative, executable-directory, and current-directory lookup are enabled:
+
+```cpp
+const std::filesystem::path startup = Application::StartupPath();
+Application::ConfigureResourceDirectories({
+    (startup / L"Assets").wstring(),
+    startup.wstring()
+});
+```
+
+For product packaging, implement `IResourceSource`, add it to a `ResourceResolver`, and install it
+with `Application::SetResourceResolver()`. A source returns bytes, a stable identity, a logical base
+URI, and an optional `WatchPath`, so packaged resources do not need to masquerade as files. The only
+built-in implementation today is `FileResourceSource`. Dynamic documents collect their main XAML,
+recursive merged dictionaries, and image dependencies; changed, deleted, and restored file-backed
+dependencies participate in the same debounced transactional hot-reload flow.
+
+`Control.Clip` accepts `RectangleGeometry`, `EllipseGeometry`, `PathGeometry`, and nested
+`GeometryGroup` values in control-local DIPs. A path is composed explicitly from `PathFigure`
+and `LineSegment`, `BezierSegment`, `QuadraticBezierSegment`, or `ArcSegment` objects. Paths
+and groups support `EvenOdd` (the default) and `Nonzero` fill rules. Every geometry can also
+use `Geometry.Transform` with Matrix, Translate, Scale, Rotate, Skew, or TransformGroup.
+A Clip is an
+additional constraint beyond the normal layout-bounds clip. It is inherited by descendant
+rendering, ordinary and virtual accessibility hit testing, and Designer hit testing, but it
+does not change Measure/Arrange or the layout rectangle:
+
+```xml
+<Panel Width="320" Height="180">
+  <Control.Clip>
+    <PathGeometry FillRule="Nonzero">
+      <Geometry.Transform>
+        <TranslateTransform X="4" Y="6" />
+      </Geometry.Transform>
+      <PathFigure StartPoint="18,0" IsClosed="true">
+        <LineSegment Point="282,0" />
+        <ArcSegment Point="300,18" Size="18,18" SweepDirection="Clockwise" />
+        <LineSegment Point="300,144" />
+        <ArcSegment Point="282,162" Size="18,18" SweepDirection="Clockwise" />
+        <LineSegment Point="18,162" />
+        <ArcSegment Point="0,144" Size="18,18" SweepDirection="Clockwise" />
+        <LineSegment Point="0,18" />
+        <ArcSegment Point="18,0" Size="18,18" SweepDirection="Clockwise" />
+      </PathFigure>
+    </PathGeometry>
+  </Control.Clip>
+</Panel>
+```
+
+`Control.RenderTransform` supports `MatrixTransform`, `TranslateTransform`, `ScaleTransform`,
+`RotateTransform`, `SkewTransform`, and declaration-ordered `TransformGroup` composition.
+`RenderTransformOrigin="x,y"` is relative to the control bounds. A render transform does not
+participate in Measure/Arrange, but it consistently affects control and descendant rendering,
+pointer hit testing, dirty bounds, accessibility bounds, Designer selection bounds, and static C++ output:
+
+```xml
+<Button Text="Transformed" RenderTransformOrigin="0.5,0.5">
+  <Control.RenderTransform>
+    <TransformGroup>
+      <RotateTransform Angle="-4" />
+      <ScaleTransform ScaleX="1.05" ScaleY="1.05" />
+    </TransformGroup>
+  </Control.RenderTransform>
+</Button>
 ```
 
 External controls use a prefixed element plus portable design/code-generation
@@ -865,12 +1007,10 @@ registration fails transactionally instead of silently replacing the control.
 The Designer and `CuiCodeGen` opt into a built-in-base proxy, so they can preview
 generic metadata and emit the typed member, include, and constructor without
 loading an application DLL. Custom-only XAML properties still require metadata
-from the real control. Dynamic parsing validates and coerces them through the
-registered factory. Canonical output keeps tool-unknown values and Bindings in
-typed `d:DesignProps` / `d:DesignBindings` bags; the CLI proxy preserves them and
-emits deferred setters/bindings. Unknown attributes are never guessed. Reload
-inherits the current document's registry when it is omitted, so custom properties
-can still update in place.
+from the real control or manifest and use ordinary XAML attributes. Dynamic parsing
+validates and coerces them through that metadata. Properties without verifiable
+metadata fail explicitly; canonical output no longer creates opaque `d:` value bags.
+Reload inherits the current document's registry when it is omitted.
 
 The Designer ToolBox can register the same portable descriptors from a UTF-8
 control manifest without loading application DLLs. Loading is transactional and
@@ -1015,31 +1155,26 @@ and whether a `Recomposed` or `Replaced` result is acceptable.
 
 This is a CUI-oriented XAML dialect rather than the full WPF XAML object system.
 Unsupported elements, properties, or markup extensions fail before commit.
-`XamlDocumentSerializer` is the parser's canonical counterpart. It keeps ordinary
-properties readable and stores structured compatibility data that has no direct syntax
-in `d:DesignProps` / `d:DesignExtra`, so a save/reload cycle preserves the complete
-Designer model. The Designer opens and saves `.cui.xaml` / `.xaml` directly and keeps
+`XamlDocumentSerializer` is the parser's canonical counterpart. Scalar properties use
+ordinary attributes, Bindings use `{Binding ...}`, single Items collections prefer direct
+content, multi-collection controls use public property elements such as `ListView.Columns`
+and `GridView.Rows`; brushes, clips, and transforms use the `Control.Foreground`,
+`Control.Clip`, and `Control.RenderTransform` object elements. Residual model
+data without public syntax fails explicitly instead of creating opaque `d:` bags.
+The Designer opens and saves `.cui.xaml` / `.xaml` directly and keeps
 the current source format on Save; `.cui.xml` / `.xml` use v5 XML. Version 5 adds optional
 code-behind class identity and a relative base path; versions 1–4 remain readable and are
 upgraded on the next save. Both use atomic replacement and the same materialization/code-generation path. The explicit
 Reload command runs the existing save/discard/cancel flow for dirty documents and keeps
 the current canvas if loading fails. `LoadXamlFile(...)` remains the runtime file entry.
 
-The toolbar's XAML action opens a source editor for the complete current document. Input
-is parsed after a 300 ms debounce and valid text previews immediately on the main Canvas;
-syntax or model errors report diagnostics while retaining the last valid preview. Restore Preview
-discards the invalid or not-yet-applied draft and returns to that checkpoint as one text Undo unit;
-Undo/Redo also restores the exact selection on each side of the replacement. Format
-atomically rewrites the valid document through the canonical serializer as one Undo unit
-with its pre/post selections, `Ctrl+Enter` accepts, and
-`Escape` or closing the dialog cancels. **Apply** and `Ctrl+S` commit the current strict
-document transaction and immediately begin another at that endpoint, so each changed Apply is
-an independent Undo checkpoint while a no-change Apply adds no history. Final cancellation rolls
-back only to the most recent checkpoint; when none was applied it restores the pre-editor document
-and complete selection. Individual keystrokes never enter Designer history.
-Completion reuses the control property/event catalogs and custom-control manifests rather than a
-second hard-coded XAML schema. Lexical context, tag pairing, and indentation are covered by the same
-headless regression suite as the parser.
+The toolbar's XAML action opens an intentionally simple source editor for the complete document.
+Input is parsed after a 300 ms debounce and valid text previews immediately on the main Canvas;
+syntax or model errors retain the last valid preview and expose precise diagnostic navigation.
+Restore Valid Version discards the current draft, `Ctrl+Enter` accepts, and `Escape` or closing
+the dialog cancels and restores the pre-editor Canvas. The dialog does not implement completion,
+syntax coloring, find/replace, formatting, tag matching, or multiple checkpoints; a future
+Visual Studio/COM host can layer those services over the same parser, diagnostics, and transaction API.
 
 `CuiRuntime/CuiRuntime.vcxproj` packages this dynamic path as a standalone static
 library; applications do not link the Designer executable. `CuiRuntimeSample` is a

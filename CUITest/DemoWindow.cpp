@@ -402,33 +402,18 @@ void DemoWindow::InitializeChrome()
 
 void DemoWindow::InitializeBasicPage()
 {
-	auto* combo = RequireControl<ComboBox>(L"basicCombo");
-	combo->Items = { L"动态 XAML", L"静态生成 C++", L"手写 C++ 控件树" };
-	combo->SelectedIndex = 0;
-	combo->Text = combo->Items[0];
+	(void)RequireControl<ComboBox>(L"basicCombo");
 }
 
 void DemoWindow::InitializeContainerPage()
 {
-	_picture->SetImageEx(_images[5]);
 	auto* sideBar = RequireControl<SideBar>(L"sideBar");
-	sideBar->AddHeader(L"工作区");
-	sideBar->AddItem(L"概览", L"overview", _icons[0]);
-	sideBar->Items.back().BadgeText = L"3";
-	sideBar->AddItem(L"资源", L"assets", _icons[1]);
-	sideBar->AddSeparator();
-	sideBar->AddItem(L"设置", L"settings", _icons[2]);
-	sideBar->SelectItem(1);
 	sideBar->OnItemClick += [this](NavigationView* sender, int index)
 	{
 		if (index >= 0 && index < static_cast<int>(sender->Items.size()))
 			UpdateStatus(L"SideBar: " + sender->Items[index].Text);
 	};
-	auto* breadcrumb = RequireControl<BreadcrumbBar>(L"breadcrumb");
-	breadcrumb->AddItem(L"应用");
-	breadcrumb->AddItem(L"资源");
-	breadcrumb->AddItem(L"详情");
-	breadcrumb->SelectItem(2);
+	(void)RequireControl<BreadcrumbBar>(L"breadcrumb");
 }
 
 void DemoWindow::InitializeDataPage()
@@ -444,14 +429,9 @@ void DemoWindow::InitializeDataPage()
 				StringHelper::Format(L"node%d-%d", i, j), _images[(i + j) % 10]));
 	}
 
-	auto* listBox = RequireControl<ListBox>(L"demoListBox");
-	for (const auto* text : { L"全部任务", L"今天", L"进行中", L"已完成" })
-		listBox->AddItem(ListViewItem(text));
-	listBox->SelectItem(0);
+	(void)RequireControl<ListBox>(L"demoListBox");
 
 	auto* list = RequireControl<ListView>(L"demoList");
-	list->AddColumn(ListViewColumn(L"Name", 170));
-	list->AddColumn(ListViewColumn(L"State", 120));
 	for (int i = 0; i < 40; ++i)
 	{
 		ListViewItem item(StringHelper::Format(L"List item %02d", i + 1),
@@ -462,13 +442,6 @@ void DemoWindow::InitializeDataPage()
 		list->AddItem(item);
 	}
 
-	_pagedGrid->AddColumn(GridViewColumn(L"Image", 70, ColumnType::Image));
-	GridViewColumn combo(L"State", 110, ColumnType::ComboBox);
-	combo.ComboBoxItems = { L"Ready", L"Running", L"Done" };
-	_pagedGrid->AddColumn(combo);
-	_pagedGrid->AddColumn(GridViewColumn(L"Check", 70, ColumnType::Check));
-	_pagedGrid->AddColumn(GridViewColumn(L"Value", 150, ColumnType::Text, true));
-	_pagedGrid->AddColumn(GridViewColumn(L"Link", 100, ColumnType::LinkedText));
 	for (int i = 0; i < 500; ++i)
 	{
 		GridViewRow row;
@@ -496,72 +469,10 @@ void DemoWindow::InitializeDataPage()
 
 void DemoWindow::InitializeAnalyticsPage()
 {
-	_filter->Placeholder = L"搜索客户、区域或阶段";
-	_filter->AddItem(FilterBarItem(L"已成交", L"done", true));
-	_filter->AddItem(FilterBarItem(L"合同中", L"contract"));
-	_filter->AddItem(FilterBarItem(L"跟进中", L"follow"));
-	_filter->AddItem(FilterBarItem(L"高毛利", L"margin"));
 	_filter->OnQueryChanged += [this](FilterBar*, const std::wstring& query)
 	{
 		UpdateStatus(query.empty() ? L"FilterBar: query cleared" : L"FilterBar: " + query);
 	};
-	_kpiRevenue->Title = L"成交额";
-	_kpiRevenue->Value = L"1,870.5";
-	_kpiRevenue->Unit = L"万";
-	_kpiRevenue->TrendText = L"+18.4%";
-	_kpiRevenue->Caption = L"较上期";
-	_kpiRevenue->TrendDirection = KpiTrendDirection::Up;
-	_kpiRevenue->SetSparkline({ 118, 134, 126, 156, 178, 172, 191, 218 });
-	_kpiDeals->Title = L"成交客户";
-	_kpiDeals->Value = L"128";
-	_kpiDeals->TrendText = L"+9";
-	_kpiDeals->Caption = L"本月新增";
-	_kpiDeals->TrendDirection = KpiTrendDirection::Up;
-	_kpiDeals->SetSparkline({ 56, 64, 72, 79, 88, 96, 113, 128 });
-	_kpiMargin->Title = L"平均毛利率";
-	_kpiMargin->Value = L"29.8";
-	_kpiMargin->Unit = L"%";
-	_kpiMargin->TrendText = L"-1.2%";
-	_kpiMargin->Caption = L"需关注";
-	_kpiMargin->TrendDirection = KpiTrendDirection::Down;
-	_kpiMargin->SetSparkline({ 34, 32, 31, 30, 31, 29, 28, 29.8 });
-
-	_chart->Title = L"成交趋势";
-	_chart->Subtitle = L"点击数据点查看明细";
-	std::vector<std::wstring> months = {
-		L"1月", L"2月", L"3月", L"4月", L"5月", L"6月", L"7月", L"8月" };
-	ChartSeries retail(L"零售", D2D1::ColorF(0.17f, 0.49f, 0.96f, 0.95f));
-	ChartSeries enterprise(L"企业", D2D1::ColorF(0.10f, 0.68f, 0.55f, 0.95f));
-	ChartSeries channel(L"渠道", D2D1::ColorF(0.94f, 0.53f, 0.18f, 0.95f));
-	const double retailValues[] = { 118, 134.5, 126.2, 156.8, 178.4, 172, 191.3, 218.5 };
-	const double enterpriseValues[] = { 92.4, 108, 131.8, 139, 151.2, 169.5, 182.8, 197 };
-	const double channelValues[] = { 66, 72.5, 84, 90.4, 96, 104.3, 112, 128.6 };
-	for (size_t i = 0; i < months.size(); ++i)
-	{
-		retail.Points.emplace_back(months[i], retailValues[i]);
-		enterprise.Points.emplace_back(months[i], enterpriseValues[i]);
-		channel.Points.emplace_back(months[i], channelValues[i]);
-	}
-	_chart->AddSeries(retail);
-	_chart->AddSeries(enterprise);
-	_chart->AddSeries(channel);
-
-	_report->Title = L"成交报表";
-	_report->Subtitle = L"表头排序与分组折叠";
-	_report->FooterText = L"ReportView · runtime data";
-	_report->AddColumn(ReportColumn(L"客户", 150));
-	_report->AddColumn(ReportColumn(L"区域", 90));
-	_report->AddColumn(ReportColumn(L"阶段", 90));
-	_report->AddColumn(ReportColumn(L"成交额", 100, ReportCellAlign::Right));
-	_report->AddColumn(ReportColumn(L"毛利率", 84, ReportCellAlign::Right));
-	_report->AddGroup(L"华东区域");
-	_report->AddRow(ReportRow({ L"上海云舟", L"华东", L"已成交", L"312.4", L"31%" }));
-	_report->AddRow(ReportRow({ L"杭州数擎", L"华东", L"合同中", L"228.6", L"28%" }));
-	_report->AddSummary(L"华东小计", { L"华东小计", L"", L"", L"541.0", L"30%" });
-	_report->AddGroup(L"华南区域");
-	_report->AddRow(ReportRow({ L"深圳星河", L"华南", L"已成交", L"276.8", L"29%" }));
-	_report->AddRow(ReportRow({ L"广州远航", L"华南", L"跟进中", L"162.5", L"25%" }));
-	_report->AddSummary(L"华南小计", { L"华南小计", L"", L"", L"439.3", L"27%" });
 }
 
 void DemoWindow::InitializeLayoutPage()

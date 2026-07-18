@@ -82,6 +82,7 @@ public:
 	bool HandlesNavigationKey(WPARAM key) const override;
 	bool IsAnimationRunning() override;
 	bool GetAnimatedInvalidRect(D2D1_RECT_F& outRect) override;
+	cui::core::Point GetChildrenLayoutOriginDip() override;
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 };

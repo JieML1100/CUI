@@ -41,6 +41,7 @@ class ChartView : public Control
 {
 public:
 	UIClass Type() override;
+	void EnsureBindingPropertiesRegistered() override;
 	ChartView(int x = 0, int y = 0, int width = 360, int height = 240);
 
 	std::vector<ChartSeries> Series;

@@ -351,6 +351,11 @@ void Expander::PerformPendingLayout()
 	PerformExpanderLayoutIfNeeded();
 }
 
+cui::core::Point Expander::GetChildrenLayoutOriginDip()
+{
+	return { Padding.Left, Padding.Top + HeaderHeight };
+}
+
 bool Expander::HeaderHitTest(int localX, int localY) const
 {
 	return localX >= 0 && localY >= 0 && localX <= _size.cx && localY <= _headerHeight;

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cmath>
 
 bool HitTestService::IsDescendantOf(Control* ancestor, Control* node)
 {
@@ -47,26 +48,25 @@ std::shared_ptr<DesignerControl> HitTestService::HitTestControl(
 	POINT pt,
 	bool preferParentContainer)
 {
-	auto pointInRect = [](POINT p, POINT loc, SIZE sz) -> bool {
-		return p.x >= loc.x && p.y >= loc.y && p.x <= (loc.x + sz.cx) && p.y <= (loc.y + sz.cy);
-	};
-
-	std::function<Control*(Control*, POINT)> hitDeepest = [&](Control* parent, POINT ptLocal) -> Control* {
+	std::function<Control*(Control*)> hitDeepest = [&](Control* parent) -> Control* {
 		if (!parent) return nullptr;
 		auto children = parent->GetChildrenInReverseZOrder();
 		for (auto* child : children)
 		{
 			if (!child || !child->Visible) continue;
-
-			auto loc = child->ActualLocation;
-			auto sz = child->ActualSize();
-			if (!pointInRect(ptLocal, loc, sz))
+			D2D1_POINT_2F local{};
+			if (!child->TryTransformRenderPointToLocal(
+				D2D1::Point2F(
+					static_cast<float>(pt.x), static_cast<float>(pt.y)), local)
+				|| !child->IsRenderPointInsideClip(D2D1::Point2F(
+					static_cast<float>(pt.x), static_cast<float>(pt.y)))
+				|| !child->ContainsPoint(
+					static_cast<int>(std::floor(local.x)),
+					static_cast<int>(std::floor(local.y))))
 				continue;
-
-			POINT childLocal{ ptLocal.x - loc.x, ptLocal.y - loc.y };
 			if (child->HitTestChildren() && child->Count > 0)
 			{
-				auto* deeper = hitDeepest(child, childLocal);
+				auto* deeper = hitDeepest(child);
 				if (deeper) return deeper;
 			}
 			return child;
@@ -88,7 +88,7 @@ std::shared_ptr<DesignerControl> HitTestService::HitTestControl(
 		return nullptr;
 	};
 
-	Control* hit = hitDeepest(root, pt);
+	Control* hit = hitDeepest(root);
 	if (!hit) return nullptr;
 
 	if (preferParentContainer)
@@ -109,7 +109,8 @@ Control* HitTestService::FindBestContainerAtPoint(
 	const std::vector<std::shared_ptr<DesignerControl>>& designerControls,
 	POINT ptCanvas,
 	Control* ignore,
-	const std::function<RECT(Control*)>& getControlRectInCanvas)
+	const std::function<RECT(Control*)>& getControlRectInCanvas,
+	const std::function<bool(Control*)>& containsPoint)
 {
 	Control* best = nullptr;
 	int bestArea = INT_MAX;
@@ -123,7 +124,9 @@ Control* HitTestService::FindBestContainerAtPoint(
 		if (ignore && (control == ignore || IsDescendantOf(ignore, control))) continue;
 
 		auto rect = getControlRectInCanvas(control);
-		if (ptCanvas.x >= rect.left && ptCanvas.x <= rect.right && ptCanvas.y >= rect.top && ptCanvas.y <= rect.bottom)
+		if (ptCanvas.x >= rect.left && ptCanvas.x <= rect.right
+			&& ptCanvas.y >= rect.top && ptCanvas.y <= rect.bottom
+			&& (!containsPoint || containsPoint(control)))
 		{
 			int area = (rect.right - rect.left) * (rect.bottom - rect.top);
 			if (area < bestArea)

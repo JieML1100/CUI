@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ResourceDictionary xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <ImageBrush x:Key="RuntimeBadgeForeground"
+              ImageSource="nav-overview.svg"
+              Stretch="UniformToFill"
+              AlignmentX="Center"
+              AlignmentY="Center"
+              Opacity="0.9"/>
+  <Style TargetType="Label" x:Key="ImageText">
+    <Setter Property="Foreground" Value="{StaticResource RuntimeBadgeForeground}"/>
+  </Style>
+</ResourceDictionary>

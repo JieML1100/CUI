@@ -466,6 +466,9 @@ void TextBox::Update()
 	const auto size = this->GetActualSizeDip();
 	const float actualWidth = size.width;
 	const float actualHeight = size.height;
+	Microsoft::WRL::ComPtr<ID2D1Brush> foreground;
+	foreground.Attach(CreateForegroundBrush(
+		*d2d, D2D1::SizeF(actualWidth, actualHeight)));
 	bool isSelected = this->ParentForm->Selected == this;
 	this->_caretRectCacheValid = false;
 	bool shouldDrawCaret = false;
@@ -520,12 +523,20 @@ void TextBox::Update()
 				}
 				auto textLayout = Factory::CreateStringLayout(this->Text, FLT_MAX, renderHeight, font->FontObject);
 				if (textLayout) {
-					d2d->DrawStringLayoutEffect(textLayout,
-						TextMargin - HorizontalScrollOffset, textOffsetY,
-						this->ForeColor,
-						DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
-						this->SelectedForeColor,
-						font);
+					if (foreground)
+						d2d->DrawStringLayoutEffect(textLayout,
+							TextMargin - HorizontalScrollOffset, textOffsetY,
+							foreground.Get(),
+							DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
+							this->SelectedForeColor,
+							font);
+					else
+						d2d->DrawStringLayoutEffect(textLayout,
+							TextMargin - HorizontalScrollOffset, textOffsetY,
+							this->ForeColor,
+							DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen },
+							this->SelectedForeColor,
+							font);
 					textLayout->Release();
 				}
 			}
@@ -533,9 +544,14 @@ void TextBox::Update()
 			{
 				auto textLayout = Factory::CreateStringLayout(this->Text, FLT_MAX, renderHeight, font->FontObject);
 				if (textLayout) {
-					d2d->DrawStringLayout(textLayout,
-						TextMargin - HorizontalScrollOffset, textOffsetY,
-						this->ForeColor);
+					if (foreground)
+						d2d->DrawStringLayout(textLayout,
+							TextMargin - HorizontalScrollOffset, textOffsetY,
+							foreground.Get());
+					else
+						d2d->DrawStringLayout(textLayout,
+							TextMargin - HorizontalScrollOffset, textOffsetY,
+							this->ForeColor);
 					textLayout->Release();
 				}
 			}

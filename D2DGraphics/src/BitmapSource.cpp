@@ -1,7 +1,12 @@
 ﻿#include "BitmapSource.h"
 #include "Factory.h"
+#include "Graphics.h"
 #include <memory>
 #include <algorithm>
+#include <cwctype>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 
 using Microsoft::WRL::ComPtr;
 
@@ -106,9 +111,27 @@ std::shared_ptr<BitmapSource> BitmapSource::FromWicBitmap(IWICBitmap* bitmap, bo
 	return FromBitmapInternal(bitmap, takeOwnership);
 }
 
-std::shared_ptr<BitmapSource> BitmapSource::FromFile(const std::wstring& path) {
+std::shared_ptr<BitmapSource> BitmapSource::FromFile(
+	const std::wstring& path,
+	const std::wstring& sourceUri) {
 	if (path.empty()) {
 		return {};
+	}
+	auto extension = std::filesystem::path(path).extension().wstring();
+	std::transform(extension.begin(), extension.end(), extension.begin(),
+		[](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+	if (extension == L".svg") {
+		std::ifstream stream(std::filesystem::path(path), std::ios::binary);
+		if (!stream) {
+			return {};
+		}
+		std::ostringstream content;
+		content << stream.rdbuf();
+		auto result = D2DGraphics::ToBitmapFromSvg(content.str());
+		if (result) {
+			result->sourceUri = sourceUri.empty() ? path : sourceUri;
+		}
+		return result;
 	}
 	ComPtr<IWICBitmapDecoder> decoder;
 	if (FAILED(_ImageFactory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder))) {
@@ -122,12 +145,27 @@ std::shared_ptr<BitmapSource> BitmapSource::FromFile(const std::wstring& path) {
 	if (!bitmap) {
 		return {};
 	}
-	return FromBitmapInternal(bitmap.Detach(), true);
+	auto result = FromBitmapInternal(bitmap.Detach(), true);
+	if (result) {
+		result->sourceUri = sourceUri.empty() ? path : sourceUri;
+	}
+	return result;
 }
 
-std::shared_ptr<BitmapSource> BitmapSource::FromBuffer(const void* data, size_t size) {
+std::shared_ptr<BitmapSource> BitmapSource::FromBuffer(
+	const void* data,
+	size_t size,
+	const std::wstring& sourceUri) {
 	if (!data || size == 0) {
 		return {};
+	}
+	const std::string content(static_cast<const char*>(data), size);
+	const auto first = content.find_first_not_of(" \t\r\n");
+	if (first != std::string::npos && content[first] == '<'
+		&& content.find("<svg", first) != std::string::npos) {
+		auto result = D2DGraphics::ToBitmapFromSvg(content);
+		if (result) result->sourceUri = sourceUri;
+		return result;
 	}
 
 	ComPtr<IWICStream> stream;
@@ -151,7 +189,9 @@ std::shared_ptr<BitmapSource> BitmapSource::FromBuffer(const void* data, size_t 
 	if (!bitmap) {
 		return {};
 	}
-	return FromBitmapInternal(bitmap.Detach(), true);
+	auto result = FromBitmapInternal(bitmap.Detach(), true);
+	if (result) result->sourceUri = sourceUri;
+	return result;
 }
 
 std::shared_ptr<BitmapSource> BitmapSource::FromHBitmap(HBITMAP bitmap) {

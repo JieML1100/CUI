@@ -36,24 +36,36 @@
     <ClInclude Include="include\Application.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\Resource.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\Binding.h">
       <Filter>include</Filter>
     </ClInclude>
-	<ClInclude Include="include\Style.h">
-	  <Filter>include</Filter>
-	</ClInclude>
-	<ClInclude Include="include\ObservableCollection.h">
-	  <Filter>include</Filter>
-	</ClInclude>
+    <ClInclude Include="include\Brush.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Geometry.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Transform.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Style.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ObservableCollection.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\Button.h">
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\CalendarView.h">
       <Filter>include</Filter>
     </ClInclude>
-	<ClInclude Include="include\AnchorPickerPopup.h">
-	  <Filter>include</Filter>
-	</ClInclude>
+    <ClInclude Include="include\AnchorPickerPopup.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\ChartView.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -186,9 +198,9 @@
     <ClInclude Include="include\Layout\LayoutState.h">
       <Filter>include\Layout</Filter>
     </ClInclude>
-	<ClInclude Include="include\Layout\LayoutDeferral.h">
-	  <Filter>include\Layout</Filter>
-	</ClInclude>
+    <ClInclude Include="include\Layout\LayoutDeferral.h">
+      <Filter>include\Layout</Filter>
+    </ClInclude>
     <ClInclude Include="include\Layout\LegacyCanvasLayout.h">
       <Filter>include\Layout</Filter>
     </ClInclude>
@@ -240,6 +252,10 @@
     <ClInclude Include="include\NumericUpDown.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\Core\Threading.h" />
+    <ClInclude Include="src\AdvancedControlPropertyRegistration.h">
+      <Filter>src</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Control.cpp">
@@ -251,21 +267,33 @@
     <ClCompile Include="src\Application.cpp">
       <Filter>src</Filter>
     </ClCompile>
+    <ClCompile Include="src\Resource.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\Binding.cpp">
       <Filter>src</Filter>
     </ClCompile>
-	<ClCompile Include="src\Style.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
+    <ClCompile Include="src\Brush.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Geometry.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Transform.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Style.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\Button.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\CalendarView.cpp">
       <Filter>src</Filter>
     </ClCompile>
-	<ClCompile Include="src\AnchorPickerPopup.cpp">
-	  <Filter>src</Filter>
-	</ClCompile>
+    <ClCompile Include="src\AnchorPickerPopup.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\ChartView.cpp">
       <Filter>src</Filter>
     </ClCompile>
@@ -425,6 +453,7 @@
     <ClCompile Include="src\NumericUpDown.cpp">
       <Filter>src</Filter>
     </ClCompile>
+    <ClCompile Include="src\Core\Threading.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

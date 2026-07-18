@@ -4,8 +4,8 @@
 
 #include <chrono>
 #include <cstdint>
-#include <optional>
 #include <string>
+#include <vector>
 
 namespace DesignerModel
 {
@@ -48,6 +48,9 @@ public:
 	void Stop() noexcept;
 	bool IsWatching() const noexcept { return !_filePath.empty(); }
 	const std::wstring& FilePath() const noexcept { return _filePath; }
+	/** Replaces secondary file dependencies while retaining the main document. */
+	void SetDependencies(const std::vector<ResourceDependency>& dependencies);
+	std::vector<std::wstring> WatchedFiles() const;
 
 	std::chrono::milliseconds Debounce() const noexcept { return _debounce; }
 	void SetDebounce(std::chrono::milliseconds value) noexcept;
@@ -78,18 +81,25 @@ private:
 
 		bool operator==(const FileSignature&) const = default;
 	};
+	struct WatchedFile
+	{
+		std::wstring Path;
+		FileSignature Signature;
+	};
 
 	std::wstring _filePath;
 	std::chrono::milliseconds _debounce;
-	std::optional<FileSignature> _observed;
+	std::vector<WatchedFile> _watchedFiles;
 	TimePoint _changedAt{};
 	bool _pending = false;
 	bool _failed = false;
+	bool _resourceChangePending = false;
 	std::wstring _lastError;
 
 	static FileSignature Observe(const std::wstring& filePath);
 	static std::wstring DescribeObservationFailure(
 		const std::wstring& filePath,
 		uint32_t errorCode);
+	void SyncDocumentDependencies(const RuntimeDocument& document);
 };
 }

@@ -16,7 +16,9 @@ public:
 	bool Applied = false;
 	DesignerStyleSheet ResultStyleSheet;
 
-	explicit StyleSheetEditorDialog(const DesignerStyleSheet& styleSheet);
+	explicit StyleSheetEditorDialog(
+		const DesignerStyleSheet& styleSheet,
+		std::wstring resourceBasePath = {});
 	~StyleSheetEditorDialog() = default;
 
 private:
@@ -28,6 +30,7 @@ private:
 	ComboBox* _ruleList = nullptr;
 	ComboBox* _ruleType = nullptr;
 	TextBox* _ruleId = nullptr;
+	TextBox* _ruleBasedOn = nullptr;
 	TextBox* _ruleClasses = nullptr;
 	TextBox* _requiredStates = nullptr;
 	TextBox* _excludedStates = nullptr;
@@ -42,6 +45,7 @@ private:
 	RichTextBox* _summary = nullptr;
 	std::unique_ptr<Control> _propertyProbe;
 	std::vector<DesignerPropertyDescriptor> _setterProperties;
+	std::wstring _resourceBasePath;
 	bool _loading = false;
 
 	void SelectComboIndex(ComboBox* combo, int index);

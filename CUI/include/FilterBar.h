@@ -22,6 +22,7 @@ class FilterBar : public Control
 {
 public:
 	UIClass Type() override;
+	void EnsureBindingPropertiesRegistered() override;
 	FilterBar(int x = 0, int y = 0, int width = 640, int height = 48);
 
 	std::wstring Placeholder = L"Search";

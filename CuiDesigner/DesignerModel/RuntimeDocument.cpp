@@ -1181,6 +1181,7 @@ bool RuntimeDocument::BindDataContext(
 		}
 		return false;
 	}
+	SetStyleDataContext(source.get());
 	_dataContext = std::move(source);
 	_installedBindings = std::move(next);
 	if (outError) outError->clear();
@@ -1190,7 +1191,22 @@ bool RuntimeDocument::BindDataContext(
 void RuntimeDocument::ClearDataBindings()
 {
 	RemoveDataBindings(_installedBindings);
+	SetStyleDataContext(nullptr);
 	_dataContext.reset();
+}
+
+void RuntimeDocument::SetStyleDataContext(IBindingSource* source)
+{
+	std::vector<const ControlStyleSheet*> updated;
+	for (auto* root : _rootControls)
+	{
+		if (!root) continue;
+		const auto& sheet = root->GetStyleSheet();
+		if (!sheet || std::find(updated.begin(), updated.end(), sheet.get())
+			!= updated.end()) continue;
+		sheet->SetDataContext(source);
+		updated.push_back(sheet.get());
+	}
 }
 
 bool RuntimeDocument::BindControlEvents(
@@ -1567,6 +1583,8 @@ CodeGenInput RuntimeDocument::BuildCodeGenInput() const
 	input.FormAllowResize = _form.AllowResize;
 	input.FormFontName = _form.FontName;
 	input.FormFontSize = _form.FontSize;
+	input.ResourceBasePath = _sourceDocument
+		? _sourceDocument->ResourceBasePath : std::wstring{};
 	input.StyleSheet = _styleSheet;
 	return input;
 }
@@ -2029,13 +2047,15 @@ bool RuntimeDocumentLoader::Reload(
 		if (!DesignDocumentEventIndex::Build(
 			document, eventIndex, outError)) return false;
 
+		const bool sameSourceDocument = output._sourceDocument
+			&& *output._sourceDocument == document;
 		const bool hasExplicitRuntimeChange = options.DataContext
 			|| options.ControlEventResolver
 			|| options.RequireControlEventResolver
 			|| options.CustomControls
 			|| options.AllowCustomControlProxy;
-		if (output._sourceDocument
-			&& *output._sourceDocument == document
+		if (sameSourceDocument
+			&& !options.ForceResourceRefresh
 			&& !hasExplicitRuntimeChange)
 		{
 			if (outMode) *outMode = RuntimeDocumentReloadMode::Unchanged;
@@ -2044,6 +2064,7 @@ bool RuntimeDocumentLoader::Reload(
 		}
 
 		if (output._sourceDocument
+			&& !(sameSourceDocument && options.ForceResourceRefresh)
 			&& CanReloadInPlace(*output._sourceDocument, document))
 		{
 			std::unordered_map<int, const DesignNode*> currentById;
@@ -2282,12 +2303,15 @@ bool RuntimeDocumentLoader::Reload(
 			if (hasStyleChanges)
 			{
 				if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
-					document.StyleSheet, nextRuntimeStyleSheet, outError))
+					document.StyleSheet, nextRuntimeStyleSheet, outError,
+					document.ResourceBasePath, document.Resources))
 				{
 					rollbackBindings();
 					rollbackProperties();
 					return false;
 				}
+				if (nextDataContext)
+					nextRuntimeStyleSheet->SetDataContext(nextDataContext.get());
 				styleApplied = true;
 				for (auto* root : output._rootControls)
 				{

@@ -30,10 +30,10 @@ public:
 	static bool Contains(std::wstring str, std::wstring substr);
 	static int GetHashCode(std::string str);
 	static int GetHashCode(std::wstring str);
-	static std::string Insert(std::string str, int index, std::string substr);
-	static std::wstring Insert(std::wstring str, int index, std::wstring substr);
-	static std::string Remove(std::string str, int index, int count);
-	static std::wstring Remove(std::wstring str, int index, int count);
+	static std::string Insert(std::string str, size_t index, std::string substr);
+	static std::wstring Insert(std::wstring str, size_t index, std::wstring substr);
+	static std::string Remove(std::string str, size_t index, size_t count);
+	static std::wstring Remove(std::wstring str, size_t index, size_t count);
 	static std::string Join(std::vector<std::string> strs, std::string separator);
 	static std::wstring Join(std::vector<std::wstring> strs, std::wstring separator);
 	static std::wstring Format(const wchar_t* fmt, ...);

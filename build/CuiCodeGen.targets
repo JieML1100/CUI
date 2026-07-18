@@ -5,7 +5,7 @@
     <CuiCodeGenExe Condition="'$(CuiCodeGenExe)' == ''">CuiCodeGen.exe</CuiCodeGenExe>
     <!-- Bump whenever generator output semantics change. The versioned default
          stamp invalidates old outputs without depending on unstable linker times. -->
-    <CuiCodeGenContractVersion Condition="'$(CuiCodeGenContractVersion)' == ''">7</CuiCodeGenContractVersion>
+    <CuiCodeGenContractVersion Condition="'$(CuiCodeGenContractVersion)' == ''">8</CuiCodeGenContractVersion>
   </PropertyGroup>
 
   <ItemDefinitionGroup>

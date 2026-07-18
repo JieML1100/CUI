@@ -1,5 +1,6 @@
 ﻿#include "FilterBar.h"
 #include "Form.h"
+#include "AdvancedControlPropertyRegistration.h"
 #include <algorithm>
 #include <utility>
 
@@ -29,6 +30,53 @@ FilterBarItem::FilterBarItem(std::wstring text, std::wstring value, bool selecte
 UIClass FilterBar::Type()
 {
 	return UIClass::UI_FilterBar;
+}
+
+void FilterBar::EnsureBindingPropertiesRegistered()
+{
+	Control::EnsureBindingPropertiesRegistered();
+	static const bool registered = []
+	{
+		using namespace cui::advanced_properties;
+		RegisterField(L"Placeholder", &FilterBar::Placeholder, std::wstring(L"Search"),
+			L"Data", 600, 10, ControlPropertyEditorKind::Text);
+		RegisterField(L"QueryText", &FilterBar::QueryText, std::wstring{},
+			L"Data", 600, 20, ControlPropertyEditorKind::Text);
+		RegisterField(L"ShowSearchBox", &FilterBar::ShowSearchBox, true,
+			L"Behavior", 110, 10, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"ShowActions", &FilterBar::ShowActions, true,
+			L"Behavior", 110, 20, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"ApplyOnFilterChange", &FilterBar::ApplyOnFilterChange, false,
+			L"Behavior", 110, 30, ControlPropertyEditorKind::Boolean);
+		RegisterMetric(L"Border", &FilterBar::Border, 1.0f,
+			L"Appearance", 200, 10);
+		RegisterMetric(L"CornerRadius", &FilterBar::CornerRadius, 8.0f,
+			L"Appearance", 200, 20);
+		RegisterMetric(L"SearchBoxWidth", &FilterBar::SearchBoxWidth, 220.0f,
+			L"Layout", 100, 10);
+		RegisterMetric(L"ChipHeight", &FilterBar::ChipHeight, 28.0f,
+			L"Layout", 100, 20);
+		RegisterColor(L"SurfaceColor", &FilterBar::SurfaceColor,
+			cui::theme::palette::Surface, 100);
+		RegisterColor(L"InputBackColor", &FilterBar::InputBackColor,
+			cui::theme::palette::SurfaceSubtle, 110);
+		RegisterColor(L"ChipBackColor", &FilterBar::ChipBackColor,
+			cui::theme::palette::SurfaceMuted, 120);
+		RegisterColor(L"ChipSelectedBackColor", &FilterBar::ChipSelectedBackColor,
+			cui::theme::palette::AccentSelected, 130);
+		RegisterColor(L"HoverColor", &FilterBar::HoverColor,
+			cui::theme::palette::AccentSoft, 140);
+		RegisterColor(L"AccentColor", &FilterBar::AccentColor,
+			cui::theme::palette::Accent, 150);
+		RegisterColor(L"MutedTextColor", &FilterBar::MutedTextColor,
+			cui::theme::palette::TextMuted, 160);
+		RegisterColor(L"ButtonBackColor", &FilterBar::ButtonBackColor,
+			cui::theme::palette::Accent, 170);
+		RegisterColor(L"ButtonTextColor", &FilterBar::ButtonTextColor,
+			cui::theme::palette::OnAccent, 180);
+		return true;
+	}();
+	(void)registered;
 }
 
 FilterBar::FilterBar(int x, int y, int width, int height)

@@ -21,5 +21,6 @@ public:
 		const std::vector<std::shared_ptr<DesignerControl>>& designerControls,
 		POINT ptCanvas,
 		Control* ignore,
-		const std::function<RECT(Control*)>& getControlRectInCanvas);
+		const std::function<RECT(Control*)>& getControlRectInCanvas,
+		const std::function<bool(Control*)>& containsPoint = {});
 };

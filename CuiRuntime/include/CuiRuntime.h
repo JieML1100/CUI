@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Resource.h>
+
 /**
  * Public umbrella header for CUI's dynamic design-document runtime.
  *

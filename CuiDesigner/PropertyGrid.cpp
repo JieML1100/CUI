@@ -2040,7 +2040,9 @@ void PropertyGrid::LoadControls(
 					L"编辑文档级样式资源和规则。",
 					[this, canvas]() {
 					if (!this->ParentForm) return;
-					StyleSheetEditorDialog dialog(canvas->GetDocumentStyleSheet());
+					StyleSheetEditorDialog dialog(
+						canvas->GetDocumentStyleSheet(),
+						canvas->GetDocumentResourceBasePath());
 					dialog.ShowDialog(this->ParentForm->Handle);
 					if (!dialog.Applied
 						|| dialog.ResultStyleSheet == canvas->GetDocumentStyleSheet()) return;

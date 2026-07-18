@@ -13,6 +13,10 @@ struct XamlDocumentParseOptions
 {
 	/** Optional real-control probe for custom elements and their properties. */
 	std::function<std::unique_ptr<Control>(const DesignNode&)> CustomControlFactory;
+	/** Optional directory used to resolve relative image/resource URIs. */
+	std::wstring ResourceBasePath;
+	/** Optional per-load context; defaults to an Application resolver snapshot. */
+	std::shared_ptr<ResourceLoadContext> Resources;
 };
 
 /** Structured syntax or semantic source diagnostic produced by the XAML frontend. */

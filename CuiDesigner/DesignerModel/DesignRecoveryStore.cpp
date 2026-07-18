@@ -12,6 +12,7 @@
 #include <ShlObj.h>
 #include <algorithm>
 #include <charconv>
+#include <filesystem>
 #include <limits>
 #include <string_view>
 
@@ -238,10 +239,15 @@ bool DesignRecoveryStore::LoadFromFile(
 		parsed.OriginalFilePath = Convert::Utf8ToUnicode(
 			content.substr(cursor, static_cast<size_t>(originalPathSize)));
 		cursor += static_cast<size_t>(originalPathSize);
+		std::wstring resourceBasePath;
+		if (!parsed.OriginalFilePath.empty())
+			resourceBasePath = std::filesystem::absolute(
+				std::filesystem::path(parsed.OriginalFilePath))
+				.parent_path().lexically_normal().wstring();
 		std::wstring xmlError;
 		if (!DesignDocumentSerializer::FromXml(
 			content.substr(cursor, static_cast<size_t>(xmlSize)),
-			parsed.Document, &xmlError))
+			parsed.Document, &xmlError, resourceBasePath))
 		{
 			if (outError) *outError = L"Recovery document is invalid: " + xmlError;
 			return false;

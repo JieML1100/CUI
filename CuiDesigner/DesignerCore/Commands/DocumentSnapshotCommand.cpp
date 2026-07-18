@@ -68,22 +68,51 @@ namespace
 
 		result += document.StyleSheet.Resources.capacity()
 			* sizeof(DesignerStyleResource);
+		result += document.StyleSheet.MergedDictionaries.capacity()
+			* sizeof(std::wstring);
+		for (const auto& dictionary : document.StyleSheet.MergedDictionaries)
+			result += WideStringMemory(dictionary);
 		for (const auto& resource : document.StyleSheet.Resources)
 			result += WideStringMemory(resource.Key)
+				+ WideStringMemory(resource.SourceDictionary)
 				+ StyleValueMemory(resource.Value);
 		result += document.StyleSheet.Rules.capacity()
 			* sizeof(DesignerStyleRule);
 		for (const auto& rule : document.StyleSheet.Rules)
 		{
 			result += WideStringMemory(rule.Id)
+				+ WideStringMemory(rule.BasedOn)
+				+ WideStringMemory(rule.SourceDictionary)
 				+ rule.Classes.capacity() * sizeof(std::wstring)
-				+ rule.Setters.capacity() * sizeof(DesignerStyleSetter);
+				+ rule.Setters.capacity() * sizeof(DesignerStyleSetter)
+				+ rule.DataConditions.capacity() * sizeof(DesignerStyleDataCondition)
+				+ rule.Triggers.capacity() * sizeof(DesignerStyleTrigger);
 			for (const auto& className : rule.Classes)
 				result += WideStringMemory(className);
 			for (const auto& setter : rule.Setters)
 				result += WideStringMemory(setter.PropertyName)
 					+ WideStringMemory(setter.ResourceKey)
 					+ StyleValueMemory(setter.Literal);
+			for (const auto& condition : rule.DataConditions)
+				result += WideStringMemory(condition.SourceProperty)
+					+ StyleValueMemory(condition.Value);
+			for (const auto& trigger : rule.Triggers)
+			{
+				result += trigger.Conditions.capacity()
+						* sizeof(DesignerStyleCondition)
+					+ trigger.DataConditions.capacity()
+						* sizeof(DesignerStyleDataCondition)
+					+ trigger.Setters.capacity() * sizeof(DesignerStyleSetter);
+				for (const auto& condition : trigger.Conditions)
+					result += WideStringMemory(condition.Property);
+				for (const auto& condition : trigger.DataConditions)
+					result += WideStringMemory(condition.SourceProperty)
+						+ StyleValueMemory(condition.Value);
+				for (const auto& setter : trigger.Setters)
+					result += WideStringMemory(setter.PropertyName)
+						+ WideStringMemory(setter.ResourceKey)
+						+ StyleValueMemory(setter.Literal);
+			}
 		}
 
 		result += document.Nodes.capacity()

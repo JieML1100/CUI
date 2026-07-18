@@ -33,7 +33,7 @@ namespace
 		else if (auto* parent = dynamic_cast<Panel*>(control->Parent))
 		{
 			parent->InvalidateLayout();
-			parent->PerformLayout();
+			parent->UpdateLayout();
 		}
 		control->InvalidateVisual();
 		if (canvas) canvas->InvalidateVisual();

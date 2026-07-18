@@ -1,5 +1,6 @@
 #include "TestRunner.h"
 #include <AnchorPickerPopup.h>
+#include <Application.h>
 #include <Button.h>
 #include <CheckBox.h>
 #include <CalendarView.h>
@@ -49,6 +50,7 @@
 #include <TextBox.h>
 #include <TextEditCore.h>
 #include <RichTextBox.h>
+#include <Resource.h>
 #include <ToolBar.h>
 #include <TreeView.h>
 #include <WebBrowser.h>
@@ -76,10 +78,10 @@
 #include "../CuiDesigner/DesignerModel/DesignDocumentSerializer.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentCodeGenInputBuilder.h"
 #include "../CuiDesigner/DesignerModel/RuntimeDocument.h"
+#include "../CuiDesigner/DesignerModel/RuntimeDocumentFileWatcher.h"
 #include "../CuiDesigner/DesignerModel/RuntimeEventHandlerRegistry.h"
 #include "../CuiDesigner/DesignerModel/XamlDocumentParser.h"
 #include "../CuiDesigner/DesignerModel/XamlDocumentSerializer.h"
-#include "../CuiDesigner/DesignerModel/XamlEditorAssist.h"
 #include "../CuiDesigner/DesignerModel/DesignRecoveryStore.h"
 #include <algorithm>
 #include <chrono>
@@ -2729,6 +2731,20 @@ int main()
 		DesignerStyleSheet styleSheet;
 		styleSheet.Resources.push_back({
 			L" Accent ", { DesignerStyleValueKind::Color, L"#804080C0" } });
+		DesignerStyleValue clipResource;
+		clipResource.Kind = DesignerStyleValueKind::Geometry;
+		clipResource.ObjectValue = DesignerModel::DesignValue{
+			{ "type", "rectangle" }, { "x", 0.0 }, { "y", 0.0 },
+			{ "width", 80.0 }, { "height", 30.0 },
+			{ "radiusX", 6.0 }, { "radiusY", 6.0 } };
+		styleSheet.Resources.push_back({ L"ButtonClip", clipResource });
+		DesignerStyleValue transformResource;
+		transformResource.Kind = DesignerStyleValueKind::Transform;
+		transformResource.ObjectValue = DesignerModel::DesignValue::array();
+		transformResource.ObjectValue.push_back(DesignerModel::DesignValue{
+			{ "type", "rotate" }, { "angle", 3.0 },
+			{ "centerX", 40.0 }, { "centerY", 15.0 } });
+		styleSheet.Resources.push_back({ L"ButtonTransform", transformResource });
 		DesignerStyleRule rule;
 		rule.HasType = true;
 		rule.Type = UIClass::UI_Button;
@@ -2736,7 +2752,9 @@ int main()
 		rule.RequiredStates = ControlStyleState::Hovered;
 		rule.Setters = {
 			{ L"UnderMouseColor", true, L"Accent", {} },
-			{ L"Round", false, L"", { DesignerStyleValueKind::Float, L"7.25" } }
+			{ L"Round", false, L"", { DesignerStyleValueKind::Float, L"7.25" } },
+			{ L"Clip", true, L"ButtonClip", {} },
+			{ L"RenderTransform", true, L"ButtonTransform", {} }
 		};
 		styleSheet.Rules.push_back(std::move(rule));
 
@@ -2758,6 +2776,19 @@ int main()
 		CUI_EXPECT_EQ(64.0f / 255.0f, button.UnderMouseColor.r);
 		CUI_EXPECT_EQ(128.0f / 255.0f, button.UnderMouseColor.g);
 		CUI_EXPECT_EQ(128.0f / 255.0f, button.UnderMouseColor.a);
+		CUI_EXPECT_TRUE(button.GetClip().has_value());
+		CUI_EXPECT_EQ(cui::drawing::GeometryKind::Rectangle,
+			button.GetClip()->Kind);
+		CUI_EXPECT_EQ(6.0f, button.GetClip()->RadiusX);
+		CUI_EXPECT_TRUE(button.GetRenderTransform().has_value());
+		CUI_EXPECT_EQ(1ULL, button.GetRenderTransform()->Operations.size());
+		CUI_EXPECT_EQ(cui::drawing::TransformKind::Rotate,
+			button.GetRenderTransform()->Operations[0].Kind);
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Style,
+			button.GetPropertyValueSource(L"Clip"));
+		CUI_EXPECT_TRUE(button.SetStyleSheet(nullptr));
+		CUI_EXPECT_FALSE(button.GetClip().has_value());
+		CUI_EXPECT_FALSE(button.GetRenderTransform().has_value());
 
 		DesignerStyleValue thickness{
 			DesignerStyleValueKind::Thickness, L"4, 8" };
@@ -2776,6 +2807,147 @@ int main()
 		invalid = styleSheet;
 		invalid.Rules[0].ExcludedStates = ControlStyleState::Hovered;
 		CUI_EXPECT_FALSE(DesignerStyleSheetUtils::Validate(invalid, &error));
+	});
+
+	runner.Add("Designer styles resolve implicit and BasedOn inheritance", []
+	{
+		DesignerStyleSheet styleSheet;
+		DesignerStyleRule implicit;
+		implicit.HasType = true;
+		implicit.Type = UIClass::UI_Button;
+		implicit.Setters.push_back({
+			L"Raised", false, {}, { DesignerStyleValueKind::Bool, L"false" } });
+		DesignerStyleTrigger hovered;
+		hovered.Conditions.push_back({ L"IsMouseOver", true });
+		hovered.Setters.push_back({
+			L"BorderThickness", false, {},
+			{ DesignerStyleValueKind::Float, L"5.5" } });
+		implicit.Triggers.push_back(std::move(hovered));
+		DesignerStyleTrigger hoveredAndChecked;
+		hoveredAndChecked.Conditions = {
+			{ L"IsMouseOver", true }, { L"IsChecked", true } };
+		hoveredAndChecked.Setters.push_back({
+			L"Round", false, {},
+			{ DesignerStyleValueKind::Float, L"12" } });
+		implicit.Triggers.push_back(std::move(hoveredAndChecked));
+		DesignerStyleTrigger ready;
+		ready.DataConditions.push_back(DesignerStyleDataCondition{
+			L"Profile.Status",
+			{ DesignerStyleValueKind::String, L"Ready" } });
+		ready.Setters.push_back({
+			L"Visible", false, {},
+			{ DesignerStyleValueKind::Bool, L"false" } });
+		implicit.Triggers.push_back(std::move(ready));
+		DesignerStyleTrigger readyAndEditable;
+		readyAndEditable.DataConditions = {
+			{ L"Profile.Status", { DesignerStyleValueKind::String, L"Ready" } },
+			{ L"CanEdit", { DesignerStyleValueKind::Bool, L"true" } }
+		};
+		readyAndEditable.Setters.push_back({
+			L"Raised", false, {},
+			{ DesignerStyleValueKind::Bool, L"true" } });
+		implicit.Triggers.push_back(std::move(readyAndEditable));
+		DesignerStyleRule base;
+		base.HasType = true;
+		base.Type = UIClass::UI_Button;
+		base.Id = L"BaseButton";
+		base.BasedOn = L"{x:Type Button}";
+		base.Setters = {
+			{ L"BorderThickness", false, {},
+				{ DesignerStyleValueKind::Float, L"2.5" } },
+			{ L"Round", false, {},
+				{ DesignerStyleValueKind::Float, L"4" } }
+		};
+		DesignerStyleRule derived;
+		derived.Id = L"PrimaryButton";
+		derived.BasedOn = L"BaseButton";
+		derived.Setters.push_back({
+			L"Round", false, {}, { DesignerStyleValueKind::Float, L"9" } });
+		styleSheet.Rules = {
+			std::move(implicit), std::move(base), std::move(derived) };
+
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerStyleSheetUtils::Validate(styleSheet, &error));
+		DesignerStyleSheet resolved;
+		CUI_EXPECT_TRUE(DesignerStyleSheetUtils::ResolveInheritance(
+			styleSheet, resolved, &error));
+		CUI_EXPECT_EQ(3ULL, resolved.Rules.size());
+		CUI_EXPECT_TRUE(resolved.Rules[2].HasType);
+		CUI_EXPECT_EQ(UIClass::UI_Button, resolved.Rules[2].Type);
+		CUI_EXPECT_TRUE(resolved.Rules[2].BasedOn.empty());
+		CUI_EXPECT_EQ(3ULL, resolved.Rules[2].Setters.size());
+		CUI_EXPECT_EQ(4ULL, resolved.Rules[2].Triggers.size());
+
+		std::shared_ptr<ControlStyleSheet> runtime;
+		CUI_EXPECT_TRUE(DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
+			styleSheet, runtime, &error));
+		auto profile = std::make_shared<ObservableObject>();
+		profile->SetValue(L"Status", std::wstring(L"Pending"));
+		ObservableObject source;
+		source.SetValue(L"Profile", BindingSourceReference(profile));
+		source.SetValue(L"CanEdit", false);
+		runtime->SetDataContext(&source);
+		Button button(L"Inherited", 0, 0);
+		button.SetStyleId(L"PrimaryButton");
+		CUI_EXPECT_TRUE(button.SetStyleSheet(runtime));
+		CUI_EXPECT_FALSE(button.Raised);
+		CUI_EXPECT_EQ(2.5f, button.BorderThickness);
+		CUI_EXPECT_EQ(9.0f, button.Round);
+		CUI_EXPECT_TRUE(button.Visible);
+		profile->SetValue(L"Status", std::wstring(L"Ready"));
+		CUI_EXPECT_FALSE(button.Visible);
+		CUI_EXPECT_FALSE(button.Raised);
+		source.SetValue(L"CanEdit", true);
+		CUI_EXPECT_TRUE(button.Raised);
+		auto replacementProfile = std::make_shared<ObservableObject>();
+		replacementProfile->SetValue(L"Status", std::wstring(L"Pending"));
+		source.SetValue(L"Profile", BindingSourceReference(replacementProfile));
+		CUI_EXPECT_TRUE(button.Visible);
+		CUI_EXPECT_FALSE(button.Raised);
+		replacementProfile->SetValue(L"Status", std::wstring(L"Ready"));
+		CUI_EXPECT_FALSE(button.Visible);
+		CUI_EXPECT_TRUE(button.Raised);
+		source.SetValue(L"CanEdit", false);
+		CUI_EXPECT_FALSE(button.Raised);
+		runtime->SetDataContext(nullptr);
+		CUI_EXPECT_TRUE(button.Visible);
+		button.SetStyleState(ControlStyleState::Hovered);
+		CUI_EXPECT_EQ(5.5f, button.BorderThickness);
+		CUI_EXPECT_EQ(9.0f, button.Round);
+		button.SetStyleState(ControlStyleState::Checked);
+		CUI_EXPECT_EQ(12.0f, button.Round);
+		button.SetStyleState(ControlStyleState::Hovered, false);
+		CUI_EXPECT_EQ(2.5f, button.BorderThickness);
+		CUI_EXPECT_EQ(9.0f, button.Round);
+
+		auto unsupportedTrigger = styleSheet;
+		unsupportedTrigger.Rules[0].Triggers[0].Conditions[0].Property = L"Text";
+		CUI_EXPECT_FALSE(DesignerStyleSheetUtils::Validate(
+			unsupportedTrigger, &error));
+		CUI_EXPECT_TRUE(error.find(L"不支持") != std::wstring::npos);
+
+		auto duplicateCondition = styleSheet;
+		duplicateCondition.Rules[0].Triggers[1].Conditions.push_back(
+			{ L"IsMouseOver", false });
+		CUI_EXPECT_FALSE(DesignerStyleSheetUtils::Validate(
+			duplicateCondition, &error));
+		CUI_EXPECT_TRUE(error.find(L"重复") != std::wstring::npos);
+
+		auto duplicateDataCondition = styleSheet;
+		duplicateDataCondition.Rules[0].Triggers[3].DataConditions.push_back(
+			{ L"CanEdit", { DesignerStyleValueKind::Bool, L"false" } });
+		CUI_EXPECT_FALSE(DesignerStyleSheetUtils::Validate(
+			duplicateDataCondition, &error));
+		CUI_EXPECT_TRUE(error.find(L"重复") != std::wstring::npos);
+
+		auto cyclic = styleSheet;
+		cyclic.Rules[0].Id = L"CycleA";
+		cyclic.Rules[0].BasedOn = L"CycleB";
+		cyclic.Rules[1].Id = L"CycleB";
+		cyclic.Rules[1].BasedOn = L"CycleA";
+		cyclic.Rules.resize(2);
+		CUI_EXPECT_FALSE(DesignerStyleSheetUtils::Validate(cyclic, &error));
+		CUI_EXPECT_TRUE(error.find(L"循环") != std::wstring::npos);
 	});
 
 	runner.Add("Binding collections find and remove individual target bindings", []
@@ -8349,8 +8521,10 @@ int main()
 		CUI_EXPECT_TRUE(pastedPageButton != nullptr);
 		if (pastedPanel)
 		{
-			CUI_EXPECT_EQ(22, pastedPanel->Props["location"]["x"].get<int>());
-			CUI_EXPECT_EQ(34, pastedPanel->Props["location"]["y"].get<int>());
+			CUI_EXPECT_EQ(std::string("22"), pastedPanel->Props["metadata"]
+				["Left"]["value"].get<std::string>());
+			CUI_EXPECT_EQ(std::string("34"), pastedPanel->Props["metadata"]
+				["Top"]["value"].get<std::string>());
 		}
 		if (pastedPanel && pastedLabel)
 		{
@@ -8582,15 +8756,25 @@ int main()
 		identified.Id = L"PrimaryButton";
 		identified.Setters.push_back(literalSetter(
 			L"BorderThickness", DesignerStyleValueKind::Float, L"3"));
-		DesignerStyleRule hovered = identified;
-		hovered.RequiredStates = ControlStyleState::Hovered;
-		hovered.Setters.front().Literal.Text = L"4";
+		DesignerStyleTrigger hovered;
+		hovered.Conditions = {
+			{ L"IsMouseOver", true }, { L"IsChecked", false } };
+		hovered.Setters.push_back(literalSetter(
+			L"BorderThickness", DesignerStyleValueKind::Float, L"4"));
+		identified.Triggers.push_back(std::move(hovered));
+		DesignerStyleTrigger readyAdmin;
+		readyAdmin.DataConditions = {
+			{ L"Status", { DesignerStyleValueKind::String, L"Ready" } },
+			{ L"IsAdmin", { DesignerStyleValueKind::Bool, L"true" } }
+		};
+		readyAdmin.Setters.push_back(literalSetter(
+			L"Round", DesignerStyleValueKind::Float, L"10"));
+		identified.Triggers.push_back(std::move(readyAdmin));
 		DesignerStyleRule unrelated;
 		unrelated.HasType = true;
 		unrelated.Type = UIClass::UI_Label;
 		unrelated.Setters.push_back(resourceSetter(L"ForeColor", L"Unused"));
-		source.StyleSheet.Rules = {
-			typed, primary, identified, hovered, unrelated };
+		source.StyleSheet.Rules = { typed, primary, identified, unrelated };
 
 		DesignerModel::DesignNode button;
 		button.Id = 1;
@@ -8614,7 +8798,7 @@ int main()
 		CUI_EXPECT_EQ(1ULL, fragment.StyleSheet.Resources.size());
 		CUI_EXPECT_EQ(std::wstring(L"Accent"),
 			fragment.StyleSheet.Resources.front().Key);
-		CUI_EXPECT_EQ(4ULL, fragment.StyleSheet.Rules.size());
+		CUI_EXPECT_EQ(5ULL, fragment.StyleSheet.Rules.size());
 		CUI_EXPECT_TRUE(std::none_of(
 			fragment.StyleSheet.Rules.begin(), fragment.StyleSheet.Rules.end(),
 			[](const DesignerStyleRule& rule)
@@ -8672,7 +8856,7 @@ int main()
 			target, parsed, 12, 12,
 			isolated, &isolatedResult, &error));
 		CUI_EXPECT_EQ(2ULL, isolated.StyleSheet.Resources.size());
-		CUI_EXPECT_EQ(7ULL, isolated.StyleSheet.Rules.size());
+		CUI_EXPECT_EQ(8ULL, isolated.StyleSheet.Rules.size());
 		CUI_EXPECT_TRUE(std::equal(
 			targetStyleSheet.Resources.begin(), targetStyleSheet.Resources.end(),
 			isolated.StyleSheet.Resources.begin()));
@@ -8697,7 +8881,7 @@ int main()
 				: isolatedNode->Props["styleClasses"].ArrayItems())
 				isolatedClasses.push_back(Convert::Utf8ToUnicode(
 					value.get<std::string>()));
-			CUI_EXPECT_EQ(3ULL, isolatedClasses.size());
+			CUI_EXPECT_EQ(4ULL, isolatedClasses.size());
 			CUI_EXPECT_TRUE(std::none_of(
 				isolatedClasses.begin(), isolatedClasses.end(),
 				[](const std::wstring& value)
@@ -8731,6 +8915,15 @@ int main()
 		CUI_EXPECT_EQ(0.0f, pastedButton.UnderMouseColor.b);
 		pastedButton.SetStyleState(ControlStyleState::Hovered);
 		CUI_EXPECT_EQ(4.0f, pastedButton.BorderThickness);
+		ObservableObject pastedDataContext;
+		pastedDataContext.SetValue(L"Status", std::wstring(L"Ready"));
+		pastedDataContext.SetValue(L"IsAdmin", false);
+		runtime->SetDataContext(&pastedDataContext);
+		CUI_EXPECT_FALSE(std::fabs(pastedButton.Round - 10.0f) < 0.001f);
+		pastedDataContext.SetValue(L"IsAdmin", true);
+		CUI_EXPECT_EQ(10.0f, pastedButton.Round);
+		pastedDataContext.SetValue(L"Status", std::wstring(L"Pending"));
+		CUI_EXPECT_FALSE(std::fabs(pastedButton.Round - 10.0f) < 0.001f);
 
 		Button targetButton(L"Existing", 0, 0);
 		targetButton.SetStyleId(L"PrimaryButton");
@@ -8746,7 +8939,7 @@ int main()
 			isolated, parsed, 24, 24,
 			isolatedAgain, &secondResult, &error));
 		CUI_EXPECT_EQ(3ULL, isolatedAgain.StyleSheet.Resources.size());
-		CUI_EXPECT_EQ(11ULL, isolatedAgain.StyleSheet.Rules.size());
+		CUI_EXPECT_EQ(13ULL, isolatedAgain.StyleSheet.Rules.size());
 		const auto secondNode = std::find_if(
 			isolatedAgain.Nodes.begin(), isolatedAgain.Nodes.end(),
 			[&](const DesignerModel::DesignNode& node)
@@ -9020,7 +9213,7 @@ int main()
 		CUI_EXPECT_FALSE(error.empty());
 	});
 
-	runner.Add("Canonical XAML projected properties honor source edits", []
+	runner.Add("Canonical XAML properties are the single source of truth", []
 	{
 		DesignerModel::DesignDocument document;
 		document.NextStableId = 2;
@@ -9036,14 +9229,16 @@ int main()
 		const auto canonical =
 			DesignerModel::XamlDocumentSerializer::ToXaml(document);
 		CUI_EXPECT_TRUE(canonical.find("d:ProjectedProperties=")
-			!= std::string::npos);
+			== std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("d:DesignProps") == std::string::npos);
 		CUI_EXPECT_TRUE(canonical.find("d:Locked=\"true\"")
 			!= std::string::npos);
 		DesignerModel::DesignDocument unchanged;
 		std::wstring error;
 		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
 			canonical, unchanged, &error));
-		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_EQ(std::string("Paste"), unchanged.Nodes.front()
+			.Props["metadata"]["Text"]["value"].get<std::string>());
 
 		auto edited = canonical;
 		const auto text = edited.find(" Text=\"Paste\"");
@@ -9054,8 +9249,6 @@ int main()
 		DesignerModel::DesignDocument changed;
 		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
 			edited, changed, &error));
-		CUI_EXPECT_EQ(std::string("Paste"),
-			changed.Nodes.front().Props["text"].get<std::string>());
 		CUI_EXPECT_EQ(std::string("Live Preview"), changed.Nodes.front()
 			.Props["metadata"]["Text"]["value"].get<std::string>());
 
@@ -9081,6 +9274,791 @@ int main()
 		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
 			invalidLocked, preserved, &error));
 		CUI_EXPECT_EQ(document, preserved);
+	});
+
+	runner.Add("Render transforms compose through descendants and invert hit coordinates", []
+	{
+		Control parent;
+		parent.ApplyLayout(cui::core::Rect{ 100.0f, 50.0f, 200.0f, 100.0f });
+		cui::drawing::Transform parentTransform;
+		cui::drawing::TransformOperation scale;
+		scale.Kind = cui::drawing::TransformKind::Scale;
+		scale.ScaleX = 2.0f;
+		scale.ScaleY = 2.0f;
+		parentTransform.Operations.push_back(scale);
+		parent.SetRenderTransform(parentTransform);
+
+		auto* child = parent.AddControl(new Control());
+		child->ApplyLayout(cui::core::Rect{ 10.0f, 5.0f, 20.0f, 10.0f });
+		cui::drawing::Transform childTransform;
+		cui::drawing::TransformOperation translate;
+		translate.Kind = cui::drawing::TransformKind::Translate;
+		translate.X = 3.0f;
+		translate.Y = 4.0f;
+		childTransform.Operations.push_back(translate);
+		child->SetRenderTransform(childTransform);
+
+		const auto raw = child->GetLocalToRenderTransform();
+		const auto matrix = D2D1::Matrix3x2F(
+			raw._11, raw._12, raw._21, raw._22, raw._31, raw._32);
+		const auto renderedOrigin = matrix.TransformPoint(D2D1::Point2F());
+		CUI_EXPECT_NEAR(126.0f, renderedOrigin.x, 0.001f);
+		CUI_EXPECT_NEAR(68.0f, renderedOrigin.y, 0.001f);
+		D2D1_POINT_2F local{};
+		CUI_EXPECT_TRUE(child->TryTransformRenderPointToLocal(
+			renderedOrigin, local));
+		CUI_EXPECT_NEAR(0.0f, local.x, 0.001f);
+		CUI_EXPECT_NEAR(0.0f, local.y, 0.001f);
+		const auto bounds = child->GetRenderedAbsoluteRectDip();
+		CUI_EXPECT_NEAR(126.0f, bounds.left, 0.001f);
+		CUI_EXPECT_NEAR(68.0f, bounds.top, 0.001f);
+		CUI_EXPECT_NEAR(166.0f, bounds.right, 0.001f);
+		CUI_EXPECT_NEAR(88.0f, bounds.bottom, 0.001f);
+	});
+
+	runner.Add("Geometry clips provide exact fill rules and inherit through transforms", []
+	{
+		cui::drawing::Geometry rounded;
+		rounded.Kind = cui::drawing::GeometryKind::Rectangle;
+		rounded.Rect = D2D1::RectF(0.0f, 0.0f, 100.0f, 60.0f);
+		rounded.RadiusX = 20.0f;
+		rounded.RadiusY = 20.0f;
+		CUI_EXPECT_TRUE(rounded.ContainsPoint(D2D1::Point2F(50.0f, 30.0f)));
+		CUI_EXPECT_FALSE(rounded.ContainsPoint(D2D1::Point2F(1.0f, 1.0f)));
+
+		cui::drawing::Geometry ellipse;
+		ellipse.Kind = cui::drawing::GeometryKind::Ellipse;
+		ellipse.Center = D2D1::Point2F(50.0f, 30.0f);
+		ellipse.RadiusX = 25.0f;
+		ellipse.RadiusY = 15.0f;
+		CUI_EXPECT_TRUE(ellipse.ContainsPoint(D2D1::Point2F(50.0f, 30.0f)));
+		CUI_EXPECT_FALSE(ellipse.ContainsPoint(D2D1::Point2F(80.0f, 30.0f)));
+
+		cui::drawing::Geometry alternating;
+		alternating.Kind = cui::drawing::GeometryKind::Group;
+		alternating.FillRule = cui::drawing::GeometryFillRule::EvenOdd;
+		alternating.Children = { rounded, ellipse };
+		CUI_EXPECT_FALSE(alternating.ContainsPoint(D2D1::Point2F(50.0f, 30.0f)));
+		CUI_EXPECT_TRUE(alternating.ContainsPoint(D2D1::Point2F(20.0f, 30.0f)));
+		Microsoft::WRL::ComPtr<ID2D1Geometry> native;
+		native.Attach(alternating.CreateD2DGeometry());
+		CUI_EXPECT_TRUE(native != nullptr);
+		if (native)
+		{
+			BOOL nativeInside = TRUE;
+			CUI_EXPECT_TRUE(SUCCEEDED(native->FillContainsPoint(
+				D2D1::Point2F(50.0f, 30.0f), nullptr,
+				D2D1_DEFAULT_FLATTENING_TOLERANCE, &nativeInside)));
+			CUI_EXPECT_FALSE(nativeInside != FALSE);
+		}
+
+		auto lineTo = [](float x, float y)
+		{
+			cui::drawing::PathSegment segment;
+			segment.Kind = cui::drawing::PathSegmentKind::Line;
+			segment.Point = D2D1::Point2F(x, y);
+			return segment;
+		};
+		cui::drawing::Geometry path;
+		path.Kind = cui::drawing::GeometryKind::Path;
+		path.FillRule = cui::drawing::GeometryFillRule::Nonzero;
+		cui::drawing::PathFigure square;
+		square.StartPoint = D2D1::Point2F(0.0f, 0.0f);
+		square.IsClosed = true;
+		square.Segments = {
+			lineTo(40.0f, 0.0f), lineTo(40.0f, 40.0f), lineTo(0.0f, 40.0f) };
+		path.Figures.push_back(square);
+		cui::drawing::Transform pathTransform;
+		cui::drawing::TransformOperation translatePath;
+		translatePath.Kind = cui::drawing::TransformKind::Translate;
+		translatePath.X = 10.0f;
+		translatePath.Y = 5.0f;
+		pathTransform.Operations.push_back(translatePath);
+		path.LocalTransform = pathTransform;
+		CUI_EXPECT_TRUE(path.ContainsPoint(D2D1::Point2F(30.0f, 25.0f)));
+		CUI_EXPECT_FALSE(path.ContainsPoint(D2D1::Point2F(5.0f, 5.0f)));
+		Microsoft::WRL::ComPtr<ID2D1Geometry> nativePath;
+		nativePath.Attach(path.CreateD2DGeometry());
+		CUI_EXPECT_TRUE(nativePath != nullptr);
+		if (nativePath)
+		{
+			BOOL nativeInside = FALSE;
+			CUI_EXPECT_TRUE(SUCCEEDED(nativePath->FillContainsPoint(
+				D2D1::Point2F(30.0f, 25.0f), nullptr,
+				D2D1_DEFAULT_FLATTENING_TOLERANCE, &nativeInside)));
+			CUI_EXPECT_TRUE(nativeInside != FALSE);
+		}
+
+		cui::drawing::Geometry curvedPath;
+		curvedPath.Kind = cui::drawing::GeometryKind::Path;
+		cui::drawing::PathFigure curvedFigure;
+		curvedFigure.StartPoint = D2D1::Point2F(0.0f, 20.0f);
+		curvedFigure.IsClosed = true;
+		cui::drawing::PathSegment cubic;
+		cubic.Kind = cui::drawing::PathSegmentKind::Bezier;
+		cubic.Point1 = D2D1::Point2F(5.0f, 0.0f);
+		cubic.Point2 = D2D1::Point2F(15.0f, 0.0f);
+		cubic.Point3 = D2D1::Point2F(20.0f, 20.0f);
+		cui::drawing::PathSegment quadratic;
+		quadratic.Kind = cui::drawing::PathSegmentKind::QuadraticBezier;
+		quadratic.Point1 = D2D1::Point2F(30.0f, 40.0f);
+		quadratic.Point2 = D2D1::Point2F(40.0f, 20.0f);
+		cui::drawing::PathSegment arc;
+		arc.Kind = cui::drawing::PathSegmentKind::Arc;
+		arc.Point = D2D1::Point2F(0.0f, 20.0f);
+		arc.Size = D2D1::SizeF(20.0f, 12.0f);
+		arc.RotationAngle = 15.0f;
+		arc.IsLargeArc = true;
+		arc.Sweep = cui::drawing::SweepDirection::Clockwise;
+		curvedFigure.Segments = { cubic, quadratic, arc };
+		curvedPath.Figures.push_back(curvedFigure);
+		Microsoft::WRL::ComPtr<ID2D1Geometry> nativeCurvedPath;
+		nativeCurvedPath.Attach(curvedPath.CreateD2DGeometry());
+		CUI_EXPECT_TRUE(nativeCurvedPath != nullptr);
+
+		Control parent;
+		parent.ApplyLayout(cui::core::Rect{ 100.0f, 50.0f, 100.0f, 60.0f });
+		parent.SetClip(ellipse);
+		cui::drawing::Transform transform;
+		cui::drawing::TransformOperation scale;
+		scale.Kind = cui::drawing::TransformKind::Scale;
+		scale.ScaleX = 2.0f;
+		scale.ScaleY = 2.0f;
+		transform.Operations.push_back(scale);
+		parent.SetRenderTransform(transform);
+		auto* child = parent.AddControl(new Control());
+		child->ApplyLayout(cui::core::Rect{ 0.0f, 0.0f, 100.0f, 60.0f });
+		const auto parentRaw = parent.GetLocalToRenderTransform();
+		const auto parentMatrix = D2D1::Matrix3x2F(
+			parentRaw._11, parentRaw._12, parentRaw._21,
+			parentRaw._22, parentRaw._31, parentRaw._32);
+		const auto inside = parentMatrix.TransformPoint(D2D1::Point2F(50.0f, 30.0f));
+		const auto outside = parentMatrix.TransformPoint(D2D1::Point2F(5.0f, 5.0f));
+		CUI_EXPECT_TRUE(child->IsRenderPointInsideClip(inside));
+		CUI_EXPECT_FALSE(child->IsRenderPointInsideClip(outside));
+		CUI_EXPECT_TRUE(parent.GetClip().has_value());
+		parent.ClearClip();
+		CUI_EXPECT_FALSE(parent.GetClip().has_value());
+		CUI_EXPECT_TRUE(child->IsRenderPointInsideClip(outside));
+	});
+
+	runner.Add("Public XAML collection properties round-trip without designer bags", []
+	{
+		DesignerModel::DesignDocument document;
+		document.Form.Name = L"CollectionsForm";
+		document.NextStableId = 10;
+		auto addNode = [&](int id, const wchar_t* name, UIClass type,
+			DesignerModel::DesignValue extra)
+		{
+			DesignerModel::DesignNode node;
+			node.Id = id;
+			node.Name = name;
+			node.Type = type;
+			node.Order = static_cast<int>(document.Nodes.size());
+			node.Extra = std::move(extra);
+			document.Nodes.push_back(std::move(node));
+		};
+
+		DesignerModel::DesignValue brush = DesignerModel::DesignValue::object();
+		brush["type"] = "linear";
+		brush["mapping"] = "relative";
+		brush["opacity"] = 0.75;
+		brush["startX"] = 0.0;
+		brush["startY"] = 0.0;
+		brush["endX"] = 1.0;
+		brush["endY"] = 1.0;
+		brush["stops"] = DesignerModel::DesignValue::array_t{
+			DesignerModel::DesignValue{
+				{ "offset", 0.0 }, { "color", DesignerModel::DesignValue{
+					{ "r", 1.0 }, { "g", 0.0 }, { "b", 0.0 }, { "a", 1.0 } } } },
+			DesignerModel::DesignValue{
+				{ "offset", 1.0 }, { "color", DesignerModel::DesignValue{
+					{ "r", 0.0 }, { "g", 0.0 }, { "b", 1.0 }, { "a", 1.0 } } } } };
+		DesignerModel::DesignValue choices = DesignerModel::DesignValue::object();
+		choices["items"] = DesignerModel::DesignValue::array_t{ "One", "Two" };
+		choices["foregroundBrush"] = std::move(brush);
+		choices["renderTransformOrigin"] = DesignerModel::DesignValue{
+			{ "x", 0.5 }, { "y", 0.5 } };
+		choices["renderTransform"] = DesignerModel::DesignValue::array_t{
+			DesignerModel::DesignValue{
+				{ "type", "matrix" }, { "m11", 1.0 }, { "m12", 0.0 },
+				{ "m21", 0.0 }, { "m22", 1.0 }, { "dx", 2.0 }, { "dy", 3.0 } },
+			DesignerModel::DesignValue{
+				{ "type", "translate" }, { "x", 4.0 }, { "y", -2.0 } },
+			DesignerModel::DesignValue{
+				{ "type", "scale" }, { "scaleX", 1.1 }, { "scaleY", 0.9 },
+				{ "centerX", 0.0 }, { "centerY", 0.0 } },
+			DesignerModel::DesignValue{
+				{ "type", "rotate" }, { "angle", 5.0 },
+				{ "centerX", 0.0 }, { "centerY", 0.0 } },
+			DesignerModel::DesignValue{
+				{ "type", "skew" }, { "angleX", 2.0 }, { "angleY", 0.0 },
+				{ "centerX", 0.0 }, { "centerY", 0.0 } } };
+		DesignerModel::DesignValue clipPath{
+			{ "type", "path" }, { "fillRule", "nonzero" },
+			{ "transform", DesignerModel::DesignValue::array_t{
+				DesignerModel::DesignValue{
+					{ "type", "translate" }, { "x", 1.5 }, { "y", 2.5 } } } },
+			{ "figures", DesignerModel::DesignValue::array_t{
+				DesignerModel::DesignValue{
+					{ "startX", 0.0 }, { "startY", 18.0 },
+					{ "closed", true }, { "filled", true },
+					{ "segments", DesignerModel::DesignValue::array_t{
+						DesignerModel::DesignValue{
+							{ "type", "line" }, { "x", 24.0 }, { "y", 0.0 } },
+						DesignerModel::DesignValue{
+							{ "type", "bezier" },
+							{ "x1", 42.0 }, { "y1", 0.0 },
+							{ "x2", 42.0 }, { "y2", 36.0 },
+							{ "x3", 60.0 }, { "y3", 36.0 } },
+						DesignerModel::DesignValue{
+							{ "type", "quadratic" },
+							{ "x1", 72.0 }, { "y1", 18.0 },
+							{ "x2", 60.0 }, { "y2", 0.0 } },
+						DesignerModel::DesignValue{
+							{ "type", "arc" }, { "x", 0.0 }, { "y", 18.0 },
+							{ "width", 24.0 }, { "height", 18.0 },
+							{ "rotation", 12.0 }, { "large", true },
+							{ "sweep", "clockwise" } } } } } } } };
+		DesignerModel::DesignValue clipGroup{
+			{ "type", "group" }, { "fillRule", "nonzero" },
+			{ "children", DesignerModel::DesignValue::array_t{
+				DesignerModel::DesignValue{
+					{ "type", "rectangle" }, { "x", 0.0 }, { "y", 0.0 },
+					{ "width", 180.0 }, { "height", 36.0 },
+					{ "radiusX", 8.0 }, { "radiusY", 8.0 } },
+				DesignerModel::DesignValue{
+					{ "type", "group" }, { "fillRule", "evenodd" },
+					{ "children", DesignerModel::DesignValue::array_t{
+						DesignerModel::DesignValue{
+							{ "type", "ellipse" }, { "centerX", 90.0 },
+							{ "centerY", 18.0 }, { "radiusX", 20.0 },
+							{ "radiusY", 12.0 } } } } } } } };
+		clipGroup["children"].push_back(std::move(clipPath));
+		choices["clip"] = std::move(clipGroup);
+		addNode(1, L"choices", UIClass::UI_ComboBox, std::move(choices));
+		addNode(2, L"records", UIClass::UI_ListView, {
+			{ "columns", DesignerModel::DesignValue::array_t{
+				DesignerModel::DesignValue{
+					{ "header", "Name" }, { "width", 180.5 }, { "align", 2 } } } },
+			{ "items", DesignerModel::DesignValue::array_t{
+				DesignerModel::DesignValue{
+					{ "text", "Alice" }, { "subText", "Admin" },
+					{ "checked", true }, { "selected", true }, { "enabled", false },
+					{ "subItems", DesignerModel::DesignValue::array_t{ "A", "B" } } } } } });
+		addNode(3, L"cells", UIClass::UI_GridView, {
+			{ "columns", DesignerModel::DesignValue::array_t{
+				DesignerModel::DesignValue{
+					{ "name", "State" }, { "width", 150.25 }, { "type", 4 },
+					{ "canEdit", false }, { "buttonText", "Pick" },
+					{ "comboBoxItems", DesignerModel::DesignValue::array_t{
+						"Ready", "Done" } } } } },
+			{ "rows", DesignerModel::DesignValue::array_t{
+				DesignerModel::DesignValue{ { "cells", DesignerModel::DesignValue::array_t{
+					DesignerModel::DesignValue{ { "value", "Ready" }, { "selectedIndex", 0 } },
+					DesignerModel::DesignValue{ { "checked", true } },
+					DesignerModel::DesignValue{ { "tag", static_cast<long long>(42) } } } } } } } });
+		addNode(4, L"properties", UIClass::UI_PropertyGrid, {
+			{ "items", DesignerModel::DesignValue::array_t{
+				DesignerModel::DesignValue{
+					{ "category", "Layout" }, { "name", "Anchor" },
+					{ "value", "Left, Top" }, { "description", "Edges" },
+					{ "type", 8 }, { "readOnly", true }, { "isMixed", true },
+					{ "canReset", true }, { "minimum", -2.5 },
+					{ "maximum", 8.5 }, { "step", 0.5 },
+					{ "tag", static_cast<unsigned long long>(42) },
+					{ "options", DesignerModel::DesignValue::array_t{
+						"Left", "Top" } } } } } });
+		addNode(5, L"outline", UIClass::UI_TreeView, {
+			{ "nodes", DesignerModel::DesignValue::array_t{
+				DesignerModel::DesignValue{
+					{ "text", "Root" }, { "expand", true },
+					{ "children", DesignerModel::DesignValue::array_t{
+						DesignerModel::DesignValue{
+							{ "text", "Child" }, { "expand", false } } } } } } } });
+		addNode(6, L"status", UIClass::UI_StatusBar, {
+			{ "parts", DesignerModel::DesignValue::array_t{
+				DesignerModel::DesignValue{ { "text", "Ready" }, { "width", 120 } } } } });
+		addNode(7, L"mainMenu", UIClass::UI_Menu, {
+			{ "items", DesignerModel::DesignValue::array_t{
+				DesignerModel::DesignValue{
+					{ "text", "File" }, { "id", 100 }, { "shortcut", "Alt+F" },
+					{ "enable", false },
+					{ "subItems", DesignerModel::DesignValue::array_t{
+						DesignerModel::DesignValue{ { "text", "Open" }, { "id", 101 } },
+						DesignerModel::DesignValue{ { "separator", true } } } } } } } });
+		addNode(8, L"player", UIClass::UI_MediaPlayer, {
+			{ "mediaFile", "media/demo.mp4" } });
+		addNode(9, L"paged", UIClass::UI_PagedGridView, {
+			{ "columns", DesignerModel::DesignValue::array_t{
+				DesignerModel::DesignValue{
+					{ "name", "Value" }, { "width", 96.0 }, { "type", 0 },
+					{ "canEdit", true }, { "buttonText", "" } } } },
+			{ "rows", DesignerModel::DesignValue::array_t{
+				DesignerModel::DesignValue{ { "cells", DesignerModel::DesignValue::array_t{
+					DesignerModel::DesignValue{ { "value", "Paged row" } } } } } } } });
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto forbidden : { "d:ProjectedProperties", "d:DesignProps",
+			"d:DesignBindings", "d:DesignExtra" })
+			CUI_EXPECT_TRUE(canonical.find(forbidden) == std::string::npos);
+		for (const auto expected : { "RenderTransformOrigin=\"0.5,0.5\"",
+			"<Control.Clip>", "<GeometryGroup FillRule=\"Nonzero\"",
+			"<RectangleGeometry", "<EllipseGeometry", "<PathGeometry",
+			"<Geometry.Transform>", "<PathFigure", "<LineSegment",
+			"<BezierSegment", "<QuadraticBezierSegment", "<ArcSegment",
+			"<Control.RenderTransform>", "<TransformGroup>", "<MatrixTransform",
+			"<TranslateTransform", "<ScaleTransform", "<RotateTransform",
+			"<SkewTransform", "<Control.Foreground>", "<LinearGradientBrush",
+			"<ComboBoxItem Content=\"One\"", "<ListView.Columns>",
+			"<ListViewItem Content=\"Alice\"", "<GridView.Columns>", "<GridView.Rows>",
+			"<PagedGridView.Columns>", "<PagedGridView.Rows>", "<PropertyGrid.Items>",
+			"<TreeView.Items>", "<StatusBar.Items>", "<Menu.Items>",
+			"Source=\"media/demo.mp4\"" })
+			CUI_EXPECT_TRUE(canonical.find(expected) != std::string::npos);
+
+		DesignerModel::DesignDocument parsed;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, parsed, &error));
+		if (!error.empty())
+			std::wcerr << L"Collection XAML parse error: " << error << L'\n';
+		CUI_EXPECT_EQ(9ULL, parsed.Nodes.size());
+		CUI_EXPECT_EQ(2ULL, parsed.Nodes[0].Extra["items"].size());
+		CUI_EXPECT_EQ(std::string("linear"),
+			parsed.Nodes[0].Extra["foregroundBrush"]["type"].get<std::string>());
+		CUI_EXPECT_EQ(5ULL, parsed.Nodes[0].Extra["renderTransform"].size());
+		CUI_EXPECT_EQ(std::string("group"),
+			parsed.Nodes[0].Extra["clip"]["type"].get<std::string>());
+		CUI_EXPECT_EQ(3ULL,
+			parsed.Nodes[0].Extra["clip"]["children"].size());
+		const auto& parsedPath = parsed.Nodes[0].Extra["clip"]["children"][size_t{ 2 }];
+		CUI_EXPECT_EQ(std::string("path"),
+			parsedPath["type"].get<std::string>());
+		CUI_EXPECT_EQ(1ULL, parsedPath["transform"].size());
+		CUI_EXPECT_EQ(4ULL,
+			parsedPath["figures"][size_t{ 0 }]["segments"].size());
+		CUI_EXPECT_EQ(0.5,
+			parsed.Nodes[0].Extra["renderTransformOrigin"]["x"].get<double>());
+		CUI_EXPECT_EQ(1ULL, parsed.Nodes[1].Extra["columns"].size());
+		CUI_EXPECT_EQ(2ULL, parsed.Nodes[1].Extra["items"][size_t{ 0 }]["subItems"].size());
+		CUI_EXPECT_EQ(4, parsed.Nodes[2].Extra["columns"][size_t{ 0 }]["type"].get<int>());
+		CUI_EXPECT_TRUE(parsed.Nodes[2].Extra["rows"][size_t{ 0 }]
+			["cells"][size_t{ 1 }]["checked"].get<bool>());
+		CUI_EXPECT_EQ(static_cast<unsigned long long>(42),
+			parsed.Nodes[3].Extra["items"][size_t{ 0 }]["tag"].get<unsigned long long>());
+		CUI_EXPECT_EQ(1ULL,
+			parsed.Nodes[4].Extra["nodes"][size_t{ 0 }]["children"].size());
+		CUI_EXPECT_EQ(2ULL,
+			parsed.Nodes[6].Extra["items"][size_t{ 0 }]["subItems"].size());
+		CUI_EXPECT_EQ(std::string("media/demo.mp4"),
+			parsed.Nodes[7].Extra["mediaFile"].get<std::string>());
+		CUI_EXPECT_EQ(std::string("Paged row"), parsed.Nodes[8].Extra["rows"]
+			[size_t{ 0 }]["cells"][size_t{ 0 }]["value"].get<std::string>());
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			parsed, runtime, {}, &error));
+		auto* combo = dynamic_cast<ComboBox*>(runtime.FindControlByDesignId(1));
+		CUI_EXPECT_TRUE(combo != nullptr);
+		CUI_EXPECT_TRUE(combo && combo->GetForegroundBrush().has_value());
+		if (combo && combo->GetForegroundBrush())
+			CUI_EXPECT_EQ(2ULL, combo->GetForegroundBrush()->GradientStops.size());
+		CUI_EXPECT_TRUE(combo && combo->GetRenderTransform().has_value());
+		CUI_EXPECT_TRUE(combo && combo->GetClip().has_value());
+		if (combo && combo->GetClip())
+		{
+			CUI_EXPECT_EQ(cui::drawing::GeometryKind::Group,
+				combo->GetClip()->Kind);
+			CUI_EXPECT_EQ(3ULL, combo->GetClip()->Children.size());
+			const auto& pathGeometry = combo->GetClip()->Children[2];
+			CUI_EXPECT_EQ(cui::drawing::GeometryKind::Path, pathGeometry.Kind);
+			CUI_EXPECT_TRUE(pathGeometry.LocalTransform.has_value());
+			CUI_EXPECT_EQ(1ULL, pathGeometry.Figures.size());
+			CUI_EXPECT_EQ(4ULL, pathGeometry.Figures[0].Segments.size());
+			CUI_EXPECT_EQ(cui::drawing::PathSegmentKind::Arc,
+				pathGeometry.Figures[0].Segments[3].Kind);
+		}
+		if (combo && combo->GetRenderTransform())
+		{
+			CUI_EXPECT_EQ(5ULL, combo->GetRenderTransform()->Operations.size());
+			const auto raw = combo->GetLocalToRenderTransform();
+			const auto matrix = D2D1::Matrix3x2F(
+				raw._11, raw._12, raw._21, raw._22, raw._31, raw._32);
+			const auto renderedPoint = matrix.TransformPoint(D2D1::Point2F(10.0f, 5.0f));
+			D2D1_POINT_2F localPoint{};
+			CUI_EXPECT_TRUE(combo->TryTransformRenderPointToLocal(
+				renderedPoint, localPoint));
+			CUI_EXPECT_NEAR(10.0f, localPoint.x, 0.001f);
+			CUI_EXPECT_NEAR(5.0f, localPoint.y, 0.001f);
+		}
+		auto* grid = dynamic_cast<GridView*>(runtime.FindControlByDesignId(3));
+		CUI_EXPECT_TRUE(grid != nullptr);
+		CUI_EXPECT_EQ(1ULL, grid ? grid->Rows.size() : 0ULL);
+		if (grid && !grid->Rows.empty())
+			CUI_EXPECT_TRUE(grid->Rows[0].Cells[1].GetBool());
+		auto* paged = dynamic_cast<PagedGridView*>(
+			runtime.FindControlByDesignId(9));
+		CUI_EXPECT_TRUE(paged != nullptr);
+		CUI_EXPECT_EQ(1ULL, paged ? paged->Rows.size() : 0ULL);
+		CodeGenInput codeGenInput;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentCodeGenInputBuilder::Build(
+			parsed, codeGenInput, &error));
+		const auto generated = CodeGenerator(
+			L"CollectionsForm", codeGenInput).GenerateCpp();
+		for (const auto expected : { "cui::drawing::Brush __foregroundBrush_choices",
+			"choices->SetForegroundBrush", "GridViewRow __gridRow1",
+			"cui::drawing::Geometry __clip_choices",
+			"cui::drawing::GeometryKind::Group",
+			"cui::drawing::GeometryKind::Path",
+			"cui::drawing::PathSegmentKind::Arc", ".LocalTransform =",
+			"choices->SetClip",
+			"cui::drawing::Transform __renderTransform_choices",
+			"cui::drawing::TransformKind::Skew", "choices->SetRenderTransform",
+			"choices->SetRenderTransformOrigin", "cells->AddRow(__gridRow1)",
+			"paged->AddRow(__gridRow1)" })
+			CUI_EXPECT_TRUE(generated.find(expected) != std::string::npos);
+		CUI_EXPECT_EQ(canonical,
+			DesignerModel::XamlDocumentSerializer::ToXaml(parsed));
+		auto invalidClip = canonical;
+		const auto radius = invalidClip.find("RadiusX=\"8\"");
+		CUI_EXPECT_TRUE(radius != std::string::npos);
+		if (radius != std::string::npos)
+			invalidClip.replace(radius, std::string("RadiusX=\"8\"").size(),
+				"RadiusX=\"-1\"");
+		auto preserved = parsed;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidClip, preserved, &error));
+		CUI_EXPECT_EQ(parsed, preserved);
+	});
+
+	runner.Add("Merged XAML resource dictionaries preserve precedence origins and image brushes", []
+	{
+		namespace fs = std::filesystem;
+		const auto root = fs::temp_directory_path()
+			/ ("cui-merged-dictionaries-" + std::to_string(
+				std::chrono::steady_clock::now().time_since_epoch().count()));
+		const auto themes = root / "themes";
+		fs::create_directories(themes);
+		auto write = [](const fs::path& path, const std::string& text)
+		{
+			std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+			stream << text;
+			CUI_EXPECT_TRUE(stream.good());
+		};
+		write(themes / "icon.svg",
+			R"(<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><rect width="16" height="16" fill="#2f6fe4"/></svg>)");
+		write(themes / "base.xaml", R"(<?xml version="1.0" encoding="utf-8"?>
+<ResourceDictionary xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Color x:Key="Accent">#FFFF0000</Color>
+  <ImageBrush x:Key="Texture" ImageSource="icon.svg" Stretch="Uniform" AlignmentX="Right" AlignmentY="Bottom" Opacity="0.75"/>
+  <Style TargetType="Label" x:Key="ImageLabel">
+    <Setter Property="Foreground" Value="{StaticResource Texture}"/>
+  </Style>
+</ResourceDictionary>)");
+		write(themes / "overlay.xaml", R"(<ResourceDictionary xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Color x:Key="Accent">#FF0000FF</Color>
+</ResourceDictionary>)");
+		const auto mainPath = root / "Main.cui.xaml";
+		write(mainPath, R"(<Form xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="MergedForm">
+  <Form.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <ResourceDictionary Source="themes/base.xaml"/>
+        <ResourceDictionary Source="themes/overlay.xaml"/>
+      </ResourceDictionary.MergedDictionaries>
+      <Color x:Key="Accent">#FF00FF00</Color>
+      <Style TargetType="Label" x:Key="AccentLabel">
+        <Setter Property="ForeColor" Value="{StaticResource Accent}"/>
+      </Style>
+    </ResourceDictionary>
+  </Form.Resources>
+  <Label x:Name="imageLabel" Style="{StaticResource ImageLabel}" Text="Image"/>
+  <Label x:Name="accentLabel" Style="{StaticResource AccentLabel}" Text="Accent"/>
+  <Label x:Name="inlineImageLabel" Text="Inline">
+    <Control.Foreground>
+      <ImageBrush ImageSource="themes/icon.svg" Stretch="None" AlignmentX="Left" AlignmentY="Top"/>
+    </Control.Foreground>
+  </Label>
+</Form>)");
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::LoadFromFile(
+			mainPath.wstring(), document, &error));
+		if (!error.empty()) std::wcerr << L"Merged dictionary parse error: " << error << L'\n';
+		CUI_EXPECT_EQ(2ULL, document.StyleSheet.MergedDictionaries.size());
+		const auto parsedDependencies = document.ResourceDependencies();
+		CUI_EXPECT_EQ(4ULL, parsedDependencies.size());
+		CUI_EXPECT_TRUE(std::all_of(
+			parsedDependencies.begin(), parsedDependencies.end(),
+			[](const auto& dependency)
+			{
+				return !dependency.Identity.empty()
+					&& !dependency.WatchPath.empty();
+			}));
+		const auto texture = std::find_if(
+			document.StyleSheet.Resources.begin(), document.StyleSheet.Resources.end(),
+			[](const auto& item) { return item.Key == L"Texture"; });
+		const auto accent = std::find_if(
+			document.StyleSheet.Resources.begin(), document.StyleSheet.Resources.end(),
+			[](const auto& item) { return item.Key == L"Accent"; });
+		CUI_EXPECT_TRUE(texture != document.StyleSheet.Resources.end());
+		CUI_EXPECT_TRUE(accent != document.StyleSheet.Resources.end());
+		if (texture != document.StyleSheet.Resources.end())
+		{
+			CUI_EXPECT_EQ(std::wstring(L"themes/base.xaml"),
+				texture->SourceDictionary);
+			CUI_EXPECT_EQ(std::string("themes/icon.svg"),
+				texture->Value.ObjectValue.value("source", std::string{}));
+		}
+		if (accent != document.StyleSheet.Resources.end())
+		{
+			CUI_EXPECT_TRUE(accent->SourceDictionary.empty());
+			CUI_EXPECT_EQ(std::wstring(L"#FF00FF00"), accent->Value.Text);
+		}
+		const auto imageNode = std::find_if(
+			document.Nodes.begin(), document.Nodes.end(),
+			[](const auto& node) { return node.Name == L"imageLabel"; });
+		CUI_EXPECT_TRUE(imageNode != document.Nodes.end());
+		if (imageNode != document.Nodes.end())
+		{
+			DesignerModel::DesignDocument fragment;
+			CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+				document, { imageNode->Id }, fragment, &error));
+			CUI_EXPECT_TRUE(fragment.StyleSheet.MergedDictionaries.empty());
+			CUI_EXPECT_EQ(root.wstring(), fragment.ResourceBasePath);
+			CUI_EXPECT_TRUE(std::all_of(
+				fragment.StyleSheet.Resources.begin(), fragment.StyleSheet.Resources.end(),
+				[](const auto& item) { return item.SourceDictionary.empty(); }));
+			CUI_EXPECT_TRUE(std::all_of(
+				fragment.StyleSheet.Rules.begin(), fragment.StyleSheet.Rules.end(),
+				[](const auto& item) { return item.SourceDictionary.empty(); }));
+			CUI_EXPECT_TRUE(DesignerModel::XamlDocumentSerializer::ToXaml(fragment)
+				.find("<ImageBrush") != std::string::npos);
+		}
+
+		DesignerModel::RuntimeDocument runtime;
+		const bool runtimeLoaded = DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error);
+		if (!runtimeLoaded)
+			std::wcerr << L"Merged dictionary runtime error: " << error << L'\n';
+		CUI_EXPECT_TRUE(runtimeLoaded);
+		auto* imageLabel = runtime.FindControlByName(L"imageLabel");
+		auto* accentLabel = runtime.FindControlByName(L"accentLabel");
+		auto* inlineImageLabel = runtime.FindControlByName(L"inlineImageLabel");
+		CUI_EXPECT_TRUE(imageLabel != nullptr);
+		CUI_EXPECT_TRUE(accentLabel != nullptr);
+		CUI_EXPECT_TRUE(inlineImageLabel != nullptr);
+		CUI_EXPECT_TRUE(imageLabel && imageLabel->GetForegroundBrush().has_value());
+		if (imageLabel && imageLabel->GetForegroundBrush())
+		{
+			const auto& brush = *imageLabel->GetForegroundBrush();
+			CUI_EXPECT_EQ(cui::drawing::BrushKind::Image, brush.Kind);
+			CUI_EXPECT_EQ(cui::drawing::ImageBrushStretch::Uniform, brush.Stretch);
+			CUI_EXPECT_EQ(cui::drawing::ImageBrushAlignmentX::Right, brush.AlignmentX);
+			CUI_EXPECT_EQ(cui::drawing::ImageBrushAlignmentY::Bottom, brush.AlignmentY);
+			CUI_EXPECT_NEAR(0.75f, brush.Opacity, 0.001f);
+			CUI_EXPECT_TRUE(brush.ImageSource != nullptr);
+			if (brush.ImageSource)
+				CUI_EXPECT_EQ(std::wstring(L"themes/icon.svg"),
+					brush.ImageSource->GetSourceUri());
+		}
+		if (accentLabel)
+		{
+			CUI_EXPECT_NEAR(0.0f, accentLabel->ForeColor.r, 0.001f);
+			CUI_EXPECT_NEAR(1.0f, accentLabel->ForeColor.g, 0.001f);
+			CUI_EXPECT_NEAR(0.0f, accentLabel->ForeColor.b, 0.001f);
+		}
+		CUI_EXPECT_TRUE(inlineImageLabel
+			&& inlineImageLabel->GetForegroundBrush().has_value());
+		if (inlineImageLabel && inlineImageLabel->GetForegroundBrush())
+		{
+			const auto& brush = *inlineImageLabel->GetForegroundBrush();
+			CUI_EXPECT_EQ(cui::drawing::BrushKind::Image, brush.Kind);
+			CUI_EXPECT_EQ(cui::drawing::ImageBrushStretch::None, brush.Stretch);
+			CUI_EXPECT_EQ(cui::drawing::ImageBrushAlignmentX::Left, brush.AlignmentX);
+			CUI_EXPECT_EQ(cui::drawing::ImageBrushAlignmentY::Top, brush.AlignmentY);
+		}
+		DesignerModel::RuntimeDocumentFileWatcher watcher(
+			std::chrono::milliseconds::zero());
+		CUI_EXPECT_TRUE(watcher.Start(mainPath.wstring(), &error));
+		watcher.SetDependencies(runtime.ResourceDependencies());
+		CUI_EXPECT_EQ(4ULL, watcher.WatchedFiles().size());
+		auto previousBitmap = imageLabel && imageLabel->GetForegroundBrush()
+			? imageLabel->GetForegroundBrush()->ImageSource
+			: std::shared_ptr<BitmapSource>{};
+		write(themes / "icon.svg",
+			R"(<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><rect width="16" height="16" fill="#e30940"/></svg>)");
+		const auto imageWatchNow =
+			DesignerModel::RuntimeDocumentFileWatcher::Clock::now();
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentWatchState::Debouncing,
+			watcher.PollAt(runtime, {}, imageWatchNow).State);
+		const auto imageReloaded = watcher.PollAt(runtime, {}, imageWatchNow);
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentWatchState::Reloaded,
+			imageReloaded.State);
+		CUI_EXPECT_TRUE(imageReloaded.ReloadMode
+			!= DesignerModel::RuntimeDocumentReloadMode::Unchanged);
+		imageLabel = runtime.FindControlByName(L"imageLabel");
+		CUI_EXPECT_TRUE(imageLabel && imageLabel->GetForegroundBrush()
+			&& imageLabel->GetForegroundBrush()->ImageSource != previousBitmap);
+		write(themes / "base.xaml", R"(<?xml version="1.0" encoding="utf-8"?>
+<ResourceDictionary xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Color x:Key="Accent">#FFFF0000</Color>
+  <ImageBrush x:Key="Texture" ImageSource="icon.svg" Stretch="Uniform" AlignmentX="Right" AlignmentY="Bottom" Opacity="0.5"/>
+  <Style TargetType="Label" x:Key="ImageLabel"><Setter Property="Foreground" Value="{StaticResource Texture}"/></Style>
+</ResourceDictionary>)");
+		const auto watchNow = DesignerModel::RuntimeDocumentFileWatcher::Clock::now();
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentWatchState::Debouncing,
+			watcher.PollAt(runtime, {}, watchNow).State);
+		const auto reloaded = watcher.PollAt(runtime, {}, watchNow);
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentWatchState::Reloaded,
+			reloaded.State);
+		imageLabel = runtime.FindControlByName(L"imageLabel");
+		CUI_EXPECT_TRUE(imageLabel && imageLabel->GetForegroundBrush());
+		if (imageLabel && imageLabel->GetForegroundBrush())
+			CUI_EXPECT_NEAR(0.5f,
+				imageLabel->GetForegroundBrush()->Opacity, 0.001f);
+
+		fs::remove(themes / "base.xaml");
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentWatchState::Debouncing,
+			watcher.PollAt(runtime, {}, watchNow).State);
+		const auto missingDependency = watcher.PollAt(runtime, {}, watchNow);
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentWatchState::Failed,
+			missingDependency.State);
+		CUI_EXPECT_TRUE(!missingDependency.Error.empty());
+		write(themes / "base.xaml", R"(<ResourceDictionary xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <ImageBrush x:Key="Texture" ImageSource="icon.svg" Opacity="0.25"/>
+  <Style TargetType="Label" x:Key="ImageLabel"><Setter Property="Foreground" Value="{StaticResource Texture}"/></Style>
+</ResourceDictionary>)");
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentWatchState::Debouncing,
+			watcher.PollAt(runtime, {}, watchNow).State);
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentWatchState::Reloaded,
+			watcher.PollAt(runtime, {}, watchNow).State);
+		// Restore the source fixture before the serializer round-trip assertions.
+		write(themes / "base.xaml", R"(<?xml version="1.0" encoding="utf-8"?>
+<ResourceDictionary xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Color x:Key="Accent">#FFFF0000</Color>
+  <ImageBrush x:Key="Texture" ImageSource="icon.svg" Stretch="Uniform" AlignmentX="Right" AlignmentY="Bottom" Opacity="0.75"/>
+  <Style TargetType="Label" x:Key="ImageLabel">
+    <Setter Property="Foreground" Value="{StaticResource Texture}"/>
+  </Style>
+</ResourceDictionary>)");
+		CodeGenInput mergedCodeInput;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentCodeGenInputBuilder::Build(
+			document, mergedCodeInput, &error));
+		const auto mergedCode = CodeGenerator(
+			L"MergedForm", mergedCodeInput).GenerateCpp();
+		CUI_EXPECT_TRUE(mergedCode.find("cui::drawing::BrushKind::Image")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(mergedCode.find("cui::resources::LoadBitmapResource")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(mergedCode.find("themes/icon.svg")
+			!= std::string::npos);
+
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("ResourceDictionary.MergedDictionaries")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("Source=\"themes/base.xaml\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("x:Key=\"Texture\"")
+			== std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("<ImageBrush") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("Stretch=\"None\"") != std::string::npos);
+		DesignerModel::XamlDocumentParseOptions options;
+		options.ResourceBasePath = root.wstring();
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, options, &error));
+		CUI_EXPECT_EQ(document.StyleSheet, reparsed.StyleSheet);
+		const auto native = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument nativeRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			native, nativeRoundTrip, &error, root.wstring()));
+		CUI_EXPECT_EQ(document.StyleSheet, nativeRoundTrip.StyleSheet);
+
+		write(themes / "cycle-a.xaml", R"(<ResourceDictionary xmlns="urn:cui"><ResourceDictionary.MergedDictionaries><ResourceDictionary Source="cycle-b.xaml"/></ResourceDictionary.MergedDictionaries></ResourceDictionary>)");
+		write(themes / "cycle-b.xaml", R"(<ResourceDictionary xmlns="urn:cui"><ResourceDictionary.MergedDictionaries><ResourceDictionary Source="cycle-a.xaml"/></ResourceDictionary.MergedDictionaries></ResourceDictionary>)");
+		const std::string cycleMain = R"(<Form xmlns="urn:cui"><Form.Resources><ResourceDictionary><ResourceDictionary.MergedDictionaries><ResourceDictionary Source="themes/cycle-a.xaml"/></ResourceDictionary.MergedDictionaries></ResourceDictionary></Form.Resources></Form>)";
+		const auto baseline = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			cycleMain, document, options, &error));
+		CUI_EXPECT_EQ(baseline, document);
+		CUI_EXPECT_TRUE(error.find(L"循环") != std::wstring::npos);
+		fs::remove_all(root);
+	});
+
+	runner.Add("Application resource sources are configurable and extensible", []
+	{
+		struct ResolverRestore final
+		{
+			std::shared_ptr<const ResourceResolver> Previous =
+				Application::GetResourceResolver();
+			~ResolverRestore() { Application::SetResourceResolver(Previous); }
+		} restore;
+
+		class MemoryResourceSource final : public IResourceSource
+		{
+		public:
+			ResourceResolveStatus Resolve(
+				const ResourceRequest& request,
+				ResolvedResource& output,
+				std::wstring*) const override
+			{
+				if (request.Uri != L"memory://theme")
+					return ResourceResolveStatus::NotHandled;
+				const std::string content =
+					R"(<ResourceDictionary xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><Color x:Key="Accent">#FF123456</Color></ResourceDictionary>)";
+				output = {};
+				output.RequestedUri = request.Uri;
+				output.Identity = L"memory://theme";
+				output.BaseUri = L"memory://";
+				output.Bytes.assign(content.begin(), content.end());
+				output.Dependency.Identity = output.Identity;
+				return ResourceResolveStatus::Resolved;
+			}
+		};
+
+		auto resolver = std::make_shared<ResourceResolver>();
+		resolver->AddSource(std::make_shared<MemoryResourceSource>());
+		Application::SetResourceResolver(resolver);
+		DesignerModel::DesignDocument memoryDocument;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			R"(<Form xmlns="urn:cui"><Form.Resources><ResourceDictionary><ResourceDictionary.MergedDictionaries><ResourceDictionary Source="memory://theme"/></ResourceDictionary.MergedDictionaries></ResourceDictionary></Form.Resources></Form>)",
+			memoryDocument, &error));
+		CUI_EXPECT_EQ(1ULL, memoryDocument.StyleSheet.Resources.size());
+		CUI_EXPECT_EQ(std::wstring(L"Accent"),
+			memoryDocument.StyleSheet.Resources.front().Key);
+		const auto memoryDependencies = memoryDocument.ResourceDependencies();
+		CUI_EXPECT_EQ(1ULL, memoryDependencies.size());
+		CUI_EXPECT_TRUE(memoryDependencies.front().WatchPath.empty());
+
+		namespace fs = std::filesystem;
+		const auto root = fs::temp_directory_path()
+			/ ("cui-resource-roots-" + std::to_string(
+				std::chrono::steady_clock::now().time_since_epoch().count()));
+		fs::create_directories(root);
+		const auto documentPath = root / "Configured.cui.xaml";
+		{
+			std::ofstream stream(documentPath, std::ios::binary);
+			stream << R"(<Form xmlns="urn:cui" x:Name="ConfiguredForm" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><Label Text="Configured"/></Form>)";
+		}
+		Application::ConfigureResourceDirectories({ root.wstring() });
+		{
+			std::ofstream stream(root / "configured.svg", std::ios::binary);
+			stream << R"(<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="#123456"/></svg>)";
+		}
+		CUI_EXPECT_TRUE(cui::resources::LoadBitmapResource(
+			L"configured.svg") != nullptr);
+		DesignerModel::DesignDocument fileDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::LoadFromFile(
+			L"Configured.cui.xaml", fileDocument, &error));
+		CUI_EXPECT_EQ(std::wstring(L"ConfiguredForm"), fileDocument.Form.Name);
+		CUI_EXPECT_EQ(root.lexically_normal().wstring(),
+			fileDocument.ResourceBasePath);
+		CUI_EXPECT_EQ(1ULL, fileDocument.ResourceDependencies().size());
+		fs::remove_all(root);
 	});
 
 	runner.Add("XAML syntax diagnostics expose Unicode editor coordinates transactionally", []
@@ -13143,6 +14121,32 @@ class FreshWindow : public FreshWindowGenerated {};
 
 	runner.Add("Custom control code generation uses declared include type and constructor", []
 	{
+		class CodegenFancyButton final : public Button
+		{
+		public:
+			CodegenFancyButton() : Button(L"", 0, 0, 120, 30) {}
+			void EnsureBindingPropertiesRegistered() override
+			{
+				Button::EnsureBindingPropertiesRegistered();
+				static const bool registered = []
+				{
+					ControlPropertyOptions<CodegenFancyButton, int> options;
+					options.DefaultValue = 0;
+					options.Design.Persistence =
+						ControlPropertyPersistence::Metadata;
+					BindingPropertyRegistry::Register<CodegenFancyButton, int>(
+						L"Severity",
+						[](CodegenFancyButton& target) { return target.Severity; },
+						[](CodegenFancyButton& target, const int& value)
+						{ target.Severity = value; }, {}, std::move(options));
+					return true;
+				}();
+				(void)registered;
+			}
+
+			int Severity = 0;
+		};
+
 		DesignerModel::DesignDocument document;
 		document.Form.Name = L"CustomCodeForm";
 		DesignerModel::DesignNode node;
@@ -13177,9 +14181,13 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_EQ(document, xmlRoundTrip);
 		const auto xaml = DesignerModel::XamlDocumentSerializer::ToXaml(document);
 		DesignerModel::DesignDocument xamlRoundTrip;
+		DesignerModel::XamlDocumentParseOptions xamlOptions;
+		xamlOptions.CustomControlFactory = [](const DesignerModel::DesignNode&)
+			{ return std::make_unique<CodegenFancyButton>(); };
 		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
-			xaml, xamlRoundTrip, &error));
-		CUI_EXPECT_EQ(document, xamlRoundTrip);
+			xaml, xamlRoundTrip, xamlOptions, &error));
+		CUI_EXPECT_EQ(xaml,
+			DesignerModel::XamlDocumentSerializer::ToXaml(xamlRoundTrip));
 		auto invalidXamlContract = xaml;
 		const auto xamlSignature = invalidXamlContract.find(
 			" Signature=\"SenderInt\"");
@@ -13188,7 +14196,7 @@ class FreshWindow : public FreshWindowGenerated {};
 			" Unsupported=\"manifest-cpp\"");
 		DesignerModel::DesignDocument rejectedXamlContract;
 		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
-			invalidXamlContract, rejectedXamlContract, &error));
+			invalidXamlContract, rejectedXamlContract, xamlOptions, &error));
 		auto invalidXmlContract = xml;
 		const auto xmlSignature = invalidXmlContract.find(
 			" signature=\"SenderInt\"");
@@ -13231,232 +14239,6 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(cpp.find(
 			"fancy->OnSeverityInvoked.Subscribe(std::bind_front(&CustomCodeFormGenerated::HandleSeverityInvoked, this))")
 			!= std::string::npos);
-	});
-
-	runner.Add("XAML editor assistance handles lexical context, matching, and indentation", []
-	{
-		using namespace DesignerModel::XamlEditorAssist;
-		const std::wstring markup =
-			L"<Panel Text=\"1 > 0\"><!-- <Ignored /> --><Button /></Panel>";
-		const auto tags = ScanTags(markup);
-		CUI_EXPECT_EQ(static_cast<size_t>(3), tags.size());
-		CUI_EXPECT_EQ(std::wstring(L"Panel"), tags.front().Name);
-		CUI_EXPECT_EQ(TagKind::SelfClosing, tags[1].Kind);
-		const auto match = FindTagMatch(markup, 2);
-		CUI_EXPECT_TRUE(match.HasMatch());
-		CUI_EXPECT_EQ(static_cast<size_t>(2), match.Ranges.size());
-
-		const auto element = GetCompletionContext(L"<Bu", 3);
-		CUI_EXPECT_EQ(CompletionKind::Element, element.Kind);
-		CUI_EXPECT_EQ(std::wstring(L"Bu"), element.Prefix);
-		const auto attribute = GetCompletionContext(L"<Button Te", 10);
-		CUI_EXPECT_EQ(CompletionKind::Attribute, attribute.Kind);
-		CUI_EXPECT_EQ(std::wstring(L"Button"), attribute.ElementName);
-		CUI_EXPECT_EQ(std::wstring(L"Te"), attribute.Prefix);
-		const std::wstring valueText = L"<Button Checked=\"tr";
-		const auto value = GetCompletionContext(valueText, valueText.size());
-		CUI_EXPECT_EQ(CompletionKind::AttributeValue, value.Kind);
-		CUI_EXPECT_EQ(std::wstring(L"Checked"), value.AttributeName);
-		CUI_EXPECT_EQ(std::wstring(L"tr"), value.Prefix);
-
-		const std::wstring closingText = L"<Form><Panel></Pa";
-		const auto closing = GetCompletionContext(
-			closingText, closingText.size());
-		CUI_EXPECT_EQ(CompletionKind::ClosingElement, closing.Kind);
-		const auto open = OpenElementNames(closingText, closingText.size());
-		CUI_EXPECT_EQ(static_cast<size_t>(2), open.size());
-		CUI_EXPECT_EQ(std::wstring(L"Panel"), open.front());
-
-		CompletionContext filteredContext;
-		filteredContext.Kind = CompletionKind::Attribute;
-		filteredContext.Prefix = L"T";
-		filteredContext.UsedAttributes = { L"Text" };
-		const auto filtered = FilterSuggestions(
-			{ L"Text", L"Top", L"Tag", L"top" }, filteredContext);
-		CUI_EXPECT_EQ(static_cast<size_t>(2), filtered.size());
-		CUI_EXPECT_EQ(std::wstring(L"Tag"), filtered.front());
-		CUI_EXPECT_EQ(std::wstring(L"Top"), filtered.back());
-
-		const auto between = BuildNewLineEdit(L"<Panel></Panel>", 7, 7);
-		CUI_EXPECT_EQ(std::wstring(L"\r\n\t\r\n"), between.Text);
-		CUI_EXPECT_EQ(static_cast<size_t>(3), between.CaretOffset);
-		const std::wstring nested = L"\t<Button>";
-		const auto nestedLine = BuildNewLineEdit(
-			nested, nested.size(), nested.size());
-		CUI_EXPECT_EQ(std::wstring(L"\r\n\t\t"), nestedLine.Text);
-
-		const std::wstring navigable =
-			LR"(<Form xmlns="urn:cui" xmlns:x="urn:x" xmlns:d="urn:d" x:Name="MainForm">
-	<Panel x:Name="layout" DesignId="7">
-		<Button x:Name="runButton" DesignId="9" Text="Run > Stop" />
-		<d:DesignProps><d:Member name="notAControl">value</d:Member></d:DesignProps>
-	</Panel>
-</Form>)";
-		const auto buttonPosition = navigable.find(L"Run > Stop");
-		const auto buttonElement = FindElementAtPosition(
-			navigable, buttonPosition);
-		CUI_EXPECT_TRUE(buttonElement.has_value());
-		CUI_EXPECT_EQ(9, buttonElement->StableId);
-		CUI_EXPECT_EQ(std::wstring(L"runButton"), buttonElement->Name);
-		const auto betweenPosition = navigable.find(L"</Panel>") - 1;
-		const auto parentElement = FindElementAtPosition(
-			navigable, betweenPosition);
-		CUI_EXPECT_TRUE(parentElement.has_value());
-		CUI_EXPECT_EQ(7, parentElement->StableId);
-		const auto byStableId = FindElementByDesignIdentity(
-			navigable, 9, L"staleName");
-		const auto byName = FindElementByDesignIdentity(
-			navigable, 0, L"LAYOUT");
-		CUI_EXPECT_TRUE(byStableId.has_value());
-		CUI_EXPECT_EQ(std::wstring(L"Button"), byStableId->ElementName);
-		CUI_EXPECT_TRUE(byName.has_value());
-		CUI_EXPECT_EQ(7, byName->StableId);
-		const auto metadataPosition = navigable.find(L"notAControl");
-		const auto metadataOwner = FindElementAtPosition(
-			navigable, metadataPosition);
-		CUI_EXPECT_TRUE(metadataOwner.has_value());
-		CUI_EXPECT_EQ(7, metadataOwner->StableId);
-	});
-
-	runner.Add("XAML syntax coloring is tolerant and editor-history neutral", []
-	{
-		using namespace DesignerModel::XamlEditorAssist;
-		const std::wstring source =
-			L"<?xml version=\"1.0\"?><Form xmlns=\"urn:cui\">"
-			L"<local:Button x:Name=\"run\" Text=\"1 > 0\">&amp;"
-			L"<!-- <Ignored Value=\"x\"/> --><![CDATA[<raw/>]]>"
-			L"</local:Button></Form>";
-		const auto syntax = ScanXamlSyntax(source);
-		auto hasSpan = [&](XamlSyntaxKind kind, const std::wstring& value)
-		{
-			return std::any_of(syntax.begin(), syntax.end(),
-				[&](const XamlSyntaxSpan& span)
-				{
-					return span.Kind == kind
-						&& source.substr(span.Start, span.Length) == value;
-				});
-		};
-		CUI_EXPECT_TRUE(hasSpan(
-			XamlSyntaxKind::ProcessingInstruction,
-			L"<?xml version=\"1.0\"?>"));
-		CUI_EXPECT_TRUE(hasSpan(XamlSyntaxKind::ElementName, L"local:Button"));
-		CUI_EXPECT_TRUE(hasSpan(XamlSyntaxKind::AttributeName, L"x:Name"));
-		CUI_EXPECT_TRUE(hasSpan(XamlSyntaxKind::AttributeValue, L"\"1 > 0\""));
-		CUI_EXPECT_TRUE(hasSpan(XamlSyntaxKind::EntityReference, L"&amp;"));
-		CUI_EXPECT_TRUE(hasSpan(
-			XamlSyntaxKind::Comment,
-			L"<!-- <Ignored Value=\"x\"/> -->"));
-		CUI_EXPECT_TRUE(hasSpan(XamlSyntaxKind::CData, L"<![CDATA[<raw/>]]>"));
-		CUI_EXPECT_FALSE(hasSpan(XamlSyntaxKind::ElementName, L"Ignored"));
-		CUI_EXPECT_FALSE(hasSpan(XamlSyntaxKind::ElementName, L"raw"));
-
-		const std::wstring incomplete = L"<Button Text=\"unfinished";
-		const auto incompleteSyntax = ScanXamlSyntax(incomplete);
-		CUI_EXPECT_TRUE(std::any_of(
-			incompleteSyntax.begin(), incompleteSyntax.end(),
-			[&](const XamlSyntaxSpan& span)
-			{
-				return span.Kind == XamlSyntaxKind::AttributeValue
-					&& incomplete.substr(span.Start, span.Length)
-						== L"\"unfinished";
-			}));
-
-		RichTextBox editor(source, 0, 0, 400, 200);
-		editor.Select(3, 5);
-		editor.SetTextStyleRanges({
-			{ -4, 5, Colors::DarkGreen },
-			{ static_cast<int>(source.size() - 2), 50, Colors::Sienna4 },
-			{ 2, 0, Colors::DimGrey } });
-		const auto& styles = editor.GetTextStyleRanges();
-		CUI_EXPECT_EQ(static_cast<size_t>(2), styles.size());
-		CUI_EXPECT_EQ(0, styles[0].Start);
-		CUI_EXPECT_EQ(5, styles[0].Length);
-		CUI_EXPECT_EQ(2, styles[1].Length);
-		CUI_EXPECT_EQ(3, editor.SelectionStart);
-		CUI_EXPECT_EQ(8, editor.SelectionEnd);
-		CUI_EXPECT_FALSE(editor.CanUndo());
-		editor.InsertText(L"X");
-		CUI_EXPECT_TRUE(editor.GetTextStyleRanges().empty());
-		CUI_EXPECT_TRUE(editor.CanUndo());
-	});
-
-	runner.Add("XAML line indentation preserves touched lines and one-step history", []
-	{
-		using namespace DesignerModel::XamlEditorAssist;
-		auto apply = [](const std::wstring& source, const LineIndentEdit& edit)
-			{
-				return source.substr(0, edit.ReplaceStart) + edit.Text
-					+ source.substr(edit.ReplaceStart + edit.ReplaceLength);
-			};
-
-		const std::wstring firstTwo = L"A\r\nB";
-		const auto firstLine = BuildLineIndentEdit(firstTwo, 0, 3, false);
-		CUI_EXPECT_TRUE(firstLine.Changed);
-		CUI_EXPECT_EQ(3ULL,
-			static_cast<unsigned long long>(firstLine.ReplaceLength));
-		CUI_EXPECT_EQ(std::wstring(L"\tA\r\nB"), apply(firstTwo, firstLine));
-
-		const std::wstring mixed =
-			L"\t<Button/>\r\n    <Label/>\r\n<Next/>";
-		const auto mixedEnd = mixed.find(L"<Next/>");
-		const auto outdented = BuildLineIndentEdit(
-			mixed, 0, mixedEnd, true);
-		CUI_EXPECT_TRUE(outdented.Changed);
-		CUI_EXPECT_EQ(
-			std::wstring(L"<Button/>\r\n<Label/>\r\n<Next/>"),
-			apply(mixed, outdented));
-		const auto unchanged = BuildLineIndentEdit(
-			L"<Button/>", 4, 4, true);
-		CUI_EXPECT_FALSE(unchanged.Changed);
-
-		const std::wstring source =
-			L"<Form>\r\n\t<Button/>\r\n\t<Label/>\r\n</Form>";
-		const size_t selectionStart = source.find(L"\t<Button/>");
-		const size_t selectionEnd = source.find(L"\r\n</Form>");
-		const auto indented = BuildLineIndentEdit(
-			source, selectionStart, selectionEnd, false);
-		const auto expected = apply(source, indented);
-		RichTextBox editor(source, 0, 0, 400, 200);
-		editor.Select(
-			static_cast<int>(indented.ReplaceStart),
-			static_cast<int>(indented.ReplaceLength));
-		editor.InsertTextAndSelect(
-			indented.Text,
-			static_cast<int>(indented.SelectionStart),
-			static_cast<int>(
-				indented.SelectionEnd - indented.SelectionStart));
-		CUI_EXPECT_EQ(expected, editor.Text);
-		CUI_EXPECT_TRUE(editor.CanUndo());
-		CUI_EXPECT_FALSE(editor.CanRedo());
-		CUI_EXPECT_EQ(
-			static_cast<int>(indented.SelectionStart), editor.SelectionStart);
-		CUI_EXPECT_EQ(
-			static_cast<int>(indented.SelectionEnd), editor.SelectionEnd);
-
-		editor.Undo();
-		CUI_EXPECT_EQ(source, editor.Text);
-		CUI_EXPECT_TRUE(editor.CanRedo());
-		editor.Redo();
-		CUI_EXPECT_EQ(expected, editor.Text);
-		CUI_EXPECT_EQ(
-			static_cast<int>(indented.SelectionStart), editor.SelectionStart);
-		CUI_EXPECT_EQ(
-			static_cast<int>(indented.SelectionEnd), editor.SelectionEnd);
-
-		const std::wstring replacement = L"<Form><Button/></Form>";
-		editor.Select(3, 5);
-		editor.ReplaceAllTextAndSelect(replacement, 7, 2);
-		CUI_EXPECT_EQ(replacement, editor.Text);
-		CUI_EXPECT_EQ(7, editor.SelectionStart);
-		CUI_EXPECT_EQ(9, editor.SelectionEnd);
-		editor.Undo();
-		CUI_EXPECT_EQ(expected, editor.Text);
-		CUI_EXPECT_EQ(3, editor.SelectionStart);
-		CUI_EXPECT_EQ(8, editor.SelectionEnd);
-		editor.Redo();
-		CUI_EXPECT_EQ(replacement, editor.Text);
-		CUI_EXPECT_EQ(7, editor.SelectionStart);
-		CUI_EXPECT_EQ(9, editor.SelectionEnd);
 	});
 
 	runner.Add("Registered custom probes validate direct properties and canonicalize tool metadata", []
@@ -13527,13 +14309,16 @@ class FreshWindow : public FreshWindowGenerated {};
 
 		const auto canonical =
 			DesignerModel::XamlDocumentSerializer::ToXaml(document);
-		CUI_EXPECT_TRUE(canonical.find("d:DesignProps") != std::string::npos);
-		CUI_EXPECT_TRUE(canonical.find("d:DesignBindings") != std::string::npos);
-		CUI_EXPECT_TRUE(canonical.find(" Severity=\"") == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("d:DesignProps") == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("d:DesignBindings") == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("Severity=\"{Binding ")
+			!= std::string::npos);
 		DesignerModel::DesignDocument headless;
 		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
-			canonical, headless, &error));
-		CUI_EXPECT_EQ(document, headless);
+			canonical, headless, parseOptions, &error));
+		CUI_EXPECT_TRUE(!headless.Nodes.front().Props.contains("metadata")
+			|| !headless.Nodes.front().Props["metadata"].contains("Severity"));
+		CUI_EXPECT_TRUE(headless.Nodes.front().Bindings.contains("Severity"));
 		CodeGenInput input;
 		CUI_EXPECT_TRUE(
 			DesignerModel::DesignDocumentCodeGenInputBuilder::Build(
@@ -13541,7 +14326,7 @@ class FreshWindow : public FreshWindowGenerated {};
 		const auto cpp = CodeGenerator(L"PropertyForm", input).GenerateCpp();
 		CUI_EXPECT_TRUE(cpp.find(
 			"badge->TrySetPropertyValue(L\"Severity\", BindingValue(6))")
-			!= std::string::npos);
+			== std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find(
 			"badge->DataBindings.Add(L\"Severity\", dataContext, L\"View.Severity\"")
 			!= std::string::npos);

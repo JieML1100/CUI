@@ -458,7 +458,8 @@ public:
 		}
 		else
 		{
-			rectangle = _form->ContentDipRectToClientPixels(control->AbsRect);
+			rectangle = _form->ContentDipRectToClientPixels(
+				control->GetRenderedAbsoluteRectDip());
 		}
 		POINT points[2]{ { rectangle.left, rectangle.top }, { rectangle.right, rectangle.bottom } };
 		::MapWindowPoints(_form->Handle, nullptr, points, 2);
@@ -1120,7 +1121,8 @@ public:
 		auto* control = CurrentControl();
 		auto* form = _root ? _root->GetForm() : nullptr;
 		if (!control || !form) return UIA_E_ELEMENTNOTAVAILABLE;
-		RECT rectangle = form->ContentDipRectToClientPixels(control->AbsRect);
+		RECT rectangle = form->ContentDipRectToClientPixels(
+			control->GetRenderedAbsoluteRectDip());
 		POINT points[2]{ { rectangle.left, rectangle.top },
 			{ rectangle.right, rectangle.bottom } };
 		::MapWindowPoints(form->Handle, nullptr, points, 2);
@@ -1474,7 +1476,8 @@ private:
 	{
 		auto* form = _root ? _root->GetForm() : nullptr;
 		if (!form || !form->Handle) return false;
-		RECT controlRect = form->ContentDipRectToClientPixels(control->AbsRect);
+		RECT controlRect = form->ContentDipRectToClientPixels(
+			control->GetRenderedAbsoluteRectDip());
 		RECT client{};
 		return ::GetClientRect(form->Handle, &client)
 			&& controlRect.right > client.left && controlRect.left < client.right
@@ -1794,7 +1797,8 @@ public:
 		const D2D1_RECT_F absolute = D2D1::RectF(
 			owner.x + node.BoundsDip.left, owner.y + node.BoundsDip.top,
 			owner.x + node.BoundsDip.right, owner.y + node.BoundsDip.bottom);
-		RECT rectangle = form->ContentDipRectToClientPixels(absolute);
+		RECT rectangle = form->ContentDipRectToClientPixels(
+			_owner->TransformAbsoluteRectToRenderSpace(absolute));
 		POINT points[2]{ { rectangle.left, rectangle.top },
 			{ rectangle.right, rectangle.bottom } };
 		::MapWindowPoints(form->Handle, nullptr, points, 2);
@@ -2334,10 +2338,14 @@ HRESULT FormUiaProvider::ElementProviderFromPoint(double x, double y,
 		auto* source = dynamic_cast<IAccessibilityVirtualizedControl*>(control);
 		if (source)
 		{
-			const auto owner = control->GetAbsoluteLocationDip();
+			D2D1_POINT_2F local{};
 			uint32_t virtualId = 0;
-			if (source->TryHitTestAccessibilityVirtualNode(
-				contentX - owner.x, contentY - owner.y, virtualId)
+			if (control->TryTransformRenderPointToLocal(
+				D2D1::Point2F(contentX, contentY), local)
+				&& control->IsRenderPointInsideClip(
+					D2D1::Point2F(contentX, contentY))
+				&& source->TryHitTestAccessibilityVirtualNode(
+					local.x, local.y, virtualId)
 				&& virtualId != 0)
 			{
 				AccessibilityVirtualNode node;
@@ -2351,12 +2359,14 @@ HRESULT FormUiaProvider::ElementProviderFromPoint(double x, double y,
 				}
 			}
 		}
-		RECT rectangle = form->ContentDipRectToClientPixels(control->AbsRect);
-		POINT points[2]{ { rectangle.left, rectangle.top },
-			{ rectangle.right, rectangle.bottom } };
-		::MapWindowPoints(form->Handle, nullptr, points, 2);
-		if (x < points[0].x || y < points[0].y
-			|| x >= points[1].x || y >= points[1].y) continue;
+		D2D1_POINT_2F local{};
+		if (!control->TryTransformRenderPointToLocal(
+			D2D1::Point2F(contentX, contentY), local)
+			|| !control->IsRenderPointInsideClip(
+				D2D1::Point2F(contentX, contentY))
+			|| !control->ContainsPoint(
+				static_cast<int>(std::floor(local.x)),
+				static_cast<int>(std::floor(local.y)))) continue;
 		auto* provider = ProviderFor(control);
 		if (!provider) return E_OUTOFMEMORY;
 		*value = static_cast<IRawElementProviderFragment*>(provider);
@@ -3351,22 +3361,44 @@ static int ToLegacyLocalCoordinate(float value)
 	return static_cast<int>(std::floor(value));
 }
 
+static bool TryGetControlLocalPoint(
+	Control* control,
+	POINT contentMouse,
+	int& localX,
+	int& localY)
+{
+	if (!control) return false;
+	D2D1_POINT_2F local{};
+	if (!control->TryTransformRenderPointToLocal(
+		D2D1::Point2F(
+			static_cast<float>(contentMouse.x),
+			static_cast<float>(contentMouse.y)), local)
+		|| !control->IsRenderPointInsideClip(D2D1::Point2F(
+			static_cast<float>(contentMouse.x),
+			static_cast<float>(contentMouse.y)))) return false;
+	localX = ToLegacyLocalCoordinate(local.x);
+	localY = ToLegacyLocalCoordinate(local.y);
+	return true;
+}
+
 static Control* HitTestDeepestChild(Control* root, POINT contentMouse)
 {
 	if (!root) return nullptr;
 	if (!root->Visible || !root->Enable) return nullptr;
-	const auto rootAbs = root->GetAbsoluteLocationDip();
-	const int localX = ToLegacyLocalCoordinate((float)contentMouse.x - rootAbs.x);
-	const int localY = ToLegacyLocalCoordinate((float)contentMouse.y - rootAbs.y);
+	int localX = 0;
+	int localY = 0;
+	if (!TryGetControlLocalPoint(root, contentMouse, localX, localY))
+		return nullptr;
 	if (!root->ShouldHitTestChildrenAt(localX, localY))
 		return root;
 
 	for (auto child : root->GetChildrenInReverseZOrder())
 	{
 		if (!child || !child->Visible || !child->Enable) continue;
-		const auto childRect = child->GetAbsoluteRectDip();
-		if (childRect.Contains(cui::core::Point{
-			(float)contentMouse.x, (float)contentMouse.y }))
+		int childX = 0;
+		int childY = 0;
+		if (TryGetControlLocalPoint(child, contentMouse, childX, childY)
+			&& child->ContainsPoint(childX, childY))
 		{
 			auto deeperChild = HitTestDeepestChild(child, contentMouse);
 			return deeperChild ? deeperChild : child;
@@ -3379,20 +3411,20 @@ static bool PointInControlRect(Control* control, POINT contentMouse)
 {
 	if (!control) return false;
 	if (!control->Visible || !control->Enable) return false;
-	const auto location = control->GetAbsoluteLocationDip();
-	return control->ContainsPoint(
-		ToLegacyLocalCoordinate((float)contentMouse.x - location.x),
-		ToLegacyLocalCoordinate((float)contentMouse.y - location.y));
+	int localX = 0;
+	int localY = 0;
+	return TryGetControlLocalPoint(control, contentMouse, localX, localY)
+		&& control->ContainsPoint(localX, localY);
 }
 
 static bool PointInForegroundControlRect(Control* control, POINT contentMouse)
 {
 	if (!control) return false;
 	if (!control->Visible || !control->Enable) return false;
-	const auto location = control->GetAbsoluteLocationDip();
-	return control->ContainsForegroundPoint(
-		ToLegacyLocalCoordinate((float)contentMouse.x - location.x),
-		ToLegacyLocalCoordinate((float)contentMouse.y - location.y));
+	int localX = 0;
+	int localY = 0;
+	return TryGetControlLocalPoint(control, contentMouse, localX, localY)
+		&& control->ContainsForegroundPoint(localX, localY);
 }
 
 static bool IsControlOrDescendantOf(Control* control, Control* ancestor)
@@ -3859,18 +3891,20 @@ CursorKind Form::QueryCursorAt(POINT mouseClient, POINT contentMouse)
 		}
 		if (keepSelectedCursor)
 		{
-			const auto selectedLocation = this->Selected->GetAbsoluteLocationDip();
-			int localX = ToLegacyLocalCoordinate((float)contentMouse.x - selectedLocation.x);
-			int localY = ToLegacyLocalCoordinate((float)contentMouse.y - selectedLocation.y);
-			return this->Selected->QueryCursor(localX, localY);
+			int localX = 0;
+			int localY = 0;
+			if (TryGetControlLocalPoint(
+				this->Selected, contentMouse, localX, localY))
+				return this->Selected->QueryCursor(localX, localY);
 		}
 	}
 
 	if (!hitControl) return CursorKind::Arrow;
-	const auto hitLocation = hitControl->GetAbsoluteLocationDip();
-	int localX = ToLegacyLocalCoordinate((float)contentMouse.x - hitLocation.x);
-	int localY = ToLegacyLocalCoordinate((float)contentMouse.y - hitLocation.y);
-	return hitControl->QueryCursor(localX, localY);
+	int localX = 0;
+	int localY = 0;
+	return TryGetControlLocalPoint(hitControl, contentMouse, localX, localY)
+		? hitControl->QueryCursor(localX, localY)
+		: CursorKind::Arrow;
 }
 
 void Form::UpdateCursor(POINT mouseClient, POINT contentMouse)
@@ -4130,11 +4164,12 @@ static void RaiseControlMouseEnterLeave(Form* form, Control* previousHover, Cont
 	auto makeArgs = [&](Control* control) -> MouseEventArgs
 		{
 			if (!control) return MouseEventArgs(MouseButtons::None, 0, 0, 0, 0);
-			const auto controlLocation = control->GetAbsoluteLocationDip();
+			int localX = 0;
+			int localY = 0;
+			(void)TryGetControlLocalPoint(
+				control, contentMouse, localX, localY);
 			return MouseEventArgs(
-				MouseButtons::None, 0,
-				ToLegacyLocalCoordinate((float)contentMouse.x - controlLocation.x),
-				ToLegacyLocalCoordinate((float)contentMouse.y - controlLocation.y), 0);
+				MouseButtons::None, 0, localX, localY, 0);
 		};
 
 	if (previousHover)
@@ -4381,7 +4416,8 @@ void Form::InvalidateControl(Control* control, float inflateDip, bool immediate)
 {
 	if (!control || !this->Handle) return;
 	if (!control->IsVisual) return;
-	RECT physicalRect = ContentDipRectToClientPixels(control->AbsRect, inflateDip);
+	RECT physicalRect = ContentDipRectToClientPixels(
+		control->GetRenderedAbsoluteRectDip(), inflateDip);
 	Invalidate(physicalRect, immediate);
 }
 
@@ -4756,14 +4792,13 @@ void Form::RenderValidationToolTip()
 			textSize.height + paddingY * 2.0f));
 	if (!(popupWidth > 0.0f) || !(popupHeight > 0.0f)) return;
 
-	const auto location = target->GetAbsoluteLocationDip();
-	const auto targetSize = target->GetActualSizeDip();
-	float x = location.x;
-	float y = location.y + targetSize.height + 6.0f;
+	const auto targetBounds = target->GetRenderedAbsoluteRectDip();
+	float x = targetBounds.left;
+	float y = targetBounds.bottom + 6.0f;
 	if (x + popupWidth > contentWidth - margin)
 		x = contentWidth - margin - popupWidth;
 	if (y + popupHeight > contentHeight - margin)
-		y = location.y - popupHeight - 6.0f;
+		y = targetBounds.top - popupHeight - 6.0f;
 	x = (std::clamp)(x, margin, (std::max)(margin, contentWidth - margin - popupWidth));
 	y = (std::clamp)(y, margin, (std::max)(margin, contentHeight - margin - popupHeight));
 
@@ -5251,11 +5286,16 @@ bool Form::GetDCompSceneClientClip(Control* control, const RECT& contentDirty, R
 		{
 			auto clip = current->GetChildrenClipRect();
 			const auto parentAbs = current->GetAbsoluteLocationDip();
+			clip = current->TransformAbsoluteRectToRenderSpace(D2D1_RECT_F{
+				clip.left + parentAbs.x,
+				clip.top + parentAbs.y,
+				clip.right + parentAbs.x,
+				clip.bottom + parentAbs.y });
 			RECT clipRect{
-				(LONG)std::floor(clip.left + parentAbs.x),
-				(LONG)std::floor(clip.top + parentAbs.y + top),
-				(LONG)std::ceil(clip.right + parentAbs.x),
-				(LONG)std::ceil(clip.bottom + parentAbs.y + top)
+				(LONG)std::floor(clip.left),
+				(LONG)std::floor(clip.top + top),
+				(LONG)std::ceil(clip.right),
+				(LONG)std::ceil(clip.bottom + top)
 			};
 			RECT intersection{};
 			if (!::IntersectRect(&intersection, &outClip, &clipRect))
@@ -5335,7 +5375,7 @@ void Form::RenderDCompD2DControlInSegment(Control* control, DCompSceneBuildState
 #ifdef CUI_ENABLE_WEBVIEW2
 	if (!control || !state.SegmentOpen || !state.SegmentRender)
 		return;
-	RECT crc = ToRECT(control->AbsRect, 2);
+	RECT crc = ToRECT(control->GetRenderedAbsoluteRectDip(), 2);
 	const int top = (int)(ClientTop() / GetDpiScale());
 	RECT clientControlRc = crc;
 	clientControlRc.top += top;
@@ -6154,7 +6194,7 @@ bool Form::UpdateDirtyRect(const RECT& dirty, bool force)
 				if (c == this->MainMenu) continue;
 				if (this->MainStatusBar && this->MainStatusBar->TopMost && c == this->MainStatusBar)
 					continue;
-				RECT crc = ToRECT(c->AbsRect, 2);
+				RECT crc = ToRECT(c->GetRenderedAbsoluteRectDip(), 2);
 				if (!RectIntersects(contentDirty, crc)) continue;
 				if (c->ParentForm->Render == nullptr)
 					c->ParentForm->Render = this->Render;
@@ -6400,12 +6440,15 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 		{
 			if (!this->_mouseCaptureControl || !this->_mouseCaptureControl->IsVisual)
 				return false;
+			int localX = 0;
+			int localY = 0;
+			if (!TryGetControlLocalPoint(
+				this->_mouseCaptureControl, contentMouse, localX, localY))
+				return false;
 			hitControl = this->_mouseCaptureControl;
-			const auto location = this->_mouseCaptureControl->GetAbsoluteLocationDip();
 			this->_mouseCaptureControl->ProcessMessage(
 				messageId, wParamValue, lParamValue,
-				ToLegacyLocalCoordinate((float)contentMouse.x - location.x),
-				ToLegacyLocalCoordinate((float)contentMouse.y - location.y));
+				localX, localY);
 			return true;
 		};
 	auto releaseCapturedControlIfIdle = [&]()
@@ -6496,11 +6539,12 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 				this->_hoverControl = this->Selected;
 				this->UnderMouse = this->Selected;
 				hitControl = this->Selected;
-				const auto location = this->Selected->GetAbsoluteLocationDip();
-				this->Selected->ProcessMessage(
-					message, wParam, lParam,
-					ToLegacyLocalCoordinate((float)contentMouse.x - location.x),
-					ToLegacyLocalCoordinate((float)contentMouse.y - location.y));
+				int localX = 0;
+				int localY = 0;
+				if (TryGetControlLocalPoint(
+					this->Selected, contentMouse, localX, localY))
+					this->Selected->ProcessMessage(
+						message, wParam, lParam, localX, localY);
 				UpdateCursor(mouse, contentMouse);
 				break;
 			}
@@ -6515,11 +6559,11 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 		if (hit)
 		{
 			hitControl = hit;
-			const auto hitLocation = hit->GetAbsoluteLocationDip();
-			hit->ProcessMessage(
-				message, wParam, lParam,
-				ToLegacyLocalCoordinate((float)contentMouse.x - hitLocation.x),
-				ToLegacyLocalCoordinate((float)contentMouse.y - hitLocation.y));
+			int localX = 0;
+			int localY = 0;
+			if (TryGetControlLocalPoint(hit, contentMouse, localX, localY))
+				hit->ProcessMessage(
+					message, wParam, lParam, localX, localY);
 		}
 		this->UnderMouse = this->_hoverControl;
 		UpdateCursor(mouse, contentMouse);
@@ -6621,11 +6665,12 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 				if (this->Selected->IsVisual)
 				{
 					hitControl = this->Selected;
-					const auto location = this->Selected->GetAbsoluteLocationDip();
-					this->Selected->ProcessMessage(
-						message, wParam, lParam,
-						ToLegacyLocalCoordinate((float)contentMouse.x - location.x),
-						ToLegacyLocalCoordinate((float)contentMouse.y - location.y));
+					int localX = 0;
+					int localY = 0;
+					if (TryGetControlLocalPoint(
+						this->Selected, contentMouse, localX, localY))
+						this->Selected->ProcessMessage(
+							message, wParam, lParam, localX, localY);
 					UpdateCursor(mouse, contentMouse);
 					break;
 				}
@@ -6671,9 +6716,10 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 			for (Control* target = wheelHit; target; target = target->Parent)
 			{
 				if (!target->HandlesMouseWheel()) continue;
-				const auto targetAbs = target->GetAbsoluteLocationDip();
-				const int targetX = ToLegacyLocalCoordinate((float)contentMouse.x - targetAbs.x);
-				const int targetY = ToLegacyLocalCoordinate((float)contentMouse.y - targetAbs.y);
+				int targetX = 0;
+				int targetY = 0;
+				if (!TryGetControlLocalPoint(
+					target, contentMouse, targetX, targetY)) continue;
 				if (!target->CanHandleMouseWheel(delta, targetX, targetY)) continue;
 				if (target->ProcessMessage(message, wParam, lParam, targetX, targetY))
 				{
@@ -6689,11 +6735,16 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 		if (hit)
 		{
 			hitControl = hit;
-			const auto hitLocation = hit->GetAbsoluteLocationDip();
+			int controlLocalX = 0;
+			int controlLocalY = 0;
+			if (!TryGetControlLocalPoint(
+				hit, contentMouse, controlLocalX, controlLocalY))
+			{
+				hitControl = nullptr;
+				break;
+			}
 			if (message == WM_MOUSEWHEEL)
 			{
-				const int controlLocalX = ToLegacyLocalCoordinate((float)contentMouse.x - hitLocation.x);
-				const int controlLocalY = ToLegacyLocalCoordinate((float)contentMouse.y - hitLocation.y);
 				const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
 				if (!hit->CanHandleMouseWheel(delta, controlLocalX, controlLocalY))
 					hitControl = nullptr;
@@ -6703,9 +6754,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 			else
 			{
 				hit->ProcessMessage(
-					message, wParam, lParam,
-					ToLegacyLocalCoordinate((float)contentMouse.x - hitLocation.x),
-					ToLegacyLocalCoordinate((float)contentMouse.y - hitLocation.y));
+					message, wParam, lParam, controlLocalX, controlLocalY);
 			}
 			if (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN)
 			{
@@ -7220,12 +7269,6 @@ LRESULT CALLBACK Form::WINMSG_PROCESS(HWND hWnd, UINT message, WPARAM wParam, LP
 			BeginPaint(hWnd, &ps);
 			if (form->Render)
 			{
-				if (!::IsWindowEnabled(hWnd))
-				{
-					EndPaint(hWnd, &ps);
-					return 0;
-				}
-
 				if (form->ControlChanged || !form->_hasRenderedOnce)
 					form->UpdateDirtyRect(ps.rcPaint, true);
 			}

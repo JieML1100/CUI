@@ -1,6 +1,7 @@
 #define NOMINMAX
 #include "NavigationView.h"
 #include "Form.h"
+#include "AdvancedControlPropertyRegistration.h"
 
 #include <algorithm>
 #include <cmath>
@@ -118,21 +119,94 @@ void NavigationView::EnsureBindingPropertiesRegistered()
 	Control::EnsureBindingPropertiesRegistered();
 	static const bool registered = []
 	{
-		using Handler = BindingPropertyMetadata::ChangeHandler;
+		using namespace cui::advanced_properties;
+		RegisterEnumField(L"DisplayMode", &NavigationView::DisplayMode,
+			NavigationViewDisplayMode::Expanded, L"Layout", 100, 10,
+			{ { L"Expanded", NavigationViewDisplayMode::Expanded },
+			  { L"Compact", NavigationViewDisplayMode::Compact } });
+		RegisterField(L"IsPaneOpen", &NavigationView::IsPaneOpen, true,
+			L"Behavior", 110, 10, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"ShowToggleButton", &NavigationView::ShowToggleButton, true,
+			L"Behavior", 110, 20, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"ShowHeader", &NavigationView::ShowHeader, true,
+			L"Behavior", 110, 30, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"ShowIconPlaceholder", &NavigationView::ShowIconPlaceholder, true,
+			L"Behavior", 110, 40, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"AutoSelectOnClick", &NavigationView::AutoSelectOnClick, true,
+			L"Behavior", 110, 50, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"HeaderText", &NavigationView::HeaderText,
+			std::wstring(L"Navigation"), L"Data", 600, 10,
+			ControlPropertyEditorKind::Text);
+		RegisterField(L"FooterText", &NavigationView::FooterText,
+			std::wstring{}, L"Data", 600, 20, ControlPropertyEditorKind::Text);
+		RegisterMetric(L"Border", &NavigationView::Border, 1.0f,
+			L"Appearance", 200, 10);
+		RegisterMetric(L"CornerRadius", &NavigationView::CornerRadius, 8.0f,
+			L"Appearance", 200, 20);
+		RegisterMetric(L"HeaderHeight", &NavigationView::HeaderHeight, 44.0f,
+			L"Layout", 100, 20);
+		RegisterMetric(L"ItemHeight", &NavigationView::ItemHeight, 34.0f,
+			L"Layout", 100, 30);
+		RegisterMetric(L"HeaderItemHeight", &NavigationView::HeaderItemHeight, 24.0f,
+			L"Layout", 100, 40);
+		RegisterMetric(L"SeparatorHeight", &NavigationView::SeparatorHeight, 10.0f,
+			L"Layout", 100, 50);
+		RegisterMetric(L"ItemGap", &NavigationView::ItemGap, 4.0f,
+			L"Layout", 100, 60);
+		RegisterMetric(L"ItemPaddingX", &NavigationView::ItemPaddingX, 8.0f,
+			L"Layout", 100, 70);
+		RegisterMetric(L"IconSize", &NavigationView::IconSize, 18.0f,
+			L"Layout", 100, 80);
+		RegisterMetric(L"SelectedAccentWidth", &NavigationView::SelectedAccentWidth, 3.0f,
+			L"Layout", 100, 90);
+		RegisterMetric(L"ScrollBarSize", &NavigationView::ScrollBarSize, 8.0f,
+			L"Layout", 100, 100);
+		RegisterIntMetric(L"MouseWheelStep", &NavigationView::MouseWheelStep, 48,
+			L"Behavior", 110, 60, 1);
+		RegisterColor(L"SurfaceColor", &NavigationView::SurfaceColor,
+			cui::theme::palette::Surface, 100);
+		RegisterColor(L"HeaderBackColor", &NavigationView::HeaderBackColor,
+			cui::theme::palette::SurfaceMuted, 110);
+		RegisterColor(L"MutedTextColor", &NavigationView::MutedTextColor,
+			cui::theme::palette::TextMuted, 120);
+		RegisterColor(L"SelectedItemBackColor", &NavigationView::SelectedItemBackColor,
+			cui::theme::palette::AccentSelected, 130);
+		RegisterColor(L"SelectedItemForeColor", &NavigationView::SelectedItemForeColor,
+			cui::theme::palette::TextPrimary, 140);
+		RegisterColor(L"UnderMouseItemBackColor", &NavigationView::UnderMouseItemBackColor,
+			cui::theme::palette::AccentSoft, 150);
+		RegisterColor(L"AccentColor", &NavigationView::AccentColor,
+			cui::theme::palette::Accent, 160);
+		RegisterColor(L"IconPlaceholderColor", &NavigationView::IconPlaceholderColor,
+			cui::theme::palette::AccentSelected, 170);
+		RegisterColor(L"BadgeBackColor", &NavigationView::BadgeBackColor,
+			cui::theme::palette::Accent, 180);
+		RegisterColor(L"BadgeForeColor", &NavigationView::BadgeForeColor,
+			cui::theme::palette::OnAccent, 190);
+		RegisterColor(L"SeparatorColor", &NavigationView::SeparatorColor,
+			cui::theme::palette::Border, 200);
+		RegisterColor(L"ScrollBackColor", &NavigationView::ScrollBackColor,
+			cui::theme::palette::ScrollTrack, 210);
+		RegisterColor(L"ScrollForeColor", &NavigationView::ScrollForeColor,
+			cui::theme::palette::ScrollThumb, 220);
+
+		auto selectedOptions = Options<NavigationView, int>(-1,
+			L"Behavior", 110, 70, ControlPropertyEditorKind::Number);
+		selectedOptions.Design.Minimum = -1.0;
 		BindingPropertyRegistry::Register<NavigationView, int>(L"SelectedIndex",
 			[](NavigationView& target) { return target.SelectedIndex; },
 			[](NavigationView& target, const int& value)
 			{
-				if (value < 0)
-					target.ClearSelection();
-				else
-					target.SelectItem(value);
+				if (value < 0) target.ClearSelection();
+				else if (target.Items.empty()) target.SelectedIndex = value;
+				else target.SelectItem(value);
 			},
-			[](NavigationView& target, Handler handler, DataSourceUpdateMode)
+			[](NavigationView& target,
+				BindingPropertyMetadata::ChangeHandler handler, DataSourceUpdateMode)
 			{
 				return target.SelectionChanged.Subscribe(
 					[handler = std::move(handler)](Control*) { handler(); });
-			});
+			}, std::move(selectedOptions));
 		return true;
 	}();
 	(void)registered;
@@ -796,6 +870,49 @@ BreadcrumbBarItem::BreadcrumbBarItem(std::wstring text, std::wstring value)
 UIClass BreadcrumbBar::Type()
 {
 	return UIClass::UI_BreadcrumbBar;
+}
+
+void BreadcrumbBar::EnsureBindingPropertiesRegistered()
+{
+	Control::EnsureBindingPropertiesRegistered();
+	static const bool registered = []
+	{
+		using namespace cui::advanced_properties;
+		RegisterMetric(L"Border", &BreadcrumbBar::Border, 1.0f,
+			L"Appearance", 200, 10);
+		RegisterMetric(L"CornerRadius", &BreadcrumbBar::CornerRadius, 7.0f,
+			L"Appearance", 200, 20);
+		RegisterMetric(L"ItemPaddingX", &BreadcrumbBar::ItemPaddingX, 10.0f,
+			L"Layout", 100, 10);
+		RegisterMetric(L"ItemGap", &BreadcrumbBar::ItemGap, 4.0f,
+			L"Layout", 100, 20);
+		RegisterMetric(L"SeparatorWidth", &BreadcrumbBar::SeparatorWidth, 18.0f,
+			L"Layout", 100, 30);
+		RegisterColor(L"SurfaceColor", &BreadcrumbBar::SurfaceColor,
+			cui::theme::palette::Surface, 100);
+		RegisterColor(L"HoverBackColor", &BreadcrumbBar::HoverBackColor,
+			cui::theme::palette::AccentSoft, 110);
+		RegisterColor(L"SelectedBackColor", &BreadcrumbBar::SelectedBackColor,
+			cui::theme::palette::AccentSelected, 120);
+		RegisterColor(L"MutedTextColor", &BreadcrumbBar::MutedTextColor,
+			cui::theme::palette::TextMuted, 130);
+		RegisterColor(L"AccentColor", &BreadcrumbBar::AccentColor,
+			cui::theme::palette::Accent, 140);
+		auto selectedOptions = Options<BreadcrumbBar, int>(-1,
+			L"Behavior", 110, 10, ControlPropertyEditorKind::Number);
+		selectedOptions.Design.Minimum = -1.0;
+		BindingPropertyRegistry::Register<BreadcrumbBar, int>(L"SelectedIndex",
+			[](BreadcrumbBar& target) { return target.SelectedIndex; },
+			[](BreadcrumbBar& target, const int& value)
+			{
+				if (value < 0) target.SelectedIndex = -1;
+				else if (target.Items.empty()) target.SelectedIndex = value;
+				else target.SelectItem(value);
+			}, Subscriber<BreadcrumbBar>(L"SelectedIndex"),
+			std::move(selectedOptions));
+		return true;
+	}();
+	(void)registered;
 }
 
 BreadcrumbBar::BreadcrumbBar(int x, int y, int width, int height)

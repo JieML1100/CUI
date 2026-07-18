@@ -270,6 +270,9 @@ HRESULT D2DGraphics::EnsureDeviceResources() {
 }
 
 void D2DGraphics::ResetTarget() {
+	_transformStack.clear();
+	_geometryClipLayerStack.clear();
+	_geometryClipGeometryStack.clear();
 	pSwapChain.Reset();
 	pTargetBitmap.Reset();
 	pDeviceContext.Reset();
@@ -1342,9 +1345,30 @@ void D2DGraphics::PopDrawRect() {
 	if (!ctx) return;
 	ctx->PopAxisAlignedClip();
 }
-bool D2DGraphics::PushRoundClip(float left, float top, float width, float height, float radius) {
+bool D2DGraphics::PushGeometryClip(ID2D1Geometry* geometry) {
 	auto* ctx = pDeviceContext.Get();
-	if (!ctx || width <= 0.0f || height <= 0.0f || radius <= 0.0f) return false;
+	if (!ctx || !geometry) return false;
+
+	ComPtr<ID2D1Layer> layer;
+	if (FAILED(ctx->CreateLayer(ctx->GetSize(), &layer)))
+		return false;
+	auto params = D2D1::LayerParameters(
+		D2D1::InfiniteRect(), geometry, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+	ctx->PushLayer(&params, layer.Get());
+	_geometryClipLayerStack.push_back(std::move(layer));
+	_geometryClipGeometryStack.emplace_back(geometry);
+	return true;
+}
+void D2DGraphics::PopGeometryClip() {
+	auto* ctx = pDeviceContext.Get();
+	if (!ctx || _geometryClipLayerStack.empty()) return;
+	ctx->PopLayer();
+	_geometryClipLayerStack.pop_back();
+	if (!_geometryClipGeometryStack.empty())
+		_geometryClipGeometryStack.pop_back();
+}
+bool D2DGraphics::PushRoundClip(float left, float top, float width, float height, float radius) {
+	if (!pDeviceContext || width <= 0.0f || height <= 0.0f || radius <= 0.0f) return false;
 	radius = (std::clamp)(radius, 0.0f, (std::min)(width, height) * 0.5f);
 	if (radius <= 0.0f) return false;
 
@@ -1353,34 +1377,24 @@ bool D2DGraphics::PushRoundClip(float left, float top, float width, float height
 	if (FAILED(_D2DFactory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(rect, radius, radius), &roundedGeometry)))
 		return false;
 
-	ComPtr<ID2D1Layer> layer;
-	if (FAILED(ctx->CreateLayer(D2D1::SizeF(width, height), &layer)))
-		return false;
-
-	auto params = D2D1::LayerParameters(rect, roundedGeometry.Get(), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-	ctx->PushLayer(&params, layer.Get());
-
-	ComPtr<ID2D1Geometry> geometry;
-	roundedGeometry.As(&geometry);
-	_roundClipLayerStack.push_back(layer);
-	_roundClipGeometryStack.push_back(geometry);
-	return true;
+	return PushGeometryClip(roundedGeometry.Get());
 }
 void D2DGraphics::PopRoundClip() {
-	auto* ctx = pDeviceContext.Get();
-	if (!ctx || _roundClipLayerStack.empty()) return;
-	ctx->PopLayer();
-	_roundClipLayerStack.pop_back();
-	if (!_roundClipGeometryStack.empty())
-		_roundClipGeometryStack.pop_back();
+	PopGeometryClip();
 }
 void D2DGraphics::PushLocalTransform(float tx, float ty, float clipW, float clipH) {
+	PushLocalTransform(D2D1::Matrix3x2F::Translation(tx, ty), clipW, clipH);
+}
+void D2DGraphics::PushLocalTransform(
+	const D2D1_MATRIX_3X2_F& transform,
+	float clipW,
+	float clipH) {
 	auto* ctx = pDeviceContext.Get();
 	if (!ctx) return;
 	D2D1_MATRIX_3X2_F current;
 	ctx->GetTransform(&current);
 	_transformStack.push_back(current);
-	ctx->SetTransform(D2D1::Matrix3x2F::Translation(tx, ty));
+	ctx->SetTransform(transform);
 	ctx->PushAxisAlignedClip(D2D1::RectF(0.f, 0.f, clipW, clipH), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 }
 void D2DGraphics::PopLocalTransform() {

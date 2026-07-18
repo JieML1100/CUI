@@ -30,6 +30,13 @@ namespace
 		return value;
 	}
 
+	D2D1::Matrix3x2F AsMatrix(const D2D1_MATRIX_3X2_F& value) noexcept
+	{
+		return D2D1::Matrix3x2F(
+			value._11, value._12, value._21,
+			value._22, value._31, value._32);
+	}
+
 	int StoredPropertySourceIndex(ControlPropertyValueSource source) noexcept
 	{
 		const int value = static_cast<int>(source);
@@ -479,6 +486,14 @@ void Control::InvalidateMeasureSubtree()
 			child->InvalidateMeasureSubtree();
 	}
 }
+
+void Control::InvalidateVisualSubtree()
+{
+	InvalidateVisual();
+	for (auto* child : Children)
+		if (child) child->InvalidateVisualSubtree();
+}
+
 void Control::BeginRender()
 {
 	auto actualSize = this->GetActualSizeDip();
@@ -486,18 +501,100 @@ void Control::BeginRender()
 }
 void Control::BeginRender(float clipW, float clipH)
 {
+	_activeGeometryClipCount = 0;
 	if (!this->ParentForm || !this->ParentForm->Render) return;
-	auto absoluteLocation = this->GetAbsoluteLocationDip();
 	// HeadHeight is physical; divide by dpiScale to match the logical DIP transform.
 	const float dpiScale = this->ParentForm->GetDpiScale();
 	const float titleBarOffset = (this->ParentForm->VisibleHead ? this->ParentForm->HeadHeight / dpiScale : 0.0f);
-	this->ParentForm->Render->PushLocalTransform(absoluteLocation.x, absoluteLocation.y + titleBarOffset, clipW, clipH);
+	// Layout coordinates are relative to the form content. The control-local
+	// transform is followed by ancestor transforms and finally the title bar.
+	const auto transform = AsMatrix(GetLocalToRenderTransform())
+		* D2D1::Matrix3x2F::Translation(0.0f, titleBarOffset);
+	this->ParentForm->Render->PushLocalTransform(transform, clipW, clipH);
+
+	std::vector<const Control*> clipOwners;
+	for (auto* current = this; current; current = current->Parent)
+		if (current->_clip) clipOwners.push_back(current);
+	if (clipOwners.empty()) return;
+	std::reverse(clipOwners.begin(), clipOwners.end());
+	auto renderToLocal = AsMatrix(GetLocalToRenderTransform());
+	if (!renderToLocal.Invert()) return;
+	for (const auto* owner : clipOwners)
+	{
+		const auto ownerToLocal = AsMatrix(owner->GetLocalToRenderTransform())
+			* renderToLocal;
+		Microsoft::WRL::ComPtr<ID2D1Geometry> native;
+		native.Attach(owner->_clip->CreateD2DGeometry(&ownerToLocal));
+		if (native && this->ParentForm->Render->PushGeometryClip(native.Get()))
+			++_activeGeometryClipCount;
+	}
 }
 void Control::SetRenderDecorator(
 	std::function<void(Control&, D2DGraphics&)> decorator)
 {
 	_renderDecorator = std::move(decorator);
 	InvalidateVisual();
+}
+void Control::SetForegroundBrush(const cui::drawing::Brush& brush)
+{
+	_foregroundBrush = brush;
+	InvalidateVisual();
+}
+void Control::ClearForegroundBrush()
+{
+	if (!_foregroundBrush) return;
+	_foregroundBrush.reset();
+	InvalidateVisual();
+}
+ID2D1Brush* Control::CreateForegroundBrush(
+	D2DGraphics& graphics,
+	D2D1_SIZE_F bounds) const
+{
+	return _foregroundBrush
+		? _foregroundBrush->CreateBrush(graphics, bounds)
+		: nullptr;
+}
+void Control::SetClip(const cui::drawing::Geometry& geometry)
+{
+	if (_clip && *_clip == geometry) return;
+	InvalidateVisualSubtree();
+	_clip = geometry;
+	InvalidateVisualSubtree();
+}
+void Control::ClearClip()
+{
+	if (!_clip) return;
+	InvalidateVisualSubtree();
+	_clip.reset();
+	InvalidateVisualSubtree();
+}
+void Control::SetRenderTransform(const cui::drawing::Transform& transform)
+{
+	if (transform.Empty())
+	{
+		ClearRenderTransform();
+		return;
+	}
+	if (_renderTransform && *_renderTransform == transform) return;
+	InvalidateVisualSubtree();
+	_renderTransform = transform;
+	InvalidateVisualSubtree();
+}
+void Control::ClearRenderTransform()
+{
+	if (!_renderTransform) return;
+	InvalidateVisualSubtree();
+	_renderTransform.reset();
+	InvalidateVisualSubtree();
+}
+void Control::SetRenderTransformOrigin(D2D1_POINT_2F origin)
+{
+	if (!std::isfinite(origin.x) || !std::isfinite(origin.y)) return;
+	if (_renderTransformOrigin.x == origin.x
+		&& _renderTransformOrigin.y == origin.y) return;
+	InvalidateVisualSubtree();
+	_renderTransformOrigin = origin;
+	InvalidateVisualSubtree();
 }
 void Control::EndRender()
 {
@@ -516,6 +613,11 @@ void Control::EndRender()
 	}
 	RenderFocusAdorner();
 	RenderValidationAdorner();
+	while (_activeGeometryClipCount > 0)
+	{
+		this->ParentForm->Render->PopGeometryClip();
+		--_activeGeometryClipCount;
+	}
 	this->ParentForm->Render->PopLocalTransform();
 	this->_layoutState.CommitPaint();
 }
@@ -545,7 +647,8 @@ void Control::InvalidateVisualRect(const D2D1_RECT_F& contentRect)
 	}
 	this->_layoutState.InvalidatePaint();
 	if (!this->IsVisual || !this->ParentForm) return;
-	const RECT currentClientPixels = this->ParentForm->ContentDipRectToClientPixels(contentRect);
+	const auto renderedRect = TransformAbsoluteRectToRenderSpace(contentRect);
+	const RECT currentClientPixels = this->ParentForm->ContentDipRectToClientPixels(renderedRect);
 	const D2D1_RECT_F currentRect{
 		(float)currentClientPixels.left,
 		(float)currentClientPixels.top,
@@ -2065,6 +2168,114 @@ void Control::EnsureBindingPropertiesRegistered()
 						&& left.b == right.b && left.a == right.a;
 				} }, PropertyDesign(L"Appearance", 200, 20,
 					ControlPropertyPersistence::Legacy, ControlPropertyEditorKind::Color)));
+		ControlPropertyOptions<Control, cui::drawing::Brush> foregroundOptions;
+		foregroundOptions.Flags = ControlPropertyFlags::AffectsRender;
+		foregroundOptions.Equals = [](const cui::drawing::Brush& left,
+			const cui::drawing::Brush& right)
+		{
+			return left.Kind == right.Kind
+				&& left.MappingMode == right.MappingMode
+				&& left.Color.r == right.Color.r
+				&& left.Color.g == right.Color.g
+				&& left.Color.b == right.Color.b
+				&& left.Color.a == right.Color.a
+				&& left.Opacity == right.Opacity
+				&& left.StartPoint.x == right.StartPoint.x
+				&& left.StartPoint.y == right.StartPoint.y
+				&& left.EndPoint.x == right.EndPoint.x
+				&& left.EndPoint.y == right.EndPoint.y
+				&& left.Center.x == right.Center.x
+				&& left.Center.y == right.Center.y
+				&& left.GradientOrigin.x == right.GradientOrigin.x
+				&& left.GradientOrigin.y == right.GradientOrigin.y
+				&& left.RadiusX == right.RadiusX
+				&& left.RadiusY == right.RadiusY
+				&& left.GradientStops == right.GradientStops
+				&& left.ImageSource == right.ImageSource
+				&& left.Stretch == right.Stretch
+				&& left.AlignmentX == right.AlignmentX
+				&& left.AlignmentY == right.AlignmentY;
+		};
+		foregroundOptions.Design = PropertyDesign(
+			L"Appearance", 200, 21, ControlPropertyPersistence::Metadata,
+			ControlPropertyEditorKind::Text, L"Foreground");
+		// Object editors are handled by XAML/Style resources in this batch.
+		foregroundOptions.Design.Browsable = false;
+		BindingPropertyRegistry::Register<Control, cui::drawing::Brush>(L"Foreground",
+			[](Control& target)
+			{
+				if (const auto& brush = target.GetForegroundBrush(); brush)
+					return *brush;
+				cui::drawing::Brush fallback;
+				fallback.Color = target.ForeColor;
+				return fallback;
+			},
+			[](Control& target, const cui::drawing::Brush& value)
+			{
+				target.SetForegroundBrush(value);
+			}, {}, std::move(foregroundOptions));
+
+		ControlPropertyOptions<Control, std::shared_ptr<BitmapSource>> imageOptions;
+		imageOptions.Flags = ControlPropertyFlags::AffectsRender;
+		imageOptions.Equals = [](const std::shared_ptr<BitmapSource>& left,
+			const std::shared_ptr<BitmapSource>& right)
+		{
+			return left == right;
+		};
+		imageOptions.Design = PropertyDesign(
+			L"Appearance", 200, 25, ControlPropertyPersistence::Metadata,
+			ControlPropertyEditorKind::Text, L"Image source");
+		imageOptions.Design.BrowsableWhen = [](Control& target)
+		{
+			return target.Type() == UIClass::UI_PictureBox;
+		};
+		BindingPropertyRegistry::Register<Control, std::shared_ptr<BitmapSource>>(
+			L"ImageSource",
+			[](Control& target) { return target.Image; },
+			[](Control& target, const std::shared_ptr<BitmapSource>& value)
+			{
+				target.SetImageEx(value);
+			}, {}, std::move(imageOptions));
+
+		ControlPropertyOptions<Control, cui::drawing::Geometry> clipOptions;
+		clipOptions.DefaultValue = cui::drawing::Geometry{};
+		clipOptions.Flags = ControlPropertyFlags::AffectsRender;
+		clipOptions.Equals = [](const cui::drawing::Geometry& left,
+			const cui::drawing::Geometry& right) { return left == right; };
+		clipOptions.Design = PropertyDesign(
+			L"Appearance", 200, 26, ControlPropertyPersistence::Metadata,
+			ControlPropertyEditorKind::Text, L"Clip geometry");
+		clipOptions.Design.Browsable = false;
+		BindingPropertyRegistry::Register<Control, cui::drawing::Geometry>(L"Clip",
+			[](Control& target)
+			{
+				return target.GetClip().value_or(cui::drawing::Geometry{});
+			},
+			[](Control& target, const cui::drawing::Geometry& value)
+			{
+				if (value == cui::drawing::Geometry{}) target.ClearClip();
+				else target.SetClip(value);
+			}, {}, std::move(clipOptions));
+
+		ControlPropertyOptions<Control, cui::drawing::Transform> transformOptions;
+		transformOptions.DefaultValue = cui::drawing::Transform{};
+		transformOptions.Flags = ControlPropertyFlags::AffectsRender;
+		transformOptions.Equals = [](const cui::drawing::Transform& left,
+			const cui::drawing::Transform& right) { return left == right; };
+		transformOptions.Design = PropertyDesign(
+			L"Appearance", 200, 27, ControlPropertyPersistence::Metadata,
+			ControlPropertyEditorKind::Text, L"Render transform");
+		transformOptions.Design.Browsable = false;
+		BindingPropertyRegistry::Register<Control, cui::drawing::Transform>(
+			L"RenderTransform",
+			[](Control& target)
+			{
+				return target.GetRenderTransform().value_or(cui::drawing::Transform{});
+			},
+			[](Control& target, const cui::drawing::Transform& value)
+			{
+				target.SetRenderTransform(value);
+			}, {}, std::move(transformOptions));
 		BindingPropertyRegistry::Register<Control, D2D1_COLOR_F>(L"BorderColor",
 			[](Control& target) { return target.BorderColor; },
 			[](Control& target, const D2D1_COLOR_F& value) { target.BorderColor = value; },
@@ -3100,6 +3311,101 @@ cui::core::Rect Control::GetAbsoluteRectDip()
 {
 	return cui::core::Rect{
 		GetAbsoluteLocationDip(), GetActualSizeDip() };
+}
+
+D2D1_MATRIX_3X2_F Control::GetInheritedRenderTransform() const
+{
+	auto result = D2D1::Matrix3x2F::Identity();
+	for (auto* ancestor = this->Parent; ancestor; ancestor = ancestor->Parent)
+		result = result * AsMatrix(
+			ancestor->GetEffectiveDescendantRenderTransform());
+	return result;
+}
+
+D2D1_MATRIX_3X2_F Control::GetEffectiveDescendantRenderTransform() const
+{
+	auto result = D2D1::Matrix3x2F::Identity();
+	if (_renderTransform)
+	{
+		const auto size = const_cast<Control*>(this)->GetActualSizeDip();
+		const auto local = AsMatrix(_renderTransform->ToMatrix(
+			D2D1::SizeF(size.width, size.height), _renderTransformOrigin));
+		const auto absolute = GetAbsoluteLocationDip();
+		result = D2D1::Matrix3x2F::Translation(-absolute.x, -absolute.y)
+			* local
+			* D2D1::Matrix3x2F::Translation(absolute.x, absolute.y);
+	}
+	D2D1_MATRIX_3X2_F extra{};
+	if (TryGetDescendantRenderTransform(extra))
+		result = result * AsMatrix(extra);
+	return result;
+}
+
+D2D1_MATRIX_3X2_F Control::GetLocalToRenderTransform() const
+{
+	const auto size = const_cast<Control*>(this)->GetActualSizeDip();
+	const auto local = _renderTransform
+		? AsMatrix(_renderTransform->ToMatrix(
+			D2D1::SizeF(size.width, size.height), _renderTransformOrigin))
+		: D2D1::Matrix3x2F::Identity();
+	const auto absolute = GetAbsoluteLocationDip();
+	return local
+		* D2D1::Matrix3x2F::Translation(absolute.x, absolute.y)
+		* AsMatrix(GetInheritedRenderTransform());
+}
+
+bool Control::TryTransformRenderPointToLocal(
+	D2D1_POINT_2F renderPoint,
+	D2D1_POINT_2F& localPoint) const
+{
+	auto inverse = AsMatrix(GetLocalToRenderTransform());
+	if (!inverse.Invert()) return false;
+	localPoint = inverse.TransformPoint(renderPoint);
+	return std::isfinite(localPoint.x) && std::isfinite(localPoint.y);
+}
+
+bool Control::IsRenderPointInsideClip(D2D1_POINT_2F renderPoint) const
+{
+	for (auto* current = this; current; current = current->Parent)
+	{
+		if (!current->_clip) continue;
+		D2D1_POINT_2F local{};
+		if (!current->TryTransformRenderPointToLocal(renderPoint, local)
+			|| !current->_clip->ContainsPoint(local)) return false;
+	}
+	return true;
+}
+
+D2D1_RECT_F Control::TransformAbsoluteRectToRenderSpace(
+	const D2D1_RECT_F& rect) const
+{
+	const auto absolute = GetAbsoluteLocationDip();
+	const auto transform = D2D1::Matrix3x2F::Translation(
+		-absolute.x, -absolute.y)
+		* AsMatrix(GetLocalToRenderTransform());
+	const D2D1_POINT_2F points[] = {
+		transform.TransformPoint(D2D1::Point2F(rect.left, rect.top)),
+		transform.TransformPoint(D2D1::Point2F(rect.right, rect.top)),
+		transform.TransformPoint(D2D1::Point2F(rect.left, rect.bottom)),
+		transform.TransformPoint(D2D1::Point2F(rect.right, rect.bottom))
+	};
+	D2D1_RECT_F bounds{
+		points[0].x, points[0].y, points[0].x, points[0].y };
+	for (size_t index = 1; index < std::size(points); ++index)
+	{
+		bounds.left = (std::min)(bounds.left, points[index].x);
+		bounds.top = (std::min)(bounds.top, points[index].y);
+		bounds.right = (std::max)(bounds.right, points[index].x);
+		bounds.bottom = (std::max)(bounds.bottom, points[index].y);
+	}
+	return bounds;
+}
+
+D2D1_RECT_F Control::GetRenderedAbsoluteRectDip()
+{
+	const auto rect = GetAbsoluteRectDip();
+	return TransformAbsoluteRectToRenderSpace(D2D1_RECT_F{
+		rect.Left(), rect.Top(), rect.Right(), rect.Bottom() });
 }
 
 // 应用浮点 DIP 布局结果；POINT/SIZE 仅作为兼容投影保留。

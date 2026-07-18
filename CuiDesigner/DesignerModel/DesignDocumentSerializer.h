@@ -11,6 +11,10 @@ public:
 	static bool LoadFromFile(const std::wstring& filePath, DesignDocument& document, std::wstring* outError = nullptr);
 	/** In-memory equivalents used by tooling, tests, and non-file transports. */
 	static std::string ToXml(const DesignDocument& document);
-	static bool FromXml(const std::string& xml, DesignDocument& document, std::wstring* outError);
+	static bool FromXml(
+		const std::string& xml,
+		DesignDocument& document,
+		std::wstring* outError,
+		const std::wstring& resourceBasePath = {});
 };
 }

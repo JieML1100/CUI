@@ -1,5 +1,6 @@
 ﻿#include "KpiCard.h"
 #include "Form.h"
+#include "AdvancedControlPropertyRegistration.h"
 #include <algorithm>
 #include <cmath>
 
@@ -19,6 +20,62 @@ namespace
 UIClass KpiCard::Type()
 {
 	return UIClass::UI_KpiCard;
+}
+
+void KpiCard::EnsureBindingPropertiesRegistered()
+{
+	Control::EnsureBindingPropertiesRegistered();
+	static const bool registered = []
+	{
+		using namespace cui::advanced_properties;
+		RegisterField(L"Title", &KpiCard::Title, std::wstring(L"Metric"),
+			L"Data", 600, 10, ControlPropertyEditorKind::Text);
+		RegisterField(L"Value", &KpiCard::Value, std::wstring(L"0"),
+			L"Data", 600, 20, ControlPropertyEditorKind::Text);
+		RegisterField(L"Unit", &KpiCard::Unit, std::wstring{},
+			L"Data", 600, 30, ControlPropertyEditorKind::Text);
+		RegisterField(L"TrendText", &KpiCard::TrendText, std::wstring{},
+			L"Data", 600, 40, ControlPropertyEditorKind::Text);
+		RegisterField(L"Caption", &KpiCard::Caption, std::wstring{},
+			L"Data", 600, 50, ControlPropertyEditorKind::Text);
+		RegisterEnumField(L"TrendDirection", &KpiCard::TrendDirection,
+			KpiTrendDirection::Neutral, L"Data", 600, 60,
+			{ { L"Neutral", KpiTrendDirection::Neutral },
+			  { L"Up", KpiTrendDirection::Up },
+			  { L"Down", KpiTrendDirection::Down } });
+		RegisterField(L"Clickable", &KpiCard::Clickable, true,
+			L"Behavior", 110, 10, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"Active", &KpiCard::Active, false,
+			L"Behavior", 110, 20, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"ShowSparkline", &KpiCard::ShowSparkline, true,
+			L"Behavior", 110, 30, ControlPropertyEditorKind::Boolean);
+		RegisterField(L"ToggleActiveOnClick", &KpiCard::ToggleActiveOnClick, true,
+			L"Behavior", 110, 40, ControlPropertyEditorKind::Boolean);
+		RegisterMetric(L"Border", &KpiCard::Border, 1.0f,
+			L"Appearance", 200, 10);
+		RegisterMetric(L"CornerRadius", &KpiCard::CornerRadius, 8.0f,
+			L"Appearance", 200, 20);
+		RegisterColor(L"SurfaceColor", &KpiCard::SurfaceColor,
+			cui::theme::palette::Surface, 100);
+		RegisterColor(L"ActiveBackColor", &KpiCard::ActiveBackColor,
+			cui::theme::palette::AccentSelected, 110);
+		RegisterColor(L"HoverColor", &KpiCard::HoverColor,
+			cui::theme::palette::AccentSoft, 120);
+		RegisterColor(L"AccentColor", &KpiCard::AccentColor,
+			cui::theme::palette::Accent, 130);
+		RegisterColor(L"MutedTextColor", &KpiCard::MutedTextColor,
+			cui::theme::palette::TextMuted, 140);
+		RegisterColor(L"PositiveColor", &KpiCard::PositiveColor,
+			cui::theme::palette::Positive, 150);
+		RegisterColor(L"NegativeColor", &KpiCard::NegativeColor,
+			cui::theme::palette::Negative, 160);
+		RegisterColor(L"NeutralColor", &KpiCard::NeutralColor,
+			cui::theme::palette::TextMuted, 170);
+		RegisterColor(L"SparklineFillColor", &KpiCard::SparklineFillColor,
+			cui::theme::palette::AccentSoft, 180);
+		return true;
+	}();
+	(void)registered;
 }
 
 KpiCard::KpiCard(int x, int y, int width, int height)

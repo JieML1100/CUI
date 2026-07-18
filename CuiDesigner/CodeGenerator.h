@@ -84,6 +84,7 @@ private:
 	std::wstring _formFontName;
 	float _formFontSize = 18.0f;
 	DesignerStyleSheet _styleSheet;
+	std::wstring _resourceBasePath;
 	std::unordered_map<const DesignerControl*, std::string> _varNameOf;
 	std::wstring _lastError;
 	
@@ -106,6 +107,8 @@ private:
 	std::string DockToString(::Dock d);
 	std::string SizeUnitToString(SizeUnit u);
 	std::string GridLengthToCtorString(const GridLength& gl);
+	std::string GenerateTransformExpression(const cui::drawing::Transform& value);
+	std::string GenerateGeometryExpression(const cui::drawing::Geometry& value);
 	std::string GenerateStyleValueExpression(const DesignerStyleValue& value);
 	std::string GenerateStyleSheetCode(int indent);
 	bool CollectEventHandlers(

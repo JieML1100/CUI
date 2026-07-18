@@ -140,6 +140,8 @@ struct RuntimeDocumentLoadOptions
 	std::shared_ptr<const RuntimeCustomControlRegistry> CustomControls;
 	/** Primarily for tools: materialize the declared built-in base as a proxy. */
 	bool AllowCustomControlProxy = false;
+	/** Rebuilds runtime resources when dependency bytes changed but XAML is identical. */
+	bool ForceResourceRefresh = false;
 };
 
 enum class RuntimeDocumentReloadMode
@@ -180,6 +182,12 @@ public:
 		return _dataContextSchema;
 	}
 	const DesignerStyleSheet& StyleSheet() const noexcept { return _styleSheet; }
+	std::vector<ResourceDependency> ResourceDependencies() const
+	{
+		return _sourceDocument
+			? _sourceDocument->ResourceDependencies()
+			: std::vector<ResourceDependency>{};
+	}
 	const std::vector<std::shared_ptr<DesignerControl>>& Controls() const noexcept
 	{
 		return _controls;
@@ -334,6 +342,7 @@ private:
 		std::wstring* outError);
 	static void RemoveDataBindings(
 		std::vector<InstalledBinding>& installed) noexcept;
+	void SetStyleDataContext(IBindingSource* source);
 	void RebuildControlIndex();
 	bool CommitInheritedFormAttachments(
 		RuntimeDocument& previous,

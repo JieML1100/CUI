@@ -86,7 +86,7 @@ namespace
 		if (auto* panel = dynamic_cast<Panel*>(control))
 		{
 			panel->InvalidateLayout();
-			panel->PerformLayout();
+			panel->UpdateLayout();
 		}
 	}
 	
@@ -166,6 +166,305 @@ namespace
 			}
 			return c;
 		}
+
+	static bool TransformFromValue(
+		const DesignValue& value,
+		cui::drawing::Transform& output,
+		std::wstring* outError)
+	{
+		if (!value.is_array() || value.empty())
+		{
+			if (outError) *outError = L"RenderTransform 必须是非空数组。";
+			return false;
+		}
+		output.Operations.clear();
+		for (const auto& item : value.ArrayItems())
+		{
+			if (!item.is_object())
+			{
+				if (outError) *outError = L"RenderTransform 操作格式无效。";
+				return false;
+			}
+			cui::drawing::TransformOperation operation;
+			const auto type = item.value("type", std::string{});
+			if (type == "matrix")
+			{
+				operation.Kind = cui::drawing::TransformKind::Matrix;
+				operation.Matrix = D2D1::Matrix3x2F(
+					static_cast<float>(item.value("m11", 1.0)),
+					static_cast<float>(item.value("m12", 0.0)),
+					static_cast<float>(item.value("m21", 0.0)),
+					static_cast<float>(item.value("m22", 1.0)),
+					static_cast<float>(item.value("dx", 0.0)),
+					static_cast<float>(item.value("dy", 0.0)));
+			}
+			else if (type == "translate")
+			{
+				operation.Kind = cui::drawing::TransformKind::Translate;
+				operation.X = static_cast<float>(item.value("x", 0.0));
+				operation.Y = static_cast<float>(item.value("y", 0.0));
+			}
+			else if (type == "scale")
+			{
+				operation.Kind = cui::drawing::TransformKind::Scale;
+				operation.ScaleX = static_cast<float>(item.value("scaleX", 1.0));
+				operation.ScaleY = static_cast<float>(item.value("scaleY", 1.0));
+			}
+			else if (type == "rotate")
+			{
+				operation.Kind = cui::drawing::TransformKind::Rotate;
+				operation.Angle = static_cast<float>(item.value("angle", 0.0));
+			}
+			else if (type == "skew")
+			{
+				operation.Kind = cui::drawing::TransformKind::Skew;
+				operation.AngleX = static_cast<float>(item.value("angleX", 0.0));
+				operation.AngleY = static_cast<float>(item.value("angleY", 0.0));
+			}
+			else
+			{
+				if (outError) *outError = L"RenderTransform 操作类型无效。";
+				return false;
+			}
+			operation.CenterX = static_cast<float>(item.value("centerX", 0.0));
+			operation.CenterY = static_cast<float>(item.value("centerY", 0.0));
+			output.Operations.push_back(operation);
+		}
+		return true;
+	}
+
+	static bool GeometryFromValue(
+		const DesignValue& value,
+		cui::drawing::Geometry& output,
+		std::wstring* outError)
+	{
+		if (!value.is_object())
+		{
+			if (outError) *outError = L"Clip 几何必须是对象。";
+			return false;
+		}
+		output = cui::drawing::Geometry{};
+		auto finish = [&]() -> bool
+		{
+			if (!value.contains("transform")) return true;
+			cui::drawing::Transform transform;
+			std::wstring transformError;
+			if (!TransformFromValue(value["transform"], transform, &transformError))
+			{
+				if (outError) *outError = L"Geometry.Transform：" + transformError;
+				return false;
+			}
+			output.LocalTransform = std::move(transform);
+			return true;
+		};
+		auto finite = [](std::initializer_list<float> values)
+		{
+			return std::all_of(values.begin(), values.end(), [](float item)
+				{ return std::isfinite(item); });
+		};
+		const auto type = value.value("type", std::string{});
+		if (type == "rectangle")
+		{
+			const float x = static_cast<float>(value.value("x", 0.0));
+			const float y = static_cast<float>(value.value("y", 0.0));
+			const float width = static_cast<float>(value.value("width", 0.0));
+			const float height = static_cast<float>(value.value("height", 0.0));
+			const float radiusX = static_cast<float>(value.value("radiusX", 0.0));
+			const float radiusY = static_cast<float>(value.value("radiusY", 0.0));
+			if (!std::isfinite(x) || !std::isfinite(y)
+				|| !std::isfinite(width) || !std::isfinite(height)
+				|| !std::isfinite(radiusX) || !std::isfinite(radiusY)
+				|| width < 0.0f || height < 0.0f
+				|| radiusX < 0.0f || radiusY < 0.0f)
+			{
+				if (outError) *outError = L"RectangleGeometry 数值无效。";
+				return false;
+			}
+			output.Kind = cui::drawing::GeometryKind::Rectangle;
+			output.Rect = D2D1::RectF(x, y, x + width, y + height);
+			output.RadiusX = radiusX;
+			output.RadiusY = radiusY;
+			return finish();
+		}
+		if (type == "ellipse")
+		{
+			const float centerX = static_cast<float>(value.value("centerX", 0.0));
+			const float centerY = static_cast<float>(value.value("centerY", 0.0));
+			const float radiusX = static_cast<float>(value.value("radiusX", 0.0));
+			const float radiusY = static_cast<float>(value.value("radiusY", 0.0));
+			if (!std::isfinite(centerX) || !std::isfinite(centerY)
+				|| !std::isfinite(radiusX) || !std::isfinite(radiusY)
+				|| radiusX < 0.0f || radiusY < 0.0f)
+			{
+				if (outError) *outError = L"EllipseGeometry 数值无效。";
+				return false;
+			}
+			output.Kind = cui::drawing::GeometryKind::Ellipse;
+			output.Center = D2D1::Point2F(centerX, centerY);
+			output.RadiusX = radiusX;
+			output.RadiusY = radiusY;
+			return finish();
+		}
+		if (type == "path")
+		{
+			output.Kind = cui::drawing::GeometryKind::Path;
+			const auto fillRule = value.value("fillRule", std::string("evenodd"));
+			if (fillRule == "nonzero")
+				output.FillRule = cui::drawing::GeometryFillRule::Nonzero;
+			else if (fillRule != "evenodd")
+			{
+				if (outError) *outError = L"PathGeometry FillRule 无效。";
+				return false;
+			}
+			if (!value.contains("figures") || !value["figures"].is_array())
+			{
+				if (outError) *outError = L"PathGeometry 缺少 Figures。";
+				return false;
+			}
+			for (const auto& figureValue : value["figures"].ArrayItems())
+			{
+				if (!figureValue.is_object() || !figureValue.contains("segments")
+					|| !figureValue["segments"].is_array())
+				{
+					if (outError) *outError = L"PathFigure 格式无效。";
+					return false;
+				}
+				cui::drawing::PathFigure figure;
+				figure.StartPoint = D2D1::Point2F(
+					static_cast<float>(figureValue.value("startX", 0.0)),
+					static_cast<float>(figureValue.value("startY", 0.0)));
+				figure.IsClosed = figureValue.value("closed", false);
+				figure.IsFilled = figureValue.value("filled", true);
+				if (!finite({ figure.StartPoint.x, figure.StartPoint.y }))
+				{
+					if (outError) *outError = L"PathFigure.StartPoint 数值无效。";
+					return false;
+				}
+				for (const auto& segmentValue : figureValue["segments"].ArrayItems())
+				{
+					if (!segmentValue.is_object())
+					{
+						if (outError) *outError = L"PathSegment 格式无效。";
+						return false;
+					}
+					cui::drawing::PathSegment segment;
+					const auto segmentType = segmentValue.value("type", std::string{});
+					if (segmentType == "line")
+						segment.Kind = cui::drawing::PathSegmentKind::Line;
+					else if (segmentType == "bezier")
+						segment.Kind = cui::drawing::PathSegmentKind::Bezier;
+					else if (segmentType == "quadratic")
+						segment.Kind = cui::drawing::PathSegmentKind::QuadraticBezier;
+					else if (segmentType == "arc")
+						segment.Kind = cui::drawing::PathSegmentKind::Arc;
+					else
+					{
+						if (outError) *outError = L"PathSegment 类型无效。";
+						return false;
+					}
+					segment.Point = D2D1::Point2F(
+						static_cast<float>(segmentValue.value("x", 0.0)),
+						static_cast<float>(segmentValue.value("y", 0.0)));
+					segment.Point1 = D2D1::Point2F(
+						static_cast<float>(segmentValue.value("x1", 0.0)),
+						static_cast<float>(segmentValue.value("y1", 0.0)));
+					segment.Point2 = D2D1::Point2F(
+						static_cast<float>(segmentValue.value("x2", 0.0)),
+						static_cast<float>(segmentValue.value("y2", 0.0)));
+					segment.Point3 = D2D1::Point2F(
+						static_cast<float>(segmentValue.value("x3", 0.0)),
+						static_cast<float>(segmentValue.value("y3", 0.0)));
+					segment.Size = D2D1::SizeF(
+						static_cast<float>(segmentValue.value("width", 0.0)),
+						static_cast<float>(segmentValue.value("height", 0.0)));
+					segment.RotationAngle = static_cast<float>(
+						segmentValue.value("rotation", 0.0));
+					segment.IsLargeArc = segmentValue.value("large", false);
+					const auto sweep = segmentValue.value(
+						"sweep", std::string("counterclockwise"));
+					if (sweep == "clockwise")
+						segment.Sweep = cui::drawing::SweepDirection::Clockwise;
+					else if (sweep != "counterclockwise")
+					{
+						if (outError) *outError = L"ArcSegment SweepDirection 无效。";
+						return false;
+					}
+					if (!finite({ segment.Point.x, segment.Point.y,
+						segment.Point1.x, segment.Point1.y,
+						segment.Point2.x, segment.Point2.y,
+						segment.Point3.x, segment.Point3.y,
+						segment.Size.width, segment.Size.height,
+						segment.RotationAngle })
+						|| segment.Size.width < 0.0f || segment.Size.height < 0.0f)
+					{
+						if (outError) *outError = L"PathSegment 数值无效。";
+						return false;
+					}
+					figure.Segments.push_back(segment);
+				}
+				output.Figures.push_back(std::move(figure));
+			}
+			return finish();
+		}
+		if (type != "group")
+		{
+			if (outError) *outError = L"Clip 几何类型无效。";
+			return false;
+		}
+		output.Kind = cui::drawing::GeometryKind::Group;
+		const auto fillRule = value.value("fillRule", std::string("evenodd"));
+		if (fillRule == "nonzero")
+			output.FillRule = cui::drawing::GeometryFillRule::Nonzero;
+		else if (fillRule == "evenodd")
+			output.FillRule = cui::drawing::GeometryFillRule::EvenOdd;
+		else
+		{
+			if (outError) *outError = L"GeometryGroup FillRule 无效。";
+			return false;
+		}
+		if (!value.contains("children") || !value["children"].is_array())
+		{
+			if (outError) *outError = L"GeometryGroup 缺少 Children。";
+			return false;
+		}
+		for (const auto& childValue : value["children"].ArrayItems())
+		{
+			cui::drawing::Geometry child;
+			if (!GeometryFromValue(childValue, child, outError)) return false;
+			output.Children.push_back(std::move(child));
+		}
+		return finish();
+	}
+
+	static void ValueToGridRows(
+		const DesignValue& value,
+		std::vector<GridViewRow>& output)
+	{
+		if (!value.is_array()) return;
+		for (const auto& rowValue : value)
+		{
+			if (!rowValue.is_object() || !rowValue.contains("cells")
+				|| !rowValue["cells"].is_array()) continue;
+			GridViewRow row;
+			for (const auto& cellValue : rowValue["cells"])
+			{
+				if (!cellValue.is_object()) continue;
+				CellValue cell;
+				if (cellValue.contains("checked"))
+					cell.SetBool(cellValue.value("checked", false));
+				else if (cellValue.contains("selectedIndex"))
+					cell.SetComboSelection(
+						cellValue.value("selectedIndex", -1),
+						FromUtf8(cellValue.value("value", std::string{})));
+				else if (cellValue.contains("tag"))
+					cell.SetTag(cellValue.value("tag", static_cast<long long>(0)));
+				else
+					cell.SetText(FromUtf8(cellValue.value("value", std::string{})));
+				row.Cells.push_back(std::move(cell));
+			}
+			output.push_back(std::move(row));
+		}
+	}
 	
 	static std::wstring ColorToMetadataText(const D2D1_COLOR_F& color)
 		{
@@ -418,7 +717,9 @@ bool DesignerModel::DesignDocumentMaterializer::Materialize(
 		if (!DesignerStyleSheetUtils::ValidateAgainstPropertyMetadata(
 			document.StyleSheet,
 			createBaseControl,
-			outError))
+			outError,
+			document.ResourceBasePath,
+			document.Resources))
 			return false;
 		DesignDocumentGraph documentGraph;
 		if (!DesignDocumentGraph::Build(
@@ -591,7 +892,8 @@ bool DesignerModel::DesignDocumentMaterializer::Materialize(
 
 			if (it.props.is_object())
 			{
-				c->Text = FromUtf8(it.props.value("text", std::string()));
+				if (it.props.contains("text") && it.props["text"].is_string())
+					c->Text = FromUtf8(it.props["text"].get<std::string>());
 				c->SetStyleId(it.props.contains("styleId") && it.props["styleId"].is_string()
 					? FromUtf8(it.props["styleId"].get<std::string>())
 					: std::wstring{});
@@ -669,11 +971,6 @@ bool DesignerModel::DesignDocumentMaterializer::Materialize(
 					if (fn.empty()) fn = GetDefaultFontObject()->FontName;
 					c->Font = new ::Font(fn, fs);
 				}
-				else
-				{
-					c->SetFontEx(nullptr, false);
-				}
-
 				if (it.props.contains("metadata") && it.props["metadata"].is_object())
 				{
 					using MetadataEntry = std::pair<const std::string*, const DesignValue*>;
@@ -730,6 +1027,8 @@ bool DesignerModel::DesignDocumentMaterializer::Materialize(
 							return false;
 						}
 						value.Text = FromUtf8(propertyValue["value"].get<std::string>());
+						if (propertyValue.contains("object"))
+							value.ObjectValue = propertyValue["object"];
 						const auto propertyName = FromUtf8(propertyKey);
 						if (!it.customType.Empty()
 							&& options.AllowDeferredCustomMetadata
@@ -744,7 +1043,8 @@ bool DesignerModel::DesignDocumentMaterializer::Materialize(
 						if (!DesignerPropertyCatalog::ApplyAndTrackValue(
 							*c, dc->MetadataProperties,
 							propertyName, value,
-							&canonicalName, &effective, &metadataError))
+							&canonicalName, &effective, &metadataError,
+							document.ResourceBasePath))
 						{
 							if (outError) *outError = L"控件 " + it.name + L"：" + metadataError;
 							return false;
@@ -769,6 +1069,60 @@ bool DesignerModel::DesignDocumentMaterializer::Materialize(
 
 			if (it.extra.is_object())
 			{
+				if (it.extra.contains("clip"))
+				{
+					cui::drawing::Geometry clip;
+					std::wstring clipError;
+					if (!GeometryFromValue(it.extra["clip"], clip, &clipError))
+					{
+						if (outError) *outError = L"控件 " + it.name + L"：" + clipError;
+						return false;
+					}
+					c->SetClip(clip);
+				}
+				if (it.extra.contains("renderTransformOrigin"))
+				{
+					const auto& origin = it.extra["renderTransformOrigin"];
+					if (!origin.is_object())
+					{
+						if (outError) *outError = L"控件 " + it.name
+							+ L" 的 RenderTransformOrigin 格式无效。";
+						return false;
+					}
+					c->SetRenderTransformOrigin(D2D1::Point2F(
+						static_cast<float>(origin.value("x", 0.0)),
+						static_cast<float>(origin.value("y", 0.0))));
+				}
+				if (it.extra.contains("renderTransform"))
+				{
+					cui::drawing::Transform transform;
+					std::wstring transformError;
+					if (!TransformFromValue(
+						it.extra["renderTransform"], transform, &transformError))
+					{
+						if (outError) *outError = L"控件 " + it.name + L"：" + transformError;
+						return false;
+					}
+					c->SetRenderTransform(transform);
+				}
+				if (it.extra.contains("foregroundBrush"))
+				{
+					DesignerStyleValue brushValue;
+					brushValue.Kind = DesignerStyleValueKind::Brush;
+					brushValue.ObjectValue = it.extra["foregroundBrush"];
+					BindingValue convertedBrush;
+					cui::drawing::Brush brush;
+					std::wstring brushError;
+					if (!DesignerStyleSheetUtils::TryConvertValue(
+						brushValue, convertedBrush, &brushError,
+						document.ResourceBasePath, document.Resources)
+						|| !convertedBrush.TryGet(brush))
+					{
+						if (outError) *outError = L"控件 " + it.name + L"：" + brushError;
+						return false;
+					}
+					c->SetForegroundBrush(brush);
+				}
 				if (it.type == UIClass::UI_GridPanel)
 				{
 					auto* gridPanel = (GridPanel*)c;
@@ -1088,6 +1442,40 @@ bool DesignerModel::DesignDocumentMaterializer::Materialize(
 							gridView->AddColumn(col);
 						}
 					}
+					std::vector<GridViewRow> rows;
+					if (it.extra.contains("rows"))
+						ValueToGridRows(it.extra["rows"], rows);
+					gridView->SetRows(std::move(rows));
+				}
+				else if (it.type == UIClass::UI_PagedGridView)
+				{
+					auto* gridView = static_cast<PagedGridView*>(c);
+					auto update = gridView->DeferUpdates();
+					gridView->ClearColumns();
+					if (it.extra.contains("columns") && it.extra["columns"].is_array())
+					{
+						for (const auto& columnValue : it.extra["columns"])
+						{
+							if (!columnValue.is_object()) continue;
+							GridViewColumn column;
+							column.Name = FromUtf8(columnValue.value("name", std::string{}));
+							column.Width = static_cast<float>(columnValue.value("width", 120.0));
+							column.Type = static_cast<ColumnType>(columnValue.value("type", 0));
+							column.CanEdit = columnValue.value("canEdit", true);
+							column.ButtonText = FromUtf8(
+								columnValue.value("buttonText", std::string{}));
+							if (columnValue.contains("comboBoxItems")
+								&& columnValue["comboBoxItems"].is_array())
+								for (const auto& option : columnValue["comboBoxItems"])
+									if (option.is_string()) column.ComboBoxItems.push_back(
+										FromUtf8(option.get<std::string>()));
+							gridView->AddColumn(column);
+						}
+					}
+					std::vector<GridViewRow> rows;
+					if (it.extra.contains("rows"))
+						ValueToGridRows(it.extra["rows"], rows);
+					gridView->SetRows(std::move(rows));
 				}
 				else if (it.type == UIClass::UI_PropertyGrid)
 				{
@@ -1332,6 +1720,184 @@ bool DesignerModel::DesignDocumentMaterializer::Materialize(
 						}
 					}
 				}
+				else if (it.type == UIClass::UI_NavigationView
+					|| it.type == UIClass::UI_SideBar)
+				{
+					auto* navigation = static_cast<NavigationView*>(c);
+					const int requestedSelection = navigation->SelectedIndex;
+					navigation->ClearItems();
+					int itemSelection = -1;
+					if (it.extra.contains("navigationItems")
+						&& it.extra["navigationItems"].is_array())
+					{
+						for (const auto& value : it.extra["navigationItems"])
+						{
+							if (!value.is_object()) continue;
+							NavigationViewItem item;
+							item.Text = FromUtf8(value.value("text", std::string{}));
+							item.Value = FromUtf8(value.value("value", std::string{}));
+							item.BadgeText = FromUtf8(value.value("badgeText", std::string{}));
+							const auto iconUri = FromUtf8(
+								value.value("icon", std::string{}));
+							if (!iconUri.empty())
+							{
+								BindingValue convertedIcon;
+								std::wstring imageError;
+								if (!DesignerStyleSheetUtils::TryConvertValue(
+									{ DesignerStyleValueKind::ImageSource, iconUri },
+									convertedIcon, &imageError,
+									document.ResourceBasePath, document.Resources)
+									|| !convertedIcon.TryGet(item.Icon))
+								{
+									if (outError) *outError = L"控件 " + it.name
+										+ L" 的导航图标加载失败：" + imageError;
+									return false;
+								}
+							}
+							const int kind = (std::clamp)(value.value("kind", 0), 0, 2);
+							item.Kind = static_cast<NavigationViewItemKind>(kind);
+							item.Enabled = value.value("enabled", kind == 0);
+							item.Selected = false;
+							item.Tag = value.value("tag", static_cast<UINT64>(0));
+							const int index = navigation->AddItem(item);
+							if (kind == 0 && value.value("selected", false)
+								&& itemSelection < 0) itemSelection = index;
+						}
+					}
+					const int selection = itemSelection >= 0
+						? itemSelection : requestedSelection;
+					if (selection >= 0) navigation->SelectItem(selection);
+					else navigation->ClearSelection();
+				}
+				else if (it.type == UIClass::UI_BreadcrumbBar)
+				{
+					auto* breadcrumb = static_cast<BreadcrumbBar*>(c);
+					const int requestedSelection = breadcrumb->SelectedIndex;
+					breadcrumb->ClearItems();
+					if (it.extra.contains("breadcrumbItems")
+						&& it.extra["breadcrumbItems"].is_array())
+					{
+						for (const auto& value : it.extra["breadcrumbItems"])
+						{
+							if (!value.is_object()) continue;
+							BreadcrumbBarItem item(
+								FromUtf8(value.value("text", std::string{})),
+								FromUtf8(value.value("value", std::string{})));
+							item.Enabled = value.value("enabled", true);
+							item.Tag = value.value("tag", static_cast<UINT64>(0));
+							breadcrumb->AddItem(item);
+						}
+					}
+					if (requestedSelection >= 0)
+						breadcrumb->SelectItem(requestedSelection);
+				}
+				else if (it.type == UIClass::UI_FilterBar)
+				{
+					auto* filter = static_cast<FilterBar*>(c);
+					filter->ClearItems();
+					if (it.extra.contains("filterItems")
+						&& it.extra["filterItems"].is_array())
+					{
+						for (const auto& value : it.extra["filterItems"])
+						{
+							if (!value.is_object()) continue;
+							FilterBarItem item(
+								FromUtf8(value.value("text", std::string{})),
+								FromUtf8(value.value("value", std::string{})),
+								value.value("selected", false));
+							item.Enabled = value.value("enabled", true);
+							item.Tag = value.value("tag", static_cast<UINT64>(0));
+							filter->AddItem(item);
+						}
+					}
+				}
+				else if (it.type == UIClass::UI_KpiCard)
+				{
+					auto* kpi = static_cast<KpiCard*>(c);
+					std::vector<double> values;
+					if (it.extra.contains("sparkline")
+						&& it.extra["sparkline"].is_array())
+					{
+						for (const auto& value : it.extra["sparkline"])
+							if (value.is_number()) values.push_back(value.get<double>());
+					}
+					kpi->SetSparkline(values);
+				}
+				else if (it.type == UIClass::UI_ChartView)
+				{
+					auto* chart = static_cast<ChartView*>(c);
+					chart->Clear();
+					if (it.extra.contains("series") && it.extra["series"].is_array())
+					{
+						for (const auto& seriesValue : it.extra["series"])
+						{
+							if (!seriesValue.is_object()) continue;
+							ChartSeries series;
+							series.Name = FromUtf8(seriesValue.value("name", std::string{}));
+							series.Visible = seriesValue.value("visible", true);
+							if (seriesValue.contains("color"))
+								series.Color = ColorFromValue(seriesValue["color"], series.Color);
+							if (seriesValue.contains("points")
+								&& seriesValue["points"].is_array())
+							{
+								for (const auto& pointValue : seriesValue["points"])
+								{
+									if (!pointValue.is_object()) continue;
+									ChartPoint point(
+										FromUtf8(pointValue.value("label", std::string{})),
+										pointValue.value("value", 0.0));
+									point.Tag = pointValue.value("tag", static_cast<UINT64>(0));
+									point.UseCustomColor = pointValue.value("useCustomColor", false)
+										&& pointValue.contains("color");
+									if (point.UseCustomColor)
+										point.Color = ColorFromValue(pointValue["color"], point.Color);
+									series.Points.push_back(std::move(point));
+								}
+							}
+							chart->AddSeries(series);
+						}
+					}
+				}
+				else if (it.type == UIClass::UI_ReportView)
+				{
+					auto* report = static_cast<ReportView*>(c);
+					report->Clear();
+					if (it.extra.contains("reportColumns")
+						&& it.extra["reportColumns"].is_array())
+					{
+						for (const auto& value : it.extra["reportColumns"])
+						{
+							if (!value.is_object()) continue;
+							report->AddColumn(ReportColumn(
+								FromUtf8(value.value("header", std::string{})),
+								static_cast<float>(value.value("width", 120.0)),
+								static_cast<ReportCellAlign>((std::clamp)(
+									value.value("align", 0), 0, 2)),
+								value.value("sortable", true)));
+						}
+					}
+					if (it.extra.contains("reportRows")
+						&& it.extra["reportRows"].is_array())
+					{
+						for (const auto& value : it.extra["reportRows"])
+						{
+							if (!value.is_object()) continue;
+							std::vector<std::wstring> cells;
+							if (value.contains("cells") && value["cells"].is_array())
+								for (const auto& cell : value["cells"])
+									if (cell.is_string()) cells.push_back(FromUtf8(cell.get<std::string>()));
+							const int kind = (std::clamp)(value.value("kind", 0), 0, 2);
+							const auto caption = FromUtf8(value.value("caption", std::string{}));
+							ReportRow row = kind == 1
+								? ReportRow::Group(caption, value.value("expanded", true))
+								: kind == 2 ? ReportRow::Summary(caption, std::move(cells))
+								: ReportRow(std::move(cells));
+							row.Caption = caption;
+							row.Tag = value.value("tag", static_cast<UINT64>(0));
+							report->AddRow(row);
+						}
+					}
+				}
 				else if (it.type == UIClass::UI_MediaPlayer)
 				{
 					auto* mediaPlayer = (MediaPlayer*)c;
@@ -1525,7 +2091,8 @@ bool DesignerModel::DesignDocumentMaterializer::Materialize(
 
 		std::shared_ptr<ControlStyleSheet> runtimeStyleSheet;
 		if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
-			document.StyleSheet, runtimeStyleSheet, outError))
+			document.StyleSheet, runtimeStyleSheet, outError,
+			document.ResourceBasePath, document.Resources))
 			return false;
 		if (!document.StyleSheet.Empty()
 			&& !stagingRoot.SetStyleSheet(runtimeStyleSheet, true))

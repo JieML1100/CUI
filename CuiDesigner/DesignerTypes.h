@@ -346,6 +346,13 @@ public:
 			{ UIClass::UI_ToastHost, L"ToastHost", L"通知宿主", {340, 260}, false },
 			{ UIClass::UI_WebBrowser, L"WebBrowser", L"浏览器", {500, 360}, false },
 			{ UIClass::UI_MediaPlayer, L"MediaPlayer", L"媒体播放器", {640, 360}, false },
+			{ UIClass::UI_NavigationView, L"NavigationView", L"导航视图", {220, 360}, false },
+			{ UIClass::UI_SideBar, L"SideBar", L"侧边栏", {200, 360}, false },
+			{ UIClass::UI_BreadcrumbBar, L"BreadcrumbBar", L"面包屑", {320, 32}, false },
+			{ UIClass::UI_CalendarView, L"CalendarView", L"日历", {280, 300}, false },
+			{ UIClass::UI_DateRangePicker, L"DateRangePicker", L"日期范围", {240, 30}, false },
+			{ UIClass::UI_ColorPicker, L"ColorPicker", L"颜色选择器", {180, 30}, false },
+			{ UIClass::UI_PagedGridView, L"PagedGridView", L"分页表格", {520, 320}, false },
 		};
 	}
 };

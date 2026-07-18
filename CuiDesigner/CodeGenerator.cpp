@@ -6,6 +6,7 @@
 #include "DesignerBindingUtils.h"
 #include "DesignerPropertyCatalog.h"
 #include "DesignerStyleSheetUtils.h"
+#include "../D2DGraphics/include/BitmapSource.h"
 #include <algorithm>
 #include <set>
 #include <unordered_map>
@@ -25,6 +26,7 @@
 #include "../CUI/include/ComboBox.h"
 #include "../CUI/include/ListView.h"
 #include "../CUI/include/GridView.h"
+#include "../CUI/include/PagedGridView.h"
 #include "../CUI/include/PropertyGrid.h"
 #include "../CUI/include/ChartView.h"
 #include "../CUI/include/ReportView.h"
@@ -46,6 +48,7 @@
 #include "../CUI/include/StatusBar.h"
 #include "../CUI/include/Toast.h"
 #include "../CUI/include/MediaPlayer.h"
+#include "../CUI/include/NavigationView.h"
 #include "../CUI/include/GroupBox.h"
 #include "../CUI/include/Expander.h"
 #include "../CUI/include/SplitContainer.h"
@@ -419,6 +422,7 @@ CodeGenerator::CodeGenerator(std::wstring className, const CodeGenInput& input)
 		input.FormFontSize)
 {
 	_styleSheet = input.StyleSheet;
+	_resourceBasePath = input.ResourceBasePath;
 }
 
 CodeGenerator::CodeGenerator(std::wstring className, const std::vector<std::shared_ptr<DesignerControl>>& controls,
@@ -699,6 +703,7 @@ std::string CodeGenerator::GetControlTypeName(UIClass type)
 	case UIClass::UI_ListView: return "ListView";
 	case UIClass::UI_ListBox: return "ListBox";
 	case UIClass::UI_GridView: return "GridView";
+	case UIClass::UI_PagedGridView: return "PagedGridView";
 	case UIClass::UI_PropertyGrid: return "PropertyGridView";
 	case UIClass::UI_ChartView: return "ChartView";
 	case UIClass::UI_ReportView: return "ReportView";
@@ -1043,6 +1048,7 @@ std::string CodeGenerator::GenerateControlInstantiation(const std::shared_ptr<De
 	case UIClass::UI_ListView:
 	case UIClass::UI_ListBox:
 	case UIClass::UI_GridView:
+	case UIClass::UI_PagedGridView:
 	case UIClass::UI_PropertyGrid:
 	case UIClass::UI_ChartView:
 	case UIClass::UI_ReportView:
@@ -1157,6 +1163,308 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	code << indentStr << name << "->BackColor = " << ColorToString(control->BackColor) << ";\n";
 	code << indentStr << name << "->ForeColor = " << ColorToString(control->ForeColor) << ";\n";
 	code << indentStr << name << "->BorderColor = " << ColorToString(control->BorderColor) << ";\n";
+	if (const auto& foreground = control->GetForegroundBrush(); foreground)
+	{
+		const std::string brushName = "__foregroundBrush_" + name;
+		code << indentStr << "cui::drawing::Brush " << brushName << ";\n";
+		const char* kind = foreground->Kind == cui::drawing::BrushKind::Solid
+			? "cui::drawing::BrushKind::Solid"
+			: foreground->Kind == cui::drawing::BrushKind::LinearGradient
+				? "cui::drawing::BrushKind::LinearGradient"
+				: foreground->Kind == cui::drawing::BrushKind::RadialGradient
+					? "cui::drawing::BrushKind::RadialGradient"
+					: "cui::drawing::BrushKind::Image";
+		code << indentStr << brushName << ".Kind = " << kind << ";\n";
+		if (foreground->MappingMode == cui::drawing::BrushMappingMode::Absolute)
+			code << indentStr << brushName
+				<< ".MappingMode = cui::drawing::BrushMappingMode::Absolute;\n";
+		if (foreground->Kind == cui::drawing::BrushKind::Solid)
+			code << indentStr << brushName << ".Color = "
+				<< ColorToString(foreground->Color) << ";\n";
+		else if (foreground->Kind == cui::drawing::BrushKind::LinearGradient)
+		{
+			code << indentStr << brushName << ".StartPoint = D2D1::Point2F("
+				<< FloatLiteral(foreground->StartPoint.x) << ", "
+				<< FloatLiteral(foreground->StartPoint.y) << ");\n";
+			code << indentStr << brushName << ".EndPoint = D2D1::Point2F("
+				<< FloatLiteral(foreground->EndPoint.x) << ", "
+				<< FloatLiteral(foreground->EndPoint.y) << ");\n";
+		}
+		else if (foreground->Kind == cui::drawing::BrushKind::RadialGradient)
+		{
+			code << indentStr << brushName << ".Center = D2D1::Point2F("
+				<< FloatLiteral(foreground->Center.x) << ", "
+				<< FloatLiteral(foreground->Center.y) << ");\n";
+			code << indentStr << brushName << ".GradientOrigin = D2D1::Point2F("
+				<< FloatLiteral(foreground->GradientOrigin.x) << ", "
+				<< FloatLiteral(foreground->GradientOrigin.y) << ");\n";
+			code << indentStr << brushName << ".RadiusX = "
+				<< FloatLiteral(foreground->RadiusX) << ";\n";
+			code << indentStr << brushName << ".RadiusY = "
+				<< FloatLiteral(foreground->RadiusY) << ";\n";
+		}
+		else
+		{
+			code << indentStr << brushName << ".ImageSource = cui::resources::LoadBitmapResource(L\""
+				<< EscapeWStringLiteral(foreground->ImageSource
+					? foreground->ImageSource->GetSourceUri() : L"") << "\");\n";
+			const char* stretch = foreground->Stretch == cui::drawing::ImageBrushStretch::None
+				? "cui::drawing::ImageBrushStretch::None"
+				: foreground->Stretch == cui::drawing::ImageBrushStretch::Uniform
+					? "cui::drawing::ImageBrushStretch::Uniform"
+					: foreground->Stretch == cui::drawing::ImageBrushStretch::UniformToFill
+						? "cui::drawing::ImageBrushStretch::UniformToFill"
+						: "cui::drawing::ImageBrushStretch::Fill";
+			const char* alignmentX = foreground->AlignmentX == cui::drawing::ImageBrushAlignmentX::Left
+				? "cui::drawing::ImageBrushAlignmentX::Left"
+				: foreground->AlignmentX == cui::drawing::ImageBrushAlignmentX::Right
+					? "cui::drawing::ImageBrushAlignmentX::Right"
+					: "cui::drawing::ImageBrushAlignmentX::Center";
+			const char* alignmentY = foreground->AlignmentY == cui::drawing::ImageBrushAlignmentY::Top
+				? "cui::drawing::ImageBrushAlignmentY::Top"
+				: foreground->AlignmentY == cui::drawing::ImageBrushAlignmentY::Bottom
+					? "cui::drawing::ImageBrushAlignmentY::Bottom"
+					: "cui::drawing::ImageBrushAlignmentY::Center";
+			code << indentStr << brushName << ".Stretch = " << stretch << ";\n";
+			code << indentStr << brushName << ".AlignmentX = " << alignmentX << ";\n";
+			code << indentStr << brushName << ".AlignmentY = " << alignmentY << ";\n";
+		}
+		if (std::fabs(foreground->Opacity - 1.0f) > 1e-6f)
+			code << indentStr << brushName << ".Opacity = "
+				<< FloatLiteral(foreground->Opacity) << ";\n";
+		if (foreground->Kind == cui::drawing::BrushKind::LinearGradient
+			|| foreground->Kind == cui::drawing::BrushKind::RadialGradient)
+			for (const auto& stop : foreground->GradientStops)
+				code << indentStr << brushName << ".GradientStops.push_back({ "
+					<< FloatLiteral(stop.Offset) << ", " << ColorToString(stop.Color)
+					<< " });\n";
+		code << indentStr << name << "->SetForegroundBrush(" << brushName << ");\n";
+	}
+	auto emitTransform = [&](const cui::drawing::Transform& transform,
+		const std::string& transformName)
+	{
+		code << indentStr << "cui::drawing::Transform " << transformName << ";\n";
+		for (size_t index = 0; index < transform.Operations.size(); ++index)
+		{
+			const auto& operation = transform.Operations[index];
+			const auto operationName = transformName + "_operation_"
+				+ std::to_string(index);
+			code << indentStr << "cui::drawing::TransformOperation "
+				<< operationName << ";\n";
+			const char* kind = operation.Kind == cui::drawing::TransformKind::Matrix
+				? "cui::drawing::TransformKind::Matrix"
+				: operation.Kind == cui::drawing::TransformKind::Translate
+					? "cui::drawing::TransformKind::Translate"
+					: operation.Kind == cui::drawing::TransformKind::Scale
+						? "cui::drawing::TransformKind::Scale"
+						: operation.Kind == cui::drawing::TransformKind::Rotate
+							? "cui::drawing::TransformKind::Rotate"
+							: "cui::drawing::TransformKind::Skew";
+			code << indentStr << operationName << ".Kind = " << kind << ";\n";
+			switch (operation.Kind)
+			{
+			case cui::drawing::TransformKind::Matrix:
+				code << indentStr << operationName << ".Matrix = D2D1::Matrix3x2F("
+					<< FloatLiteral(operation.Matrix._11) << ", "
+					<< FloatLiteral(operation.Matrix._12) << ", "
+					<< FloatLiteral(operation.Matrix._21) << ", "
+					<< FloatLiteral(operation.Matrix._22) << ", "
+					<< FloatLiteral(operation.Matrix._31) << ", "
+					<< FloatLiteral(operation.Matrix._32) << ");\n";
+				break;
+			case cui::drawing::TransformKind::Translate:
+				code << indentStr << operationName << ".X = "
+					<< FloatLiteral(operation.X) << ";\n";
+				code << indentStr << operationName << ".Y = "
+					<< FloatLiteral(operation.Y) << ";\n";
+				break;
+			case cui::drawing::TransformKind::Scale:
+				code << indentStr << operationName << ".ScaleX = "
+					<< FloatLiteral(operation.ScaleX) << ";\n";
+				code << indentStr << operationName << ".ScaleY = "
+					<< FloatLiteral(operation.ScaleY) << ";\n";
+				break;
+			case cui::drawing::TransformKind::Rotate:
+				code << indentStr << operationName << ".Angle = "
+					<< FloatLiteral(operation.Angle) << ";\n";
+				break;
+			case cui::drawing::TransformKind::Skew:
+				code << indentStr << operationName << ".AngleX = "
+					<< FloatLiteral(operation.AngleX) << ";\n";
+				code << indentStr << operationName << ".AngleY = "
+					<< FloatLiteral(operation.AngleY) << ";\n";
+				break;
+			}
+			if (operation.Kind == cui::drawing::TransformKind::Scale
+				|| operation.Kind == cui::drawing::TransformKind::Rotate
+				|| operation.Kind == cui::drawing::TransformKind::Skew)
+			{
+				code << indentStr << operationName << ".CenterX = "
+					<< FloatLiteral(operation.CenterX) << ";\n";
+				code << indentStr << operationName << ".CenterY = "
+					<< FloatLiteral(operation.CenterY) << ";\n";
+			}
+			code << indentStr << transformName << ".Operations.push_back("
+				<< operationName << ");\n";
+		}
+	};
+	if (const auto& clip = control->GetClip(); clip)
+	{
+		const std::string clipName = "__clip_" + name;
+		auto emitGeometry = [&](auto&& self,
+			const cui::drawing::Geometry& geometry,
+			const std::string& geometryName) -> void
+		{
+			code << indentStr << "cui::drawing::Geometry "
+				<< geometryName << ";\n";
+			const char* kind = geometry.Kind == cui::drawing::GeometryKind::Rectangle
+				? "cui::drawing::GeometryKind::Rectangle"
+				: geometry.Kind == cui::drawing::GeometryKind::Ellipse
+					? "cui::drawing::GeometryKind::Ellipse"
+					: geometry.Kind == cui::drawing::GeometryKind::Path
+						? "cui::drawing::GeometryKind::Path"
+						: "cui::drawing::GeometryKind::Group";
+			code << indentStr << geometryName << ".Kind = " << kind << ";\n";
+			if (geometry.Kind == cui::drawing::GeometryKind::Rectangle)
+			{
+				code << indentStr << geometryName << ".Rect = D2D1::RectF("
+					<< FloatLiteral(geometry.Rect.left) << ", "
+					<< FloatLiteral(geometry.Rect.top) << ", "
+					<< FloatLiteral(geometry.Rect.right) << ", "
+					<< FloatLiteral(geometry.Rect.bottom) << ");\n";
+				code << indentStr << geometryName << ".RadiusX = "
+					<< FloatLiteral(geometry.RadiusX) << ";\n";
+				code << indentStr << geometryName << ".RadiusY = "
+					<< FloatLiteral(geometry.RadiusY) << ";\n";
+			}
+			else if (geometry.Kind == cui::drawing::GeometryKind::Ellipse)
+			{
+				code << indentStr << geometryName << ".Center = D2D1::Point2F("
+					<< FloatLiteral(geometry.Center.x) << ", "
+					<< FloatLiteral(geometry.Center.y) << ");\n";
+				code << indentStr << geometryName << ".RadiusX = "
+					<< FloatLiteral(geometry.RadiusX) << ";\n";
+				code << indentStr << geometryName << ".RadiusY = "
+					<< FloatLiteral(geometry.RadiusY) << ";\n";
+			}
+			else if (geometry.Kind == cui::drawing::GeometryKind::Path)
+			{
+				if (geometry.FillRule == cui::drawing::GeometryFillRule::Nonzero)
+					code << indentStr << geometryName
+						<< ".FillRule = cui::drawing::GeometryFillRule::Nonzero;\n";
+				for (size_t figureIndex = 0;
+					figureIndex < geometry.Figures.size(); ++figureIndex)
+				{
+					const auto& figure = geometry.Figures[figureIndex];
+					const auto figureName = geometryName + "_figure_"
+						+ std::to_string(figureIndex);
+					code << indentStr << "cui::drawing::PathFigure "
+						<< figureName << ";\n";
+					code << indentStr << figureName << ".StartPoint = D2D1::Point2F("
+						<< FloatLiteral(figure.StartPoint.x) << ", "
+						<< FloatLiteral(figure.StartPoint.y) << ");\n";
+					if (figure.IsClosed)
+						code << indentStr << figureName << ".IsClosed = true;\n";
+					if (!figure.IsFilled)
+						code << indentStr << figureName << ".IsFilled = false;\n";
+					for (size_t segmentIndex = 0;
+						segmentIndex < figure.Segments.size(); ++segmentIndex)
+					{
+						const auto& segment = figure.Segments[segmentIndex];
+						const auto segmentName = figureName + "_segment_"
+							+ std::to_string(segmentIndex);
+						code << indentStr << "cui::drawing::PathSegment "
+							<< segmentName << ";\n";
+						const char* segmentKind = segment.Kind
+							== cui::drawing::PathSegmentKind::Line
+							? "cui::drawing::PathSegmentKind::Line"
+							: segment.Kind == cui::drawing::PathSegmentKind::Bezier
+								? "cui::drawing::PathSegmentKind::Bezier"
+								: segment.Kind
+									== cui::drawing::PathSegmentKind::QuadraticBezier
+									? "cui::drawing::PathSegmentKind::QuadraticBezier"
+									: "cui::drawing::PathSegmentKind::Arc";
+						code << indentStr << segmentName << ".Kind = "
+							<< segmentKind << ";\n";
+						auto emitPoint = [&](const char* field, D2D1_POINT_2F point)
+						{
+							code << indentStr << segmentName << "." << field
+								<< " = D2D1::Point2F(" << FloatLiteral(point.x)
+								<< ", " << FloatLiteral(point.y) << ");\n";
+						};
+						if (segment.Kind == cui::drawing::PathSegmentKind::Line)
+							emitPoint("Point", segment.Point);
+						else if (segment.Kind == cui::drawing::PathSegmentKind::Bezier)
+						{
+							emitPoint("Point1", segment.Point1);
+							emitPoint("Point2", segment.Point2);
+							emitPoint("Point3", segment.Point3);
+						}
+						else if (segment.Kind
+							== cui::drawing::PathSegmentKind::QuadraticBezier)
+						{
+							emitPoint("Point1", segment.Point1);
+							emitPoint("Point2", segment.Point2);
+						}
+						else
+						{
+							emitPoint("Point", segment.Point);
+							code << indentStr << segmentName << ".Size = D2D1::SizeF("
+								<< FloatLiteral(segment.Size.width) << ", "
+								<< FloatLiteral(segment.Size.height) << ");\n";
+							code << indentStr << segmentName << ".RotationAngle = "
+								<< FloatLiteral(segment.RotationAngle) << ";\n";
+							if (segment.IsLargeArc)
+								code << indentStr << segmentName
+									<< ".IsLargeArc = true;\n";
+							if (segment.Sweep == cui::drawing::SweepDirection::Clockwise)
+								code << indentStr << segmentName
+									<< ".Sweep = cui::drawing::SweepDirection::Clockwise;\n";
+						}
+						code << indentStr << figureName << ".Segments.push_back("
+							<< segmentName << ");\n";
+					}
+					code << indentStr << geometryName << ".Figures.push_back("
+						<< figureName << ");\n";
+				}
+			}
+			else
+			{
+				if (geometry.FillRule == cui::drawing::GeometryFillRule::Nonzero)
+					code << indentStr << geometryName
+						<< ".FillRule = cui::drawing::GeometryFillRule::Nonzero;\n";
+				for (size_t index = 0; index < geometry.Children.size(); ++index)
+				{
+					const auto childName = geometryName + "_child_"
+						+ std::to_string(index);
+					self(self, geometry.Children[index], childName);
+					code << indentStr << geometryName << ".Children.push_back("
+						<< childName << ");\n";
+				}
+			}
+			if (geometry.LocalTransform)
+			{
+				const auto transformName = geometryName + "_transform";
+				emitTransform(*geometry.LocalTransform, transformName);
+				code << indentStr << geometryName << ".LocalTransform = "
+					<< transformName << ";\n";
+			}
+		};
+		emitGeometry(emitGeometry, *clip, clipName);
+		code << indentStr << name << "->SetClip(" << clipName << ");\n";
+	}
+	if (const auto& transform = control->GetRenderTransform(); transform)
+	{
+		const std::string transformName = "__renderTransform_" + name;
+		emitTransform(*transform, transformName);
+		code << indentStr << name << "->SetRenderTransform("
+			<< transformName << ");\n";
+	}
+	const auto transformOrigin = control->GetRenderTransformOrigin();
+	if (transformOrigin.x != 0.0f || transformOrigin.y != 0.0f)
+		code << indentStr << name << "->SetRenderTransformOrigin(D2D1::Point2F("
+			<< FloatLiteral(transformOrigin.x) << ", "
+			<< FloatLiteral(transformOrigin.y) << "));\n";
 	if (!control->IsPropertyValueDefault(L"ShowValidationBorder"))
 		code << indentStr << name << "->ShowValidationBorder = "
 			<< (control->ShowValidationBorder ? "true" : "false") << ";\n";
@@ -1465,10 +1773,149 @@ std::string CodeGenerator::GenerateMetadataProperties(
 	return code.str();
 }
 
+std::string CodeGenerator::GenerateTransformExpression(
+	const cui::drawing::Transform& value)
+{
+	std::ostringstream expression;
+	expression << "[] { cui::drawing::Transform value; ";
+	for (const auto& operation : value.Operations)
+	{
+		expression << "{ cui::drawing::TransformOperation operation; operation.Kind = ";
+		switch (operation.Kind)
+		{
+		case cui::drawing::TransformKind::Matrix:
+			expression << "cui::drawing::TransformKind::Matrix; operation.Matrix = "
+				"D2D1::Matrix3x2F(" << FloatLiteral(operation.Matrix._11) << ", "
+				<< FloatLiteral(operation.Matrix._12) << ", "
+				<< FloatLiteral(operation.Matrix._21) << ", "
+				<< FloatLiteral(operation.Matrix._22) << ", "
+				<< FloatLiteral(operation.Matrix._31) << ", "
+				<< FloatLiteral(operation.Matrix._32) << "); ";
+			break;
+		case cui::drawing::TransformKind::Translate:
+			expression << "cui::drawing::TransformKind::Translate; operation.X = "
+				<< FloatLiteral(operation.X) << "; operation.Y = "
+				<< FloatLiteral(operation.Y) << "; ";
+			break;
+		case cui::drawing::TransformKind::Scale:
+			expression << "cui::drawing::TransformKind::Scale; operation.ScaleX = "
+				<< FloatLiteral(operation.ScaleX) << "; operation.ScaleY = "
+				<< FloatLiteral(operation.ScaleY) << "; operation.CenterX = "
+				<< FloatLiteral(operation.CenterX) << "; operation.CenterY = "
+				<< FloatLiteral(operation.CenterY) << "; ";
+			break;
+		case cui::drawing::TransformKind::Rotate:
+			expression << "cui::drawing::TransformKind::Rotate; operation.Angle = "
+				<< FloatLiteral(operation.Angle) << "; operation.CenterX = "
+				<< FloatLiteral(operation.CenterX) << "; operation.CenterY = "
+				<< FloatLiteral(operation.CenterY) << "; ";
+			break;
+		case cui::drawing::TransformKind::Skew:
+			expression << "cui::drawing::TransformKind::Skew; operation.AngleX = "
+				<< FloatLiteral(operation.AngleX) << "; operation.AngleY = "
+				<< FloatLiteral(operation.AngleY) << "; operation.CenterX = "
+				<< FloatLiteral(operation.CenterX) << "; operation.CenterY = "
+				<< FloatLiteral(operation.CenterY) << "; ";
+			break;
+		}
+		expression << "value.Operations.push_back(operation); } ";
+	}
+	expression << "return value; }()";
+	return expression.str();
+}
+
+std::string CodeGenerator::GenerateGeometryExpression(
+	const cui::drawing::Geometry& geometry)
+{
+	std::ostringstream expression;
+	expression << "[] { cui::drawing::Geometry value; value.Kind = ";
+	switch (geometry.Kind)
+	{
+	case cui::drawing::GeometryKind::Rectangle:
+		expression << "cui::drawing::GeometryKind::Rectangle; value.Rect = D2D1::RectF("
+			<< FloatLiteral(geometry.Rect.left) << ", "
+			<< FloatLiteral(geometry.Rect.top) << ", "
+			<< FloatLiteral(geometry.Rect.right) << ", "
+			<< FloatLiteral(geometry.Rect.bottom) << "); value.RadiusX = "
+			<< FloatLiteral(geometry.RadiusX) << "; value.RadiusY = "
+			<< FloatLiteral(geometry.RadiusY) << "; ";
+		break;
+	case cui::drawing::GeometryKind::Ellipse:
+		expression << "cui::drawing::GeometryKind::Ellipse; value.Center = D2D1::Point2F("
+			<< FloatLiteral(geometry.Center.x) << ", "
+			<< FloatLiteral(geometry.Center.y) << "); value.RadiusX = "
+			<< FloatLiteral(geometry.RadiusX) << "; value.RadiusY = "
+			<< FloatLiteral(geometry.RadiusY) << "; ";
+		break;
+	case cui::drawing::GeometryKind::Path:
+		expression << "cui::drawing::GeometryKind::Path; ";
+		if (geometry.FillRule == cui::drawing::GeometryFillRule::Nonzero)
+			expression << "value.FillRule = cui::drawing::GeometryFillRule::Nonzero; ";
+		for (const auto& figure : geometry.Figures)
+		{
+			expression << "value.Figures.push_back([] { cui::drawing::PathFigure figure; "
+				"figure.StartPoint = D2D1::Point2F("
+				<< FloatLiteral(figure.StartPoint.x) << ", "
+				<< FloatLiteral(figure.StartPoint.y) << "); figure.IsClosed = "
+				<< (figure.IsClosed ? "true" : "false") << "; figure.IsFilled = "
+				<< (figure.IsFilled ? "true" : "false") << "; ";
+			for (const auto& segment : figure.Segments)
+			{
+				expression << "{ cui::drawing::PathSegment segment; segment.Kind = ";
+				const char* kind = segment.Kind == cui::drawing::PathSegmentKind::Line
+					? "cui::drawing::PathSegmentKind::Line"
+					: segment.Kind == cui::drawing::PathSegmentKind::Bezier
+						? "cui::drawing::PathSegmentKind::Bezier"
+						: segment.Kind == cui::drawing::PathSegmentKind::QuadraticBezier
+							? "cui::drawing::PathSegmentKind::QuadraticBezier"
+							: "cui::drawing::PathSegmentKind::Arc";
+				expression << kind << "; segment.Point = D2D1::Point2F("
+					<< FloatLiteral(segment.Point.x) << ", "
+					<< FloatLiteral(segment.Point.y) << "); segment.Point1 = D2D1::Point2F("
+					<< FloatLiteral(segment.Point1.x) << ", "
+					<< FloatLiteral(segment.Point1.y) << "); segment.Point2 = D2D1::Point2F("
+					<< FloatLiteral(segment.Point2.x) << ", "
+					<< FloatLiteral(segment.Point2.y) << "); segment.Point3 = D2D1::Point2F("
+					<< FloatLiteral(segment.Point3.x) << ", "
+					<< FloatLiteral(segment.Point3.y) << "); segment.Size = D2D1::SizeF("
+					<< FloatLiteral(segment.Size.width) << ", "
+					<< FloatLiteral(segment.Size.height) << "); segment.RotationAngle = "
+					<< FloatLiteral(segment.RotationAngle) << "; segment.IsLargeArc = "
+					<< (segment.IsLargeArc ? "true" : "false") << "; segment.Sweep = "
+					<< (segment.Sweep == cui::drawing::SweepDirection::Clockwise
+						? "cui::drawing::SweepDirection::Clockwise"
+						: "cui::drawing::SweepDirection::Counterclockwise")
+					<< "; figure.Segments.push_back(segment); } ";
+			}
+			expression << "return figure; }()); ";
+		}
+		break;
+	case cui::drawing::GeometryKind::Group:
+		expression << "cui::drawing::GeometryKind::Group; ";
+		if (geometry.FillRule == cui::drawing::GeometryFillRule::Nonzero)
+			expression << "value.FillRule = cui::drawing::GeometryFillRule::Nonzero; ";
+		for (const auto& child : geometry.Children)
+			expression << "value.Children.push_back("
+				<< GenerateGeometryExpression(child) << "); ";
+		break;
+	}
+	if (geometry.LocalTransform)
+		expression << "value.LocalTransform = "
+			<< GenerateTransformExpression(*geometry.LocalTransform) << "; ";
+	expression << "return value; }()";
+	return expression.str();
+}
+
 std::string CodeGenerator::GenerateStyleValueExpression(const DesignerStyleValue& value)
 {
+	if (value.Kind == DesignerStyleValueKind::ImageSource)
+	{
+		return "BindingValue(cui::resources::LoadBitmapResource(L\""
+			+ EscapeWStringLiteral(value.Text) + "\"))";
+	}
 	BindingValue runtimeValue;
-	if (!DesignerStyleSheetUtils::TryConvertValue(value, runtimeValue, nullptr))
+	if (!DesignerStyleSheetUtils::TryConvertValue(
+		value, runtimeValue, nullptr, _resourceBasePath))
 		return "BindingValue()";
 
 	switch (value.Kind)
@@ -1536,6 +1983,89 @@ std::string CodeGenerator::GenerateStyleValueExpression(const DesignerStyleValue
 			? "BindingValue(cui::layout::Length::Auto())"
 			: "BindingValue(cui::layout::Length::Fixed(" + FloatLiteral(parsed.value) + "))";
 	}
+	case DesignerStyleValueKind::Brush:
+	{
+		cui::drawing::Brush parsed;
+		if (!runtimeValue.TryGet(parsed)) return "BindingValue()";
+		std::ostringstream expression;
+		expression << "BindingValue([] { cui::drawing::Brush value; value.Kind = "
+			<< (parsed.Kind == cui::drawing::BrushKind::Solid
+				? "cui::drawing::BrushKind::Solid"
+				: parsed.Kind == cui::drawing::BrushKind::LinearGradient
+					? "cui::drawing::BrushKind::LinearGradient"
+					: parsed.Kind == cui::drawing::BrushKind::RadialGradient
+						? "cui::drawing::BrushKind::RadialGradient"
+						: "cui::drawing::BrushKind::Image")
+			<< "; value.MappingMode = "
+			<< (parsed.MappingMode == cui::drawing::BrushMappingMode::Absolute
+				? "cui::drawing::BrushMappingMode::Absolute"
+				: "cui::drawing::BrushMappingMode::RelativeToBoundingBox")
+			<< "; value.Opacity = " << FloatLiteral(parsed.Opacity) << "; ";
+		if (parsed.Kind == cui::drawing::BrushKind::Solid)
+			expression << "value.Color = " << ColorToString(parsed.Color) << "; ";
+		else if (parsed.Kind == cui::drawing::BrushKind::LinearGradient)
+			expression << "value.StartPoint = D2D1::Point2F("
+				<< FloatLiteral(parsed.StartPoint.x) << ", "
+				<< FloatLiteral(parsed.StartPoint.y) << "); value.EndPoint = D2D1::Point2F("
+				<< FloatLiteral(parsed.EndPoint.x) << ", "
+				<< FloatLiteral(parsed.EndPoint.y) << "); ";
+		else if (parsed.Kind == cui::drawing::BrushKind::RadialGradient)
+			expression << "value.Center = D2D1::Point2F("
+				<< FloatLiteral(parsed.Center.x) << ", "
+				<< FloatLiteral(parsed.Center.y) << "); value.GradientOrigin = D2D1::Point2F("
+				<< FloatLiteral(parsed.GradientOrigin.x) << ", "
+				<< FloatLiteral(parsed.GradientOrigin.y) << "); value.RadiusX = "
+				<< FloatLiteral(parsed.RadiusX) << "; value.RadiusY = "
+				<< FloatLiteral(parsed.RadiusY) << "; ";
+		else
+		{
+			expression << "value.ImageSource = cui::resources::LoadBitmapResource(L\""
+				<< EscapeWStringLiteral(parsed.ImageSource
+					? parsed.ImageSource->GetSourceUri() : L"") << "\"); ";
+			expression << "value.Stretch = "
+				<< (parsed.Stretch == cui::drawing::ImageBrushStretch::None
+					? "cui::drawing::ImageBrushStretch::None"
+					: parsed.Stretch == cui::drawing::ImageBrushStretch::Uniform
+						? "cui::drawing::ImageBrushStretch::Uniform"
+						: parsed.Stretch == cui::drawing::ImageBrushStretch::UniformToFill
+							? "cui::drawing::ImageBrushStretch::UniformToFill"
+							: "cui::drawing::ImageBrushStretch::Fill") << "; ";
+			expression << "value.AlignmentX = "
+				<< (parsed.AlignmentX == cui::drawing::ImageBrushAlignmentX::Left
+					? "cui::drawing::ImageBrushAlignmentX::Left"
+					: parsed.AlignmentX == cui::drawing::ImageBrushAlignmentX::Right
+						? "cui::drawing::ImageBrushAlignmentX::Right"
+						: "cui::drawing::ImageBrushAlignmentX::Center") << "; ";
+			expression << "value.AlignmentY = "
+				<< (parsed.AlignmentY == cui::drawing::ImageBrushAlignmentY::Top
+					? "cui::drawing::ImageBrushAlignmentY::Top"
+					: parsed.AlignmentY == cui::drawing::ImageBrushAlignmentY::Bottom
+						? "cui::drawing::ImageBrushAlignmentY::Bottom"
+						: "cui::drawing::ImageBrushAlignmentY::Center") << "; ";
+		}
+		if (parsed.Kind == cui::drawing::BrushKind::LinearGradient
+			|| parsed.Kind == cui::drawing::BrushKind::RadialGradient)
+			for (const auto& stop : parsed.GradientStops)
+				expression << "value.GradientStops.push_back({ "
+					<< FloatLiteral(stop.Offset) << ", "
+					<< ColorToString(stop.Color) << " }); ";
+		expression << "return value; }())";
+		return expression.str();
+	}
+	case DesignerStyleValueKind::Geometry:
+	{
+		cui::drawing::Geometry parsed;
+		if (!runtimeValue.TryGet(parsed)) return "BindingValue()";
+		return "BindingValue(" + GenerateGeometryExpression(parsed) + ")";
+	}
+	case DesignerStyleValueKind::Transform:
+	{
+		cui::drawing::Transform parsed;
+		if (!runtimeValue.TryGet(parsed)) return "BindingValue()";
+		return "BindingValue(" + GenerateTransformExpression(parsed) + ")";
+	}
+	case DesignerStyleValueKind::ImageSource:
+		break;
 	}
 	return "BindingValue()";
 }
@@ -1547,6 +2077,12 @@ std::string CodeGenerator::GenerateStyleSheetCode(int indent)
 	const std::string indentStr(indent, '\t');
 	auto styleSheet = _styleSheet;
 	DesignerStyleSheetUtils::Canonicalize(styleSheet);
+	DesignerStyleSheet resolvedStyleSheet;
+	std::wstring inheritanceError;
+	if (!DesignerStyleSheetUtils::ExpandRuntimeRules(
+		styleSheet, resolvedStyleSheet, &inheritanceError))
+		throw std::invalid_argument(WStringToString(inheritanceError));
+	styleSheet = std::move(resolvedStyleSheet);
 
 	code << indentStr << "// 文档级控件样式\n";
 	code << indentStr << "auto __styleSheet = std::make_shared<ControlStyleSheet>();\n";
@@ -1578,6 +2114,11 @@ std::string CodeGenerator::GenerateStyleSheetCode(int indent)
 		if (rule.ExcludedStates != ControlStyleState::None)
 			code << indentStr << selectorName << ".ExcludedStates = static_cast<ControlStyleState>("
 				<< static_cast<uint32_t>(rule.ExcludedStates) << "u);\n";
+		for (const auto& condition : rule.DataConditions)
+			code << indentStr << selectorName
+				<< ".DataConditions.push_back({ L\""
+				<< EscapeWStringLiteral(condition.SourceProperty) << "\", "
+				<< GenerateStyleValueExpression(condition.Value) << " });\n";
 		code << indentStr << "__styleSheet->AddRule(std::move(" << selectorName << "), {\n";
 		for (size_t setterIndex = 0; setterIndex < rule.Setters.size(); ++setterIndex)
 		{
@@ -1699,18 +2240,33 @@ std::string CodeGenerator::GenerateContainerProperties(const std::shared_ptr<Des
 		}
 	}
 
-	// GridView 列是结构化集合；在标量元数据之后批量生成，避免重复布局/重绘。
-	if (dc->Type == UIClass::UI_GridView)
+	// Grid/PagedGrid 的列与行都是结构化集合，统一在一次更新作用域中生成。
+	if (dc->Type == UIClass::UI_GridView
+		|| dc->Type == UIClass::UI_PagedGridView)
 	{
-		auto* gridView = (GridView*)control;
-		if (gridView->ColumnCount() > 0)
+		const GridView::ColumnCollection* columns = nullptr;
+		const GridView::RowCollection* rows = nullptr;
+		if (dc->Type == UIClass::UI_GridView)
+		{
+			auto* gridView = static_cast<GridView*>(control);
+			columns = &gridView->Columns;
+			rows = &gridView->Rows;
+		}
+		else
+		{
+			auto* gridView = static_cast<PagedGridView*>(control);
+			columns = &gridView->GetColumns();
+			rows = &gridView->Rows;
+		}
+		if ((columns && !columns->empty()) || (rows && !rows->empty()))
 		{
 			code << indentStr << "{\n";
 			code << indentStr << "\tauto __gridUpdate = " << name << "->DeferUpdates();\n";
 			code << indentStr << "\t" << name << "->ClearColumns();\n";
-			for (size_t i = 0; i < gridView->ColumnCount(); ++i)
+			code << indentStr << "\t" << name << "->ClearRows();\n";
+			for (size_t i = 0; columns && i < columns->size(); ++i)
 			{
-				const auto& column = gridView->ColumnAt(static_cast<int>(i));
+				const auto& column = (*columns)[i];
 				std::string columnTypeExpr = "ColumnType::Text";
 				switch (column.Type)
 				{
@@ -1741,6 +2297,42 @@ std::string CodeGenerator::GenerateContainerProperties(const std::shared_ptr<Des
 					code << " };\n";
 				}
 				code << indentStr << "\t" << name << "->AddColumn(" << columnVar << ");\n";
+			}
+			for (size_t rowIndex = 0; rows && rowIndex < rows->size(); ++rowIndex)
+			{
+				const auto& row = (*rows)[rowIndex];
+				const std::string rowVar = "__gridRow" + std::to_string(rowIndex + 1);
+				code << indentStr << "\tGridViewRow " << rowVar << ";\n";
+				for (size_t cellIndex = 0; cellIndex < row.Cells.size(); ++cellIndex)
+				{
+					const auto& cell = row.Cells[cellIndex];
+					const auto type = columns && cellIndex < columns->size()
+						? (*columns)[cellIndex].Type : ColumnType::Text;
+					if (type == ColumnType::Check)
+						code << indentStr << "\t" << rowVar
+							<< ".Cells.emplace_back("
+							<< (cell.GetBool() ? "true" : "false") << ");\n";
+					else if (type == ColumnType::ComboBox)
+					{
+						const std::string cellVar = "__gridCell"
+							+ std::to_string(rowIndex + 1) + "_"
+							+ std::to_string(cellIndex + 1);
+						code << indentStr << "\tCellValue " << cellVar << ";\n";
+						code << indentStr << "\t" << cellVar << ".SetComboSelection("
+							<< cell.GetTag() << ", L\""
+							<< EscapeWStringLiteral(cell.GetText()) << "\");\n";
+						code << indentStr << "\t" << rowVar
+							<< ".Cells.push_back(std::move(" << cellVar << "));\n";
+					}
+					else if (type == ColumnType::Image && cell.Image)
+						code << indentStr << "\t" << rowVar
+							<< ".Cells.emplace_back(); // BitmapSource is runtime-owned\n";
+					else
+						code << indentStr << "\t" << rowVar
+							<< ".Cells.emplace_back(L\""
+							<< EscapeWStringLiteral(cell.GetText()) << "\");\n";
+				}
+				code << indentStr << "\t" << name << "->AddRow(" << rowVar << ");\n";
 			}
 			code << indentStr << "}\n";
 		}
@@ -1796,6 +2388,177 @@ std::string CodeGenerator::GenerateContainerProperties(const std::shared_ptr<Des
 			}
 			code << indentStr << name << "->SetItems(std::move("
 				<< itemsName << "));\n";
+		}
+	}
+
+	if (dc->Type == UIClass::UI_NavigationView
+		|| dc->Type == UIClass::UI_SideBar)
+	{
+		auto* navigation = static_cast<NavigationView*>(control);
+		if (!navigation->Items.empty())
+		{
+			code << indentStr << name << "->ClearItems();\n";
+			for (size_t index = 0; index < navigation->Items.size(); ++index)
+			{
+				const auto& item = navigation->Items[index];
+				const auto itemVar = "__navigationItem_" + name + "_"
+					+ std::to_string(index + 1);
+				code << indentStr << "NavigationViewItem " << itemVar << ";\n";
+				code << indentStr << itemVar << ".Text = L\""
+					<< EscapeWStringLiteral(item.Text) << "\";\n";
+				if (!item.Value.empty()) code << indentStr << itemVar << ".Value = L\""
+					<< EscapeWStringLiteral(item.Value) << "\";\n";
+				if (!item.BadgeText.empty()) code << indentStr << itemVar << ".BadgeText = L\""
+					<< EscapeWStringLiteral(item.BadgeText) << "\";\n";
+				if (item.Icon && !item.Icon->GetSourceUri().empty())
+					code << indentStr << itemVar << ".Icon = cui::resources::LoadBitmapResource(L\""
+						<< EscapeWStringLiteral(item.Icon->GetSourceUri()) << "\");\n";
+				code << indentStr << itemVar << ".Kind = static_cast<NavigationViewItemKind>("
+					<< static_cast<int>(item.Kind) << ");\n";
+				if (!item.Enabled) code << indentStr << itemVar << ".Enabled = false;\n";
+				if (item.Tag != 0) code << indentStr << itemVar << ".Tag = "
+					<< static_cast<unsigned long long>(item.Tag) << "ULL;\n";
+				code << indentStr << name << "->AddItem(" << itemVar << ");\n";
+			}
+			if (navigation->SelectedIndex >= 0)
+				code << indentStr << name << "->SelectItem("
+					<< navigation->SelectedIndex << ");\n";
+		}
+	}
+
+	if (dc->Type == UIClass::UI_BreadcrumbBar)
+	{
+		auto* breadcrumb = static_cast<BreadcrumbBar*>(control);
+		if (!breadcrumb->Items.empty())
+		{
+			code << indentStr << name << "->ClearItems();\n";
+			for (size_t index = 0; index < breadcrumb->Items.size(); ++index)
+			{
+				const auto& item = breadcrumb->Items[index];
+				const auto itemVar = "__breadcrumbItem_" + name + "_"
+					+ std::to_string(index + 1);
+				code << indentStr << "BreadcrumbBarItem " << itemVar << "(L\""
+					<< EscapeWStringLiteral(item.Text) << "\", L\""
+					<< EscapeWStringLiteral(item.Value) << "\");\n";
+				if (!item.Enabled) code << indentStr << itemVar << ".Enabled = false;\n";
+				if (item.Tag != 0) code << indentStr << itemVar << ".Tag = "
+					<< static_cast<unsigned long long>(item.Tag) << "ULL;\n";
+				code << indentStr << name << "->AddItem(" << itemVar << ");\n";
+			}
+			if (breadcrumb->SelectedIndex >= 0)
+				code << indentStr << name << "->SelectItem("
+					<< breadcrumb->SelectedIndex << ");\n";
+		}
+	}
+
+	if (dc->Type == UIClass::UI_FilterBar)
+	{
+		auto* filter = static_cast<FilterBar*>(control);
+		if (!filter->Items.empty())
+		{
+			code << indentStr << name << "->ClearItems();\n";
+			for (size_t index = 0; index < filter->Items.size(); ++index)
+			{
+				const auto& item = filter->Items[index];
+				const auto itemVar = "__filterItem_" + name + "_"
+					+ std::to_string(index + 1);
+				code << indentStr << "FilterBarItem " << itemVar << "(L\""
+					<< EscapeWStringLiteral(item.Text) << "\", L\""
+					<< EscapeWStringLiteral(item.Value) << "\", "
+					<< (item.Selected ? "true" : "false") << ");\n";
+				if (!item.Enabled) code << indentStr << itemVar << ".Enabled = false;\n";
+				if (item.Tag != 0) code << indentStr << itemVar << ".Tag = "
+					<< static_cast<unsigned long long>(item.Tag) << "ULL;\n";
+				code << indentStr << name << "->AddItem(" << itemVar << ");\n";
+			}
+		}
+	}
+
+	if (dc->Type == UIClass::UI_KpiCard)
+	{
+		auto* kpi = static_cast<KpiCard*>(control);
+		if (!kpi->SparklineValues.empty())
+		{
+			code << indentStr << name << "->SetSparkline({ ";
+			for (size_t index = 0; index < kpi->SparklineValues.size(); ++index)
+			{
+				if (index > 0) code << ", ";
+				code << DoubleLiteral(kpi->SparklineValues[index]);
+			}
+			code << " });\n";
+		}
+	}
+
+	if (dc->Type == UIClass::UI_ChartView)
+	{
+		auto* chart = static_cast<ChartView*>(control);
+		if (!chart->Series.empty())
+		{
+			code << indentStr << name << "->Clear();\n";
+			for (size_t seriesIndex = 0; seriesIndex < chart->Series.size(); ++seriesIndex)
+			{
+				const auto& series = chart->Series[seriesIndex];
+				const auto seriesVar = "__chartSeries_" + name + "_"
+					+ std::to_string(seriesIndex + 1);
+				code << indentStr << "ChartSeries " << seriesVar << "(L\""
+					<< EscapeWStringLiteral(series.Name) << "\", "
+					<< ColorToString(series.Color) << ");\n";
+				if (!series.Visible) code << indentStr << seriesVar << ".Visible = false;\n";
+				for (const auto& point : series.Points)
+				{
+					code << indentStr << seriesVar << ".Points.emplace_back(L\""
+						<< EscapeWStringLiteral(point.Label) << "\", "
+						<< DoubleLiteral(point.Value);
+					if (point.UseCustomColor) code << ", " << ColorToString(point.Color);
+					code << ");\n";
+					if (point.Tag != 0) code << indentStr << seriesVar
+						<< ".Points.back().Tag = "
+						<< static_cast<unsigned long long>(point.Tag) << "ULL;\n";
+				}
+				code << indentStr << name << "->AddSeries(" << seriesVar << ");\n";
+			}
+		}
+	}
+
+	if (dc->Type == UIClass::UI_ReportView)
+	{
+		auto* report = static_cast<ReportView*>(control);
+		if (!report->Columns.empty() || !report->Rows.empty())
+		{
+			code << indentStr << name << "->Clear();\n";
+			for (const auto& column : report->Columns)
+				code << indentStr << name << "->AddColumn(ReportColumn(L\""
+					<< EscapeWStringLiteral(column.Header) << "\", "
+					<< FloatLiteral(column.Width) << ", static_cast<ReportCellAlign>("
+					<< static_cast<int>(column.Align) << "), "
+					<< (column.Sortable ? "true" : "false") << "));\n";
+			for (size_t rowIndex = 0; rowIndex < report->Rows.size(); ++rowIndex)
+			{
+				const auto& row = report->Rows[rowIndex];
+				const auto rowVar = "__reportRow_" + name + "_"
+					+ std::to_string(rowIndex + 1);
+				code << indentStr << "ReportRow " << rowVar << ";\n";
+				code << indentStr << rowVar << ".Kind = static_cast<ReportRowKind>("
+					<< static_cast<int>(row.Kind) << ");\n";
+				if (!row.Caption.empty()) code << indentStr << rowVar << ".Caption = L\""
+					<< EscapeWStringLiteral(row.Caption) << "\";\n";
+				if (!row.Expanded)
+				{
+					code << indentStr << rowVar << ".Expanded = false;\n";
+					if (row.Kind == ReportRowKind::Group)
+					{
+						code << indentStr << rowVar << ".ExpandProgress = 0.0f;\n";
+						code << indentStr << rowVar << ".AnimStartProgress = 0.0f;\n";
+						code << indentStr << rowVar << ".AnimTargetProgress = 0.0f;\n";
+					}
+				}
+				for (const auto& cell : row.Cells)
+					code << indentStr << rowVar << ".Cells.push_back(L\""
+						<< EscapeWStringLiteral(cell) << "\");\n";
+				if (row.Tag != 0) code << indentStr << rowVar << ".Tag = "
+					<< static_cast<unsigned long long>(row.Tag) << "ULL;\n";
+				code << indentStr << name << "->AddRow(" << rowVar << ");\n";
+			}
 		}
 	}
 	return code.str();
@@ -1953,7 +2716,18 @@ std::string CodeGenerator::GenerateHeader()
 	std::set<std::string> includes;
 	includes.insert("Form.h");
 	includes.insert("Control.h");
-	const bool hasDataBindings = std::any_of(
+	const bool hasStyleDataTriggers = std::any_of(
+		_styleSheet.Rules.begin(), _styleSheet.Rules.end(),
+		[](const DesignerStyleRule& rule)
+		{
+			return !rule.DataConditions.empty()
+				|| std::any_of(rule.Triggers.begin(), rule.Triggers.end(),
+					[](const DesignerStyleTrigger& trigger)
+					{
+						return !trigger.DataConditions.empty();
+					});
+		});
+	const bool hasDataBindings = hasStyleDataTriggers || std::any_of(
 		_controls.begin(), _controls.end(),
 		[](const std::shared_ptr<DesignerControl>& control)
 		{
@@ -2260,6 +3034,46 @@ std::string CodeGenerator::GenerateCppForBaseName(
 	// 包含头文件
 	cpp << "#include \"" << generatedHeaderBaseName << ".g.h\"\n";
 	if (!_styleSheet.Empty()) cpp << "#include \"Style.h\"\n";
+	auto usesImageValue = [](const DesignerStyleValue& value)
+	{
+		return value.Kind == DesignerStyleValueKind::ImageSource
+			|| (value.Kind == DesignerStyleValueKind::Brush
+				&& value.ObjectValue.is_object()
+				&& value.ObjectValue.value("type", std::string{}) == "image");
+	};
+	bool usesResources = std::any_of(
+		_styleSheet.Resources.begin(), _styleSheet.Resources.end(),
+		[&](const auto& resource) { return usesImageValue(resource.Value); });
+	for (const auto& rule : _styleSheet.Rules)
+	{
+		for (const auto& setter : rule.Setters)
+			usesResources = usesResources
+				|| (!setter.UsesResource && usesImageValue(setter.Literal));
+		for (const auto& trigger : rule.Triggers)
+			for (const auto& setter : trigger.Setters)
+				usesResources = usesResources
+					|| (!setter.UsesResource && usesImageValue(setter.Literal));
+	}
+	for (const auto& control : _controls)
+	{
+		if (!control || !control->ControlInstance) continue;
+		usesResources = usesResources || std::any_of(
+			control->MetadataProperties.begin(),
+			control->MetadataProperties.end(),
+			[&](const auto& property) { return usesImageValue(property.second); });
+		const auto foreground = control->ControlInstance->GetForegroundBrush();
+		usesResources = usesResources || (foreground
+			&& foreground->Kind == cui::drawing::BrushKind::Image);
+		if (control->Type == UIClass::UI_NavigationView)
+		{
+			const auto* navigation = static_cast<const NavigationView*>(
+				control->ControlInstance);
+			usesResources = usesResources || std::any_of(
+				navigation->Items.begin(), navigation->Items.end(),
+				[](const auto& item) { return static_cast<bool>(item.Icon); });
+		}
+	}
+	if (usesResources) cpp << "#include \"Resource.h\"\n";
 	cpp << "#include <functional>\n";
 	cpp << "#include <memory>\n";
 	cpp << "#include <utility>\n";
@@ -2599,7 +3413,18 @@ std::string CodeGenerator::GenerateCppForBaseName(
 	cpp << "{\n";
 	cpp << "}\n";
 
-	const bool hasDataBindings = std::any_of(
+	const bool hasStyleDataTriggers = std::any_of(
+		_styleSheet.Rules.begin(), _styleSheet.Rules.end(),
+		[](const DesignerStyleRule& rule)
+		{
+			return !rule.DataConditions.empty()
+				|| std::any_of(rule.Triggers.begin(), rule.Triggers.end(),
+					[](const DesignerStyleTrigger& trigger)
+					{
+						return !trigger.DataConditions.empty();
+					});
+		});
+	const bool hasDataBindings = hasStyleDataTriggers || std::any_of(
 		_controls.begin(), _controls.end(),
 		[](const std::shared_ptr<DesignerControl>& control)
 		{
@@ -2611,6 +3436,18 @@ std::string CodeGenerator::GenerateCppForBaseName(
 		cpp << "bool " << className << "::BindData(IBindingSource& dataContext)\n";
 		cpp << "{\n";
 		cpp << "\tbool success = true;\n";
+		if (hasStyleDataTriggers)
+		{
+			for (const auto& dc : _controls)
+			{
+				if (!dc || !dc->ControlInstance
+					|| dc->DesignerParent != nullptr
+					|| dc->Type == UIClass::UI_TabPage) continue;
+				const auto controlVar = GetVarName(dc);
+				cpp << "\tif (const auto __styles = " << controlVar
+					<< "->GetStyleSheet()) __styles->SetDataContext(&dataContext);\n";
+			}
+		}
 		for (const auto& dc : _controls)
 		{
 			if (!dc || dc->DataBindings.empty()) continue;

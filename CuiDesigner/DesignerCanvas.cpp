@@ -65,6 +65,7 @@
 #include "../CUI/include/StatusBar.h"
 #include "../CUI/include/Toast.h"
 #include "../CUI/include/MediaPlayer.h"
+#include "../CUI/include/NavigationView.h"
 #include "../CUI/include/SplitContainer.h"
 #include "../CUI/include/Layout/StackPanel.h"
 #include "../CUI/include/Layout/GridPanel.h"
@@ -518,7 +519,7 @@ static void RefreshDesignerPanelLayout(Control* control)
 	if (auto* panel = dynamic_cast<Panel*>(control))
 	{
 		panel->InvalidateLayout();
-		panel->PerformLayout();
+		panel->UpdateLayout();
 	}
 }
 
@@ -624,27 +625,6 @@ DesignerCanvas::~DesignerCanvas()
 	_retiredDesignedFormSharedFonts.clear();
 }
 
-std::vector<std::wstring> DesignerCanvas::GetXamlCompletionElementNames() const
-{
-	std::vector<std::wstring> result{ L"Form", L"TabPage" };
-	for (const auto& metadata : ControlRegistry::GetAvailableControls())
-		result.push_back(metadata.Name);
-	for (const auto& [_, descriptor] : _customControlDescriptors)
-	{
-		if (!descriptor.IsCustom()) continue;
-		result.push_back(descriptor.CustomType.XamlPrefix + L":"
-			+ descriptor.CustomType.XamlName);
-	}
-	std::sort(result.begin(), result.end(), [](const auto& left, const auto& right)
-	{
-		return _wcsicmp(left.c_str(), right.c_str()) < 0;
-	});
-	result.erase(std::unique(result.begin(), result.end(),
-		[](const auto& left, const auto& right)
-		{ return _wcsicmp(left.c_str(), right.c_str()) == 0; }), result.end());
-	return result;
-}
-
 std::vector<std::wstring> DesignerCanvas::GetCompatibleEventHandlerNames(
 	const DesignerEventDescriptor& requested,
 	const std::wstring& defaultName,
@@ -692,199 +672,6 @@ std::vector<std::wstring> DesignerCanvas::GetCompatibleEventHandlerNames(
 	return result;
 }
 
-std::vector<std::wstring> DesignerCanvas::GetXamlCompletionAttributeNames(
-	const std::wstring& elementName) const
-{
-	std::vector<std::wstring> result;
-	auto add = [&](const std::wstring& name)
-	{
-		if (name.empty()) return;
-		if (name == L"Name") result.push_back(L"x:Name");
-		else if (name == L"Locked") result.push_back(L"d:Locked");
-		else result.push_back(name);
-	};
-	if (_wcsicmp(elementName.c_str(), L"Form") == 0)
-	{
-		for (const auto& property : DesignerFormPropertyCatalog::GetProperties())
-			add(property.Name);
-		for (const auto& event : DesignerEventCatalog::GetFormEvents())
-			add(event.Name);
-		add(L"x:Class");
-		add(L"d:CodeBehind");
-	}
-	else if (_wcsicmp(elementName.c_str(), L"TabPage") == 0)
-	{
-		add(L"x:Name");
-		add(L"Header");
-	}
-	else
-	{
-		UIClass type = UIClass::UI_Base;
-		const DesignerControlDescriptor* custom = nullptr;
-		for (const auto& metadata : ControlRegistry::GetAvailableControls())
-		{
-			if (_wcsicmp(metadata.Name.c_str(), elementName.c_str()) != 0) continue;
-			type = metadata.Type;
-			break;
-		}
-		for (const auto& [_, descriptor] : _customControlDescriptors)
-		{
-			const auto name = descriptor.CustomType.XamlPrefix + L":"
-				+ descriptor.CustomType.XamlName;
-			if (_wcsicmp(name.c_str(), elementName.c_str()) != 0) continue;
-			custom = &descriptor;
-			type = descriptor.Type;
-			break;
-		}
-		if (type != UIClass::UI_Base)
-		{
-			auto probe = DesignerControlFactory::Create(type);
-			if (probe)
-			{
-				DesignerControl wrapper(probe.get(), L"Preview", type);
-				for (const auto& property :
-					DesignerControlPropertyCatalog::GetProperties(wrapper))
-					add(property.Name);
-				for (const auto& property :
-					DesignerPropertyCatalog::GetPropertyGridProperties(*probe))
-					add(property.Name);
-			}
-			if (custom)
-				for (const auto& property : custom->CustomProperties)
-					add(property.Name);
-			for (const auto& event : DesignerEventCatalog::GetControlEvents(
-				type, custom ? custom->CustomEvents
-					: std::vector<DesignerCustomEventDescriptor>{}))
-				add(event.Name);
-			add(L"DesignId");
-			add(L"Canvas.Left");
-			add(L"Canvas.Top");
-			add(L"Grid.Row");
-			add(L"Grid.Column");
-			add(L"Grid.RowSpan");
-			add(L"Grid.ColumnSpan");
-			add(L"DockPanel.Dock");
-			add(L"SplitContainer.Region");
-			add(L"Width");
-			add(L"Height");
-			add(L"HorizontalAlignment");
-			add(L"VerticalAlignment");
-			add(L"Visibility");
-		}
-	}
-	std::sort(result.begin(), result.end(), [](const auto& left, const auto& right)
-	{
-		return _wcsicmp(left.c_str(), right.c_str()) < 0;
-	});
-	result.erase(std::unique(result.begin(), result.end(),
-		[](const auto& left, const auto& right)
-		{ return _wcsicmp(left.c_str(), right.c_str()) == 0; }), result.end());
-	return result;
-}
-
-std::vector<std::wstring> DesignerCanvas::GetXamlCompletionAttributeValues(
-	const std::wstring& elementName,
-	const std::wstring& attributeName,
-	const std::map<std::string, std::vector<std::wstring>>&
-		compatibleUserHandlers) const
-{
-	std::vector<std::wstring> result;
-	std::optional<DesignerEventDescriptor> requestedEvent;
-	auto addKind = [&](DesignerStyleValueKind kind)
-	{
-		if (kind == DesignerStyleValueKind::Bool)
-			result.insert(result.end(), { L"false", L"true" });
-	};
-	if (_wcsicmp(attributeName.c_str(), L"Visibility") == 0)
-		result = { L"Visible", L"Hidden", L"Collapsed" };
-	else if (_wcsicmp(attributeName.c_str(), L"d:Locked") == 0)
-		result = { L"false", L"true" };
-	else if (_wcsicmp(attributeName.c_str(), L"Anchor") == 0)
-		result = { L"None", L"Left, Top", L"Left, Top, Right",
-			L"Left, Top, Bottom", L"Left, Top, Right, Bottom" };
-	else if (_wcsicmp(attributeName.c_str(), L"HorizontalAlignment") == 0)
-		result = { L"Left", L"Center", L"Right", L"Stretch" };
-	else if (_wcsicmp(attributeName.c_str(), L"VerticalAlignment") == 0)
-		result = { L"Top", L"Center", L"Bottom", L"Stretch" };
-	else if (_wcsicmp(attributeName.c_str(), L"DockPanel.Dock") == 0)
-		result = { L"Left", L"Top", L"Right", L"Bottom", L"Fill" };
-	else if (_wcsicmp(attributeName.c_str(), L"SplitContainer.Region") == 0)
-		result = { L"First", L"Second" };
-
-	if (_wcsicmp(elementName.c_str(), L"Form") == 0)
-	{
-		if (const auto* property = DesignerFormPropertyCatalog::Find(attributeName))
-			addKind(property->ValueKind);
-		requestedEvent = DesignerEventCatalog::FindFormEvent(attributeName);
-	}
-	else
-	{
-		UIClass type = UIClass::UI_Base;
-		const DesignerControlDescriptor* custom = nullptr;
-		for (const auto& metadata : ControlRegistry::GetAvailableControls())
-			if (_wcsicmp(metadata.Name.c_str(), elementName.c_str()) == 0)
-			{
-				type = metadata.Type;
-				break;
-			}
-		for (const auto& [_, descriptor] : _customControlDescriptors)
-		{
-			const auto name = descriptor.CustomType.XamlPrefix + L":"
-				+ descriptor.CustomType.XamlName;
-			if (_wcsicmp(name.c_str(), elementName.c_str()) != 0) continue;
-			custom = &descriptor;
-			type = descriptor.Type;
-			break;
-		}
-		if (type != UIClass::UI_Base)
-		{
-			auto probe = DesignerControlFactory::Create(type);
-			if (probe)
-			{
-				const auto properties =
-					DesignerPropertyCatalog::GetPropertyGridProperties(*probe);
-				if (const auto* property =
-					DesignerPropertyCatalog::Find(properties, attributeName))
-				{
-					addKind(property->ValueKind);
-					for (const auto& choice : property->Choices)
-						result.push_back(choice.ValueText);
-				}
-			}
-			if (custom)
-				for (const auto& property : custom->CustomProperties)
-					if (_wcsicmp(property.Name.c_str(), attributeName.c_str()) == 0)
-					{
-						addKind(property.DefaultValue.Kind);
-						for (const auto& choice : property.Choices)
-							result.push_back(choice.ValueText);
-					}
-			requestedEvent = DesignerEventCatalog::FindControlEvent(
-				type, attributeName,
-				custom ? custom->CustomEvents
-					: std::vector<DesignerCustomEventDescriptor>{});
-		}
-	}
-	if (requestedEvent)
-	{
-		auto handlers = GetCompatibleEventHandlerNames(
-			*requestedEvent, L"Auto", L"", compatibleUserHandlers);
-		result.insert(result.end(), handlers.begin(), handlers.end());
-	}
-	std::sort(result.begin(), result.end(), [](const auto& left, const auto& right)
-	{
-		return _wcsicmp(left.c_str(), right.c_str()) < 0;
-	});
-	result.erase(std::unique(result.begin(), result.end(),
-		[](const auto& left, const auto& right)
-		{ return _wcsicmp(left.c_str(), right.c_str()) == 0; }), result.end());
-	if (const auto automatic = std::find_if(result.begin(), result.end(),
-		[](const auto& value) { return _wcsicmp(value.c_str(), L"Auto") == 0; });
-		automatic != result.end() && automatic != result.begin())
-		std::rotate(result.begin(), automatic, automatic + 1);
-	return result;
-}
-
 POINT DesignerCanvas::ViewToCanvasPoint(POINT point) const
 {
 	const float zoom = (std::max)(_viewZoom, DesignerMinimumViewZoom);
@@ -902,6 +689,23 @@ POINT DesignerCanvas::CanvasToViewPoint(POINT point) const
 			_viewOffset.x + static_cast<float>(point.x) * _viewZoom)),
 		static_cast<LONG>(std::lround(
 			_viewOffset.y + static_cast<float>(point.y) * _viewZoom)) };
+}
+
+D2D1_MATRIX_3X2_F DesignerCanvas::GetViewRenderTransform() const
+{
+	const auto absoluteLocation = GetAbsoluteLocationDip();
+	return D2D1::Matrix3x2F::Scale(
+		_viewZoom, _viewZoom,
+		D2D1::Point2F(absoluteLocation.x, absoluteLocation.y))
+		* D2D1::Matrix3x2F::Translation(
+			_viewOffset.x, _viewOffset.y);
+}
+
+bool DesignerCanvas::TryGetDescendantRenderTransform(
+	D2D1_MATRIX_3X2_F& transform) const
+{
+	transform = GetViewRenderTransform();
+	return true;
 }
 
 void DesignerCanvas::NotifyViewChanged()
@@ -1360,6 +1164,7 @@ void DesignerCanvas::Update()
 			OnControlSelected(_selectedControl);
 		}
 	}
+	UpdateRootChromePreviewLayout();
 	if (!this->ParentForm) return;
 
 	auto d2d = this->ParentForm->Render;
@@ -1384,11 +1189,11 @@ void DesignerCanvas::Update()
 				previousTransform._11, previousTransform._12,
 				previousTransform._21, previousTransform._22,
 				previousTransform._31, previousTransform._32);
-			const auto viewTransform = D2D1::Matrix3x2F::Scale(
-				_viewZoom, _viewZoom,
-				D2D1::Point2F(absoluteX, absoluteY))
-				* D2D1::Matrix3x2F::Translation(
-					_viewOffset.x, _viewOffset.y);
+			const auto rawViewTransform = GetViewRenderTransform();
+			const auto viewTransform = D2D1::Matrix3x2F(
+				rawViewTransform._11, rawViewTransform._12,
+				rawViewTransform._21, rawViewTransform._22,
+				rawViewTransform._31, rawViewTransform._32);
 			deviceContext->SetTransform(viewTransform * previous);
 		}
 
@@ -1514,8 +1319,7 @@ void DesignerCanvas::Update()
 		// 选中边框/手柄/框选矩形：裁剪到设计面板
 		{
 			auto clip = GetClientSurfaceRectInCanvas();
-			RECT canvasRect{ 0,0,this->Width,this->Height };
-			auto finalClip = IntersectRectSafe(clip, canvasRect);
+			auto finalClip = IntersectRectSafe(clip, GetViewportRectInCanvas());
 			auto canvasAbs = this->AbsLocation;
 			d2d->PushDrawRect((float)(canvasAbs.x + finalClip.left), (float)(canvasAbs.y + finalClip.top),
 				(float)(finalClip.right - finalClip.left), (float)(finalClip.bottom - finalClip.top));
@@ -1866,7 +1670,7 @@ void DesignerCanvas::LiftSelectedToRootForDrag()
 
 	// 抬升前先拿到当前视觉矩形，保持“画面不跳”
 	RECT r = GetControlRectInCanvas(moving);
-	POINT newLocal = CanvasToContainerPoint({ r.left, r.top }, _clientSurface);
+	POINT newLocal = CanvasToChildLayoutPoint({ r.left, r.top }, _clientSurface);
 	int w = r.right - r.left;
 	int h = r.bottom - r.top;
 	if (w < 0) w = 0;
@@ -3946,7 +3750,7 @@ DesignerDocumentTransactionResult DesignerCanvas::MoveControlInHierarchy(
 	if (moving->Parent != desiredRuntimeParent)
 	{
 		const RECT rect = GetControlRectInCanvas(moving);
-		const POINT local = CanvasToContainerPoint(
+		const POINT local = CanvasToChildLayoutPoint(
 			{ rect.left, rect.top }, desiredRuntimeParent);
 		const POINT centerLocal = CanvasToContainerPoint(
 			{ (rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2 },
@@ -4043,7 +3847,8 @@ void DesignerCanvas::ApplyRectToControl(Control* c, const RECT& rectInCanvas)
 	Control* parent = c->Parent ? c->Parent : (_clientSurface ? (Control*)_clientSurface : (Control*)_designSurface);
 	if (!parent) return;
 
-	POINT newLocal = CanvasToContainerPoint({ rectInCanvas.left, rectInCanvas.top }, parent);
+	POINT newLocal = CanvasToChildLayoutPoint(
+		{ rectInCanvas.left, rectInCanvas.top }, parent);
 	int newW = rectInCanvas.right - rectInCanvas.left;
 	int newH = rectInCanvas.bottom - rectInCanvas.top;
 	if (newW < 0) newW = 0;
@@ -4075,16 +3880,19 @@ void DesignerCanvas::ApplyRectToControl(Control* c, const RECT& rectInCanvas)
 	// 其他容器：沿用运行时默认 Anchor+Margin 规则。
 	// 设计器这里需要在 Right/Bottom 锚定时同步换算 Margin.Right/Bottom，避免运行时贴边/拉伸异常。
 	Thickness pad = GetPaddingOfContainer(parent);
-	SIZE ps = parent->Size;
-	const int innerRight = (int)ps.cx - (int)pad.Right;
-	const int innerBottom = (int)ps.cy - (int)pad.Bottom;
+	const auto contentOrigin = parent->GetChildrenLayoutOriginDip();
+	const auto parentSize = parent->GetActualSizeDip();
+	const int innerWidth = static_cast<int>(std::lround((std::max)(
+		0.0f, parentSize.width - contentOrigin.x - pad.Right)));
+	const int innerHeight = static_cast<int>(std::lround((std::max)(
+		0.0f, parentSize.height - contentOrigin.y - pad.Bottom)));
 	const int x = newLocal.x;
 	const int y = newLocal.y;
 
-	int leftDist = x - (int)pad.Left;
-	int topDist = y - (int)pad.Top;
-	int rightDist = innerRight - (x + newW);
-	int bottomDist = innerBottom - (y + newH);
+	int leftDist = x;
+	int topDist = y;
+	int rightDist = innerWidth - (x + newW);
+	int bottomDist = innerHeight - (y + newH);
 	if (leftDist < 0) leftDist = 0;
 	if (topDist < 0) topDist = 0;
 	if (rightDist < 0) rightDist = 0;
@@ -4488,6 +4296,18 @@ RECT DesignerCanvas::GetClientSurfaceRectInCanvas() const
 	return r;
 }
 
+RECT DesignerCanvas::GetViewportRectInCanvas() const
+{
+	const auto first = ViewToCanvasPoint({ 0, 0 });
+	const auto second = ViewToCanvasPoint({ _size.cx, _size.cy });
+	return RECT{
+		(std::min)(first.x, second.x),
+		(std::min)(first.y, second.y),
+		(std::max)(first.x, second.x),
+		(std::max)(first.y, second.y)
+	};
+}
+
 void DesignerCanvas::UpdateClientSurfaceLayout()
 {
 	if (!_designSurface || !_clientSurface) return;
@@ -4499,6 +4319,40 @@ void DesignerCanvas::UpdateClientSurfaceLayout()
 	if (auto* p = dynamic_cast<Panel*>(_clientSurface))
 	{
 		RefreshDesignerPanelLayout(p);
+	}
+}
+
+void DesignerCanvas::UpdateRootChromePreviewLayout()
+{
+	if (!_clientSurface) return;
+
+	// Form 会在普通子控件布局之外把 TopMost StatusBar 托管到底部。
+	// Designer 使用内部 Panel 承载根控件，因此先完成普通布局，再只覆盖运行时
+	// 坐标；Location 仍保留 XAML 中的声明值，保存文档时不会产生无关改写。
+	if (_designSurface) _designSurface->UpdateLayout();
+	_clientSurface->UpdateLayout();
+	const auto clientSize = _clientSurface->GetActualSizeDip();
+	const SIZE available{
+		static_cast<LONG>(std::lround((std::max)(0.0f, clientSize.width))),
+		static_cast<LONG>(std::lround((std::max)(0.0f, clientSize.height)))
+	};
+	for (const auto& designerControl : _designerControls)
+	{
+		if (!designerControl
+			|| designerControl->Type != UIClass::UI_StatusBar
+			|| designerControl->DesignerParent
+			|| !designerControl->ControlInstance
+			|| designerControl->ControlInstance->Parent != _clientSurface)
+			continue;
+		auto* statusBar = dynamic_cast<StatusBar*>(
+			designerControl->ControlInstance);
+		if (!statusBar || !statusBar->TopMost || !statusBar->Visible)
+			continue;
+		const auto measured = statusBar->Measure(available);
+		const LONG height = (std::min)(available.cy,
+			(std::max)(0L, measured.cy));
+		statusBar->SetRuntimeLocation(
+			POINT{ 0, (std::max)(0L, available.cy - height) });
 	}
 }
 
@@ -4644,7 +4498,7 @@ void DesignerCanvas::ClampControlToDesignSurface(Control* c)
 		auto bounds = GetClientSurfaceRectInCanvas();
 		RECT clamped = ClampRectToBounds(rCanvas, bounds, true);
 		POINT newTopLeftCanvas{ clamped.left, clamped.top };
-		POINT newLocal = CanvasToContainerPoint(newTopLeftCanvas, _clientSurface);
+		POINT newLocal = CanvasToChildLayoutPoint(newTopLeftCanvas, _clientSurface);
 		c->Location = newLocal;
 		return;
 	}
@@ -4654,7 +4508,7 @@ void DesignerCanvas::ClampControlToDesignSurface(Control* c)
 		auto bounds = GetDesignSurfaceRectInCanvas();
 		RECT clamped = ClampRectToBounds(rCanvas, bounds, true);
 		POINT newTopLeftCanvas{ clamped.left, clamped.top };
-		POINT newLocal = CanvasToContainerPoint(newTopLeftCanvas, _designSurface);
+		POINT newLocal = CanvasToChildLayoutPoint(newTopLeftCanvas, _designSurface);
 		c->Location = newLocal;
 	}
 }
@@ -4725,6 +4579,11 @@ std::shared_ptr<DesignerControl> DesignerCanvas::HitTestControl(POINT pt)
 			if (*it && (*it)->ControlInstance == control) return *it;
 		return nullptr;
 	};
+	const auto viewPoint = CanvasToViewPoint(pt);
+	const auto canvasAbsolute = GetAbsoluteLocationDip();
+	const POINT renderPoint{
+		static_cast<LONG>(std::lround(canvasAbsolute.x + viewPoint.x)),
+		static_cast<LONG>(std::lround(canvasAbsolute.y + viewPoint.y)) };
 
 	// 占位绘制在运行时子树之上，所以自身不可见目标也应先于
 	// 其可见父容器命中。
@@ -4736,9 +4595,17 @@ std::shared_ptr<DesignerControl> DesignerCanvas::HitTestControl(POINT pt)
 			|| !dc->ControlInstance || dc->ControlInstance->Visible
 			|| !HasVisibleDesignerAncestors(dc->ControlInstance))
 			continue;
-		const auto rect = GetControlRectInCanvas(dc->ControlInstance);
-		if (pt.x < rect.left || pt.x > rect.right
-			|| pt.y < rect.top || pt.y > rect.bottom)
+		D2D1_POINT_2F local{};
+		if (!dc->ControlInstance->TryTransformRenderPointToLocal(
+			D2D1::Point2F(
+				static_cast<float>(renderPoint.x),
+				static_cast<float>(renderPoint.y)), local)
+			|| !dc->ControlInstance->IsRenderPointInsideClip(D2D1::Point2F(
+				static_cast<float>(renderPoint.x),
+				static_cast<float>(renderPoint.y)))
+			|| !dc->ControlInstance->ContainsPoint(
+				static_cast<int>(std::floor(local.x)),
+				static_cast<int>(std::floor(local.y))))
 			continue;
 		if (preferParentContainer)
 		{
@@ -4751,7 +4618,7 @@ std::shared_ptr<DesignerControl> DesignerCanvas::HitTestControl(POINT pt)
 	}
 
 	return HitTestService::HitTestControl(
-		this, _designerControls, pt, preferParentContainer);
+		this, _designerControls, renderPoint, preferParentContainer);
 }
 
 bool DesignerCanvas::HasVisibleDesignerAncestors(
@@ -4795,15 +4662,15 @@ RECT DesignerCanvas::GetControlRectInCanvas(Control* c)
 {
 	RECT r{ 0,0,0,0 };
 	if (!c) return r;
-	auto absoluteLocation = c->AbsLocation;
-	auto canvasAbs = this->AbsLocation;
-	auto size = c->ActualSize();
-	int left = absoluteLocation.x - canvasAbs.x;
-	int top = absoluteLocation.y - canvasAbs.y;
-	r.left = left;
-	r.top = top;
-	r.right = left + size.cx;
-	r.bottom = top + size.cy;
+	// 设计器操作的是布局槽，而不是 RenderTransform 后的外接矩形。
+	// 否则旋转/缩放控件每移动一次，外接矩形会被写回 Size 并再次变换，
+	// 导致选区持续膨胀。视图缩放由 DesignerCanvas 的绘制变换统一处理。
+	const auto absolute = c->GetAbsoluteRectDip();
+	const auto canvasAbs = GetAbsoluteLocationDip();
+	r.left = static_cast<LONG>(std::lround(absolute.Left() - canvasAbs.x));
+	r.top = static_cast<LONG>(std::lround(absolute.Top() - canvasAbs.y));
+	r.right = r.left + static_cast<LONG>(std::lround(absolute.width));
+	r.bottom = r.top + static_cast<LONG>(std::lround(absolute.height));
 	return r;
 }
 
@@ -4973,11 +4840,38 @@ POINT DesignerCanvas::CanvasToContainerPoint(POINT ptCanvas, Control* container)
 	return containerPoint;
 }
 
+POINT DesignerCanvas::CanvasToChildLayoutPoint(
+	POINT ptCanvas, Control* container)
+{
+	auto point = CanvasToContainerPoint(ptCanvas, container);
+	if (!container) return point;
+	const auto origin = container->GetChildrenLayoutOriginDip();
+	const auto renderOffset = container->GetChildrenRenderOffset();
+	point.x -= static_cast<LONG>(std::lround(origin.x)) + renderOffset.x;
+	point.y -= static_cast<LONG>(std::lround(origin.y)) + renderOffset.y;
+	return point;
+}
+
 Control* DesignerCanvas::FindBestContainerAtPoint(POINT ptCanvas, Control* ignore)
 {
-	return HitTestService::FindBestContainerAtPoint(_designerControls, ptCanvas, ignore, [this](Control* control) {
-		return GetControlRectInCanvas(control);
-	});
+	const auto viewPoint = CanvasToViewPoint(ptCanvas);
+	const auto canvasAbsolute = GetAbsoluteLocationDip();
+	const auto renderPoint = D2D1::Point2F(
+		canvasAbsolute.x + viewPoint.x,
+		canvasAbsolute.y + viewPoint.y);
+	return HitTestService::FindBestContainerAtPoint(
+		_designerControls, ptCanvas, ignore,
+		[this](Control* control) { return GetControlRectInCanvas(control); },
+		[renderPoint](Control* control)
+		{
+			if (!control || !control->IsRenderPointInsideClip(renderPoint))
+				return false;
+			D2D1_POINT_2F local{};
+			return control->TryTransformRenderPointToLocal(renderPoint, local)
+				&& control->ContainsPoint(
+					static_cast<int>(std::floor(local.x)),
+					static_cast<int>(std::floor(local.y)));
+		});
 }
 
 void DesignerCanvas::DeleteControlRecursive(Control* c)
@@ -5040,7 +4934,7 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 	{
 		runtimeHost = ResolveSplitRuntimeHost(split, dropLocalToContainer);
 	}
-	POINT newLocal = CanvasToContainerPoint(canvasTopLeft, runtimeHost);
+	POINT newLocal = CanvasToChildLayoutPoint(canvasTopLeft, runtimeHost);
 	POINT dropLocalCenter = CanvasToContainerPoint(center, runtimeHost);
 	bool runtimeHostChanged = moving->Parent != runtimeHost;
 
@@ -7086,7 +6980,7 @@ DesignerDocumentTransactionResult DesignerCanvas::PasteControlsFromXamlTextCore(
 			}
 			if (minimumX == (std::numeric_limits<int>::max)()) minimumX = 0;
 			if (minimumY == (std::numeric_limits<int>::max)()) minimumY = 0;
-			const auto destinationPoint = CanvasToContainerPoint(
+			const auto destinationPoint = CanvasToChildLayoutPoint(
 				*canvasPosition, destinationRuntimeParent);
 			offsetX = destinationPoint.x - minimumX;
 			offsetY = destinationPoint.y - minimumY;
@@ -7537,7 +7431,8 @@ void DesignerCanvas::AddControlToCanvasCore(
 			{
 				runtimeHost = ResolveSplitRuntimeHost(split, dropLocalToContainer);
 			}
-			POINT local = CanvasToContainerPoint({ centerX, centerY }, runtimeHost);
+			POINT local = CanvasToChildLayoutPoint(
+				{ centerX, centerY }, runtimeHost);
 			POINT dropLocal = CanvasToContainerPoint(canvasPos, runtimeHost);
 			(void)LayoutBridge::AttachChild(
 				runtimeHost, std::move(newControlOwner));
@@ -7548,7 +7443,8 @@ void DesignerCanvas::AddControlToCanvasCore(
 		{
 			// 根级：属于窗体客户区
 			_clientSurface->AddOwned(std::move(newControlOwner));
-			POINT local = CanvasToContainerPoint({ centerX, centerY }, _clientSurface);
+			POINT local = CanvasToChildLayoutPoint(
+				{ centerX, centerY }, _clientSurface);
 			newControl->Location = local;
 			// 约束初始位置到客户区
 			ClampControlToDesignSurface(newControl);
@@ -7715,6 +7611,8 @@ void DesignerCanvas::ClearCanvasCore()
 	_designedFormEventHandlers.clear();
 	_dataContextSchema.clear();
 	_documentStyleSheet = {};
+	_documentResourceBasePath.clear();
+	_documentResources.reset();
 	_previewStyleSheet.reset();
 	if (_clientSurface) (void)_clientSurface->SetStyleSheet(nullptr, true);
 
@@ -7766,6 +7664,8 @@ void DesignerCanvas::SetDesignDataContext(
 	std::shared_ptr<IBindingSource> source)
 {
 	_designDataContext = std::move(source);
+	if (_previewStyleSheet)
+		_previewStyleSheet->SetDataContext(_designDataContext.get());
 	(void)RefreshAllDesignBindings(nullptr);
 	OnControlSelected(_selectedControl);
 }
@@ -7966,11 +7866,16 @@ bool DesignerCanvas::SetDocumentStyleSheet(
 	if (!DesignerStyleSheetUtils::ValidateAgainstPropertyMetadata(
 		styleSheet,
 		[](UIClass type) { return DesignerControlFactory::Create(type); },
-		outError))
+		outError,
+		_documentResourceBasePath, _documentResources))
 		return false;
 	std::shared_ptr<ControlStyleSheet> runtime;
-	if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(styleSheet, runtime, outError))
+	if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
+		styleSheet, runtime, outError, _documentResourceBasePath,
+		_documentResources))
 		return false;
+	if (_designDataContext)
+		runtime->SetDataContext(_designDataContext.get());
 
 	auto describeIssue = [](const ControlStyleResolutionIssue& issue)
 	{
@@ -8051,107 +7956,19 @@ bool DesignerCanvas::SetCodeBehind(
 
 static bool IsExportableDesignType(UIClass t)
 {
-	switch (t)
-	{
-	case UIClass::UI_Label:
-	case UIClass::UI_LinkLabel:
-	case UIClass::UI_Button:
-	case UIClass::UI_TextBox:
-	case UIClass::UI_RichTextBox:
-	case UIClass::UI_PasswordBox:
-	case UIClass::UI_DateTimePicker:
-	case UIClass::UI_NumericUpDown:
-	case UIClass::UI_Panel:
-	case UIClass::UI_GroupBox:
-	case UIClass::UI_Expander:
-	case UIClass::UI_ScrollView:
-	case UIClass::UI_StackPanel:
-	case UIClass::UI_GridPanel:
-	case UIClass::UI_DockPanel:
-	case UIClass::UI_WrapPanel:
-	case UIClass::UI_RelativePanel:
-	case UIClass::UI_SplitContainer:
-	case UIClass::UI_CheckBox:
-	case UIClass::UI_RadioBox:
-	case UIClass::UI_ComboBox:
-	case UIClass::UI_ListView:
-	case UIClass::UI_ListBox:
-	case UIClass::UI_GridView:
-	case UIClass::UI_PropertyGrid:
-	case UIClass::UI_ChartView:
-	case UIClass::UI_ReportView:
-	case UIClass::UI_KpiCard:
-	case UIClass::UI_FilterBar:
-	case UIClass::UI_TreeView:
-	case UIClass::UI_ProgressBar:
-	case UIClass::UI_LoadingRing:
-	case UIClass::UI_ProgressRing:
-	case UIClass::UI_Slider:
-	case UIClass::UI_PictureBox:
-	case UIClass::UI_Switch:
-	case UIClass::UI_TabControl:
-	case UIClass::UI_TabPage:
-	case UIClass::UI_ToolBar:
-	case UIClass::UI_Menu:
-	case UIClass::UI_StatusBar:
-	case UIClass::UI_ToastHost:
-	case UIClass::UI_WebBrowser:
-	case UIClass::UI_MediaPlayer:
-		return true;
-	default:
-		return false;
-	}
+	if (t == UIClass::UI_TabPage) return true;
+	const auto controls = ControlRegistry::GetAvailableControls();
+	return std::any_of(
+		controls.begin(), controls.end(),
+		[t](const auto& metadata) { return metadata.Type == t; });
 }
 
 static std::wstring ExportTypeName(UIClass t)
 {
-	switch (t)
-	{
-	case UIClass::UI_Label: return L"Label";
-	case UIClass::UI_LinkLabel: return L"LinkLabel";
-	case UIClass::UI_Button: return L"Button";
-	case UIClass::UI_TextBox: return L"TextBox";
-	case UIClass::UI_RichTextBox: return L"RichTextBox";
-	case UIClass::UI_PasswordBox: return L"PasswordBox";
-	case UIClass::UI_DateTimePicker: return L"DateTimePicker";
-	case UIClass::UI_NumericUpDown: return L"NumericUpDown";
-	case UIClass::UI_ComboBox: return L"ComboBox";
-	case UIClass::UI_ListView: return L"ListView";
-	case UIClass::UI_ListBox: return L"ListBox";
-	case UIClass::UI_GridView: return L"GridView";
-	case UIClass::UI_PropertyGrid: return L"PropertyGrid";
-	case UIClass::UI_ChartView: return L"ChartView";
-	case UIClass::UI_ReportView: return L"ReportView";
-	case UIClass::UI_KpiCard: return L"KpiCard";
-	case UIClass::UI_FilterBar: return L"FilterBar";
-	case UIClass::UI_CheckBox: return L"CheckBox";
-	case UIClass::UI_RadioBox: return L"RadioBox";
-	case UIClass::UI_ProgressBar: return L"ProgressBar";
-	case UIClass::UI_LoadingRing: return L"LoadingRing";
-	case UIClass::UI_ProgressRing: return L"ProgressRing";
-	case UIClass::UI_TreeView: return L"TreeView";
-	case UIClass::UI_Panel: return L"Panel";
-	case UIClass::UI_GroupBox: return L"GroupBox";
-	case UIClass::UI_Expander: return L"Expander";
-	case UIClass::UI_ScrollView: return L"ScrollView";
-	case UIClass::UI_TabPage: return L"TabPage";
-	case UIClass::UI_TabControl: return L"TabControl";
-	case UIClass::UI_Switch: return L"Switch";
-	case UIClass::UI_Menu: return L"Menu";
-	case UIClass::UI_ToolBar: return L"ToolBar";
-	case UIClass::UI_StatusBar: return L"StatusBar";
-	case UIClass::UI_ToastHost: return L"ToastHost";
-	case UIClass::UI_Slider: return L"Slider";
-	case UIClass::UI_WebBrowser: return L"WebBrowser";
-	case UIClass::UI_StackPanel: return L"StackPanel";
-	case UIClass::UI_GridPanel: return L"GridPanel";
-	case UIClass::UI_DockPanel: return L"DockPanel";
-	case UIClass::UI_WrapPanel: return L"WrapPanel";
-	case UIClass::UI_RelativePanel: return L"RelativePanel";
-	case UIClass::UI_PictureBox: return L"PictureBox";
-	case UIClass::UI_MediaPlayer: return L"MediaPlayer";
-	default: return L"Control";
-	}
+	if (t == UIClass::UI_TabPage) return L"TabPage";
+	for (const auto& metadata : ControlRegistry::GetAvailableControls())
+		if (metadata.Type == t) return metadata.Name;
+	return L"Control";
 }
 
 namespace
@@ -8246,7 +8063,10 @@ std::vector<std::shared_ptr<DesignerControl>> DesignerCanvas::GetAllControlsForE
 				}
 			}
 
-			walk(c);
+			const auto descriptor = BuiltInDescriptor(t);
+			if (t == UIClass::UI_TabPage
+				|| (descriptor && descriptor->IsContainer))
+				walk(c);
 		}
 	};
 
@@ -8279,6 +8099,7 @@ CodeGenInput DesignerCanvas::BuildCodeGenInput() const
 	input.FormAllowResize = form.AllowResize;
 	input.FormFontName = form.FontName;
 	input.FormFontSize = form.FontSize;
+	input.ResourceBasePath = _documentResourceBasePath;
 	input.StyleSheet = _documentStyleSheet;
 	return input;
 }
@@ -8452,6 +8273,261 @@ namespace
 	static DesignValue ColorToValue(const D2D1_COLOR_F& c)
 	{
 		return DesignValue{ {"r", c.r}, {"g", c.g}, {"b", c.b}, {"a", c.a} };
+	}
+
+	static DesignValue BrushToValue(const cui::drawing::Brush& brush)
+	{
+		DesignValue value = DesignValue::object();
+		value["type"] = brush.Kind == cui::drawing::BrushKind::Solid ? "solid"
+			: brush.Kind == cui::drawing::BrushKind::LinearGradient ? "linear"
+			: brush.Kind == cui::drawing::BrushKind::RadialGradient ? "radial"
+			: "image";
+		value["mapping"] = brush.MappingMode
+			== cui::drawing::BrushMappingMode::Absolute ? "absolute" : "relative";
+		value["opacity"] = brush.Opacity;
+		if (brush.Kind == cui::drawing::BrushKind::Solid)
+			value["color"] = ColorToValue(brush.Color);
+		else if (brush.Kind == cui::drawing::BrushKind::Image)
+		{
+			value["source"] = brush.ImageSource
+				? ToUtf8(brush.ImageSource->GetSourceUri()) : std::string{};
+			value["stretch"] = brush.Stretch == cui::drawing::ImageBrushStretch::None
+				? "none" : brush.Stretch == cui::drawing::ImageBrushStretch::Uniform
+					? "uniform" : brush.Stretch == cui::drawing::ImageBrushStretch::UniformToFill
+						? "uniformToFill" : "fill";
+			value["alignmentX"] = brush.AlignmentX == cui::drawing::ImageBrushAlignmentX::Left
+				? "left" : brush.AlignmentX == cui::drawing::ImageBrushAlignmentX::Right
+					? "right" : "center";
+			value["alignmentY"] = brush.AlignmentY == cui::drawing::ImageBrushAlignmentY::Top
+				? "top" : brush.AlignmentY == cui::drawing::ImageBrushAlignmentY::Bottom
+					? "bottom" : "center";
+		}
+		else
+		{
+			if (brush.Kind == cui::drawing::BrushKind::LinearGradient)
+			{
+				value["startX"] = brush.StartPoint.x;
+				value["startY"] = brush.StartPoint.y;
+				value["endX"] = brush.EndPoint.x;
+				value["endY"] = brush.EndPoint.y;
+			}
+			else
+			{
+				value["centerX"] = brush.Center.x;
+				value["centerY"] = brush.Center.y;
+				value["originX"] = brush.GradientOrigin.x;
+				value["originY"] = brush.GradientOrigin.y;
+				value["radiusX"] = brush.RadiusX;
+				value["radiusY"] = brush.RadiusY;
+			}
+			DesignValue stops = DesignValue::array();
+			for (const auto& stop : brush.GradientStops)
+				stops.push_back(DesignValue{
+					{ "offset", stop.Offset }, { "color", ColorToValue(stop.Color) } });
+			value["stops"] = std::move(stops);
+		}
+		return value;
+	}
+
+	static DesignValue TransformToValue(const cui::drawing::Transform& transform)
+	{
+		DesignValue result = DesignValue::array();
+		for (const auto& operation : transform.Operations)
+		{
+			DesignValue value = DesignValue::object();
+			switch (operation.Kind)
+			{
+			case cui::drawing::TransformKind::Matrix:
+				value["type"] = "matrix";
+				value["m11"] = operation.Matrix._11;
+				value["m12"] = operation.Matrix._12;
+				value["m21"] = operation.Matrix._21;
+				value["m22"] = operation.Matrix._22;
+				value["dx"] = operation.Matrix._31;
+				value["dy"] = operation.Matrix._32;
+				break;
+			case cui::drawing::TransformKind::Translate:
+				value["type"] = "translate";
+				value["x"] = operation.X;
+				value["y"] = operation.Y;
+				break;
+			case cui::drawing::TransformKind::Scale:
+				value["type"] = "scale";
+				value["scaleX"] = operation.ScaleX;
+				value["scaleY"] = operation.ScaleY;
+				break;
+			case cui::drawing::TransformKind::Rotate:
+				value["type"] = "rotate";
+				value["angle"] = operation.Angle;
+				break;
+			case cui::drawing::TransformKind::Skew:
+				value["type"] = "skew";
+				value["angleX"] = operation.AngleX;
+				value["angleY"] = operation.AngleY;
+				break;
+			}
+			if (operation.Kind == cui::drawing::TransformKind::Scale
+				|| operation.Kind == cui::drawing::TransformKind::Rotate
+				|| operation.Kind == cui::drawing::TransformKind::Skew)
+			{
+				value["centerX"] = operation.CenterX;
+				value["centerY"] = operation.CenterY;
+			}
+			result.push_back(std::move(value));
+		}
+		return result;
+	}
+
+	static DesignValue GeometryToValue(const cui::drawing::Geometry& geometry)
+	{
+		DesignValue value = DesignValue::object();
+		auto finish = [&]()
+		{
+			if (geometry.LocalTransform)
+				value["transform"] = TransformToValue(*geometry.LocalTransform);
+			return value;
+		};
+		if (geometry.Kind == cui::drawing::GeometryKind::Rectangle)
+		{
+			value["type"] = "rectangle";
+			value["x"] = geometry.Rect.left;
+			value["y"] = geometry.Rect.top;
+			value["width"] = geometry.Rect.right - geometry.Rect.left;
+			value["height"] = geometry.Rect.bottom - geometry.Rect.top;
+			value["radiusX"] = geometry.RadiusX;
+			value["radiusY"] = geometry.RadiusY;
+			return finish();
+		}
+		if (geometry.Kind == cui::drawing::GeometryKind::Ellipse)
+		{
+			value["type"] = "ellipse";
+			value["centerX"] = geometry.Center.x;
+			value["centerY"] = geometry.Center.y;
+			value["radiusX"] = geometry.RadiusX;
+			value["radiusY"] = geometry.RadiusY;
+			return finish();
+		}
+		if (geometry.Kind == cui::drawing::GeometryKind::Path)
+		{
+			value["type"] = "path";
+			value["fillRule"] = geometry.FillRule
+				== cui::drawing::GeometryFillRule::Nonzero ? "nonzero" : "evenodd";
+			DesignValue figures = DesignValue::array();
+			for (const auto& figure : geometry.Figures)
+			{
+				DesignValue figureValue{
+					{ "startX", figure.StartPoint.x },
+					{ "startY", figure.StartPoint.y },
+					{ "closed", figure.IsClosed },
+					{ "filled", figure.IsFilled },
+					{ "segments", DesignValue::array() } };
+				for (const auto& segment : figure.Segments)
+				{
+					DesignValue segmentValue = DesignValue::object();
+					if (segment.Kind == cui::drawing::PathSegmentKind::Line)
+					{
+						segmentValue["type"] = "line";
+						segmentValue["x"] = segment.Point.x;
+						segmentValue["y"] = segment.Point.y;
+					}
+					else if (segment.Kind == cui::drawing::PathSegmentKind::Bezier)
+					{
+						segmentValue["type"] = "bezier";
+						segmentValue["x1"] = segment.Point1.x;
+						segmentValue["y1"] = segment.Point1.y;
+						segmentValue["x2"] = segment.Point2.x;
+						segmentValue["y2"] = segment.Point2.y;
+						segmentValue["x3"] = segment.Point3.x;
+						segmentValue["y3"] = segment.Point3.y;
+					}
+					else if (segment.Kind == cui::drawing::PathSegmentKind::QuadraticBezier)
+					{
+						segmentValue["type"] = "quadratic";
+						segmentValue["x1"] = segment.Point1.x;
+						segmentValue["y1"] = segment.Point1.y;
+						segmentValue["x2"] = segment.Point2.x;
+						segmentValue["y2"] = segment.Point2.y;
+					}
+					else
+					{
+						segmentValue["type"] = "arc";
+						segmentValue["x"] = segment.Point.x;
+						segmentValue["y"] = segment.Point.y;
+						segmentValue["width"] = segment.Size.width;
+						segmentValue["height"] = segment.Size.height;
+						segmentValue["rotation"] = segment.RotationAngle;
+						segmentValue["large"] = segment.IsLargeArc;
+						segmentValue["sweep"] = segment.Sweep
+							== cui::drawing::SweepDirection::Clockwise
+							? "clockwise" : "counterclockwise";
+					}
+					figureValue["segments"].push_back(std::move(segmentValue));
+				}
+				figures.push_back(std::move(figureValue));
+			}
+			value["figures"] = std::move(figures);
+			return finish();
+		}
+		value["type"] = "group";
+		value["fillRule"] = geometry.FillRule
+			== cui::drawing::GeometryFillRule::Nonzero ? "nonzero" : "evenodd";
+		DesignValue children = DesignValue::array();
+		for (const auto& child : geometry.Children)
+			children.push_back(GeometryToValue(child));
+		value["children"] = std::move(children);
+		return finish();
+	}
+
+	static DesignValue GridColumnsToValue(
+		const GridView::ColumnCollection& columns)
+	{
+		DesignValue result = DesignValue::array();
+		for (const auto& column : columns)
+		{
+			DesignValue value = DesignValue::object();
+			value["name"] = ToUtf8(column.Name);
+			value["width"] = column.Width;
+			value["type"] = static_cast<int>(column.Type);
+			value["canEdit"] = column.CanEdit;
+			if (!column.ButtonText.empty()) value["buttonText"] = ToUtf8(column.ButtonText);
+			if (!column.ComboBoxItems.empty())
+			{
+				DesignValue options = DesignValue::array();
+				for (const auto& option : column.ComboBoxItems)
+					options.push_back(ToUtf8(option));
+				value["comboBoxItems"] = std::move(options);
+			}
+			result.push_back(std::move(value));
+		}
+		return result;
+	}
+
+	static DesignValue GridRowsToValue(
+		const GridView::RowCollection& rows,
+		const GridView::ColumnCollection& columns)
+	{
+		DesignValue result = DesignValue::array();
+		for (const auto& row : rows)
+		{
+			DesignValue cells = DesignValue::array();
+			for (size_t index = 0; index < row.Cells.size(); ++index)
+			{
+				const auto& cell = row.Cells[index];
+				const auto type = index < columns.size()
+					? columns[index].Type : ColumnType::Text;
+				DesignValue value = DesignValue::object();
+				if (type == ColumnType::Check) value["checked"] = cell.GetBool();
+				else if (type == ColumnType::ComboBox)
+				{
+					value["value"] = ToUtf8(cell.GetText());
+					value["selectedIndex"] = static_cast<long long>(cell.GetTag());
+				}
+				else value["value"] = ToUtf8(cell.GetText());
+				cells.push_back(std::move(value));
+			}
+			result.push_back(DesignValue{ { "cells", std::move(cells) } });
+		}
+		return result;
 	}
 	static D2D1_COLOR_F ColorFromValue(const DesignValue& j, const D2D1_COLOR_F& def)
 	{
@@ -8941,6 +9017,8 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 	try
 	{
 		document.Clear();
+		document.ResourceBasePath = _documentResourceBasePath;
+		document.Resources = _documentResources;
 		document.NextStableId = _nextStableControlId;
 		document.Form = CaptureDesignedFormModel();
 		document.CodeBehind = _codeBehind;
@@ -8950,7 +9028,9 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			return false;
 		document.StyleSheet = _documentStyleSheet;
 		DesignerStyleSheetUtils::Canonicalize(document.StyleSheet);
-		if (!DesignerStyleSheetUtils::Validate(document.StyleSheet, outError))
+		if (!DesignerStyleSheetUtils::Validate(
+			document.StyleSheet, outError, document.ResourceBasePath,
+			document.Resources))
 			return false;
 
 		// 防御：Name 与稳定 ID 都必须唯一，且 ID 高水位不可回退。
@@ -9131,56 +9211,138 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 							return false;
 						}
 					}
-					metadataProperties[ToUtf8(canonicalName)] = DesignValue{
+					auto persisted = DesignValue{
 						{ "kind", ToUtf8(DesignerStyleSheetUtils::ValueKindName(currentValue.Kind)) },
 						{ "value", ToUtf8(currentValue.Text) }
 					};
+					if (!currentValue.ObjectValue.is_null())
+						persisted["object"] = currentValue.ObjectValue;
+					metadataProperties[ToUtf8(canonicalName)] = std::move(persisted);
 				}
 				props["metadata"] = std::move(metadataProperties);
 			}
 			node.Props = std::move(props);
 
 			DesignValue extra = DesignValue::object();
-			if (dc->Type == UIClass::UI_ComboBox)
+			if (dc->Type == UIClass::UI_NavigationView
+				|| dc->Type == UIClass::UI_SideBar)
+			{
+				auto* navigation = static_cast<NavigationView*>(c);
+				DesignValue items = DesignValue::array();
+				for (const auto& item : navigation->Items)
+				{
+					auto persisted = DesignValue{
+						{ "text", ToUtf8(item.Text) },
+						{ "value", ToUtf8(item.Value) },
+						{ "badgeText", ToUtf8(item.BadgeText) },
+						{ "kind", static_cast<int>(item.Kind) },
+						{ "enabled", item.Enabled },
+						{ "selected", item.Selected },
+						{ "tag", item.Tag } };
+					if (item.Icon && !item.Icon->GetSourceUri().empty())
+						persisted["icon"] = ToUtf8(item.Icon->GetSourceUri());
+					items.push_back(std::move(persisted));
+				}
+				if (!items.empty()) extra["navigationItems"] = std::move(items);
+			}
+			else if (dc->Type == UIClass::UI_BreadcrumbBar)
+			{
+				auto* breadcrumb = static_cast<BreadcrumbBar*>(c);
+				DesignValue items = DesignValue::array();
+				for (const auto& item : breadcrumb->Items)
+				{
+					items.push_back(DesignValue{
+						{ "text", ToUtf8(item.Text) },
+						{ "value", ToUtf8(item.Value) },
+						{ "enabled", item.Enabled },
+						{ "tag", item.Tag } });
+				}
+				if (!items.empty()) extra["breadcrumbItems"] = std::move(items);
+			}
+			else if (dc->Type == UIClass::UI_FilterBar)
+			{
+				auto* filter = static_cast<FilterBar*>(c);
+				DesignValue items = DesignValue::array();
+				for (const auto& item : filter->Items)
+				{
+					items.push_back(DesignValue{
+						{ "text", ToUtf8(item.Text) },
+						{ "value", ToUtf8(item.Value) },
+						{ "selected", item.Selected },
+						{ "enabled", item.Enabled },
+						{ "tag", item.Tag } });
+				}
+				if (!items.empty()) extra["filterItems"] = std::move(items);
+			}
+			else if (dc->Type == UIClass::UI_KpiCard)
+			{
+				auto* kpi = static_cast<KpiCard*>(c);
+				DesignValue values = DesignValue::array();
+				for (const auto value : kpi->SparklineValues) values.push_back(value);
+				if (!values.empty()) extra["sparkline"] = std::move(values);
+			}
+			else if (dc->Type == UIClass::UI_ChartView)
+			{
+				auto* chart = static_cast<ChartView*>(c);
+				DesignValue seriesValues = DesignValue::array();
+				for (const auto& series : chart->Series)
+				{
+					DesignValue seriesValue{
+						{ "name", ToUtf8(series.Name) },
+						{ "visible", series.Visible } };
+					if (series.Color.a > 0.0f)
+						seriesValue["color"] = ColorToValue(series.Color);
+					DesignValue points = DesignValue::array();
+					for (const auto& point : series.Points)
+					{
+						DesignValue pointValue{
+							{ "label", ToUtf8(point.Label) },
+							{ "value", point.Value },
+							{ "tag", point.Tag },
+							{ "useCustomColor", point.UseCustomColor } };
+						if (point.UseCustomColor)
+							pointValue["color"] = ColorToValue(point.Color);
+						points.push_back(std::move(pointValue));
+					}
+					seriesValue["points"] = std::move(points);
+					seriesValues.push_back(std::move(seriesValue));
+				}
+				if (!seriesValues.empty()) extra["series"] = std::move(seriesValues);
+			}
+			else if (dc->Type == UIClass::UI_ReportView)
+			{
+				auto* report = static_cast<ReportView*>(c);
+				DesignValue columns = DesignValue::array();
+				for (const auto& column : report->Columns)
+				{
+					columns.push_back(DesignValue{
+						{ "header", ToUtf8(column.Header) },
+						{ "width", column.Width },
+						{ "align", static_cast<int>(column.Align) },
+						{ "sortable", column.Sortable } });
+				}
+				if (!columns.empty()) extra["reportColumns"] = std::move(columns);
+				DesignValue rows = DesignValue::array();
+				for (const auto& row : report->Rows)
+				{
+					DesignValue cells = DesignValue::array();
+					for (const auto& cell : row.Cells) cells.push_back(ToUtf8(cell));
+					rows.push_back(DesignValue{
+						{ "kind", static_cast<int>(row.Kind) },
+						{ "caption", ToUtf8(row.Caption) },
+						{ "cells", std::move(cells) },
+						{ "expanded", row.Expanded },
+						{ "tag", row.Tag } });
+				}
+				if (!rows.empty()) extra["reportRows"] = std::move(rows);
+			}
+			else if (dc->Type == UIClass::UI_ComboBox)
 			{
 				auto* comboBox = (ComboBox*)c;
 				DesignValue items = DesignValue::array();
 				for (size_t i = 0; i < comboBox->Items.size(); ++i)
 					items.push_back(ToUtf8(comboBox->Items[i]));
-				extra["items"] = items;
-			}
-			else if (dc->Type == UIClass::UI_ProgressBar)
-			{
-				extra["percentageValue"] = ((ProgressBar*)c)->PercentageValue;
-			}
-			else if (dc->Type == UIClass::UI_LoadingRing)
-			{
-				extra["active"] = ((LoadingRing*)c)->Active;
-			}
-			else if (dc->Type == UIClass::UI_ProgressRing)
-			{
-				auto* progressRing = (ProgressRing*)c;
-				extra["percentageValue"] = progressRing->PercentageValue;
-				extra["showPercentage"] = progressRing->ShowPercentage;
-			}
-			else if (dc->Type == UIClass::UI_DateTimePicker)
-			{
-				auto* dateTimePicker = (DateTimePicker*)c;
-				const SYSTEMTIME st = dateTimePicker->Value;
-				extra["value"] = DesignValue{
-					{"year", st.wYear},
-					{"month", st.wMonth},
-					{"day", st.wDay},
-					{"hour", st.wHour},
-					{"minute", st.wMinute},
-					{"second", st.wSecond},
-					{"milliseconds", st.wMilliseconds}
-				};
-				extra["mode"] = (int)dateTimePicker->Mode;
-				extra["allowDateSelection"] = dateTimePicker->AllowDateSelection;
-				extra["allowTimeSelection"] = dateTimePicker->AllowTimeSelection;
-				extra["allowModeSwitch"] = dateTimePicker->AllowModeSwitch;
-				extra["expand"] = dateTimePicker->Expand;
+				if (!items.empty()) extra["items"] = std::move(items);
 			}
 			else if (dc->Type == UIClass::UI_ListView || dc->Type == UIClass::UI_ListBox)
 			{
@@ -9194,47 +9356,40 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 					cj["align"] = (int)col.Align;
 					cols.push_back(cj);
 				}
-				extra["columns"] = cols;
-				extra["items"] = ListViewItemsToValue(listView->Items);
+				if (!cols.empty()) extra["columns"] = std::move(cols);
+				auto items = ListViewItemsToValue(listView->Items);
+				if (!items.empty()) extra["items"] = std::move(items);
 			}
 			else if (dc->Type == UIClass::UI_GridView)
 			{
 				auto* gridView = (GridView*)c;
-				DesignValue cols = DesignValue::array();
-				for (size_t i = 0; i < gridView->ColumnCount(); ++i)
-				{
-					auto& col = gridView->ColumnAt(static_cast<int>(i));
-					DesignValue cj = DesignValue::object();
-					cj["name"] = ToUtf8(col.Name);
-					cj["width"] = col.Width;
-					cj["type"] = (int)col.Type;
-					cj["canEdit"] = col.CanEdit;
-					if (!col.ButtonText.empty())
-						cj["buttonText"] = ToUtf8(col.ButtonText);
-					if (!col.ComboBoxItems.empty())
-					{
-						DesignValue items = DesignValue::array();
-						for (const auto& item : col.ComboBoxItems)
-							items.push_back(ToUtf8(item));
-						cj["comboBoxItems"] = std::move(items);
-					}
-					cols.push_back(cj);
-				}
-				extra["columns"] = cols;
+				auto cols = GridColumnsToValue(gridView->Columns);
+				if (!cols.empty()) extra["columns"] = std::move(cols);
+				auto rows = GridRowsToValue(gridView->Rows, gridView->Columns);
+				if (!rows.empty()) extra["rows"] = std::move(rows);
+			}
+			else if (dc->Type == UIClass::UI_PagedGridView)
+			{
+				auto* gridView = static_cast<PagedGridView*>(c);
+				auto cols = GridColumnsToValue(gridView->GetColumns());
+				if (!cols.empty()) extra["columns"] = std::move(cols);
+				auto rows = GridRowsToValue(gridView->Rows, gridView->GetColumns());
+				if (!rows.empty()) extra["rows"] = std::move(rows);
 			}
 			else if (dc->Type == UIClass::UI_PropertyGrid)
 			{
 				auto* pg = (PropertyGridView*)c;
-				extra["items"] = PropertyGridItemsToValue(pg->Items);
+				auto items = PropertyGridItemsToValue(pg->Items);
+				if (!items.empty()) extra["items"] = std::move(items);
 			}
 			else if (dc->Type == UIClass::UI_TreeView)
 			{
 				auto* treeView = (TreeView*)c;
 				if (treeView->Root)
-					extra["nodes"] = TreeNodesToValue(treeView->Root->Children);
-				extra["selectedBackColor"] = ColorToValue(treeView->SelectedBackColor);
-				extra["underMouseItemBackColor"] = ColorToValue(treeView->UnderMouseItemBackColor);
-				extra["selectedForeColor"] = ColorToValue(treeView->SelectedForeColor);
+				{
+					auto nodes = TreeNodesToValue(treeView->Root->Children);
+					if (!nodes.empty()) extra["nodes"] = std::move(nodes);
+				}
 			}
 			else if (dc->Type == UIClass::UI_TabControl)
 			{
@@ -9287,7 +9442,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 					pj["width"] = statusBar->GetPartWidth(i);
 					parts.push_back(pj);
 				}
-				extra["parts"] = parts;
+				if (!parts.empty()) extra["parts"] = std::move(parts);
 			}
 			else if (dc->Type == UIClass::UI_Menu)
 			{
@@ -9299,7 +9454,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 					if (!it) continue;
 					tops.push_back(MenuItemToValue(it));
 				}
-				extra["items"] = tops;
+				if (!tops.empty()) extra["items"] = std::move(tops);
 			}
 			else if (dc->Type == UIClass::UI_MediaPlayer)
 			{
@@ -9309,6 +9464,25 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 				std::wstring mediaFile = (it != dc->DesignStrings.end()) ? it->second : mediaPlayer->MediaFile;
 				if (!mediaFile.empty()) extra["mediaFile"] = ToUtf8(mediaFile);
 			}
+			auto shouldCaptureLocalObject = [c](const wchar_t* propertyName)
+			{
+				const auto source = c->GetPropertyValueSource(propertyName);
+				return source != ControlPropertyValueSource::Style
+					&& source != ControlPropertyValueSource::Theme;
+			};
+			if (const auto& brush = c->GetForegroundBrush();
+				brush && shouldCaptureLocalObject(L"Foreground"))
+				extra["foregroundBrush"] = BrushToValue(*brush);
+			if (const auto& clip = c->GetClip();
+				clip && shouldCaptureLocalObject(L"Clip"))
+				extra["clip"] = GeometryToValue(*clip);
+			if (const auto& transform = c->GetRenderTransform();
+				transform && shouldCaptureLocalObject(L"RenderTransform"))
+				extra["renderTransform"] = TransformToValue(*transform);
+			const auto transformOrigin = c->GetRenderTransformOrigin();
+			if (transformOrigin.x != 0.0f || transformOrigin.y != 0.0f)
+				extra["renderTransformOrigin"] = DesignValue{
+					{ "x", transformOrigin.x }, { "y", transformOrigin.y } };
 
 			if (auto* splitParent = AsSplitContainer(dc->DesignerParent))
 			{
@@ -9444,8 +9618,14 @@ bool DesignerCanvas::PreviewXamlDocumentText(
 	std::wstring error;
 	try
 	{
+		DesignerModel::XamlDocumentParseOptions parseOptions;
+		parseOptions.ResourceBasePath = _documentResourceBasePath;
+		if (_documentResources)
+			parseOptions.Resources = std::make_shared<ResourceLoadContext>(
+				_documentResources->Resolver());
 		if (!DesignerModel::XamlDocumentParser::FromXaml(
-			Convert::UnicodeToUtf8(xamlText), candidate, &error, outDiagnostic))
+			Convert::UnicodeToUtf8(xamlText), candidate, parseOptions,
+			&error, outDiagnostic))
 		{
 			if (outError) *outError = std::move(error);
 			return false;
@@ -10055,6 +10235,8 @@ bool DesignerCanvas::ApplyDesignDocument(
 	try
 	{
 		ClearCanvasCore();
+		_documentResourceBasePath = document.ResourceBasePath;
+		_documentResources = document.Resources;
 		_controlTypeCounters.clear();
 		ApplyDesignedFormModel(document.Form);
 		if (!SetCodeBehind(document.CodeBehind, outError)) return false;

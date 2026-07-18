@@ -171,6 +171,14 @@ float GroupBox::GetCaptionBandHeight()
 	return (std::max)(20.0f, textSize.height + CaptionPaddingY * 2.0f);
 }
 
+cui::core::Point GroupBox::GetChildrenLayoutOriginDip()
+{
+	return {
+		Padding.Left,
+		Padding.Top + GetCaptionBandHeight() * 0.5f + CaptionPaddingY + 6.0f
+	};
+}
+
 void GroupBox::PerformGroupLayoutIfNeeded()
 {
 	if (this->IsLayoutSuspended()) return;

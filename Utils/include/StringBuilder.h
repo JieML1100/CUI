@@ -8,9 +8,9 @@ private:
 public:
 	StringBuilder();
 	~StringBuilder();
-	PROPERTY(uint32_t, Lenght);
-	GET(uint32_t, Lenght);
-	SET(uint32_t, Lenght);
+	PROPERTY(uint32_t, Length);
+	GET(uint32_t, Length);
+	SET(uint32_t, Length);
 
 	void Append(const char* str);
 	void Append(const wchar_t* str);

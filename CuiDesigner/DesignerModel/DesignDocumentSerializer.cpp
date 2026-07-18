@@ -3,6 +3,7 @@
 #include "DesignDocumentGraph.h"
 #include "DesignDocumentEventIndex.h"
 #include "../../XmlLite/include/Xml.h"
+#include <Application.h>
 #include "../DesignerDataContextSchemaUtils.h"
 #include "../DesignerEventCatalog.h"
 #include "../DesignerStyleSheetUtils.h"
@@ -10,6 +11,7 @@
 #include <cctype>
 #include <Convert.h>
 #include <type_traits>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -526,7 +528,11 @@ bool DesignDocumentSerializer::LoadFromFile(const std::wstring& filePath, Design
 			return false;
 		}
 
-		return FromXml(content, document, outError);
+		const auto resourceBasePath =
+			std::filesystem::absolute(std::filesystem::path(filePath))
+			.parent_path().lexically_normal().wstring();
+		if (!FromXml(content, document, outError, resourceBasePath)) return false;
+		return true;
 	}
 	catch (const std::exception& exception)
 	{
@@ -640,6 +646,16 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& document)
 		auto styleSheet = document.StyleSheet;
 		DesignerStyleSheetUtils::Canonicalize(styleSheet);
 		auto styleSheetElement = AppendElement(xml, root, "styleSheet");
+		if (!styleSheet.MergedDictionaries.empty())
+		{
+			auto dictionaries = AppendElement(
+				xml, styleSheetElement, "mergedDictionaries");
+			for (const auto& source : styleSheet.MergedDictionaries)
+			{
+				auto item = AppendElement(xml, dictionaries, "dictionary");
+				item->SetAttribute("source", ToUtf8(source));
+			}
+		}
 		if (!styleSheet.Resources.empty())
 		{
 			auto resources = AppendElement(xml, styleSheetElement, "resources");
@@ -649,7 +665,14 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& document)
 				item->SetAttribute("key", ToUtf8(resource.Key));
 				item->SetAttribute("kind", ToUtf8(
 					DesignerStyleSheetUtils::ValueKindName(resource.Value.Kind)));
-				item->SetInnerText(ToUtf8(resource.Value.Text));
+				if (!resource.SourceDictionary.empty())
+					item->SetAttribute("sourceDictionary", ToUtf8(
+						resource.SourceDictionary));
+				if (resource.Value.ObjectValue.is_null())
+					item->SetInnerText(ToUtf8(resource.Value.Text));
+				else
+					WriteValue(xml, AppendElement(xml, item, "objectValue"),
+						resource.Value.ObjectValue);
 			}
 		}
 		if (!styleSheet.Rules.empty())
@@ -662,6 +685,11 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& document)
 					item->SetAttribute("type", ToUtf8(
 						DesignerStyleSheetUtils::UIClassName(rule.Type)));
 				if (!rule.Id.empty()) item->SetAttribute("id", ToUtf8(rule.Id));
+				if (!rule.BasedOn.empty())
+					item->SetAttribute("basedOn", ToUtf8(rule.BasedOn));
+				if (!rule.SourceDictionary.empty())
+					item->SetAttribute("sourceDictionary", ToUtf8(
+						rule.SourceDictionary));
 				if (rule.RequiredStates != ControlStyleState::None)
 					item->SetAttribute("requiredStates", ToUtf8(
 						DesignerStyleSheetUtils::FormatStates(rule.RequiredStates)));
@@ -683,7 +711,106 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& document)
 					{
 						setterElement->SetAttribute("kind", ToUtf8(
 							DesignerStyleSheetUtils::ValueKindName(setter.Literal.Kind)));
-						setterElement->SetInnerText(ToUtf8(setter.Literal.Text));
+						if (setter.Literal.ObjectValue.is_null())
+							setterElement->SetInnerText(ToUtf8(setter.Literal.Text));
+						else
+							WriteValue(xml, AppendElement(xml, setterElement, "objectValue"),
+								setter.Literal.ObjectValue);
+					}
+				}
+				if (!rule.DataConditions.empty())
+				{
+					auto conditionsElement = AppendElement(
+						xml, item, "dataConditions");
+					for (const auto& condition : rule.DataConditions)
+					{
+						auto conditionElement = AppendElement(
+							xml, conditionsElement, "condition");
+						conditionElement->SetAttribute(
+							"source", ToUtf8(condition.SourceProperty));
+						conditionElement->SetAttribute("kind", ToUtf8(
+							DesignerStyleSheetUtils::ValueKindName(condition.Value.Kind)));
+						if (condition.Value.ObjectValue.is_null())
+							conditionElement->SetInnerText(ToUtf8(condition.Value.Text));
+						else
+							WriteValue(xml, AppendElement(
+								xml, conditionElement, "objectValue"),
+								condition.Value.ObjectValue);
+					}
+				}
+				if (!rule.Triggers.empty())
+				{
+					auto triggersElement = AppendElement(xml, item, "triggers");
+					for (const auto& trigger : rule.Triggers)
+					{
+						auto triggerElement = AppendElement(
+							xml, triggersElement, "trigger");
+						if (!trigger.DataConditions.empty())
+						{
+							auto conditionsElement = AppendElement(
+								xml, triggerElement, "dataConditions");
+							for (const auto& condition : trigger.DataConditions)
+							{
+								auto conditionElement = AppendElement(
+									xml, conditionsElement, "condition");
+								conditionElement->SetAttribute("source", ToUtf8(
+									condition.SourceProperty));
+								conditionElement->SetAttribute("kind", ToUtf8(
+									DesignerStyleSheetUtils::ValueKindName(
+										condition.Value.Kind)));
+								if (condition.Value.ObjectValue.is_null())
+									conditionElement->SetInnerText(ToUtf8(
+										condition.Value.Text));
+								else
+									WriteValue(xml, AppendElement(xml,
+										conditionElement, "objectValue"),
+										condition.Value.ObjectValue);
+							}
+						}
+						else if (trigger.Conditions.size() == 1)
+						{
+							triggerElement->SetAttribute("property", ToUtf8(
+								trigger.Conditions.front().Property));
+							triggerElement->SetAttribute("value", BoolToString(
+								trigger.Conditions.front().Value));
+						}
+						else
+						{
+							auto conditionsElement = AppendElement(
+								xml, triggerElement, "conditions");
+							for (const auto& condition : trigger.Conditions)
+							{
+								auto conditionElement = AppendElement(
+									xml, conditionsElement, "condition");
+								conditionElement->SetAttribute(
+									"property", ToUtf8(condition.Property));
+								conditionElement->SetAttribute(
+									"value", BoolToString(condition.Value));
+							}
+						}
+						for (const auto& setter : trigger.Setters)
+						{
+							auto setterElement = AppendElement(
+								xml, triggerElement, "setter");
+							setterElement->SetAttribute(
+								"property", ToUtf8(setter.PropertyName));
+							if (setter.UsesResource)
+								setterElement->SetAttribute(
+									"resource", ToUtf8(setter.ResourceKey));
+							else
+							{
+								setterElement->SetAttribute("kind", ToUtf8(
+									DesignerStyleSheetUtils::ValueKindName(
+										setter.Literal.Kind)));
+								if (setter.Literal.ObjectValue.is_null())
+									setterElement->SetInnerText(
+										ToUtf8(setter.Literal.Text));
+								else
+									WriteValue(xml, AppendElement(
+										xml, setterElement, "objectValue"),
+										setter.Literal.ObjectValue);
+							}
+						}
 					}
 				}
 			}
@@ -764,7 +891,11 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& document)
 	return xml.ToString(settings);
 }
 
-bool DesignDocumentSerializer::FromXml(const std::string& xmlText, DesignDocument& document, std::wstring* outError)
+bool DesignDocumentSerializer::FromXml(
+	const std::string& xmlText,
+	DesignDocument& document,
+	std::wstring* outError,
+	const std::wstring& resourceBasePath)
 {
 	XmlDocument xml;
 	xml.LoadXml(xmlText);
@@ -807,6 +938,9 @@ bool DesignDocumentSerializer::FromXml(const std::string& xmlText, DesignDocumen
 	}
 
 	document.Clear();
+	document.ResourceBasePath = resourceBasePath;
+	document.Resources = std::make_shared<ResourceLoadContext>(
+		Application::GetResourceResolver());
 	document.Schema = "cui.designer";
 	document.SchemaVersion = DesignDocument::CurrentSchemaVersion;
 	if (version >= 4) document.NextStableId = persistedNextId;
@@ -907,19 +1041,34 @@ bool DesignDocumentSerializer::FromXml(const std::string& xmlText, DesignDocumen
 	{
 		if (auto styleSheet = FindChildElement(root, "styleSheet"))
 		{
+			if (auto dictionaries = FindChildElement(
+				styleSheet, "mergedDictionaries"))
+			{
+				for (const auto& item : FindChildElements(
+					dictionaries, "dictionary"))
+					document.StyleSheet.MergedDictionaries.push_back(
+						FromUtf8(item->GetAttribute("source")));
+			}
 			if (auto resources = FindChildElement(styleSheet, "resources"))
 			{
 				for (const auto& item : FindChildElements(resources, "resource"))
 				{
 					DesignerStyleResource resource;
 					resource.Key = FromUtf8(item->GetAttribute("key"));
+					resource.SourceDictionary = FromUtf8(
+						item->GetAttribute("sourceDictionary"));
 					if (!DesignerStyleSheetUtils::TryParseValueKind(
 						FromUtf8(item->GetAttribute("kind")), resource.Value.Kind))
 					{
 						if (outError) *outError = L"样式资源包含无效的值类型。";
 						return false;
 					}
-					resource.Value.Text = FromUtf8(item->InnerText());
+					if (const auto object = FindChildElement(item, "objectValue"); object)
+					{
+						if (!ReadValue(object, resource.Value.ObjectValue, outError))
+							return false;
+					}
+					else resource.Value.Text = FromUtf8(item->InnerText());
 					document.StyleSheet.Resources.push_back(std::move(resource));
 				}
 			}
@@ -928,6 +1077,8 @@ bool DesignDocumentSerializer::FromXml(const std::string& xmlText, DesignDocumen
 				for (const auto& item : FindChildElements(rules, "rule"))
 				{
 					DesignerStyleRule rule;
+					rule.SourceDictionary = FromUtf8(
+						item->GetAttribute("sourceDictionary"));
 					const auto type = FromUtf8(item->GetAttribute("type"));
 					if (!type.empty())
 					{
@@ -939,6 +1090,7 @@ bool DesignDocumentSerializer::FromXml(const std::string& xmlText, DesignDocumen
 						}
 					}
 					rule.Id = FromUtf8(item->GetAttribute("id"));
+					rule.BasedOn = FromUtf8(item->GetAttribute("basedOn"));
 					if (!DesignerStyleSheetUtils::TryParseStates(
 						FromUtf8(item->GetAttribute("requiredStates")), rule.RequiredStates)
 						|| !DesignerStyleSheetUtils::TryParseStates(
@@ -963,15 +1115,175 @@ bool DesignDocumentSerializer::FromXml(const std::string& xmlText, DesignDocumen
 								if (outError) *outError = L"样式 Setter 包含无效的值类型。";
 								return false;
 							}
-							setter.Literal.Text = FromUtf8(setterElement->InnerText());
+							if (const auto object = FindChildElement(
+								setterElement, "objectValue"); object)
+							{
+								if (!ReadValue(object, setter.Literal.ObjectValue, outError))
+									return false;
+							}
+							else setter.Literal.Text = FromUtf8(
+								setterElement->InnerText());
 						}
-						rule.Setters.push_back(std::move(setter));
+					rule.Setters.push_back(std::move(setter));
+					}
+					if (const auto dataConditionsElement = FindChildElement(
+						item, "dataConditions"))
+					{
+						for (const auto& conditionElement : FindChildElements(
+							dataConditionsElement, "condition"))
+						{
+							DesignerStyleDataCondition condition;
+							condition.SourceProperty = FromUtf8(
+								conditionElement->GetAttribute("source"));
+							if (!DesignerStyleSheetUtils::TryParseValueKind(
+								FromUtf8(conditionElement->GetAttribute("kind")),
+								condition.Value.Kind))
+							{
+								if (outError) *outError =
+									L"样式 DataTrigger 包含无效的值类型。";
+								return false;
+							}
+							if (const auto object = FindChildElement(
+								conditionElement, "objectValue"))
+							{
+								if (!ReadValue(object,
+									condition.Value.ObjectValue, outError)) return false;
+							}
+							else condition.Value.Text = FromUtf8(
+								conditionElement->InnerText());
+							rule.DataConditions.push_back(std::move(condition));
+						}
+					}
+					if (const auto triggersElement = FindChildElement(item, "triggers"))
+					{
+						for (const auto& triggerElement : FindChildElements(
+							triggersElement, "trigger"))
+						{
+							DesignerStyleTrigger trigger;
+							auto readDataCondition = [&](const auto& dataConditionElement,
+								DesignerStyleDataCondition& condition)
+							{
+								condition.SourceProperty = FromUtf8(
+									dataConditionElement->GetAttribute("source"));
+								if (!DesignerStyleSheetUtils::TryParseValueKind(
+									FromUtf8(dataConditionElement->GetAttribute("kind")),
+									condition.Value.Kind))
+								{
+									if (outError) *outError =
+										L"样式 DataTrigger 包含无效的值类型。";
+									return false;
+								}
+								if (const auto object = FindChildElement(
+									dataConditionElement, "objectValue"))
+								{
+									if (!ReadValue(object,
+										condition.Value.ObjectValue, outError)) return false;
+								}
+								else condition.Value.Text = FromUtf8(
+									dataConditionElement->InnerText());
+								return true;
+							};
+							const auto dataConditionsElement = FindChildElement(
+								triggerElement, "dataConditions");
+							const auto legacyDataConditionElement = FindChildElement(
+								triggerElement, "dataCondition");
+							if (dataConditionsElement && legacyDataConditionElement)
+							{
+								if (outError) *outError =
+									L"样式 Trigger 不能同时包含 dataCondition 和 dataConditions。";
+								return false;
+							}
+							if (dataConditionsElement)
+							{
+								for (const auto& conditionElement : FindChildElements(
+									dataConditionsElement, "condition"))
+								{
+									DesignerStyleDataCondition condition;
+									if (!readDataCondition(conditionElement, condition))
+										return false;
+									trigger.DataConditions.push_back(std::move(condition));
+								}
+							}
+							else if (legacyDataConditionElement)
+							{
+								DesignerStyleDataCondition condition;
+								if (!readDataCondition(legacyDataConditionElement, condition))
+									return false;
+								trigger.DataConditions.push_back(std::move(condition));
+							}
+							else if (const auto conditionsElement = FindChildElement(
+								triggerElement, "conditions"))
+							{
+								for (const auto& conditionElement : FindChildElements(
+									conditionsElement, "condition"))
+								{
+									DesignerStyleCondition condition;
+									condition.Property = FromUtf8(
+										conditionElement->GetAttribute("property"));
+									if (!TryReadBoolAttribute(conditionElement,
+										"value", condition.Value))
+									{
+										if (outError) *outError =
+											L"样式 MultiTrigger 包含无效的布尔条件。";
+										return false;
+									}
+									trigger.Conditions.push_back(std::move(condition));
+								}
+							}
+							else
+							{
+								DesignerStyleCondition condition;
+								condition.Property = FromUtf8(
+									triggerElement->GetAttribute("property"));
+								if (!TryReadBoolAttribute(
+									triggerElement, "value", condition.Value))
+								{
+									if (outError) *outError =
+										L"样式 Trigger 包含无效的布尔条件。";
+									return false;
+								}
+								trigger.Conditions.push_back(std::move(condition));
+							}
+							for (const auto& setterElement : FindChildElements(
+								triggerElement, "setter"))
+							{
+								DesignerStyleSetter setter;
+								setter.PropertyName = FromUtf8(
+									setterElement->GetAttribute("property"));
+								setter.ResourceKey = FromUtf8(
+									setterElement->GetAttribute("resource"));
+								setter.UsesResource = !setter.ResourceKey.empty();
+								if (!setter.UsesResource)
+								{
+									if (!DesignerStyleSheetUtils::TryParseValueKind(
+										FromUtf8(setterElement->GetAttribute("kind")),
+										setter.Literal.Kind))
+									{
+										if (outError) *outError =
+											L"样式 Trigger Setter 包含无效的值类型。";
+										return false;
+									}
+									if (const auto object = FindChildElement(
+										setterElement, "objectValue"); object)
+									{
+										if (!ReadValue(object,
+											setter.Literal.ObjectValue, outError)) return false;
+									}
+									else setter.Literal.Text = FromUtf8(
+										setterElement->InnerText());
+								}
+								trigger.Setters.push_back(std::move(setter));
+							}
+							rule.Triggers.push_back(std::move(trigger));
+						}
 					}
 					document.StyleSheet.Rules.push_back(std::move(rule));
 				}
 			}
 			DesignerStyleSheetUtils::Canonicalize(document.StyleSheet);
-			if (!DesignerStyleSheetUtils::Validate(document.StyleSheet, outError))
+			if (!DesignerStyleSheetUtils::Validate(
+				document.StyleSheet, outError, document.ResourceBasePath,
+				document.Resources))
 				return false;
 		}
 	}

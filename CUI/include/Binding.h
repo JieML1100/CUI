@@ -243,6 +243,8 @@ private:
 bool TryConvertBindingValue(const BindingValue& value, BindingValueKind targetKind, BindingValue& out);
 /** Converts while preserving the concrete type represented by targetValue. */
 bool TryConvertBindingValue(const BindingValue& value, const BindingValue& targetValue, BindingValue& out);
+/** Compares two already-normalized scalar binding values without stringifying them. */
+bool BindingValuesEqual(const BindingValue& left, const BindingValue& right);
 
 /**
  * Optional transform used before metadata conversion in either binding direction.

@@ -2,9 +2,12 @@
 
 #include "DesignerStyleSheet.h"
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
+
+class ResourceLoadContext;
 
 /**
  * Designer-facing projection of one writable runtime property. The runtime
@@ -68,7 +71,9 @@ namespace DesignerPropertyCatalog
 		Control& target,
 		const std::wstring& propertyName,
 		const DesignerStyleValue& value,
-		std::wstring* outError = nullptr);
+		std::wstring* outError = nullptr,
+		const std::wstring& resourceBasePath = {},
+		const std::shared_ptr<ResourceLoadContext>& resources = {});
 
 	/** Captures the current effective value using the property's canonical name/kind. */
 	bool CaptureValue(
@@ -85,7 +90,8 @@ namespace DesignerPropertyCatalog
 		const DesignerStyleValue& value,
 		std::wstring* outCanonicalName = nullptr,
 		DesignerStyleValue* outEffective = nullptr,
-		std::wstring* outError = nullptr);
+		std::wstring* outError = nullptr,
+		const std::wstring& resourceBasePath = {});
 
 	/** True when a design edit belongs in the generic typed metadata bag. */
 	bool UsesMetadataPersistence(const BindingPropertyMetadata& metadata) noexcept;
@@ -111,7 +117,8 @@ namespace DesignerPropertyCatalog
 		const DesignerStyleValue& value,
 		std::wstring* outCanonicalName = nullptr,
 		DesignerStyleValue* outEffective = nullptr,
-		std::wstring* outError = nullptr);
+		std::wstring* outError = nullptr,
+		const std::wstring& resourceBasePath = {});
 
 	/** Clears the Local value, exposes the next value source, and untracks it. */
 	bool ResetAndUntrackValue(

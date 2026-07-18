@@ -63,9 +63,6 @@
     <ClInclude Include="include\Process.h">
       <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="include\ProcessOperator.h">
-      <Filter>include</Filter>
-    </ClInclude>
     <ClInclude Include="include\Registry.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -141,9 +138,6 @@
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\Process.cpp">
-      <Filter>src</Filter>
-    </ClCompile>
-    <ClCompile Include="src\ProcessOperator.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\Registry.cpp">

@@ -40,6 +40,7 @@ public:
 #undef CUI_GROUP_BOX_PROPERTY
 
 	void Update() override;
+	cui::core::Point GetChildrenLayoutOriginDip() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 private:

@@ -79,6 +79,15 @@ if ($p.ExitCode -ne 0) { throw "Designer self-test failed: $($p.ExitCode)" }
 `CUITest` 的八个页面由 `CUITest/DemoWindow.cui.xaml` 动态构造；项目构建必须把该文件复制到
 `CUITest.exe` 同目录。除正常启动检查外，每种配置都应执行：
 
+XAML 表达能力回归至少覆盖：ComboBox/List 直接内容项；GridView/PagedGridView Columns、Rows 与 typed
+cells；Solid/Linear/Radial/Image `Control.Foreground`（含 SVG、Stretch、Alignment、Opacity）；
+`ResourceDictionary.MergedDictionaries` 的外部 Source、覆盖顺序、相对 URI 重基准、来源保真和循环拒绝；Matrix/Translate/Scale/Rotate/Skew/TransformGroup
+`Control.RenderTransform` 与相对原点；Rectangle/Ellipse/Path/嵌套 GeometryGroup `Control.Clip`，
+PathFigure 的 Line/Bezier/QuadraticBezier/Arc、`Geometry.Transform` 及 EvenOdd/Nonzero 填充规则；
+解析后的规范序列化幂等；Materializer 中 Items/Rows/Brush/Clip/Transform
+实际生效；Designer 回存不丢结构对象；静态代码生成包含相同 Brush、Clip、Transform、Rows 与
+PagedGridView 类型。
+
 ```powershell
 $validate = Start-Process .\CUITest\x64\Debug\CUITest.exe `
     -ArgumentList '--validate-xaml' -Wait -PassThru -WindowStyle Hidden
@@ -220,13 +229,14 @@ target->DataBindings.Add(
   代码生成相同的 `CodeGenInput` 投影。生成样式必须挂到根控件树，不得调用不存在的
   `Form::SetStyleSheet`。`XamlDocumentParser` 必须把嵌套树、浮点/Auto 尺寸、Grid 定义、TabPage、Split
   区域、Binding、命名事件、强类型资源与 Style Setter 投影到同一 `DesignDocument`；未知语法和失败替换
-  不得污染已有模型或运行时树。`XamlDocumentSerializer` 必须把同一文档规范写回，并通过通用
-  `d:DesignProps` / `d:DesignExtra` 保留没有直接语法的结构值；浮点颜色不得量化为 8 位通道。
+  不得污染已有模型或运行时树。`XamlDocumentSerializer` 必须把同一文档规范写回；普通属性、Binding 和集合
+  分别使用公开 attribute、`{Binding ...}` 与 `.Items` / `.Columns` 属性元素。残余模型字段必须明确失败，
+  禁止通用 `d:` 值袋。
   外部自定义标签必须把命名空间、C++ 类型/头文件、内置 `d:BaseType` 和构造约定在规范 XAML 与 v5 XML 中
   完整往返。生产 `RuntimeDocumentLoader` 未注册工厂时应保持旧输出并失败；注册表应创建真实派生实例，
   Designer/CLI 的显式代理模式应继续生成真实类型 include、强类型成员/访问器和构造代码。注册真实控件后，
-  专有属性应以普通 XAML attribute 接受并经过属性元数据 Coerce；规范 writer 应回退为 `d:DesignProps` /
-  `d:DesignBindings`，无业务 DLL 的解析与代码生成仍须保真，Reload 省略注册表时应继续原位更新真实实例。
+  专有属性应以普通 XAML attribute 接受并经过属性元数据 Coerce；缺少真实元数据或清单时必须明确拒绝，
+  不得回退为不透明值袋。Reload 省略注册表时应继续原位更新真实实例。
   `Designer.exe --self-test` 覆盖上述动态 XML/XAML 冒烟路径。
 - Designer 外部控件清单必须通过 `Designer.exe --validate-controls <manifest>` 无窗口校验；有效清单加入
   ToolBox 后应保留分类、默认尺寸、容器语义、XAML identity、规范 C++ 类型和构造约定。重复名称、重复 XAML
@@ -1063,3 +1073,44 @@ panel->DeleteControl(obsoleteLabel);
   `Debug/Release × x64/x86` 四套解决方案均构建成功（Release 为完整 Rebuild，x86 Release 使用单节点）；
   四套 `CUICoreTests` 均为 172/172，四套 Designer 自测、动态宿主、静态生成样例与 `CuiCodeGen 7`
   共 20 项运行门禁全部返回 0。
+- XAML 画刷新增可渲染 `ImageBrush`，支持本地位图/SVG、Stretch、Alignment 与 Opacity，并贯通内联属性、
+  强类型资源、Style、Designer 回存和静态代码生成。资源层新增内联/外部
+  `ResourceDictionary.MergedDictionaries`，实现后项与本地项覆盖、外部相对 URI 重基准、来源保真、循环拒绝，
+  原生 XML 与剪贴板样式依赖也保持有效资源基目录。`DemoWindow.cui.xaml` 从外部 `Assets/DemoTheme.xaml`
+  取得图像文字画刷。`Debug|x64` 的 CUI/Designer/CUICoreTests/CUITest 全部构建成功，核心测试 173/173、
+  `Designer --self-test`、`CUITest --validate-xaml` 与 `--smoke-xaml` 均返回 0，`git diff --check` 通过。
+- 资源发现抽为 Application 级可配置层：`IResourceSource` + 有序 `ResourceResolver` + 每文档
+  `ResourceLoadContext`，内置 `FileResourceSource` 支持绝对/文档相对路径和目录搜索；资源以字节、稳定身份、
+  逻辑基 URI 与可选 WatchPath 返回，为产品包资源保留无文件扩展点。XAML、合并字典、ImageSource/ImageBrush
+  和运行时材质化共用该层，SVG 也可直接从资源字节解码。热重载现监视主 XAML、递归字典和图片依赖，覆盖
+  修改、删除失败、恢复重载及仅图片字节变化时的强制资源刷新。静态代码生成也改用
+  `cui::resources::LoadBitmapResource`。`Debug|x64` CUI/CuiRuntime/CuiDesigner/CUICoreTests/CUITest 构建成功，
+  核心测试增至 174/174；`Designer --self-test`、`CUITest --validate-xaml` 与 `--smoke-xaml` 均返回 0。
+- XAML 样式新增无 `x:Key` 的隐式 `TargetType` 规则及 `Style.BasedOn`；BasedOn 可引用命名样式或
+  `{x:Type T}` 隐式键，统一展开 TargetType 与 Setter，派生同名 Setter 覆盖基值，并拒绝缺失、歧义和循环链。
+  Designer 样式编辑器、规范 XAML/v5 XML、动态预览、静态代码生成及剪贴板依赖均使用同一展开结果。
+  `Debug|x64` 全解决方案零警告构建通过，核心测试增至 175/175；`Designer --self-test`、
+  `CUITest --validate-xaml` 与 `--smoke-xaml` 均返回 0，`git diff --check` 通过。
+- XAML 样式新增 WPF 风格 `Style.Triggers`，首批把 IsMouseOver/IsKeyboardFocused/IsPressed/IsEnabled/
+  IsChecked/IsSelected 布尔条件统一降低到现有状态级联；Trigger 支持强类型/资源 Setter、BasedOn 继承、
+  规范 XAML/v5 XML 往返、动态预览、静态生成与剪贴板隔离。未知条件、空 Trigger、状态冲突均事务性拒绝。
+  `Debug|x64` 全解决方案零警告构建通过，核心测试保持 175/175；`Designer --self-test`、
+  `CUITest --validate-xaml` 与 `--smoke-xaml` 均返回 0，`git diff --check` 通过。
+- `Style.Triggers` 新增 WPF 风格 `MultiTrigger`；两个或更多 `Condition` 以 AND 语义统一合并到状态掩码，
+  单 Trigger 保持原有规范格式。BasedOn、强类型/资源 Setter、v5 XML、动态预览、静态生成、剪贴板隔离和
+  样式摘要共用同一条件模型；空、重复、未知及冲突条件均拒绝。`Debug|x64` 全解决方案零警告构建通过，
+  核心测试保持 175/175；`Designer --self-test`、`CUITest --validate-xaml` 与 `--smoke-xaml` 均返回 0，
+  `git diff --check` 通过。
+- `Style.Triggers` 新增首批 WPF 风格 `DataTrigger`：支持单个 `{Binding Path}` 与字面 `Value`，运行时按
+  实际源类型转换后比较，并订阅点分路径的叶属性与中间对象替换。设计时 DataContext、动态
+  `RuntimeDocument::BindDataContext`、静态 `BindData`、BasedOn、规范 XAML/v5 XML、剪贴板和样式摘要共用
+  同一条件模型；Converter、Mode/UpdateMode、StaticResource Value 与 MultiDataTrigger 明确拒绝。
+  `Debug|x64` 全解决方案零警告构建通过，核心测试保持 175/175；`Designer --self-test`、
+  `CUITest --validate-xaml` 与 `--smoke-xaml` 均返回 0，`git diff --check` 通过。
+- `Style.Triggers` 新增 WPF 风格 `MultiDataTrigger`；`MultiDataTrigger.Conditions` 中两个或更多
+  `Binding + Value` 条件以 AND 语义共用 DataTrigger 的类型转换、点分路径订阅与中间对象重连。
+  单/多数据条件统一为同一作者模型和运行时选择器，BasedOn、规范 XAML/v5 XML、动态预览、静态生成、
+  剪贴板隔离和样式摘要同步支持；v5 XML 继续兼容上一批单数 `dataCondition`。空、单条件、重复路径及
+  带额外 Binding 配置的 Condition 均事务性拒绝。`Debug|x64` 全解决方案零警告构建通过，核心测试保持
+  175/175；`Designer --self-test`、`CUITest --validate-xaml` 与 `--smoke-xaml` 均返回 0，
+  `git diff --check` 通过。

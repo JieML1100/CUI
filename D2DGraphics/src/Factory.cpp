@@ -1,4 +1,5 @@
 ﻿#include "Factory.h"
+#include <wrl/client.h>
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "Dwrite.lib")
 #pragma comment(lib, "windowscodecs.lib")
@@ -32,49 +33,132 @@ IWICImagingFactory* Factory::ImageFactory() {
 	}
 	return _pImageFactory;
 }
-IWICBitmap* Factory::CreateWICBitmap(std::wstring path) {
-	IWICBitmap* wb = NULL;
-	IWICBitmapDecoder* bitmapdecoder = NULL;
-	HRESULT hr = _ImageFactory->CreateDecoderFromFilename(path.c_str(), NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &bitmapdecoder);
-	if SUCCEEDED(hr) {
-		IWICBitmapFrameDecode* pframe = NULL;
-		bitmapdecoder->GetFrame(0, &pframe);
-		IWICFormatConverter* fmtcovter = NULL;
-		_ImageFactory->CreateFormatConverter(&fmtcovter);
-		fmtcovter->Initialize(pframe, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, NULL, 0.0f, WICBitmapPaletteTypeCustom);
-		pframe->Release();
-		bitmapdecoder->Release();
-		return (IWICBitmap*)fmtcovter;
-	}
-	return wb;
+IWICBitmap* Factory::CreateWICBitmap(const std::wstring& path) {
+	using Microsoft::WRL::ComPtr;
+
+	if (_ImageFactory == nullptr || path.empty())
+		return nullptr;
+
+	ComPtr<IWICBitmapDecoder> decoder;
+	ComPtr<IWICBitmapFrameDecode> frame;
+	ComPtr<IWICFormatConverter> converter;
+	ComPtr<IWICBitmap> bitmap;
+
+	HRESULT hr = _ImageFactory->CreateDecoderFromFilename(
+		path.c_str(),
+		nullptr,
+		GENERIC_READ,
+		WICDecodeMetadataCacheOnLoad,
+		decoder.GetAddressOf());
+
+	if (FAILED(hr))
+		return nullptr;
+
+	hr = decoder->GetFrame(
+		0,
+		frame.GetAddressOf());
+
+	if (FAILED(hr))
+		return nullptr;
+
+	hr = _ImageFactory->CreateFormatConverter(
+		converter.GetAddressOf());
+
+	if (FAILED(hr))
+		return nullptr;
+
+	hr = converter->Initialize(
+		frame.Get(),
+		GUID_WICPixelFormat32bppPBGRA,
+		WICBitmapDitherTypeNone,
+		nullptr,
+		0.0,
+		WICBitmapPaletteTypeCustom);
+
+	if (FAILED(hr))
+		return nullptr;
+
+	hr = _ImageFactory->CreateBitmapFromSource(
+		converter.Get(),
+		WICBitmapCacheOnLoad,
+		bitmap.GetAddressOf());
+
+	if (FAILED(hr))
+		return nullptr;
+
+	return bitmap.Detach();
 }
-IWICBitmap* Factory::CreateWICBitmap(unsigned char* data, int size) {
-	ID2D1Bitmap* bmp = NULL;
-	IWICBitmapDecoder* bitmapdecoder = NULL;
-	IWICStream* pStream = NULL;
-	HRESULT hr = _ImageFactory->CreateStream(&pStream);
-	if (!SUCCEEDED(hr)) {
-		return NULL;
+IWICBitmap* Factory::CreateWICBitmap(const uint8_t* data, size_t size)
+{
+	using Microsoft::WRL::ComPtr;
+
+	if (_ImageFactory == nullptr ||
+		data == nullptr ||
+		size == 0 ||
+		size > static_cast<size_t>(MAXDWORD))
+	{
+		return nullptr;
 	}
-	hr = pStream->InitializeFromMemory(data, size);
-	if (!SUCCEEDED(hr)) {
-		return NULL;
-	}
-	hr = _ImageFactory->CreateDecoderFromStream(pStream, NULL, WICDecodeMetadataCacheOnDemand, &bitmapdecoder);
-	if (!SUCCEEDED(hr)) {
-		return NULL;
-	}
-	if (bitmapdecoder) {
-		IWICBitmapFrameDecode* pframe = NULL;
-		bitmapdecoder->GetFrame(0, &pframe);
-		IWICFormatConverter* fmtcovter = NULL;
-		_ImageFactory->CreateFormatConverter(&fmtcovter);
-		fmtcovter->Initialize(pframe, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, NULL, 0.0f, WICBitmapPaletteTypeCustom);
-		pframe->Release();
-		bitmapdecoder->Release();
-		return (IWICBitmap*)fmtcovter;
-	}
-	return NULL;
+
+	ComPtr<IWICStream> stream;
+	ComPtr<IWICBitmapDecoder> decoder;
+	ComPtr<IWICBitmapFrameDecode> frame;
+	ComPtr<IWICFormatConverter> converter;
+	ComPtr<IWICBitmap> bitmap;
+
+	HRESULT hr = _ImageFactory->CreateStream(
+		stream.GetAddressOf());
+
+	if (FAILED(hr))
+		return nullptr;
+
+	hr = stream->InitializeFromMemory(reinterpret_cast<BYTE*>(const_cast<uint8_t*>(data)), static_cast<DWORD>(size));
+
+	if (FAILED(hr))
+		return nullptr;
+
+	hr = _ImageFactory->CreateDecoderFromStream(
+		stream.Get(),
+		nullptr,
+		WICDecodeMetadataCacheOnDemand,
+		decoder.GetAddressOf());
+
+	if (FAILED(hr))
+		return nullptr;
+
+	hr = decoder->GetFrame(
+		0,
+		frame.GetAddressOf());
+
+	if (FAILED(hr))
+		return nullptr;
+
+	hr = _ImageFactory->CreateFormatConverter(
+		converter.GetAddressOf());
+
+	if (FAILED(hr))
+		return nullptr;
+
+	hr = converter->Initialize(
+		frame.Get(),
+		GUID_WICPixelFormat32bppPBGRA,
+		WICBitmapDitherTypeNone,
+		nullptr,
+		0.0,
+		WICBitmapPaletteTypeCustom);
+
+	if (FAILED(hr))
+		return nullptr;
+
+	hr = _ImageFactory->CreateBitmapFromSource(
+		converter.Get(),
+		WICBitmapCacheOnLoad,
+		bitmap.GetAddressOf());
+
+	if (FAILED(hr))
+		return nullptr;
+
+	return bitmap.Detach();
 }
 IWICBitmap* Factory::CreateWICBitmap(HBITMAP hb) {
 	IWICBitmap* wb = NULL;

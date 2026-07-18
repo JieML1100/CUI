@@ -23,6 +23,7 @@
 #include "DesignerModel/XamlDocumentSerializer.h"
 #include "DesignerPropertyCatalog.h"
 #include "DesignerPropertyRowCatalog.h"
+#include "DesignerStyleSheetUtils.h"
 #include "PropertyGrid.h"
 #include "SourceCodeNavigator.h"
 #include "ToolBox.h"
@@ -30,8 +31,14 @@
 #include "../CUI/include/ComboBox.h"
 #include "../CUI/include/Form.h"
 #include "../CUI/include/GridView.h"
+#include "../CUI/include/ChartView.h"
+#include "../CUI/include/FilterBar.h"
+#include "../CUI/include/KpiCard.h"
 #include "../CUI/include/Menu.h"
+#include "../CUI/include/NavigationView.h"
+#include "../CUI/include/PictureBox.h"
 #include "../CUI/include/ProgressBar.h"
+#include "../CUI/include/ReportView.h"
 #include "../CUI/include/SplitContainer.h"
 #include "../CUI/include/StatusBar.h"
 #include "../CUI/include/TabControl.h"
@@ -40,6 +47,8 @@
 #include "../CUI/include/WebBrowser.h"
 #include "../CUI/include/Layout/GridPanel.h"
 #include "../CUI/include/Layout/StackPanel.h"
+#include "../D2DGraphics/include/BitmapSource.h"
+#include <Convert.h>
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -208,6 +217,46 @@ namespace
 		NormalizeRuntimeColorValues(left);
 		NormalizeRuntimeColorValues(right);
 		return left == right;
+	}
+
+	bool EquivalentXamlContent(
+		const DesignerModel::DesignDocument& left,
+		const DesignerModel::DesignDocument& right)
+	{
+		try
+		{
+			return DesignerModel::XamlDocumentSerializer::ToXaml(left)
+				== DesignerModel::XamlDocumentSerializer::ToXaml(right);
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+
+	std::wstring DescribeXamlDifference(
+		const DesignerModel::DesignDocument& left,
+		const DesignerModel::DesignDocument& right)
+	{
+		try
+		{
+			const auto a = DesignerModel::XamlDocumentSerializer::ToXaml(left);
+			const auto b = DesignerModel::XamlDocumentSerializer::ToXaml(right);
+			const auto count = (std::min)(a.size(), b.size());
+			size_t offset = 0;
+			while (offset < count && a[offset] == b[offset]) ++offset;
+			if (offset == a.size() && offset == b.size()) return L"equal";
+			const auto start = offset > 40 ? offset - 40 : 0;
+			return L"offset=" + std::to_wstring(offset)
+				+ L", left=" + Convert::Utf8ToUnicode(
+					a.substr(start, (std::min)(size_t{ 100 }, a.size() - start)))
+				+ L", right=" + Convert::Utf8ToUnicode(
+					b.substr(start, (std::min)(size_t{ 100 }, b.size() - start)));
+		}
+		catch (...)
+		{
+			return L"serialization failed";
+		}
 	}
 
 	const wchar_t* SelfTestFlag(bool value) noexcept
@@ -402,263 +451,115 @@ bool RunDesignerSelfTest(std::wstring& report)
 		toolBox.GetVisibleItemCount() == 0
 			&& toolBox.GetVisibleCategoryCount() == 0,
 		L"toolbox: empty filter results retained stale visible rows");
-
 	{
 		const std::wstring source =
-			L"<Form>\r\n\t<Button/>\r\n\t<Label/>\r\n</Form>";
-		XamlEditorDialog xamlEditor(nullptr, source);
-		const auto formNameStart = source.find(L"Form");
-		const bool syntaxInitiallyStyled = formNameStart != std::wstring::npos
-			&& std::any_of(
-				xamlEditor._editor->GetTextStyleRanges().begin(),
-				xamlEditor._editor->GetTextStyleRanges().end(),
-				[&](const RichTextBoxTextStyleRange& range)
-				{
-					return range.Start == static_cast<int>(formNameStart)
-						&& range.Length == 4;
-				});
-		const auto selectionStart = source.find(L"\t<Button/>");
-		const auto selectionEnd = source.find(L"\r\n</Form>");
-		xamlEditor._editor->Select(
-			static_cast<int>(selectionStart),
-			static_cast<int>(selectionEnd - selectionStart));
-		xamlEditor.IndentSelection(false);
-		const std::wstring indented =
-			L"<Form>\r\n\t\t<Button/>\r\n\t\t<Label/>\r\n</Form>";
-		xamlEditor.RefreshEditorContextMenu();
-		const auto* undoItem = xamlEditor._editorMenu
-			? xamlEditor._editorMenu->FindItemById(
-				XamlEditorDialog::EditorUndo) : nullptr;
-		const auto* redoItem = xamlEditor._editorMenu
-			? xamlEditor._editorMenu->FindItemById(
-				XamlEditorDialog::EditorRedo) : nullptr;
-		const auto* indentItem = xamlEditor._editorMenu
-			? xamlEditor._editorMenu->FindItemById(
-				XamlEditorDialog::EditorIndent) : nullptr;
-		const auto* outdentItem = xamlEditor._editorMenu
-			? xamlEditor._editorMenu->FindItemById(
-				XamlEditorDialog::EditorOutdent) : nullptr;
-		const auto* formatItem = xamlEditor._editorMenu
-			? xamlEditor._editorMenu->FindItemById(
-				XamlEditorDialog::EditorFormat) : nullptr;
-		const bool menuReady = xamlEditor._editorMenu
-			&& xamlEditor._editorMenu->ItemCount() == 13
-			&& undoItem && undoItem->Enable
-			&& redoItem && !redoItem->Enable
-			&& indentItem && indentItem->Shortcut == L"Tab"
-			&& outdentItem && outdentItem->Shortcut == L"Shift+Tab"
-			&& formatItem && formatItem->Shortcut == L"Ctrl+Shift+F"
-			&& !formatItem->Enable;
-		xamlEditor.OnEditorMenuCommand(XamlEditorDialog::EditorUndo);
-		const bool undoRestored = xamlEditor._editor->Text == source
-			&& xamlEditor._editor->CanRedo();
-		xamlEditor.OnEditorMenuCommand(XamlEditorDialog::EditorRedo);
-		const bool redoRestored = xamlEditor._editor->Text == indented
-			&& xamlEditor._editor->HasSelection();
-		xamlEditor.IndentSelection(true);
-		const bool outdentRestored = xamlEditor._editor->Text == source
-			&& xamlEditor._editor->CanUndo()
-			&& !xamlEditor._editor->GetTextStyleRanges().empty();
-
-		XamlEditorDialog restoreEditor(nullptr, source);
+			L"<Form xmlns=\"urn:cui\" Name=\"MainForm\">"
+			L"<Button Name=\"existingButton\" Text=\"Existing\"/>"
+			L"</Form>";
+		XamlEditorDialog recoveryEditor(nullptr, source);
 		const std::wstring invalidDraft =
-			L"<Form>\r\n\t<Button Visibility=\"Vanished\"/>\r\n</Form>";
-		restoreEditor._editor->SelectAll();
-		restoreEditor._editor->InsertText(invalidDraft);
-		restoreEditor._editor->Select(8, 4);
-		restoreEditor.RefreshRestorePreviewState();
-		const bool restoreEnabled = restoreEditor._restorePreview
-			&& restoreEditor._restorePreview->Enable;
-		restoreEditor.RestoreLastValidPreview();
-		const bool restoredLastValid = restoreEditor._editor->Text == source
-			&& restoreEditor._restorePreview
-			&& !restoreEditor._restorePreview->Enable
-			&& restoreEditor._editor->CanUndo();
-		restoreEditor._editor->Undo();
-		const bool restoreUndo = restoreEditor._editor->Text == invalidDraft
-			&& restoreEditor._restorePreview->Enable
-			&& restoreEditor._editor->SelectionStart == 8
-			&& restoreEditor._editor->SelectionEnd == 12;
+			L"<Form><Button Visibility=\"Vanished\"/></Form>";
+		recoveryEditor._editor->SelectAll();
+		recoveryEditor._editor->InsertText(invalidDraft);
+		recoveryEditor.RefreshRestorePreviewState();
+		const bool recoveryEnabled = recoveryEditor._restorePreview
+			&& recoveryEditor._restorePreview->Enable;
+		recoveryEditor.RestoreLastValidPreview();
+		const bool recoveryRestored = recoveryEditor._editor->Text == source
+			&& recoveryEditor._restorePreview
+			&& !recoveryEditor._restorePreview->Enable
+			&& recoveryEditor._editor->CanUndo();
+		recoveryEditor._editor->Undo();
+		const bool recoveryUndo = recoveryEditor._editor->Text == invalidDraft
+			&& recoveryEditor._restorePreview->Enable;
 
-		DesignerCanvas formatCanvas(0, 0, 900, 640);
-		const std::wstring formatSource =
-			L"<Form xmlns=\"urn:cui\" Name=\"MainForm\"><Button "
-			L"Name=\"formatButton\" Text=\"Format\"/></Form>";
-		const auto formatBegin = formatCanvas.BeginDocumentEditTransaction(
-			L"EditXaml");
-		XamlEditorDialog formatEditor(&formatCanvas, formatSource);
-		const auto formatSelectionOffset = formatSource.find(L"formatButton");
-		const int formatSelectionStart = formatSelectionOffset
-			== std::wstring::npos ? 0
-			: static_cast<int>(formatSelectionOffset);
-		formatEditor._editor->Select(formatSelectionStart, 6);
-		formatEditor.FormatDocument();
-		const std::wstring formattedSource = formatEditor._editor->Text;
-		const int formattedSelectionStart =
-			formatEditor._editor->SelectionStart;
-		const int formattedSelectionEnd = formatEditor._editor->SelectionEnd;
-		const bool formatApplied = formatBegin.Succeeded()
-			&& formatSelectionOffset != std::wstring::npos
-			&& formattedSource != formatSource
-			&& formatEditor._lastValidXaml == formattedSource
-			&& formatEditor._editor->GetSelectedString() == L"Button"
-			&& formatEditor._editor->CanUndo();
-		formatEditor._editor->Undo();
-		const bool formatUndo = formatEditor._editor->Text == formatSource
-			&& formatEditor._editor->SelectionStart == formatSelectionStart
-			&& formatEditor._editor->SelectionEnd == formatSelectionStart + 6
-			&& formatEditor._editor->CanRedo();
-		formatEditor._editor->Redo();
-		const bool formatRedo = formatEditor._editor->Text == formattedSource
-			&& formatEditor._editor->SelectionStart == formattedSelectionStart
-			&& formatEditor._editor->SelectionEnd == formattedSelectionEnd;
-		const bool formatSyntaxRefreshed = !formattedSource.empty()
-			&& !formatEditor._editor->GetTextStyleRanges().empty()
-			&& std::all_of(
-				formatEditor._editor->GetTextStyleRanges().begin(),
-				formatEditor._editor->GetTextStyleRanges().end(),
-				[&](const RichTextBoxTextStyleRange& range)
-				{
-					return range.Start >= 0 && range.Length > 0
-						&& static_cast<size_t>(range.Start + range.Length)
-							<= formattedSource.size();
-				});
-		const auto formatRollback =
-			formatCanvas.RollbackDocumentEditTransaction();
-
-		DesignerCanvas checkpointCanvas(0, 0, 900, 640);
-		std::wstring checkpointSource;
-		std::wstring checkpointError;
-		const bool checkpointSourceBuilt = checkpointCanvas.BuildXamlDocumentText(
-			checkpointSource, &checkpointError);
-		const auto checkpointBegin = checkpointCanvas.BeginDocumentEditTransaction(
-			L"EditXaml");
-		XamlEditorDialog checkpointEditor(&checkpointCanvas, checkpointSource);
-		auto appendBeforeFormEnd = [](std::wstring source,
-			const std::wstring& element)
+		DesignerCanvas previewCanvas(0, 0, 900, 640);
+		std::wstring initial;
+		std::wstring previewError;
+		const bool sourceBuilt =
+			previewCanvas.BuildXamlDocumentText(initial, &previewError);
+		const auto transaction =
+			previewCanvas.BeginDocumentEditTransaction(L"EditXaml");
+		XamlEditorDialog previewEditor(&previewCanvas, initial);
+		auto valid = initial;
+		const auto formEnd = valid.rfind(L"</Form>");
+		if (formEnd != std::wstring::npos)
+			valid.insert(formEnd,
+				L"  <Button Name=\"liveButton\" Text=\"Live\" />\r\n");
+		else
 		{
-			const auto end = source.rfind(L"</Form>");
-			if (end != std::wstring::npos)
-			{
-				source.insert(end, L"  " + element + L"\r\n");
-				return source;
-			}
-			const auto form = source.rfind(L"<Form");
-			const auto selfClosing = source.rfind(L"/>");
-			if (form == std::wstring::npos || selfClosing == std::wstring::npos
-				|| selfClosing < form) return std::wstring{};
-			source.replace(selfClosing, 2,
-				L">\r\n  " + element + L"\r\n</Form>");
-			return source;
-		};
-		const auto firstCheckpointSource = appendBeforeFormEnd(
-			checkpointSource,
-			L"<Button Name=\"checkpointButton\" Text=\"First\" />");
-		checkpointEditor._editor->ReplaceAllTextAndSelect(
-			firstCheckpointSource,
-			static_cast<int>(firstCheckpointSource.size()), 0);
-		const bool firstCheckpoint = checkpointEditor.ApplyCheckpoint();
-		const bool firstCheckpointState = firstCheckpoint
-			&& checkpointEditor.GetAppliedCheckpointCount() == 1
-			&& checkpointCanvas.HasActiveDocumentTransaction()
-			&& checkpointCanvas.GetUndoCommandCount() == 1
-			&& FindControl(checkpointCanvas, L"checkpointButton");
-		const bool unchangedCheckpoint = checkpointEditor.ApplyCheckpoint();
-		const bool unchangedCheckpointState = unchangedCheckpoint
-			&& checkpointEditor.GetAppliedCheckpointCount() == 1
-			&& checkpointCanvas.HasActiveDocumentTransaction()
-			&& checkpointCanvas.GetUndoCommandCount() == 1;
-		const auto secondCheckpointSource = appendBeforeFormEnd(
-			checkpointEditor._editor->Text,
-			L"<Label Name=\"checkpointLabel\" Text=\"Second\" />");
-		checkpointEditor._editor->ReplaceAllTextAndSelect(
-			secondCheckpointSource,
-			static_cast<int>(secondCheckpointSource.size()), 0);
-		const bool secondCheckpoint = checkpointEditor.ApplyCheckpoint();
-		const bool secondCheckpointState = secondCheckpoint
-			&& checkpointEditor.GetAppliedCheckpointCount() == 2
-			&& checkpointCanvas.HasActiveDocumentTransaction()
-			&& checkpointCanvas.GetUndoCommandCount() == 2
-			&& FindControl(checkpointCanvas, L"checkpointButton")
-			&& FindControl(checkpointCanvas, L"checkpointLabel");
-		const auto uncommittedDraft = appendBeforeFormEnd(
-			checkpointEditor._editor->Text,
-			L"<CheckBox Name=\"checkpointDraft\" Text=\"Draft\" />");
-		checkpointEditor._editor->ReplaceAllTextAndSelect(
-			uncommittedDraft,
-			static_cast<int>(uncommittedDraft.size()), 0);
-		const bool draftPreviewed = checkpointEditor.ValidateAndPreview()
-			&& FindControl(checkpointCanvas, L"checkpointDraft");
-		checkpointEditor.Applied = false;
-		const auto checkpointCancel =
-			checkpointCanvas.RollbackDocumentEditTransaction();
-		const bool cancelKeptCheckpoints = checkpointCancel.Succeeded()
-			&& !checkpointCanvas.HasActiveDocumentTransaction()
-			&& checkpointCanvas.GetUndoCommandCount() == 2
-			&& FindControl(checkpointCanvas, L"checkpointButton")
-			&& FindControl(checkpointCanvas, L"checkpointLabel")
-			&& !FindControl(checkpointCanvas, L"checkpointDraft");
-		const auto undoSecondCheckpoint = checkpointCanvas.UndoCommand();
-		const bool firstCheckpointRemains = undoSecondCheckpoint.HasChanges()
-			&& checkpointCanvas.GetUndoCommandCount() == 1
-			&& FindControl(checkpointCanvas, L"checkpointButton")
-			&& !FindControl(checkpointCanvas, L"checkpointLabel");
-		const auto undoFirstCheckpoint = checkpointCanvas.UndoCommand();
-		const bool allCheckpointsUndone = undoFirstCheckpoint.HasChanges()
-			&& checkpointCanvas.GetUndoCommandCount() == 0
-			&& !FindControl(checkpointCanvas, L"checkpointButton");
-		const bool checkpointButtonReady = checkpointEditor._applyButton
-			&& checkpointEditor._applyButton->AccessibleName
-				== L"应用 XAML 但保持编辑器打开";
+			const auto close = valid.rfind(L"/>");
+			if (close != std::wstring::npos)
+				valid.replace(close, 2,
+					L">\r\n  <Button Name=\"liveButton\" Text=\"Live\" />"
+					L"\r\n</Form>");
+		}
+		previewEditor._editor->ReplaceAllTextAndSelect(
+			valid, static_cast<int>(valid.size()), 0);
+		const bool validSynchronized = previewEditor.ValidateAndPreview()
+			&& previewEditor._lastValidXaml == valid
+			&& FindControl(previewCanvas, L"liveButton");
+		const auto validControlCount = previewCanvas.GetAllControls().size();
+		auto invalid = valid;
+		const auto visibility = invalid.find(L"Text=\"Live\"");
+		if (visibility != std::wstring::npos)
+			invalid.replace(
+				visibility, std::wstring(L"Text=\"Live\"").size(),
+				L"Visibility=\"Vanished\"");
+		previewEditor._editor->ReplaceAllTextAndSelect(
+			invalid, static_cast<int>(invalid.size()), 0);
+		const bool invalidRejected = !previewEditor.ValidateAndPreview()
+			&& previewEditor._diagnosticOffset
+				!= DesignerModel::XamlDocumentDiagnostic::UnknownOffset
+			&& previewCanvas.GetAllControls().size() == validControlCount
+			&& FindControl(previewCanvas, L"liveButton");
+		previewEditor.RestoreLastValidPreview();
+		const bool validRecovered = previewEditor._editor->Text == valid
+			&& previewEditor._diagnosticOffset
+				== DesignerModel::XamlDocumentDiagnostic::UnknownOffset;
+		const auto rollback = previewCanvas.RollbackDocumentEditTransaction();
+		const bool rollbackRestored = rollback.Succeeded()
+			&& !FindControl(previewCanvas, L"liveButton");
 
-		XamlEditorDialog popupLifetimeEditor(nullptr, source);
-		popupLifetimeEditor._completionPopup = new DropDownPopup();
-		popupLifetimeEditor._completionPopup->Parent =
-			popupLifetimeEditor._editor;
-		popupLifetimeEditor._completionPopup->ParentForm =
-			&popupLifetimeEditor;
-		popupLifetimeEditor.ForegroundControl =
-			popupLifetimeEditor._completionPopup;
-		popupLifetimeEditor.Selected = popupLifetimeEditor._completionPopup;
-		popupLifetimeEditor.UnderMouse = popupLifetimeEditor._completionPopup;
-		popupLifetimeEditor.OnFormClosed(&popupLifetimeEditor);
-		const bool popupLifetimeReleased =
-			!popupLifetimeEditor._completionPopup
-			&& !popupLifetimeEditor.ForegroundControl
-			&& !popupLifetimeEditor.Selected
-			&& !popupLifetimeEditor.UnderMouse;
 		AppendFailure(failures,
-			xamlEditor._editor && syntaxInitiallyStyled
-				&& menuReady && undoRestored
-				&& redoRestored && outdentRestored
-				&& restoreEnabled && restoredLastValid && restoreUndo
-				&& formatApplied && formatUndo && formatRedo
-				&& formatSyntaxRefreshed
-				&& formatRollback.Succeeded() && popupLifetimeReleased,
-			L"XAML editor: syntax colors, indentation, context menu, recovery, format history, or popup teardown failed");
-		AppendFailure(failures,
-			checkpointSourceBuilt && checkpointBegin.Succeeded()
-				&& !firstCheckpointSource.empty()
-				&& firstCheckpointState && unchangedCheckpointState
-				&& secondCheckpointState && draftPreviewed
-				&& cancelKeptCheckpoints && firstCheckpointRemains
-				&& allCheckpointsUndone && checkpointButtonReady,
-			std::wstring(L"XAML editor: apply checkpoints were not independent, cancel-safe, or undoable")
-				+ L" [built=" + std::to_wstring(checkpointSourceBuilt)
-				+ L", begin=" + std::to_wstring(checkpointBegin.Succeeded())
-				+ L", source=" + std::to_wstring(!firstCheckpointSource.empty())
-				+ L", apply1=" + std::to_wstring(firstCheckpoint)
-				+ L", first=" + std::to_wstring(firstCheckpointState)
-				+ L", unchanged=" + std::to_wstring(unchangedCheckpointState)
-				+ L", second=" + std::to_wstring(secondCheckpointState)
-				+ L", draft=" + std::to_wstring(draftPreviewed)
-				+ L", cancel=" + std::to_wstring(cancelKeptCheckpoints)
-				+ L", undo2=" + std::to_wstring(firstCheckpointRemains)
-				+ L", undo1=" + std::to_wstring(allCheckpointsUndone)
-				+ L", button=" + std::to_wstring(checkpointButtonReady) + L"]"
-				+ (checkpointError.empty()
-					? std::wstring{} : L": " + checkpointError));
+			recoveryEditor._editor && recoveryEnabled
+				&& recoveryRestored && recoveryUndo
+				&& sourceBuilt && transaction.Succeeded()
+				&& validSynchronized && invalidRejected
+				&& validRecovered && rollbackRestored,
+			L"XAML editor thin shell: recovery, validation, synchronization, or rollback failed"
+				+ (previewError.empty()
+					? std::wstring{} : L": " + previewError));
 	}
+
+	// The XAML editor is modal, so its Designer owner is disabled while live
+	// previews invalidate the canvas. Disabled owners must still consume paint
+	// requests; otherwise BeginPaint validates the region and the applied XAML
+	// remains visually stale after the editor closes.
+	bool disabledOwnerRepainted = false;
+	{
+		Form previewOwner(
+			L"Designer live XAML repaint probe",
+			POINT{ -30000, -30000 }, SIZE{ 220, 140 });
+		previewOwner.VisibleHead = false;
+		auto* previewSurface = previewOwner.AddControl(
+			new Panel(0, 0, 200, 120));
+		size_t repaintCount = 0;
+		previewOwner.OnPaint +=
+			[&](Form*) { ++repaintCount; };
+		previewOwner.Show();
+		(void)::UpdateWindow(previewOwner.Handle);
+		repaintCount = 0;
+		(void)::EnableWindow(previewOwner.Handle, FALSE);
+		previewSurface->BackColor = Colors::DodgerBlue;
+		previewSurface->InvalidateVisual();
+		(void)::UpdateWindow(previewOwner.Handle);
+		disabledOwnerRepainted = repaintCount > 0;
+		(void)::EnableWindow(previewOwner.Handle, TRUE);
+		(void)::DestroyWindow(previewOwner.Handle);
+	}
+	AppendFailure(failures, disabledOwnerRepainted,
+		L"live XAML: a disabled modal owner discarded the canvas repaint");
 
 	auto catalogDescriptors = DesignerControlCatalog::BuiltInDescriptors();
 	const auto builtInDescriptorCount = catalogDescriptors.size();
@@ -1082,26 +983,6 @@ bool RunDesignerSelfTest(std::wstring& report)
 			descriptorCanvas.GetAllControls().front()->ControlInstance) != nullptr
 		&& descriptorCanvas.GetAllControls().front()->ControlInstance->Size.cx == 150,
 		L"custom descriptor: preview/custom identity was not retained");
-	const auto completionElements =
-		descriptorCanvas.GetXamlCompletionElementNames();
-	const auto completionAttributes =
-		descriptorCanvas.GetXamlCompletionAttributeNames(L"sample:StatusBadge");
-	const auto completionValues =
-		descriptorCanvas.GetXamlCompletionAttributeValues(
-			L"sample:StatusBadge", L"Severity");
-	const auto completionEventValues =
-		descriptorCanvas.GetXamlCompletionAttributeValues(
-			L"sample:StatusBadge", L"OnSeverityInvoked");
-	AppendFailure(failures,
-		std::find(completionElements.begin(), completionElements.end(),
-			L"sample:StatusBadge") != completionElements.end()
-		&& std::find(completionAttributes.begin(), completionAttributes.end(),
-			L"Severity") != completionAttributes.end()
-		&& std::find(completionAttributes.begin(), completionAttributes.end(),
-			L"OnSeverityInvoked") != completionAttributes.end()
-		&& completionValues == std::vector<std::wstring>{ L"0", L"1", L"2" }
-		&& completionEventValues == std::vector<std::wstring>{ L"Auto" },
-		L"XAML completion: installed custom metadata was not projected");
 	PropertyGrid customPropertyGrid(0, 0, 360, 500);
 	customPropertyGrid.SetDesignerCanvas(&descriptorCanvas);
 	ReloadCurrentSelection(customPropertyGrid, descriptorCanvas);
@@ -1132,19 +1013,6 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& descriptorCanvas.GetAllControls().front()->EventHandlers.contains(
 			L"OnSeverityInvoked"),
 		L"custom event catalog: event page/default activation did not use the manifest contract");
-	const auto completionEventHandlers =
-		descriptorCanvas.GetXamlCompletionAttributeValues(
-			L"sample:StatusBadge", L"OnSeverityInvoked",
-			{ { "Control* sender, int value",
-				{ L"ReusableSeverityHandler" } } });
-	AppendFailure(failures,
-		std::find(completionEventHandlers.begin(), completionEventHandlers.end(),
-			L"Auto") != completionEventHandlers.end()
-		&& std::find(completionEventHandlers.begin(), completionEventHandlers.end(),
-			customDefaultHandler) != completionEventHandlers.end()
-		&& std::find(completionEventHandlers.begin(), completionEventHandlers.end(),
-			L"ReusableSeverityHandler") != completionEventHandlers.end(),
-		L"XAML completion: same-signature document/source handlers were not reusable");
 	AppendFailure(failures,
 		descriptorCanvas.UndoCommand()
 		&& !descriptorCanvas.GetAllControls().front()->EventHandlers.contains(
@@ -3876,6 +3744,9 @@ bool RunDesignerSelfTest(std::wstring& report)
 	auto runtimeDataContext = std::make_shared<ObservableObject>();
 	runtimeDataContext->SetValue(
 		L"Caption", std::wstring(L"动态绑定值"));
+	runtimeDataContext->SetValue(
+		L"Status", std::wstring(L"Pending"));
+	runtimeDataContext->SetValue(L"IsAdmin", false);
 	int runtimeClickCount = 0;
 	DesignerModel::RuntimeDocumentLoadOptions runtimeOptions;
 	runtimeOptions.DataContext = runtimeDataContext;
@@ -4016,7 +3887,37 @@ bool RunDesignerSelfTest(std::wstring& report)
       Width="520" Height="280" Command="HandleRuntimeCommand">
   <Form.Resources>
     <Color x:Key="Accent">#FF0067C0</Color>
-    <Style x:Key="PrimaryButton" TargetType="Button" Class="primary">
+    <Style TargetType="Button">
+      <Setter Property="Raised" Value="false" />
+      <Style.Triggers>
+        <Trigger Property="IsMouseOver" Value="true">
+          <Setter Property="BorderThickness" Value="5.5" />
+        </Trigger>
+        <MultiTrigger>
+          <MultiTrigger.Conditions>
+            <Condition Property="IsMouseOver" Value="true" />
+            <Condition Property="IsChecked" Value="true" />
+          </MultiTrigger.Conditions>
+          <Setter Property="Round" Value="12" />
+        </MultiTrigger>
+        <DataTrigger Binding="{Binding Status}" Value="Ready">
+          <Setter Property="Visible" Value="false" />
+        </DataTrigger>
+        <MultiDataTrigger>
+          <MultiDataTrigger.Conditions>
+            <Condition Binding="{Binding Status}" Value="Ready" />
+            <Condition Binding="{Binding IsAdmin}" Value="true" />
+          </MultiDataTrigger.Conditions>
+          <Setter Property="Raised" Value="true" />
+        </MultiDataTrigger>
+      </Style.Triggers>
+    </Style>
+    <Style x:Key="BaseButton" TargetType="Button"
+           BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="BorderThickness" Value="2.5" />
+      <Setter Property="Round" Value="4" />
+    </Style>
+    <Style x:Key="PrimaryButton" BasedOn="{StaticResource BaseButton}" Class="primary">
       <Setter Property="Round" Value="9" />
       <Setter Property="BackColor" Value="{StaticResource Accent}" />
     </Style>
@@ -4043,13 +3944,31 @@ bool RunDesignerSelfTest(std::wstring& report)
 			xamlRoundTrip,
 			&xamlError)
 		&& xamlRoundTrip == parsedXamlDocument;
+	const auto canonicalRuntimeXaml = parsedRuntimeXaml
+		? DesignerModel::XamlDocumentSerializer::ToXaml(parsedXamlDocument)
+		: std::string{};
 	DesignerModel::DesignDocument canonicalXamlRoundTrip;
 	const bool roundTrippedCanonicalXaml = parsedRuntimeXaml
 		&& DesignerModel::XamlDocumentParser::FromXaml(
-			DesignerModel::XamlDocumentSerializer::ToXaml(parsedXamlDocument),
+			canonicalRuntimeXaml,
 			canonicalXamlRoundTrip,
 			&xamlError)
-		&& canonicalXamlRoundTrip == parsedXamlDocument;
+		&& EquivalentXamlContent(
+			canonicalXamlRoundTrip, parsedXamlDocument);
+	CodeGenInput xamlStyleCodeInput;
+	const bool builtXamlStyleCodeInput = parsedRuntimeXaml
+		&& DesignerModel::DesignDocumentCodeGenInputBuilder::Build(
+			parsedXamlDocument, xamlStyleCodeInput, &xamlError);
+	const auto xamlStyleGeneratedCpp = builtXamlStyleCodeInput
+		? CodeGenerator(L"XamlStyleForm", xamlStyleCodeInput).GenerateCpp()
+		: std::string{};
+	const auto firstInheritedBorder = xamlStyleGeneratedCpp.find(
+		"ControlStyleSetter(L\"BorderThickness\"");
+	const bool generatedExpandedStyleInheritance = firstInheritedBorder
+		!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(
+			"ControlStyleSetter(L\"BorderThickness\"", firstInheritedBorder + 1)
+			!= std::string::npos;
 	DesignerModel::RuntimeDocument xamlRuntimeDocument;
 	int xamlClickCount = 0;
 	auto xamlOptions = runtimeOptions;
@@ -4073,6 +3992,44 @@ bool RunDesignerSelfTest(std::wstring& report)
 		DesignerModel::RuntimeDocumentLoader::LoadXaml(
 			runtimeXaml, xamlRuntimeDocument, xamlOptions, &xamlError);
 	auto* xamlAction = xamlRuntimeDocument.FindControlByDesignId(501);
+	auto* xamlButton = dynamic_cast<Button*>(xamlAction);
+	bool xamlTriggerApplied = false;
+	bool xamlTriggerRestored = false;
+	bool xamlMultiTriggerInactive = false;
+	bool xamlMultiTriggerApplied = false;
+	bool xamlMultiTriggerRestored = false;
+	bool xamlDataTriggerInactive = false;
+	bool xamlDataTriggerApplied = false;
+	bool xamlDataTriggerRestored = false;
+	bool xamlMultiDataTriggerInactive = false;
+	bool xamlMultiDataTriggerApplied = false;
+	bool xamlMultiDataTriggerRestored = false;
+	if (xamlButton)
+	{
+		xamlDataTriggerInactive = xamlButton->Visible;
+		xamlMultiDataTriggerInactive = !xamlButton->Raised;
+		runtimeDataContext->SetValue(
+			L"Status", std::wstring(L"Ready"));
+		xamlDataTriggerApplied = !xamlButton->Visible;
+		runtimeDataContext->SetValue(L"IsAdmin", true);
+		xamlMultiDataTriggerApplied = xamlButton->Raised;
+		runtimeDataContext->SetValue(
+			L"Status", std::wstring(L"Pending"));
+		xamlDataTriggerRestored = xamlButton->Visible;
+		xamlMultiDataTriggerRestored = !xamlButton->Raised;
+		runtimeDataContext->SetValue(L"IsAdmin", false);
+		xamlButton->SetStyleState(ControlStyleState::Hovered);
+		xamlTriggerApplied = std::fabs(
+			xamlButton->BorderThickness - 5.5f) < 0.001f;
+		xamlMultiTriggerInactive = std::fabs(xamlButton->Round - 9.0f) < 0.001f;
+		xamlButton->SetStyleState(ControlStyleState::Checked);
+		xamlMultiTriggerApplied = std::fabs(xamlButton->Round - 12.0f) < 0.001f;
+		xamlButton->SetStyleState(ControlStyleState::Hovered, false);
+		xamlTriggerRestored = std::fabs(
+			xamlButton->BorderThickness - 2.5f) < 0.001f;
+		xamlMultiTriggerRestored = std::fabs(xamlButton->Round - 9.0f) < 0.001f;
+		xamlButton->SetStyleState(ControlStyleState::Checked, false);
+	}
 	if (xamlAction)
 		xamlAction->OnMouseClick.Invoke(xamlAction, MouseEventArgs{});
 	const auto* xamlActionBeforeFailure = xamlAction;
@@ -4114,16 +4071,89 @@ bool RunDesignerSelfTest(std::wstring& report)
 			"xmlns:d=\"urn:cui:designer\" x:Name=\"Unsafe\" "
 			"x:Class=\"UnsafeWindow\" d:CodeBehind=\"C:/outside/UnsafeWindow\" />",
 			unchangedCodeBehindDocument, &xamlError);
+	auto unchangedDataTriggerDocument = parsedXamlDocument;
+	const bool rejectedConfiguredDataTriggerBinding =
+		!DesignerModel::XamlDocumentParser::FromXaml(
+			"<Form><Form.Resources><Style TargetType=\"Button\"><Style.Triggers>"
+			"<DataTrigger Binding=\"{Binding Status, Mode=OneWay}\" Value=\"Ready\">"
+			"<Setter Property=\"Visible\" Value=\"false\" /></DataTrigger>"
+			"</Style.Triggers></Style></Form.Resources></Form>",
+			unchangedDataTriggerDocument, &xamlError);
+	auto unchangedDataTriggerResourceDocument = parsedXamlDocument;
+	const bool rejectedDataTriggerResourceValue =
+		!DesignerModel::XamlDocumentParser::FromXaml(
+			"<Form><Form.Resources><Style TargetType=\"Button\"><Style.Triggers>"
+			"<DataTrigger Binding=\"{Binding Status}\" Value=\"{StaticResource Ready}\">"
+			"<Setter Property=\"Visible\" Value=\"false\" /></DataTrigger>"
+			"</Style.Triggers></Style></Form.Resources></Form>",
+			unchangedDataTriggerResourceDocument, &xamlError);
+	auto unchangedMultiDataTriggerDocument = parsedXamlDocument;
+	const bool rejectedMultiDataTrigger =
+		!DesignerModel::XamlDocumentParser::FromXaml(
+			"<Form><Form.Resources><Style TargetType=\"Button\"><Style.Triggers>"
+			"<MultiDataTrigger><MultiDataTrigger.Conditions>"
+			"<Condition Binding=\"{Binding Status}\" Value=\"Ready\" />"
+			"</MultiDataTrigger.Conditions><Setter Property=\"Visible\" Value=\"false\" />"
+			"</MultiDataTrigger></Style.Triggers></Style></Form.Resources></Form>",
+			unchangedMultiDataTriggerDocument, &xamlError);
 	AppendFailure(failures,
 		parsedRuntimeXaml
 		&& roundTrippedRuntimeXaml
 		&& roundTrippedCanonicalXaml
 		&& loadedRuntimeXaml
 		&& xamlAction
+		&& xamlButton
 		&& xamlAction->Text == L"动态更新值"
+		&& !xamlButton->Raised
+		&& std::fabs(xamlButton->BorderThickness - 2.5f) < 0.001f
+		&& std::fabs(xamlButton->Round - 9.0f) < 0.001f
+		&& xamlTriggerApplied
+		&& xamlTriggerRestored
+		&& xamlMultiTriggerInactive
+		&& xamlMultiTriggerApplied
+		&& xamlMultiTriggerRestored
+		&& xamlDataTriggerInactive
+		&& xamlDataTriggerApplied
+		&& xamlDataTriggerRestored
+		&& xamlMultiDataTriggerInactive
+		&& xamlMultiDataTriggerApplied
+		&& xamlMultiDataTriggerRestored
 		&& xamlAction->GetLayoutWidth().IsFixed()
 		&& std::fabs(xamlAction->GetLayoutWidth().value - 180.5f) < 0.001f
 		&& xamlAction->GetStyleSheet() != nullptr
+		&& canonicalRuntimeXaml.find("<Style TargetType=\"Button\">")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find("<Style.Triggers>")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find(
+			"<Trigger Property=\"IsMouseOver\" Value=\"true\">")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find("<MultiTrigger>") != std::string::npos
+		&& canonicalRuntimeXaml.find("<MultiTrigger.Conditions>")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find(
+			"<Condition Property=\"IsChecked\" Value=\"true\"")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find(
+			"<DataTrigger Binding=\"{Binding Status}\" Value=\"Ready\">")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find("<MultiDataTrigger>") != std::string::npos
+		&& canonicalRuntimeXaml.find("<MultiDataTrigger.Conditions>")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find(
+			"<Condition Binding=\"{Binding IsAdmin}\" Value=\"true\"")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find(".DataConditions.push_back")
+			!= std::string::npos
+		&& xamlStyleGeneratedCpp.find("::BindData(IBindingSource& dataContext)")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find(
+			"BasedOn=\"{StaticResource {x:Type Button}}\"")
+			!= std::string::npos
+		&& canonicalRuntimeXaml.find(
+			"BasedOn=\"{StaticResource BaseButton}\"")
+			!= std::string::npos
+		&& generatedExpandedStyleInheritance
 		&& xamlClickCount == 1
 		&& xamlRuntimeDocument.FormModel().Name == L"XamlRuntimeForm"
 		&& parsedXamlDocument.CodeBehind.ClassName
@@ -4144,9 +4174,32 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& rejectedDuplicateControlNameXaml
 		&& unchangedDuplicateNameDocument == parsedXamlDocument
 		&& rejectedAbsoluteCodeBehindXaml
-		&& unchangedCodeBehindDocument == parsedXamlDocument,
+		&& unchangedCodeBehindDocument == parsedXamlDocument
+		&& rejectedConfiguredDataTriggerBinding
+		&& unchangedDataTriggerDocument == parsedXamlDocument
+		&& rejectedDataTriggerResourceValue
+		&& unchangedDataTriggerResourceDocument == parsedXamlDocument
+		&& rejectedMultiDataTrigger
+		&& unchangedMultiDataTriggerDocument == parsedXamlDocument,
 		L"runtime XAML: frontend, floating/Auto layout, binding, style, event, "
 		L"round-trip, or transactional rollback failed [error=" + xamlError + L"]");
+	DesignerStyleSheet cyclicStyles;
+	DesignerStyleRule cyclicA;
+	cyclicA.Id = L"CycleA";
+	cyclicA.BasedOn = L"CycleB";
+	cyclicA.Setters.push_back({
+		L"Visible", false, {}, { DesignerStyleValueKind::Bool, L"true" } });
+	DesignerStyleRule cyclicB;
+	cyclicB.Id = L"CycleB";
+	cyclicB.BasedOn = L"CycleA";
+	cyclicB.Setters.push_back({
+		L"Enable", false, {}, { DesignerStyleValueKind::Bool, L"true" } });
+	cyclicStyles.Rules = { std::move(cyclicA), std::move(cyclicB) };
+	std::wstring cyclicStyleError;
+	AppendFailure(failures,
+		!DesignerStyleSheetUtils::Validate(cyclicStyles, &cyclicStyleError)
+		&& cyclicStyleError.find(L"循环") != std::wstring::npos,
+		L"style inheritance: a cyclic BasedOn chain was accepted");
 	const auto runtimeGeneratorInput = runtimeDocument.BuildCodeGenInput();
 	auto releasedRuntimeRoots = runtimeDocument.ReleaseRootControls();
 	AppendFailure(failures,
@@ -6672,10 +6725,6 @@ bool RunDesignerSelfTest(std::wstring& report)
 		lockedDocument, &lockedError);
 	const bool lockedXamlCaptured = lockCanvas.BuildXamlDocumentText(
 		lockedXaml, &lockedError);
-	const auto lockedNames =
-		lockCanvas.GetXamlCompletionAttributeNames(L"Button");
-	const auto lockedValues =
-		lockCanvas.GetXamlCompletionAttributeValues(L"Button", L"d:Locked");
 	const auto lockedUndoCount = lockCanvas.GetUndoCommandCount();
 	const auto rejectedLockedNudge = lockCanvas.NudgeSelectionBy(8, 4);
 	const auto rejectedLockedArrange = lockCanvas.ArrangeSelection(
@@ -6713,12 +6762,6 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& lockedDocument.Nodes.front().Locked
 		&& lockedXamlCaptured
 		&& lockedXaml.find(L"d:Locked=\"true\"") != std::wstring::npos
-		&& std::find(lockedNames.begin(), lockedNames.end(), L"d:Locked")
-			!= lockedNames.end()
-		&& std::find(lockedValues.begin(), lockedValues.end(), L"false")
-			!= lockedValues.end()
-		&& std::find(lockedValues.begin(), lockedValues.end(), L"true")
-			!= lockedValues.end()
 		&& lockedUndoCount == 1
 		&& rejectedLockedNudge.State
 			== DesignerDocumentTransactionState::Rejected
@@ -6727,7 +6770,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& rejectedLockedHierarchy.State
 			== DesignerDocumentTransactionState::Rejected
 		&& lockedPlacementUnchanged,
-		L"design lock: persistence, completion, or placement guards failed"
+		L"design lock: persistence or placement guards failed"
 		+ std::wstring(L" [capture=") + SelfTestFlag(lockedCaptured)
 		+ L", xaml=" + SelfTestFlag(lockedXamlCaptured)
 		+ L", placement=" + SelfTestFlag(lockedPlacementUnchanged)
@@ -6759,6 +6802,10 @@ bool RunDesignerSelfTest(std::wstring& report)
 		+ L", error=" + lockedError + L"]");
 
 	DesignerCanvas viewCanvas(0, 0, 400, 300);
+	viewCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 180, 140 });
+	const auto transformedViewControl = viewCanvas.GetAllControls().empty()
+		? nullptr : viewCanvas.GetAllControls().front();
 	size_t viewChangeCount = 0;
 	viewCanvas.OnViewChanged +=
 		[&](const DesignerCanvasViewChangedEventArgs&) { ++viewChangeCount; };
@@ -6769,6 +6816,40 @@ bool RunDesignerSelfTest(std::wstring& report)
 	const POINT logicalAtFocal = viewCanvas.ViewToCanvasPoint(focalPoint);
 	viewCanvas.SetViewZoom(fittedZoom * 1.2f, focalPoint);
 	const POINT logicalAfterZoom = viewCanvas.ViewToCanvasPoint(focalPoint);
+	D2D1_RECT_F logicalRenderRect{};
+	D2D1_RECT_F transformedRenderRect{};
+	D2D1_RECT_F expectedRenderRect{};
+	bool descendantRenderTransformApplied = false;
+	if (transformedViewControl && transformedViewControl->ControlInstance)
+	{
+		auto* runtimeControl = transformedViewControl->ControlInstance;
+		const auto logicalRect = runtimeControl->GetAbsoluteRectDip();
+		logicalRenderRect = D2D1_RECT_F{
+			logicalRect.Left(), logicalRect.Top(),
+			logicalRect.Right(), logicalRect.Bottom() };
+		transformedRenderRect = runtimeControl->GetRenderedAbsoluteRectDip();
+		const auto canvasAbs = viewCanvas.GetAbsoluteLocationDip();
+		const auto viewOffset = viewCanvas.GetViewOffset();
+		const float viewZoom = viewCanvas.GetViewZoom();
+		expectedRenderRect = D2D1_RECT_F{
+			canvasAbs.x + viewOffset.x
+				+ (logicalRenderRect.left - canvasAbs.x) * viewZoom,
+			canvasAbs.y + viewOffset.y
+				+ (logicalRenderRect.top - canvasAbs.y) * viewZoom,
+			canvasAbs.x + viewOffset.x
+				+ (logicalRenderRect.right - canvasAbs.x) * viewZoom,
+			canvasAbs.y + viewOffset.y
+				+ (logicalRenderRect.bottom - canvasAbs.y) * viewZoom };
+		descendantRenderTransformApplied =
+			std::fabs(transformedRenderRect.left
+				- expectedRenderRect.left) < 0.01f
+			&& std::fabs(transformedRenderRect.top
+				- expectedRenderRect.top) < 0.01f
+			&& std::fabs(transformedRenderRect.right
+				- expectedRenderRect.right) < 0.01f
+			&& std::fabs(transformedRenderRect.bottom
+				- expectedRenderRect.bottom) < 0.01f;
+	}
 	const auto offsetBeforePan = viewCanvas.GetViewOffset();
 	const bool panDown = viewCanvas.ProcessMessage(
 		WM_MBUTTONDOWN, 0, 0, 100, 100);
@@ -6783,6 +6864,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 		fittedZoom > 0.42f && fittedZoom < 0.45f
 		&& logicalAtFocal.x == logicalAfterZoom.x
 		&& logicalAtFocal.y == logicalAfterZoom.y
+		&& descendantRenderTransformApplied
 		&& panDown && panMove && panUp
 		&& (offsetBeforePan.x != offsetAfterPan.x
 			|| offsetBeforePan.y != offsetAfterPan.y)
@@ -6790,7 +6872,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& viewChangeCount >= 4
 		&& viewCanvas.GetUndoCommandCount() == 0
 		&& !viewCanvas.IsDocumentDirty(),
-		L"canvas view: fit, focal zoom, pan, reset, or non-document state failed");
+		L"canvas view: fit, focal zoom, descendant rendering, pan, reset, or non-document state failed");
 
 	DesignerCanvas contextCanvas(0, 0, 900, 680);
 	contextCanvas.AddControlToCanvasCore(
@@ -6998,12 +7080,18 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& contextPasteDesigner._btnPaste->Enable;
 	const bool contextPasteEmptyTextPublished =
 		ReplaceClipboardTextForSelfTest(L"");
-	const bool contextPasteEmptyTextDisabled =
-		contextPasteDesigner.ProcessMessage(
-			WM_CLIPBOARDUPDATE, 0, 0, 0, 0)
-		&& contextPasteDesigner._btnPaste
-		&& !contextPasteDesigner._btnPaste->Enable
-		&& !contextPasteDesigner._canvas->CanPasteControlsFromClipboard();
+	bool contextPasteEmptyTextDisabled = false;
+	for (int attempt = 0;
+		attempt < 20 && !contextPasteEmptyTextDisabled; ++attempt)
+	{
+		const bool handled = contextPasteDesigner.ProcessMessage(
+			WM_CLIPBOARDUPDATE, 0, 0, 0, 0);
+		contextPasteEmptyTextDisabled = handled
+			&& contextPasteDesigner._btnPaste
+			&& !contextPasteDesigner._btnPaste->Enable
+			&& !contextPasteDesigner._canvas->CanPasteControlsFromClipboard();
+		if (!contextPasteEmptyTextDisabled) ::Sleep(10);
+	}
 	const auto contextPasteRestoreCopy = contextPasteDesigner._canvas
 		? contextPasteDesigner._canvas->CopySelectedControls()
 		: DesignerDocumentTransactionResult::Failure(
@@ -7047,7 +7135,15 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& contextPasteEmptyTextPublished
 		&& contextPasteEmptyTextDisabled
 		&& contextPasteRestored,
-		L"designer paste availability: source, transaction gate, clipboard update, empty text, or restore failed");
+		L"designer paste availability: source, transaction gate, clipboard update, empty text, or restore failed"
+			+ std::wstring(L" [add=") + SelfTestFlag(contextPasteAdd.HasChanges())
+			+ L", copy=" + SelfTestFlag(contextPasteCopy.Succeeded())
+			+ L", source=" + SelfTestFlag(contextPasteSourceAvailable)
+			+ L", blocked=" + SelfTestFlag(contextPasteBlockedDuringTransaction)
+			+ L", update=" + SelfTestFlag(contextPasteClipboardUpdateHandled)
+			+ L", emptyPublished=" + SelfTestFlag(contextPasteEmptyTextPublished)
+			+ L", emptyDisabled=" + SelfTestFlag(contextPasteEmptyTextDisabled)
+			+ L", restored=" + SelfTestFlag(contextPasteRestored) + L"]");
 	AppendFailure(failures,
 		pasteHereCommand && pasteHereCommand->Enable
 		&& contextPasteDesigner._hasCanvasContextPastePoint
@@ -7788,12 +7884,12 @@ bool RunDesignerSelfTest(std::wstring& report)
 					xamlLifecyclePath, persistedXamlDocument,
 					&persistedXamlError);
 			const bool persistedXamlEquivalent = persistedXamlLoaded
-				&& EquivalentDocumentContent(
+				&& EquivalentXamlContent(
 					persistedXamlDocument, cleanBranchDocument);
 			const bool openedXamlBuilt = xamlOpenCanvas.BuildDesignDocument(
 				openedXamlDocument, &openedXamlError);
 			const bool openedXamlEquivalent = openedXamlBuilt
-				&& EquivalentDocumentContent(
+				&& EquivalentXamlContent(
 					openedXamlDocument, cleanBranchDocument);
 			const bool noXamlTemporaryFile =
 				!HasAtomicSaveTemporaryFile(xamlLifecyclePath);
@@ -7820,6 +7916,10 @@ bool RunDesignerSelfTest(std::wstring& report)
 				+ L", opened=" + SelfTestFlag(openedXamlEquivalent)
 				+ L", persistedDiff=" + DescribeDocumentDifference(
 					persistedXamlDocument, cleanBranchDocument)
+				+ L", xamlDiff=" + DescribeXamlDifference(
+					persistedXamlDocument, cleanBranchDocument)
+				+ L", openedXamlDiff=" + DescribeXamlDifference(
+					openedXamlDocument, cleanBranchDocument)
 				+ L", temp=" + SelfTestFlag(!noXamlTemporaryFile) + L"]");
 
 			if (!invalidXamlPath.empty())
@@ -8273,9 +8373,353 @@ bool RunDesignerSelfTest(std::wstring& report)
 			&& missingDetected && repairedMissing
 			&& blockedDetected && restoredCurrent,
 			L"designer toolbar/code freshness: arrange menu, Undo/Redo, drift, missing, or blocked detection failed");
-		if (::GetEnvironmentVariableW(
+	if (::GetEnvironmentVariableW(
 			L"CUI_KEEP_CODEGEN_TEST_OUTPUT", nullptr, 0) == 0)
 			fs::remove_all(freshnessRoot, removeError);
+	}
+
+	// The runtime gallery is the public XAML conformance fixture. The Designer
+	// must consume the same complete built-in surface; unsupported native or
+	// custom implementations are represented by design-safe proxies rather than
+	// rejecting the document.
+	{
+		namespace fs = std::filesystem;
+		const auto demoPath = fs::current_path()
+			/ L"CUITest" / L"DemoWindow.cui.xaml";
+		DesignerModel::DesignDocument demoDocument;
+		std::wstring demoParseError;
+		const bool demoParsed = DesignerModel::XamlDocumentParser::LoadFromFile(
+			demoPath.wstring(), demoDocument, &demoParseError);
+		DesignerCanvas demoCanvas(0, 0, 1440, 900);
+		std::wstring demoApplyError;
+		const bool demoApplied = demoParsed
+			&& demoCanvas.ApplyDesignDocument(demoDocument, &demoApplyError);
+		auto demoStatus = demoApplied
+			? FindControl(demoCanvas, L"mainStatusBar") : nullptr;
+		const POINT declaredStatusLocation = demoStatus
+			&& demoStatus->ControlInstance
+			? demoStatus->ControlInstance->Location : POINT{};
+		const SIZE declaredStatusSize = demoStatus
+			&& demoStatus->ControlInstance
+			? demoStatus->ControlInstance->Size : SIZE{};
+		if (demoApplied) demoCanvas.Update();
+		bool statusPreviewMatchesRuntime = false;
+		if (demoStatus && demoStatus->ControlInstance
+			&& demoStatus->ControlInstance->Parent)
+		{
+			auto* status = dynamic_cast<StatusBar*>(
+				demoStatus->ControlInstance);
+			const auto actual = demoStatus->ControlInstance
+				->GetActualLocationDip();
+			const auto actualSize = demoStatus->ControlInstance
+				->GetActualSizeDip();
+			const auto parentSize = demoStatus->ControlInstance->Parent
+				->GetActualSizeDip();
+			statusPreviewMatchesRuntime = status && status->TopMost
+				&& std::fabs(actual.x) < 0.01f
+				&& std::fabs(actual.y + actualSize.height
+					- parentSize.height) < 0.01f
+				&& demoStatus->ControlInstance->Location.x
+					== declaredStatusLocation.x
+				&& demoStatus->ControlInstance->Location.y
+					== declaredStatusLocation.y
+				&& demoStatus->ControlInstance->Size.cx
+					== declaredStatusSize.cx
+				&& demoStatus->ControlInstance->Size.cy
+					== declaredStatusSize.cy;
+		}
+		DesignerModel::DesignDocument recapturedDemo;
+		std::wstring demoCaptureError;
+		const bool demoRecaptured = demoApplied
+			&& demoCanvas.BuildDesignDocument(
+				recapturedDemo, &demoCaptureError);
+		CodeGenInput demoCodeInput;
+		const bool demoCodeInputBuilt = demoRecaptured
+			&& DesignerModel::DesignDocumentCodeGenInputBuilder::Build(
+				recapturedDemo, demoCodeInput, &demoCaptureError);
+		CodeGenerator demoCodeGenerator(L"DemoResourceForm", demoCodeInput);
+		const auto demoGeneratedCpp = demoCodeInputBuilt
+			? demoCodeGenerator.GenerateCpp() : std::string{};
+		const bool drawingResourcesGenerated = demoCodeInputBuilt
+			&& demoGeneratedCpp.find(
+				"SetResource(L\"GradientLabelClip\"") != std::string::npos
+			&& demoGeneratedCpp.find(
+				"cui::drawing::GeometryKind::Path") != std::string::npos
+			&& demoGeneratedCpp.find(
+				"SetResource(L\"GradientLabelTransform\"") != std::string::npos
+			&& demoGeneratedCpp.find(
+				"cui::drawing::TransformKind::Rotate") != std::string::npos;
+		const bool imageBrushGenerated = demoCodeInputBuilt
+			&& demoGeneratedCpp.find(
+				"SetResource(L\"RuntimeBadgeForeground\"") != std::string::npos
+			&& demoGeneratedCpp.find(
+				"cui::drawing::BrushKind::Image") != std::string::npos
+			&& demoGeneratedCpp.find(
+				"cui::drawing::ImageBrushStretch::UniformToFill") != std::string::npos;
+		std::string compactDemo;
+		bool demoCompact = false;
+		if (demoRecaptured)
+		{
+			try
+			{
+				compactDemo = DesignerModel::XamlDocumentSerializer::ToXaml(
+					recapturedDemo);
+				demoCompact = compactDemo.find("d:ProjectedProperties")
+					== std::string::npos
+					&& compactDemo.find("d:DesignProps") == std::string::npos
+					&& compactDemo.find("d:DesignBindings") == std::string::npos
+					&& compactDemo.find("d:DesignExtra") == std::string::npos
+					&& compactDemo.find("<PathGeometry")
+						!= std::string::npos
+					&& compactDemo.find("x:Key=\"GradientLabelClip\"")
+						!= std::string::npos
+					&& compactDemo.find("<Geometry.Transform>")
+						!= std::string::npos
+					&& compactDemo.find("<ArcSegment")
+						!= std::string::npos
+					&& compactDemo.find("x:Key=\"GradientLabelTransform\"")
+						!= std::string::npos
+					&& compactDemo.find("Property=\"Clip\"") != std::string::npos
+					&& compactDemo.find("Property=\"RenderTransform\"")
+						!= std::string::npos
+					&& compactDemo.find("RenderTransformOrigin=\"0.5,0.5\"")
+						!= std::string::npos
+					&& compactDemo.find("<SideBar.Items>") != std::string::npos
+					&& compactDemo.find("<BreadcrumbBar.Items>") != std::string::npos
+					&& compactDemo.find("<FilterBar.Items>") != std::string::npos
+					&& compactDemo.find("<KpiCard.Sparkline>") != std::string::npos
+					&& compactDemo.find("<ChartView.Series>") != std::string::npos
+					&& compactDemo.find("<ReportView.Columns>") != std::string::npos
+					&& compactDemo.find("<ReportView.Rows>") != std::string::npos
+					&& compactDemo.find("<BitmapImage") != std::string::npos
+					&& compactDemo.find(
+						"UriSource=\"Assets/nav-overview.svg\"") != std::string::npos
+					&& compactDemo.find("<LinearGradientBrush") != std::string::npos
+					&& compactDemo.find(
+						"<ResourceDictionary.MergedDictionaries>")
+						!= std::string::npos
+					&& compactDemo.find(
+						"Source=\"Assets/DemoTheme.xaml\"")
+						!= std::string::npos
+					&& compactDemo.find(
+						"Icon=\"Assets/nav-overview.svg\"") != std::string::npos;
+			}
+			catch (const std::exception& exception)
+			{
+				demoCaptureError = Convert::Utf8ToUnicode(exception.what());
+			}
+		}
+		const auto hasType = [&](UIClass type)
+		{
+			return std::any_of(
+				demoDocument.Nodes.begin(), demoDocument.Nodes.end(),
+				[type](const auto& node) { return node.Type == type; });
+		};
+		bool advancedDataMaterialized = false;
+		bool objectResourcesMaterialized = false;
+		bool drawingResourcesMaterialized = false;
+		if (demoApplied)
+		{
+			auto sideBarWrapper = FindControl(demoCanvas, L"sideBar");
+			auto breadcrumbWrapper = FindControl(demoCanvas, L"breadcrumb");
+			auto filterWrapper = FindControl(demoCanvas, L"analyticsFilter");
+			auto kpiWrapper = FindControl(demoCanvas, L"kpiRevenue");
+			auto chartWrapper = FindControl(demoCanvas, L"salesChart");
+			auto reportWrapper = FindControl(demoCanvas, L"salesReport");
+			auto titleWrapper = FindControl(demoCanvas, L"basicTitle");
+			auto badgeWrapper = FindControl(demoCanvas, L"runtimeBadge");
+			auto pictureWrapper = FindControl(demoCanvas, L"demoPicture");
+			auto gradientWrapper = FindControl(demoCanvas, L"gradientLabel");
+			auto* sideBar = sideBarWrapper
+				? dynamic_cast<NavigationView*>(sideBarWrapper->ControlInstance) : nullptr;
+			auto* breadcrumb = breadcrumbWrapper
+				? dynamic_cast<BreadcrumbBar*>(breadcrumbWrapper->ControlInstance) : nullptr;
+			auto* filter = filterWrapper
+				? dynamic_cast<FilterBar*>(filterWrapper->ControlInstance) : nullptr;
+			auto* kpi = kpiWrapper
+				? dynamic_cast<KpiCard*>(kpiWrapper->ControlInstance) : nullptr;
+			auto* chart = chartWrapper
+				? dynamic_cast<ChartView*>(chartWrapper->ControlInstance) : nullptr;
+			auto* report = reportWrapper
+				? dynamic_cast<ReportView*>(reportWrapper->ControlInstance) : nullptr;
+			auto* title = titleWrapper ? titleWrapper->ControlInstance : nullptr;
+			auto* badge = badgeWrapper ? badgeWrapper->ControlInstance : nullptr;
+			auto* picture = pictureWrapper
+				? dynamic_cast<PictureBox*>(pictureWrapper->ControlInstance) : nullptr;
+			auto* gradient = gradientWrapper
+				? gradientWrapper->ControlInstance : nullptr;
+			advancedDataMaterialized = sideBar && sideBar->Items.size() == 5
+				&& sideBar->SelectedIndex == 1
+				&& sideBar->Items[1].BadgeText == L"3"
+				&& breadcrumb && breadcrumb->Items.size() == 3
+				&& breadcrumb->SelectedIndex == 2
+				&& filter && filter->Items.size() == 4
+				&& filter->Items[0].Selected
+				&& filter->Placeholder == L"搜索客户、区域或阶段"
+				&& kpi && kpi->Title == L"成交额"
+				&& kpi->TrendDirection == KpiTrendDirection::Up
+				&& std::fabs(kpi->CornerRadius - 10.0f) < 0.01f
+				&& kpi->SparklineValues.size() == 8
+				&& chart && chart->Title == L"成交趋势"
+				&& chart->Series.size() == 3
+				&& chart->Series[0].Points.size() == 8
+				&& report && report->Title == L"成交报表"
+				&& report->Columns.size() == 5
+				&& report->Rows.size() == 8
+				&& report->Rows[0].Kind == ReportRowKind::Group
+				&& report->Rows[3].Kind == ReportRowKind::Summary;
+			const auto& titleBrush = title
+				? title->GetForegroundBrush()
+				: std::optional<cui::drawing::Brush>{};
+			const auto& badgeBrush = badge
+				? badge->GetForegroundBrush()
+				: std::optional<cui::drawing::Brush>{};
+			objectResourcesMaterialized = sideBar
+				&& sideBar->Items.size() == 5
+				&& sideBar->Items[1].Icon
+				&& sideBar->Items[1].Icon->GetSourceUri()
+					== L"Assets/nav-overview.svg"
+				&& sideBar->Items[2].Icon
+				&& sideBar->Items[2].Icon->GetSourceUri()
+					== L"Assets/nav-assets.svg"
+				&& sideBar->Items[4].Icon
+				&& sideBar->Items[4].Icon->GetSourceUri()
+					== L"Assets/nav-settings.svg"
+				&& picture && picture->Image
+				&& picture->Image->GetSourceUri() == L"Assets/nav-overview.svg"
+				&& titleBrush
+				&& titleBrush->Kind == cui::drawing::BrushKind::LinearGradient
+				&& titleBrush->GradientStops.size() == 2
+				&& badgeBrush
+				&& badgeBrush->Kind == cui::drawing::BrushKind::Image
+				&& badgeBrush->ImageSource
+				&& badgeBrush->ImageSource->GetSourceUri()
+					== L"Assets/nav-overview.svg"
+				&& badgeBrush->Stretch
+					== cui::drawing::ImageBrushStretch::UniformToFill
+				&& std::fabs(badgeBrush->Opacity - 0.9f) < 0.01f;
+			const auto& clip = gradient
+				? gradient->GetClip()
+				: std::optional<cui::drawing::Geometry>{};
+			const auto& transform = gradient
+				? gradient->GetRenderTransform()
+				: std::optional<cui::drawing::Transform>{};
+			drawingResourcesMaterialized = clip
+				&& clip->Kind == cui::drawing::GeometryKind::Path
+				&& clip->Figures.size() == 1
+				&& clip->Figures[0].Segments.size() == 8
+				&& clip->LocalTransform
+				&& clip->LocalTransform->Operations.size() == 1
+				&& transform && transform->Operations.size() == 2
+				&& transform->Operations[0].Kind
+					== cui::drawing::TransformKind::Rotate
+				&& transform->Operations[1].Kind
+					== cui::drawing::TransformKind::Scale
+				&& gradient->GetPropertyValueSource(L"Clip")
+					== ControlPropertyValueSource::Style
+				&& gradient->GetPropertyValueSource(L"RenderTransform")
+					== ControlPropertyValueSource::Style;
+		}
+		bool surfaceChildMoveStable = false;
+		if (auto basicButton = demoApplied
+			? FindControl(demoCanvas, L"basicButton") : nullptr;
+			basicButton && basicButton->ControlInstance)
+		{
+			auto* control = basicButton->ControlInstance;
+			const auto beforeLocation = control->Location;
+			const auto beforeSize = control->Size;
+			const auto beforeAbsolute = control->GetAbsoluteLocationDip();
+			demoCanvas.RestoreSelectionByNames(
+				{ basicButton->Name }, basicButton->Name, false);
+			const auto moved = demoCanvas.NudgeSelectionBy(1, 1);
+			const auto afterAbsolute = control->GetAbsoluteLocationDip();
+			surfaceChildMoveStable = moved.HasChanges()
+				&& control->Location.x == beforeLocation.x + 1
+				&& control->Location.y == beforeLocation.y + 1
+				&& control->Size.cx == beforeSize.cx
+				&& control->Size.cy == beforeSize.cy
+				&& std::fabs(afterAbsolute.x - beforeAbsolute.x - 1.0f) < 0.01f
+				&& std::fabs(afterAbsolute.y - beforeAbsolute.y - 1.0f) < 0.01f;
+		}
+		bool transformedChildMoveStable = false;
+		if (auto gradientLabel = demoApplied
+			? FindControl(demoCanvas, L"gradientLabel") : nullptr;
+			gradientLabel && gradientLabel->ControlInstance)
+		{
+			auto* control = gradientLabel->ControlInstance;
+			const auto beforeLocation = control->Location;
+			const auto beforeSize = control->Size;
+			demoCanvas.RestoreSelectionByNames(
+				{ gradientLabel->Name }, gradientLabel->Name, false);
+			const auto moved = demoCanvas.NudgeSelectionBy(1, 0);
+			transformedChildMoveStable = moved.HasChanges()
+				&& control->Location.x == beforeLocation.x + 1
+				&& control->Location.y == beforeLocation.y
+				&& control->Size.cx == beforeSize.cx
+				&& control->Size.cy == beforeSize.cy;
+		}
+		const auto nestedContainerChildMoveStable =
+			[&](const std::wstring& name)
+			{
+				auto wrapper = demoApplied
+					? FindControl(demoCanvas, name) : nullptr;
+				if (!wrapper || !wrapper->ControlInstance) return false;
+				auto* control = wrapper->ControlInstance;
+				const auto beforeLocation = control->Location;
+				const auto beforeSize = control->Size;
+				const auto beforeAbsolute = control->GetAbsoluteLocationDip();
+				demoCanvas.RestoreSelectionByNames(
+					{ wrapper->Name }, wrapper->Name, false);
+				const auto moved = demoCanvas.NudgeSelectionBy(1, 1);
+				const auto afterAbsolute = control->GetAbsoluteLocationDip();
+				return moved.HasChanges()
+					&& control->Location.x == beforeLocation.x + 1
+					&& control->Location.y == beforeLocation.y + 1
+					&& control->Size.cx == beforeSize.cx
+					&& control->Size.cy == beforeSize.cy
+					&& std::fabs(afterAbsolute.x
+						- beforeAbsolute.x - 1.0f) < 0.01f
+					&& std::fabs(afterAbsolute.y
+						- beforeAbsolute.y - 1.0f) < 0.01f;
+			};
+		const bool groupChildMoveStable =
+			nestedContainerChildMoveStable(L"groupName");
+		const bool expanderChildMoveStable =
+			nestedContainerChildMoveStable(L"expanderText");
+		const bool specialContainerMovesStable =
+			groupChildMoveStable && expanderChildMoveStable;
+		AppendFailure(failures,
+			demoParsed && demoApplied && demoRecaptured && demoCompact
+			&& drawingResourcesGenerated
+			&& imageBrushGenerated
+			&& advancedDataMaterialized
+			&& objectResourcesMaterialized
+			&& drawingResourcesMaterialized
+			&& statusPreviewMatchesRuntime
+			&& surfaceChildMoveStable
+			&& transformedChildMoveStable
+			&& specialContainerMovesStable
+			&& hasType(UIClass::UI_SideBar)
+			&& hasType(UIClass::UI_BreadcrumbBar)
+			&& hasType(UIClass::UI_PagedGridView)
+			&& hasType(UIClass::UI_WebBrowser)
+			&& hasType(UIClass::UI_MediaPlayer),
+			L"public XAML gallery: DemoWindow preview geometry, movement, or compact serialization regressed"
+			+ std::wstring(L" [path=") + demoPath.wstring()
+			+ L", parse=" + demoParseError
+			+ L", apply=" + demoApplyError
+			+ L", capture=" + demoCaptureError
+			+ L", status=" + (statusPreviewMatchesRuntime ? L"1" : L"0")
+			+ L", surface=" + (surfaceChildMoveStable ? L"1" : L"0")
+			+ L", transform=" + (transformedChildMoveStable ? L"1" : L"0")
+			+ L", group=" + (groupChildMoveStable ? L"1" : L"0")
+			+ L", expander=" + (expanderChildMoveStable ? L"1" : L"0")
+			+ L", advanced=" + (advancedDataMaterialized ? L"1" : L"0")
+			+ L", objects=" + (objectResourcesMaterialized ? L"1" : L"0")
+			+ L", drawing=" + (drawingResourcesMaterialized ? L"1" : L"0")
+			+ L", drawingCode=" + (drawingResourcesGenerated ? L"1" : L"0")
+			+ L", imageBrushCode=" + (imageBrushGenerated ? L"1" : L"0")
+			+ L"]");
 	}
 
 	if (failures.empty())

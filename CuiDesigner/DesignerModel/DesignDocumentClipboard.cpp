@@ -406,11 +406,17 @@ namespace
 				static_cast<uint32_t>(rule.ExcludedStates)));
 	}
 
+	uint32_t StyleConditionCount(const DesignerStyleRule& rule)
+	{
+		return StyleStateCount(rule)
+			+ static_cast<uint32_t>(rule.DataConditions.size());
+	}
+
 	uint32_t StyleRuleSpecificity(const DesignerStyleRule& rule)
 	{
 		const uint32_t id = rule.Id.empty() ? 0u : 1u;
 		const uint32_t qualifiers = static_cast<uint32_t>(rule.Classes.size())
-			+ StyleStateCount(rule);
+			+ StyleConditionCount(rule);
 		const uint32_t exactType = rule.HasType
 			&& rule.Type != UIClass::UI_Base ? 1u : 0u;
 		return id * 1'000'000u + qualifiers * 1'000u + exactType;
@@ -426,11 +432,16 @@ namespace
 		if (document.StyleSheet.Empty()) return true;
 		std::wstring styleError;
 		if (!DesignerStyleSheetUtils::Validate(
-			document.StyleSheet, &styleError))
+			document.StyleSheet, &styleError, document.ResourceBasePath,
+			document.Resources))
 			return Fail(L"无法复制无效的样式表：" + styleError, outError);
+		DesignerStyleSheet effectiveStyleSheet;
+		if (!DesignerStyleSheetUtils::ExpandRuntimeRules(
+			document.StyleSheet, effectiveStyleSheet, &styleError))
+			return Fail(L"无法展开复制样式依赖：" + styleError, outError);
 
 		std::unordered_set<std::wstring> requiredResources;
-		for (const auto& rule : document.StyleSheet.Rules)
+		for (const auto& rule : effectiveStyleSheet.Rules)
 		{
 			const bool matches = std::any_of(
 				document.Nodes.begin(), document.Nodes.end(),
@@ -441,17 +452,25 @@ namespace
 						&& StyleRuleMatchesNode(rule, node);
 				});
 			if (!matches) continue;
-			output.Rules.push_back(rule);
+			auto portableRule = rule;
+			portableRule.SourceDictionary.clear();
+			output.Rules.push_back(std::move(portableRule));
 			for (const auto& setter : rule.Setters)
 				if (setter.UsesResource)
 					requiredResources.insert(Lower(setter.ResourceKey));
 		}
 
-		for (const auto& resource : document.StyleSheet.Resources)
+		for (const auto& resource : effectiveStyleSheet.Resources)
 			if (requiredResources.contains(Lower(resource.Key)))
-				output.Resources.push_back(resource);
+			{
+				auto portableResource = resource;
+				portableResource.SourceDictionary.clear();
+				output.Resources.push_back(std::move(portableResource));
+			}
 		DesignerStyleSheetUtils::Canonicalize(output);
-		if (!DesignerStyleSheetUtils::Validate(output, &styleError))
+		if (!DesignerStyleSheetUtils::Validate(
+			output, &styleError, document.ResourceBasePath,
+			document.Resources))
 			return Fail(L"控件样式依赖无效：" + styleError, outError);
 		return true;
 	}
@@ -489,8 +508,12 @@ namespace
 		const DesignDocument& fragment,
 		const DesignerStyleSheet& dependencies)
 	{
-		if (RelevantStyleRules(target.StyleSheet, fragment.Nodes)
-			!= dependencies.Rules) return false;
+		DesignerStyleSheet effectiveTarget;
+		if (!DesignerStyleSheetUtils::ExpandRuntimeRules(
+			target.StyleSheet, effectiveTarget)) return false;
+		auto relevant = RelevantStyleRules(effectiveTarget, fragment.Nodes);
+		for (auto& rule : relevant) rule.SourceDictionary.clear();
+		if (relevant != dependencies.Rules) return false;
 		for (const auto& resource : dependencies.Resources)
 		{
 			const auto* existing = FindStyleResource(
@@ -578,14 +601,14 @@ namespace
 		{
 			std::vector<const DesignerStyleRule*> matchingRules;
 			std::vector<uint32_t> specificities;
-			uint32_t maximumStateCount = 0;
+			uint32_t maximumConditionCount = 0;
 			for (const auto& rule : dependencies.Rules)
 			{
 				if (!StyleRuleMatchesNode(rule, node)) continue;
 				matchingRules.push_back(&rule);
 				specificities.push_back(StyleRuleSpecificity(rule));
-				maximumStateCount = (std::max)(
-					maximumStateCount, StyleStateCount(rule));
+				maximumConditionCount = (std::max)(
+					maximumConditionCount, StyleConditionCount(rule));
 			}
 			if (matchingRules.empty()) continue;
 
@@ -607,9 +630,9 @@ namespace
 				const auto rank = static_cast<uint32_t>(std::lower_bound(
 					distinctSpecificities.begin(), distinctSpecificities.end(),
 					specificities[index]) - distinctSpecificities.begin());
-				const auto desiredQualifierCount = maximumStateCount + rank;
+				const auto desiredQualifierCount = maximumConditionCount + rank;
 				const auto extra = static_cast<size_t>(
-					desiredQualifierCount - StyleStateCount(*matchingRules[index]));
+					desiredQualifierCount - StyleConditionCount(*matchingRules[index]));
 				extraClassCounts.push_back(extra);
 				maximumExtraClassCount = (std::max)(maximumExtraClassCount, extra);
 			}
@@ -641,7 +664,8 @@ namespace
 
 		std::wstring styleError;
 		if (!DesignerStyleSheetUtils::Validate(
-			candidate.StyleSheet, &styleError))
+			candidate.StyleSheet, &styleError, candidate.ResourceBasePath,
+			candidate.Resources))
 			return Fail(L"粘贴会产生无效的隔离样式：" + styleError, outError);
 		return true;
 	}
@@ -698,6 +722,8 @@ bool DesignDocumentClipboard::Capture(
 		}
 
 		DesignDocument candidate;
+		candidate.ResourceBasePath = source.ResourceBasePath;
+		candidate.Resources = source.Resources;
 		candidate.Form.Name = L"Clipboard";
 		candidate.Form.Text = L"CUI Clipboard";
 		candidate.Form.Size = source.Form.Size;

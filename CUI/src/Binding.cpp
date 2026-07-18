@@ -101,7 +101,7 @@ namespace
 		return oss.str();
 	}
 
-	bool BindingValuesEqual(const BindingValue& a, const BindingValue& b)
+	bool BindingValuesEqualCore(const BindingValue& a, const BindingValue& b)
 	{
 		if (a.Kind() != b.Kind())
 			return false;
@@ -277,6 +277,11 @@ namespace
 		static std::mutex mutex;
 		return mutex;
 	}
+}
+
+bool BindingValuesEqual(const BindingValue& left, const BindingValue& right)
+{
+	return BindingValuesEqualCore(left, right);
 }
 
 const wchar_t* BindingErrorMessage(BindingError error) noexcept

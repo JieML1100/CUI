@@ -14,8 +14,8 @@ public:
 	static ID2D1Factory1* D2DFactory();
 	static IDWriteFactory* DWriteFactory();
 	static IWICImagingFactory* ImageFactory();
-	static IWICBitmap* CreateWICBitmap(std::wstring path);
-	static IWICBitmap* CreateWICBitmap(unsigned char* data, int size);
+	static IWICBitmap* CreateWICBitmap(const std::wstring& path);
+	static IWICBitmap* CreateWICBitmap(const uint8_t* data, size_t size);
 	static IWICBitmap* CreateWICBitmap(HBITMAP hb);
 	static IWICBitmap* CreateWICBitmap(int width, int height);
 	static IWICBitmap* CreateWICBitmap(HICON hb);

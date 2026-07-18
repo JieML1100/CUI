@@ -110,6 +110,10 @@ public:
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 	bool ClipsChildren() override { return true; }
+	cui::core::Point GetChildrenLayoutOriginDip() override
+	{
+		return { Padding.Left, Padding.Top };
+	}
 	
 	// 布局引擎管理
 	/**

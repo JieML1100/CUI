@@ -25,6 +25,7 @@ namespace
 			selector += L"#";
 			selector += rule.Id;
 		}
+		if (!rule.BasedOn.empty()) selector += L" <- @" + rule.BasedOn;
 		for (const auto& styleClass : rule.Classes)
 		{
 			if (!selector.empty()) selector += L" ";
@@ -38,9 +39,12 @@ namespace
 	}
 }
 
-StyleSheetEditorDialog::StyleSheetEditorDialog(const DesignerStyleSheet& styleSheet)
+StyleSheetEditorDialog::StyleSheetEditorDialog(
+	const DesignerStyleSheet& styleSheet,
+	std::wstring resourceBasePath)
 	: Form(L"编辑文档样式表", POINT{ 250, 100 }, SIZE{ 1020, 760 }),
-	  ResultStyleSheet(styleSheet)
+	  ResultStyleSheet(styleSheet),
+	  _resourceBasePath(std::move(resourceBasePath))
 {
 	DesignerStyleSheetUtils::Canonicalize(ResultStyleSheet);
 	this->VisibleHead = true;
@@ -50,7 +54,7 @@ StyleSheetEditorDialog::StyleSheetEditorDialog(const DesignerStyleSheet& styleSh
 	this->BackColor = Colors::WhiteSmoke;
 
 	auto tip = this->AddControl(new Label(
-		L"资源与 Setter 使用强类型值；Color 支持 #RRGGBB/#AARRGGBB，状态与 Class 使用逗号分隔。",
+		L"资源与 Setter 使用强类型值；Trigger/MultiTrigger/DataTrigger/MultiDataTrigger 由 XAML 编辑器维护并在摘要中展示。",
 		20, 12));
 	tip->Size = { 970, 24 };
 
@@ -90,9 +94,12 @@ StyleSheetEditorDialog::StyleSheetEditorDialog(const DesignerStyleSheet& styleSh
 	auto idLabel = this->AddControl(new Label(L"StyleId", 748, 118));
 	idLabel->Size = { 70, 24 };
 	_ruleId = this->AddControl(new TextBox(L"", 820, 112, 160, 30));
-	auto classesLabel = this->AddControl(new Label(L"Classes", 500, 158));
+	auto basedOnLabel = this->AddControl(new Label(L"BasedOn", 500, 158));
+	basedOnLabel->Size = { 70, 24 };
+	_ruleBasedOn = this->AddControl(new TextBox(L"", 575, 152, 160, 30));
+	auto classesLabel = this->AddControl(new Label(L"Classes", 748, 158));
 	classesLabel->Size = { 70, 24 };
-	_ruleClasses = this->AddControl(new TextBox(L"", 575, 152, 405, 30));
+	_ruleClasses = this->AddControl(new TextBox(L"", 820, 152, 160, 30));
 	auto requiredLabel = this->AddControl(new Label(L"必需状态", 500, 198));
 	requiredLabel->Size = { 85, 24 };
 	_requiredStates = this->AddControl(new TextBox(L"", 590, 192, 175, 30));
@@ -171,7 +178,8 @@ StyleSheetEditorDialog::StyleSheetEditorDialog(const DesignerStyleSheet& styleSh
 		if (!DesignerStyleSheetUtils::ValidateAgainstPropertyMetadata(
 			ResultStyleSheet,
 			[](UIClass type) { return DesignerControlFactory::Create(type); },
-			&error))
+			&error,
+			_resourceBasePath))
 		{
 			ShowValidation(error, true);
 			return;
@@ -227,7 +235,8 @@ void StyleSheetEditorDialog::RefreshResourceList(int preferredIndex)
 	_resourceList->Items.clear();
 	_resourceList->Items.push_back(kNewResource);
 	for (const auto& resource : ResultStyleSheet.Resources)
-		_resourceList->Items.push_back(resource.Key);
+		_resourceList->Items.push_back(resource.SourceDictionary.empty()
+			? resource.Key : L"[外部] " + resource.Key);
 	SelectComboIndex(_resourceList, preferredIndex >= 0 ? preferredIndex + 1 : 0);
 	_loading = false;
 }
@@ -254,7 +263,12 @@ void StyleSheetEditorDialog::RefreshRuleList(int preferredIndex)
 	_ruleList->Items.clear();
 	_ruleList->Items.push_back(kNewRule);
 	for (size_t index = 0; index < ResultStyleSheet.Rules.size(); ++index)
-		_ruleList->Items.push_back(RuleCaption(ResultStyleSheet.Rules[index], index));
+	{
+		const auto& rule = ResultStyleSheet.Rules[index];
+		auto caption = RuleCaption(rule, index);
+		if (!rule.SourceDictionary.empty()) caption = L"[外部] " + caption;
+		_ruleList->Items.push_back(std::move(caption));
+	}
 	SelectComboIndex(_ruleList, preferredIndex >= 0 ? preferredIndex + 1 : 0);
 	_loading = false;
 }
@@ -271,6 +285,7 @@ void StyleSheetEditorDialog::LoadSelectedRule()
 	SelectComboIndex(_ruleType, typeIt == _ruleType->Items.end()
 		? 0 : static_cast<int>(typeIt - _ruleType->Items.begin()));
 	_ruleId->Text = rule ? rule->Id : L"";
+	_ruleBasedOn->Text = rule ? rule->BasedOn : L"";
 	_ruleClasses->Text = rule ? DesignerStyleSheetUtils::JoinClasses(rule->Classes) : L"";
 	_requiredStates->Text = rule ? DesignerStyleSheetUtils::FormatStates(rule->RequiredStates) : L"";
 	_excludedStates->Text = rule ? DesignerStyleSheetUtils::FormatStates(rule->ExcludedStates) : L"";
@@ -351,6 +366,17 @@ void StyleSheetEditorDialog::RefreshSetterPropertyCatalog(
 	if (!EqualsName(typeName, L"Any")
 		&& !DesignerStyleSheetUtils::TryParseUIClass(typeName, type))
 		type = UIClass::UI_Base;
+	else if (EqualsName(typeName, L"Any"))
+	{
+		const int ruleIndex = SelectedRuleIndex();
+		DesignerStyleSheet resolved;
+		if (ruleIndex >= 0
+			&& DesignerStyleSheetUtils::ResolveInheritance(
+				ResultStyleSheet, resolved)
+			&& ruleIndex < static_cast<int>(resolved.Rules.size())
+			&& resolved.Rules[static_cast<size_t>(ruleIndex)].HasType)
+			type = resolved.Rules[static_cast<size_t>(ruleIndex)].Type;
+	}
 
 	_propertyProbe = DesignerControlFactory::Create(type);
 	_setterProperties = _propertyProbe
@@ -435,12 +461,60 @@ void StyleSheetEditorDialog::RefreshSummary()
 	{
 		const auto& rule = ResultStyleSheet.Rules[index];
 		text += L"\r\n  " + RuleCaption(rule, index)
-			+ L"  (" + std::to_wstring(rule.Setters.size()) + L" setters)";
+			+ L"  (" + std::to_wstring(rule.Setters.size()) + L" setters, "
+			+ std::to_wstring(rule.Triggers.size()
+				+ (rule.DataConditions.empty() ? 0u : 1u))
+			+ L" triggers)";
+		if (!rule.DataConditions.empty())
+		{
+			text += rule.DataConditions.size() > 1
+				? L"\r\n    MultiDataTrigger " : L"\r\n    DataTrigger ";
+			for (size_t conditionIndex = 0;
+				conditionIndex < rule.DataConditions.size(); ++conditionIndex)
+			{
+				if (conditionIndex != 0) text += L" AND ";
+				const auto& condition = rule.DataConditions[conditionIndex];
+				text += condition.SourceProperty + L" = " + condition.Value.Text;
+			}
+		}
 		for (const auto& setter : rule.Setters)
 			text += L"\r\n    " + setter.PropertyName + L" = "
 				+ (setter.UsesResource ? L"@" + setter.ResourceKey
 					: DesignerStyleSheetUtils::ValueKindName(setter.Literal.Kind)
 						+ L":" + setter.Literal.Text);
+		for (const auto& trigger : rule.Triggers)
+		{
+			if (!trigger.DataConditions.empty())
+			{
+				text += trigger.DataConditions.size() > 1
+					? L"\r\n    MultiDataTrigger " : L"\r\n    DataTrigger ";
+				for (size_t conditionIndex = 0;
+					conditionIndex < trigger.DataConditions.size(); ++conditionIndex)
+				{
+					if (conditionIndex != 0) text += L" AND ";
+					const auto& condition = trigger.DataConditions[conditionIndex];
+					text += condition.SourceProperty + L" = " + condition.Value.Text;
+				}
+			}
+			else
+			{
+				text += trigger.Conditions.size() > 1
+					? L"\r\n    MultiTrigger " : L"\r\n    Trigger ";
+				for (size_t conditionIndex = 0;
+					conditionIndex < trigger.Conditions.size(); ++conditionIndex)
+				{
+					if (conditionIndex != 0) text += L" AND ";
+					const auto& condition = trigger.Conditions[conditionIndex];
+					text += condition.Property + L" = "
+						+ (condition.Value ? L"true" : L"false");
+				}
+			}
+			for (const auto& setter : trigger.Setters)
+				text += L"\r\n      " + setter.PropertyName + L" = "
+					+ (setter.UsesResource ? L"@" + setter.ResourceKey
+						: DesignerStyleSheetUtils::ValueKindName(setter.Literal.Kind)
+							+ L":" + setter.Literal.Text);
+		}
 	}
 	_summary->Text = std::move(text);
 }
@@ -454,6 +528,14 @@ void StyleSheetEditorDialog::ShowValidation(const std::wstring& message, bool is
 
 bool StyleSheetEditorDialog::SaveResource()
 {
+	const int selected = SelectedResourceIndex();
+	if (selected >= 0 && selected < static_cast<int>(ResultStyleSheet.Resources.size())
+		&& !ResultStyleSheet.Resources[static_cast<size_t>(selected)]
+			.SourceDictionary.empty())
+	{
+		ShowValidation(L"外部资源字典项为只读；请在对应 XAML 文件中编辑。", true);
+		return false;
+	}
 	DesignerStyleResource resource;
 	resource.Key = DesignerStyleSheetUtils::Trim(_resourceKey->Text);
 	if (resource.Key.empty())
@@ -469,13 +551,13 @@ bool StyleSheetEditorDialog::SaveResource()
 	resource.Value.Text = _resourceValue->Text;
 	BindingValue parsed;
 	std::wstring error;
-	if (!DesignerStyleSheetUtils::TryConvertValue(resource.Value, parsed, &error))
+	if (!DesignerStyleSheetUtils::TryConvertValue(
+		resource.Value, parsed, &error, _resourceBasePath))
 	{
 		ShowValidation(error, true);
 		return false;
 	}
 
-	const int selected = SelectedResourceIndex();
 	auto collision = std::find_if(ResultStyleSheet.Resources.begin(), ResultStyleSheet.Resources.end(),
 		[&](const DesignerStyleResource& item) { return EqualsName(item.Key, resource.Key); });
 	const auto selectedIt = selected >= 0 && selected < static_cast<int>(ResultStyleSheet.Resources.size())
@@ -498,10 +580,16 @@ bool StyleSheetEditorDialog::SaveResource()
 		*selectedIt = resource;
 		if (!EqualsName(oldKey, resource.Key))
 		{
-			for (auto& rule : ResultStyleSheet.Rules)
-				for (auto& setter : rule.Setters)
+		for (auto& rule : ResultStyleSheet.Rules)
+		{
+			for (auto& setter : rule.Setters)
+				if (setter.UsesResource && EqualsName(setter.ResourceKey, oldKey))
+					setter.ResourceKey = resource.Key;
+			for (auto& trigger : rule.Triggers)
+				for (auto& setter : trigger.Setters)
 					if (setter.UsesResource && EqualsName(setter.ResourceKey, oldKey))
 						setter.ResourceKey = resource.Key;
+		}
 		}
 	}
 	RefreshResourceList(savedIndex);
@@ -519,14 +607,29 @@ void StyleSheetEditorDialog::RemoveResource()
 		ShowValidation(L"请选择要删除的资源。", false);
 		return;
 	}
+	if (!ResultStyleSheet.Resources[static_cast<size_t>(selected)]
+		.SourceDictionary.empty())
+	{
+		ShowValidation(L"外部资源字典项为只读；请在对应 XAML 文件中删除。", true);
+		return;
+	}
 	const auto key = ResultStyleSheet.Resources[static_cast<size_t>(selected)].Key;
 	for (const auto& rule : ResultStyleSheet.Rules)
+	{
 		for (const auto& setter : rule.Setters)
 			if (setter.UsesResource && EqualsName(setter.ResourceKey, key))
 			{
 				ShowValidation(L"资源仍被 Setter 引用：" + key, true);
 				return;
 			}
+		for (const auto& trigger : rule.Triggers)
+			for (const auto& setter : trigger.Setters)
+				if (setter.UsesResource && EqualsName(setter.ResourceKey, key))
+				{
+					ShowValidation(L"资源仍被 Trigger Setter 引用：" + key, true);
+					return;
+				}
+	}
 	ResultStyleSheet.Resources.erase(ResultStyleSheet.Resources.begin() + selected);
 	RefreshResourceList();
 	LoadSelectedResource();
@@ -538,8 +641,22 @@ bool StyleSheetEditorDialog::SaveRule()
 {
 	DesignerStyleRule rule;
 	const int selected = SelectedRuleIndex();
+	if (selected >= 0 && selected < static_cast<int>(ResultStyleSheet.Rules.size())
+		&& !ResultStyleSheet.Rules[static_cast<size_t>(selected)]
+			.SourceDictionary.empty())
+	{
+		ShowValidation(L"外部资源字典规则为只读；请在对应 XAML 文件中编辑。", true);
+		return false;
+	}
+	std::wstring previousId;
 	if (selected >= 0 && selected < static_cast<int>(ResultStyleSheet.Rules.size()))
-		rule.Setters = ResultStyleSheet.Rules[static_cast<size_t>(selected)].Setters;
+	{
+		const auto& previous = ResultStyleSheet.Rules[static_cast<size_t>(selected)];
+		rule.Setters = previous.Setters;
+		rule.DataConditions = previous.DataConditions;
+		rule.Triggers = previous.Triggers;
+		previousId = previous.Id;
+	}
 	const auto typeName = DesignerStyleSheetUtils::Trim(_ruleType->Text);
 	if (!EqualsName(typeName, L"Any"))
 	{
@@ -551,6 +668,7 @@ bool StyleSheetEditorDialog::SaveRule()
 		}
 	}
 	rule.Id = DesignerStyleSheetUtils::Trim(_ruleId->Text);
+	rule.BasedOn = DesignerStyleSheetUtils::Trim(_ruleBasedOn->Text);
 	rule.Classes = DesignerStyleSheetUtils::SplitClasses(_ruleClasses->Text);
 	if (!DesignerStyleSheetUtils::TryParseStates(_requiredStates->Text, rule.RequiredStates)
 		|| !DesignerStyleSheetUtils::TryParseStates(_excludedStates->Text, rule.ExcludedStates))
@@ -571,6 +689,28 @@ bool StyleSheetEditorDialog::SaveRule()
 		savedIndex = static_cast<int>(ResultStyleSheet.Rules.size()) - 1;
 	}
 	else ResultStyleSheet.Rules[static_cast<size_t>(selected)] = std::move(rule);
+	const auto& savedId = ResultStyleSheet.Rules[static_cast<size_t>(savedIndex)].Id;
+	if (!previousId.empty() && !EqualsName(previousId, savedId))
+	{
+		if (savedId.empty())
+		{
+			const bool referenced = std::any_of(
+				ResultStyleSheet.Rules.begin(), ResultStyleSheet.Rules.end(),
+				[&](const DesignerStyleRule& current)
+				{
+					return EqualsName(current.BasedOn, previousId);
+				});
+			if (referenced)
+			{
+				ResultStyleSheet.Rules[static_cast<size_t>(savedIndex)].Id = previousId;
+				ShowValidation(L"该样式仍被 BasedOn 引用，不能移除其 StyleId。", true);
+				return false;
+			}
+		}
+		else
+			for (auto& current : ResultStyleSheet.Rules)
+				if (EqualsName(current.BasedOn, previousId)) current.BasedOn = savedId;
+	}
 	RefreshRuleList(savedIndex);
 	LoadSelectedRule();
 	RefreshSummary();
@@ -586,6 +726,24 @@ void StyleSheetEditorDialog::RemoveRule()
 		ShowValidation(L"请选择要删除的规则。", false);
 		return;
 	}
+	if (!ResultStyleSheet.Rules[static_cast<size_t>(selected)]
+		.SourceDictionary.empty())
+	{
+		ShowValidation(L"外部资源字典规则为只读；请在对应 XAML 文件中删除。", true);
+		return;
+	}
+	const auto removedId = ResultStyleSheet.Rules[static_cast<size_t>(selected)].Id;
+	if (!removedId.empty()
+		&& std::any_of(ResultStyleSheet.Rules.begin(), ResultStyleSheet.Rules.end(),
+			[&](const DesignerStyleRule& rule)
+			{
+				return &rule != &ResultStyleSheet.Rules[static_cast<size_t>(selected)]
+					&& EqualsName(rule.BasedOn, removedId);
+			}))
+	{
+		ShowValidation(L"该样式仍被 BasedOn 引用：" + removedId, true);
+		return;
+	}
 	ResultStyleSheet.Rules.erase(ResultStyleSheet.Rules.begin() + selected);
 	RefreshRuleList();
 	LoadSelectedRule();
@@ -599,6 +757,12 @@ bool StyleSheetEditorDialog::SaveSetter()
 	if (ruleIndex < 0 || ruleIndex >= static_cast<int>(ResultStyleSheet.Rules.size()))
 	{
 		ShowValidation(L"请先保存并选择一条规则。", true);
+		return false;
+	}
+	if (!ResultStyleSheet.Rules[static_cast<size_t>(ruleIndex)]
+		.SourceDictionary.empty())
+	{
+		ShowValidation(L"外部资源字典规则为只读；请在对应 XAML 文件中编辑 Setter。", true);
 		return false;
 	}
 	DesignerStyleSetter setter;
@@ -635,7 +799,8 @@ bool StyleSheetEditorDialog::SaveSetter()
 		std::wstring error;
 		if (resource == ResultStyleSheet.Resources.end()
 			|| !DesignerPropertyCatalog::ValidateStyleValue(
-				*_propertyProbe, setter.PropertyName, resource->Value, &error))
+				*_propertyProbe, setter.PropertyName, resource->Value, &error,
+				_resourceBasePath))
 		{
 			ShowValidation(error.empty() ? L"资源与属性类型不兼容。" : error, true);
 			return false;
@@ -647,7 +812,8 @@ bool StyleSheetEditorDialog::SaveSetter()
 		setter.Literal.Text = _setterValue->Text;
 		std::wstring error;
 		if (!DesignerPropertyCatalog::ValidateStyleValue(
-			*_propertyProbe, setter.PropertyName, setter.Literal, &error))
+			*_propertyProbe, setter.PropertyName, setter.Literal, &error,
+			_resourceBasePath))
 		{
 			ShowValidation(error, true);
 			return false;
@@ -686,6 +852,12 @@ void StyleSheetEditorDialog::RemoveSetter()
 	if (ruleIndex < 0 || ruleIndex >= static_cast<int>(ResultStyleSheet.Rules.size()))
 	{
 		ShowValidation(L"请选择规则。", false);
+		return;
+	}
+	if (!ResultStyleSheet.Rules[static_cast<size_t>(ruleIndex)]
+		.SourceDictionary.empty())
+	{
+		ShowValidation(L"外部资源字典规则为只读；请在对应 XAML 文件中删除 Setter。", true);
 		return;
 	}
 	auto& setters = ResultStyleSheet.Rules[static_cast<size_t>(ruleIndex)].Setters;

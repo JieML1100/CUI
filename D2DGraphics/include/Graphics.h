@@ -169,11 +169,19 @@ public:
 
 	void PushDrawRect(float left, float top, float width, float height);
 	void PopDrawRect();
+	/** Pushes an arbitrary filled geometry as an additional local clip. */
+	bool PushGeometryClip(ID2D1Geometry* geometry);
+	void PopGeometryClip();
 	bool PushRoundClip(float left, float top, float width, float height, float radius);
 	void PopRoundClip();
 
 	// 本地坐标渲染辅助：设置平移变换 + 裁剪，控件内部以 (0,0) 为原点绘制。
 	void PushLocalTransform(float tx, float ty, float clipW, float clipH);
+	// 使用完整的局部到目标坐标变换；用于继承容器提供的缩放/平移视图。
+	void PushLocalTransform(
+		const D2D1_MATRIX_3X2_F& transform,
+		float clipW,
+		float clipH);
 	void PopLocalTransform();
 
 	void SetAntialiasMode(D2D1_ANTIALIAS_MODE antialiasMode);
@@ -237,8 +245,8 @@ protected:
 	bool _deviceLost = false;
 
 	std::vector<D2D1_MATRIX_3X2_F> _transformStack;
-	std::vector<Microsoft::WRL::ComPtr<ID2D1Layer>> _roundClipLayerStack;
-	std::vector<Microsoft::WRL::ComPtr<ID2D1Geometry>> _roundClipGeometryStack;
+	std::vector<Microsoft::WRL::ComPtr<ID2D1Layer>> _geometryClipLayerStack;
+	std::vector<Microsoft::WRL::ComPtr<ID2D1Geometry>> _geometryClipGeometryStack;
 };
 
 class CompatibleGraphics : public D2DGraphics {

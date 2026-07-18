@@ -15,6 +15,7 @@ class KpiCard : public Control
 {
 public:
 	UIClass Type() override;
+	void EnsureBindingPropertiesRegistered() override;
 	KpiCard(int x = 0, int y = 0, int width = 220, int height = 132);
 
 	std::wstring Title = L"Metric";

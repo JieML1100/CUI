@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -51,6 +52,13 @@ struct ControlStyleSetter
 	}
 };
 
+/** One observable DataContext path/value predicate used by DataTrigger. */
+struct ControlStyleDataCondition
+{
+	std::wstring SourceProperty;
+	BindingValue Value;
+};
+
 /**
  * Matches a control by runtime type, style id, all listed classes, and states.
  * UIClass::UI_Base is a wildcard type selector; any other type is exact.
@@ -62,6 +70,7 @@ struct ControlStyleSelector
 	std::vector<std::wstring> Classes;
 	ControlStyleState RequiredStates = ControlStyleState::None;
 	ControlStyleState ExcludedStates = ControlStyleState::None;
+	std::vector<ControlStyleDataCondition> DataConditions;
 
 	bool Matches(Control& target) const;
 	uint32_t Specificity() const noexcept;
@@ -114,7 +123,8 @@ struct ControlStyleResolution
 class ControlStyleSheet final
 {
 public:
-	ControlStyleSheet() = default;
+	ControlStyleSheet();
+	~ControlStyleSheet();
 	ControlStyleSheet(const ControlStyleSheet&) = delete;
 	ControlStyleSheet& operator=(const ControlStyleSheet&) = delete;
 
@@ -133,6 +143,9 @@ public:
 	ControlStyleResolution Resolve(Control& target) const;
 	uint64_t Revision() const noexcept { return _revision; }
 	EventConnection SubscribeChanged(std::function<void()> handler) const;
+	/** Attaches the DataContext evaluated by DataTrigger rules; source stays caller-owned. */
+	void SetDataContext(IBindingSource* source) const;
+	IBindingSource* DataContext() const noexcept;
 
 private:
 	struct ResourceEntry
@@ -144,8 +157,12 @@ private:
 	std::vector<ControlStyleRule> _rules;
 	std::vector<ResourceEntry> _resources;
 	size_t _nextRuleId = 1;
-	uint64_t _revision = 0;
+	mutable uint64_t _revision = 0;
 	mutable Event<void()> _changed;
+	struct DataContextState;
+	mutable std::unique_ptr<DataContextState> _dataContextState;
 
-	void NotifyChanged();
+	bool MatchesDataConditions(const ControlStyleSelector& selector) const;
+	void RebuildDataContextSubscriptions() const;
+	void NotifyChanged() const;
 };

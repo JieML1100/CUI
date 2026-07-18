@@ -98,6 +98,8 @@ bool RuntimeDocumentSession::MountFile(
 		: RuntimeDocumentLoader::LoadFileIntoForm(
 			filePath, form, _document, loadOptions, formResolver, outError);
 	if (!loaded) return false;
+	if (options.WatchFile)
+		candidateWatcher.SetDependencies(_document.ResourceDependencies());
 
 	_sourceFile = std::move(candidateSource);
 	_mountedForm = &form;
@@ -118,7 +120,9 @@ bool RuntimeDocumentSession::StartWatching(std::wstring* outError)
 		return false;
 	}
 	if (!CheckOwningThread(outError)) return false;
-	return _watcher.Start(_sourceFile, outError);
+	if (!_watcher.Start(_sourceFile, outError)) return false;
+	_watcher.SetDependencies(_document.ResourceDependencies());
+	return true;
 }
 
 RuntimeDocumentWatchResult RuntimeDocumentSession::Poll()

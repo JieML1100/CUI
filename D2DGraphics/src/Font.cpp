@@ -215,8 +215,10 @@ std::vector<std::wstring> Font::GetSystemFonts() {
 						if SUCCEEDED(hr)
 							hr = pFamilyNames->GetStringLength(index, &length);
 						if SUCCEEDED(hr) {
-							std::wstring name(length, L'\0');
-							hr = pFamilyNames->GetString(index, &name[0], length + 1);
+							wchar_t* nameBuffer = new wchar_t[length + 1];
+							hr = pFamilyNames->GetString(index, nameBuffer, length + 1);
+							std::wstring name(nameBuffer, length);
+							delete[] nameBuffer;
 							result.push_back(name);
 						}
 					}

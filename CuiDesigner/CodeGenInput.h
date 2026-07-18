@@ -34,5 +34,6 @@ struct CodeGenInput
 	bool FormAllowResize = true;
 	std::wstring FormFontName;
 	float FormFontSize = 18.0f;
+	std::wstring ResourceBasePath;
 	DesignerStyleSheet StyleSheet;
 };

@@ -470,7 +470,11 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 		{
 			std::shared_ptr<ControlStyleSheet> styleSheet;
 			if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
-				target._styleSheet, styleSheet, nullptr)) return;
+				target._styleSheet, styleSheet, nullptr,
+				target._sourceDocument
+					? target._sourceDocument->ResourceBasePath : std::wstring{},
+				target._sourceDocument
+					? target._sourceDocument->Resources : nullptr)) return;
 			for (auto* root : target._rootControls)
 				if (root) (void)root->SetStyleSheet(styleSheet, true);
 		}
@@ -521,7 +525,8 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 
 		std::shared_ptr<ControlStyleSheet> runtimeStyleSheet;
 		if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
-			document.StyleSheet, runtimeStyleSheet, outError))
+			document.StyleSheet, runtimeStyleSheet, outError,
+			document.ResourceBasePath, document.Resources))
 		{
 			const auto error = outError ? *outError : std::wstring{};
 			rollbackRuntime();

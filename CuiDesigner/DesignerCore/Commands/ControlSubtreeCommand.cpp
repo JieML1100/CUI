@@ -68,7 +68,7 @@ namespace
 		if (auto* panel = dynamic_cast<Panel*>(parent))
 		{
 			panel->InvalidateLayout();
-			panel->PerformLayout();
+			panel->UpdateLayout();
 		}
 	}
 

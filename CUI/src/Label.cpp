@@ -37,7 +37,13 @@ void Label::Update()
 		{
 			this->RenderImage();
 		}
-		d2d->DrawString(this->Text, 0, 0, this->ForeColor, font);
+		Microsoft::WRL::ComPtr<ID2D1Brush> foreground;
+		foreground.Attach(CreateForegroundBrush(
+			*d2d, D2D1::SizeF(size.width, size.height)));
+		if (foreground)
+			d2d->DrawString(this->Text, 0, 0, foreground.Get(), font);
+		else
+			d2d->DrawString(this->Text, 0, 0, this->ForeColor, font);
 	}
 	if (!this->Enable)
 	{

@@ -2636,7 +2636,7 @@ void SvgParse_createGradients(SvgParser* p)
 	for (shape = p->image->shapes; shape != NULL; shape = shape->next) {
 		if (shape->fill.type == SVG_PAINT_UNDEF) {
 			if (shape->fillGradient[0] != '\0') {
-				float inv[6], localBounds[4];
+				float inv[6]{}, localBounds[4]{};
 				SvgParse_xformInverse(inv, shape->xform);
 				SvgParse_getLocalBounds(localBounds, shape, inv);
 				shape->fill.gradient = SvgParse_createGradient(p, shape->fillGradient, localBounds, shape->xform, &shape->fill.type);
@@ -2647,7 +2647,7 @@ void SvgParse_createGradients(SvgParser* p)
 		}
 		if (shape->stroke.type == SVG_PAINT_UNDEF) {
 			if (shape->strokeGradient[0] != '\0') {
-				float inv[6], localBounds[4];
+				float inv[6]{}, localBounds[4]{};
 				SvgParse_xformInverse(inv, shape->xform);
 				SvgParse_getLocalBounds(localBounds, shape, inv);
 				shape->stroke.gradient = SvgParse_createGradient(p, shape->strokeGradient, localBounds, shape->xform, &shape->stroke.type);

@@ -5,6 +5,9 @@
 #include "ObservableCollection.h"
 #include <Colors.h>
 #include "ThemePalette.h"
+#include "Brush.h"
+#include "Geometry.h"
+#include "Transform.h"
 #include <Font.h>
 #include <Factory.h>
 #include <Graphics.h>
@@ -668,6 +671,11 @@ protected:
 	bool _refreshingStyleValues = false;
 	bool _styleRefreshPending = false;
 	std::function<void(Control&, D2DGraphics&)> _renderDecorator;
+	std::optional<cui::drawing::Brush> _foregroundBrush;
+	std::optional<cui::drawing::Geometry> _clip;
+	std::optional<cui::drawing::Transform> _renderTransform;
+	D2D1_POINT_2F _renderTransformOrigin{ 0.0f, 0.0f };
+	size_t _activeGeometryClipCount = 0;
 	// Keyboard focus may remain on a button after a click. Keep the physical
 	// press lifecycle separate so a modal nested message loop cannot turn a
 	// stray WM_LBUTTONUP into another click.
@@ -799,6 +807,8 @@ protected:
 	// 通知父容器（Panel 或 Form）需要重新布局
 	virtual void RequestLayout();
 	void InvalidateMeasureSubtree();
+	void InvalidateVisualSubtree();
+	D2D1_MATRIX_3X2_F GetEffectiveDescendantRenderTransform() const;
 	// 将内容区 DIP 矩形统一转换为窗口客户区物理像素，并与上次区域取并集。
 	void InvalidateVisualRect(const D2D1_RECT_F& contentRect);
 	void DispatchInvalidatedClientRect(const D2D1_RECT_F& clientRect);
@@ -916,6 +926,37 @@ public:
 	bool HasRenderDecorator() const noexcept
 	{
 		return static_cast<bool>(_renderDecorator);
+	}
+	/** Sets a device-independent brush used by brush-aware foreground rendering. */
+	void SetForegroundBrush(const cui::drawing::Brush& brush);
+	void ClearForegroundBrush();
+	const std::optional<cui::drawing::Brush>& GetForegroundBrush() const noexcept
+	{
+		return _foregroundBrush;
+	}
+	/** Returns an owned COM brush reference, or nullptr when no brush is set. */
+	ID2D1Brush* CreateForegroundBrush(
+		D2DGraphics& graphics,
+		D2D1_SIZE_F bounds) const;
+	/** Sets an additional local geometry clip that also applies to descendants. */
+	void SetClip(const cui::drawing::Geometry& geometry);
+	void ClearClip();
+	const std::optional<cui::drawing::Geometry>& GetClip() const noexcept
+	{
+		return _clip;
+	}
+	/** Sets a device-independent transform that affects this control and its descendants. */
+	void SetRenderTransform(const cui::drawing::Transform& transform);
+	void ClearRenderTransform();
+	const std::optional<cui::drawing::Transform>& GetRenderTransform() const noexcept
+	{
+		return _renderTransform;
+	}
+	/** Relative point in the control bounds used as the transform origin. */
+	void SetRenderTransformOrigin(D2D1_POINT_2F origin);
+	D2D1_POINT_2F GetRenderTransformOrigin() const noexcept
+	{
+		return _renderTransformOrigin;
 	}
 	/** @brief 结束局部坐标渲染，恢复之前的变换状态。 */
 	void EndRender();
@@ -1344,6 +1385,13 @@ public:
 	 * @param performLayout true 时在最外层恢复后立即执行本容器的待处理布局。
 	 */
 	void ResumeLayout(bool performLayout = true);
+	/**
+	 * @brief 立即执行当前控件类型的待处理布局。
+	 *
+	 * 与直接调用 Panel::PerformLayout 不同，此入口会保留 GroupBox、
+	 * Expander、ScrollView 等派生容器的专用内容区语义。
+	 */
+	void UpdateLayout() { PerformPendingLayout(); }
 	/** @brief 当前控件是否仍处于布局暂停状态。 */
 	bool IsLayoutSuspended() const { return _layoutDeferral.IsSuspended(); }
 	const cui::layout::LayoutStyle& GetSpecifiedLayout() const { return _layoutStyle; }
@@ -1353,6 +1401,33 @@ public:
 	virtual cui::core::Size GetActualSizeDip();
 	cui::core::Point GetAbsoluteLocationDip() const;
 	cui::core::Rect GetAbsoluteRectDip();
+	/**
+	 * @brief 可选的后代绘制变换，输入和输出都位于窗体内容区 DIP 坐标。
+	 *
+	 * 容器可借此实现只影响视图、不改写布局数据的缩放和平移。控件绘制、
+	 * 脏矩形和 DComp 裁剪会统一继承该变换。
+	 */
+	virtual bool TryGetDescendantRenderTransform(
+		D2D1_MATRIX_3X2_F& transform) const
+	{
+		transform = D2D1::Matrix3x2F::Identity();
+		return false;
+	}
+	/** @brief 返回所有祖先为当前控件提供的内容区绘制变换。 */
+	D2D1_MATRIX_3X2_F GetInheritedRenderTransform() const;
+	/** @brief 返回当前控件局部坐标到实际内容区绘制坐标的完整变换。 */
+	D2D1_MATRIX_3X2_F GetLocalToRenderTransform() const;
+	/** @brief 把实际绘制坐标反变换为当前控件局部坐标；奇异矩阵返回 false。 */
+	bool TryTransformRenderPointToLocal(
+		D2D1_POINT_2F renderPoint,
+		D2D1_POINT_2F& localPoint) const;
+	/** Returns false when the point is outside this control or any ancestor Clip. */
+	bool IsRenderPointInsideClip(D2D1_POINT_2F renderPoint) const;
+	/** @brief 将绝对内容区矩形映射到当前控件实际的绘制空间。 */
+	D2D1_RECT_F TransformAbsoluteRectToRenderSpace(
+		const D2D1_RECT_F& rect) const;
+	/** @brief 返回应用祖先绘制变换后的绝对内容区边界。 */
+	D2D1_RECT_F GetRenderedAbsoluteRectDip();
 	/**
 	 * @brief 布局应用：由布局引擎/父容器设置最终浮点 DIP 矩形。
 	 * POINT/SIZE 重载仅用于兼容旧容器和手工布局代码。
@@ -1385,6 +1460,13 @@ public:
 	virtual bool RenderNormalWhenForeground() const { return false; }
 	virtual bool HitTestChildren() const { return true; }
 	virtual bool ShouldHitTestChildrenAt(int localX, int localY) const { (void)localX; (void)localY; return this->HitTestChildren(); }
+	/**
+	 * @brief 子控件布局内容区相对当前控件的原点（DIP）。
+	 *
+	 * 设计器和容器布局都可用它在“容器局部坐标”与“子控件布局坐标”
+	 * 之间换算。滚动等仅影响绘制的位置仍由 GetChildrenRenderOffset 表达。
+	 */
+	virtual cui::core::Point GetChildrenLayoutOriginDip() { return {}; }
 	virtual POINT GetChildrenRenderOffset() const { return POINT{ 0, 0 }; }
 	virtual bool ClipsChildren() { return false; }
 	virtual D2D1_RECT_F GetChildrenClipRect()

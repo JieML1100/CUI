@@ -58,6 +58,7 @@ class ReportView : public Control
 {
 public:
 	UIClass Type() override;
+	void EnsureBindingPropertiesRegistered() override;
 	ReportView(int x = 0, int y = 0, int width = 420, int height = 260);
 
 	std::wstring Title = L"Report";

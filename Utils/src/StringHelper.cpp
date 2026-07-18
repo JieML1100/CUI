@@ -320,16 +320,16 @@ int StringHelper::GetHashCode(std::wstring str) {
 	}
 	return num + num2 * 1566083941;
 }
-std::string StringHelper::Insert(std::string str, int index, std::string substr) {
+std::string StringHelper::Insert(std::string str, size_t index, std::string substr) {
 	return str.insert(index, substr);
 }
-std::wstring StringHelper::Insert(std::wstring str, int index, std::wstring substr) {
+std::wstring StringHelper::Insert(std::wstring str, size_t index, std::wstring substr) {
 	return str.insert(index, substr);
 }
-std::string StringHelper::Remove(std::string str, int index, int count) {
+std::string StringHelper::Remove(std::string str, size_t index, size_t count) {
 	return str.erase(index, count);
 }
-std::wstring StringHelper::Remove(std::wstring str, int index, int count) {
+std::wstring StringHelper::Remove(std::wstring str, size_t index, size_t count) {
 	return str.erase(index, count);
 }
 

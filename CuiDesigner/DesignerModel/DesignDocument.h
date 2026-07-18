@@ -3,7 +3,9 @@
 #include "../DesignerTypes.h"
 #include "../DesignerStyleSheet.h"
 #include "DesignValue.h"
+#include "../../CUI/include/Resource.h"
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -94,6 +96,18 @@ struct DesignDocument
 	DesignerDataContextSchema DataContextSchema;
 	DesignerStyleSheet StyleSheet;
 	std::vector<DesignNode> Nodes;
+	/**
+	 * Non-persisted directory used to resolve relative XAML resource URIs.
+	 * File frontends set it to the source document directory; equality ignores it.
+	 */
+	std::wstring ResourceBasePath;
+	/** Non-persisted resolver snapshot and dependency collector for this load. */
+	std::shared_ptr<ResourceLoadContext> Resources;
+	std::vector<ResourceDependency> ResourceDependencies() const
+	{
+		return Resources ? Resources->Dependencies()
+			: std::vector<ResourceDependency>{};
+	}
 
 	int AllocateNodeId();
 	void RecalculateNextStableId();
