@@ -180,35 +180,13 @@ namespace
 		const std::wstring& currentName,
 		const DesignerModel::DesignEventHandlerCodeInspection& codeInspection)
 	{
+		if (canvas)
+			return canvas->GetCompatibleEventHandlerNames(
+				requested, defaultName, currentName,
+				codeInspection.CompatibleUserHandlers);
 		std::set<std::wstring> compatible;
 		if (!defaultName.empty()) compatible.insert(defaultName);
 		if (!currentName.empty()) compatible.insert(currentName);
-		DesignerModel::DesignDocumentEventIndex documentIndex;
-		bool hasDocumentIndex = false;
-		if (canvas)
-		{
-			hasDocumentIndex = canvas->BuildEventHandlerIndex(
-				documentIndex, nullptr);
-			if (hasDocumentIndex)
-				for (const auto& handler : documentIndex.Handlers())
-					if (handler.Signature == requested.Signature)
-						compatible.insert(handler.Name);
-		}
-		if (const auto source = codeInspection.CompatibleUserHandlers.find(
-			requested.ParameterList);
-			source != codeInspection.CompatibleUserHandlers.end())
-		{
-			for (const auto& name : source->second)
-			{
-				std::wstring validationError;
-				if (!DesignerEventCatalog::ValidateHandlerName(
-					name, &validationError)) continue;
-				const auto* used = hasDocumentIndex
-					? documentIndex.FindHandler(name) : nullptr;
-				if (used && used->Signature != requested.Signature) continue;
-				compatible.insert(name);
-			}
-		}
 
 		std::vector<std::wstring> result;
 		auto appendFirst = [&](const std::wstring& name) {
@@ -355,6 +333,16 @@ PropertyGrid::PropertyGrid(int x, int y, int width, int height)
 	_nativeGrid->OnItemClick += [this](PropertyGridView*, int index)
 	{
 		HandleNativeItemClick(index);
+	};
+	_nativeGrid->SelectionChanged += [this](PropertyGridView*, int index)
+	{
+		RememberNativeSelection(index);
+	};
+	_nativeGrid->OnKeyDown += [this](Control*, KeyEventArgs args)
+	{
+		if (_viewMode == DesignerPropertyGridViewMode::Events
+			&& args.KeyCode() == Keys::F12)
+			ActivateSelectedEventHandler();
 	};
 	_nativeGrid->OnMouseDoubleClick += [this](Control*, MouseEventArgs eventArgs)
 	{
@@ -712,11 +700,14 @@ void PropertyGrid::AddNativeEventRow(
 	const DesignerEventDescriptor& event,
 	const std::wstring& subjectName,
 	const std::wstring& storedHandler,
-	const std::wstring& category)
+	const std::wstring& category,
+	bool hasMixedValue,
+	size_t targetCount)
 {
 	if (!_nativeGrid) return;
-	const auto currentName = DesignerEventCatalog::ResolveHandlerName(
+	const auto resolvedName = DesignerEventCatalog::ResolveHandlerName(
 		storedHandler, subjectName, event.Name);
+	const auto currentName = hasMixedValue ? std::wstring{} : resolvedName;
 	const auto defaultName = DesignerEventCatalog::MakeDefaultHandlerName(
 		subjectName, event.Name);
 	const auto code = GetEventCodePresentation(
@@ -724,13 +715,21 @@ void PropertyGrid::AddNativeEventRow(
 	PropertyGridItem item(
 		category,
 		event.DisplayName.empty() ? event.Name : event.DisplayName,
-		currentName,
+		hasMixedValue ? kMixedValueText : currentName,
 		PropertyGridValueType::EditableEnum);
+	item.IsMixed = hasMixedValue;
+	item.CanReset = hasMixedValue || !currentName.empty();
 	if (!code.Badge.empty()) item.Name += L"  [" + code.Badge + L"]";
 	item.Options = GetCompatibleHandlerNames(
 		_binding.GetCanvas(), event, defaultName, currentName,
 		_eventCodeInspection);
 	item.Description = event.IsDefault ? L"默认事件。" : L"";
+	if (targetCount > 1)
+	{
+		if (!item.Description.empty()) item.Description += L" ";
+		item.Description += L"编辑会同时应用到 "
+			+ std::to_wstring(targetCount) + L" 个选中控件。";
+	}
 	if (!code.Diagnostic.empty())
 	{
 		if (!item.Description.empty()) item.Description += L" ";
@@ -739,7 +738,7 @@ void PropertyGrid::AddNativeEventRow(
 	item.Description += L"签名：void Handler("
 		+ std::wstring(event.ParameterList.begin(), event.ParameterList.end())
 		+ L")。留空表示不绑定；F4 可复用文档或用户源码中的同签名函数；"
-			L"双击生成或定位处理函数。";
+			L"双击或按 F12 生成/定位处理函数。";
 	_nativeItemBuffer.push_back(std::move(item));
 	NativeGridEntry entry;
 	entry.Kind = NativeGridEntryKind::Event;
@@ -775,9 +774,108 @@ void PropertyGrid::PopulateNativeEventRows(
 		AddNativeEventRow(
 			event, subjectName, storedHandler, category);
 	}
+	const bool hasVisibleEventRows = _nativeItemBuffer.size() > before;
+	if (hasVisibleEventRows)
+		AddNativeEventActivationRow(scopeCaption);
 	AddNativeEventHandlerManagerRow(scopeCaption);
-	if (_nativeItemBuffer.size() == before && HasActivePropertyFilter())
+	if (!hasVisibleEventRows && HasActivePropertyFilter())
 		AddNativeInformationalRow(L"筛选", L"没有匹配的事件");
+}
+
+void PropertyGrid::PopulateNativeMultiSelectionEventRows(
+	const std::vector<std::shared_ptr<DesignerControl>>& controls,
+	const std::shared_ptr<DesignerControl>& primaryControl,
+	const std::wstring& scopeCaption)
+{
+	if (!_nativeGrid || controls.empty() || !primaryControl) return;
+	auto common = DesignerEventCatalog::GetControlEvents(
+		primaryControl->Type, primaryControl->CustomEvents);
+	for (const auto& control : controls)
+	{
+		if (!control || control == primaryControl) continue;
+		common.erase(std::remove_if(
+			common.begin(), common.end(), [&](DesignerEventDescriptor& candidate)
+			{
+				const auto matching = DesignerEventCatalog::FindControlEvent(
+					control->Type, candidate.Name, control->CustomEvents);
+				if (!matching || !candidate.SameSignature(*matching)) return true;
+				candidate.IsDefault = candidate.IsDefault && matching->IsDefault;
+				return false;
+			}), common.end());
+	}
+
+	const auto before = _nativeItemBuffer.size();
+	for (const auto& event : common)
+	{
+		std::wstring primaryStored;
+		if (const auto found = primaryControl->EventHandlers.find(event.Name);
+			found != primaryControl->EventHandlers.end())
+			primaryStored = found->second;
+		const auto primaryResolved = DesignerEventCatalog::ResolveHandlerName(
+			primaryStored, primaryControl->Name, event.Name);
+		bool mixed = false;
+		for (const auto& control : controls)
+		{
+			if (!control) { mixed = true; break; }
+			const auto matching = DesignerEventCatalog::FindControlEvent(
+				control->Type, event.Name, control->CustomEvents);
+			if (!matching || !event.SameSignature(*matching))
+			{
+				mixed = true;
+				break;
+			}
+			std::wstring stored;
+			if (const auto found = control->EventHandlers.find(matching->Name);
+				found != control->EventHandlers.end())
+				stored = found->second;
+			if (DesignerEventCatalog::ResolveHandlerName(
+				stored, control->Name, matching->Name) != primaryResolved)
+			{
+				mixed = true;
+				break;
+			}
+		}
+
+		const std::wstring category = scopeCaption + L" · "
+			+ std::wstring(DesignerEventCatalog::GetCategoryDisplayName(
+				event.Category));
+		const auto code = GetEventCodePresentation(
+			_eventCodeInspection, mixed ? std::wstring{} : primaryResolved);
+		if (!MatchesCurrentFilter(event.Name + L" " + event.DisplayName
+			+ L" Event 事件 公共 多选 " + category + L" "
+			+ (mixed ? kMixedValueText : primaryResolved) + L" "
+			+ code.Badge + L" " + code.Diagnostic + L" "
+			+ std::wstring(event.ParameterList.begin(),
+				event.ParameterList.end()))) continue;
+		AddNativeEventRow(
+			event, primaryControl->Name, primaryStored, category,
+			mixed, controls.size());
+	}
+	const bool hasVisibleEventRows = _nativeItemBuffer.size() > before;
+	if (hasVisibleEventRows)
+		AddNativeEventActivationRow(scopeCaption);
+	AddNativeEventHandlerManagerRow(scopeCaption);
+	if (!hasVisibleEventRows)
+	{
+		AddNativeInformationalRow(
+			HasActivePropertyFilter() ? L"筛选" : scopeCaption,
+			HasActivePropertyFilter()
+				? L"没有匹配的公共事件"
+				: L"所选控件没有签名一致的公共事件");
+	}
+}
+
+void PropertyGrid::AddNativeEventActivationRow(
+	const std::wstring& category)
+{
+	const auto eventName = ResolveEventActivationName();
+	AddNativeActionRow(
+		category,
+		L"生成/定位处理函数",
+		eventName.empty() ? L"F12" : L"F12 · " + eventName,
+		L"先选中事件行；未绑定时会通过可撤销文档命令写入约定处理函数名，"
+			L"再生成或定位用户代码；不会覆盖现有函数体。",
+		[this]() { ActivateSelectedEventHandler(); });
 }
 
 void PropertyGrid::AddNativeEventHandlerManagerRow(
@@ -1004,17 +1102,83 @@ void PropertyGrid::HandleNativeItemClick(int index)
 void PropertyGrid::HandleNativeDoubleClick(int index)
 {
 	if (index < 0 || index >= static_cast<int>(_nativeEntries.size())) return;
-	const auto entry = _nativeEntries[static_cast<size_t>(index)];
-	if (entry.Kind != NativeGridEntryKind::Event
-		|| entry.PropertyName.empty()) return;
+	const auto& entry = _nativeEntries[static_cast<size_t>(index)];
+	if (entry.Kind != NativeGridEntryKind::Event) return;
+	RememberNativeSelection(index);
 	if (_nativeGrid) _nativeGrid->CancelEdit();
-	(void)ActivateEventHandler(entry.PropertyName);
+	ActivateSelectedEventHandler();
+}
+
+void PropertyGrid::RememberNativeSelection(int index)
+{
+	if (index < 0 || index >= static_cast<int>(_nativeEntries.size())) return;
+	const auto& entry = _nativeEntries[static_cast<size_t>(index)];
+	if (entry.Kind == NativeGridEntryKind::Event
+		&& !entry.PropertyName.empty())
+		_lastSelectedEventName = entry.PropertyName;
+}
+
+std::wstring PropertyGrid::ResolveEventActivationName() const
+{
+	auto isVisibleEvent = [this](const std::wstring& name)
+	{
+		return !name.empty() && std::any_of(
+			_nativeEntries.begin(), _nativeEntries.end(),
+			[&name](const NativeGridEntry& entry)
+			{
+				return entry.Kind == NativeGridEntryKind::Event
+					&& entry.PropertyName == name;
+			});
+	};
+	if (isVisibleEvent(_lastSelectedEventName))
+		return _lastSelectedEventName;
+
+	std::optional<DesignerEventDescriptor> defaultEvent;
+	if (_binding.IsFormBinding())
+		defaultEvent = DesignerEventCatalog::GetDefaultFormEvent();
+	else if (const auto control = _binding.GetBoundControl())
+		defaultEvent = DesignerEventCatalog::GetDefaultControlEvent(
+			control->Type, control->CustomEvents);
+	if (defaultEvent && isVisibleEvent(defaultEvent->Name))
+		return defaultEvent->Name;
+
+	for (const auto& entry : _nativeEntries)
+		if (entry.Kind == NativeGridEntryKind::Event
+			&& !entry.PropertyName.empty())
+			return entry.PropertyName;
+	return L"";
+}
+
+void PropertyGrid::ActivateSelectedEventHandler()
+{
+	const auto eventName = ResolveEventActivationName();
+	if (eventName.empty())
+	{
+		ShowPropertyEditError(L"事件", L"请先选择一个事件。");
+		return;
+	}
+	if (_nativeGrid)
+	{
+		ClearPropertyEditError();
+		_nativeGrid->CommitEdit();
+		if (HasPropertyEditError()) return;
+	}
+	const auto result = ActivateEventHandler(eventName);
+	if (result) ClearPropertyEditError();
+	else ShowPropertyEditError(eventName, result.Error);
 }
 
 void PropertyGrid::HandleNativeResetRequested(int index)
 {
 	if (index < 0 || index >= static_cast<int>(_nativeEntries.size())) return;
 	const auto entry = _nativeEntries[static_cast<size_t>(index)];
+	if (entry.Kind == NativeGridEntryKind::Event
+		&& !entry.PropertyName.empty())
+	{
+		const auto result = UpdatePropertyFromTextBox(entry.PropertyName, L"");
+		if (result) _reloadRequested = true;
+		return;
+	}
 	if (entry.Kind != NativeGridEntryKind::Property
 		|| entry.PropertyName.empty()) return;
 	ResetCurrentProperty(entry.PropertyName);
@@ -1384,8 +1548,15 @@ DesignerPropertyEditResult PropertyGrid::UpdatePropertyFromTextBox(
 			return failure;
 		}
 		std::wstring error;
-		auto transaction = canvas->UpdateEventHandler(
-			eventControl, currentEvent->Name, TrimWs(value), &error);
+		const auto eventTargetCount = !_binding.IsFormBinding()
+			? _binding.GetBoundControls().size() : size_t{ 1 };
+		const bool multiControlEvent = eventTargetCount > 1;
+		auto transaction = multiControlEvent
+			? canvas->UpdateEventHandlers(
+				_binding.GetBoundControls(), currentEvent->Name,
+				TrimWs(value), &error)
+			: canvas->UpdateEventHandler(
+				eventControl, currentEvent->Name, TrimWs(value), &error);
 		if (!transaction)
 		{
 			auto failure = DesignerPropertyEditResult::Failure(
@@ -1395,7 +1566,7 @@ DesignerPropertyEditResult PropertyGrid::UpdatePropertyFromTextBox(
 		}
 		ClearPropertyEditError();
 		return DesignerPropertyEditResult::Success(
-			transaction.HasChanges() ? 1 : 0);
+			transaction.HasChanges() ? eventTargetCount : 0);
 	}
 
 	auto result = ExecutePropertyEditCommand(propertyName, [this, propertyName, value]()
@@ -1931,8 +2102,8 @@ void PropertyGrid::LoadControls(
 	if (selectionCount > 1)
 	{
 		if (events)
-			AddNativeInformationalRow(
-				L"事件", L"多选时不编辑事件；请选择一个主控件");
+			PopulateNativeMultiSelectionEventRows(
+				_binding.GetBoundControls(), control, L"公共事件");
 		Control::SetChildrenParentForm(this, this->ParentForm);
 		CommitNativeRowsReload();
 		return;

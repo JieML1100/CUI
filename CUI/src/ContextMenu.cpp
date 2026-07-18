@@ -23,6 +23,19 @@ namespace
 		color.a = (std::clamp)(color.a * factor, 0.0f, 1.0f);
 		return color;
 	}
+
+	D2D1_SIZE_F LogicalPopupExtent(Form* form)
+	{
+		if (!form) return D2D1::SizeF(0.0f, 0.0f);
+		float scale = form->GetDpiScale();
+		if (scale <= 0.0f) scale = 1.0f;
+		const float head = form->VisibleHead
+			? static_cast<float>(form->HeadHeight) : 0.0f;
+		return D2D1::SizeF(
+			(static_cast<float>(form->ClientSize.cx) / scale),
+			((std::max)(0.0f,
+				static_cast<float>(form->ClientSize.cy) - head) / scale));
+	}
 }
 
 UIClass ContextMenu::Type() { return UIClass::UI_ContextMenu; }
@@ -51,7 +64,7 @@ float ContextMenu::CalcPanelWidth(const std::vector<MenuItem*>& items)
 	{
 		if (!it || it->Separator) continue;
 		auto ts = font->GetTextSize(it->Text);
-		float tw = ts.width + ItemPaddingX * 2.0f + 24.0f;
+		float tw = ts.width + ItemPaddingX * 2.0f + 42.0f;
 		if (!it->Shortcut.empty())
 		{
 			auto ss = font->GetTextSize(it->Shortcut);
@@ -64,7 +77,7 @@ float ContextMenu::CalcPanelWidth(const std::vector<MenuItem*>& items)
 	if (w < 80.0f) w = 80.0f;
 	if (this->ParentForm)
 	{
-		float maxW = (float)this->ParentForm->ClientSize.cx - 8.0f;
+		float maxW = LogicalPopupExtent(this->ParentForm).width - 8.0f;
 		if (w > maxW) w = maxW;
 	}
 	return w;
@@ -79,8 +92,9 @@ std::vector<ContextMenu::PopupPanel> ContextMenu::BuildPanels()
 	auto clampPanelXY = [&](float& x, float& y, float w, float h)
 		{
 			if (!this->ParentForm) return;
-			float maxX = (float)this->ParentForm->ClientSize.cx;
-			float maxY = (float)this->ParentForm->ClientSize.cy;
+			const auto extent = LogicalPopupExtent(this->ParentForm);
+			float maxX = extent.width;
+			float maxY = extent.height;
 			if (x < 0.0f) x = 0.0f;
 			if (y < 0.0f) y = 0.0f;
 			if (x + w > maxX) x = (std::max)(0.0f, maxX - w);
@@ -114,7 +128,7 @@ std::vector<ContextMenu::PopupPanel> ContextMenu::BuildPanels()
 		p.Y = prev.Y + DropPaddingY + (float)openIdx * (float)ItemHeight;
 		if (this->ParentForm)
 		{
-			float maxX = (float)this->ParentForm->ClientSize.cx;
+			float maxX = LogicalPopupExtent(this->ParentForm).width;
 			if (p.X + p.W > maxX)
 			{
 				p.X = prev.X - p.W - 4.0f;
@@ -266,7 +280,19 @@ void ContextMenu::Update()
 				auto ts = font->GetTextSize(it->Text);
 				float ty = iy + ((float)ItemHeight - ts.height) * 0.5f;
 				if (ty < iy) ty = iy;
-				d2d->DrawString(it->Text, pn.X + ItemPaddingX, ty, FadeColor(PopupTextColor, alpha), font);
+				const float checkSlot = 18.0f;
+				if (it->Checked)
+				{
+					auto checkSize = font->GetTextSize(L"\u2713");
+					const float checkY = iy
+						+ ((float)ItemHeight - checkSize.height) * 0.5f;
+					d2d->DrawString(
+						L"\u2713", pn.X + ItemPaddingX, checkY,
+						FadeColor(PopupTextColor, alpha), font);
+				}
+				d2d->DrawString(
+					it->Text, pn.X + ItemPaddingX + checkSlot, ty,
+					FadeColor(PopupTextColor, alpha), font);
 				const float arrowReserve = !it->SubItems.empty() ? 18.0f : 0.0f;
 				if (!it->Shortcut.empty())
 				{

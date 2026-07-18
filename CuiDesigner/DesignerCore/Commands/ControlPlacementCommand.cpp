@@ -71,6 +71,7 @@ namespace
 		if (actual.GridRowSpan != expected.GridRowSpan) return L"GridRowSpan";
 		if (actual.GridColumnSpan != expected.GridColumnSpan)
 			return L"GridColumnSpan";
+		if (actual.ZIndex != expected.ZIndex) return L"ZIndex";
 		return L"unknown";
 	}
 
@@ -227,6 +228,7 @@ bool ControlPlacementCommand::CaptureTarget(
 	state.GridColumn = control->GridColumn;
 	state.GridRowSpan = control->GridRowSpan;
 	state.GridColumnSpan = control->GridColumnSpan;
+	state.ZIndex = control->ZIndex;
 	out = std::move(state);
 	if (outError) outError->clear();
 	return true;
@@ -434,6 +436,7 @@ bool ControlPlacementCommand::ApplyStateUnchecked(
 		control->GridColumn = state.GridColumn;
 		control->GridRowSpan = state.GridRowSpan;
 		control->GridColumnSpan = state.GridColumnSpan;
+		control->ZIndex = state.ZIndex;
 		control->HAlign = state.HAlign;
 		control->VAlign = state.VAlign;
 		control->AnchorStyles = state.AnchorStyles;
@@ -547,7 +550,8 @@ bool DesignerControlPlacementState::EquivalentTo(
 		&& GridRow == other.GridRow
 		&& GridColumn == other.GridColumn
 		&& GridRowSpan == other.GridRowSpan
-		&& GridColumnSpan == other.GridColumnSpan;
+		&& GridColumnSpan == other.GridColumnSpan
+		&& ZIndex == other.ZIndex;
 }
 
 size_t DesignerControlPlacementState::GetEstimatedMemoryUsage() const noexcept

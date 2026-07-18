@@ -330,6 +330,8 @@ namespace
 	{
 		switch (editor)
 		{
+		case DesignerControlPropertyEditorKind::Boolean:
+			return DesignerPropertyRowEditorKind::Boolean;
 		case DesignerControlPropertyEditorKind::FontName:
 			return DesignerPropertyRowEditorKind::FontName;
 		case DesignerControlPropertyEditorKind::FontSize:

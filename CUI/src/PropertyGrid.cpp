@@ -1759,7 +1759,11 @@ bool PropertyGridView::BeginEdit(int index)
 	CloseDropDownEditor();
 	_editing = true;
 	_editingIndex = index;
-	_editingText = item.Value;
+	// A mixed value is presentation state, not editable content. Starting from
+	// the placeholder (for example "<multiple values>") lets a mouse click put
+	// the caret inside it and produces an invalid composite value. Match native
+	// property editors by opening a mixed scalar as an empty replacement field.
+	_editingText = item.IsMixed ? std::wstring{} : item.Value;
 	_editingOriginalText = item.Value;
 	_editSelectionStart = 0;
 	_editSelectionEnd = (int)_editingText.size();

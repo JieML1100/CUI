@@ -138,6 +138,18 @@ RichTextBox::RichTextBox(std::wstring text, int x, int y, int width, int height)
 	UpdateLayout();
 }
 
+void RichTextBox::NotifySelectionChanged()
+{
+	if (_lastNotifiedSelectionStart == SelectionStart
+		&& _lastNotifiedSelectionEnd == SelectionEnd)
+	{
+		return;
+	}
+	_lastNotifiedSelectionStart = SelectionStart;
+	_lastNotifiedSelectionEnd = SelectionEnd;
+	OnSelectionChanged(this);
+}
+
 void RichTextBox::SyncBufferFromControlIfNeeded()
 {
 	if (!this->bufferSyncedFromControl || this->TextChanged)
@@ -191,6 +203,8 @@ void RichTextBox::SyncControlTextFromBuffer(const std::wstring& oldText)
 {
 	if (oldText == this->buffer)
 		return;
+	this->highlightRanges.clear();
+	this->textStyleRanges.clear();
 	this->SetTextInternal(this->buffer);
 	this->TextChanged = true;
 	this->OnTextChanged(this, oldText, this->buffer);
@@ -216,16 +230,75 @@ void RichTextBox::UpdateSelRange()
 {
 	if (!this->_textLayoutCache)
 		return;
-	auto d2d = this->ParentForm->Render;
 	auto font = this->Font;
 	int sels = SelectionStart <= SelectionEnd ? SelectionStart : SelectionEnd;
 	int sele = SelectionEnd >= SelectionStart ? SelectionEnd : SelectionStart;
 	int selLen = sele - sels;
 	selRange = font->HitTestTextRange(this->_textLayoutCache, (UINT32)sels, (UINT32)selLen);
-
-	this->_textLayoutCache->SetDrawingEffect(nullptr, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
-	this->_textLayoutCache->SetDrawingEffect(d2d->GetBackColorBrush(this->SelectedForeColor), DWRITE_TEXT_RANGE{ (UINT32)sels, (UINT32)selLen });
 	this->selRangeDirty = false;
+}
+
+void RichTextBox::ApplyTextDrawingEffects(
+	IDWriteTextLayout* layout,
+	int textStart,
+	int textLength,
+	bool includeSelection)
+{
+	if (!layout || !ParentForm || !ParentForm->Render) return;
+	layout->SetDrawingEffect(nullptr, DWRITE_TEXT_RANGE{ 0, UINT_MAX });
+	const int textEnd = textStart + (std::max)(0, textLength);
+	for (const auto& style : textStyleRanges)
+	{
+		const int rangeStart = (std::max)(style.Start, textStart);
+		const int rangeEnd = (std::min)(
+			style.Start + style.Length, textEnd);
+		if (rangeEnd <= rangeStart) continue;
+		auto brush = GetTextStyleBrush(style.ForeColor);
+		if (!brush) continue;
+		layout->SetDrawingEffect(
+			brush,
+			DWRITE_TEXT_RANGE{
+				static_cast<UINT32>(rangeStart - textStart),
+				static_cast<UINT32>(rangeEnd - rangeStart) });
+	}
+	if (!includeSelection) return;
+	const int selectionStart = (std::max)(
+		(std::min)(SelectionStart, SelectionEnd), textStart);
+	const int selectionEnd = (std::min)(
+		(std::max)(SelectionStart, SelectionEnd), textEnd);
+	if (selectionEnd <= selectionStart) return;
+	auto selectionBrush = GetTextStyleBrush(SelectedForeColor);
+	if (!selectionBrush) return;
+	layout->SetDrawingEffect(
+		selectionBrush,
+		DWRITE_TEXT_RANGE{
+			static_cast<UINT32>(selectionStart - textStart),
+			static_cast<UINT32>(selectionEnd - selectionStart) });
+}
+
+ID2D1SolidColorBrush* RichTextBox::GetTextStyleBrush(D2D1_COLOR_F color)
+{
+	if (!ParentForm || !ParentForm->Render) return nullptr;
+	auto context = ParentForm->Render->GetDeviceContextRaw();
+	if (!context) return nullptr;
+	if (context != textStyleBrushDeviceContext.Get())
+	{
+		textStyleBrushes.clear();
+		textStyleBrushDeviceContext = context;
+	}
+	for (auto& entry : textStyleBrushes)
+	{
+		if (entry.Color.r == color.r && entry.Color.g == color.g
+			&& entry.Color.b == color.b && entry.Color.a == color.a)
+			return entry.Brush.Get();
+	}
+	TextStyleBrush entry;
+	entry.Color = color;
+	if (FAILED(context->CreateSolidColorBrush(
+		color, entry.Brush.ReleaseAndGetAddressOf())))
+		return nullptr;
+	textStyleBrushes.push_back(std::move(entry));
+	return textStyleBrushes.back().Brush.Get();
 }
 void RichTextBox::UpdateLayout()
 {
@@ -509,8 +582,109 @@ void RichTextBox::ScrollToEnd()
 	this->VerticalScrollOffset = maxScroll;
 	if (this->VerticalScrollOffset < 0)this->VerticalScrollOffset = 0;
 	this->SelectionEnd = this->SelectionStart = (int)this->buffer.size();
+	NotifySelectionChanged();
 	this->InvalidateVisual();
 }
+
+void RichTextBox::ScrollSelectionIntoView()
+{
+	SyncBufferFromControlIfNeeded();
+	const int textLength = static_cast<int>(buffer.size());
+	SelectionStart = (std::clamp)(SelectionStart, 0, textLength);
+	SelectionEnd = (std::clamp)(SelectionEnd, 0, textLength);
+	NotifySelectionChanged();
+	UpdateScroll(SelectionEnd >= textLength);
+	selRangeDirty = true;
+	InvalidateVisual();
+}
+
+void RichTextBox::SetHighlightRanges(
+	std::vector<RichTextBoxTextRange> ranges)
+{
+	SyncBufferFromControlIfNeeded();
+	std::vector<RichTextBoxTextRange> normalized;
+	normalized.reserve(ranges.size());
+	const int textLength = static_cast<int>(buffer.size());
+	for (auto range : ranges)
+	{
+		range.Start = (std::clamp)(range.Start, 0, textLength);
+		range.Length = (std::clamp)(range.Length, 0,
+			textLength - range.Start);
+		if (range.Length > 0) normalized.push_back(range);
+	}
+	highlightRanges = std::move(normalized);
+	InvalidateVisual();
+}
+
+void RichTextBox::ClearHighlightRanges()
+{
+	if (highlightRanges.empty()) return;
+	highlightRanges.clear();
+	InvalidateVisual();
+}
+
+void RichTextBox::SetTextStyleRanges(
+	std::vector<RichTextBoxTextStyleRange> ranges)
+{
+	SyncBufferFromControlIfNeeded();
+	std::vector<RichTextBoxTextStyleRange> normalized;
+	normalized.reserve(ranges.size());
+	const int textLength = static_cast<int>(buffer.size());
+	for (auto range : ranges)
+	{
+		range.Start = (std::clamp)(range.Start, 0, textLength);
+		range.Length = (std::clamp)(range.Length, 0,
+			textLength - range.Start);
+		if (range.Length > 0) normalized.push_back(range);
+	}
+	textStyleRanges = std::move(normalized);
+	InvalidateVisual();
+}
+
+void RichTextBox::ClearTextStyleRanges()
+{
+	if (textStyleRanges.empty()) return;
+	textStyleRanges.clear();
+	InvalidateVisual();
+}
+
+bool RichTextBox::TryGetCaretViewportRect(D2D1_RECT_F& outRect)
+{
+	outRect = D2D1::RectF();
+	if (!ParentForm) return false;
+	UpdateLayout();
+	SyncBufferFromControlIfNeeded();
+	const auto absolute = GetAbsoluteLocationDip();
+	float x = TextMargin;
+	float y = 0.0f;
+	float height = Font ? Font->FontHeight : 16.0f;
+	if (!buffer.empty())
+	{
+		if (_isVirtualized)
+		{
+			if (!GetCaretMetrics(SelectionEnd, x, y, height)) return false;
+		}
+		else
+		{
+			if (!_textLayoutCache || !Font) return false;
+			const int caret = (std::clamp)(SelectionEnd, 0,
+				static_cast<int>(buffer.size()));
+			auto hit = Font->HitTestTextRange(
+				_textLayoutCache, static_cast<UINT32>(caret), 0);
+			if (hit.empty()) return false;
+			x = hit[0].left + TextMargin;
+			y = hit[0].top + TextMargin - VerticalScrollOffset;
+			height = hit[0].height > 0.0f ? hit[0].height : height;
+		}
+	}
+	outRect = D2D1::RectF(
+		static_cast<float>(absolute.x) + x,
+		static_cast<float>(absolute.y) + y,
+		static_cast<float>(absolute.x) + x + 1.0f,
+		static_cast<float>(absolute.y) + y + (std::max)(1.0f, height));
+	return true;
+}
+
 void RichTextBox::UpdateScrollDrag(float posY) {
 	if (!isDraggingScroll) return;
 
@@ -592,6 +766,7 @@ void RichTextBox::InputText(std::wstring input)
 		this->redoStack.clear();
 	}
 	SyncControlTextFromBuffer(oldText);
+	NotifySelectionChanged();
 }
 void RichTextBox::InputBack()
 {
@@ -619,6 +794,7 @@ void RichTextBox::InputBack()
 		this->redoStack.clear();
 	}
 	SyncControlTextFromBuffer(oldText);
+	NotifySelectionChanged();
 }
 void RichTextBox::InputDelete()
 {
@@ -646,6 +822,7 @@ void RichTextBox::InputDelete()
 		this->redoStack.clear();
 	}
 	SyncControlTextFromBuffer(oldText);
+	NotifySelectionChanged();
 }
 void RichTextBox::ApplyUndoRecord(const UndoRecord& rec, bool isUndo)
 {
@@ -685,6 +862,7 @@ void RichTextBox::ApplyUndoRecord(const UndoRecord& rec, bool isUndo)
 
 	this->isApplyingUndoRedo = false;
 	SyncControlTextFromBuffer(oldText);
+	NotifySelectionChanged();
 }
 void RichTextBox::Undo()
 {
@@ -797,6 +975,7 @@ void RichTextBox::Select(int start, int length)
 	this->SelectionStart = start;
 	this->SelectionEnd = start + length;
 	this->selRangeDirty = true;
+	NotifySelectionChanged();
 	this->InvalidateVisual();
 }
 
@@ -809,6 +988,7 @@ void RichTextBox::ClearSelection()
 {
 	this->SelectionEnd = this->SelectionStart;
 	this->selRangeDirty = true;
+	NotifySelectionChanged();
 	this->InvalidateVisual();
 }
 
@@ -821,8 +1001,50 @@ void RichTextBox::Clear()
 
 void RichTextBox::InsertText(const std::wstring& text)
 {
-	if (this->ReadOnly || text.empty()) return;
+	if (this->ReadOnly || (text.empty() && !HasSelection())) return;
 	this->InputText(text);
+}
+
+void RichTextBox::InsertTextAndSelect(
+	const std::wstring& text, int selectionStart, int selectionLength)
+{
+	if (this->ReadOnly || (text.empty() && !HasSelection())) return;
+	const size_t undoCount = this->undoStack.size();
+	this->InputText(text);
+	this->Select(selectionStart, selectionLength);
+	if (this->undoStack.size() > undoCount)
+	{
+		auto& record = this->undoStack.back();
+		record.selStartAfter = this->SelectionStart;
+		record.selEndAfter = this->SelectionEnd;
+	}
+}
+
+void RichTextBox::ReplaceAllTextAndSelect(
+	const std::wstring& text, int selectionStart, int selectionLength)
+{
+	if (this->ReadOnly) return;
+	SyncBufferFromControlIfNeeded();
+	const int selectionStartBefore = this->SelectionStart;
+	const int selectionEndBefore = this->SelectionEnd;
+	if (this->buffer == text)
+	{
+		this->Select(selectionStart, selectionLength);
+		return;
+	}
+
+	this->SelectAll();
+	const size_t undoCount = this->undoStack.size();
+	this->InputText(text);
+	this->Select(selectionStart, selectionLength);
+	if (this->undoStack.size() > undoCount)
+	{
+		auto& record = this->undoStack.back();
+		record.selStartBefore = selectionStartBefore;
+		record.selEndBefore = selectionEndBefore;
+		record.selStartAfter = this->SelectionStart;
+		record.selEndAfter = this->SelectionEnd;
+	}
 }
 
 bool RichTextBox::Copy()
@@ -852,6 +1074,12 @@ bool RichTextBox::Paste()
 	if (clipboardText.empty()) return false;
 	this->InputText(clipboardText);
 	return true;
+}
+
+bool RichTextBox::CanPaste() const noexcept
+{
+	return !this->ReadOnly
+		&& ::IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE;
 }
 
 void RichTextBox::Update()
@@ -931,6 +1159,31 @@ void RichTextBox::Update()
 					float drawY = TextMargin + (top - this->VerticalScrollOffset);
 					float drawX = TextMargin;
 
+					if (isSelected && !highlightRanges.empty())
+					{
+						const int blockStart = static_cast<int>(blocks[i].start);
+						const int blockEnd = static_cast<int>(
+							blocks[i].start + blocks[i].len);
+						for (const auto& highlight : highlightRanges)
+						{
+							const int rangeStart = (std::max)(
+								highlight.Start, blockStart);
+							const int rangeEnd = (std::min)(
+								highlight.Start + highlight.Length, blockEnd);
+							if (rangeEnd <= rangeStart) continue;
+							auto ranges = font->HitTestTextRange(
+								blocks[i].layout,
+								static_cast<UINT32>(rangeStart - blockStart),
+								static_cast<UINT32>(rangeEnd - rangeStart));
+							for (const auto& range : ranges)
+							{
+								d2d->FillRect(range.left + drawX,
+									range.top + drawY, range.width, range.height,
+									HighlightBackColor);
+							}
+						}
+					}
+
 					if (isSelected && selLen != 0)
 					{
 						int blockStart = (int)this->blocks[i].start;
@@ -954,11 +1207,32 @@ void RichTextBox::Update()
 						}
 					}
 
+					ApplyTextDrawingEffects(
+						blocks[i].layout,
+						static_cast<int>(blocks[i].start),
+						static_cast<int>(blocks[i].len),
+						isSelected);
 					d2d->DrawStringLayout(this->blocks[i].layout, drawX, drawY, this->ForeColor);
 				}
 			}
 			else if (isSelected)
 			{
+				ApplyTextDrawingEffects(
+					_textLayoutCache, 0,
+					static_cast<int>(buffer.size()), true);
+				for (const auto& highlight : highlightRanges)
+				{
+					auto ranges = font->HitTestTextRange(
+						_textLayoutCache,
+						static_cast<UINT32>(highlight.Start),
+						static_cast<UINT32>(highlight.Length));
+					for (const auto& range : ranges)
+					{
+						d2d->FillRect(range.left + TextMargin,
+							range.top + TextMargin - VerticalScrollOffset,
+							range.width, range.height, HighlightBackColor);
+					}
+				}
 				if (isSelected && this->selRangeDirty)
 				{
 					UpdateSelRange();
@@ -1010,6 +1284,9 @@ void RichTextBox::Update()
 			}
 			else
 			{
+				ApplyTextDrawingEffects(
+					_textLayoutCache, 0,
+					static_cast<int>(buffer.size()), false);
 				d2d->DrawStringLayout(this->_textLayoutCache,
 					TextMargin, TextMargin - this->VerticalScrollOffset,
 					this->ForeColor);
@@ -1057,6 +1334,7 @@ bool RichTextBox::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
 bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
+	SelectionNotificationScope selectionNotification{ this };
 	switch (message)
 	{
 	case WM_DROPFILES:
@@ -1130,7 +1408,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 	case WM_RBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 	{
-		if (WM_LBUTTONDOWN == message)
+		if (WM_LBUTTONDOWN == message || WM_RBUTTONDOWN == message)
 		{
 			if (this->ParentForm->Selected != this)
 			{
@@ -1138,7 +1416,8 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 				this->ParentForm->SetSelectedControl(this, false);
 				if (previousSelection) previousSelection->InvalidateVisual();
 			}
-			if (localX >= Width - 8 && localX <= Width)
+			if (WM_LBUTTONDOWN == message
+				&& localX >= Width - 8 && localX <= Width)
 			{
 				// 竖向滚动条：点在滑块上则用按下点锚定；否则用滑块中心（原行为）
 				const float renderHeight = this->Height - (TextMargin * 2.0f);
@@ -1166,12 +1445,21 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			}
 			else
 			{
+				SyncBufferFromControlIfNeeded();
 				auto font = this->Font;
-				if (this->_isVirtualized)
-					this->SelectionStart = this->SelectionEnd = HitTestGlobalIndex((float)localX, (float)localY);
-				else
-					this->SelectionStart = this->SelectionEnd = font->HitTestTextPosition(this->_textLayoutCache, localX - TextMargin, (localY + this->VerticalScrollOffset) - TextMargin);
-				this->selRangeDirty = true;
+				const int hit = this->_isVirtualized
+					? HitTestGlobalIndex((float)localX, (float)localY)
+					: font->HitTestTextPosition(this->_textLayoutCache,
+						localX - TextMargin,
+						(localY + this->VerticalScrollOffset) - TextMargin);
+				const auto selection = CuiTextEdit::NormalizeSelection(
+					this->SelectionStart, this->SelectionEnd, this->buffer.size());
+				if (WM_LBUTTONDOWN == message || !selection.HasSelection()
+					|| hit < selection.start || hit > selection.end)
+				{
+					this->SelectionStart = this->SelectionEnd = hit;
+					this->selRangeDirty = true;
+				}
 			}
 		}
 		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
@@ -1186,7 +1474,8 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		if (isDraggingScroll) {
 			isDraggingScroll = false;
 		}
-		else if (this->ParentForm->Selected == this)
+		else if (message == WM_LBUTTONUP
+			&& this->ParentForm->Selected == this)
 		{
 			auto font = this->Font;
 			if (this->_isVirtualized)
@@ -1232,7 +1521,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 			this->InvalidateVisual();
 			return true;
 		}
-		if (!this->ReadOnly && (GetAsyncKeyState(VK_CONTROL) & 0x8000))
+		if (!this->ReadOnly && (GetKeyState(VK_CONTROL) & 0x8000))
 		{
 			if (wParam == 'Z')
 			{
@@ -1269,7 +1558,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 		else if (wParam == VK_RIGHT)
 		{
-			const bool extendSelection = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+			const bool extendSelection = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 			auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->buffer.size());
 			if (!extendSelection && span.HasSelection())
 			{
@@ -1288,7 +1577,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 		else if (wParam == VK_LEFT)
 		{
-			const bool extendSelection = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+			const bool extendSelection = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 			auto span = CuiTextEdit::NormalizeSelection(this->SelectionStart, this->SelectionEnd, this->buffer.size());
 			if (!extendSelection && span.HasSelection())
 			{
@@ -1319,7 +1608,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 				auto hit = font->HitTestTextRange(this->_textLayoutCache, (UINT32)this->SelectionEnd, (UINT32)0);
 				this->SelectionEnd = font->HitTestTextPosition(this->_textLayoutCache, hit[0].left, hit[0].top - (font->FontHeight * 0.5f));
 			}
-			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
+			if ((GetKeyState(VK_SHIFT) & 0x8000) == false)
 			{
 				this->SelectionStart = this->SelectionEnd;
 			}
@@ -1344,7 +1633,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 				auto hit = font->HitTestTextRange(this->_textLayoutCache, (UINT32)this->SelectionEnd, (UINT32)0);
 				this->SelectionEnd = font->HitTestTextPosition(this->_textLayoutCache, hit[0].left, hit[0].top + (font->FontHeight * 1.5f));
 			}
-			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
+			if ((GetKeyState(VK_SHIFT) & 0x8000) == false)
 			{
 				this->SelectionStart = this->SelectionEnd;
 			}
@@ -1357,18 +1646,18 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 		}
 		else if (wParam == VK_HOME)
 		{
-			const bool controlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+			const bool controlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 			this->SelectionEnd = controlDown ? 0 : CuiTextEdit::GetLineStartIndex(this->buffer, this->SelectionEnd);
-			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
+			if ((GetKeyState(VK_SHIFT) & 0x8000) == false)
 				this->SelectionStart = this->SelectionEnd;
 			this->selRangeDirty = true;
 			UpdateScroll();
 		}
 		else if (wParam == VK_END)
 		{
-			const bool controlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+			const bool controlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 			this->SelectionEnd = controlDown ? (int)this->buffer.size() : CuiTextEdit::GetLineEndIndex(this->buffer, this->SelectionEnd);
-			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
+			if ((GetKeyState(VK_SHIFT) & 0x8000) == false)
 				this->SelectionStart = this->SelectionEnd;
 			this->selRangeDirty = true;
 			UpdateScroll();
@@ -1387,7 +1676,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 				auto hit = font->HitTestTextRange(this->_textLayoutCache, (UINT32)this->SelectionEnd, (UINT32)0);
 				this->SelectionEnd = font->HitTestTextPosition(this->_textLayoutCache, hit[0].left, hit[0].top - this->Height);
 			}
-			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
+			if ((GetKeyState(VK_SHIFT) & 0x8000) == false)
 			{
 				this->SelectionStart = this->SelectionEnd;
 			}
@@ -1412,7 +1701,7 @@ bool RichTextBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int
 				auto hit = font->HitTestTextRange(this->_textLayoutCache, (UINT32)this->SelectionEnd, (UINT32)0);
 				this->SelectionEnd = font->HitTestTextPosition(this->_textLayoutCache, hit[0].left, hit[0].top + this->Height);
 			}
-			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) == false)
+			if ((GetKeyState(VK_SHIFT) & 0x8000) == false)
 			{
 				this->SelectionStart = this->SelectionEnd;
 			}

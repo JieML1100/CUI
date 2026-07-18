@@ -833,3 +833,233 @@ panel->DeleteControl(obsoleteLabel);
 - `Panel`、`ScrollView`、`TreeView` 的容器循环和主要绘制转换 warning 已收敛。
 - 设计器模态编辑器的列表索引类 warning 已收敛。
 - `Utils` 中第三方 `sqlite3.c` 的 C4028/C4113 签名兼容 warning 已通过 `Utils.vcxproj` 文件级 `DisableSpecificWarnings` 隔离，未修改 vendored 源码。
+- 设计器新增完整复制/剪切/粘贴闭环：多选捕获会消除已选祖先下的重复根并保留普通/TabPage 完整子树，
+  Windows Unicode 文本剪贴板使用规范 CUI XAML；粘贴重新分配 stable ID、大小写不敏感唯一名称和父级引用，
+  级联偏移并选中新根，一次剪切/粘贴只产生一条 Undo 记录。工具栏实时 XAML 编辑器以 300ms 防抖预览，
+  无效文本保留最后有效画布，接受/取消分别提交一条命令或恢复会话基线。解析器同时修复
+  `d:ProjectedProperties` 的人工编辑语义：未修改的规范 XAML 仍精确往返，修改后的可读属性提升为权威元数据。
+  新增模型、画布和会话回归后，`Debug/Release × x64/x86` 四套 `CUICoreTests` 均为 161/161；四套
+  `Designer.exe --self-test`、`CuiRuntimeSample.exe`、`CuiStaticGeneratedSample.exe` 与 `CuiCodeGen 7`
+  全部返回 0。两个 Release 配置的陈旧增量 PDB 曾触发 `LNK1103`，均以完整 Rebuild 重新生成对象后通过；
+  随后的四套普通 Build 均为 `codegen=0`。
+- 设计器新增 WinForms 风格编排入口：`Ctrl+D` 在不覆盖系统剪贴板的情况下创建偏移副本；“排列”弹出菜单
+  提供以主选为基准的六向对齐、宽/高/尺寸统一、固定两端的水平/垂直分布，以及单层/顶底层级调整。
+  几何命令拒绝布局托管父级；层级命令仅移动设计期同级，并把 sibling index 与显式 `ZIndex` 一并纳入
+  `ControlPlacementCommand`，每次操作只产生一条 Undo 记录。Designer 自测覆盖 stable ID/唯一名称/偏移、
+  四类层级在非连续 ZIndex 下的精确 Undo、布局容器拒绝和菜单快捷键。最终 `Debug/Release × x64/x86`
+  四套解决方案均构建成功，四套 `CUICoreTests` 均为 161/161；四套 Designer 自测、动态宿主、静态生成样例与
+  `CuiCodeGen 7` 门禁全部返回 0。x86 Debug 的旧项目直编产物曾显示旧主题基线，以解决方案完整 Rebuild
+  统一输出后通过；x86 Release 清理阶段出现一次被占用 `WebView2Loader.dll` 警告，后续链接和运行门禁均通过。
+- Designer 新增动态 Undo/Redo 工具栏和统一画布右键命令面：命令按钮及菜单标签直接读取下一条历史记录，
+  右键命中未选控件会切换选择，命中既有多选成员只切换主选，空白处清空控件选择；菜单键与 `Shift+F10`
+  发布同一种上下文请求。菜单集中复用撤销/重做、剪切/复制/粘贴、重复、删除、排列、当前容器全选和实时
+  XAML API，文档级 `Ctrl+N/O/S` 也汇入既有生命周期入口。Designer 自测覆盖右键/空白/键盘请求、菜单结构、
+  动态命令标签和 Undo/Redo 按钮状态翻转。`Debug/Release × x64/x86` 四套解决方案增量构建成功，四套
+  `CUICoreTests` 均保持 161/161；四套 Designer 自测、动态宿主、静态生成样例与 `CuiCodeGen 7` 全部返回 0。
+- Designer 画布新增不污染文档的视图导航层：25%–400% 焦点缩放、100% 还原、适合窗口和有界平移统一
+  经过 Canvas/View 坐标变换；中键或 `Space+左键` 平移，`Ctrl+滚轮`、`Ctrl++/-/0/1` 提供键盘/鼠标入口。
+  画布下方常驻缩放条和右键“视图”菜单共享同一状态，适配模式会随视口或 Form 尺寸重算；选择手柄、参考线
+  与细线按倍率补偿。Designer 自测覆盖适配比例、焦点不漂移、平移、还原和零 Dirty/Undo，Windows 可视化冒烟
+  验证了 114% 适配、95% 缩小及再次适配的真实 Direct2D 输出。最终 `Debug/Release × x64/x86` 四套解决方案
+  Build 均成功，四套 `CUICoreTests` 均为 161/161；四套 `Designer.exe --self-test`、`CuiRuntimeSample.exe`、
+  `CuiStaticGeneratedSample.exe` 与 `CuiCodeGen 7` 门禁全部返回 0。
+- Designer 左侧新增工具箱/文档层级双视图。层级树按 stable ID 投影 Form、普通容器、TabPage 与完整后代，
+  标记自身隐藏控件，画布主选与树选择双向同步；选择非活动页后代会先激活 TabPage 祖先链。结构变化、重命名、
+  XAML 提交和 Undo/Redo 后重建节点，同时保留展开与滚动位置。Designer 自测覆盖嵌套父子、隐藏控件选择、
+  Form 根选择、视图切换和展开状态保持；Windows 可视化冒烟验证工具箱/层级切换、新增 `Button1` 即时出现及
+  根节点恢复 Form 属性。最终 `Debug/Release × x64/x86` 四套解决方案 Build 均成功，四套 161/161 核心测试、
+  Designer 自测、动态宿主、静态生成样例与 `CuiCodeGen 7` 共 20 项运行门禁全部返回 0。
+- 文档层级新增 WinForms 风格拖放：TreeView 公开可见行命中和 Before/Inside/After 反馈，Designer 负责捕获、
+  4px 阈值与边缘自动滚动；Canvas 按 stable ID 原子执行同级重排或跨普通容器换父，拒绝循环、TabPage、
+  Split 中间区及 Menu/StatusBar 非根目标，保持屏幕位置并只提交一条可 Undo 的 placement 差量。底部“网格 N”
+  与右键三级菜单共享显示网格、网格/参考线吸附及 5/10/20 DIP 设置，勾选状态和 DPI 边界已在真实窗口验证，
+  且切换不产生 Dirty/Undo。真实重复控件冒烟另定位并修复两处 UAF：文档重建现在在释放运行时控件前清空
+  多选记录，退出阶段不再向已由 Form 释放的属性栏发布代码检查状态；调试器验证重复、撤销、重做和退出均无
+  访问冲突。最终 `Debug/Release × x64/x86` 四套解决方案构建成功（两个 Release 对陈旧 LTCG/IPDB 执行完整
+  Rebuild），四套 `CUICoreTests` 均为 161/161；四套 Designer 自测、动态宿主、静态生成样例与
+  `CuiCodeGen 7` 共 20 项运行门禁全部返回 0。
+- 实时 XAML 编辑器新增结构化语法诊断：`XamlDocumentDiagnostic` 将 XmlLite 的行/字节列转换为
+  1-based Unicode 行/列与 UTF-16 编辑器偏移，且保持解析失败时输出文档不变。对话框以“定位错误”或 `F8`
+  显式选中出错字符，`RichTextBox::ScrollSelectionIntoView()` 能将长文档滚动到目标；新键入和有效预览会清除旧位置。
+  同时为编辑器、状态栏和四个底部按钮补齐 Right/Bottom Anchor 的逻辑锚距，修复编辑区覆盖底部与按钮全部重叠的实际布局问题。
+  回归新增含中文前缀的精确偏移断言，并把 Canvas 无效预览扩展为诊断+恢复不变式。Windows 真实窗口验证
+  第 83 行错误能由按钮和 `F8` 从文档顶部滚回并选中，有效 XAML 后按钮禁用。最终 `Debug/Release × x64/x86`
+  四套解决方案构建成功（两个 Release 对陈旧 LTCG/IPDB 执行完整 Rebuild），四套 `CUICoreTests` 均为 162/162；
+  四套 Designer 自测、动态宿主、静态生成样例与 `CuiCodeGen 7` 共 20 项运行门禁全部返回 0。
+- 实时 XAML 编辑器新增常驻查找/替换栏，覆盖 `Ctrl+F` / `Ctrl+H`、`F3` / `Shift+F3`、大小写匹配、
+  当前替换与全部替换；右侧行列由 RichTextBox 的统一选区变化事件实时刷新。`TextEditCore` 回归验证向前/
+  向后循环、大小写、非重叠批量替换、CRLF 和 UTF-16 代理项坐标；空字符串替换可删除当前选区并保持 Undo。
+  Windows 真实窗口验证查找定位到第 2 行第 6 列、全部替换 1 处后 300ms 预览成功、一次 `Ctrl+Z` 恢复整批
+  修改，`Escape` 取消后主画布回滚。最终 `Debug/Release × x64/x86` 四套解决方案构建成功（两个 Release
+  对陈旧 LTCG/IPDB 的 `LNK1103` 执行完整 Rebuild），四套 `CUICoreTests` 均为 163/163；四套 Designer
+  自测、动态宿主、静态生成样例与 `CuiCodeGen 7` 共 20 项运行门禁全部返回 0。
+- 实时 XAML 编辑器新增元数据驱动的元素、属性、枚举/布尔值和事件补全，覆盖自动筛选、`Ctrl+Space`、
+  方向键与 `Tab`/`Enter` 提交、`Name=""` 属性模板、成对标签高亮及智能换行缩进。候选复用内置属性/事件
+  目录和已安装自定义控件 descriptor；纯模型回归覆盖注释、引号内 `>`、未闭合上下文、开放标签栈、去重
+  过滤和成对标签中间换行。Windows 真实窗口验证元素 `Button`、属性 `Checked`、布尔值 `true` 的逐级补全，
+  Tab 无残留字符、缩进行列、2 控件实时预览和 Escape 完整回滚。最终四配置与 20 项运行门禁见本轮记录。
+- 设计器剪贴板新增显式片段根目标：普通容器以现有 stable ID 定位，TabPage 合成引用和 Split First/Second
+  区域在合并前验证；`Ctrl+D` 为每个源根恢复原父级/区域，普通粘贴可进入选中的容器或当前 TabPage，连续
+  粘贴容器保持上次目标而不会逐层嵌套。模型与 Canvas 回归覆盖跨 Panel 粘贴、Split 第二区域原位重复、
+  TabPage 目标、连续三次容器粘贴、无效目标零修改及一次 Undo。Windows 真实窗口验证 `button1` 在 `panel1`
+  重复为同层级 `button2`，再复制到选中的 `panel2` 生成其子级 `button3`，一次撤销仅移除该次粘贴。
+  层级树选择现在保留树的键盘焦点和方向键导航，剪贴板、重复、历史、全选与删除快捷键直接路由到设计选区；
+  命令仍在原按键分发中同步执行，结构树刷新则在事务退出后异步合并，避免同步重建节点时的迭代器重入。
+  Windows 真实窗口再次验证从层级复制 `button1`、选中 `panel2` 后 `Ctrl+V`、`Ctrl+Z` 及工具栏“粘贴”均
+  正确更新层级与画布，且不再触发 TreeView 迭代器断言。
+  `Debug/Release × x64/x86` 四套解决方案 Build 全部成功，四套 `CUICoreTests` 均为 165/165；四套 Designer
+  自测、动态宿主、静态生成样例与 `CuiCodeGen 7` 共 20 项运行门禁全部返回 0。
+- 实时 XAML 编辑器新增源码元素与设计选区的 stable-ID 双向定位；源码改名后的预览保留选区，格式化按身份
+  恢复当前元素而不再跳到顶部。事件属性值补全与属性栏 F4 共用同一签名筛选，除 `Auto` 外可复用文档及
+  用户 `.h/.cpp` 中的兼容函数，并排除跨签名同名冲突。纯模型回归覆盖嵌套/自闭合元素、`>` 属性文本、
+  大小写名称后备和 `d:Member name=...` 元数据排除；Designer 自测覆盖自定义事件的文档/源码候选以及 XAML
+  改名后的 stable-ID 选区保持。Windows 真实窗口验证按钮布局、Form/`button2` 双向定位、格式化后仍停在
+  `button2`，以及事件弹层同时显示 `Auto`、`button2_OnMouseClick` 和同签名 `HandleShared`。
+  最终 `Debug/Release × x64/x86` 四套解决方案构建成功，四套 `CUICoreTests` 均为 165/165；四套 Designer
+  自测、动态宿主、静态生成样例与 `CuiCodeGen 7` 共 20 项运行门禁全部返回 0。
+- 工具箱条目在保留“单击后落点”的同时支持直接拖到 Form、普通嵌套容器及 Split First/Second 区域；跨过
+  系统阈值后 Canvas 显示实际目标高亮和默认尺寸幽灵预览，松开复用原添加路径并只产生一条 Undo，取消或
+  捕获丢失不修改文档。Designer 自测覆盖根/Panel/Split 目标、阈值、预览清理、提交和 Undo。Windows 真实
+  窗口验证 Panel 直拖、Button 嵌套直拖、单步撤销及原单击放置；捕获层坐标改为按当前光标、DPI 与客户区
+  标题偏移重算后，层级树拖放也继续正常。工具箱切换层级视图的破坏性树重建改为输入栈退出后合并调度，
+  消除了 ToggleButton 鼠标分发中的 TreeView 迭代器重入。最终 `Debug/Release × x64/x86` 四套解决方案均
+  构建成功，四套 `CUICoreTests` 均为 165/165；四套 Designer 自测、动态宿主、静态生成样例与
+  `CuiCodeGen 7` 共 20 项运行门禁全部返回 0。
+- Designer 新增 WinForms 风格 Tab 顺序模式：底部按钮与画布 View 菜单共享模式状态，缩放补偿徽章显示
+  全部 `IsTabStop` 可聚焦类型的当前 `TabIndex`，依次单击可手动编号，`Escape` 退出；自身隐藏控件仍可通过
+  设计轮廓参与，TabPage、不可聚焦类型和不可见祖先下的后代被排除。“按布局自动排序”使用绝对画布矩形按
+  top/left 稳定编排。手动与自动写入都经过属性 Binder 和 `ControlPropertyCommand`，自动批次只形成一条
+  Undo，任一失败会恢复全部目标。Designer 自测覆盖纯视图入模、点击分配、候选筛选、批量 Undo/Redo 及
+  规范 XAML `TabIndex` 持久化；Windows 真实窗口验证蓝/绿徽章、Button/TextBox 手动次序、Escape、右键自动
+  排序及单步整批撤销。最终 `Debug/Release × x64/x86` 四套解决方案构建成功，四套 `CUICoreTests` 均为
+  165/165；四套 Designer 自测、动态宿主、静态生成样例与 `CuiCodeGen 7` 共 20 项运行门禁全部返回 0。
+- Designer 新增 WinForms 风格的设计期 `Locked` 属性：属性栏 Bool 编辑器、画布右键/“排列”菜单与
+  `Ctrl+L` 共享可 Undo 命令，层级树以 `[锁定]` 前缀显示，选中时绘制缩放补偿的橙色锁徽章。锁定控件仍可
+  选中、编辑属性、复制、剪切和删除，但会阻止鼠标拖动/缩放、键盘微移、Split 分割条拖动、排列/层级及
+  层级树换父；混合选区只要包含锁定项就整体拒绝几何修改。状态通过设计文档 `locked="true"` 和规范 XAML
+  `d:Locked="true"` 精确往返，复制/粘贴保留，不进入运行时属性或静态代码生成。Windows 真实窗口验证了属性勾选、
+  锁徽章、拖动/方向键拒绝、`Ctrl+L` 解锁后拖动恢复、右键重新锁定和层级前缀。最终
+  `Debug/Release × x64/x86` 四套解决方案均构建成功，四套 `CUICoreTests` 均为 165/165；四套
+  `Designer.exe --self-test`、`CuiRuntimeSample.exe`、`CuiStaticGeneratedSample.exe` 和 `CuiCodeGen 7`
+  共 20 项运行门禁全部通过，`git diff --check` 无空白错误。
+- Designer 补齐三种剪贴板放置语义：`Ctrl+V` 保持 12 DIP 级联，`Ctrl+Shift+V` 原位粘贴且不消耗级联序号，
+  画布右键“粘贴到此处”把多根包围框左上角精确对齐点击点，并自动解析 Panel、TabPage 与 Split First/Second
+  目标。模型偏移同时维护精确 location 与手写 `Canvas.Left` / `Canvas.Top` 元数据，坐标溢出或无效落点保持
+  文档和历史不变；每次成功粘贴仍只产生一条 Undo。纯模型与 Designer 自测覆盖原位/后续级联、Panel/Split
+  定位、多根相对布局、非法点和元数据事务；Windows 真实窗口验证了菜单、同坐标原位粘贴、右键精确落点及
+  单步撤销。`Debug/Release × x64/x86` 四套解决方案最终均构建成功，四套 `CUICoreTests` 均为 166/166；
+  四套 `Designer.exe --self-test`、`CuiRuntimeSample.exe`、`CuiStaticGeneratedSample.exe` 与 `CuiCodeGen 7`
+  共 20 项运行门禁全部通过，`git diff --check` 无空白错误。
+- 实时 XAML 编辑器补齐代码编辑级行操作：多行 `Tab` / `Shift+Tab` 按完整触及行整体缩进/反缩进，选区结束
+  在换行符后不会误改下一行，批量替换与操作后选区共同保存在一个 RichTextBox Undo/Redo 记录中。源码右键
+  菜单新增动态可用的撤销/重做、剪切/复制/粘贴/删除、全选、缩进与格式化，右键命中已有选区内部不再破坏
+  选区；菜单键/`Shift+F10` 和 `Ctrl+Shift+F` 共享同一命令路径。纯模型回归覆盖混合 Tab/空格、行尾边界与
+  选区映射，Designer 自测覆盖 13 项菜单和单步历史。Windows 真实窗口验证两行 Button 选区的 Tab、Shift+Tab、
+  右键选区保持及菜单撤销。`Debug/Release × x64/x86` 四套解决方案构建成功，四套 `CUICoreTests` 均为
+  167/167；四套 `Designer.exe --self-test`、动态宿主、静态生成样例与 `CuiCodeGen 7` 共 20 项运行门禁
+  全部通过，`git diff --check` 无空白错误。
+- “粘贴到此处”补齐布局容器语义：剪贴板根目标新增以粘贴前同级集合为基准的可选插入序号，同序号多根保持
+  片段顺序并连续重编号，越界或同一目标混用追加/插入会在模型提交前整体拒绝。Stack/Wrap/ToolBar 根据点击点
+  插入到可视项边界，Grid 写入命中 Row/Column、单格 Span 和 Stretch，Dock 解析边缘/Fill 并在启用
+  LastChildFill 时把新停靠项插到填充项之前，RelativePanel 将平移后的根坐标转换成 Margin；所有布局托管目标
+  同时清理无效的 Canvas.Left/Top，成功粘贴仍只形成一条 Undo。纯模型新增同级顺序/多根稳定性/越界事务回归，
+  Designer 自测覆盖 Stack 中间插入、Grid 单元格、Relative Margin 与单步撤销；Windows 真实窗口验证
+  `firstButton → firstButton1 → secondButton` 的视觉和层级顺序及一次撤销恢复。`Ctrl+D` 同步采用布局语义：
+  Stack/Wrap/Dock/ToolBar 副本紧邻各自源项，Grid 保留单元格，RelativePanel 以 Margin 偏移 12 DIP；自测覆盖
+  Stack 中间项和 Relative 偏移，真实窗口验证 `First → Middle → Middle → Last` 与单步撤销。Release 增量链接
+  再次遇到既知 LTCG `LNK1103`，x64/x86 标准 Rebuild 后成功；最终 `Debug/Release × x64/x86` 四套解决方案均构建通过，
+  四套 `CUICoreTests` 均为 168/168，四套 Designer 自测、动态宿主、静态生成样例与 `CuiCodeGen 7`
+  共 20 项运行门禁全部返回 0。
+- 实时 XAML 的结构化诊断从 XML 语法错误扩展到语义验证错误。解析器为 XmlLite DOM 建立只读源码旁路索引，
+  将失败上下文优先映射到当前属性名、其次映射到元素名，再按 RichTextBox 的 UTF-16/CRLF/代理对语义计算
+  1-based 行列；无效属性值、未知控件及后续模型验证失败不再只有消息而没有位置。纯模型回归覆盖中文前缀、
+  CRLF、属性精确偏移、未知元素与输出文档事务不变，Designer 自测覆盖实时预览的语义诊断透传和最后有效预览
+  保持。Windows 真实窗口验证 `Visibility="Vanished"` 显示第 2 行第 43 列，`F8` 精确选中 `Visibility` 首字符，
+  取消后恢复画布。Release 增量 LTCG 再次遇到既知 `LNK1103`，x64/x86 标准 Rebuild 后成功；最终
+  `Debug/Release × x64/x86` 四套解决方案均构建通过，四套 `CUICoreTests` 均为 169/169，四套 Designer 自测、
+  动态宿主、静态生成样例与 `CuiCodeGen 7` 共 20 项运行门禁全部返回 0。
+- 实时 XAML 编辑器新增“还原预览”检查点：完整预览或格式化成功时更新最后有效源码，无效或尚未应用的草稿
+  可一键恢复，恢复后错误定位和按钮状态同步清理。`RichTextBox::ReplaceAllTextAndSelect()` 将全文替换保存为
+  单个 Undo 记录，并分别记录调用前与替换后的选区，避免内部全选状态泄漏到 Undo；Redo 同样恢复目标选区。
+  核心回归覆盖全文替换的文本/选区 Undo/Redo，Designer 自测覆盖无效草稿、按钮状态、恢复与撤销后的原选区。
+  Windows 真实窗口验证 `Visibility="Vanished"` 诊断启用还原、还原后回到规范源码并禁用诊断/还原入口。
+  `Debug/Release × x64/x86` 四套解决方案均构建通过；两个 Release 增量 LTCG 命中既知 `LNK1103` 后以标准
+  Rebuild 成功。四套 `CUICoreTests` 均为 169/169，四套 Designer 自测、动态宿主、静态生成样例与
+  `CuiCodeGen 7` 共 20 项运行门禁全部返回 0，`git diff --check` 无空白错误。
+- 实时 XAML 的“格式化”改为通过 `RichTextBox::ReplaceAllTextAndSelect()` 原子写回规范源码，格式化前源码与
+  选区、格式化后映射选区分别进入同一个 Undo/Redo 记录；键盘修饰键改用同步 `GetKeyState`，使真实窗口中的
+  `Ctrl+Z` / `Ctrl+Y` 与程序化输入路径一致。补全弹窗的关闭顺序同步收紧：弹窗虽然由对话框持有，但父级是
+  编辑器，因此在 `OnFormClosed` 的子控件清理前先清空窗体的前景、选中和悬停引用，再解除父级并销毁，避免
+  关闭对话框时 `Hide()` 访问已经释放的编辑器。Designer 自测覆盖格式化源码/选区的撤销重做及弹窗幂等拆除；
+  Windows 真实窗口完成“输入并触发补全 → 格式化 → 撤销 → 重做 → 取消”，源码、选区、预览均正确且窗口
+  干净退出。本轮 `Debug/Release × x64/x86` 四套解决方案均直接 Build 成功，零警告、零错误；四套
+  `CUICoreTests` 均为 169/169，四套 Designer 自测、动态宿主、静态生成样例与 `CuiCodeGen 7` 共 20 项
+  运行门禁全部返回 0，`git diff --check` 无空白错误。
+- 属性栏的多选事件页现在按事件名及精确函数签名求公共交集：不同处理函数显示 `<多个值>`，编辑、候选选择、
+  默认激活与重置均通过一条包含 stable ID 和预期旧值的 `EventHandlerCommand` 原子应用到全部目标，并保留完整
+  选区；签名冲突或任一目标失效时整体零修改。原生 PropertyGrid 的混合标量/枚举编辑器进入编辑态时从空文本
+  开始，展示占位符不会再混入用户输入。核心回归覆盖混合编辑占位语义，Designer 自测覆盖公共事件筛选、批量
+  写入、撤销、重置、默认激活和跨签名冲突拒绝；Windows 真实窗口验证 Button/CheckBox 多选只显示公共事件、
+  空白编辑 `OnMouseClick`、一次提交应用全部目标及一次撤销恢复混合值。本轮 `Debug/Release × x64/x86` 四套
+  解决方案均直接 Build 成功，零警告、零错误；四套 `CUICoreTests` 均为 169/169，四套 Designer 自测、动态
+  宿主、静态生成样例与 `CuiCodeGen 7` 共 20 项运行门禁全部返回 0。
+- 实时 XAML 编辑器新增“应用”检查点和 `Ctrl+S`：当前有效预览提交为一条独立 `EditXaml` Undo 后立即从该
+  端点开启下一段严格文档事务，无变化应用不增加历史；最终确定提交当前段，取消/关闭只回滚最近检查点之后的
+  草稿，已应用检查点与完整选择保持可逐级撤销。外层在最后一次 Rollback 后显式刷新命令可用性，避免已存在
+  检查点但主工具栏“撤销”仍禁用。Designer 自测同时覆盖成对/自闭合空 Form 夹具、两次应用、无变化应用、
+  第三版草稿预览后取消和两次独立 Undo。Windows 真实窗口验证底部八按钮无重叠，点击“应用”与 `Ctrl+S`
+  分别建立第 1/2 个检查点，三控件草稿取消后只保留 Button/Label，状态说明与“撤销”可用性同步正确。本轮
+  `Debug/Release × x64/x86` 四套解决方案均直接 Build 成功，零警告、零错误；四套 `CUICoreTests` 均为
+  169/169，四套 Designer 自测、动态宿主、静态生成样例与 `CuiCodeGen 7` 共 20 项运行门禁全部返回 0。
+- Designer 新增剪贴板驱动的粘贴可用性：主工具栏与画布菜单共享实际非空 Unicode 文本查询，活动严格文档
+  事务会同时禁用普通、原位和定位粘贴；`AddClipboardFormatListener` 让跨应用剪贴板变化无需重新聚焦即可
+  更新命令。针对发布通知时的短暂剪贴板占用增加四次 60ms 有界重读，且不把位图源同时公布的空文本格式误判
+  为可粘贴。Designer 自测覆盖复制后的启用、事务期间三入口禁用、`WM_CLIPBOARDUPDATE` 刷新、空文本禁用与
+  恢复；Windows 真实窗口验证空文本启动禁用、外部有效 CUI XAML 后自动启用、Button1 复制粘贴为 Button2，
+  并逐步撤销回干净空文档。最终 `Debug/Release × x64/x86` 四套解决方案均构建成功，四套 `CUICoreTests`
+  均为 169/169，四套 Designer 自测、动态宿主、静态生成样例与 `CuiCodeGen 7` 共 20 项运行门禁全部返回 0；
+  x86 Release 首次并行构建遇到 `%TEMP%` 响应文件被外部清理，改用单节点构建后通过且无源码诊断。
+- 实时 XAML 编辑器新增容错语法着色：处理指令、元素、属性、值、注释、CDATA、声明和实体使用独立前景，
+  未闭合属性值、字符串内 `>` 及不完整标签不会破坏扫描。`RichTextBox` 的前景样式层不写回文本、不改变
+  选区或 Undo/Redo，真实选区前景最后覆盖，标签配对仍使用独立背景；虚拟化绘制把全局范围裁剪到各文本块。
+  Windows 真实窗口先用 13.5K 跨块注释发现共享可变 DirectWrite 画刷会让末块颜色互相污染，随后改为按设备
+  上下文缓存稳定的逐色画刷并复验：整条注释跨四块保持绿色，末尾 Button 的元素/属性/值颜色独立，实时预览
+  成功且 Undo 恢复原源码及颜色。核心回归覆盖全部词法种类、容错边界与编辑历史中立性，Designer 自测覆盖
+  初始化、缩进、格式化和 Undo/Redo 后重算。本轮四套解决方案最终均构建成功；两个 Release 增量 LTCG 命中
+  既知 `LNK1103` 后分别以 x64 完整 Rebuild、x86 单节点完整 Rebuild 通过，均为零警告零错误。四套
+  `CUICoreTests` 均为 170/170，四套 Designer 自测、动态宿主、静态生成样例与 `CuiCodeGen 7` 共 20 项
+  运行门禁全部返回 0。
+- Designer 事件页新增显式“生成/定位处理函数” Action 行与 `F12`：目标按最后选中的可见事件、
+  目录默认事件、首个可见事件顺序解析，Action 行本身不会丢失已选事件，筛选或切换目标后不会激活过期事件。
+  双击、Action 和 `F12` 全部汇合到原有安全激活链路：已有处理函数零文档修改复用，未绑定事件经单条可撤销
+  `EventHandlerCommand` 写入约定默认名，继续共用签名校验、代码生成/定位和用户函数体保护。Designer 自测覆盖 Action 可发现性、
+  目标跟随、Action/`F12` 复用同一回调以及已绑定激活不增加 Undo。Windows 真实窗口筛选 `OnShown` 后确认
+  `F12 · OnShown`，按 `F12` 写入 `MainForm_OnShown`、启用撤销并显示就绪状态，再点击 Action 零修改复用；
+  最后通过主工具栏 Undo 恢复干净文档并关闭窗口。`Debug|x64` / `Debug|x86` Build 与 `Release|x64` / `Release|x86`
+  完整 Rebuild 全部成功（x86 Release 使用单节点）；四套 `CUICoreTests` 均为 170/170，四套 Designer 自测、
+  动态宿主、静态生成样例与 `CuiCodeGen 7` 共 20 项运行门禁全部返回 0。
+- 设计器剪贴板的事件身份现与控件身份同步：仅约定默认处理函数随副本名称重映射，复制子树内部对默认函数的
+  显式共享引用使用同一映射，用户自定义/外部函数保持不变；legacy Auto 所有者仍保持逻辑 Auto，同时其被显式
+  引用的默认函数可正确跟随副本。核心回归覆盖连续两次粘贴、跨后代共享、自定义函数和 legacy 引用，Designer
+  自测覆盖真实 `Ctrl+D`、Undo/Redo 及源/副本映射。Windows 真实窗口从 `Button1` 以 `F12` 生成
+  `Button1_OnMouseClick` 后复制粘贴，确认新选中的 `Button2` 显示 `Button2_OnMouseClick`；三次 Undo 恢复干净
+  文档后正常关闭，未留下恢复会话。最终 `Debug/Release × x64/x86` 四套解决方案均构建成功（Release 为完整
+  Rebuild，x86 Release 使用单节点），四套 `CUICoreTests` 均为 170/170，四套 Designer 自测、动态宿主、
+  静态生成样例与 `CuiCodeGen 7` 共 20 项运行门禁全部返回 0。
+- 跨文档剪贴板片段现会裁剪并携带 Binding 实际依赖的 DataContext Schema：点分父路径、值类型和 R/W/O 能力
+  经规范 XAML 保真；目标缺失路径才会导入，同名声明由目标保持权威。目标原本为空 Schema 时会先为既有绑定
+  推导 `Unknown` 路径，避免导入后把宽松模式意外收紧成不完整 Schema。格式错误的绑定源保持 Capture 输出不变。
+  核心回归覆盖依赖裁剪、XAML 往返、空目标既有绑定、目标同名声明优先和失败事务，增至 171 项；Designer
+  自测使用两个真实 Canvas 和系统文本剪贴板验证跨画布 Copy/Paste 后四条依赖完整，并确认一次 Undo/Redo 同时
+  恢复控件树与 Schema。最终 `Debug/Release × x64/x86` 四套解决方案均构建成功（Release 为完整 Rebuild，
+  x86 Release 使用单节点），四套 `CUICoreTests` 均为 171/171，四套 Designer 自测、动态宿主、静态生成样例
+  与 `CuiCodeGen 7` 共 20 项运行门禁全部返回 0。
+- 跨文档剪贴板片段新增样式依赖裁剪与冲突隔离：Capture 只携带静态选择器匹配复制节点的规则及其引用资源；
+  目标相关样式环境完全一致时直接复用，存在同名资源、Class、StyleId、全局或类型规则差异时，则按粘贴节点
+  生成唯一私有选择器、资源键与 Setter 引用，并编码保留源状态、特异性和源顺序。目标既有样式表保持原前缀，
+  既有控件不串色，连续粘贴不会共享上一副本的隔离名；无效资源依赖事务性拒绝。核心回归覆盖裁剪、规范 XAML
+  往返、同环境复用、冲突/连续隔离、运行时级联效果和失败零修改，增至 172 项；Designer 自测通过两个真实
+  Canvas 和系统文本剪贴板验证冲突资源下的预览、一次 Undo/Redo 同步恢复控件树与样式表。最终
+  `Debug/Release × x64/x86` 四套解决方案均构建成功（Release 为完整 Rebuild，x86 Release 使用单节点）；
+  四套 `CUICoreTests` 均为 172/172，四套 Designer 自测、动态宿主、静态生成样例与 `CuiCodeGen 7`
+  共 20 项运行门禁全部返回 0。

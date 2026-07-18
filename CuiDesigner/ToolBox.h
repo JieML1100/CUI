@@ -73,9 +73,17 @@ public:
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 	void SetFilterText(const std::wstring& value);
+	/** Clears the pressed state when a cross-control drag consumes mouse-up. */
+	void CancelActiveItemPress();
 	size_t GetItemCount() const noexcept { return _items.size(); }
 	size_t GetVisibleItemCount() const noexcept;
 	size_t GetVisibleCategoryCount() const noexcept;
 	
 	Event<void(const DesignerControlDescriptor&)> OnControlSelected;
+	/**
+	 * Raised on the initial left-button press of an item.  The point is in the
+	 * owning Form's logical client coordinates so the Designer can continue a
+	 * captured drag across the toolbox, canvas, and side panels.
+	 */
+	Event<void(const DesignerControlDescriptor&, POINT)> OnControlDragReady;
 };

@@ -9,6 +9,7 @@
 enum class DesignerControlPropertyEditorKind : unsigned char
 {
 	Text,
+	Boolean,
 	FontName,
 	FontSize,
 	Anchor

@@ -81,6 +81,16 @@ static void renderNodes(TreeView* tree, D2DGraphics* d2d, float w, float h, floa
 			{
 				d2d->FillRoundRect(itemRect, tree->UnderMouseItemBackColor, tree->ItemCornerRadius);
 			}
+			if (c == tree->DropTargetNode
+				&& tree->DropPosition == TreeViewDropPosition::Inside)
+			{
+				auto fill = tree->DropIndicatorColor;
+				fill.a = (std::min)(fill.a, 0.16f);
+				d2d->FillRoundRect(itemRect, fill, tree->ItemCornerRadius);
+				d2d->DrawRoundRect(
+					itemRect, tree->DropIndicatorColor, 1.5f,
+					tree->ItemCornerRadius);
+			}
 			if (c->Children.size() > 0)
 			{
 				const float chevronCx = baseLeft + chevronSlot * 0.5f;
@@ -98,6 +108,20 @@ static void renderNodes(TreeView* tree, D2DGraphics* d2d, float w, float h, floa
 			}
 			const float textTop = renderTop + (std::max)(0.0f, (itemHeight - fontHeight) * 0.5f);
 			d2d->DrawString(c->Text, contentLeft, textTop, foreColor, tree->Font);
+			if (c == tree->DropTargetNode
+				&& (tree->DropPosition == TreeViewDropPosition::Before
+					|| tree->DropPosition == TreeViewDropPosition::After))
+			{
+				const float indicatorY = tree->DropPosition
+					== TreeViewDropPosition::Before
+					? renderTop + 1.0f : renderBottom - 1.0f;
+				d2d->DrawLine(
+					rowInsetX + 1.0f, indicatorY, pillRight, indicatorY,
+					tree->DropIndicatorColor, 2.0f);
+				d2d->FillRoundRect(
+					rowInsetX, indicatorY - 2.5f, 5.0f, 5.0f,
+					tree->DropIndicatorColor, 2.5f);
+			}
 		}
 
 		cursorY += itemHeight;
@@ -132,7 +156,10 @@ static void renderNodes(TreeView* tree, D2DGraphics* d2d, float w, float h, floa
 	}
 }
 
-static TreeNode* findNode(TreeView* tree, float posX, float posY, float h, float itemHeight, float scrollOffsetY, float& cursorY, int sunLevel, std::vector<TreeNode*>& children, bool& isHitEx)
+static TreeNode* findNode(TreeView* tree, float posX, float posY,
+	float h, float itemHeight, float scrollOffsetY, float& cursorY,
+	int sunLevel, std::vector<TreeNode*>& children, bool& isHitEx,
+	float* relativeRowY = nullptr)
 {
 	if (!tree) return nullptr;
 	const float rowInsetX = (std::max)(0.0f, tree->ItemHorizontalPadding);
@@ -147,6 +174,10 @@ static TreeNode* findNode(TreeView* tree, float posX, float posY, float h, float
 		{
 			if (posY >= currTop && posY <= currBottom)
 			{
+				if (relativeRowY)
+					*relativeRowY = itemHeight > 0.0f
+						? (std::clamp)((posY - currTop) / itemHeight, 0.0f, 1.0f)
+						: 0.5f;
 				float exLeft = rowInsetX + (sunLevel * (std::max)(8.0f, tree->IndentWidth));
 				if (posX >= (exLeft - 3.0f) && posX <= (exLeft + chevronSlot + 3.0f) && c->Children.size() > 0)
 					isHitEx = true;
@@ -167,7 +198,9 @@ static TreeNode* findNode(TreeView* tree, float posX, float posY, float h, float
 				if (posY >= childTop && posY <= childBottom)
 				{
 					float childCursor = cursorY;
-					auto result = findNode(tree, posX, posY, h, itemHeight, scrollOffsetY, childCursor, sunLevel + 1, c->Children, isHitEx);
+					auto result = findNode(tree, posX, posY, h, itemHeight,
+						scrollOffsetY, childCursor, sunLevel + 1,
+						c->Children, isHitEx, relativeRowY);
 					if (result)
 						return result;
 				}
@@ -177,6 +210,39 @@ static TreeNode* findNode(TreeView* tree, float posX, float posY, float h, float
 	}
 
 	return nullptr;
+}
+
+TreeNode* TreeView::HitTestNode(
+	float localX, float localY, float* relativeRowY)
+{
+	if (relativeRowY) *relativeRowY = 0.5f;
+	if (!Root || localX < 0.0f || localY < 0.0f
+		|| localX > static_cast<float>(Width)
+		|| localY > static_cast<float>(Height))
+		return nullptr;
+	const auto size = GetActualSizeDip();
+	const float itemHeight = EffectiveItemHeight(this);
+	float cursorY = 0.0f;
+	bool hitExpander = false;
+	return findNode(
+		this, localX, localY, size.height, itemHeight,
+		static_cast<float>(ScrollIndex) * itemHeight,
+		cursorY, 0, Root->Children, hitExpander, relativeRowY);
+}
+
+void TreeView::SetDropTarget(
+	TreeNode* node, TreeViewDropPosition position)
+{
+	if (!node) position = TreeViewDropPosition::None;
+	if (DropTargetNode == node && DropPosition == position) return;
+	DropTargetNode = node;
+	DropPosition = position;
+	InvalidateVisual();
+}
+
+void TreeView::ClearDropTarget()
+{
+	SetDropTarget(nullptr, TreeViewDropPosition::None);
 }
 
 static void CollectVisibleTreeNodes(

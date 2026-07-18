@@ -102,7 +102,7 @@
     <ClCompile Include="ToolBox.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="TreeViewNodesEditorDialog.cpp">
+	<ClCompile Include="TreeViewNodesEditorDialog.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="MenuItemsEditorDialog.cpp">
@@ -113,6 +113,9 @@
     </ClCompile>
 	<ClCompile Include="StyleSheetEditorDialog.cpp">
 	  <Filter>源文件</Filter>
+	</ClCompile>
+	<ClCompile Include="XamlEditorDialog.cpp">
+	  <Filter>Source Files</Filter>
 	</ClCompile>
     <ClCompile Include="FakeWebBrowser.cpp">
       <Filter>源文件</Filter>
@@ -269,7 +272,7 @@
     <ClInclude Include="ToolBox.h">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="TreeViewNodesEditorDialog.h">
+	<ClInclude Include="TreeViewNodesEditorDialog.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="MenuItemsEditorDialog.h">
@@ -281,11 +284,17 @@
 	<ClInclude Include="StyleSheetEditorDialog.h">
 	  <Filter>头文件</Filter>
 	</ClInclude>
+	<ClInclude Include="XamlEditorDialog.h">
+	  <Filter>Header Files</Filter>
+	</ClInclude>
     <ClInclude Include="FakeWebBrowser.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="DesignerModel\DesignDocument.h">
       <Filter>DesignerModel</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerModel\DesignDocumentClipboard.h">
+      <Filter>Header Files</Filter>
     </ClInclude>
 	<ClInclude Include="DesignerModel\DesignDocumentEventIndex.h">
 	  <Filter>DesignerModel</Filter>
@@ -315,7 +324,10 @@
 	  <Filter>DesignerModel</Filter>
 	</ClInclude>
 	<ClInclude Include="DesignerModel\XamlDocumentParser.h">
-	  <Filter>DesignerModel</Filter>
+		<Filter>DesignerModel</Filter>
+	</ClInclude>
+	<ClInclude Include="DesignerModel\XamlEditorAssist.h">
+		<Filter>DesignerModel</Filter>
 	</ClInclude>
 	<ClInclude Include="DesignerModel\XamlDocumentSerializer.h">
 		<Filter>DesignerModel</Filter>

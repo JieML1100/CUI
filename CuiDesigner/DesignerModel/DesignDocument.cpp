@@ -162,6 +162,7 @@ bool DesignNode::operator==(const DesignNode& other) const
 		&& CustomType == other.CustomType
 		&& CustomEvents == other.CustomEvents
 		&& Order == other.Order
+		&& Locked == other.Locked
 		&& Props == other.Props
 		&& Extra == other.Extra
 		&& Events == other.Events

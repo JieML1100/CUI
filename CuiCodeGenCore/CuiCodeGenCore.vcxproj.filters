@@ -8,10 +8,12 @@
     <ClCompile Include="..\CuiDesigner\CodeGenerator.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\DesignerModel\CppUserCodeIndex.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignCodeGenerationService.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentClipboard.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\CuiDesigner\CodeGenerator.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\CuiDesigner\DesignerModel\CppUserCodeIndex.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\CuiDesigner\DesignerModel\DesignCodeGenerationService.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\CuiDesigner\DesignerModel\DesignDocumentClipboard.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
 </Project>

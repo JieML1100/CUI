@@ -40,6 +40,7 @@ struct DesignerControlPlacementState
 	int GridColumn = 0;
 	int GridRowSpan = 1;
 	int GridColumnSpan = 1;
+	int ZIndex = 0;
 
 	bool EquivalentTo(const DesignerControlPlacementState& other) const noexcept;
 	size_t GetEstimatedMemoryUsage() const noexcept;

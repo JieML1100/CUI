@@ -16,7 +16,10 @@
 #include <map>
 #include <optional>
 
+namespace DesignerModel { struct XamlDocumentDiagnostic; }
+
 struct CodeGenInput;
+struct DesignerEventDescriptor;
 class IDesignerCommand;
 class DesignerCommandCoordinator;
 class SelectionService;
@@ -28,6 +31,32 @@ class EventHandlerCommand;
 struct DesignerCanvasPlacementInteraction;
 struct DesignerCanvasPropertyInteraction;
 struct DesignerEventHandlerCodeMigration;
+
+enum class DesignerSelectionArrangeAction : uint8_t
+{
+	AlignLeft,
+	AlignHorizontalCenters,
+	AlignRight,
+	AlignTop,
+	AlignVerticalCenters,
+	AlignBottom,
+	MakeSameWidth,
+	MakeSameHeight,
+	MakeSameSize,
+	DistributeHorizontally,
+	DistributeVertically,
+	BringForward,
+	SendBackward,
+	BringToFront,
+	SendToBack,
+};
+
+enum class DesignerHierarchyDropPosition : uint8_t
+{
+	Before,
+	Inside,
+	After
+};
 
 namespace DesignerModel
 {
@@ -56,6 +85,26 @@ struct DesignerCanvasDocumentStateEventArgs
 	uint64_t CurrentStateId = 0;
 	uint64_t SavedStateId = 0;
 	bool IsDirty = false;
+};
+
+struct DesignerCanvasContextMenuEventArgs
+{
+	POINT CanvasPosition{ 0, 0 };
+	bool HasSelection = false;
+};
+
+struct DesignerCanvasViewChangedEventArgs
+{
+	float Zoom = 1.0f;
+	D2D1_POINT_2F Offset{ 0.0f, 0.0f };
+	bool FitToViewport = false;
+};
+
+struct DesignerCanvasTabOrderStateEventArgs
+{
+	bool Active = false;
+	int NextIndex = 0;
+	size_t CandidateCount = 0;
 };
 
 class DesignerCanvas : public Panel
@@ -87,6 +136,9 @@ private:
 	bool _designedFormEnable = true;
 	bool _designedFormVisible = true;
 	std::map<std::wstring, std::wstring> _designedFormEventHandlers;
+	std::wstring _lastPastedClipboardText;
+	std::vector<std::wstring> _lastPastedRootNames;
+	unsigned int _clipboardPasteSequence = 0;
 	DesignerDataContextSchema _dataContextSchema;
 	DesignerModel::DesignCodeBehindModel _codeBehind;
 	DesignerStyleSheet _documentStyleSheet;
@@ -101,13 +153,32 @@ private:
 	bool _designedFormAllowResize = true;
 	POINT _designSurfaceOrigin = { 20, 20 };
 
+	// 仅影响设计器视图，不进入 XAML/文档历史。逻辑画布坐标始终保持 1 DIP。
+	float _viewZoom = 1.0f;
+	D2D1_POINT_2F _viewOffset{ 0.0f, 0.0f };
+	bool _fitToViewport = false;
+	SIZE _lastFitViewportSize{ 0, 0 };
+	bool _isPanning = false;
+	bool _panStartedWithLeftButton = false;
+	POINT _panStartViewPoint{ 0, 0 };
+	D2D1_POINT_2F _panStartViewOffset{ 0.0f, 0.0f };
+
 	// 网格/吸附/参考线
 	int _gridSize = 10;
+	bool _showGrid = true;
 	bool _snapToGrid = true;
 	bool _snapToGuides = true;
 	int _snapThreshold = 5; // 像素阈值：接近则吸附
 	std::vector<int> _vGuides; // canvas 坐标
 	std::vector<int> _hGuides; // canvas 坐标
+
+	// Tab 顺序模式只影响设计视图；实际 TabIndex 修改仍走属性差量命令。
+	bool _tabOrderMode = false;
+	int _nextTabOrderIndex = 0;
+	int _lastTabOrderStableId = 0;
+	DWORD _lastTabOrderClickTime = 0;
+	::Font* _tabOrderBadgeFont = nullptr;
+	float _tabOrderBadgeFontZoom = 0.0f;
 
 	std::vector<std::shared_ptr<DesignerControl>> _designerControls;
 	std::vector<std::shared_ptr<DesignerControl>> _selectedControls;
@@ -153,6 +224,13 @@ private:
 	
 	// 待添加的完整控件描述；自定义控件不能退化为单一 UIClass。
 	std::optional<DesignerControlDescriptor> _controlToAdd;
+	// Toolbox drag preview is view-only state.  The actual drop still enters
+	// AddControlToCanvas as one undoable subtree command.
+	bool _controlDropPreviewVisible = false;
+	RECT _controlDropPreviewRect{ 0, 0, 0, 0 };
+	RECT _controlDropTargetRect{ 0, 0, 0, 0 };
+	std::wstring _controlDropTargetDescription;
+	std::optional<DesignerControlDescriptor> _controlDropPreviewDescriptor;
 	// 进程内预览工厂不进入文档，但必须跨 Open/Undo/Redo 材质化保持。
 	std::unordered_map<std::wstring, DesignerControlDescriptor>
 		_customControlDescriptors;
@@ -183,6 +261,13 @@ private:
 	
 	void DrawSelectionHandles(std::shared_ptr<DesignerControl> dc);
 	void DrawGrid();
+	void ClampViewOffset();
+	void RecalculateFitView(bool notify);
+	void NotifyViewChanged();
+	void NotifyTabOrderStateChanged();
+	void BeginViewPan(POINT viewPoint, bool leftButton);
+	void EndViewPan();
+	int GetSelectionHandleSizeInCanvas() const;
 	RECT GetDesignSurfaceRectInCanvas() const;
 	RECT GetClientSurfaceRectInCanvas() const;
 	bool IsPointInDesignSurface(POINT ptCanvas) const;
@@ -256,6 +341,15 @@ private:
 	RECT ApplyMoveSnap(RECT desiredRectInCanvas, Control* referenceParent);
 	RECT ApplyResizeSnap(RECT desiredRectInCanvas, Control* referenceParent, DesignerControl::ResizeHandle handle);
 	void ApplyRectToControl(Control* c, const RECT& rectInCanvas);
+	bool IsTabOrderCandidate(
+		const std::shared_ptr<DesignerControl>& control) const;
+	std::vector<std::shared_ptr<DesignerControl>>
+		CollectTabOrderCandidates() const;
+	DesignerDocumentTransactionResult ApplyTabOrderAssignments(
+		const std::vector<std::pair<std::shared_ptr<DesignerControl>, int>>&
+			assignments,
+		const std::wstring& operation,
+		std::wstring successMessage);
 	static Thickness GetPaddingOfContainer(Control* container);
 	void RebuildDesignedFormSharedFont();
 	void DetachDesignBindingPreview(DesignerControl& control);
@@ -336,6 +430,42 @@ public:
 	void SetDesignedFormCenterTitle(bool v) { _designedFormCenterTitle = v; this->InvalidateVisual(); }
 	bool GetDesignedFormAllowResize() const { return _designedFormAllowResize; }
 	void SetDesignedFormAllowResize(bool v) { _designedFormAllowResize = v; this->InvalidateVisual(); }
+
+	// 视图导航（非文档状态）：Ctrl+滚轮/加减号缩放，Ctrl+0 适配，Ctrl+1 还原。
+	float GetViewZoom() const noexcept { return _viewZoom; }
+	D2D1_POINT_2F GetViewOffset() const noexcept { return _viewOffset; }
+	bool IsFitToViewport() const noexcept { return _fitToViewport; }
+	POINT ViewToCanvasPoint(POINT point) const;
+	POINT CanvasToViewPoint(POINT point) const;
+	void SetViewZoom(float zoom);
+	void SetViewZoom(float zoom, POINT focalPointInView);
+	void ZoomIn();
+	void ZoomOut();
+	void ResetView();
+	void FitDesignSurfaceToViewport();
+	bool IsGridVisible() const noexcept { return _showGrid; }
+	bool IsSnapToGridEnabled() const noexcept { return _snapToGrid; }
+	bool IsSnapToGuidesEnabled() const noexcept { return _snapToGuides; }
+	int GetGridSize() const noexcept { return _gridSize; }
+	void SetGridVisible(bool visible);
+	void SetSnapToGridEnabled(bool enabled);
+	void SetSnapToGuidesEnabled(bool enabled);
+	void SetGridSize(int gridSize);
+	bool SetTabOrderMode(bool active, int nextIndex = 0);
+	bool IsTabOrderMode() const noexcept { return _tabOrderMode; }
+	int GetNextTabOrderIndex() const noexcept { return _nextTabOrderIndex; }
+	size_t GetTabOrderCandidateCount() const
+	{
+		return CollectTabOrderCandidates().size();
+	}
+	/** Assigns one explicit TabIndex as a reversible metadata property delta. */
+	DesignerDocumentTransactionResult AssignTabOrderIndex(
+		const std::shared_ptr<DesignerControl>& control,
+		int tabIndex);
+	/** Assigns every focusable design control in visual reading order as one Undo. */
+	DesignerDocumentTransactionResult AutoArrangeTabOrder();
+	/** Activates any owning TabPage chain so an outline-selected control is visible. */
+	bool RevealControlInDesigner(Control* control);
 	void ClampControlToDesignSurface(Control* c);
 	// 设计器专用：切换 Anchor 时保持控件当前视觉矩形不变，并同步换算 Margin
 	void ApplyAnchorStylesKeepingBounds(Control* c, uint8_t newAnchorStyles);
@@ -343,12 +473,42 @@ public:
 	// 设计文件（用于保存/加载设计进度）
 	bool BuildDesignDocument(DesignerModel::DesignDocument& document, std::wstring* outError = nullptr) const;
 	bool ApplyDesignDocument(const DesignerModel::DesignDocument& document, std::wstring* outError = nullptr);
+	bool BuildXamlDocumentText(
+		std::wstring& xamlText,
+		std::wstring* outError = nullptr) const;
+	/** Metadata-backed suggestions consumed by the live XAML editor. */
+	std::vector<std::wstring> GetXamlCompletionElementNames() const;
+	std::vector<std::wstring> GetXamlCompletionAttributeNames(
+		const std::wstring& elementName) const;
+	std::vector<std::wstring> GetXamlCompletionAttributeValues(
+		const std::wstring& elementName,
+		const std::wstring& attributeName,
+		const std::map<std::string, std::vector<std::wstring>>&
+			compatibleUserHandlers = {}) const;
+	/** Shared same-signature handler candidates for the event grid and XAML editor. */
+	std::vector<std::wstring> GetCompatibleEventHandlerNames(
+		const DesignerEventDescriptor& requested,
+		const std::wstring& defaultName,
+		const std::wstring& currentName,
+		const std::map<std::string, std::vector<std::wstring>>&
+			compatibleUserHandlers) const;
+	/** Applies one live XAML preview inside an already active document transaction. */
+	bool PreviewXamlDocumentText(
+		const std::wstring& xamlText,
+		std::wstring* outError = nullptr,
+		DesignerModel::XamlDocumentDiagnostic* outDiagnostic = nullptr);
 	bool BuildEventHandlerIndex(
 		DesignerModel::DesignDocumentEventIndex& index,
 		std::wstring* outError = nullptr) const;
 	/** Applies one Form/control event mapping through a stable-ID delta command. */
 	DesignerDocumentTransactionResult UpdateEventHandler(
 		const std::shared_ptr<DesignerControl>& control,
+		const std::wstring& eventName,
+		const std::wstring& handlerName,
+		std::wstring* outError = nullptr);
+	/** Applies one common event mapping to multiple controls atomically. */
+	DesignerDocumentTransactionResult UpdateEventHandlers(
+		const std::vector<std::shared_ptr<DesignerControl>>& controls,
 		const std::wstring& eventName,
 		const std::wstring& handlerName,
 		std::wstring* outError = nullptr);
@@ -377,10 +537,70 @@ public:
 		UIClass type, POINT canvasPos);
 	DesignerDocumentTransactionResult AddControlToCanvas(
 		const DesignerControlDescriptor& descriptor, POINT canvasPos);
+	/** Updates the view-only toolbox ghost and resolves the actual drop host. */
+	bool UpdateControlDropPreview(
+		const DesignerControlDescriptor& descriptor,
+		POINT canvasPos,
+		std::wstring* outTargetDescription = nullptr);
+	void ClearControlDropPreview();
+	bool HasControlDropPreview() const noexcept
+	{
+		return _controlDropPreviewVisible;
+	}
+	RECT GetControlDropPreviewRect() const noexcept
+	{
+		return _controlDropPreviewRect;
+	}
+	RECT GetControlDropTargetRect() const noexcept
+	{
+		return _controlDropTargetRect;
+	}
+	const std::wstring& GetControlDropTargetDescription() const noexcept
+	{
+		return _controlDropTargetDescription;
+	}
+	DesignerDocumentTransactionResult CopySelectedControls();
+	DesignerDocumentTransactionResult CutSelectedControls();
+	/**
+	 * Reports whether the current clipboard source contains text that can be
+	 * offered to the CUI XAML paste pipeline. Parsing still happens when paste
+	 * runs so externally copied malformed text receives a diagnostic.
+	 */
+	bool CanPasteControlsFromClipboard() const noexcept;
+	/** Pastes with the normal 12-DIP cascading offset. */
+	DesignerDocumentTransactionResult PasteControlsFromClipboard();
+	/** Pastes at the fragment's original local coordinates. */
+	DesignerDocumentTransactionResult PasteControlsFromClipboardInPlace();
+	/** Pastes with the fragment root bounds starting at a canvas point. */
+	DesignerDocumentTransactionResult PasteControlsFromClipboardAt(
+		POINT canvasPosition);
+	/** Creates an offset copy without replacing the system clipboard. */
+	DesignerDocumentTransactionResult DuplicateSelectedControls();
+	/** Transactionally inserts a complete CUI XAML document or control fragment. */
+	DesignerDocumentTransactionResult PasteControlsFromXamlText(
+		const std::wstring& xamlText);
+	DesignerDocumentTransactionResult PasteControlsFromXamlTextInPlace(
+		const std::wstring& xamlText);
+	DesignerDocumentTransactionResult PasteControlsFromXamlTextAt(
+		const std::wstring& xamlText,
+		POINT canvasPosition);
+	/** Applies one WinForms-style multi-selection arrangement command. */
+	DesignerDocumentTransactionResult ArrangeSelection(
+		DesignerSelectionArrangeAction action);
+	bool HasLockedSelectedControls() const noexcept;
+	bool AreAllSelectedControlsLocked() const noexcept;
+	/** Batch-locks the current selection as one undoable design-only edit. */
+	DesignerDocumentTransactionResult SetSelectedControlsLocked(bool locked);
+	/** Moves one control from the document outline as one undoable tree delta. */
+	DesignerDocumentTransactionResult MoveControlInHierarchy(
+		int sourceStableId,
+		std::optional<int> targetStableId,
+		DesignerHierarchyDropPosition position);
 	void AddControlToCanvasCore(UIClass type, POINT canvasPos);
 	void AddControlToCanvasCore(
 		const DesignerControlDescriptor& descriptor, POINT canvasPos);
-	DesignerDocumentTransactionResult DeleteSelectedControl();
+	DesignerDocumentTransactionResult DeleteSelectedControl(
+		bool publishResult = true);
 	void DeleteSelectedControlCore();
 	void RemoveDesignerControlsInSubtree(Control* root);
 	// 设计期 Name：用于保存/加载 parent 引用，必须非空且在当前文档内唯一
@@ -392,6 +612,8 @@ public:
 		std::unique_ptr<IDesignerCommand> command);
 	DesignerDocumentTransactionResult UndoCommand();
 	DesignerDocumentTransactionResult RedoCommand();
+	std::wstring GetUndoCommandLabel() const;
+	std::wstring GetRedoCommandLabel() const;
 	bool IsDocumentDirty() const noexcept;
 	uint64_t GetCurrentDocumentStateId() const noexcept;
 	uint64_t GetSavedDocumentStateId() const noexcept;
@@ -446,6 +668,8 @@ public:
 	void ClearCommandResult();
 	void RestorePrimarySelectionByName(const std::wstring& name, bool fireEvent = true);
 	void RestoreSelectionByNames(const std::vector<std::wstring>& selectionNames, const std::wstring& primaryName, bool fireEvent = true);
+	/** Selects every design control in the primary selection's current parent. */
+	bool SelectAllInCurrentContainer(bool fireEvent = true);
 	std::shared_ptr<DesignerControl> GetSelectedControl() { return _selectedControl; }
 	const std::vector<std::shared_ptr<DesignerControl>>& GetSelectedControls() const { return _selectedControls; }
 	const std::vector<std::shared_ptr<DesignerControl>>& GetAllControls() const { return _designerControls; }
@@ -468,8 +692,29 @@ public:
 	Event<void(const DesignerCanvasCommandEventArgs&)> OnCommandCompleted;
 	Event<void(const DesignerCanvasDocumentStateEventArgs&)>
 		OnDocumentStateChanged;
+	Event<void(const DesignerCanvasViewChangedEventArgs&)> OnViewChanged;
+	Event<void(const DesignerCanvasTabOrderStateEventArgs&)>
+		OnTabOrderStateChanged;
+	Event<void(const DesignerCanvasContextMenuEventArgs&)>
+		OnContextMenuRequested;
 
 private:
+	enum class ClipboardPastePlacement
+	{
+		Cascade,
+		InPlace,
+		AtCanvasPoint
+	};
+
+	DesignerDocumentTransactionResult CopySelectedControlsCore(
+		bool publishResult);
+	DesignerDocumentTransactionResult PasteControlsFromClipboardCore(
+		ClipboardPastePlacement placement,
+		std::optional<POINT> canvasPosition);
+	DesignerDocumentTransactionResult PasteControlsFromXamlTextCore(
+		const std::wstring& xamlText,
+		ClipboardPastePlacement placement,
+		std::optional<POINT> canvasPosition);
 	void ClearCanvasCore();
 	DesignerDocumentTransactionResult ReplaceDesignDocument(
 		const DesignerModel::DesignDocument& document,

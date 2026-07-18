@@ -252,6 +252,9 @@ public:
 	std::function<void(
 		const std::wstring&, const DesignerStyleValue&)> PreviewPropertyChanged;
 	bool IsSelected;
+	// Design-time only. Prevents accidental placement/tree changes while
+	// keeping the control selectable, editable, copyable and removable.
+	bool IsLocked = false;
 
 	// 事件绑定：key 为事件成员名（如 OnMouseClick/OnTextChanged），value 为类成员函数名
 	// 仅用于设计期保存/加载与导出代码生成；运行时不自动绑定。

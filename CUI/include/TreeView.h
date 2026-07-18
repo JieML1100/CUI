@@ -5,6 +5,14 @@
 
 class TreeView;
 
+enum class TreeViewDropPosition : uint8_t
+{
+	None,
+	Before,
+	Inside,
+	After
+};
+
 /**
  * @file TreeView.h
  * @brief TreeView：树形控件（节点展开/收起、选择、滚动）。
@@ -116,6 +124,9 @@ public:
 	TreeNode* SelectedNode = nullptr;
 	/** @brief 当前悬停节点。 */
 	TreeNode* HoveredNode = nullptr;
+	/** @brief 可选的拖放目标；仅用于瞬态呈现，不改变节点集合。 */
+	TreeNode* DropTargetNode = nullptr;
+	TreeViewDropPosition DropPosition = TreeViewDropPosition::None;
 	int MaxRenderItems = 0;
 	int ScrollIndex = 0;
 	float ItemHeight = 28.0f;
@@ -132,6 +143,7 @@ public:
 	D2D1_COLOR_F SelectedBackColor = cui::theme::palette::AccentSelected;
 	D2D1_COLOR_F UnderMouseItemBackColor = cui::theme::palette::AccentSoft;
 	D2D1_COLOR_F SelectedForeColor = cui::theme::palette::TextPrimary;
+	D2D1_COLOR_F DropIndicatorColor = cui::theme::palette::Accent;
 	ScrollChangedEvent ScrollChanged;
 	SelectionChangedEvent SelectionChanged;
 	TreeView(int x, int y, int width = 120, int height = 24);
@@ -164,6 +176,10 @@ public:
 		double horizontalPercent, double verticalPercent) override;
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
+	/** Returns the visible row under a local point and optionally its 0..1 row position. */
+	TreeNode* HitTestNode(float localX, float localY, float* relativeRowY = nullptr);
+	void SetDropTarget(TreeNode* node, TreeViewDropPosition position);
+	void ClearDropTarget();
 
 protected:
 	void OnComputedLayoutSizeChanged() override;

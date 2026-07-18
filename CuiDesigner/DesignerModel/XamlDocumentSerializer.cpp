@@ -464,6 +464,7 @@ namespace
 			auto element = Append(_xml, parent, ToUtf8(elementName));
 			Set(element, "x:Name", node.Name);
 			element->SetAttribute("DesignId", std::to_string(node.Id));
+			if (node.Locked) Set(element, "d:Locked", L"true");
 			if (!node.CustomType.Empty())
 			{
 				Set(element, "d:CppType", node.CustomType.CppType);

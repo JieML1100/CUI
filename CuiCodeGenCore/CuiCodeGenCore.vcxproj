@@ -111,11 +111,13 @@
     <ClCompile Include="..\CuiDesigner\CodeGenerator.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\CppUserCodeIndex.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignCodeGenerationService.cpp" />
+    <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentClipboard.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\CuiDesigner\CodeGenerator.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\CppUserCodeIndex.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\DesignCodeGenerationService.h" />
+    <ClInclude Include="..\CuiDesigner\DesignerModel\DesignDocumentClipboard.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\CuiRuntime\CuiRuntime.vcxproj">

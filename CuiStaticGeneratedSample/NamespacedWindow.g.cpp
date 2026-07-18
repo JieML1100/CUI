@@ -36,9 +36,9 @@ Acme::Views::MainWindowGenerated::MainWindowGenerated()
 	auto __owned_namespaceButton = std::make_unique<Button>(L"Namespaced", 0, 0, 120, 30);
 	namespaceButton = __owned_namespaceButton.get();
 	namespaceButton->DesignId = 77;
-	namespaceButton->BackColor = D2D1::ColorF(0.97f, 0.98f, 0.99f, 1.f);
-	namespaceButton->ForeColor = D2D1::ColorF(0.12f, 0.16f, 0.22f, 1.f);
-	namespaceButton->BorderColor = D2D1::ColorF(0.7f, 0.76f, 0.86f, 1.f);
+	namespaceButton->BackColor = D2D1::ColorF(1.f, 1.f, 1.f, 1.f);
+	namespaceButton->ForeColor = D2D1::ColorF(0.09f, 0.125f, 0.2f, 1.f);
+	namespaceButton->BorderColor = D2D1::ColorF(0.682f, 0.733f, 0.804f, 1.f);
 	// 属性元数据扩展
 	(void)namespaceButton->TrySetPropertyValue(L"LayoutWidth", BindingValue(cui::layout::Length::Fixed(120.f)));
 	(void)namespaceButton->TrySetPropertyValue(L"LayoutHeight", BindingValue(cui::layout::Length::Fixed(24.f)));
@@ -48,9 +48,9 @@ Acme::Views::MainWindowGenerated::MainWindowGenerated()
 	statusBadge = __owned_statusBadge.get();
 	statusBadge->Text = L"Custom control";
 	statusBadge->DesignId = 78;
-	statusBadge->BackColor = D2D1::ColorF(0.97f, 0.98f, 0.99f, 1.f);
-	statusBadge->ForeColor = D2D1::ColorF(0.12f, 0.16f, 0.22f, 1.f);
-	statusBadge->BorderColor = D2D1::ColorF(0.7f, 0.76f, 0.86f, 1.f);
+	statusBadge->BackColor = D2D1::ColorF(1.f, 1.f, 1.f, 1.f);
+	statusBadge->ForeColor = D2D1::ColorF(0.09f, 0.125f, 0.2f, 1.f);
+	statusBadge->BorderColor = D2D1::ColorF(0.682f, 0.733f, 0.804f, 1.f);
 	// 属性元数据扩展
 	(void)statusBadge->TrySetPropertyValue(L"LayoutWidth", BindingValue(cui::layout::Length::Fixed(150.f)));
 	(void)statusBadge->TrySetPropertyValue(L"LayoutHeight", BindingValue(cui::layout::Length::Fixed(30.f)));

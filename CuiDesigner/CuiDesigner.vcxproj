@@ -240,6 +240,7 @@
     <ClCompile Include="ToolBarButtonsEditorDialog.cpp" />
     <ClCompile Include="ToolBox.cpp" />
     <ClCompile Include="TreeViewNodesEditorDialog.cpp" />
+    <ClCompile Include="XamlEditorDialog.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="BindingEditorDialog.h" />
@@ -270,6 +271,7 @@
     <ClInclude Include="DesignerModel\DesignDocumentCodeGenInputBuilder.h" />
     <ClInclude Include="DesignerModel\DesignDocumentControlPool.h" />
     <ClInclude Include="DesignerModel\DesignDocument.h" />
+    <ClInclude Include="DesignerModel\DesignDocumentClipboard.h" />
     <ClInclude Include="DesignerModel\DesignDocumentEventIndex.h" />
     <ClInclude Include="DesignerModel\DesignDocumentFileFormat.h" />
     <ClInclude Include="DesignerModel\DesignDocumentGraph.h" />
@@ -278,6 +280,7 @@
     <ClInclude Include="DesignerModel\RuntimeDocumentFileWatcher.h" />
     <ClInclude Include="DesignerModel\RuntimeDocumentTopologyReloader.h" />
     <ClInclude Include="DesignerModel\XamlDocumentParser.h" />
+    <ClInclude Include="DesignerModel\XamlEditorAssist.h" />
     <ClInclude Include="DesignerModel\XamlDocumentSerializer.h" />
     <ClInclude Include="DesignerModel\DesignDocumentSerializer.h" />
     <ClInclude Include="DesignerModel\DesignRecoveryStore.h" />
@@ -314,6 +317,7 @@
     <ClInclude Include="ToolBarButtonsEditorDialog.h" />
     <ClInclude Include="ToolBox.h" />
     <ClInclude Include="TreeViewNodesEditorDialog.h" />
+    <ClInclude Include="XamlEditorDialog.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\CuiCodeGenCore\CuiCodeGenCore.vcxproj">

@@ -55,6 +55,7 @@ private:
 	};
 	std::vector<NativeGridEntry> _nativeEntries;
 	std::vector<PropertyGridItem> _nativeItemBuffer;
+	std::wstring _lastSelectedEventName;
 	bool _syncingNativeGrid = false;
 	bool _nativeSliderEditAccepted = true;
 	int _contentTop = 96;
@@ -109,12 +110,19 @@ private:
 		const DesignerEventDescriptor& event,
 		const std::wstring& subjectName,
 		const std::wstring& storedHandler,
-		const std::wstring& category = L"\u4e8b\u4ef6");
+		const std::wstring& category = L"\u4e8b\u4ef6",
+		bool hasMixedValue = false,
+		size_t targetCount = 1);
 	void AddNativeEventHandlerManagerRow(const std::wstring& category);
+	void AddNativeEventActivationRow(const std::wstring& category);
 	void PopulateNativeEventRows(
 		const std::vector<DesignerEventDescriptor>& events,
 		const std::wstring& subjectName,
 		const std::map<std::wstring, std::wstring>& handlers,
+		const std::wstring& scopeCaption);
+	void PopulateNativeMultiSelectionEventRows(
+		const std::vector<std::shared_ptr<DesignerControl>>& controls,
+		const std::shared_ptr<DesignerControl>& primaryControl,
 		const std::wstring& scopeCaption);
 	void AddNativeActionRow(
 		const std::wstring& category,
@@ -133,6 +141,9 @@ private:
 	void HandleNativeItemClick(int index);
 	void HandleNativeDoubleClick(int index);
 	void HandleNativeResetRequested(int index);
+	void RememberNativeSelection(int index);
+	std::wstring ResolveEventActivationName() const;
+	void ActivateSelectedEventHandler();
 
 	bool HasActivePropertyFilter() const;
 	bool MatchesCurrentFilter(const std::wstring& searchableText) const;
@@ -167,7 +178,7 @@ private:
 		bool value);
 
 public:
-	/** Fired after a double-click activation has resolved or created a handler. */
+	/** Fired after an event activation has resolved or created a handler. */
 	DesignerEventHandlerActivatedEvent OnEventHandlerActivated;
 
 	PropertyGrid(int x, int y, int width, int height);

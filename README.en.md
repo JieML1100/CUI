@@ -140,7 +140,7 @@ and complete selection. Results distinguish `Begun`, `Committed`, `Unchanged`,
 and restores a dialog that unexpectedly leaked mutations instead of merely discarding
 the before snapshot.
 
-Properties owned by the Designer wrapper rather than runtime metadata—Name, Anchor,
+Properties owned by the Designer wrapper rather than runtime metadata—Name, Locked, Anchor,
 StyleId, StyleClasses, font overrides, and the MediaPlayer source path—now share a
 typed `DesignerControlPropertyCatalog`. PropertyGrid captures, applies, and resets
 them through its Binder, so unique naming, inherited fonts, anchor-bound preservation,
@@ -200,6 +200,175 @@ The Designer toolbox is grouped into seven stable control families and supports
 multi-token filtering by localized name, C++ type name, and category. Every control has
 a code-native vector silhouette; long secondary type names stay on one ellipsized line
 in narrow sidebars instead of wrapping across neighboring rows.
+
+A toolbox item can still be clicked and then placed on the Canvas, or dragged directly onto
+the Form or a nested container. After the system drag threshold is crossed, the Canvas
+highlights the resolved destination and shows a translucent ghost at the control's default
+size. Ordinary containers, the active TabPage, and either SplitContainer region use the same
+resolution rules as the final placement. Mouse release commits one undoable add command;
+`Escape`, capture loss, or window deactivation clears the preview and cancels without leaving
+a pressed item or changing the document.
+
+The toolbar and Canvas now support Copy, Cut, and Paste (`Ctrl+C` / `Ctrl+X` /
+`Ctrl+V`). A multi-selection captures only its top-level roots and their complete
+subtrees, so selecting both a parent and child does not duplicate content. Canonical,
+readable CUI XAML is placed on the Windows Unicode text clipboard and can cross editor
+or Designer-process boundaries. Ordinary `Ctrl+V` allocates fresh stable IDs, creates
+case-insensitively unique names, repairs ordinary-parent and TabPage references, and cascades
+successive results by 12 DIPs. `Ctrl+Shift+V` pastes in place, preserving the fragment's local
+X/Y values without consuming the ordinary-paste cascade sequence. Canvas **Paste Here** aligns
+the top-left of a multi-root fragment's bounding box with a pointed Canvas/Panel, TabPage, or
+SplitContainer First/Second region while preserving relative root layout. Layout-managed targets
+use their own semantics: Stack/Wrap/ToolBar insert at the pointed item boundary while preserving
+root order, Grid assigns the pointed cell, Dock chooses an edge/fill position without displacing
+the last-child fill item, and RelativePanel converts the point to Margin. Ordinary paste uses the
+current control's container; selecting another Panel/layout container or TabControl targets that
+container or active page. Repeated pastes keep the previous destination instead of nesting each
+new container inside the preceding copy. Absolute-layout targets preserve hand-authored
+`Canvas.Left` / `Canvas.Top` metadata; managed targets remove coordinates that their layout would
+ignore. One paste or cut produces one Undo entry; invalid content, destinations, insertion indices,
+or overflowing coordinates leave the document and history unchanged.
+
+When an event value still denotes the control's conventional default handler, such as
+`Button1_OnMouseClick`, copy and duplicate rename it with the new control to
+`Button2_OnMouseClick`. Explicit references to that default handler elsewhere in the copied subtree
+follow the same mapping. User-supplied custom or external handler names remain unchanged, so a copy
+does not accidentally bind back to its source while intentional application-level sharing is preserved.
+
+A fragment containing bindings also carries the referenced DataContext paths, every dotted parent,
+and their type/read/write/notification capabilities; unrelated schema entries are omitted. Paste adds
+only missing paths and keeps the destination declaration authoritative for an existing path. If the
+destination previously used the permissive empty-schema mode, its existing binding paths are first
+declared as `Unknown`, preventing the first imported explicit path from invalidating existing controls.
+Schema merging and control insertion share one Designer command, so Undo/Redo restores both together.
+
+A styled fragment similarly carries only rules whose static selectors match copied nodes and the
+resources referenced by those rules. An identical destination style environment is reused, so
+same-document duplicate does not keep appending styles. If resources, classes, style IDs, global rules,
+or typed rules conflict, Designer assigns each pasted node a private style ID/qualifier classes and
+remaps imported resources while preserving source states, cascade precedence, and source order. Existing
+destination controls keep their own appearance, and one Undo/Redo command restores both styles and nodes.
+
+The toolbar and all three Canvas paste commands now track Windows clipboard changes live. They are
+disabled when there is no non-empty text, the clipboard contains only bitmap/file data, or a strict
+document transaction is active, and become enabled after another application publishes text without
+requiring Designer to restart or regain focus. A bounded delayed recheck handles clipboard owners that
+are still releasing data when the Windows notification arrives. External non-empty text is still parsed
+and transactionally validated when paste runs, so malformed CUI XAML reports a diagnostic without
+changing the document.
+
+`Ctrl+D` duplicates without replacing the system clipboard and preserves each source root's
+ordinary parent, TabPage, or SplitContainer region. Absolute layout and RelativePanel offset by
+12 DIPs through Location and Margin respectively; Stack/Wrap/Dock/ToolBar insert each copy next
+to its source, while Grid preserves the source cell. This prevents managed layouts from ignoring
+X/Y and either overlapping the copy or sending it to the end. The
+toolbar's Arrange popup provides left/center/right and top/middle/bottom alignment,
+horizontal/vertical equal distribution, matching width/height/size, and four layer-order
+commands. Alignment and sizing use the primary selection as their reference; distribution
+keeps the two outer controls fixed. Geometry commands require one non-layout-managed parent,
+leaving Grid, Stack, Dock, Wrap, Relative, and ToolBar positioning to their layout rules.
+Layer commands preserve both sibling order and explicit `ZIndex`; use `Ctrl+]` / `Ctrl+[` to
+move one layer and add `Shift` to send directly to front/back. Each duplicate or arrangement
+is one Undo entry and retains the complete selection.
+
+The toolbar now exposes dynamically disabled Undo and Redo buttons. When available, their
+accessible descriptions and the Canvas menu identify the next command. Right-click first
+updates the primary hit selection, preserves a multi-selection when one of its members is
+hit, and switches to the Form context on empty space. The popup centralizes Undo/Redo,
+Cut/Copy/Paste, Duplicate, Delete, every arrangement command, Select All in Current
+Container, and XAML editing. The keyboard menu key or `Shift+F10` opens the same surface;
+`Ctrl+N`, `Ctrl+O`, and `Ctrl+S` invoke New, Open, and Save.
+
+The live XAML editor reports both XML syntax failures and semantic failures such as invalid
+property values, unknown controls, and duplicate names with 1-based line/column diagnostics.
+Semantic diagnostics prefer the failing attribute name and fall back to the corresponding element
+name. Clicking **Locate Error** or pressing `F8` selects that character and scrolls long documents
+to its line. A new edit immediately clears the stale target, while a valid preview disables the
+command again. Locations use UTF-16 editor offsets, so errors after CJK or other non-ASCII text are
+not shifted by the parser's original UTF-8 byte columns; every failure preserves the last valid preview.
+Processing instructions, element names, attribute names and values, comments, CDATA, declarations, and
+entity references are colored live. The tolerant scanner remains stable for incomplete quotes and tags or
+`>` inside a value. Coloring is a non-editing foreground layer, so it does not rewrite text or add Undo
+entries; real selection foreground and tag-match backgrounds remain authoritative, and long virtualized
+XAML keeps the same colors across text-block boundaries.
+The always-visible find/replace strip supports `Ctrl+F`, `Ctrl+H`, `F3`, and `Shift+F3`, optional
+case matching, current/all replacement, and live user-facing line/column feedback. Replace All is
+recorded as one editor undo unit, so one `Ctrl+Z` restores the complete batch. `Tab` / `Shift+Tab`
+indent or outdent every touched line in a multi-line selection instead of replacing the source with
+one tab; the selection survives the edit and Undo/Redo, and the batch remains one editor history
+unit. Right-click exposes dynamically enabled Undo/Redo, Cut/Copy/Paste/Delete, Select All,
+indentation, and formatting without collapsing an existing selection. The keyboard menu key or
+`Shift+F10` opens the same popup at the caret, and `Ctrl+Shift+F` formats the document. Context-aware XAML
+completion projects elements, properties, enum/Boolean values, and events from the existing built-in
+and custom-control metadata. Suggestions filter while typing or open with `Ctrl+Space`; arrow keys
+navigate and `Tab` / `Enter` commit. Attribute completion inserts `Name=""` with the caret inside.
+`Enter` preserves indentation and expands a caret between paired tags, while entering a complete tag
+highlights both matching tag names. Event-value completion offers `Auto` plus same-signature handlers
+from the current document and associated user `.h/.cpp`; names already used by another signature are
+excluded. **Locate Selection** maps the Canvas selection to its XAML element by stable ID, while
+**Select Control** maps the element under the caret back to the design selection. A source rename
+therefore retains selection, and Format restores the same element instead of jumping to the top.
+The canonical rewrite is one Undo unit: Undo restores the pre-format source and selection,
+while Redo restores the canonical source and the mapped element selection. **Apply** or `Ctrl+S`
+commits the current valid source as an independent Designer Undo checkpoint without closing the
+editor, then immediately starts the next live-preview segment. A no-change Apply adds no history;
+Cancel later discards only the draft after the most recent checkpoint, preserves earlier applied
+checkpoints and selection, and restores the main-window Undo affordance immediately.
+
+A persistent strip below the Canvas exposes zoom out, the current percentage, zoom in,
+and Fit; the Canvas View menu exposes the same commands. `Ctrl+wheel` zooms around the
+design point under the pointer, `Ctrl++` / `Ctrl+-` step the zoom, `Ctrl+0` fits, and
+`Ctrl+1` restores 100%. Drag with the middle mouse button or `Space+left mouse` to pan a
+large surface. Zoom is clamped to 25%–400%, while selection handles and guides compensate
+for the scale so they remain visible. Zoom and pan are view-only state: they do not enter
+XML/XAML, mark the document dirty, or consume Undo/Redo history. Fit mode automatically
+recalculates after the Designer viewport or designed Form changes size.
+
+The bottom `Grid N` button and Canvas `View > Grid and Snapping` menu expose the same
+session settings: show the grid, snap to the grid, snap to alignment guides, and choose a
+5/10/20-DIP interval. Checked menu states reflect the active values, and popup placement is
+clamped in logical coordinates for the current DPI and client area. These settings are
+Designer view state only; changing them does not modify the design document, mark it dirty,
+or consume Undo/Redo history.
+
+The bottom **Tab Order** button and Canvas `View > Tab Order Mode` command provide a
+WinForms-style keyboard-navigation editor. While active, every `IsTabStop=true`, keyboard-
+focusable control receives a zoom-compensated blue `TabIndex` badge. Clicking controls assigns
+indices from zero, the most recent assignment is green, and `Escape` exits. A hidden control
+remains editable through its design outline, while controls excluded from tab navigation do not
+intercept the gesture. `Auto Order by Layout` assigns consecutive indices from top to bottom and
+left to right using absolute Canvas positions. Each manual assignment and a complete automatic
+pass is one metadata-backed, undoable command. `TabIndex` persists to XML/XAML and generated
+code; the mode switch and badges remain Designer-only view state.
+
+Selected controls can be protected through the `Locked` property, the Canvas or Arrange
+menu, or `Ctrl+L`; invoking it again unlocks the selection. Locked controls remain
+selectable, property-editable, copyable, cuttable, and deletable, but lose their resize
+handles and show an orange lock badge. Pointer moves, splitter drags, keyboard nudges,
+arrangement, and outline reparenting reject the complete selection if any member is locked,
+so a mixed selection never moves only partially. A batch lock/unlock is one undoable command.
+It persists only as design metadata (`d:Locked`, or `locked` in Designer XML), survives
+copy/paste and live-XAML round trips, and is excluded from runtime properties and generated code.
+
+The left sidebar can switch between Toolbox and Document Outline. The outline tracks the
+Form, ordinary containers, TabPages, and every descendant by stable ID, displays
+`Name (Type)`, and marks controls whose own `Visible` value is false or whose design-time
+`Locked` value is true. Covered, tiny, or
+runtime-hidden controls therefore remain directly selectable and can be restored from the
+property panel. Selecting a descendant on an inactive TabPage first activates its complete
+tab-ancestor chain. Canvas primary selection expands and scrolls the matching outline path;
+selecting the root returns to Form properties. Add/Delete/Paste, rename, Undo/Redo, and a
+committed live-XAML session rebuild the tree while preserving expansion and scroll state by
+stable ID. When the outline owns focus, arrow keys continue to navigate the tree, while
+`Ctrl+C` / `Ctrl+X` / `Ctrl+V` / `Ctrl+D` / `Ctrl+L` / `Ctrl+Z` / `Ctrl+Y` / `Ctrl+A` and `Delete`
+act directly on the design selection without returning focus to the Canvas.
+
+The outline also supports direct drag-and-drop. The upper edge, center, and lower edge of a
+node mean insert before, reparent inside, and insert after; dropping on empty space moves the
+control to the Form root. A drag can reorder siblings or move across ordinary containers,
+auto-scrolls near the viewport edges, preserves the control's screen position, and commits as
+one undoable structure command. Cycles and invalid TabPage, Menu, StatusBar, or composite
+container targets are rejected.
 
 Designer command `Execute()`, `Undo()`, and `Redo()` now return the same result object
 end to end. Failed or throwing restores retain their error and `DocumentRestored` state
@@ -296,10 +465,19 @@ signature from both the document and the user `.h/.cpp`. A source candidate must
 real member definition of the current `x:Class`; constructors, wrong signatures, duplicate
 definitions, and comment/string/raw-string lookalikes are omitted. Events are grouped as action, value, mouse, keyboard, focus, drag/drop,
 layout, lifecycle, data, navigation, media, or diagnostics, and the catalog declares one
-default event per control type. Double-clicking either an event row or a control on the
-canvas reuses an existing handler or writes the conventional default through the normal
-undoable transaction; double-clicking the Form client surface activates its one-shot
-`OnShown` event. After one explicit code export, activation also safely regenerates `.g.*`,
+default event per control type. With multiple controls selected, the Events view shows only
+events whose names and exact parameter signatures are compatible on every target. Different
+handlers appear as a mixed value; typing, choosing a suggestion, activating, or resetting the
+row applies one atomic command to the complete selection. An unsupported event or cross-signature
+name conflict rejects the whole batch. Mixed scalar editors start empty instead of inserting the
+`<multiple values>` presentation placeholder into the real handler name. Whenever the current
+filter leaves at least one visible event, the Events view exposes a **Generate/Locate Handler**
+action whose `F12 · EventName` value identifies its target. It prefers the last selected visible
+event, then the catalog default, then the first visible event. Double-clicking an event row,
+pressing `F12`, invoking that action, or double-clicking a control on the canvas shares one
+activation path: it reuses an existing handler or writes the conventional default through the
+normal undoable transaction. Double-clicking the Form client surface activates its one-shot
+`OnShown` event. After one explicit code export, another activation safely regenerates `.g.*`,
 appends a missing user stub to `.cpp`, and opens the actual `.h` or `.cpp` definition. Source lookup ignores comments,
 ordinary/raw strings, and declarations. The Designer detects VS Code or Visual Studio and
 requests the exact definition line without sending paths through a shell. Hosts may override
@@ -846,6 +1024,22 @@ code-behind class identity and a relative base path; versions 1–4 remain reada
 upgraded on the next save. Both use atomic replacement and the same materialization/code-generation path. The explicit
 Reload command runs the existing save/discard/cancel flow for dirty documents and keeps
 the current canvas if loading fails. `LoadXamlFile(...)` remains the runtime file entry.
+
+The toolbar's XAML action opens a source editor for the complete current document. Input
+is parsed after a 300 ms debounce and valid text previews immediately on the main Canvas;
+syntax or model errors report diagnostics while retaining the last valid preview. Restore Preview
+discards the invalid or not-yet-applied draft and returns to that checkpoint as one text Undo unit;
+Undo/Redo also restores the exact selection on each side of the replacement. Format
+atomically rewrites the valid document through the canonical serializer as one Undo unit
+with its pre/post selections, `Ctrl+Enter` accepts, and
+`Escape` or closing the dialog cancels. **Apply** and `Ctrl+S` commit the current strict
+document transaction and immediately begin another at that endpoint, so each changed Apply is
+an independent Undo checkpoint while a no-change Apply adds no history. Final cancellation rolls
+back only to the most recent checkpoint; when none was applied it restores the pre-editor document
+and complete selection. Individual keystrokes never enter Designer history.
+Completion reuses the control property/event catalogs and custom-control manifests rather than a
+second hard-coded XAML schema. Lexical context, tag pairing, and indentation are covered by the same
+headless regression suite as the parser.
 
 `CuiRuntime/CuiRuntime.vcxproj` packages this dynamic path as a standalone static
 library; applications do not link the Designer executable. `CuiRuntimeSample` is a

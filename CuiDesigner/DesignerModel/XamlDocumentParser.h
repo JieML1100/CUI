@@ -3,6 +3,7 @@
 #include "DesignDocument.h"
 
 #include <functional>
+#include <cstddef>
 #include <memory>
 #include <string>
 
@@ -12,6 +13,22 @@ struct XamlDocumentParseOptions
 {
 	/** Optional real-control probe for custom elements and their properties. */
 	std::function<std::unique_ptr<Control>(const DesignNode&)> CustomControlFactory;
+};
+
+/** Structured syntax or semantic source diagnostic produced by the XAML frontend. */
+struct XamlDocumentDiagnostic
+{
+	static constexpr std::size_t UnknownOffset = static_cast<std::size_t>(-1);
+
+	std::wstring Message;
+	/** 1-based source line and Unicode-column coordinates. */
+	std::size_t Line = 0;
+	std::size_t Column = 0;
+	/** Zero-based UTF-16 offset for direct navigation in the Windows editor. */
+	std::size_t Utf16Offset = UnknownOffset;
+
+	bool HasLocation() const noexcept { return Line != 0 && Column != 0; }
+	bool HasSourceOffset() const noexcept { return Utf16Offset != UnknownOffset; }
 };
 
 /**
@@ -27,22 +44,26 @@ public:
 	static bool FromXaml(
 		const std::string& xaml,
 		DesignDocument& output,
-		std::wstring* outError = nullptr);
+		std::wstring* outError = nullptr,
+		XamlDocumentDiagnostic* outDiagnostic = nullptr);
 	static bool FromXaml(
 		const std::string& xaml,
 		DesignDocument& output,
 		const XamlDocumentParseOptions& options,
-		std::wstring* outError = nullptr);
+		std::wstring* outError = nullptr,
+		XamlDocumentDiagnostic* outDiagnostic = nullptr);
 
 	/** Reads a UTF-8 XAML file and applies the same transactional semantics. */
 	static bool LoadFromFile(
 		const std::wstring& filePath,
 		DesignDocument& output,
-		std::wstring* outError = nullptr);
+		std::wstring* outError = nullptr,
+		XamlDocumentDiagnostic* outDiagnostic = nullptr);
 	static bool LoadFromFile(
 		const std::wstring& filePath,
 		DesignDocument& output,
 		const XamlDocumentParseOptions& options,
-		std::wstring* outError = nullptr);
+		std::wstring* outError = nullptr,
+		XamlDocumentDiagnostic* outDiagnostic = nullptr);
 };
 }

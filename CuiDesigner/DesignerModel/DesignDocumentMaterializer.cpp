@@ -449,6 +449,7 @@ bool DesignerModel::DesignDocumentMaterializer::Materialize(
 			UIClass type = UIClass::UI_Base;
 			std::wstring parent;
 			int order = -1;
+			bool locked = false;
 			DesignValue props;
 			DesignValue extra;
 			DesignValue events;
@@ -468,6 +469,7 @@ bool DesignerModel::DesignDocumentMaterializer::Materialize(
 			p.type = node.Type;
 			p.parent = resolved.ParentKey;
 			p.order = node.Order;
+			p.locked = node.Locked;
 			p.props = node.Props.is_object() ? node.Props : DesignValue::object();
 			p.extra = node.Extra.is_object() ? node.Extra : DesignValue::object();
 			p.events = node.Events.is_object() ? node.Events : DesignValue::object();
@@ -492,6 +494,7 @@ bool DesignerModel::DesignDocumentMaterializer::Materialize(
 				c, it.name, it.type, nullptr, it.id);
 			dc->CustomType = it.customType;
 			dc->CustomEvents = it.customEvents;
+			dc->IsLocked = it.locked;
 			dcOf[it.name] = dc;
 			instOf[it.name] = c;
 		}

@@ -4,6 +4,7 @@
 #include "Designer.h"
 #include "DesignerCanvas.h"
 #include "DesignerControlCatalog.h"
+#include "DesignerDataContextSchemaUtils.h"
 #include "DesignerPreviewPlugin.h"
 #include "DesignerCore/Commands/ControlPlacementCommand.h"
 #include "DesignerCore/Commands/ControlStructureCommand.h"
@@ -25,6 +26,7 @@
 #include "PropertyGrid.h"
 #include "SourceCodeNavigator.h"
 #include "ToolBox.h"
+#include "XamlEditorDialog.h"
 #include "../CUI/include/ComboBox.h"
 #include "../CUI/include/Form.h"
 #include "../CUI/include/GridView.h"
@@ -43,6 +45,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <limits>
 #include <vector>
 #include <Windows.h>
@@ -137,6 +140,62 @@ namespace
 			== DesignerDocumentTransactionState::Unchanged;
 	}
 
+	bool ReplaceClipboardTextForSelfTest(const std::wstring& text)
+	{
+		const auto byteCount = (text.size() + 1) * sizeof(wchar_t);
+		auto memory = ::GlobalAlloc(GMEM_MOVEABLE, byteCount);
+		if (!memory) return false;
+		auto* destination = static_cast<wchar_t*>(::GlobalLock(memory));
+		if (!destination)
+		{
+			::GlobalFree(memory);
+			return false;
+		}
+		std::copy(text.begin(), text.end(), destination);
+		destination[text.size()] = L'\0';
+		::GlobalUnlock(memory);
+		bool clipboardOpened = false;
+		for (int attempt = 0; attempt < 10 && !clipboardOpened; ++attempt)
+		{
+			clipboardOpened = ::OpenClipboard(nullptr) != FALSE;
+			if (!clipboardOpened) ::Sleep(10);
+		}
+		if (!clipboardOpened)
+		{
+			::GlobalFree(memory);
+			return false;
+		}
+		const bool published = ::EmptyClipboard()
+			&& ::SetClipboardData(CF_UNICODETEXT, memory) != nullptr;
+		::CloseClipboard();
+		if (!published) ::GlobalFree(memory);
+		return published;
+	}
+
+	void NormalizeRuntimeColorValues(
+		DesignerModel::DesignDocument& document)
+	{
+		for (auto& node : document.Nodes)
+		{
+			if (!node.Props.is_object()) continue;
+			for (const auto* name : {
+				"backColor", "foreColor", "borderColor", "bolderColor" })
+			{
+				if (!node.Props.contains(name)
+					|| !node.Props[name].is_object()) continue;
+				auto& color = node.Props[name];
+				for (const auto* component : { "r", "g", "b", "a" })
+				{
+					if (!color.contains(component)
+						|| !color[component].is_number()) continue;
+					const auto runtimeValue = static_cast<float>(
+						color[component].get<double>());
+					color[component] = static_cast<double>(runtimeValue);
+				}
+			}
+		}
+	}
+
 	bool EquivalentDocumentContent(
 		DesignerModel::DesignDocument left,
 		DesignerModel::DesignDocument right)
@@ -144,7 +203,88 @@ namespace
 		// nextId is an allocation high-water mark, not visual/document content.
 		left.NextStableId = 1;
 		right.NextStableId = 1;
+		// Runtime colors are float-valued. Text persistence is read as double, so
+		// compare the values after the same float conversion used by controls.
+		NormalizeRuntimeColorValues(left);
+		NormalizeRuntimeColorValues(right);
 		return left == right;
+	}
+
+	const wchar_t* SelfTestFlag(bool value) noexcept
+	{
+		return value ? L"1" : L"0";
+	}
+
+	std::wstring DescribeDocumentDifference(
+		const DesignerModel::DesignDocument& left,
+		const DesignerModel::DesignDocument& right)
+	{
+		std::wstring result;
+		auto add = [&](const std::wstring& value)
+		{
+			if (!result.empty()) result += L",";
+			result += value;
+		};
+		if (left.Schema != right.Schema) add(L"schema");
+		if (left.SchemaVersion != right.SchemaVersion) add(L"version");
+		if (left.Form != right.Form) add(L"form");
+		if (left.CodeBehind != right.CodeBehind) add(L"codeBehind");
+		if (left.DataContextSchema != right.DataContextSchema) add(L"dataContext");
+		if (left.StyleSheet != right.StyleSheet) add(L"styleSheet");
+		if (left.Nodes.size() != right.Nodes.size()) add(L"nodeCount");
+		const auto count = (std::min)(left.Nodes.size(), right.Nodes.size());
+		for (size_t index = 0; index < count; ++index)
+		{
+			const auto& a = left.Nodes[index];
+			const auto& b = right.Nodes[index];
+			if (a == b) continue;
+			std::wstring fields;
+			auto field = [&](const wchar_t* value)
+			{
+				if (!fields.empty()) fields += L"+";
+				fields += value;
+			};
+			if (a.Id != b.Id) field(L"id");
+			if (a.ParentId != b.ParentId) field(L"parentId");
+			if (a.ParentRef != b.ParentRef) field(L"parentRef");
+			if (a.Name != b.Name) field(L"name");
+			if (a.Type != b.Type) field(L"type");
+			if (a.CustomType != b.CustomType) field(L"customType");
+			if (a.CustomEvents != b.CustomEvents) field(L"customEvents");
+			if (a.Order != b.Order) field(L"order");
+			if (a.Props != b.Props)
+			{
+				std::wstring keys;
+				if (a.Props.is_object() && b.Props.is_object())
+				{
+					std::set<std::string> names;
+					for (const auto& [name, ignored] : a.Props.ObjectItems())
+					{
+						(void)ignored;
+						names.insert(name);
+					}
+					for (const auto& [name, ignored] : b.Props.ObjectItems())
+					{
+						(void)ignored;
+						names.insert(name);
+					}
+					for (const auto& name : names)
+					{
+						const bool aHas = a.Props.contains(name);
+						const bool bHas = b.Props.contains(name);
+						if (aHas && bHas && a.Props[name] == b.Props[name]) continue;
+						if (!keys.empty()) keys += L"|";
+						keys.append(name.begin(), name.end());
+					}
+				}
+				field((L"props{" + keys + L"}").c_str());
+			}
+			if (a.Extra != b.Extra) field(L"extra");
+			if (a.Events != b.Events) field(L"events");
+			if (a.Bindings != b.Bindings) field(L"bindings");
+			add(L"node" + std::to_wstring(index) + L":" + fields);
+		}
+		return result.empty() ? L"nextId" : result;
 	}
 
 	std::wstring CreateTemporarySelfTestFile()
@@ -260,11 +400,488 @@ bool RunDesignerSelfTest(std::wstring& report)
 	toolBox.SetFilterText(L"不存在的控件");
 	AppendFailure(failures,
 		toolBox.GetVisibleItemCount() == 0
-		&& toolBox.GetVisibleCategoryCount() == 0,
+			&& toolBox.GetVisibleCategoryCount() == 0,
 		L"toolbox: empty filter results retained stale visible rows");
+
+	{
+		const std::wstring source =
+			L"<Form>\r\n\t<Button/>\r\n\t<Label/>\r\n</Form>";
+		XamlEditorDialog xamlEditor(nullptr, source);
+		const auto formNameStart = source.find(L"Form");
+		const bool syntaxInitiallyStyled = formNameStart != std::wstring::npos
+			&& std::any_of(
+				xamlEditor._editor->GetTextStyleRanges().begin(),
+				xamlEditor._editor->GetTextStyleRanges().end(),
+				[&](const RichTextBoxTextStyleRange& range)
+				{
+					return range.Start == static_cast<int>(formNameStart)
+						&& range.Length == 4;
+				});
+		const auto selectionStart = source.find(L"\t<Button/>");
+		const auto selectionEnd = source.find(L"\r\n</Form>");
+		xamlEditor._editor->Select(
+			static_cast<int>(selectionStart),
+			static_cast<int>(selectionEnd - selectionStart));
+		xamlEditor.IndentSelection(false);
+		const std::wstring indented =
+			L"<Form>\r\n\t\t<Button/>\r\n\t\t<Label/>\r\n</Form>";
+		xamlEditor.RefreshEditorContextMenu();
+		const auto* undoItem = xamlEditor._editorMenu
+			? xamlEditor._editorMenu->FindItemById(
+				XamlEditorDialog::EditorUndo) : nullptr;
+		const auto* redoItem = xamlEditor._editorMenu
+			? xamlEditor._editorMenu->FindItemById(
+				XamlEditorDialog::EditorRedo) : nullptr;
+		const auto* indentItem = xamlEditor._editorMenu
+			? xamlEditor._editorMenu->FindItemById(
+				XamlEditorDialog::EditorIndent) : nullptr;
+		const auto* outdentItem = xamlEditor._editorMenu
+			? xamlEditor._editorMenu->FindItemById(
+				XamlEditorDialog::EditorOutdent) : nullptr;
+		const auto* formatItem = xamlEditor._editorMenu
+			? xamlEditor._editorMenu->FindItemById(
+				XamlEditorDialog::EditorFormat) : nullptr;
+		const bool menuReady = xamlEditor._editorMenu
+			&& xamlEditor._editorMenu->ItemCount() == 13
+			&& undoItem && undoItem->Enable
+			&& redoItem && !redoItem->Enable
+			&& indentItem && indentItem->Shortcut == L"Tab"
+			&& outdentItem && outdentItem->Shortcut == L"Shift+Tab"
+			&& formatItem && formatItem->Shortcut == L"Ctrl+Shift+F"
+			&& !formatItem->Enable;
+		xamlEditor.OnEditorMenuCommand(XamlEditorDialog::EditorUndo);
+		const bool undoRestored = xamlEditor._editor->Text == source
+			&& xamlEditor._editor->CanRedo();
+		xamlEditor.OnEditorMenuCommand(XamlEditorDialog::EditorRedo);
+		const bool redoRestored = xamlEditor._editor->Text == indented
+			&& xamlEditor._editor->HasSelection();
+		xamlEditor.IndentSelection(true);
+		const bool outdentRestored = xamlEditor._editor->Text == source
+			&& xamlEditor._editor->CanUndo()
+			&& !xamlEditor._editor->GetTextStyleRanges().empty();
+
+		XamlEditorDialog restoreEditor(nullptr, source);
+		const std::wstring invalidDraft =
+			L"<Form>\r\n\t<Button Visibility=\"Vanished\"/>\r\n</Form>";
+		restoreEditor._editor->SelectAll();
+		restoreEditor._editor->InsertText(invalidDraft);
+		restoreEditor._editor->Select(8, 4);
+		restoreEditor.RefreshRestorePreviewState();
+		const bool restoreEnabled = restoreEditor._restorePreview
+			&& restoreEditor._restorePreview->Enable;
+		restoreEditor.RestoreLastValidPreview();
+		const bool restoredLastValid = restoreEditor._editor->Text == source
+			&& restoreEditor._restorePreview
+			&& !restoreEditor._restorePreview->Enable
+			&& restoreEditor._editor->CanUndo();
+		restoreEditor._editor->Undo();
+		const bool restoreUndo = restoreEditor._editor->Text == invalidDraft
+			&& restoreEditor._restorePreview->Enable
+			&& restoreEditor._editor->SelectionStart == 8
+			&& restoreEditor._editor->SelectionEnd == 12;
+
+		DesignerCanvas formatCanvas(0, 0, 900, 640);
+		const std::wstring formatSource =
+			L"<Form xmlns=\"urn:cui\" Name=\"MainForm\"><Button "
+			L"Name=\"formatButton\" Text=\"Format\"/></Form>";
+		const auto formatBegin = formatCanvas.BeginDocumentEditTransaction(
+			L"EditXaml");
+		XamlEditorDialog formatEditor(&formatCanvas, formatSource);
+		const auto formatSelectionOffset = formatSource.find(L"formatButton");
+		const int formatSelectionStart = formatSelectionOffset
+			== std::wstring::npos ? 0
+			: static_cast<int>(formatSelectionOffset);
+		formatEditor._editor->Select(formatSelectionStart, 6);
+		formatEditor.FormatDocument();
+		const std::wstring formattedSource = formatEditor._editor->Text;
+		const int formattedSelectionStart =
+			formatEditor._editor->SelectionStart;
+		const int formattedSelectionEnd = formatEditor._editor->SelectionEnd;
+		const bool formatApplied = formatBegin.Succeeded()
+			&& formatSelectionOffset != std::wstring::npos
+			&& formattedSource != formatSource
+			&& formatEditor._lastValidXaml == formattedSource
+			&& formatEditor._editor->GetSelectedString() == L"Button"
+			&& formatEditor._editor->CanUndo();
+		formatEditor._editor->Undo();
+		const bool formatUndo = formatEditor._editor->Text == formatSource
+			&& formatEditor._editor->SelectionStart == formatSelectionStart
+			&& formatEditor._editor->SelectionEnd == formatSelectionStart + 6
+			&& formatEditor._editor->CanRedo();
+		formatEditor._editor->Redo();
+		const bool formatRedo = formatEditor._editor->Text == formattedSource
+			&& formatEditor._editor->SelectionStart == formattedSelectionStart
+			&& formatEditor._editor->SelectionEnd == formattedSelectionEnd;
+		const bool formatSyntaxRefreshed = !formattedSource.empty()
+			&& !formatEditor._editor->GetTextStyleRanges().empty()
+			&& std::all_of(
+				formatEditor._editor->GetTextStyleRanges().begin(),
+				formatEditor._editor->GetTextStyleRanges().end(),
+				[&](const RichTextBoxTextStyleRange& range)
+				{
+					return range.Start >= 0 && range.Length > 0
+						&& static_cast<size_t>(range.Start + range.Length)
+							<= formattedSource.size();
+				});
+		const auto formatRollback =
+			formatCanvas.RollbackDocumentEditTransaction();
+
+		DesignerCanvas checkpointCanvas(0, 0, 900, 640);
+		std::wstring checkpointSource;
+		std::wstring checkpointError;
+		const bool checkpointSourceBuilt = checkpointCanvas.BuildXamlDocumentText(
+			checkpointSource, &checkpointError);
+		const auto checkpointBegin = checkpointCanvas.BeginDocumentEditTransaction(
+			L"EditXaml");
+		XamlEditorDialog checkpointEditor(&checkpointCanvas, checkpointSource);
+		auto appendBeforeFormEnd = [](std::wstring source,
+			const std::wstring& element)
+		{
+			const auto end = source.rfind(L"</Form>");
+			if (end != std::wstring::npos)
+			{
+				source.insert(end, L"  " + element + L"\r\n");
+				return source;
+			}
+			const auto form = source.rfind(L"<Form");
+			const auto selfClosing = source.rfind(L"/>");
+			if (form == std::wstring::npos || selfClosing == std::wstring::npos
+				|| selfClosing < form) return std::wstring{};
+			source.replace(selfClosing, 2,
+				L">\r\n  " + element + L"\r\n</Form>");
+			return source;
+		};
+		const auto firstCheckpointSource = appendBeforeFormEnd(
+			checkpointSource,
+			L"<Button Name=\"checkpointButton\" Text=\"First\" />");
+		checkpointEditor._editor->ReplaceAllTextAndSelect(
+			firstCheckpointSource,
+			static_cast<int>(firstCheckpointSource.size()), 0);
+		const bool firstCheckpoint = checkpointEditor.ApplyCheckpoint();
+		const bool firstCheckpointState = firstCheckpoint
+			&& checkpointEditor.GetAppliedCheckpointCount() == 1
+			&& checkpointCanvas.HasActiveDocumentTransaction()
+			&& checkpointCanvas.GetUndoCommandCount() == 1
+			&& FindControl(checkpointCanvas, L"checkpointButton");
+		const bool unchangedCheckpoint = checkpointEditor.ApplyCheckpoint();
+		const bool unchangedCheckpointState = unchangedCheckpoint
+			&& checkpointEditor.GetAppliedCheckpointCount() == 1
+			&& checkpointCanvas.HasActiveDocumentTransaction()
+			&& checkpointCanvas.GetUndoCommandCount() == 1;
+		const auto secondCheckpointSource = appendBeforeFormEnd(
+			checkpointEditor._editor->Text,
+			L"<Label Name=\"checkpointLabel\" Text=\"Second\" />");
+		checkpointEditor._editor->ReplaceAllTextAndSelect(
+			secondCheckpointSource,
+			static_cast<int>(secondCheckpointSource.size()), 0);
+		const bool secondCheckpoint = checkpointEditor.ApplyCheckpoint();
+		const bool secondCheckpointState = secondCheckpoint
+			&& checkpointEditor.GetAppliedCheckpointCount() == 2
+			&& checkpointCanvas.HasActiveDocumentTransaction()
+			&& checkpointCanvas.GetUndoCommandCount() == 2
+			&& FindControl(checkpointCanvas, L"checkpointButton")
+			&& FindControl(checkpointCanvas, L"checkpointLabel");
+		const auto uncommittedDraft = appendBeforeFormEnd(
+			checkpointEditor._editor->Text,
+			L"<CheckBox Name=\"checkpointDraft\" Text=\"Draft\" />");
+		checkpointEditor._editor->ReplaceAllTextAndSelect(
+			uncommittedDraft,
+			static_cast<int>(uncommittedDraft.size()), 0);
+		const bool draftPreviewed = checkpointEditor.ValidateAndPreview()
+			&& FindControl(checkpointCanvas, L"checkpointDraft");
+		checkpointEditor.Applied = false;
+		const auto checkpointCancel =
+			checkpointCanvas.RollbackDocumentEditTransaction();
+		const bool cancelKeptCheckpoints = checkpointCancel.Succeeded()
+			&& !checkpointCanvas.HasActiveDocumentTransaction()
+			&& checkpointCanvas.GetUndoCommandCount() == 2
+			&& FindControl(checkpointCanvas, L"checkpointButton")
+			&& FindControl(checkpointCanvas, L"checkpointLabel")
+			&& !FindControl(checkpointCanvas, L"checkpointDraft");
+		const auto undoSecondCheckpoint = checkpointCanvas.UndoCommand();
+		const bool firstCheckpointRemains = undoSecondCheckpoint.HasChanges()
+			&& checkpointCanvas.GetUndoCommandCount() == 1
+			&& FindControl(checkpointCanvas, L"checkpointButton")
+			&& !FindControl(checkpointCanvas, L"checkpointLabel");
+		const auto undoFirstCheckpoint = checkpointCanvas.UndoCommand();
+		const bool allCheckpointsUndone = undoFirstCheckpoint.HasChanges()
+			&& checkpointCanvas.GetUndoCommandCount() == 0
+			&& !FindControl(checkpointCanvas, L"checkpointButton");
+		const bool checkpointButtonReady = checkpointEditor._applyButton
+			&& checkpointEditor._applyButton->AccessibleName
+				== L"应用 XAML 但保持编辑器打开";
+
+		XamlEditorDialog popupLifetimeEditor(nullptr, source);
+		popupLifetimeEditor._completionPopup = new DropDownPopup();
+		popupLifetimeEditor._completionPopup->Parent =
+			popupLifetimeEditor._editor;
+		popupLifetimeEditor._completionPopup->ParentForm =
+			&popupLifetimeEditor;
+		popupLifetimeEditor.ForegroundControl =
+			popupLifetimeEditor._completionPopup;
+		popupLifetimeEditor.Selected = popupLifetimeEditor._completionPopup;
+		popupLifetimeEditor.UnderMouse = popupLifetimeEditor._completionPopup;
+		popupLifetimeEditor.OnFormClosed(&popupLifetimeEditor);
+		const bool popupLifetimeReleased =
+			!popupLifetimeEditor._completionPopup
+			&& !popupLifetimeEditor.ForegroundControl
+			&& !popupLifetimeEditor.Selected
+			&& !popupLifetimeEditor.UnderMouse;
+		AppendFailure(failures,
+			xamlEditor._editor && syntaxInitiallyStyled
+				&& menuReady && undoRestored
+				&& redoRestored && outdentRestored
+				&& restoreEnabled && restoredLastValid && restoreUndo
+				&& formatApplied && formatUndo && formatRedo
+				&& formatSyntaxRefreshed
+				&& formatRollback.Succeeded() && popupLifetimeReleased,
+			L"XAML editor: syntax colors, indentation, context menu, recovery, format history, or popup teardown failed");
+		AppendFailure(failures,
+			checkpointSourceBuilt && checkpointBegin.Succeeded()
+				&& !firstCheckpointSource.empty()
+				&& firstCheckpointState && unchangedCheckpointState
+				&& secondCheckpointState && draftPreviewed
+				&& cancelKeptCheckpoints && firstCheckpointRemains
+				&& allCheckpointsUndone && checkpointButtonReady,
+			std::wstring(L"XAML editor: apply checkpoints were not independent, cancel-safe, or undoable")
+				+ L" [built=" + std::to_wstring(checkpointSourceBuilt)
+				+ L", begin=" + std::to_wstring(checkpointBegin.Succeeded())
+				+ L", source=" + std::to_wstring(!firstCheckpointSource.empty())
+				+ L", apply1=" + std::to_wstring(firstCheckpoint)
+				+ L", first=" + std::to_wstring(firstCheckpointState)
+				+ L", unchanged=" + std::to_wstring(unchangedCheckpointState)
+				+ L", second=" + std::to_wstring(secondCheckpointState)
+				+ L", draft=" + std::to_wstring(draftPreviewed)
+				+ L", cancel=" + std::to_wstring(cancelKeptCheckpoints)
+				+ L", undo2=" + std::to_wstring(firstCheckpointRemains)
+				+ L", undo1=" + std::to_wstring(allCheckpointsUndone)
+				+ L", button=" + std::to_wstring(checkpointButtonReady) + L"]"
+				+ (checkpointError.empty()
+					? std::wstring{} : L": " + checkpointError));
+	}
 
 	auto catalogDescriptors = DesignerControlCatalog::BuiltInDescriptors();
 	const auto builtInDescriptorCount = catalogDescriptors.size();
+	auto findBuiltInDescriptor = [&](UIClass type)
+		-> const DesignerControlDescriptor*
+	{
+		const auto found = std::find_if(
+			catalogDescriptors.begin(), catalogDescriptors.end(),
+			[type](const DesignerControlDescriptor& descriptor)
+			{
+				return descriptor.Type == type;
+			});
+		return found == catalogDescriptors.end() ? nullptr : &*found;
+	};
+	const auto* buttonDropDescriptor = findBuiltInDescriptor(UIClass::UI_Button);
+	const auto* panelDropDescriptor = findBuiltInDescriptor(UIClass::UI_Panel);
+	const auto* splitDropDescriptor = findBuiltInDescriptor(
+		UIClass::UI_SplitContainer);
+	AppendFailure(failures,
+		buttonDropDescriptor && panelDropDescriptor && splitDropDescriptor,
+		L"toolbox drag: required built-in descriptors were not available");
+	if (buttonDropDescriptor && panelDropDescriptor && splitDropDescriptor)
+	{
+		DesignerCanvas dropPreviewCanvas(0, 0, 900, 640);
+		std::wstring dropTarget;
+		const bool rootPreview = dropPreviewCanvas.UpdateControlDropPreview(
+			*buttonDropDescriptor, POINT{ 100, 100 }, &dropTarget);
+		const auto rootGhost = dropPreviewCanvas.GetControlDropPreviewRect();
+		AppendFailure(failures,
+			rootPreview && dropPreviewCanvas.HasControlDropPreview()
+			&& dropTarget == L"窗体根"
+			&& rootGhost.right - rootGhost.left
+				== buttonDropDescriptor->DefaultSize.cx
+			&& rootGhost.bottom - rootGhost.top
+				== buttonDropDescriptor->DefaultSize.cy,
+			L"toolbox drag: root preview did not expose the default-size ghost");
+		dropPreviewCanvas.ClearControlDropPreview();
+		AppendFailure(failures,
+			!dropPreviewCanvas.HasControlDropPreview(),
+			L"toolbox drag: clearing a preview retained stale view state");
+
+		const auto panelAdd = dropPreviewCanvas.AddControlToCanvas(
+			*panelDropDescriptor, POINT{ 300, 240 });
+		auto panelWrapper = dropPreviewCanvas.GetSelectedControl();
+		const POINT panelPoint = panelWrapper && panelWrapper->ControlInstance
+			? POINT{
+				panelWrapper->ControlInstance->AbsLocation.x
+					- dropPreviewCanvas.AbsLocation.x + 80,
+				panelWrapper->ControlInstance->AbsLocation.y
+					- dropPreviewCanvas.AbsLocation.y + 80 }
+			: POINT{ 0, 0 };
+		const bool panelPreview = panelWrapper
+			&& dropPreviewCanvas.UpdateControlDropPreview(
+				*buttonDropDescriptor, panelPoint, &dropTarget);
+		const auto buttonAdd = panelPreview
+			? dropPreviewCanvas.AddControlToCanvas(
+				*buttonDropDescriptor, panelPoint)
+			: DesignerDocumentTransactionResult::Failure(
+				DesignerDocumentTransactionState::Failed,
+				L"panel preview unavailable");
+		auto nestedButton = dropPreviewCanvas.GetSelectedControl();
+		AppendFailure(failures,
+			panelAdd.HasChanges() && panelPreview
+			&& dropTarget == panelWrapper->Name
+			&& buttonAdd.HasChanges() && nestedButton
+			&& nestedButton->DesignerParent == panelWrapper->ControlInstance
+			&& dropPreviewCanvas.UndoCommand().HasChanges()
+			&& dropPreviewCanvas.GetAllControls().size() == 1,
+			L"toolbox drag: container preview, placement, or single-step undo failed");
+
+		DesignerCanvas splitPreviewCanvas(0, 0, 900, 640);
+		const auto splitAdd = splitPreviewCanvas.AddControlToCanvas(
+			*splitDropDescriptor, POINT{ 360, 260 });
+		auto splitWrapper = splitPreviewCanvas.GetSelectedControl();
+		auto* split = splitWrapper
+			? dynamic_cast<SplitContainer*>(splitWrapper->ControlInstance)
+			: nullptr;
+		auto toCanvasPoint = [&](Control* control) -> POINT
+		{
+			if (!control) return { 0, 0 };
+			return {
+				control->AbsLocation.x - splitPreviewCanvas.AbsLocation.x
+					+ (std::max)(1, control->Width / 2),
+				control->AbsLocation.y - splitPreviewCanvas.AbsLocation.y
+					+ (std::max)(1, control->Height / 2) };
+		};
+		const bool firstPreview = split
+			&& splitPreviewCanvas.UpdateControlDropPreview(
+				*buttonDropDescriptor, toCanvasPoint(split->FirstPanel()),
+				&dropTarget)
+			&& dropTarget.find(L"First") != std::wstring::npos;
+		const bool secondPreview = split
+			&& splitPreviewCanvas.UpdateControlDropPreview(
+				*buttonDropDescriptor, toCanvasPoint(split->SecondPanel()),
+				&dropTarget)
+			&& dropTarget.find(L"Second") != std::wstring::npos;
+		AppendFailure(failures,
+			splitAdd.HasChanges() && firstPreview && secondPreview,
+			L"toolbox drag: SplitContainer First/Second target preview was ambiguous");
+
+		Designer dragDesigner;
+		dragDesigner.InitializeComponents();
+		const auto canvasOrigin = dragDesigner._canvas->GetAbsoluteLocationDip();
+		const auto canvasViewPoint = dragDesigner._canvas->CanvasToViewPoint(
+			POINT{ 140, 140 });
+		const POINT formDropPoint{
+			static_cast<LONG>(std::lround(canvasOrigin.x)) + canvasViewPoint.x,
+			static_cast<LONG>(std::lround(canvasOrigin.y)) + canvasViewPoint.y };
+		dragDesigner.BeginToolBoxDrag(
+			*buttonDropDescriptor, POINT{ 30, 160 });
+		dragDesigner.UpdateToolBoxDrag(31, 161);
+		const bool thresholdPreserved = dragDesigner._toolBoxPointerDown
+			&& !dragDesigner._toolBoxDragging
+			&& !dragDesigner._canvas->HasControlDropPreview()
+			&& dragDesigner._canvas->GetAllControls().empty();
+		dragDesigner.UpdateToolBoxDrag(formDropPoint.x, formDropPoint.y);
+		const bool activePreview = dragDesigner._toolBoxDragging
+			&& dragDesigner._toolBoxDropAccepted
+			&& dragDesigner._canvas->HasControlDropPreview();
+		dragDesigner.EndToolBoxDrag(formDropPoint.x, formDropPoint.y);
+		auto draggedControl = dragDesigner._canvas->GetSelectedControl();
+		const bool dropCommitted = !dragDesigner._toolBoxPointerDown
+			&& !dragDesigner._canvas->HasControlDropPreview()
+			&& dragDesigner._canvas->GetAllControls().size() == 1
+			&& draggedControl && draggedControl->Type == UIClass::UI_Button
+			&& dragDesigner._canvas->GetUndoCommandLabel() == L"AddControl";
+		const bool dropUndone = dragDesigner._canvas->UndoCommand().HasChanges()
+			&& dragDesigner._canvas->GetAllControls().empty();
+		AppendFailure(failures,
+			thresholdPreserved && activePreview && dropCommitted && dropUndone,
+			L"toolbox drag: Designer threshold, captured drop, or undo lifecycle failed");
+
+		DesignerCanvas tabOrderModeCanvas(0, 0, 900, 640);
+		const auto tabModeAdd = tabOrderModeCanvas.AddControlToCanvas(
+			*buttonDropDescriptor, POINT{ 180, 160 });
+		auto tabModeButton = tabOrderModeCanvas.GetSelectedControl();
+		const auto tabModeReset = tabOrderModeCanvas.ResetDocumentHistoryAsSaved();
+		const bool tabModeEntered = tabOrderModeCanvas.SetTabOrderMode(true)
+			&& tabOrderModeCanvas.IsTabOrderMode()
+			&& tabOrderModeCanvas.GetNextTabOrderIndex() == 0
+			&& tabOrderModeCanvas.GetTabOrderCandidateCount() == 1
+			&& !tabOrderModeCanvas.IsDocumentDirty()
+			&& tabOrderModeCanvas.GetUndoCommandCount() == 0;
+		POINT tabModePoint{ 0, 0 };
+		if (tabModeButton && tabModeButton->ControlInstance)
+		{
+			tabModePoint = {
+				tabModeButton->ControlInstance->AbsLocation.x
+					- tabOrderModeCanvas.AbsLocation.x
+					+ (std::max)(1, tabModeButton->ControlInstance->Width / 2),
+				tabModeButton->ControlInstance->AbsLocation.y
+					- tabOrderModeCanvas.AbsLocation.y
+					+ (std::max)(1, tabModeButton->ControlInstance->Height / 2) };
+			(void)tabOrderModeCanvas.ProcessMessage(
+				WM_LBUTTONDOWN, MK_LBUTTON, 0,
+				tabModePoint.x, tabModePoint.y);
+		}
+		const bool tabModeAssigned = tabModeButton
+			&& tabModeButton->ControlInstance
+			&& tabModeButton->ControlInstance->TabIndex == 0
+			&& tabModeButton->MetadataProperties.contains(L"TabIndex")
+			&& tabOrderModeCanvas.GetNextTabOrderIndex() == 1
+			&& tabOrderModeCanvas.GetUndoCommandCount() == 1
+			&& tabOrderModeCanvas.GetUndoCommandLabel() == L"SetTabOrder";
+		const auto tabModeUndo = tabOrderModeCanvas.UndoCommand();
+		const bool tabModeUndone = tabModeUndo.HasChanges()
+			&& tabModeButton
+			&& !tabModeButton->MetadataProperties.contains(L"TabIndex");
+		(void)tabOrderModeCanvas.ProcessMessage(
+			WM_KEYDOWN, VK_ESCAPE, 0, 0, 0);
+		AppendFailure(failures,
+			tabModeAdd.HasChanges() && tabModeReset
+			&& tabModeEntered && tabModeAssigned && tabModeUndone
+			&& !tabOrderModeCanvas.IsTabOrderMode()
+			&& !tabOrderModeCanvas.IsDocumentDirty(),
+			L"tab order: view-only mode, click assignment, Escape, or delta Undo failed");
+
+		DesignerCanvas autoTabCanvas(0, 0, 900, 640);
+		(void)autoTabCanvas.AddControlToCanvas(
+			*buttonDropDescriptor, POINT{ 330, 310 });
+		auto lowerButton = autoTabCanvas.GetSelectedControl();
+		(void)autoTabCanvas.AddControlToCanvas(
+			*buttonDropDescriptor, POINT{ 140, 130 });
+		auto upperButton = autoTabCanvas.GetSelectedControl();
+		(void)autoTabCanvas.AddControlToCanvas(
+			*buttonDropDescriptor, POINT{ 440, 130 });
+		auto excludedButton = autoTabCanvas.GetSelectedControl();
+		const auto lowerSeed = autoTabCanvas.AssignTabOrderIndex(lowerButton, 8);
+		const auto upperSeed = autoTabCanvas.AssignTabOrderIndex(upperButton, 9);
+		if (excludedButton && excludedButton->ControlInstance)
+			excludedButton->ControlInstance->IsTabStop = false;
+		const auto autoReset = autoTabCanvas.ResetDocumentHistoryAsSaved();
+		const auto autoResult = autoTabCanvas.AutoArrangeTabOrder();
+		const bool autoApplied = lowerSeed.HasChanges() && upperSeed.HasChanges()
+			&& autoReset && autoResult.HasChanges()
+			&& upperButton && lowerButton && excludedButton
+			&& upperButton->ControlInstance->TabIndex == 0
+			&& lowerButton->ControlInstance->TabIndex == 1
+			&& excludedButton->ControlInstance->TabIndex == 0
+			&& autoTabCanvas.GetTabOrderCandidateCount() == 2
+			&& autoTabCanvas.GetUndoCommandCount() == 1
+			&& autoTabCanvas.GetUndoCommandLabel() == L"AutoTabOrder";
+		const auto autoUndo = autoTabCanvas.UndoCommand();
+		const bool autoUndone = autoUndo.HasChanges()
+			&& lowerButton->ControlInstance->TabIndex == 8
+			&& upperButton->ControlInstance->TabIndex == 9;
+		const auto autoRedo = autoTabCanvas.RedoCommand();
+		DesignerModel::DesignDocument autoTabDocument;
+		std::wstring autoTabXaml;
+		std::wstring autoTabError;
+		const bool autoPersisted = autoRedo.HasChanges()
+			&& autoTabCanvas.BuildDesignDocument(
+				autoTabDocument, &autoTabError)
+			&& autoTabCanvas.BuildXamlDocumentText(
+				autoTabXaml, &autoTabError)
+			&& lowerButton->MetadataProperties.contains(L"TabIndex")
+			&& upperButton->MetadataProperties.contains(L"TabIndex")
+			&& autoTabXaml.find(L"TabIndex=\"0\"") != std::wstring::npos
+			&& autoTabXaml.find(L"TabIndex=\"1\"") != std::wstring::npos;
+		AppendFailure(failures,
+			autoApplied && autoUndone && autoPersisted,
+			L"tab order: focusable filtering, visual auto-sort, batch Undo/Redo, or persistence failed");
+	}
 	const std::string catalogXml = R"xml(<?xml version="1.0" encoding="utf-8"?>
 <cuiControlCatalog schema="cui.designer.controls" version="1">
   <control name="StatusBadge" displayName="Status badge" category="Business"
@@ -465,6 +1082,26 @@ bool RunDesignerSelfTest(std::wstring& report)
 			descriptorCanvas.GetAllControls().front()->ControlInstance) != nullptr
 		&& descriptorCanvas.GetAllControls().front()->ControlInstance->Size.cx == 150,
 		L"custom descriptor: preview/custom identity was not retained");
+	const auto completionElements =
+		descriptorCanvas.GetXamlCompletionElementNames();
+	const auto completionAttributes =
+		descriptorCanvas.GetXamlCompletionAttributeNames(L"sample:StatusBadge");
+	const auto completionValues =
+		descriptorCanvas.GetXamlCompletionAttributeValues(
+			L"sample:StatusBadge", L"Severity");
+	const auto completionEventValues =
+		descriptorCanvas.GetXamlCompletionAttributeValues(
+			L"sample:StatusBadge", L"OnSeverityInvoked");
+	AppendFailure(failures,
+		std::find(completionElements.begin(), completionElements.end(),
+			L"sample:StatusBadge") != completionElements.end()
+		&& std::find(completionAttributes.begin(), completionAttributes.end(),
+			L"Severity") != completionAttributes.end()
+		&& std::find(completionAttributes.begin(), completionAttributes.end(),
+			L"OnSeverityInvoked") != completionAttributes.end()
+		&& completionValues == std::vector<std::wstring>{ L"0", L"1", L"2" }
+		&& completionEventValues == std::vector<std::wstring>{ L"Auto" },
+		L"XAML completion: installed custom metadata was not projected");
 	PropertyGrid customPropertyGrid(0, 0, 360, 500);
 	customPropertyGrid.SetDesignerCanvas(&descriptorCanvas);
 	ReloadCurrentSelection(customPropertyGrid, descriptorCanvas);
@@ -495,6 +1132,19 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& descriptorCanvas.GetAllControls().front()->EventHandlers.contains(
 			L"OnSeverityInvoked"),
 		L"custom event catalog: event page/default activation did not use the manifest contract");
+	const auto completionEventHandlers =
+		descriptorCanvas.GetXamlCompletionAttributeValues(
+			L"sample:StatusBadge", L"OnSeverityInvoked",
+			{ { "Control* sender, int value",
+				{ L"ReusableSeverityHandler" } } });
+	AppendFailure(failures,
+		std::find(completionEventHandlers.begin(), completionEventHandlers.end(),
+			L"Auto") != completionEventHandlers.end()
+		&& std::find(completionEventHandlers.begin(), completionEventHandlers.end(),
+			customDefaultHandler) != completionEventHandlers.end()
+		&& std::find(completionEventHandlers.begin(), completionEventHandlers.end(),
+			L"ReusableSeverityHandler") != completionEventHandlers.end(),
+		L"XAML completion: same-signature document/source handlers were not reusable");
 	AppendFailure(failures,
 		descriptorCanvas.UndoCommand()
 		&& !descriptorCanvas.GetAllControls().front()->EventHandlers.contains(
@@ -1494,6 +2144,150 @@ bool RunDesignerSelfTest(std::wstring& report)
 			L"designer visibility: a self-hidden container was not retained");
 	}
 
+	DesignerCanvas multiEventCanvas(0, 0, 800, 640);
+	multiEventCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 150, 140 });
+	multiEventCanvas.AddControlToCanvasCore(
+		UIClass::UI_CheckBox, POINT{ 330, 140 });
+	const auto multiEventButton = multiEventCanvas.GetAllControls().size() > 0
+		? multiEventCanvas.GetAllControls()[0] : nullptr;
+	const auto multiEventCheck = multiEventCanvas.GetAllControls().size() > 1
+		? multiEventCanvas.GetAllControls()[1] : nullptr;
+	if (multiEventButton && multiEventCheck)
+	{
+		multiEventButton->EventHandlers[L"OnMouseClick"] = L"FirstOnlyClick";
+		multiEventCheck->EventHandlers[L"OnChecked"] = L"ConflictingShared";
+		multiEventCanvas.RestoreSelectionByNames(
+			{ multiEventButton->Name, multiEventCheck->Name },
+			multiEventCheck->Name, false);
+	}
+	PropertyGrid multiEventGrid(0, 0, 380, 520);
+	multiEventGrid.SetDesignerCanvas(&multiEventCanvas);
+	multiEventGrid.SetViewMode(DesignerPropertyGridViewMode::Events);
+	ReloadCurrentSelection(multiEventGrid, multiEventCanvas);
+	auto* multiEventNativeGrid = multiEventGrid.GetNativePropertyGrid();
+	const PropertyGridItem* mixedCommonEventItem = nullptr;
+	bool multiSelectionExposedNonCommonEvent = false;
+	if (multiEventNativeGrid)
+	{
+		for (const auto& item : multiEventNativeGrid->Items)
+		{
+			if (item.Name.rfind(L"OnMouseClick", 0) == 0)
+				mixedCommonEventItem = &item;
+			if (item.Name.rfind(L"OnChecked", 0) == 0)
+				multiSelectionExposedNonCommonEvent = true;
+		}
+	}
+	AppendFailure(failures,
+		multiEventButton && multiEventCheck && mixedCommonEventItem
+		&& mixedCommonEventItem->IsMixed
+		&& mixedCommonEventItem->Value == L"<多个值>"
+		&& mixedCommonEventItem->CanReset
+		&& mixedCommonEventItem->ValueType
+			== PropertyGridValueType::EditableEnum
+		&& mixedCommonEventItem->Category.find(L"公共事件")
+			!= std::wstring::npos
+		&& mixedCommonEventItem->Description.find(L"2 个选中控件")
+			!= std::wstring::npos
+		&& !multiSelectionExposedNonCommonEvent,
+		L"multi-selection events: common intersection or mixed value was not presented");
+
+	const auto multiEventUndoBefore = multiEventCanvas.GetUndoCommandCount();
+	const auto multiEventEdit = multiEventGrid.ApplyPropertyValue(
+		L"OnMouseClick", L"HandleMultiSelectionClick");
+	const bool multiEventApplied = multiEventButton && multiEventCheck
+		&& multiEventButton->EventHandlers[L"OnMouseClick"]
+			== L"HandleMultiSelectionClick"
+		&& multiEventCheck->EventHandlers[L"OnMouseClick"]
+			== L"HandleMultiSelectionClick"
+		&& multiEventCheck->EventHandlers[L"OnChecked"]
+			== L"ConflictingShared";
+	const auto multiEventUndoAfter = multiEventCanvas.GetUndoCommandCount();
+	const auto undoMultiEvent = multiEventCanvas.UndoCommand();
+	const bool multiEventRestored = multiEventButton && multiEventCheck
+		&& multiEventButton->EventHandlers[L"OnMouseClick"] == L"FirstOnlyClick"
+		&& !multiEventCheck->EventHandlers.contains(L"OnMouseClick")
+		&& multiEventCheck->EventHandlers[L"OnChecked"] == L"ConflictingShared";
+	const auto conflictingMultiEvent = multiEventGrid.ApplyPropertyValue(
+		L"OnMouseClick", L"ConflictingShared");
+	const bool multiEventConflictPreserved = multiEventButton && multiEventCheck
+		&& multiEventButton->EventHandlers[L"OnMouseClick"] == L"FirstOnlyClick"
+		&& !multiEventCheck->EventHandlers.contains(L"OnMouseClick")
+		&& multiEventCheck->EventHandlers[L"OnChecked"] == L"ConflictingShared";
+	AppendFailure(failures,
+		multiEventEdit && multiEventEdit.AppliedCount == 2
+		&& multiEventApplied
+		&& multiEventUndoAfter == multiEventUndoBefore + 1
+		&& undoMultiEvent.HasChanges() && multiEventRestored
+		&& multiEventCanvas.GetSelectedControls().size() == 2
+		&& multiEventCanvas.GetSelectedControl() == multiEventCheck
+		&& !conflictingMultiEvent && !conflictingMultiEvent.Error.empty()
+		&& multiEventConflictPreserved,
+		L"multi-selection events: atomic edit, undo, or signature rejection failed");
+
+	std::wstring multiActivatedHandler;
+	int multiActivationCount = 0;
+	multiEventGrid.OnEventHandlerActivated +=
+		[&](PropertyGrid*, const std::wstring& handler)
+		{
+			multiActivatedHandler = handler;
+			++multiActivationCount;
+		};
+	std::wstring multiDefaultHandler;
+	const auto activateMultiEvent = multiEventGrid.ActivateEventHandler(
+		L"OnMouseClick", &multiDefaultHandler);
+	const auto expectedMultiDefault = multiEventCheck
+		? multiEventCheck->Name + L"_OnMouseClick" : std::wstring{};
+	const bool multiActivationApplied = multiEventButton && multiEventCheck
+		&& multiEventButton->EventHandlers[L"OnMouseClick"]
+			== expectedMultiDefault
+		&& multiEventCheck->EventHandlers[L"OnMouseClick"]
+			== expectedMultiDefault;
+	const auto undoMultiActivation = multiEventCanvas.UndoCommand();
+	AppendFailure(failures,
+		activateMultiEvent && activateMultiEvent.AppliedCount == 2
+		&& !expectedMultiDefault.empty()
+		&& multiDefaultHandler == expectedMultiDefault
+		&& multiActivatedHandler == expectedMultiDefault
+		&& multiActivationCount == 1
+		&& multiActivationApplied
+		&& undoMultiActivation.HasChanges()
+		&& multiEventButton
+		&& multiEventButton->EventHandlers[L"OnMouseClick"] == L"FirstOnlyClick"
+		&& multiEventCheck
+		&& !multiEventCheck->EventHandlers.contains(L"OnMouseClick"),
+		L"multi-selection events: activation did not create one shared default handler");
+
+	ReloadCurrentSelection(multiEventGrid, multiEventCanvas);
+	int multiEventResetIndex = -1;
+	if (multiEventNativeGrid)
+		for (int index = 0;
+			index < static_cast<int>(multiEventNativeGrid->Items.size()); ++index)
+			if (multiEventNativeGrid->Items[static_cast<size_t>(index)].Name.rfind(
+				L"OnMouseClick", 0) == 0)
+			{
+				multiEventResetIndex = index;
+				break;
+			}
+	const auto multiResetUndoBefore = multiEventCanvas.GetUndoCommandCount();
+	const bool requestedMultiEventReset = multiEventNativeGrid
+		&& multiEventResetIndex >= 0
+		&& multiEventNativeGrid->RequestReset(multiEventResetIndex);
+	const bool multiEventResetApplied = multiEventButton && multiEventCheck
+		&& !multiEventButton->EventHandlers.contains(L"OnMouseClick")
+		&& !multiEventCheck->EventHandlers.contains(L"OnMouseClick")
+		&& multiEventCheck->EventHandlers[L"OnChecked"] == L"ConflictingShared";
+	const auto undoMultiEventReset = multiEventCanvas.UndoCommand();
+	AppendFailure(failures,
+		requestedMultiEventReset && multiEventResetApplied
+		&& multiEventCanvas.GetUndoCommandCount() == multiResetUndoBefore
+		&& undoMultiEventReset.HasChanges()
+		&& multiEventButton
+		&& multiEventButton->EventHandlers[L"OnMouseClick"] == L"FirstOnlyClick"
+		&& multiEventCheck
+		&& !multiEventCheck->EventHandlers.contains(L"OnMouseClick"),
+		L"multi-selection events: reset affordance was not atomic or undoable");
+
 	DesignerCanvas falseBooleanCanvas(0, 0, 800, 640);
 	falseBooleanCanvas.AddControlToCanvasCore(
 		UIClass::UI_CheckBox, POINT{ 170, 160 });
@@ -1576,6 +2370,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 	ReloadCurrentSelection(falseBooleanGrid, falseBooleanCanvas);
 	const PropertyGridItem* nativeEventItem = nullptr;
 	const PropertyGridItem* nativeDefaultEventItem = nullptr;
+	const PropertyGridItem* nativeEventActivationItem = nullptr;
 	const PropertyGridItem* nativeEventManagerItem = nullptr;
 	bool eventViewContainedProperty = false;
 	if (nativeFalseGrid)
@@ -1586,6 +2381,8 @@ bool RunDesignerSelfTest(std::wstring& report)
 				nativeEventItem = &item;
 			if (item.Name.rfind(L"OnChecked", 0) == 0)
 				nativeDefaultEventItem = &item;
+			if (item.Name == L"生成/定位处理函数")
+				nativeEventActivationItem = &item;
 			if (item.Name == L"重命名处理函数")
 				nativeEventManagerItem = &item;
 			if (!checkedDisplayName.empty()
@@ -1599,6 +2396,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 	AppendFailure(failures,
 		nativeEventItem
 		&& nativeEventItem->ValueType == PropertyGridValueType::EditableEnum
+		&& nativeEventItem->CanReset
 		&& nativeEventItem->Value == defaultEventName
 		&& nativeEventItem->Name.find(L"[未关联代码]") != std::wstring::npos
 		&& std::find(nativeEventItem->Options.begin(), nativeEventItem->Options.end(),
@@ -1609,6 +2407,17 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& nativeDefaultEventItem->Category.find(L"值变化") != std::wstring::npos
 		&& nativeDefaultEventItem->Description.find(L"默认事件") != std::wstring::npos,
 		L"native property grid: event category or default-event metadata was not presented");
+	AppendFailure(failures,
+		nativeEventActivationItem
+		&& nativeEventActivationItem->ValueType
+			== PropertyGridValueType::Action
+		&& nativeEventActivationItem->Value.find(L"F12")
+			!= std::wstring::npos
+		&& nativeEventActivationItem->Value.find(L"OnChecked")
+			!= std::wstring::npos
+		&& nativeEventActivationItem->Description.find(L"不会覆盖")
+			!= std::wstring::npos,
+		L"native property grid: explicit event generation/location action was not exposed");
 	AppendFailure(failures,
 		nativeEventManagerItem
 		&& nativeEventManagerItem->ValueType == PropertyGridValueType::Action
@@ -1702,6 +2511,54 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& currentEventControl->EventHandlers[L"OnChecked"]
 			== expectedCheckedHandler,
 		L"native property grid: event activation did not reuse or create an undoable handler");
+
+	ReloadCurrentSelection(falseBooleanGrid, falseBooleanCanvas);
+	int doubleClickEventIndex = -1;
+	int checkedEventIndex = -1;
+	int eventActivationIndex = -1;
+	if (nativeFalseGrid)
+	{
+		for (size_t i = 0; i < nativeFalseGrid->Items.size(); ++i)
+		{
+			const auto& item = nativeFalseGrid->Items[i];
+			if (item.Name.rfind(L"OnMouseDoubleClick", 0) == 0)
+				doubleClickEventIndex = static_cast<int>(i);
+			if (item.Name.rfind(L"OnChecked", 0) == 0)
+				checkedEventIndex = static_cast<int>(i);
+			if (item.Name == L"生成/定位处理函数")
+				eventActivationIndex = static_cast<int>(i);
+		}
+	}
+	const auto explicitActivationUndoBefore =
+		falseBooleanCanvas.GetUndoCommandCount();
+	const int explicitActivationCountBefore = activatedHandlerCount;
+	bool explicitActionActivated = false;
+	if (nativeFalseGrid && doubleClickEventIndex >= 0
+		&& eventActivationIndex >= 0)
+	{
+		nativeFalseGrid->SelectItem(doubleClickEventIndex);
+		explicitActionActivated =
+			nativeFalseGrid->ActivateItem(eventActivationIndex);
+	}
+	const bool explicitActionReusedExpected = activatedHandler
+		== expectedDoubleClickHandler
+		&& activatedHandlerCount == explicitActivationCountBefore + 1;
+	const bool f12Activated = nativeFalseGrid && checkedEventIndex >= 0;
+	if (f12Activated)
+	{
+		nativeFalseGrid->SelectItem(checkedEventIndex);
+		nativeFalseGrid->OnKeyDown(
+			nativeFalseGrid, KeyEventArgs(Keys::F12));
+	}
+	AppendFailure(failures,
+		explicitActionActivated
+		&& explicitActionReusedExpected
+		&& f12Activated
+		&& activatedHandler == expectedCheckedHandler
+		&& activatedHandlerCount == explicitActivationCountBefore + 2
+		&& falseBooleanCanvas.GetUndoCommandCount()
+			== explicitActivationUndoBefore,
+		L"native property grid: action row and F12 did not share the safe event activation path");
 
 	DesignerModel::DesignEventHandlerCodeInspection eventCodeInspection;
 	eventCodeInspection.Associated = true;
@@ -4504,6 +5361,1945 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& commandCanvas.GetAllControls().empty(),
 		L"active transaction: rejected redo damaged transaction or history");
 
+	DesignerCanvas clipboardCanvas(0, 0, 900, 680);
+	(void)clipboardCanvas.ResetDocumentHistoryAsSaved();
+	const std::wstring clipboardXaml = LR"xaml(
+		<Form xmlns="urn:cui"
+		      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+		      x:Name="ClipboardForm">
+		  <Panel x:Name="panel1" DesignId="1" Canvas.Left="40" Canvas.Top="50"
+		         Width="240" Height="160">
+		    <Button x:Name="button1" DesignId="2" Canvas.Left="10" Canvas.Top="12"
+		            Width="100" Height="30" Text="Paste" />
+		  </Panel>
+		</Form>)xaml";
+	const auto pasteXaml = clipboardCanvas.PasteControlsFromXamlText(
+		clipboardXaml);
+	DesignerModel::DesignDocument pastedXamlDocument;
+	std::wstring pastedXamlError;
+	AppendFailure(failures,
+		pasteXaml.HasChanges()
+		&& clipboardCanvas.BuildDesignDocument(
+			pastedXamlDocument, &pastedXamlError)
+		&& pastedXamlDocument.Nodes.size() == 2
+		&& clipboardCanvas.GetSelectedControls().size() == 1
+		&& clipboardCanvas.GetSelectedControl()
+		&& clipboardCanvas.GetSelectedControl()->Name == L"panel1"
+		&& clipboardCanvas.GetUndoCommandCount() == 1
+		&& clipboardCanvas.GetLastCommandOperation() == L"PasteSelection",
+		L"clipboard XAML: paste did not commit one selected subtree");
+	const auto pasteHistory = clipboardCanvas.GetUndoCommandCount();
+	const auto rejectedClipboardXaml = clipboardCanvas.PasteControlsFromXamlText(
+		L"<Button x:Name=\"broken\">");
+	DesignerModel::DesignDocument afterRejectedClipboard;
+	std::wstring afterRejectedClipboardError;
+	AppendFailure(failures,
+		!rejectedClipboardXaml.Succeeded()
+		&& clipboardCanvas.GetUndoCommandCount() == pasteHistory
+		&& clipboardCanvas.BuildDesignDocument(
+			afterRejectedClipboard, &afterRejectedClipboardError)
+		&& afterRejectedClipboard == pastedXamlDocument,
+		L"clipboard XAML: invalid text mutated document or history");
+	const auto undoPasteXaml = clipboardCanvas.UndoCommand();
+	AppendFailure(failures,
+		undoPasteXaml.HasChanges()
+		&& clipboardCanvas.GetAllControls().empty()
+		&& clipboardCanvas.GetSelectedControls().empty(),
+		L"clipboard XAML: undo did not remove pasted subtree and selection");
+	const auto redoPasteXaml = clipboardCanvas.RedoCommand();
+	AppendFailure(failures,
+		redoPasteXaml.HasChanges()
+		&& clipboardCanvas.GetAllControls().size() == 2
+		&& clipboardCanvas.GetSelectedControl()
+		&& clipboardCanvas.GetSelectedControl()->Name == L"panel1",
+		L"clipboard XAML: redo did not restore subtree selection");
+
+	DesignerCanvas bindingClipboardSource(0, 0, 900, 680);
+	std::wstring bindingClipboardSchemaError;
+	const bool bindingClipboardSchemaReady =
+		bindingClipboardSource.SetDataContextSchema({
+			{ L"Profile", BindingValueKind::Object, true, false, true },
+			{ L"Profile.DisplayName", BindingValueKind::String,
+				true, false, true }
+		}, &bindingClipboardSchemaError);
+	bindingClipboardSource.AddControlToCanvasCore(
+		UIClass::UI_TextBox, POINT{ 210, 170 });
+	const auto bindingClipboardSourceControl =
+		bindingClipboardSource.GetSelectedControl();
+	if (bindingClipboardSourceControl)
+		bindingClipboardSourceControl->DataBindings[L"Text"] = {
+			L"Profile.DisplayName", BindingMode::OneWay,
+			DataSourceUpdateMode::OnPropertyChanged, L"" };
+	const auto bindingClipboardCopy = bindingClipboardSource.CopySelectedControls();
+
+	DesignerCanvas bindingClipboardTarget(0, 0, 900, 680);
+	bindingClipboardTarget.AddControlToCanvasCore(
+		UIClass::UI_Label, POINT{ 140, 120 });
+	const auto bindingClipboardExisting = bindingClipboardTarget.GetSelectedControl();
+	if (bindingClipboardExisting)
+		bindingClipboardExisting->DataBindings[L"Text"] = {
+			L"Existing.Caption", BindingMode::OneWay,
+			DataSourceUpdateMode::OnPropertyChanged, L"" };
+	(void)bindingClipboardTarget.ResetDocumentHistoryAsSaved();
+	const auto bindingClipboardPaste =
+		bindingClipboardTarget.PasteControlsFromClipboardInPlace();
+	DesignerModel::DesignDocument bindingClipboardMerged;
+	std::wstring bindingClipboardMergeError;
+	const bool bindingClipboardMergedCaptured =
+		bindingClipboardTarget.BuildDesignDocument(
+			bindingClipboardMerged, &bindingClipboardMergeError);
+	const auto* bindingClipboardExistingPath =
+		DesignerDataContextSchemaUtils::Find(
+			bindingClipboardMerged.DataContextSchema, L"Existing.Caption");
+	const auto* bindingClipboardImportedPath =
+		DesignerDataContextSchemaUtils::Find(
+			bindingClipboardMerged.DataContextSchema, L"Profile.DisplayName");
+	const auto undoBindingClipboard = bindingClipboardTarget.UndoCommand();
+	DesignerModel::DesignDocument bindingClipboardUndone;
+	std::wstring bindingClipboardUndoError;
+	const bool bindingClipboardUndoCaptured =
+		bindingClipboardTarget.BuildDesignDocument(
+			bindingClipboardUndone, &bindingClipboardUndoError);
+	const auto redoBindingClipboard = bindingClipboardTarget.RedoCommand();
+	DesignerModel::DesignDocument bindingClipboardRedone;
+	std::wstring bindingClipboardRedoError;
+	const bool bindingClipboardRedoCaptured =
+		bindingClipboardTarget.BuildDesignDocument(
+			bindingClipboardRedone, &bindingClipboardRedoError);
+	AppendFailure(failures,
+		bindingClipboardSchemaReady && bindingClipboardSourceControl
+		&& bindingClipboardCopy.Succeeded()
+		&& bindingClipboardExisting && bindingClipboardPaste.HasChanges()
+		&& bindingClipboardMergedCaptured
+		&& bindingClipboardMerged.DataContextSchema.size() == 4
+		&& bindingClipboardExistingPath
+		&& bindingClipboardExistingPath->ValueKind == BindingValueKind::Empty
+		&& bindingClipboardImportedPath
+		&& bindingClipboardImportedPath->ValueKind == BindingValueKind::String
+		&& !bindingClipboardImportedPath->CanWrite
+		&& bindingClipboardTarget.GetUndoCommandCount() == 1
+		&& undoBindingClipboard.HasChanges() && bindingClipboardUndoCaptured
+		&& bindingClipboardUndone.Nodes.size() == 1
+		&& bindingClipboardUndone.DataContextSchema.empty()
+		&& redoBindingClipboard.HasChanges() && bindingClipboardRedoCaptured
+		&& bindingClipboardRedone == bindingClipboardMerged,
+		L"clipboard bindings: schema dependencies did not survive cross-canvas copy/paste and Undo/Redo"
+		+ std::wstring(L" [schema=") + SelfTestFlag(bindingClipboardSchemaReady)
+		+ L", copy=" + SelfTestFlag(bindingClipboardCopy.Succeeded())
+		+ L", paste=" + SelfTestFlag(bindingClipboardPaste.HasChanges())
+		+ L", capture=" + SelfTestFlag(bindingClipboardMergedCaptured)
+		+ L", schemaCount=" + std::to_wstring(
+			bindingClipboardMerged.DataContextSchema.size())
+		+ L", undo=" + SelfTestFlag(undoBindingClipboard.HasChanges())
+		+ L", redo=" + SelfTestFlag(redoBindingClipboard.HasChanges())
+		+ L", schemaError=" + bindingClipboardSchemaError
+		+ L", mergeError=" + bindingClipboardMergeError
+		+ L", undoError=" + bindingClipboardUndoError
+		+ L", redoError=" + bindingClipboardRedoError + L"]");
+
+	DesignerCanvas styleClipboardSource(0, 0, 900, 680);
+	styleClipboardSource.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 210, 170 });
+	const auto styleClipboardSourceControl =
+		styleClipboardSource.GetSelectedControl();
+	if (styleClipboardSourceControl && styleClipboardSourceControl->ControlInstance)
+	{
+		styleClipboardSourceControl->ControlInstance->SetStyleId(
+			L"SourceButton");
+		(void)styleClipboardSourceControl->ControlInstance->AddStyleClass(
+			L"primary");
+	}
+	DesignerStyleSheet sourceClipboardStyle;
+	sourceClipboardStyle.Resources = {
+		{ L"Accent", { DesignerStyleValueKind::Color, L"#FFFF0000" } }
+	};
+	DesignerStyleRule sourceClipboardTyped;
+	sourceClipboardTyped.HasType = true;
+	sourceClipboardTyped.Type = UIClass::UI_Button;
+	sourceClipboardTyped.Setters.push_back({
+		L"Round", false, {}, { DesignerStyleValueKind::Float, L"2" } });
+	DesignerStyleRule sourceClipboardClass;
+	sourceClipboardClass.HasType = true;
+	sourceClipboardClass.Type = UIClass::UI_Button;
+	sourceClipboardClass.Classes = { L"primary" };
+	sourceClipboardClass.Setters.push_back({
+		L"UnderMouseColor", true, L"Accent", {} });
+	DesignerStyleRule sourceClipboardId;
+	sourceClipboardId.HasType = true;
+	sourceClipboardId.Type = UIClass::UI_Button;
+	sourceClipboardId.Id = L"SourceButton";
+	sourceClipboardId.Setters.push_back({
+		L"Round", false, {}, { DesignerStyleValueKind::Float, L"7" } });
+	sourceClipboardStyle.Rules = {
+		sourceClipboardTyped, sourceClipboardClass, sourceClipboardId };
+	std::wstring styleClipboardSourceError;
+	const bool sourceClipboardStyleReady =
+		styleClipboardSource.SetDocumentStyleSheet(
+			sourceClipboardStyle, &styleClipboardSourceError);
+	const auto styleClipboardCopy =
+		styleClipboardSource.CopySelectedControls();
+
+	DesignerCanvas styleClipboardTarget(0, 0, 900, 680);
+	styleClipboardTarget.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 140, 120 });
+	const auto styleClipboardExisting = styleClipboardTarget.GetSelectedControl();
+	const auto styleClipboardExistingName = styleClipboardExisting
+		? styleClipboardExisting->Name : std::wstring{};
+	if (styleClipboardExisting && styleClipboardExisting->ControlInstance)
+	{
+		styleClipboardExisting->ControlInstance->SetStyleId(L"SourceButton");
+		(void)styleClipboardExisting->ControlInstance->AddStyleClass(L"primary");
+	}
+	DesignerStyleSheet targetClipboardStyle;
+	targetClipboardStyle.Resources = {
+		{ L"Accent", { DesignerStyleValueKind::Color, L"#FF0000FF" } }
+	};
+	DesignerStyleRule targetClipboardClass = sourceClipboardClass;
+	DesignerStyleRule targetClipboardId = sourceClipboardId;
+	targetClipboardId.Setters.front().Literal.Text = L"99";
+	targetClipboardStyle.Rules = {
+		targetClipboardClass, targetClipboardId };
+	std::wstring styleClipboardTargetError;
+	const bool targetClipboardStyleReady =
+		styleClipboardTarget.SetDocumentStyleSheet(
+			targetClipboardStyle, &styleClipboardTargetError);
+	DesignerModel::DesignDocument styleClipboardBaseline;
+	std::wstring styleClipboardBaselineError;
+	const bool styleClipboardBaselineCaptured =
+		styleClipboardTarget.BuildDesignDocument(
+			styleClipboardBaseline, &styleClipboardBaselineError);
+	(void)styleClipboardTarget.ResetDocumentHistoryAsSaved();
+	const auto styleClipboardPaste =
+		styleClipboardTarget.PasteControlsFromClipboardInPlace();
+	const auto styleClipboardPasted = styleClipboardTarget.GetSelectedControl();
+	const auto styleClipboardExistingAfterPaste =
+		FindControl(styleClipboardTarget, styleClipboardExistingName);
+	const auto pastedPreviewButton = styleClipboardPasted
+		? dynamic_cast<Button*>(styleClipboardPasted->ControlInstance)
+		: nullptr;
+	const auto existingPreviewButton = styleClipboardExistingAfterPaste
+		? dynamic_cast<Button*>(
+			styleClipboardExistingAfterPaste->ControlInstance)
+		: nullptr;
+	const auto pastedPreviewRound = pastedPreviewButton
+		? pastedPreviewButton->Round : -1.0f;
+	const auto pastedPreviewRed = pastedPreviewButton
+		? pastedPreviewButton->UnderMouseColor.r : -1.0f;
+	const auto pastedPreviewBlue = pastedPreviewButton
+		? pastedPreviewButton->UnderMouseColor.b : -1.0f;
+	const auto existingPreviewRound = existingPreviewButton
+		? existingPreviewButton->Round : -1.0f;
+	const auto existingPreviewRed = existingPreviewButton
+		? existingPreviewButton->UnderMouseColor.r : -1.0f;
+	const auto existingPreviewBlue = existingPreviewButton
+		? existingPreviewButton->UnderMouseColor.b : -1.0f;
+	const bool styleClipboardPreviewCorrect =
+		styleClipboardPasted
+		&& styleClipboardPasted != styleClipboardExistingAfterPaste
+		&& styleClipboardPasted->ControlInstance
+		&& styleClipboardPasted->ControlInstance->GetStyleId().starts_with(
+			L"CuiPasteStyle_")
+		&& pastedPreviewButton
+		&& pastedPreviewButton->Round == 7.0f
+		&& pastedPreviewButton->UnderMouseColor.r == 1.0f
+		&& pastedPreviewButton->UnderMouseColor.b == 0.0f
+		&& existingPreviewButton
+		&& existingPreviewButton->Round == 99.0f
+		&& existingPreviewButton->UnderMouseColor.r == 0.0f
+		&& existingPreviewButton->UnderMouseColor.b == 1.0f;
+	DesignerModel::DesignDocument styleClipboardMerged;
+	std::wstring styleClipboardMergeError;
+	const bool styleClipboardMergedCaptured =
+		styleClipboardTarget.BuildDesignDocument(
+			styleClipboardMerged, &styleClipboardMergeError);
+	const auto undoStyleClipboard = styleClipboardTarget.UndoCommand();
+	DesignerModel::DesignDocument styleClipboardUndone;
+	std::wstring styleClipboardUndoError;
+	const bool styleClipboardUndoCaptured =
+		styleClipboardTarget.BuildDesignDocument(
+			styleClipboardUndone, &styleClipboardUndoError);
+	const auto redoStyleClipboard = styleClipboardTarget.RedoCommand();
+	DesignerModel::DesignDocument styleClipboardRedone;
+	std::wstring styleClipboardRedoError;
+	const bool styleClipboardRedoCaptured =
+		styleClipboardTarget.BuildDesignDocument(
+			styleClipboardRedone, &styleClipboardRedoError);
+	AppendFailure(failures,
+		styleClipboardSourceControl && sourceClipboardStyleReady
+		&& styleClipboardCopy.Succeeded()
+		&& styleClipboardExisting && targetClipboardStyleReady
+		&& styleClipboardBaselineCaptured
+		&& styleClipboardPaste.HasChanges() && styleClipboardPreviewCorrect
+		&& styleClipboardMergedCaptured
+		&& styleClipboardMerged.Nodes.size() == 2
+		&& styleClipboardMerged.StyleSheet.Resources.size() == 2
+		&& styleClipboardMerged.StyleSheet.Rules.size() == 5
+		&& styleClipboardTarget.GetUndoCommandCount() == 1
+		&& undoStyleClipboard.HasChanges() && styleClipboardUndoCaptured
+		&& styleClipboardUndone == styleClipboardBaseline
+		&& redoStyleClipboard.HasChanges() && styleClipboardRedoCaptured
+		&& styleClipboardRedone == styleClipboardMerged,
+		L"clipboard styles: conflicting resources/selectors were not isolated across canvases or Undo/Redo"
+		+ std::wstring(L" [sourceStyle=")
+		+ SelfTestFlag(sourceClipboardStyleReady)
+		+ L", copy=" + SelfTestFlag(styleClipboardCopy.Succeeded())
+		+ L", targetStyle=" + SelfTestFlag(targetClipboardStyleReady)
+		+ L", paste=" + SelfTestFlag(styleClipboardPaste.HasChanges())
+		+ L", capture=" + SelfTestFlag(styleClipboardMergedCaptured)
+		+ L", resources=" + std::to_wstring(
+			styleClipboardMerged.StyleSheet.Resources.size())
+		+ L", rules=" + std::to_wstring(
+			styleClipboardMerged.StyleSheet.Rules.size())
+		+ L", preview=" + SelfTestFlag(styleClipboardPreviewCorrect)
+		+ L", pastedRound=" + std::to_wstring(pastedPreviewRound)
+		+ L", pastedRed=" + std::to_wstring(pastedPreviewRed)
+		+ L", pastedBlue=" + std::to_wstring(pastedPreviewBlue)
+		+ L", existingRound=" + std::to_wstring(existingPreviewRound)
+		+ L", existingRed=" + std::to_wstring(existingPreviewRed)
+		+ L", existingBlue=" + std::to_wstring(existingPreviewBlue)
+		+ L", undo=" + SelfTestFlag(undoStyleClipboard.HasChanges())
+		+ L", undoEqual=" + SelfTestFlag(
+			styleClipboardUndone == styleClipboardBaseline)
+		+ L", redo=" + SelfTestFlag(redoStyleClipboard.HasChanges())
+		+ L", redoEqual=" + SelfTestFlag(
+			styleClipboardRedone == styleClipboardMerged)
+		+ L", sourceError=" + styleClipboardSourceError
+		+ L", targetError=" + styleClipboardTargetError
+		+ L", mergeError=" + styleClipboardMergeError
+		+ L", undoError=" + styleClipboardUndoError
+		+ L", redoError=" + styleClipboardRedoError + L"]");
+	DesignerModel::DesignDocument liveXamlBaseline;
+	std::wstring liveXamlBaselineError;
+	std::wstring liveXamlText;
+	const bool liveXamlSetup = clipboardCanvas.BuildDesignDocument(
+		liveXamlBaseline, &liveXamlBaselineError)
+		&& clipboardCanvas.BuildXamlDocumentText(
+			liveXamlText, &liveXamlBaselineError)
+		&& clipboardCanvas.ResetDocumentHistoryAsSaved().Succeeded();
+	const auto liveTextPosition = liveXamlText.find(L"Text=\"Paste\"");
+	if (liveTextPosition != std::wstring::npos)
+		liveXamlText.replace(
+			liveTextPosition, std::wstring(L"Text=\"Paste\"").size(),
+			L"Text=\"Live Preview\"");
+	const auto liveNamePosition = liveXamlText.find(L"x:Name=\"panel1\"");
+	if (liveNamePosition != std::wstring::npos)
+		liveXamlText.replace(
+			liveNamePosition, std::wstring(L"x:Name=\"panel1\"").size(),
+			L"x:Name=\"renamedPanel\"");
+	const auto beginLivePreview = clipboardCanvas.BeginDocumentEditTransaction(
+		L"EditXaml");
+	std::wstring livePreviewError;
+	const bool appliedLivePreview = beginLivePreview.Succeeded()
+		&& liveTextPosition != std::wstring::npos
+		&& liveNamePosition != std::wstring::npos
+		&& clipboardCanvas.PreviewXamlDocumentText(
+			liveXamlText, &livePreviewError);
+	const bool renamedSelectionPreserved =
+		clipboardCanvas.GetSelectedControl()
+		&& clipboardCanvas.GetSelectedControl()->Name == L"renamedPanel";
+	DesignerModel::DesignDocument validLivePreview;
+	std::wstring validLivePreviewError;
+	const bool capturedLivePreview = clipboardCanvas.BuildDesignDocument(
+		validLivePreview, &validLivePreviewError);
+	DesignerModel::XamlDocumentDiagnostic invalidLiveDiagnostic;
+	std::wstring invalidSyntaxError;
+	const bool rejectedInvalidLivePreview =
+		!clipboardCanvas.PreviewXamlDocumentText(
+			L"<Form xmlns=\"urn:cui\">\n  <Broken>",
+			&invalidSyntaxError, &invalidLiveDiagnostic);
+	auto semanticLiveXaml = liveXamlText;
+	const auto semanticInsert = semanticLiveXaml.find(L"Text=\"Live Preview\"");
+	if (semanticInsert != std::wstring::npos)
+		semanticLiveXaml.replace(
+			semanticInsert, std::wstring(L"Text=\"Live Preview\"").size(),
+			L"Visibility=\"Vanished\"");
+	DesignerModel::XamlDocumentDiagnostic semanticLiveDiagnostic;
+	std::wstring semanticLiveError;
+	const bool rejectedSemanticLivePreview =
+		semanticInsert != std::wstring::npos
+		&& !clipboardCanvas.PreviewXamlDocumentText(
+			semanticLiveXaml, &semanticLiveError, &semanticLiveDiagnostic);
+	const auto semanticExpectedOffset = semanticLiveXaml.find(L"Visibility");
+	DesignerModel::DesignDocument afterInvalidLivePreview;
+	std::wstring afterInvalidLivePreviewError;
+	const bool invalidPreviewPreserved = clipboardCanvas.BuildDesignDocument(
+		afterInvalidLivePreview, &afterInvalidLivePreviewError)
+		&& afterInvalidLivePreview == validLivePreview;
+	const auto rollbackLivePreview = clipboardCanvas.RollbackDocumentEditTransaction();
+	DesignerModel::DesignDocument rolledBackLivePreview;
+	std::wstring rolledBackLivePreviewError;
+	AppendFailure(failures,
+		liveXamlSetup && appliedLivePreview && renamedSelectionPreserved
+		&& capturedLivePreview
+		&& validLivePreview != liveXamlBaseline
+		&& rejectedInvalidLivePreview
+		&& invalidLiveDiagnostic.HasLocation()
+		&& invalidLiveDiagnostic.HasSourceOffset()
+		&& invalidLiveDiagnostic.Message == invalidSyntaxError
+		&& rejectedSemanticLivePreview
+		&& semanticLiveDiagnostic.HasLocation()
+		&& semanticLiveDiagnostic.HasSourceOffset()
+		&& semanticLiveDiagnostic.Utf16Offset == semanticExpectedOffset
+		&& semanticLiveDiagnostic.Message == semanticLiveError
+		&& invalidPreviewPreserved
+		&& rollbackLivePreview.State
+			== DesignerDocumentTransactionState::RolledBack
+		&& clipboardCanvas.BuildDesignDocument(
+			rolledBackLivePreview, &rolledBackLivePreviewError)
+		&& rolledBackLivePreview == liveXamlBaseline,
+		L"live XAML: invalid preview or cancel did not preserve the session baseline"
+		+ std::wstring(L" [setup=") + SelfTestFlag(liveXamlSetup)
+		+ L", apply=" + SelfTestFlag(appliedLivePreview)
+		+ L", stableSelection=" + SelfTestFlag(renamedSelectionPreserved)
+		+ L", capture=" + SelfTestFlag(capturedLivePreview)
+		+ L", changed=" + SelfTestFlag(validLivePreview != liveXamlBaseline)
+		+ L", reject=" + SelfTestFlag(rejectedInvalidLivePreview)
+		+ L", located=" + SelfTestFlag(invalidLiveDiagnostic.HasLocation()
+			&& invalidLiveDiagnostic.HasSourceOffset())
+		+ L", semantic=" + SelfTestFlag(rejectedSemanticLivePreview
+			&& semanticLiveDiagnostic.HasSourceOffset()
+			&& semanticLiveDiagnostic.Utf16Offset == semanticExpectedOffset)
+		+ L", preserve=" + SelfTestFlag(invalidPreviewPreserved)
+		+ L", rollback=" + std::to_wstring(static_cast<int>(rollbackLivePreview.State))
+		+ L", syntaxError=" + invalidSyntaxError
+		+ L", semanticError=" + semanticLiveError
+		+ L", rollbackError=" + rollbackLivePreview.Error + L"]");
+
+	const auto beginCommittedLive = clipboardCanvas.BeginDocumentEditTransaction(
+		L"EditXaml");
+	const bool appliedCommittedLive = beginCommittedLive.Succeeded()
+		&& clipboardCanvas.PreviewXamlDocumentText(
+			liveXamlText, &livePreviewError);
+	const auto commitLivePreview = clipboardCanvas.CommitDocumentEditTransaction();
+	const auto liveCommitUndoCount = clipboardCanvas.GetUndoCommandCount();
+	const auto undoLivePreview = clipboardCanvas.UndoCommand();
+	DesignerModel::DesignDocument undoneLivePreview;
+	std::wstring undoneLivePreviewError;
+	const bool capturedUndoneLive = clipboardCanvas.BuildDesignDocument(
+		undoneLivePreview, &undoneLivePreviewError);
+	const auto redoLivePreview = clipboardCanvas.RedoCommand();
+	DesignerModel::DesignDocument redoneLivePreview;
+	std::wstring redoneLivePreviewError;
+	AppendFailure(failures,
+		appliedCommittedLive && commitLivePreview.HasChanges()
+		&& liveCommitUndoCount == 1
+		&& undoLivePreview.HasChanges() && capturedUndoneLive
+		&& undoneLivePreview == liveXamlBaseline
+		&& redoLivePreview.HasChanges()
+		&& clipboardCanvas.BuildDesignDocument(
+			redoneLivePreview, &redoneLivePreviewError)
+		&& redoneLivePreview == validLivePreview,
+		L"live XAML: one edit session did not commit as one undoable command"
+		+ std::wstring(L" [begin=") + SelfTestFlag(beginCommittedLive.Succeeded())
+		+ L", apply=" + SelfTestFlag(appliedCommittedLive)
+		+ L", commit=" + std::to_wstring(static_cast<int>(commitLivePreview.State))
+		+ L", undoCount=" + std::to_wstring(liveCommitUndoCount)
+		+ L", undo=" + std::to_wstring(static_cast<int>(undoLivePreview.State))
+		+ L", redo=" + std::to_wstring(static_cast<int>(redoLivePreview.State))
+		+ L", error=" + livePreviewError + L"]");
+
+	DesignerCanvas duplicateCanvas(0, 0, 900, 680);
+	duplicateCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 180, 160 });
+	const auto duplicateSource = duplicateCanvas.GetSelectedControl();
+	const auto duplicateSourceName = duplicateSource
+		? duplicateSource->Name : std::wstring{};
+	const auto duplicateSourceLocation = duplicateSource
+		&& duplicateSource->ControlInstance
+		? duplicateSource->ControlInstance->Location : POINT{};
+	if (duplicateSource)
+	{
+		duplicateSource->EventHandlers[L"OnMouseClick"] =
+			duplicateSourceName + L"_OnMouseClick";
+		duplicateSource->EventHandlers[L"OnMouseDoubleClick"] =
+			L"KeepSharedMouseHandler";
+	}
+	PropertyGrid duplicatePropertyGrid(0, 0, 360, 360);
+	duplicatePropertyGrid.SetDesignerCanvas(&duplicateCanvas);
+	ReloadCurrentSelection(duplicatePropertyGrid, duplicateCanvas);
+	int duplicateSelectionNotifications = 0;
+	duplicateCanvas.OnControlSelected +=
+		[&](std::shared_ptr<DesignerControl> selected)
+		{
+			++duplicateSelectionNotifications;
+			duplicatePropertyGrid.LoadControls(
+				duplicateCanvas.GetSelectedControls(), selected);
+		};
+	(void)duplicateCanvas.ResetDocumentHistoryAsSaved();
+	const auto duplicateResult = duplicateCanvas.DuplicateSelectedControls();
+	const auto duplicatedControl = duplicateCanvas.GetSelectedControl();
+	const auto duplicatedName = duplicatedControl
+		? duplicatedControl->Name : std::wstring{};
+	AppendFailure(failures,
+		duplicateResult.HasChanges()
+		&& duplicateCanvas.GetAllControls().size() == 2
+		&& duplicateSource && duplicatedControl
+		&& duplicatedControl != duplicateSource
+		&& duplicatedName != duplicateSourceName
+		&& duplicatedControl->StableId != duplicateSource->StableId
+		&& duplicatedControl->ControlInstance->Location.x
+			== duplicateSourceLocation.x + 12
+		&& duplicatedControl->ControlInstance->Location.y
+			== duplicateSourceLocation.y + 12
+		&& duplicateSource->EventHandlers[L"OnMouseClick"]
+			== duplicateSourceName + L"_OnMouseClick"
+		&& duplicatedControl->EventHandlers[L"OnMouseClick"]
+			== duplicatedName + L"_OnMouseClick"
+		&& duplicatedControl->EventHandlers[L"OnMouseDoubleClick"]
+			== L"KeepSharedMouseHandler"
+		&& duplicateSelectionNotifications >= 2
+		&& duplicateCanvas.GetUndoCommandCount() == 1
+		&& duplicateCanvas.GetLastCommandOperation() == L"DuplicateSelection",
+		L"duplicate: offset copy, identity, property-grid reload, selection, or one-command history failed");
+	const auto undoDuplicate = duplicateCanvas.UndoCommand();
+	const auto redoDuplicate = duplicateCanvas.RedoCommand();
+	AppendFailure(failures,
+		undoDuplicate.HasChanges() && redoDuplicate.HasChanges()
+		&& duplicateCanvas.GetAllControls().size() == 2
+		&& duplicateCanvas.GetSelectedControl()
+		&& duplicateCanvas.GetSelectedControl()->Name == duplicatedName
+		&& duplicateCanvas.GetSelectedControl()->EventHandlers[L"OnMouseClick"]
+			== duplicatedName + L"_OnMouseClick"
+		&& duplicateCanvas.GetSelectedControl()->EventHandlers[
+			L"OnMouseDoubleClick"] == L"KeepSharedMouseHandler",
+		L"duplicate: undo/redo did not restore the copied selection");
+
+	DesignerCanvas stackDuplicateCanvas(0, 0, 900, 680);
+	stackDuplicateCanvas.AddControlToCanvasCore(
+		UIClass::UI_StackPanel, POINT{ 300, 240 });
+	const auto stackDuplicateParent = stackDuplicateCanvas.GetSelectedControl();
+	if (stackDuplicateParent && stackDuplicateParent->ControlInstance)
+	{
+		const POINT inside{
+			stackDuplicateParent->ControlInstance->AbsLocation.x
+				- stackDuplicateCanvas.AbsLocation.x + 35,
+			stackDuplicateParent->ControlInstance->AbsLocation.y
+				- stackDuplicateCanvas.AbsLocation.y + 25 };
+		for (int index = 0; index < 3; ++index)
+			stackDuplicateCanvas.AddControlToCanvasCore(
+				UIClass::UI_Button,
+				POINT{ inside.x, inside.y + index * 45 });
+	}
+	const auto stackDuplicateControls = stackDuplicateCanvas.GetAllControls();
+	const bool stackDuplicateReady = stackDuplicateParent
+		&& stackDuplicateControls.size() >= 4
+		&& stackDuplicateControls[1] && stackDuplicateControls[2]
+		&& stackDuplicateControls[3];
+	const int stackFirstId = stackDuplicateReady
+		? stackDuplicateControls[1]->StableId : 0;
+	const int stackSourceId = stackDuplicateReady
+		? stackDuplicateControls[2]->StableId : 0;
+	const int stackLastId = stackDuplicateReady
+		? stackDuplicateControls[3]->StableId : 0;
+	if (stackDuplicateReady)
+		stackDuplicateCanvas.RestoreSelectionByNames(
+			{ stackDuplicateControls[2]->Name },
+			stackDuplicateControls[2]->Name, false);
+	(void)stackDuplicateCanvas.ResetDocumentHistoryAsSaved();
+	const auto duplicateStackMiddle = stackDuplicateReady
+		? stackDuplicateCanvas.DuplicateSelectedControls()
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"missing stack duplicate setup");
+	const auto stackDuplicateCopy = stackDuplicateCanvas.GetSelectedControl();
+	const int stackCopyId = stackDuplicateCopy
+		? stackDuplicateCopy->StableId : 0;
+	DesignerModel::DesignDocument stackDuplicateDocument;
+	std::wstring stackDuplicateError;
+	const bool stackDuplicateCaptured =
+		stackDuplicateCanvas.BuildDesignDocument(
+			stackDuplicateDocument, &stackDuplicateError);
+	std::vector<const DesignerModel::DesignNode*> stackDuplicateChildren;
+	for (const auto& node : stackDuplicateDocument.Nodes)
+		if (stackDuplicateParent
+			&& node.ParentId == stackDuplicateParent->StableId)
+			stackDuplicateChildren.push_back(&node);
+	std::stable_sort(stackDuplicateChildren.begin(),
+		stackDuplicateChildren.end(),
+		[](const auto* left, const auto* right)
+		{
+			return left->Order < right->Order;
+		});
+	const bool stackDuplicateAdjacent = stackDuplicateChildren.size() == 4
+		&& stackDuplicateChildren[0]->Id == stackFirstId
+		&& stackDuplicateChildren[1]->Id == stackSourceId
+		&& stackDuplicateChildren[2]->Id == stackCopyId
+		&& stackDuplicateChildren[3]->Id == stackLastId
+		&& stackDuplicateChildren[2]->Props["location"].value("x", -1) == 0
+		&& stackDuplicateChildren[2]->Props["location"].value("y", -1) == 0;
+	const auto undoStackDuplicate = stackDuplicateCanvas.UndoCommand();
+	AppendFailure(failures,
+		stackDuplicateReady && duplicateStackMiddle.HasChanges()
+		&& stackDuplicateCaptured && stackDuplicateAdjacent
+		&& stackDuplicateCanvas.GetUndoCommandCount() == 0
+		&& undoStackDuplicate.HasChanges(),
+		L"duplicate layout: StackPanel copy was not inserted beside its source or undone once"
+		+ std::wstring(L" [ready=") + SelfTestFlag(stackDuplicateReady)
+		+ L", duplicate=" + SelfTestFlag(duplicateStackMiddle.HasChanges())
+		+ L", capture=" + SelfTestFlag(stackDuplicateCaptured)
+		+ L", adjacent=" + SelfTestFlag(stackDuplicateAdjacent)
+		+ L", error=" + stackDuplicateError + L"]");
+
+	DesignerCanvas relativeDuplicateCanvas(0, 0, 900, 680);
+	relativeDuplicateCanvas.AddControlToCanvasCore(
+		UIClass::UI_RelativePanel, POINT{ 320, 250 });
+	const auto relativeDuplicateParent =
+		relativeDuplicateCanvas.GetSelectedControl();
+	if (relativeDuplicateParent && relativeDuplicateParent->ControlInstance)
+	{
+		const POINT inside{
+			relativeDuplicateParent->ControlInstance->AbsLocation.x
+				- relativeDuplicateCanvas.AbsLocation.x + 70,
+			relativeDuplicateParent->ControlInstance->AbsLocation.y
+				- relativeDuplicateCanvas.AbsLocation.y + 80 };
+		relativeDuplicateCanvas.AddControlToCanvasCore(
+			UIClass::UI_Button, inside);
+	}
+	const auto relativeDuplicateSource =
+		relativeDuplicateCanvas.GetSelectedControl();
+	const auto relativeSourceMargin = relativeDuplicateSource
+		&& relativeDuplicateSource->ControlInstance
+		? relativeDuplicateSource->ControlInstance->Margin : Thickness{};
+	(void)relativeDuplicateCanvas.ResetDocumentHistoryAsSaved();
+	const auto duplicateRelative = relativeDuplicateSource
+		&& relativeDuplicateSource != relativeDuplicateParent
+		? relativeDuplicateCanvas.DuplicateSelectedControls()
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"missing relative duplicate setup");
+	const auto relativeDuplicateCopy =
+		relativeDuplicateCanvas.GetSelectedControl();
+	DesignerModel::DesignDocument relativeDuplicateDocument;
+	std::wstring relativeDuplicateError;
+	const bool relativeDuplicateCaptured =
+		relativeDuplicateCanvas.BuildDesignDocument(
+			relativeDuplicateDocument, &relativeDuplicateError);
+	const auto relativeDuplicateNode = std::find_if(
+		relativeDuplicateDocument.Nodes.begin(),
+		relativeDuplicateDocument.Nodes.end(),
+		[&relativeDuplicateCopy](const auto& node)
+		{
+			return relativeDuplicateCopy
+				&& node.Id == relativeDuplicateCopy->StableId;
+		});
+	const bool relativeDuplicateOffset = relativeDuplicateNode
+		!= relativeDuplicateDocument.Nodes.end()
+		&& relativeDuplicateNode->Props.contains("margin")
+		&& std::fabs(relativeDuplicateNode->Props["margin"].value(
+			"l", -1000.0) - (relativeSourceMargin.Left + 12.0)) < 0.01
+		&& std::fabs(relativeDuplicateNode->Props["margin"].value(
+			"t", -1000.0) - (relativeSourceMargin.Top + 12.0)) < 0.01
+		&& relativeDuplicateNode->Props["location"].value("x", -1) == 0
+		&& relativeDuplicateNode->Props["location"].value("y", -1) == 0;
+	AppendFailure(failures,
+		duplicateRelative.HasChanges() && relativeDuplicateCaptured
+		&& relativeDuplicateCopy && relativeDuplicateOffset
+		&& relativeDuplicateCanvas.GetUndoCommandCount() == 1,
+		L"duplicate layout: RelativePanel copy did not offset Margin by 12 DIP"
+		+ std::wstring(L" [duplicate=")
+		+ SelfTestFlag(duplicateRelative.HasChanges())
+		+ L", capture=" + SelfTestFlag(relativeDuplicateCaptured)
+		+ L", offset=" + SelfTestFlag(relativeDuplicateOffset)
+		+ L", error=" + relativeDuplicateError + L"]");
+
+	DesignerCanvas nestedClipboardCanvas(0, 0, 900, 680);
+	const auto nestedSetup = nestedClipboardCanvas.PasteControlsFromXamlText(
+		clipboardXaml);
+	(void)nestedClipboardCanvas.ResetDocumentHistoryAsSaved();
+	const std::wstring nestedChildXaml = LR"xaml(
+		<Form xmlns="urn:cui"
+		      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+		      x:Name="ClipboardChild">
+		  <Label x:Name="insertLabel1" DesignId="10"
+		         Canvas.Left="8" Canvas.Top="9" Width="80" Height="24"
+		         Text="Inside" />
+		</Form>)xaml";
+	const auto pasteIntoSelectedPanel =
+		nestedClipboardCanvas.PasteControlsFromXamlText(nestedChildXaml);
+	DesignerModel::DesignDocument nestedAfterPaste;
+	std::wstring nestedClipboardError;
+	const bool nestedPasteCaptured = nestedClipboardCanvas.BuildDesignDocument(
+		nestedAfterPaste, &nestedClipboardError);
+	auto findNestedNode = [](const DesignerModel::DesignDocument& document,
+		const std::wstring& name) -> const DesignerModel::DesignNode*
+	{
+		const auto found = std::find_if(
+			document.Nodes.begin(), document.Nodes.end(),
+			[&](const auto& node) { return node.Name == name; });
+		return found == document.Nodes.end() ? nullptr : &*found;
+	};
+	const auto* nestedPanel = findNestedNode(nestedAfterPaste, L"panel1");
+	const auto* insertedLabel = findNestedNode(
+		nestedAfterPaste, L"insertLabel1");
+	const bool pastedIntoPanel = nestedSetup.HasChanges()
+		&& pasteIntoSelectedPanel.HasChanges()
+		&& nestedPasteCaptured && nestedPanel && insertedLabel
+		&& insertedLabel->ParentId == nestedPanel->Id
+		&& insertedLabel->ParentRef == nestedPanel->Name
+		&& nestedClipboardCanvas.GetUndoCommandCount() == 1;
+	const auto undoNestedPaste = nestedClipboardCanvas.UndoCommand();
+	nestedClipboardCanvas.RestoreSelectionByNames(
+		{ L"button1" }, L"button1", true);
+	(void)nestedClipboardCanvas.ResetDocumentHistoryAsSaved();
+	const auto duplicateNestedChild =
+		nestedClipboardCanvas.DuplicateSelectedControls();
+	DesignerModel::DesignDocument nestedAfterDuplicate;
+	const bool nestedDuplicateCaptured =
+		nestedClipboardCanvas.BuildDesignDocument(
+			nestedAfterDuplicate, &nestedClipboardError);
+	const auto* duplicatePanel = findNestedNode(
+		nestedAfterDuplicate, L"panel1");
+	const auto* duplicatedNestedButton = findNestedNode(
+		nestedAfterDuplicate, L"button2");
+	AppendFailure(failures,
+		pastedIntoPanel && undoNestedPaste.HasChanges()
+		&& duplicateNestedChild.HasChanges() && nestedDuplicateCaptured
+		&& duplicatePanel && duplicatedNestedButton
+		&& duplicatedNestedButton->ParentId == duplicatePanel->Id
+		&& duplicatedNestedButton->ParentRef == duplicatePanel->Name
+		&& nestedClipboardCanvas.GetSelectedControl()
+		&& nestedClipboardCanvas.GetSelectedControl()->Name == L"button2"
+		&& nestedClipboardCanvas.GetUndoCommandCount() == 1,
+		L"nested clipboard: paste target or duplicate parent was not preserved"
+		+ std::wstring(L" [setup=") + SelfTestFlag(nestedSetup.HasChanges())
+		+ L", paste=" + SelfTestFlag(pasteIntoSelectedPanel.HasChanges())
+		+ L", captured=" + SelfTestFlag(nestedPasteCaptured)
+		+ L", parent=" + SelfTestFlag(pastedIntoPanel)
+		+ L", undo=" + SelfTestFlag(undoNestedPaste.HasChanges())
+		+ L", duplicate=" + SelfTestFlag(duplicateNestedChild.HasChanges())
+		+ L", error=" + nestedClipboardError + L"]");
+
+	DesignerCanvas repeatedPasteCanvas(0, 0, 900, 680);
+	const auto repeatedPaste1 = repeatedPasteCanvas.PasteControlsFromXamlText(
+		clipboardXaml);
+	const auto repeatedPaste2 = repeatedPasteCanvas.PasteControlsFromXamlText(
+		clipboardXaml);
+	const auto repeatedPaste3 = repeatedPasteCanvas.PasteControlsFromXamlText(
+		clipboardXaml);
+	DesignerModel::DesignDocument repeatedPasteDocument;
+	std::wstring repeatedPasteError;
+	const bool repeatedPasteCaptured = repeatedPasteCanvas.BuildDesignDocument(
+		repeatedPasteDocument, &repeatedPasteError);
+	const auto* repeatedPanel1 = findNestedNode(
+		repeatedPasteDocument, L"panel1");
+	const auto* repeatedPanel2 = findNestedNode(
+		repeatedPasteDocument, L"panel2");
+	const auto* repeatedPanel3 = findNestedNode(
+		repeatedPasteDocument, L"panel3");
+	AppendFailure(failures,
+		repeatedPaste1.HasChanges() && repeatedPaste2.HasChanges()
+		&& repeatedPaste3.HasChanges() && repeatedPasteCaptured
+		&& repeatedPanel1 && repeatedPanel2 && repeatedPanel3
+		&& repeatedPanel1->ParentId == 0 && repeatedPanel1->ParentRef.empty()
+		&& repeatedPanel2->ParentId == 0 && repeatedPanel2->ParentRef.empty()
+		&& repeatedPanel3->ParentId == 0 && repeatedPanel3->ParentRef.empty()
+		&& repeatedPasteCanvas.GetSelectedControl()
+		&& repeatedPasteCanvas.GetSelectedControl()->Name == L"panel3",
+		L"repeated clipboard: a copied container was nested into its prior paste"
+		+ std::wstring(L" [first=") + SelfTestFlag(repeatedPaste1.HasChanges())
+		+ L", second=" + SelfTestFlag(repeatedPaste2.HasChanges())
+		+ L", third=" + SelfTestFlag(repeatedPaste3.HasChanges())
+		+ L", captured=" + SelfTestFlag(repeatedPasteCaptured)
+		+ L", error=" + repeatedPasteError + L"]");
+
+	auto clipboardNodeLocation = [](
+		const DesignerModel::DesignNode* node) -> POINT
+	{
+		if (!node || !node->Props.is_object()
+			|| !node->Props.contains("location")
+			|| !node->Props["location"].is_object()) return POINT{};
+		const auto& location = node->Props["location"];
+		return POINT{
+			location.contains("x") && location["x"].is_number()
+				? location["x"].get<int>() : 0,
+			location.contains("y") && location["y"].is_number()
+				? location["y"].get<int>() : 0 };
+	};
+	DesignerCanvas inPlacePasteCanvas(0, 0, 900, 680);
+	const auto inPlacePaste1 =
+		inPlacePasteCanvas.PasteControlsFromXamlTextInPlace(clipboardXaml);
+	const auto inPlacePaste2 =
+		inPlacePasteCanvas.PasteControlsFromXamlTextInPlace(clipboardXaml);
+	const auto cascadeAfterInPlace =
+		inPlacePasteCanvas.PasteControlsFromXamlText(clipboardXaml);
+	DesignerModel::DesignDocument inPlacePasteDocument;
+	std::wstring inPlacePasteError;
+	const bool inPlacePasteCaptured = inPlacePasteCanvas.BuildDesignDocument(
+		inPlacePasteDocument, &inPlacePasteError);
+	const auto* inPlacePanel1 = findNestedNode(
+		inPlacePasteDocument, L"panel1");
+	const auto* inPlacePanel2 = findNestedNode(
+		inPlacePasteDocument, L"panel2");
+	const auto* inPlacePanel3 = findNestedNode(
+		inPlacePasteDocument, L"panel3");
+	const auto inPlaceLocation1 = clipboardNodeLocation(inPlacePanel1);
+	const auto inPlaceLocation2 = clipboardNodeLocation(inPlacePanel2);
+	const auto cascadeLocation = clipboardNodeLocation(inPlacePanel3);
+	const auto undoCascadeAfterInPlace = inPlacePasteCanvas.UndoCommand();
+	AppendFailure(failures,
+		inPlacePaste1.HasChanges() && inPlacePaste2.HasChanges()
+		&& cascadeAfterInPlace.HasChanges() && inPlacePasteCaptured
+		&& inPlacePanel1 && inPlacePanel2 && inPlacePanel3
+		&& inPlaceLocation1.x == 40 && inPlaceLocation1.y == 50
+		&& inPlaceLocation2.x == 40 && inPlaceLocation2.y == 50
+		&& cascadeLocation.x == 52 && cascadeLocation.y == 62
+		&& inPlacePasteCanvas.GetUndoCommandCount() == 2
+		&& undoCascadeAfterInPlace.HasChanges(),
+		L"clipboard placement: in-place paste moved roots, consumed the cascade sequence, or lost one-command Undo"
+		+ std::wstring(L" [first=") + SelfTestFlag(inPlacePaste1.HasChanges())
+		+ L", second=" + SelfTestFlag(inPlacePaste2.HasChanges())
+		+ L", cascade=" + SelfTestFlag(cascadeAfterInPlace.HasChanges())
+		+ L", capture=" + SelfTestFlag(inPlacePasteCaptured)
+		+ L", p1=" + std::to_wstring(inPlaceLocation1.x) + L","
+		+ std::to_wstring(inPlaceLocation1.y)
+		+ L", p2=" + std::to_wstring(inPlaceLocation2.x) + L","
+		+ std::to_wstring(inPlaceLocation2.y)
+		+ L", p3=" + std::to_wstring(cascadeLocation.x) + L","
+		+ std::to_wstring(cascadeLocation.y)
+		+ L", undoCount="
+		+ std::to_wstring(inPlacePasteCanvas.GetUndoCommandCount())
+		+ L", error=" + inPlacePasteError + L"]");
+
+	DesignerCanvas pointPasteCanvas(0, 0, 900, 680);
+	const auto pointPasteSetup =
+		pointPasteCanvas.PasteControlsFromXamlTextInPlace(clipboardXaml);
+	const auto pointPanel = std::find_if(
+		pointPasteCanvas.GetAllControls().begin(),
+		pointPasteCanvas.GetAllControls().end(),
+		[](const auto& candidate)
+		{
+			return candidate && candidate->Name == L"panel1";
+		});
+	const bool pointPanelReady = pointPanel
+		!= pointPasteCanvas.GetAllControls().end()
+		&& *pointPanel && (*pointPanel)->ControlInstance;
+	POINT pointInsidePanel{};
+	if (pointPanelReady)
+	{
+		pointInsidePanel = {
+			(*pointPanel)->ControlInstance->AbsLocation.x
+				- pointPasteCanvas.AbsLocation.x + 73,
+			(*pointPanel)->ControlInstance->AbsLocation.y
+				- pointPasteCanvas.AbsLocation.y + 81 };
+	}
+	(void)pointPasteCanvas.ResetDocumentHistoryAsSaved();
+	const auto pasteAtPanelPoint = pointPanelReady
+		? pointPasteCanvas.PasteControlsFromXamlTextAt(
+			nestedChildXaml, pointInsidePanel)
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"missing point-paste panel");
+	DesignerModel::DesignDocument pointPasteDocument;
+	std::wstring pointPasteError;
+	const bool pointPasteCaptured = pointPasteCanvas.BuildDesignDocument(
+		pointPasteDocument, &pointPasteError);
+	const auto* pointPanelNode = findNestedNode(
+		pointPasteDocument, L"panel1");
+	const auto* pointLabelNode = findNestedNode(
+		pointPasteDocument, L"insertLabel1");
+	const auto pointLabelLocation = clipboardNodeLocation(pointLabelNode);
+	const auto pointPasteHistory = pointPasteCanvas.GetUndoCommandCount();
+	const auto rejectedOutsidePoint =
+		pointPasteCanvas.PasteControlsFromXamlTextAt(
+			nestedChildXaml, POINT{ -1000, -1000 });
+	DesignerModel::DesignDocument afterRejectedPointPaste;
+	const bool rejectedPointPreserved = pointPasteCanvas.BuildDesignDocument(
+		afterRejectedPointPaste, &pointPasteError)
+		&& afterRejectedPointPaste == pointPasteDocument;
+	const auto undoPointPaste = pointPasteCanvas.UndoCommand();
+	AppendFailure(failures,
+		pointPasteSetup.HasChanges() && pointPanelReady
+		&& pasteAtPanelPoint.HasChanges() && pointPasteCaptured
+		&& pointPanelNode && pointLabelNode
+		&& pointLabelNode->ParentId == pointPanelNode->Id
+		&& pointLabelLocation.x == 73 && pointLabelLocation.y == 81
+		&& pointPasteHistory == 1
+		&& rejectedOutsidePoint.State
+			== DesignerDocumentTransactionState::Rejected
+		&& pointPasteCanvas.GetUndoCommandCount() == 0
+		&& rejectedPointPreserved && undoPointPaste.HasChanges(),
+		L"clipboard placement: paste-here missed the pointed container/location or invalid target changed history"
+		+ std::wstring(L" [setup=") + SelfTestFlag(pointPasteSetup.HasChanges())
+		+ L", panel=" + SelfTestFlag(pointPanelReady)
+		+ L", paste=" + SelfTestFlag(pasteAtPanelPoint.HasChanges())
+		+ L", capture=" + SelfTestFlag(pointPasteCaptured)
+		+ L", preserve=" + SelfTestFlag(rejectedPointPreserved)
+		+ L", location=" + std::to_wstring(pointLabelLocation.x) + L","
+		+ std::to_wstring(pointLabelLocation.y)
+		+ L", parent=" + (pointLabelNode
+			? std::to_wstring(pointLabelNode->ParentId) : L"missing")
+		+ L", expectedParent=" + (pointPanelNode
+			? std::to_wstring(pointPanelNode->Id) : L"missing")
+		+ L", history=" + std::to_wstring(pointPasteHistory)
+		+ L", error=" + pointPasteError + L"]");
+
+	DesignerCanvas splitPointPasteCanvas(0, 0, 900, 680);
+	splitPointPasteCanvas.AddControlToCanvasCore(
+		UIClass::UI_SplitContainer, POINT{ 330, 250 });
+	const auto splitPointTarget = splitPointPasteCanvas.GetSelectedControl();
+	auto* splitPointControl = splitPointTarget
+		? dynamic_cast<SplitContainer*>(
+			splitPointTarget->ControlInstance) : nullptr;
+	POINT pointInsideSecond{};
+	if (splitPointControl && splitPointControl->SecondPanel())
+	{
+		pointInsideSecond = {
+			splitPointControl->SecondPanel()->AbsLocation.x
+				- splitPointPasteCanvas.AbsLocation.x + 24,
+			splitPointControl->SecondPanel()->AbsLocation.y
+				- splitPointPasteCanvas.AbsLocation.y + 30 };
+	}
+	(void)splitPointPasteCanvas.ResetDocumentHistoryAsSaved();
+	const auto pasteAtSplitPoint = splitPointControl
+		? splitPointPasteCanvas.PasteControlsFromXamlTextAt(
+			nestedChildXaml, pointInsideSecond)
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"missing split point target");
+	DesignerModel::DesignDocument splitPointDocument;
+	std::wstring splitPointError;
+	const bool splitPointCaptured = splitPointPasteCanvas.BuildDesignDocument(
+		splitPointDocument, &splitPointError);
+	const auto* splitPointLabel = findNestedNode(
+		splitPointDocument, L"insertLabel1");
+	const auto splitPointLocation = clipboardNodeLocation(splitPointLabel);
+	AppendFailure(failures,
+		pasteAtSplitPoint.HasChanges() && splitPointCaptured
+		&& splitPointTarget && splitPointLabel
+		&& splitPointLabel->ParentId == splitPointTarget->StableId
+		&& splitPointLabel->Extra.is_object()
+		&& splitPointLabel->Extra.value(
+			"splitRegion", std::string{}) == "panel2"
+		&& splitPointLocation.x == 24 && splitPointLocation.y == 30
+		&& splitPointPasteCanvas.GetUndoCommandCount() == 1,
+		L"clipboard placement: paste-here did not resolve Split Second region"
+		+ std::wstring(L" [paste=") + SelfTestFlag(pasteAtSplitPoint.HasChanges())
+		+ L", capture=" + SelfTestFlag(splitPointCaptured)
+		+ L", location=" + std::to_wstring(splitPointLocation.x) + L","
+		+ std::to_wstring(splitPointLocation.y)
+		+ L", parent=" + (splitPointLabel
+			? std::to_wstring(splitPointLabel->ParentId) : L"missing")
+		+ L", expectedParent=" + (splitPointTarget
+			? std::to_wstring(splitPointTarget->StableId) : L"missing")
+		+ L", region=" + (splitPointLabel && splitPointLabel->Extra.is_object()
+			? (splitPointLabel->Extra.value(
+				"splitRegion", std::string{}) == "panel2"
+				? L"panel2" : L"other") : L"missing")
+		+ L", error=" + splitPointError + L"]");
+
+	DesignerCanvas stackPointPasteCanvas(0, 0, 900, 680);
+	stackPointPasteCanvas.AddControlToCanvasCore(
+		UIClass::UI_StackPanel, POINT{ 300, 240 });
+	const auto stackPointTarget = stackPointPasteCanvas.GetSelectedControl();
+	auto* stackPointControl = stackPointTarget
+		? dynamic_cast<StackPanel*>(stackPointTarget->ControlInstance) : nullptr;
+	if (stackPointControl)
+	{
+		const POINT inside{
+			stackPointControl->AbsLocation.x
+				- stackPointPasteCanvas.AbsLocation.x + 30,
+			stackPointControl->AbsLocation.y
+				- stackPointPasteCanvas.AbsLocation.y + 25 };
+		stackPointPasteCanvas.AddControlToCanvasCore(
+			UIClass::UI_Button, inside);
+		stackPointPasteCanvas.AddControlToCanvasCore(
+			UIClass::UI_Button, POINT{ inside.x, inside.y + 60 });
+	}
+	POINT beforeStackSecond{};
+	if (stackPointControl && stackPointControl->Count >= 2)
+	{
+		auto* second = stackPointControl->operator[](1);
+		beforeStackSecond = {
+			second->AbsLocation.x - stackPointPasteCanvas.AbsLocation.x + 5,
+			second->AbsLocation.y - stackPointPasteCanvas.AbsLocation.y + 1 };
+	}
+	(void)stackPointPasteCanvas.ResetDocumentHistoryAsSaved();
+	const auto pasteIntoStackMiddle = stackPointControl
+		&& stackPointControl->Count >= 2
+		? stackPointPasteCanvas.PasteControlsFromXamlTextAt(
+			nestedChildXaml, beforeStackSecond)
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"missing stack point target");
+	DesignerModel::DesignDocument stackPointDocument;
+	std::wstring stackPointError;
+	const bool stackPointCaptured = stackPointPasteCanvas.BuildDesignDocument(
+		stackPointDocument, &stackPointError);
+	std::vector<const DesignerModel::DesignNode*> stackPointChildren;
+	for (const auto& node : stackPointDocument.Nodes)
+		if (stackPointTarget && node.ParentId == stackPointTarget->StableId)
+			stackPointChildren.push_back(&node);
+	std::stable_sort(stackPointChildren.begin(), stackPointChildren.end(),
+		[](const auto* left, const auto* right)
+		{
+			return left->Order < right->Order;
+		});
+	const auto* stackPointLabel = findNestedNode(
+		stackPointDocument, L"insertLabel1");
+	const auto stackPointLabelLocation = clipboardNodeLocation(stackPointLabel);
+	const bool stackOrderCorrect = stackPointChildren.size() == 3
+		&& stackPointChildren[0]->Type == UIClass::UI_Button
+		&& stackPointChildren[1]->Name == L"insertLabel1"
+		&& stackPointChildren[2]->Type == UIClass::UI_Button;
+	const auto undoStackPointPaste = stackPointPasteCanvas.UndoCommand();
+	const auto stackAfterUndo = stackPointTarget
+		? FindControl(stackPointPasteCanvas, stackPointTarget->Name) : nullptr;
+	AppendFailure(failures,
+		pasteIntoStackMiddle.HasChanges() && stackPointCaptured
+		&& stackPointTarget && stackPointLabel && stackOrderCorrect
+		&& stackPointLabelLocation.x == 0 && stackPointLabelLocation.y == 0
+		&& stackPointPasteCanvas.GetUndoCommandCount() == 0
+		&& undoStackPointPaste.HasChanges()
+		&& stackAfterUndo && stackAfterUndo->ControlInstance
+		&& stackAfterUndo->ControlInstance->Count == 2,
+		L"clipboard placement: StackPanel paste-here did not insert at the pointed boundary or undo atomically"
+		+ std::wstring(L" [paste=")
+		+ SelfTestFlag(pasteIntoStackMiddle.HasChanges())
+		+ L", capture=" + SelfTestFlag(stackPointCaptured)
+		+ L", order=" + SelfTestFlag(stackOrderCorrect)
+		+ L", location=" + std::to_wstring(stackPointLabelLocation.x)
+		+ L"," + std::to_wstring(stackPointLabelLocation.y)
+		+ L", error=" + stackPointError + L"]");
+
+	const std::wstring gridPasteTargetXaml = LR"xaml(
+		<Form xmlns="urn:cui"
+		      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+		      x:Name="GridPasteForm">
+		  <GridPanel x:Name="grid1" DesignId="1" Canvas.Left="80"
+		             Canvas.Top="70" Width="240" Height="180">
+		    <Grid.RowDefinitions>
+		      <RowDefinition Height="*" />
+		      <RowDefinition Height="*" />
+		    </Grid.RowDefinitions>
+		    <Grid.ColumnDefinitions>
+		      <ColumnDefinition Width="*" />
+		      <ColumnDefinition Width="*" />
+		    </Grid.ColumnDefinitions>
+		  </GridPanel>
+		</Form>)xaml";
+	DesignerCanvas gridPointPasteCanvas(0, 0, 900, 680);
+	const auto gridPointSetup =
+		gridPointPasteCanvas.PasteControlsFromXamlTextInPlace(
+			gridPasteTargetXaml);
+	const auto gridPointTarget = gridPointPasteCanvas.GetSelectedControl();
+	auto* gridPointControl = gridPointTarget
+		? dynamic_cast<GridPanel*>(gridPointTarget->ControlInstance) : nullptr;
+	POINT gridSecondCellPoint{};
+	if (gridPointControl)
+	{
+		gridPointControl->PerformLayout();
+		gridSecondCellPoint = {
+			gridPointControl->AbsLocation.x
+				- gridPointPasteCanvas.AbsLocation.x + 180,
+			gridPointControl->AbsLocation.y
+				- gridPointPasteCanvas.AbsLocation.y + 130 };
+	}
+	(void)gridPointPasteCanvas.ResetDocumentHistoryAsSaved();
+	const auto pasteIntoGridCell = gridPointControl
+		? gridPointPasteCanvas.PasteControlsFromXamlTextAt(
+			nestedChildXaml, gridSecondCellPoint)
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"missing grid point target");
+	DesignerModel::DesignDocument gridPointDocument;
+	std::wstring gridPointError;
+	const bool gridPointCaptured = gridPointPasteCanvas.BuildDesignDocument(
+		gridPointDocument, &gridPointError);
+	const auto* gridPointLabel = findNestedNode(
+		gridPointDocument, L"insertLabel1");
+	const auto gridPointLocation = clipboardNodeLocation(gridPointLabel);
+	AppendFailure(failures,
+		gridPointSetup.HasChanges() && pasteIntoGridCell.HasChanges()
+		&& gridPointCaptured && gridPointTarget && gridPointLabel
+		&& gridPointLabel->ParentId == gridPointTarget->StableId
+		&& gridPointLabel->Props.value("gridRow", -1) == 1
+		&& gridPointLabel->Props.value("gridColumn", -1) == 1
+		&& gridPointLabel->Props.value("gridRowSpan", -1) == 1
+		&& gridPointLabel->Props.value("gridColumnSpan", -1) == 1
+		&& gridPointLabel->Props.value("hAlign", std::string{}) == "Stretch"
+		&& gridPointLabel->Props.value("vAlign", std::string{}) == "Stretch"
+		&& gridPointLocation.x == 0 && gridPointLocation.y == 0
+		&& gridPointPasteCanvas.GetUndoCommandCount() == 1,
+		L"clipboard placement: GridPanel paste-here did not target the pointed cell"
+		+ std::wstring(L" [setup=") + SelfTestFlag(gridPointSetup.HasChanges())
+		+ L", paste=" + SelfTestFlag(pasteIntoGridCell.HasChanges())
+		+ L", capture=" + SelfTestFlag(gridPointCaptured)
+		+ L", row=" + (gridPointLabel
+			? std::to_wstring(gridPointLabel->Props.value("gridRow", -1))
+			: L"missing")
+		+ L", column=" + (gridPointLabel
+			? std::to_wstring(gridPointLabel->Props.value("gridColumn", -1))
+			: L"missing")
+		+ L", error=" + gridPointError + L"]");
+
+	DesignerCanvas relativePointPasteCanvas(0, 0, 900, 680);
+	relativePointPasteCanvas.AddControlToCanvasCore(
+		UIClass::UI_RelativePanel, POINT{ 320, 250 });
+	const auto relativePointTarget =
+		relativePointPasteCanvas.GetSelectedControl();
+	POINT relativePastePoint{};
+	if (relativePointTarget && relativePointTarget->ControlInstance)
+	{
+		relativePastePoint = {
+			relativePointTarget->ControlInstance->AbsLocation.x
+				- relativePointPasteCanvas.AbsLocation.x + 65,
+			relativePointTarget->ControlInstance->AbsLocation.y
+				- relativePointPasteCanvas.AbsLocation.y + 75 };
+	}
+	(void)relativePointPasteCanvas.ResetDocumentHistoryAsSaved();
+	const auto pasteIntoRelativePoint = relativePointTarget
+		? relativePointPasteCanvas.PasteControlsFromXamlTextAt(
+			nestedChildXaml, relativePastePoint)
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"missing relative point target");
+	DesignerModel::DesignDocument relativePointDocument;
+	std::wstring relativePointError;
+	const bool relativePointCaptured =
+		relativePointPasteCanvas.BuildDesignDocument(
+			relativePointDocument, &relativePointError);
+	const auto* relativePointLabel = findNestedNode(
+		relativePointDocument, L"insertLabel1");
+	const auto relativePointLocation = clipboardNodeLocation(relativePointLabel);
+	AppendFailure(failures,
+		pasteIntoRelativePoint.HasChanges() && relativePointCaptured
+		&& relativePointTarget && relativePointLabel
+		&& relativePointLabel->ParentId == relativePointTarget->StableId
+		&& relativePointLabel->Props.contains("margin")
+		&& relativePointLabel->Props["margin"].value("l", -1) == 65
+		&& relativePointLabel->Props["margin"].value("t", -1) == 75
+		&& relativePointLocation.x == 0 && relativePointLocation.y == 0
+		&& relativePointPasteCanvas.GetUndoCommandCount() == 1,
+		L"clipboard placement: RelativePanel paste-here did not convert the point to Margin"
+		+ std::wstring(L" [paste=")
+		+ SelfTestFlag(pasteIntoRelativePoint.HasChanges())
+		+ L", capture=" + SelfTestFlag(relativePointCaptured)
+		+ L", error=" + relativePointError + L"]");
+
+	DesignerCanvas arrangeCanvas(0, 0, 900, 680);
+	arrangeCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 140, 130 });
+	arrangeCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 330, 200 });
+	arrangeCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 570, 290 });
+	const auto arrangeFirst = arrangeCanvas.GetAllControls().size() > 0
+		? arrangeCanvas.GetAllControls()[0] : nullptr;
+	const auto arrangeSecond = arrangeCanvas.GetAllControls().size() > 1
+		? arrangeCanvas.GetAllControls()[1] : nullptr;
+	const auto arrangeThird = arrangeCanvas.GetAllControls().size() > 2
+		? arrangeCanvas.GetAllControls()[2] : nullptr;
+	const bool arrangeSetup = arrangeFirst && arrangeSecond && arrangeThird
+		&& arrangeFirst->ControlInstance && arrangeSecond->ControlInstance
+		&& arrangeThird->ControlInstance;
+	AppendFailure(failures, arrangeSetup,
+		L"arrange: three-control setup failed");
+	if (arrangeSetup)
+	{
+		auto* first = arrangeFirst->ControlInstance;
+		auto* second = arrangeSecond->ControlInstance;
+		auto* third = arrangeThird->ControlInstance;
+		first->Size = { 80, 30 };
+		second->Size = { 110, 42 };
+		third->Size = { 140, 54 };
+		first->ZIndex = 2;
+		second->ZIndex = 7;
+		third->ZIndex = 12;
+		arrangeCanvas.RestoreSelectionByNames(
+			{ arrangeFirst->Name, arrangeSecond->Name, arrangeThird->Name },
+			arrangeSecond->Name, false);
+		(void)arrangeCanvas.ResetDocumentHistoryAsSaved();
+		DesignerModel::DesignDocument arrangeBaseline;
+		std::wstring arrangeError;
+		const bool arrangeBaselineCaptured = arrangeCanvas.BuildDesignDocument(
+			arrangeBaseline, &arrangeError);
+
+		const auto alignLeft = arrangeCanvas.ArrangeSelection(
+			DesignerSelectionArrangeAction::AlignLeft);
+		const bool aligned = alignLeft.HasChanges()
+			&& first->Location.x == second->Location.x
+			&& third->Location.x == second->Location.x
+			&& arrangeCanvas.GetUndoCommandCount() == 1
+			&& arrangeCanvas.GetLastCommandOperation() == L"AlignLeft";
+		const auto undoAlign = arrangeCanvas.UndoCommand();
+		DesignerModel::DesignDocument afterUndoAlign;
+		const bool alignRestored = undoAlign.HasChanges()
+			&& arrangeCanvas.BuildDesignDocument(afterUndoAlign, &arrangeError)
+			&& afterUndoAlign == arrangeBaseline;
+
+		const auto sameSize = arrangeCanvas.ArrangeSelection(
+			DesignerSelectionArrangeAction::MakeSameSize);
+		const bool sizesMatched = sameSize.HasChanges()
+			&& first->Size.cx == second->Size.cx
+			&& first->Size.cy == second->Size.cy
+			&& third->Size.cx == second->Size.cx
+			&& third->Size.cy == second->Size.cy;
+		const bool sameSizeRestored = arrangeCanvas.UndoCommand().HasChanges()
+			&& first->Size.cx == 80 && first->Size.cy == 30
+			&& second->Size.cx == 110 && second->Size.cy == 42
+			&& third->Size.cx == 140 && third->Size.cy == 54;
+
+		const auto distribute = arrangeCanvas.ArrangeSelection(
+			DesignerSelectionArrangeAction::DistributeHorizontally);
+		const int firstGap = second->Location.x
+			- (first->Location.x + first->Size.cx);
+		const int secondGap = third->Location.x
+			- (second->Location.x + second->Size.cx);
+		const bool distributed = distribute.HasChanges()
+			&& std::abs(firstGap - secondGap) <= 1;
+		const bool distributionRestored =
+			arrangeCanvas.UndoCommand().HasChanges();
+		AppendFailure(failures,
+			arrangeBaselineCaptured && aligned && alignRestored
+			&& sizesMatched && sameSizeRestored
+			&& distributed && distributionRestored,
+			L"arrange geometry: align, same-size, distribution, or undo failed"
+			+ std::wstring(L" [baseline=")
+			+ SelfTestFlag(arrangeBaselineCaptured)
+			+ L", aligned=" + SelfTestFlag(aligned)
+			+ L", restored=" + SelfTestFlag(alignRestored)
+			+ L", size=" + SelfTestFlag(sizesMatched)
+			+ L", sizeUndo=" + SelfTestFlag(sameSizeRestored)
+			+ L", distribute=" + SelfTestFlag(distributed)
+			+ L", distributeUndo=" + SelfTestFlag(distributionRestored)
+			+ L", error=" + arrangeError + L"]");
+
+		auto peerOrder = [&]()
+		{
+			std::vector<Control*> result;
+			for (auto* control : first->Parent->GetChildrenInZOrder())
+				if (control == first || control == second || control == third)
+					result.push_back(control);
+			return result;
+		};
+		auto originalLayerState = [&]()
+		{
+			return peerOrder() == std::vector<Control*>{ first, second, third }
+				&& first->ZIndex == 2 && second->ZIndex == 7
+				&& third->ZIndex == 12;
+		};
+		arrangeCanvas.RestoreSelectionByNames(
+			{ arrangeFirst->Name }, arrangeFirst->Name, false);
+		const auto bringForward = arrangeCanvas.ArrangeSelection(
+			DesignerSelectionArrangeAction::BringForward);
+		const bool broughtForward = bringForward.HasChanges()
+			&& peerOrder() == std::vector<Control*>{ second, first, third }
+			&& first->ZIndex == 7;
+		const bool forwardUndone = arrangeCanvas.UndoCommand().HasChanges()
+			&& originalLayerState();
+		const auto bringFront = arrangeCanvas.ArrangeSelection(
+			DesignerSelectionArrangeAction::BringToFront);
+		const bool broughtFront = bringFront.HasChanges()
+			&& peerOrder() == std::vector<Control*>{ second, third, first }
+			&& first->ZIndex == 12;
+		const bool frontUndone = arrangeCanvas.UndoCommand().HasChanges()
+			&& originalLayerState();
+
+		arrangeCanvas.RestoreSelectionByNames(
+			{ arrangeThird->Name }, arrangeThird->Name, false);
+		const auto sendBackward = arrangeCanvas.ArrangeSelection(
+			DesignerSelectionArrangeAction::SendBackward);
+		const bool sentBackward = sendBackward.HasChanges()
+			&& peerOrder() == std::vector<Control*>{ first, third, second }
+			&& third->ZIndex == 7;
+		const bool backwardUndone = arrangeCanvas.UndoCommand().HasChanges()
+			&& originalLayerState();
+		const auto sendBack = arrangeCanvas.ArrangeSelection(
+			DesignerSelectionArrangeAction::SendToBack);
+		const bool sentBack = sendBack.HasChanges()
+			&& peerOrder() == std::vector<Control*>{ third, first, second }
+			&& third->ZIndex == 2;
+		const bool backUndone = arrangeCanvas.UndoCommand().HasChanges()
+			&& originalLayerState();
+		AppendFailure(failures,
+			broughtForward && forwardUndone && broughtFront && frontUndone
+			&& sentBackward && backwardUndone && sentBack && backUndone,
+			L"arrange layer: explicit ZIndex ordering or exact undo failed");
+	}
+
+	DesignerCanvas managedArrangeCanvas(0, 0, 900, 680);
+	managedArrangeCanvas.AddControlToCanvasCore(
+		UIClass::UI_StackPanel, POINT{ 260, 220 });
+	const auto managedParent = managedArrangeCanvas.GetSelectedControl();
+	if (managedParent && managedParent->ControlInstance)
+	{
+		const POINT inside{
+			managedParent->ControlInstance->AbsLocation.x
+				- managedArrangeCanvas.AbsLocation.x + 40,
+			managedParent->ControlInstance->AbsLocation.y
+				- managedArrangeCanvas.AbsLocation.y + 35
+		};
+		managedArrangeCanvas.AddControlToCanvasCore(
+			UIClass::UI_Button, inside);
+		managedArrangeCanvas.AddControlToCanvasCore(
+			UIClass::UI_Button, POINT{ inside.x + 20, inside.y + 55 });
+	}
+	if (managedArrangeCanvas.GetAllControls().size() >= 3)
+	{
+		const auto managedFirst = managedArrangeCanvas.GetAllControls()[1];
+		const auto managedSecond = managedArrangeCanvas.GetAllControls()[2];
+		managedArrangeCanvas.RestoreSelectionByNames(
+			{ managedFirst->Name, managedSecond->Name },
+			managedFirst->Name, false);
+		(void)managedArrangeCanvas.ResetDocumentHistoryAsSaved();
+		const auto rejectedManagedArrange = managedArrangeCanvas.ArrangeSelection(
+			DesignerSelectionArrangeAction::AlignLeft);
+		AppendFailure(failures,
+			rejectedManagedArrange.State
+				== DesignerDocumentTransactionState::Rejected
+			&& managedArrangeCanvas.GetUndoCommandCount() == 0,
+			L"arrange layout guard: geometry operation mutated a managed container");
+	}
+	else
+	{
+		failures.push_back(
+			L"arrange layout guard: managed-container setup failed");
+	}
+
+	DesignerCanvas lockCanvas(0, 0, 800, 640);
+	lockCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 210, 180 });
+	auto lockedControl = lockCanvas.GetSelectedControl();
+	const auto lockedIdentity = lockedControl;
+	const POINT unlockedLocation = lockedControl && lockedControl->ControlInstance
+		? lockedControl->ControlInstance->Location : POINT{ 0, 0 };
+	(void)lockCanvas.ResetDocumentHistoryAsSaved();
+	const auto lockResult = lockCanvas.SetSelectedControlsLocked(true);
+	DesignerModel::DesignDocument lockedDocument;
+	std::wstring lockedError;
+	std::wstring lockedXaml;
+	const bool lockedCaptured = lockCanvas.BuildDesignDocument(
+		lockedDocument, &lockedError);
+	const bool lockedXamlCaptured = lockCanvas.BuildXamlDocumentText(
+		lockedXaml, &lockedError);
+	const auto lockedNames =
+		lockCanvas.GetXamlCompletionAttributeNames(L"Button");
+	const auto lockedValues =
+		lockCanvas.GetXamlCompletionAttributeValues(L"Button", L"d:Locked");
+	const auto lockedUndoCount = lockCanvas.GetUndoCommandCount();
+	const auto rejectedLockedNudge = lockCanvas.NudgeSelectionBy(8, 4);
+	const auto rejectedLockedArrange = lockCanvas.ArrangeSelection(
+		DesignerSelectionArrangeAction::BringToFront);
+	const auto rejectedLockedHierarchy = lockedControl
+		? lockCanvas.MoveControlInHierarchy(
+			lockedControl->StableId, std::nullopt,
+			DesignerHierarchyDropPosition::Inside)
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"missing locked control");
+	if (lockedControl && lockedControl->ControlInstance)
+	{
+		auto* runtime = lockedControl->ControlInstance;
+		const auto size = runtime->ActualSize();
+		const POINT center{
+			runtime->AbsLocation.x - lockCanvas.AbsLocation.x + size.cx / 2,
+			runtime->AbsLocation.y - lockCanvas.AbsLocation.y + size.cy / 2 };
+		(void)lockCanvas.ProcessMessage(
+			WM_LBUTTONDOWN, MK_LBUTTON, 0, center.x, center.y);
+		(void)lockCanvas.ProcessMessage(
+			WM_MOUSEMOVE, MK_LBUTTON, 0, center.x + 25, center.y + 15);
+		(void)lockCanvas.ProcessMessage(
+			WM_LBUTTONUP, 0, 0, center.x + 25, center.y + 15);
+	}
+	const bool lockedPlacementUnchanged = lockedControl
+		&& lockedControl->ControlInstance
+		&& lockedControl->ControlInstance->Location.x == unlockedLocation.x
+		&& lockedControl->ControlInstance->Location.y == unlockedLocation.y
+		&& lockCanvas.GetUndoCommandCount() == lockedUndoCount;
+	AppendFailure(failures,
+		lockedControl && lockResult.HasChanges()
+		&& lockedControl->IsLocked
+		&& lockedCaptured && lockedDocument.Nodes.size() == 1
+		&& lockedDocument.Nodes.front().Locked
+		&& lockedXamlCaptured
+		&& lockedXaml.find(L"d:Locked=\"true\"") != std::wstring::npos
+		&& std::find(lockedNames.begin(), lockedNames.end(), L"d:Locked")
+			!= lockedNames.end()
+		&& std::find(lockedValues.begin(), lockedValues.end(), L"false")
+			!= lockedValues.end()
+		&& std::find(lockedValues.begin(), lockedValues.end(), L"true")
+			!= lockedValues.end()
+		&& lockedUndoCount == 1
+		&& rejectedLockedNudge.State
+			== DesignerDocumentTransactionState::Rejected
+		&& rejectedLockedArrange.State
+			== DesignerDocumentTransactionState::Rejected
+		&& rejectedLockedHierarchy.State
+			== DesignerDocumentTransactionState::Rejected
+		&& lockedPlacementUnchanged,
+		L"design lock: persistence, completion, or placement guards failed"
+		+ std::wstring(L" [capture=") + SelfTestFlag(lockedCaptured)
+		+ L", xaml=" + SelfTestFlag(lockedXamlCaptured)
+		+ L", placement=" + SelfTestFlag(lockedPlacementUnchanged)
+		+ L", error=" + lockedError + L"]");
+	const auto unlockUndo = lockCanvas.UndoCommand();
+	const bool unlockedByUndo = unlockUndo.HasChanges()
+		&& lockedControl && !lockedControl->IsLocked
+		&& lockCanvas.GetSelectedControl() == lockedIdentity;
+	const auto lockRedo = lockCanvas.RedoCommand();
+	const bool relockedByRedo = lockRedo.HasChanges()
+		&& lockedControl && lockedControl->IsLocked
+		&& lockCanvas.GetSelectedControl() == lockedIdentity;
+	DesignerModel::DesignDocument parsedLocked;
+	const bool parsedLockedXaml = lockedCaptured
+		&& DesignerModel::XamlDocumentParser::FromXaml(
+			DesignerModel::XamlDocumentSerializer::ToXaml(lockedDocument),
+			parsedLocked, &lockedError);
+	DesignerCanvas restoredLockCanvas(0, 0, 800, 640);
+	const bool restoredLocked = parsedLockedXaml
+		&& restoredLockCanvas.ApplyDesignDocument(parsedLocked, &lockedError)
+		&& restoredLockCanvas.GetAllControls().size() == 1
+		&& restoredLockCanvas.GetAllControls().front()->IsLocked;
+	AppendFailure(failures,
+		unlockedByUndo && relockedByRedo && restoredLocked,
+		L"design lock: undo/redo or XAML materialization lost lock metadata"
+		+ std::wstring(L" [undo=") + SelfTestFlag(unlockedByUndo)
+		+ L", redo=" + SelfTestFlag(relockedByRedo)
+		+ L", restore=" + SelfTestFlag(restoredLocked)
+		+ L", error=" + lockedError + L"]");
+
+	DesignerCanvas viewCanvas(0, 0, 400, 300);
+	size_t viewChangeCount = 0;
+	viewCanvas.OnViewChanged +=
+		[&](const DesignerCanvasViewChangedEventArgs&) { ++viewChangeCount; };
+	(void)viewCanvas.ResetDocumentHistoryAsSaved();
+	viewCanvas.FitDesignSurfaceToViewport();
+	const float fittedZoom = viewCanvas.GetViewZoom();
+	const POINT focalPoint{ 200, 150 };
+	const POINT logicalAtFocal = viewCanvas.ViewToCanvasPoint(focalPoint);
+	viewCanvas.SetViewZoom(fittedZoom * 1.2f, focalPoint);
+	const POINT logicalAfterZoom = viewCanvas.ViewToCanvasPoint(focalPoint);
+	const auto offsetBeforePan = viewCanvas.GetViewOffset();
+	const bool panDown = viewCanvas.ProcessMessage(
+		WM_MBUTTONDOWN, 0, 0, 100, 100);
+	const bool panMove = viewCanvas.ProcessMessage(
+		WM_MOUSEMOVE, 0, 0, 135, 125);
+	const bool panUp = viewCanvas.ProcessMessage(
+		WM_MBUTTONUP, 0, 0, 135, 125);
+	const auto offsetAfterPan = viewCanvas.GetViewOffset();
+	viewCanvas.ResetView();
+	const POINT resetMapped = viewCanvas.CanvasToViewPoint(POINT{ 73, 91 });
+	AppendFailure(failures,
+		fittedZoom > 0.42f && fittedZoom < 0.45f
+		&& logicalAtFocal.x == logicalAfterZoom.x
+		&& logicalAtFocal.y == logicalAfterZoom.y
+		&& panDown && panMove && panUp
+		&& (offsetBeforePan.x != offsetAfterPan.x
+			|| offsetBeforePan.y != offsetAfterPan.y)
+		&& resetMapped.x == 73 && resetMapped.y == 91
+		&& viewChangeCount >= 4
+		&& viewCanvas.GetUndoCommandCount() == 0
+		&& !viewCanvas.IsDocumentDirty(),
+		L"canvas view: fit, focal zoom, pan, reset, or non-document state failed");
+
+	DesignerCanvas contextCanvas(0, 0, 900, 680);
+	contextCanvas.AddControlToCanvasCore(
+		UIClass::UI_Button, POINT{ 170, 150 });
+	contextCanvas.AddControlToCanvasCore(
+		UIClass::UI_Label, POINT{ 390, 240 });
+	const auto contextFirst = contextCanvas.GetAllControls().size() > 0
+		? contextCanvas.GetAllControls()[0] : nullptr;
+	const auto contextSecond = contextCanvas.GetAllControls().size() > 1
+		? contextCanvas.GetAllControls()[1] : nullptr;
+	size_t contextRequestCount = 0;
+	DesignerCanvasContextMenuEventArgs lastContextRequest;
+	contextCanvas.OnContextMenuRequested +=
+		[&](const DesignerCanvasContextMenuEventArgs& args)
+		{
+			++contextRequestCount;
+			lastContextRequest = args;
+		};
+	bool contextHitHandled = false;
+	if (contextFirst && contextFirst->ControlInstance && contextSecond)
+	{
+		contextCanvas.RestoreSelectionByNames(
+			{ contextSecond->Name }, contextSecond->Name, false);
+		const auto size = contextFirst->ControlInstance->ActualSize();
+		const POINT center{
+			contextFirst->ControlInstance->AbsLocation.x
+				- contextCanvas.AbsLocation.x + size.cx / 2,
+			contextFirst->ControlInstance->AbsLocation.y
+				- contextCanvas.AbsLocation.y + size.cy / 2
+		};
+		contextHitHandled = contextCanvas.ProcessMessage(
+			WM_RBUTTONUP, 0, 0, center.x, center.y);
+	}
+	const bool contextHitSelected = contextHitHandled
+		&& contextRequestCount == 1 && lastContextRequest.HasSelection
+		&& contextCanvas.GetSelectedControl() == contextFirst;
+	const bool contextBlankHandled = contextCanvas.ProcessMessage(
+		WM_RBUTTONUP, 0, 0, 700, 540);
+	const bool blankClearedSelection = contextBlankHandled
+		&& contextRequestCount == 2 && !lastContextRequest.HasSelection
+		&& contextCanvas.GetSelectedControls().empty();
+	const bool selectedAll = contextCanvas.SelectAllInCurrentContainer(false)
+		&& contextCanvas.GetSelectedControls().size() == 2;
+	const bool keyboardMenuHandled = contextCanvas.ProcessMessage(
+		WM_KEYDOWN, VK_APPS, 0, 0, 0);
+	AppendFailure(failures,
+		contextHitSelected && blankClearedSelection && selectedAll
+		&& keyboardMenuHandled && contextRequestCount == 3
+		&& lastContextRequest.HasSelection,
+		L"canvas context menu: hit selection, blank request, select-all, or keyboard request failed");
+
+	Designer commandSurfaceDesigner;
+	commandSurfaceDesigner.InitializeComponents();
+	const bool commandSurfaceInitial = commandSurfaceDesigner._canvas
+		&& commandSurfaceDesigner._btnUndo
+		&& commandSurfaceDesigner._btnRedo
+		&& commandSurfaceDesigner._btnZoomOut
+		&& commandSurfaceDesigner._btnZoomIn
+		&& commandSurfaceDesigner._btnFitView
+		&& commandSurfaceDesigner._btnGridSettings
+		&& commandSurfaceDesigner._lblZoom
+		&& commandSurfaceDesigner._canvasMenu
+		&& commandSurfaceDesigner._gridMenu
+		&& !commandSurfaceDesigner._btnUndo->Enable
+		&& !commandSurfaceDesigner._btnRedo->Enable
+		&& commandSurfaceDesigner._canvasMenu->ItemCount() == 18
+		&& commandSurfaceDesigner._canvasMenu->FindItemByText(
+			L"原位粘贴", false) != nullptr
+		&& commandSurfaceDesigner._canvasMenu->FindItemByText(
+			L"原位粘贴", false)->Shortcut == L"Ctrl+Shift+V"
+		&& commandSurfaceDesigner._canvasMenu->FindItemByText(
+			L"粘贴到此处", false) != nullptr
+		&& commandSurfaceDesigner._canvasMenu->FindItemByText(
+			L"锁定控件", false) != nullptr
+		&& commandSurfaceDesigner._canvasMenu->FindItemByText(
+			L"锁定控件", false)->Shortcut == L"Ctrl+L"
+		&& commandSurfaceDesigner._canvasMenu->FindItemByText(
+			L"视图", false) != nullptr
+		&& commandSurfaceDesigner._canvasMenu->FindItemByText(
+			L"网格与吸附") != nullptr
+		&& commandSurfaceDesigner._lblZoom->Text.find(L"%")
+			!= std::wstring::npos;
+	const auto gridStateBefore = commandSurfaceDesigner._canvas
+		? commandSurfaceDesigner._canvas->GetCurrentDocumentStateId() : 0;
+	commandSurfaceDesigner._canvas->SetGridVisible(false);
+	commandSurfaceDesigner._canvas->SetSnapToGridEnabled(false);
+	commandSurfaceDesigner._canvas->SetSnapToGuidesEnabled(false);
+	commandSurfaceDesigner._canvas->SetGridSize(20);
+	commandSurfaceDesigner.RefreshGridSettingsPresentation();
+	const auto* gridVisibleItem = commandSurfaceDesigner._gridMenu
+		? commandSurfaceDesigner._gridMenu->FindItemByText(L"显示网格")
+		: nullptr;
+	const auto* gridSizeItem = commandSurfaceDesigner._gridMenu
+		? commandSurfaceDesigner._gridMenu->FindItemByText(L"网格间距 20 DIP")
+		: nullptr;
+	const bool gridSettingsReady = commandSurfaceDesigner._canvas
+		&& !commandSurfaceDesigner._canvas->IsGridVisible()
+		&& !commandSurfaceDesigner._canvas->IsSnapToGridEnabled()
+		&& !commandSurfaceDesigner._canvas->IsSnapToGuidesEnabled()
+		&& commandSurfaceDesigner._canvas->GetGridSize() == 20
+		&& commandSurfaceDesigner._canvas->GetCurrentDocumentStateId()
+			== gridStateBefore
+		&& gridVisibleItem && !gridVisibleItem->Checked
+		&& gridSizeItem && gridSizeItem->Checked
+		&& commandSurfaceDesigner._btnGridSettings->Text == L"网格 20";
+	const auto commandSurfaceAdd = commandSurfaceDesigner._canvas
+		? commandSurfaceDesigner._canvas->AddControlToCanvas(
+			UIClass::UI_Button, POINT{ 220, 180 })
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"missing command-surface canvas");
+	commandSurfaceDesigner.OnCanvasContextMenuRequested(
+		DesignerCanvasContextMenuEventArgs{ POINT{ 220, 180 }, true });
+	auto* commandSurfaceUndo = commandSurfaceDesigner._canvasMenu
+		? commandSurfaceDesigner._canvasMenu->GetItem(0) : nullptr;
+	auto* commandSurfaceRedo = commandSurfaceDesigner._canvasMenu
+		? commandSurfaceDesigner._canvasMenu->GetItem(1) : nullptr;
+	auto* commandSurfaceCut = commandSurfaceDesigner._canvasMenu
+		? commandSurfaceDesigner._canvasMenu->FindItemByText(L"剪切", false)
+		: nullptr;
+	const bool commandSurfaceAfterAdd = commandSurfaceAdd.HasChanges()
+		&& commandSurfaceDesigner._btnUndo->Enable
+		&& !commandSurfaceDesigner._btnRedo->Enable
+		&& commandSurfaceUndo && commandSurfaceUndo->Enable
+		&& commandSurfaceUndo->Text.find(L"添加控件") != std::wstring::npos
+		&& commandSurfaceRedo && !commandSurfaceRedo->Enable
+		&& commandSurfaceCut && commandSurfaceCut->Enable
+		&& commandSurfaceDesigner._canvasMenu->IsOpen();
+	commandSurfaceDesigner._canvasMenu->Hide();
+	commandSurfaceDesigner.OnUndoClick();
+	const bool commandSurfaceAfterUndo =
+		!commandSurfaceDesigner._btnUndo->Enable
+		&& commandSurfaceDesigner._btnRedo->Enable
+		&& commandSurfaceDesigner._canvas->GetAllControls().empty();
+	commandSurfaceDesigner.OnRedoClick();
+	const bool commandSurfaceAfterRedo =
+		commandSurfaceDesigner._btnUndo->Enable
+		&& !commandSurfaceDesigner._btnRedo->Enable
+		&& commandSurfaceDesigner._canvas->GetAllControls().size() == 1;
+	AppendFailure(failures,
+		commandSurfaceInitial && commandSurfaceAfterAdd
+		&& commandSurfaceAfterUndo && commandSurfaceAfterRedo
+		&& gridSettingsReady,
+		L"designer command surface: toolbar, context menu, history, or session-only grid settings failed");
+
+	Designer contextPasteDesigner;
+	contextPasteDesigner.InitializeComponents();
+	const auto contextPasteAdd = contextPasteDesigner._canvas
+		? contextPasteDesigner._canvas->AddControlToCanvas(
+			UIClass::UI_Button, POINT{ 220, 180 })
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"missing context-paste canvas");
+	const auto contextPasteCopy = contextPasteDesigner._canvas
+		? contextPasteDesigner._canvas->CopySelectedControls()
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"missing context-paste canvas");
+	const bool contextPasteSourceAvailable = contextPasteDesigner._canvas
+		&& contextPasteDesigner._canvas->CanPasteControlsFromClipboard()
+		&& contextPasteDesigner._btnPaste
+		&& contextPasteDesigner._btnPaste->Enable;
+	if (contextPasteDesigner._canvas)
+		(void)contextPasteDesigner._canvas->ResetDocumentHistoryAsSaved();
+	const POINT requestedPastePoint{ 520, 360 };
+	const auto requestedPasteViewPoint = contextPasteDesigner._canvas
+		? contextPasteDesigner._canvas->CanvasToViewPoint(requestedPastePoint)
+		: POINT{};
+	const auto contextPasteBlock = contextPasteDesigner._canvas
+		? contextPasteDesigner._canvas->BeginDocumentEditTransaction(
+			L"ClipboardAvailabilityTest")
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"missing context-paste canvas");
+	contextPasteDesigner.RefreshCommandAvailability();
+	contextPasteDesigner.OnCanvasContextMenuRequested(
+		DesignerCanvasContextMenuEventArgs{
+			requestedPasteViewPoint, true });
+	auto* blockedContextPaste = contextPasteDesigner._canvasMenu
+		? contextPasteDesigner._canvasMenu->FindItemByText(L"粘贴", false)
+		: nullptr;
+	auto* blockedContextPasteInPlace = contextPasteDesigner._canvasMenu
+		? contextPasteDesigner._canvasMenu->FindItemByText(
+			L"原位粘贴", false) : nullptr;
+	auto* blockedContextPasteHere = contextPasteDesigner._canvasMenu
+		? contextPasteDesigner._canvasMenu->FindItemByText(
+			L"粘贴到此处", false) : nullptr;
+	const bool contextPasteBlockedDuringTransaction = contextPasteBlock.Succeeded()
+		&& contextPasteDesigner._btnPaste
+		&& !contextPasteDesigner._btnPaste->Enable
+		&& blockedContextPaste && !blockedContextPaste->Enable
+		&& blockedContextPasteInPlace && !blockedContextPasteInPlace->Enable
+		&& blockedContextPasteHere && !blockedContextPasteHere->Enable;
+	if (contextPasteDesigner._canvasMenu)
+		contextPasteDesigner._canvasMenu->Hide();
+	if (contextPasteDesigner._canvas)
+		(void)contextPasteDesigner._canvas->RollbackDocumentEditTransaction();
+	contextPasteDesigner.RefreshCommandAvailability();
+	if (contextPasteDesigner._btnPaste)
+		contextPasteDesigner._btnPaste->Enable = false;
+	const bool contextPasteClipboardUpdateHandled =
+		contextPasteDesigner.ProcessMessage(
+			WM_CLIPBOARDUPDATE, 0, 0, 0, 0)
+		&& contextPasteDesigner._btnPaste
+		&& contextPasteDesigner._btnPaste->Enable;
+	const bool contextPasteEmptyTextPublished =
+		ReplaceClipboardTextForSelfTest(L"");
+	const bool contextPasteEmptyTextDisabled =
+		contextPasteDesigner.ProcessMessage(
+			WM_CLIPBOARDUPDATE, 0, 0, 0, 0)
+		&& contextPasteDesigner._btnPaste
+		&& !contextPasteDesigner._btnPaste->Enable
+		&& !contextPasteDesigner._canvas->CanPasteControlsFromClipboard();
+	const auto contextPasteRestoreCopy = contextPasteDesigner._canvas
+		? contextPasteDesigner._canvas->CopySelectedControls()
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"missing context-paste canvas");
+	const bool contextPasteRestored = contextPasteRestoreCopy.Succeeded()
+		&& contextPasteDesigner._btnPaste
+		&& contextPasteDesigner._btnPaste->Enable;
+	contextPasteDesigner.OnCanvasContextMenuRequested(
+		DesignerCanvasContextMenuEventArgs{
+			requestedPasteViewPoint, true });
+	auto* pasteHereCommand = contextPasteDesigner._canvasMenu
+		? contextPasteDesigner._canvasMenu->FindItemByText(
+			L"粘贴到此处", false) : nullptr;
+	if (pasteHereCommand)
+		contextPasteDesigner.OnCanvasMenuCommand(pasteHereCommand->Id);
+	if (contextPasteDesigner._canvasMenu)
+		contextPasteDesigner._canvasMenu->Hide();
+	const auto contextPastedControl = contextPasteDesigner._canvas
+		? contextPasteDesigner._canvas->GetSelectedControl() : nullptr;
+	POINT contextPastedCanvasLocation{};
+	if (contextPastedControl && contextPastedControl->ControlInstance
+		&& contextPasteDesigner._canvas)
+	{
+		contextPastedCanvasLocation = {
+			contextPastedControl->ControlInstance->AbsLocation.x
+				- contextPasteDesigner._canvas->AbsLocation.x,
+			contextPastedControl->ControlInstance->AbsLocation.y
+				- contextPasteDesigner._canvas->AbsLocation.y };
+	}
+	const auto undoContextPaste = contextPasteDesigner._canvas
+		? contextPasteDesigner._canvas->UndoCommand()
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"missing context-paste canvas");
+	AppendFailure(failures,
+		contextPasteAdd.HasChanges() && contextPasteCopy.Succeeded()
+		&& contextPasteSourceAvailable
+		&& contextPasteBlockedDuringTransaction
+		&& contextPasteClipboardUpdateHandled
+		&& contextPasteEmptyTextPublished
+		&& contextPasteEmptyTextDisabled
+		&& contextPasteRestored,
+		L"designer paste availability: source, transaction gate, clipboard update, empty text, or restore failed");
+	AppendFailure(failures,
+		pasteHereCommand && pasteHereCommand->Enable
+		&& contextPasteDesigner._hasCanvasContextPastePoint
+		&& contextPasteDesigner._canvasContextPastePoint.x
+			== requestedPastePoint.x
+		&& contextPasteDesigner._canvasContextPastePoint.y
+			== requestedPastePoint.y
+		&& contextPastedControl
+		&& contextPastedCanvasLocation.x == requestedPastePoint.x
+		&& contextPastedCanvasLocation.y == requestedPastePoint.y
+		&& undoContextPaste.HasChanges()
+		&& contextPasteDesigner._canvas->GetAllControls().size() == 1,
+		L"designer context paste: view-to-canvas point, command route, placement, or one-step Undo failed");
+
+	Designer outlineDesigner;
+	outlineDesigner.InitializeComponents();
+	outlineDesigner._canvas->AddControlToCanvasCore(
+		UIClass::UI_StackPanel, POINT{ 280, 210 });
+	const auto outlineParent = outlineDesigner._canvas->GetSelectedControl();
+	if (outlineParent && outlineParent->ControlInstance)
+	{
+		const POINT inside{
+			outlineParent->ControlInstance->AbsLocation.x
+				- outlineDesigner._canvas->AbsLocation.x + 30,
+			outlineParent->ControlInstance->AbsLocation.y
+				- outlineDesigner._canvas->AbsLocation.y + 30 };
+		outlineDesigner._canvas->AddControlToCanvasCore(
+			UIClass::UI_Button, inside);
+	}
+	const auto outlineChild = outlineDesigner._canvas->GetSelectedControl();
+	if (outlineChild && outlineChild->ControlInstance)
+		outlineChild->ControlInstance->Visible = false;
+	if (outlineParent) outlineParent->IsLocked = true;
+	outlineDesigner.RebuildDocumentOutline();
+	outlineDesigner.SetSidebarView(true);
+	TreeNode* outlineParentNode = outlineParent
+		? outlineDesigner._outlineNodesByStableId[outlineParent->StableId]
+		: nullptr;
+	TreeNode* outlineChildNode = outlineChild
+		? outlineDesigner._outlineNodesByStableId[outlineChild->StableId]
+		: nullptr;
+	const bool outlineNested = outlineParentNode && outlineChildNode
+		&& std::find(
+			outlineParentNode->Children.begin(),
+			outlineParentNode->Children.end(), outlineChildNode)
+			!= outlineParentNode->Children.end();
+	const bool outlineHiddenMarked = outlineChildNode
+		&& outlineChildNode->Text.find(L"[隐藏]") != std::wstring::npos;
+	const bool outlineLockedMarked = outlineParentNode
+		&& outlineParentNode->Text.rfind(L"[锁定]", 0) == 0;
+	if (outlineChildNode)
+	{
+		outlineDesigner._outlineTree->SelectedNode = outlineChildNode;
+		outlineDesigner.OnDocumentOutlineSelectionChanged();
+	}
+	const bool outlineSelectedHidden = outlineChild
+		&& outlineDesigner._canvas->GetSelectedControl() == outlineChild;
+	if (outlineDesigner._outlineFormNode)
+	{
+		outlineDesigner._outlineTree->SelectedNode =
+			outlineDesigner._outlineFormNode;
+		outlineDesigner.OnDocumentOutlineSelectionChanged();
+	}
+	const bool outlineSelectedForm =
+		outlineDesigner._canvas->GetSelectedControls().empty();
+	outlineDesigner._canvas->AddControlToCanvasCore(
+		UIClass::UI_Label, POINT{ 760, 520 });
+	const auto outlineRootSibling =
+		outlineDesigner._canvas->GetSelectedControl();
+	if (outlineChild)
+		outlineDesigner._canvas->RestoreSelectionByNames(
+			{ outlineChild->Name }, outlineChild->Name, false);
+	const auto outlineMove = outlineChild && outlineRootSibling
+		? outlineDesigner._canvas->MoveControlInHierarchy(
+			outlineChild->StableId, outlineRootSibling->StableId,
+			DesignerHierarchyDropPosition::Before)
+		: DesignerDocumentTransactionResult::Failure(
+			DesignerDocumentTransactionState::Failed,
+			L"missing outline hierarchy controls");
+	const bool outlineMovedToRoot = outlineMove.HasChanges()
+		&& outlineChild && outlineRootSibling
+		&& outlineChild->DesignerParent == nullptr
+		&& outlineChild->ControlInstance->Parent
+			== outlineRootSibling->ControlInstance->Parent
+		&& outlineChild->ControlInstance->Parent->IndexOfControl(
+			outlineChild->ControlInstance)
+			< outlineChild->ControlInstance->Parent->IndexOfControl(
+				outlineRootSibling->ControlInstance);
+	const auto outlineMoveUndo = outlineDesigner._canvas->UndoCommand();
+	const bool outlineMoveUndone = outlineMoveUndo.HasChanges()
+		&& outlineChild && outlineParent
+		&& outlineChild->DesignerParent == outlineParent->ControlInstance
+		&& outlineChild->ControlInstance->Parent
+			== outlineParent->ControlInstance;
+	const auto outlineMoveRedo = outlineDesigner._canvas->RedoCommand();
+	const bool outlineMoveRedone = outlineMoveRedo.HasChanges()
+		&& outlineChild && outlineRootSibling
+		&& outlineChild->DesignerParent == nullptr
+		&& outlineChild->ControlInstance->Parent
+			== outlineRootSibling->ControlInstance->Parent;
+	const auto latestParentNode = outlineParent
+		? outlineDesigner._outlineNodesByStableId[outlineParent->StableId]
+		: nullptr;
+	if (latestParentNode) latestParentNode->SetExpanded(false, false);
+	outlineDesigner.RebuildDocumentOutline();
+	const auto rebuiltParentNode = outlineParent
+		? outlineDesigner._outlineNodesByStableId[outlineParent->StableId]
+		: nullptr;
+	AppendFailure(failures,
+		outlineDesigner._btnToolboxView
+		&& outlineDesigner._btnOutlineView
+		&& outlineDesigner._outlineTree
+		&& outlineDesigner._outlineTree->Visible
+		&& !outlineDesigner._toolBox->Visible
+		&& outlineNested && outlineHiddenMarked && outlineLockedMarked
+		&& outlineSelectedHidden && outlineSelectedForm
+		&& outlineMovedToRoot && outlineMoveUndone && outlineMoveRedone
+		&& rebuiltParentNode && !rebuiltParentNode->Expand,
+		L"document outline: selection, drag hierarchy delta, Undo/Redo, view switch, or expansion persistence failed");
+
+	Designer outlineShortcutDesigner;
+	outlineShortcutDesigner.InitializeComponents();
+	const auto outlineShortcutSetup =
+		outlineShortcutDesigner._canvas->PasteControlsFromXamlText(
+			clipboardXaml);
+	(void)outlineShortcutDesigner._canvas->ResetDocumentHistoryAsSaved();
+	outlineShortcutDesigner.RebuildDocumentOutline();
+	outlineShortcutDesigner.SetSidebarView(true);
+	auto selectOutlineNode = [&](const std::wstring& name) -> bool
+	{
+		const auto control = std::find_if(
+			outlineShortcutDesigner._canvas->GetAllControls().begin(),
+			outlineShortcutDesigner._canvas->GetAllControls().end(),
+			[&](const auto& candidate)
+			{
+				return candidate && candidate->Name == name;
+			});
+		if (control == outlineShortcutDesigner._canvas->GetAllControls().end())
+			return false;
+		const auto node = outlineShortcutDesigner._outlineNodesByStableId.find(
+			(*control)->StableId);
+		if (node == outlineShortcutDesigner._outlineNodesByStableId.end())
+			return false;
+		outlineShortcutDesigner._outlineTree->SelectedNode = node->second;
+		outlineShortcutDesigner.OnDocumentOutlineSelectionChanged();
+		return true;
+	};
+	const bool outlineShortcutChildSelected = selectOutlineNode(L"button1");
+	const bool outlineShortcutTreeFocused =
+		outlineShortcutDesigner.Selected == outlineShortcutDesigner._outlineTree;
+	const bool outlineShortcutCopied = outlineShortcutDesigner.QueueOutlineShortcut(
+		'C', true, false);
+	const bool outlineShortcutParentSelected = selectOutlineNode(L"panel1");
+	outlineShortcutDesigner.SetSelectedControl(
+		outlineShortcutDesigner._outlineTree, false);
+	(void)outlineShortcutDesigner.ProcessMessage(
+		WM_KEYDOWN, VK_CONTROL, 0, 0, 0);
+	const bool outlineShortcutPasted = outlineShortcutDesigner.ProcessMessage(
+		WM_KEYDOWN, 'V', 0, 0, 0);
+	const size_t outlineShortcutCountAfterPaste =
+		outlineShortcutDesigner._canvas->GetAllControls().size();
+	const bool outlineShortcutCharacterSuppressed =
+		outlineShortcutDesigner.ProcessMessage(WM_CHAR, L'\x16', 0, 0, 0)
+		&& outlineShortcutDesigner._canvas->GetAllControls().size()
+			== outlineShortcutCountAfterPaste;
+	(void)outlineShortcutDesigner.ProcessMessage(
+		WM_KEYUP, 'V', 0, 0, 0);
+	(void)outlineShortcutDesigner.ProcessMessage(
+		WM_KEYUP, VK_CONTROL, 0, 0, 0);
+	const bool outlineShortcutParentReselected = selectOutlineNode(L"panel1");
+	const bool outlineShortcutInPlacePasted =
+		outlineShortcutDesigner.QueueOutlineShortcut('V', true, true);
+	DesignerModel::DesignDocument outlineShortcutPasteDocument;
+	std::wstring outlineShortcutError;
+	const bool outlineShortcutPasteCaptured =
+		outlineShortcutDesigner._canvas->BuildDesignDocument(
+			outlineShortcutPasteDocument, &outlineShortcutError);
+	auto findOutlineShortcutNode = [](
+		const DesignerModel::DesignDocument& document,
+		const std::wstring& name) -> const DesignerModel::DesignNode*
+	{
+		const auto found = std::find_if(
+			document.Nodes.begin(), document.Nodes.end(),
+			[&](const auto& node) { return node.Name == name; });
+		return found == document.Nodes.end() ? nullptr : &*found;
+	};
+	const auto* outlineShortcutPanel = findOutlineShortcutNode(
+		outlineShortcutPasteDocument, L"panel1");
+	const auto* outlineShortcutButton = findOutlineShortcutNode(
+		outlineShortcutPasteDocument, L"button2");
+	const auto* outlineShortcutInPlaceButton = findOutlineShortcutNode(
+		outlineShortcutPasteDocument, L"button3");
+	const auto outlineShortcutInPlaceLocation =
+		clipboardNodeLocation(outlineShortcutInPlaceButton);
+	const bool outlineShortcutParentPreserved = outlineShortcutPanel
+		&& outlineShortcutButton
+		&& outlineShortcutInPlaceButton
+		&& outlineShortcutButton->ParentId == outlineShortcutPanel->Id
+		&& outlineShortcutInPlaceButton->ParentId == outlineShortcutPanel->Id
+		&& outlineShortcutInPlaceLocation.x == 10
+		&& outlineShortcutInPlaceLocation.y == 12;
+	const bool outlineShortcutInPlaceUndone =
+		outlineShortcutDesigner.QueueOutlineShortcut('Z', true, false)
+		&& outlineShortcutDesigner._canvas->GetAllControls().size() == 3;
+	const bool outlineShortcutUndone = outlineShortcutDesigner.QueueOutlineShortcut(
+		'Z', true, false)
+		&& outlineShortcutDesigner._canvas->GetAllControls().size() == 2;
+	const bool outlineShortcutReselected = selectOutlineNode(L"button1");
+	const auto outlineShortcutLockTarget =
+		outlineShortcutDesigner._canvas->GetSelectedControl();
+	const bool outlineShortcutLocked =
+		outlineShortcutDesigner.QueueOutlineShortcut('L', true, false)
+		&& outlineShortcutLockTarget && outlineShortcutLockTarget->IsLocked;
+	const bool outlineShortcutUnlocked =
+		outlineShortcutDesigner.QueueOutlineShortcut('L', true, false)
+		&& outlineShortcutLockTarget && !outlineShortcutLockTarget->IsLocked;
+	const bool outlineShortcutDuplicated =
+		outlineShortcutDesigner.QueueOutlineShortcut('D', true, false)
+		&& outlineShortcutDesigner._canvas->GetAllControls().size() == 3;
+	const bool outlineShortcutDeleted =
+		outlineShortcutDesigner.QueueOutlineShortcut(
+			VK_DELETE, false, false)
+		&& outlineShortcutDesigner._canvas->GetAllControls().size() == 2;
+	AppendFailure(failures,
+		outlineShortcutSetup.HasChanges()
+		&& outlineShortcutChildSelected && outlineShortcutTreeFocused
+		&& outlineShortcutCopied
+		&& outlineShortcutParentSelected && outlineShortcutPasted
+		&& outlineShortcutCharacterSuppressed
+		&& outlineShortcutParentReselected && outlineShortcutInPlacePasted
+		&& outlineShortcutPasteCaptured && outlineShortcutParentPreserved
+		&& outlineShortcutInPlaceUndone
+		&& outlineShortcutUndone && outlineShortcutReselected
+		&& outlineShortcutLocked && outlineShortcutUnlocked
+		&& outlineShortcutDuplicated && outlineShortcutDeleted,
+		L"document outline: window-level edit shortcuts did not preserve target semantics"
+		+ std::wstring(L" [setup=")
+		+ SelfTestFlag(outlineShortcutSetup.HasChanges())
+		+ L", treeFocus=" + SelfTestFlag(outlineShortcutTreeFocused)
+		+ L", copied=" + SelfTestFlag(outlineShortcutCopied)
+		+ L", pasted=" + SelfTestFlag(outlineShortcutPasted)
+		+ L", inPlace=" + SelfTestFlag(outlineShortcutInPlacePasted)
+		+ L", charSuppressed="
+		+ SelfTestFlag(outlineShortcutCharacterSuppressed)
+		+ L", parent=" + SelfTestFlag(outlineShortcutParentPreserved)
+		+ L", undo=" + SelfTestFlag(outlineShortcutUndone)
+		+ L", lock=" + SelfTestFlag(outlineShortcutLocked)
+		+ L", unlock=" + SelfTestFlag(outlineShortcutUnlocked)
+		+ L", duplicate=" + SelfTestFlag(outlineShortcutDuplicated)
+		+ L", delete=" + SelfTestFlag(outlineShortcutDeleted)
+		+ L", error=" + outlineShortcutError + L"]");
+
 	DesignerCanvas subtreeCanvas(0, 0, 900, 680);
 	subtreeCanvas.AddControlToCanvasCore(
 		UIClass::UI_StackPanel, POINT{ 260, 220 });
@@ -4982,28 +7778,49 @@ bool RunDesignerSelfTest(std::wstring& report)
 			DesignerModel::DesignDocument persistedXamlDocument;
 			std::wstring persistedXamlError;
 			DesignerCanvas xamlOpenCanvas(0, 0, 800, 640);
+			std::wstring xamlOpenError;
 			auto xamlOpen = xamlOpenCanvas.LoadDesignFile(
-				xamlLifecyclePath, &persistedXamlError);
+				xamlLifecyclePath, &xamlOpenError);
 			DesignerModel::DesignDocument openedXamlDocument;
 			std::wstring openedXamlError;
+			const bool persistedXamlLoaded =
+				DesignerModel::XamlDocumentParser::LoadFromFile(
+					xamlLifecyclePath, persistedXamlDocument,
+					&persistedXamlError);
+			const bool persistedXamlEquivalent = persistedXamlLoaded
+				&& EquivalentDocumentContent(
+					persistedXamlDocument, cleanBranchDocument);
+			const bool openedXamlBuilt = xamlOpenCanvas.BuildDesignDocument(
+				openedXamlDocument, &openedXamlError);
+			const bool openedXamlEquivalent = openedXamlBuilt
+				&& EquivalentDocumentContent(
+					openedXamlDocument, cleanBranchDocument);
+			const bool noXamlTemporaryFile =
+				!HasAtomicSaveTemporaryFile(xamlLifecyclePath);
 			AppendFailure(failures,
 				xamlSave.State == DesignerDocumentTransactionState::Unchanged
 				&& !lifecycleCanvas.IsDocumentDirty()
-				&& DesignerModel::XamlDocumentParser::LoadFromFile(
-					xamlLifecyclePath, persistedXamlDocument, &persistedXamlError)
-				&& EquivalentDocumentContent(
-					persistedXamlDocument, cleanBranchDocument)
+				&& persistedXamlEquivalent
 				&& xamlOpen.Succeeded()
 				&& !xamlOpenCanvas.IsDocumentDirty()
-				&& xamlOpenCanvas.BuildDesignDocument(
-					openedXamlDocument, &openedXamlError)
-				&& EquivalentDocumentContent(
-					openedXamlDocument, cleanBranchDocument)
-				&& !HasAtomicSaveTemporaryFile(xamlLifecyclePath),
+				&& openedXamlEquivalent
+				&& noXamlTemporaryFile,
 				L"document lifecycle: XAML Save As/open did not preserve content or clean state"
 				+ std::wstring(L" [save=") + xamlSaveError
-				+ L", open=" + persistedXamlError
-				+ L", build=" + openedXamlError + L"]");
+				+ L", open=" + xamlOpenError
+				+ L", parse=" + persistedXamlError
+				+ L", build=" + openedXamlError
+				+ L", saveState="
+				+ std::to_wstring(static_cast<int>(xamlSave.State))
+				+ L", dirty=" + SelfTestFlag(lifecycleCanvas.IsDocumentDirty())
+				+ L", persisted=" + SelfTestFlag(persistedXamlEquivalent)
+				+ L", openState="
+				+ std::to_wstring(static_cast<int>(xamlOpen.State))
+				+ L", openDirty=" + SelfTestFlag(xamlOpenCanvas.IsDocumentDirty())
+				+ L", opened=" + SelfTestFlag(openedXamlEquivalent)
+				+ L", persistedDiff=" + DescribeDocumentDifference(
+					persistedXamlDocument, cleanBranchDocument)
+				+ L", temp=" + SelfTestFlag(!noXamlTemporaryFile) + L"]");
 
 			if (!invalidXamlPath.empty())
 			{
@@ -5018,19 +7835,27 @@ bool RunDesignerSelfTest(std::wstring& report)
 					invalidXamlPath, &rejectedXamlError);
 				DesignerModel::DesignDocument afterRejectedXaml;
 				std::wstring afterRejectedXamlError;
+				const bool rejectedXamlBuilt = xamlOpenCanvas.BuildDesignDocument(
+					afterRejectedXaml, &afterRejectedXamlError);
+				const bool rejectedXamlPreserved = rejectedXamlBuilt
+					&& EquivalentDocumentContent(
+						afterRejectedXaml, beforeRejectedXaml);
 				AppendFailure(failures,
 					malformedWritten
 					&& rejectedXaml.State
 						== DesignerDocumentTransactionState::Failed
 					&& !rejectedXamlError.empty()
-					&& xamlOpenCanvas.BuildDesignDocument(
-						afterRejectedXaml, &afterRejectedXamlError)
-					&& EquivalentDocumentContent(
-						afterRejectedXaml, beforeRejectedXaml)
+					&& rejectedXamlPreserved
 					&& !xamlOpenCanvas.IsDocumentDirty(),
 					L"document lifecycle: rejected XAML replacement mutated the open document"
 					+ std::wstring(L" [write=") + malformedWriteError
-					+ L", load=" + rejectedXamlError + L"]");
+					+ L", load=" + rejectedXamlError
+					+ L", build=" + afterRejectedXamlError
+					+ L", state="
+					+ std::to_wstring(static_cast<int>(rejectedXaml.State))
+					+ L", preserved=" + SelfTestFlag(rejectedXamlPreserved)
+					+ L", dirty=" + SelfTestFlag(xamlOpenCanvas.IsDocumentDirty())
+					+ L"]");
 			}
 		}
 
@@ -5052,17 +7877,37 @@ bool RunDesignerSelfTest(std::wstring& report)
 			(void)::CloseHandle(lockedDesignFile);
 			DesignerModel::DesignDocument persistedAfterLockedSave;
 			std::wstring persistedError;
+			const bool persistedAfterLockedSaveLoaded =
+				DesignerModel::DesignDocumentSerializer::LoadFromFile(
+					lifecyclePath, persistedAfterLockedSave,
+					&persistedError);
+			const bool lockedSavePreserved =
+				persistedAfterLockedSaveLoaded
+				&& EquivalentDocumentContent(
+					persistedAfterLockedSave, cleanBranchDocument);
+			const bool noLockedSaveTemporaryFile =
+				!HasAtomicSaveTemporaryFile(lifecyclePath);
 			AppendFailure(failures,
 				lockedSave.State == DesignerDocumentTransactionState::Failed
 				&& !lockedSaveError.empty()
 				&& lifecycleCanvas.IsDocumentDirty()
 				&& lifecycleCanvas.GetCurrentDocumentStateId()
 					== dirtyBeforeLockedSave
-				&& DesignerModel::DesignDocumentSerializer::LoadFromFile(
-					lifecyclePath, persistedAfterLockedSave, &persistedError)
-				&& persistedAfterLockedSave == cleanBranchDocument
-				&& !HasAtomicSaveTemporaryFile(lifecyclePath),
-				L"document lifecycle: failed atomic replacement damaged the old file or save point");
+				&& lockedSavePreserved
+				&& noLockedSaveTemporaryFile,
+				L"document lifecycle: failed atomic replacement damaged the old file or save point"
+				+ std::wstring(L" [error=") + lockedSaveError
+				+ L", parse=" + persistedError
+				+ L", state="
+				+ std::to_wstring(static_cast<int>(lockedSave.State))
+				+ L", dirty=" + SelfTestFlag(lifecycleCanvas.IsDocumentDirty())
+				+ L", stateId=" + SelfTestFlag(
+					lifecycleCanvas.GetCurrentDocumentStateId()
+						== dirtyBeforeLockedSave)
+				+ L", content=" + SelfTestFlag(lockedSavePreserved)
+				+ L", diff=" + DescribeDocumentDifference(
+					persistedAfterLockedSave, cleanBranchDocument)
+				+ L", temp=" + SelfTestFlag(!noLockedSaveTemporaryFile) + L"]");
 		}
 		DesignerModel::DesignDocument beforeInvalidLoad;
 		std::wstring beforeInvalidError;
@@ -5300,6 +8145,26 @@ bool RunDesignerSelfTest(std::wstring& report)
 
 		Designer freshnessDesigner;
 		freshnessDesigner.InitializeComponents();
+		const auto* duplicateArrangeItem = freshnessDesigner._arrangeMenu
+			? freshnessDesigner._arrangeMenu->FindItemByText(L"重复") : nullptr;
+		const auto* layerArrangeItem = freshnessDesigner._arrangeMenu
+			? freshnessDesigner._arrangeMenu->FindItemByText(L"层级") : nullptr;
+		const auto* lockArrangeItem = freshnessDesigner._arrangeMenu
+			? freshnessDesigner._arrangeMenu->FindItemByText(
+				L"锁定控件", false) : nullptr;
+		const auto* frontArrangeItem = freshnessDesigner._arrangeMenu
+			? freshnessDesigner._arrangeMenu->FindItemByText(L"置于顶层") : nullptr;
+		const bool arrangeUiReady = freshnessDesigner._btnArrange
+			&& !freshnessDesigner._btnArrange->Enable
+			&& freshnessDesigner._arrangeMenu
+			&& freshnessDesigner._arrangeMenu->ItemCount() == 7
+			&& duplicateArrangeItem
+			&& duplicateArrangeItem->Shortcut == L"Ctrl+D"
+			&& lockArrangeItem
+			&& lockArrangeItem->Shortcut == L"Ctrl+L"
+			&& layerArrangeItem && layerArrangeItem->SubItems.size() == 4
+			&& frontArrangeItem
+			&& frontArrangeItem->Shortcut == L"Ctrl+Shift+]";
 		DesignerModel::DesignCodeBehindModel association;
 		association.ClassName = L"Acme::FreshDesignerWindow";
 		std::wstring freshnessError;
@@ -5402,12 +8267,12 @@ bool RunDesignerSelfTest(std::wstring& report)
 				== DesignerModel::DesignCodeFreshnessState::Current;
 
 		AppendFailure(failures,
-			initiallyCurrent && eventMarkedStale
+			arrangeUiReady && initiallyCurrent && eventMarkedStale
 			&& undoRestoredCurrent && redoRestoredStale
 			&& regenerated && externalDriftDetected && repairedDrift
 			&& missingDetected && repairedMissing
 			&& blockedDetected && restoredCurrent,
-			L"code freshness: toolbar state, Undo/Redo, drift, missing, or blocked detection failed");
+			L"designer toolbar/code freshness: arrange menu, Undo/Redo, drift, missing, or blocked detection failed");
 		if (::GetEnvironmentVariableW(
 			L"CUI_KEEP_CODEGEN_TEST_OUTPUT", nullptr, 0) == 0)
 			fs::remove_all(freshnessRoot, removeError);

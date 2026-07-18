@@ -73,6 +73,8 @@ struct DesignNode
 	DesignerCustomControlType CustomType;
 	std::vector<DesignerCustomEventDescriptor> CustomEvents;
 	int Order = -1;
+	// Pure design-time placement protection; it is never projected to runtime.
+	bool Locked = false;
 	DesignValue Props = DesignValue::object();
 	DesignValue Extra = DesignValue::object();
 	DesignValue Events = DesignValue::object();

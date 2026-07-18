@@ -89,6 +89,13 @@ namespace
 		DesignerStyleValue result{ kind, L"" };
 		switch (kind)
 		{
+		case DesignerStyleValueKind::Bool:
+		{
+			bool typed = false;
+			(void)value.TryGet(typed);
+			result.Text = typed ? L"true" : L"false";
+			break;
+		}
 		case DesignerStyleValueKind::Int:
 		{
 			int typed = 0;
@@ -166,6 +173,26 @@ namespace
 					if (context.SyncDefaultNameCounter)
 						context.SyncDefaultNameCounter(target.Type, target.Name);
 					return true;
+				});
+
+			add(Property(L"Locked", L"Common", 0, 20,
+				DesignerStyleValueKind::Bool,
+				DesignerControlPropertyEditorKind::Boolean, true), always,
+				[](const DesignerControl& target, const DesignerControlPropertyContext&)
+				{
+					return BindingValue(target.IsLocked);
+				},
+				[](DesignerControl& target, DesignerControlPropertyContext&,
+					const BindingValue& value)
+				{
+					bool typed = false;
+					if (!value.TryGet(typed)) return false;
+					target.IsLocked = typed;
+					return true;
+				},
+				[](const DesignerControl&, const DesignerControlPropertyContext&)
+				{
+					return BindingValue(false);
 				});
 
 			add(Property(L"Anchor", L"Layout", 100, 10,

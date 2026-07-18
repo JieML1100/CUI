@@ -2,6 +2,20 @@
 #include "Control.h"
 #pragma comment(lib, "Imm32.lib")
 
+struct RichTextBoxTextRange
+{
+	int Start = 0;
+	int Length = 0;
+};
+
+/** Non-editing foreground style applied by code-oriented RichTextBox hosts. */
+struct RichTextBoxTextStyleRange
+{
+	int Start = 0;
+	int Length = 0;
+	D2D1_COLOR_F ForeColor{};
+};
+
 /**
  * @file RichTextBox.h
  * @brief RichTextBox：富文本/大文本输入控件（支持虚拟化渲染）。
@@ -16,6 +30,17 @@ class RichTextBox : public Control
 private:
 	std::wstring buffer;
 	bool bufferSyncedFromControl = false;
+	int _lastNotifiedSelectionStart = 0;
+	int _lastNotifiedSelectionEnd = 0;
+	void NotifySelectionChanged();
+	struct SelectionNotificationScope
+	{
+		RichTextBox* owner = nullptr;
+		~SelectionNotificationScope()
+		{
+			if (owner) owner->NotifySelectionChanged();
+		}
+	};
 	::Font* _lastLayoutFont = nullptr;
 	struct UndoRecord
 	{
@@ -29,6 +54,15 @@ private:
 	};
 	std::vector<UndoRecord> undoStack;
 	std::vector<UndoRecord> redoStack;
+	std::vector<RichTextBoxTextRange> highlightRanges;
+	std::vector<RichTextBoxTextStyleRange> textStyleRanges;
+	struct TextStyleBrush
+	{
+		D2D1_COLOR_F Color{};
+		Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> Brush;
+	};
+	std::vector<TextStyleBrush> textStyleBrushes;
+	Microsoft::WRL::ComPtr<ID2D1DeviceContext> textStyleBrushDeviceContext;
 	bool isApplyingUndoRedo = false;
 
 	POINT selectedPos = { 0,0 };
@@ -71,6 +105,8 @@ public:
 	D2D1_COLOR_F SelectedBackColor = cui::theme::palette::SelectionBack;
 	/** @brief 选区前景色。 */
 	D2D1_COLOR_F SelectedForeColor = cui::theme::palette::TextPrimary;
+	/** Secondary non-editing highlights, for example paired markup names. */
+	D2D1_COLOR_F HighlightBackColor = cui::theme::palette::AccentSelected;
 	/** @brief 获得焦点时高亮色。 */
 	D2D1_COLOR_F FocusedColor = cui::theme::palette::Surface;
 	/** @brief 滚动条背景色。 */
@@ -96,6 +132,8 @@ public:
 	int SelectionStart = 0;
 	/** @brief 选择结束索引（基于字符）。 */
 	int SelectionEnd = 0;
+	/** Raised once whenever the effective selection or caret changes. */
+	SelectionChangedEvent OnSelectionChanged;
 	/** @brief 边框宽度（像素）。 */
 	float BorderThickness = 1.5f;
 	/** @brief 圆角半径。 */
@@ -139,6 +177,12 @@ private:
 	void UpdateScroll(bool arrival = false);
 	void UpdateLayout();
 	void UpdateSelRange();
+	void ApplyTextDrawingEffects(
+		IDWriteTextLayout* layout,
+		int textStart,
+		int textLength,
+		bool includeSelection);
+	ID2D1SolidColorBrush* GetTextStyleBrush(D2D1_COLOR_F color);
 public:
 	/** @brief 追加文本（不自动换行）。 */
 	void AppendText(std::wstring str);
@@ -156,11 +200,35 @@ public:
 	void ClearSelection();
 	void Clear();
 	void InsertText(const std::wstring& text);
+	/** Replaces the selection as one Undo record and stores its final selection. */
+	void InsertTextAndSelect(
+		const std::wstring& text, int selectionStart, int selectionLength);
+	/** Replaces the complete document as one Undo record while preserving the
+	 *  pre-replacement selection for Undo and the requested selection for Redo. */
+	void ReplaceAllTextAndSelect(
+		const std::wstring& text, int selectionStart, int selectionLength);
 	bool Copy();
 	bool Cut();
 	bool Paste();
+	bool CanUndo() const noexcept { return !ReadOnly && !undoStack.empty(); }
+	bool CanRedo() const noexcept { return !ReadOnly && !redoStack.empty(); }
+	bool CanPaste() const noexcept;
 	void Undo();
 	void Redo();
+	/** Scrolls the current caret/selection endpoint into the viewport. */
+	void ScrollSelectionIntoView();
+	/** Replaces the secondary, non-editing text highlights. */
+	void SetHighlightRanges(std::vector<RichTextBoxTextRange> ranges);
+	void ClearHighlightRanges();
+	/** Replaces non-editing foreground styles without changing text or history. */
+	void SetTextStyleRanges(std::vector<RichTextBoxTextStyleRange> ranges);
+	void ClearTextStyleRanges();
+	const std::vector<RichTextBoxTextStyleRange>& GetTextStyleRanges() const noexcept
+	{
+		return textStyleRanges;
+	}
+	/** Returns the current caret rectangle in top-level client DIPs. */
+	bool TryGetCaretViewportRect(D2D1_RECT_F& outRect);
 
 	void Update() override;
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;

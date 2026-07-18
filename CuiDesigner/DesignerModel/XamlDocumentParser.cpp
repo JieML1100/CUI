@@ -3,6 +3,7 @@
 #include "DesignDocumentGraph.h"
 #include "DesignDocumentEventIndex.h"
 #include "DesignDocumentMaterializer.h"
+#include "XamlEditorAssist.h"
 #include "../../XmlLite/include/Xml.h"
 #include "../DesignerBindingUtils.h"
 #include "../DesignerDataContextSchemaUtils.h"
@@ -42,6 +43,70 @@ namespace
 	std::string ToUtf8(const std::wstring& value)
 	{
 		return Convert::UnicodeToUtf8(value);
+	}
+
+	void ResetDiagnostic(XamlDocumentDiagnostic* diagnostic)
+	{
+		if (diagnostic) *diagnostic = {};
+	}
+
+	void ReportFailure(
+		const std::wstring& message,
+		std::wstring* outError,
+		XamlDocumentDiagnostic* diagnostic)
+	{
+		if (outError) *outError = message;
+		if (diagnostic) diagnostic->Message = message;
+	}
+
+	std::string XmlExceptionMessageWithoutLocation(
+		const System::Xml::XmlException& exception)
+	{
+		std::string message = exception.what();
+		if (exception.Line() == 0 || exception.Column() == 0)
+			return message;
+		const std::string suffix = " Line " + std::to_string(exception.Line())
+			+ ", position " + std::to_string(exception.Column()) + ".";
+		if (message.size() >= suffix.size()
+			&& message.compare(message.size() - suffix.size(), suffix.size(), suffix) == 0)
+			message.erase(message.size() - suffix.size());
+		return message;
+	}
+
+	void PopulateXmlLocation(
+		const std::string& xaml,
+		const System::Xml::XmlException& exception,
+		XamlDocumentDiagnostic* diagnostic)
+	{
+		if (!diagnostic || exception.Line() == 0 || exception.Column() == 0)
+			return;
+
+		std::size_t lineStart = 0;
+		for (std::size_t line = 1; line < exception.Line(); ++line)
+		{
+			const auto newline = xaml.find('\n', lineStart);
+			if (newline == std::string::npos) return;
+			lineStart = newline + 1;
+		}
+		const auto lineEnd = xaml.find('\n', lineStart);
+		const auto available = (lineEnd == std::string::npos ? xaml.size() : lineEnd)
+			- lineStart;
+		const auto byteInLine = (std::min)(exception.Column() - 1, available);
+		const auto byteOffset = lineStart + byteInLine;
+
+		diagnostic->Line = exception.Line();
+		try
+		{
+			diagnostic->Column = FromUtf8(
+				xaml.substr(lineStart, byteInLine)).size() + 1;
+			diagnostic->Utf16Offset = FromUtf8(
+				xaml.substr(0, byteOffset)).size();
+		}
+		catch (...)
+		{
+			// Invalid UTF-8 can still report the parser's byte-based coordinates.
+			diagnostic->Column = exception.Column();
+		}
 	}
 
 	std::wstring Trim(const std::wstring& value)
@@ -103,6 +168,147 @@ namespace
 		return Equals(attribute.Name(), "xmlns")
 			|| Equals(attribute.Prefix(), "xmlns");
 	}
+
+	/**
+	 * Associates XmlLite DOM elements with their opening tags in the original
+	 * UTF-16 editor text. XmlLite deliberately keeps source coordinates out of
+	 * the DOM, so semantic validation failures need this lightweight side map.
+	 */
+	class XamlSourceLocationIndex final
+	{
+	public:
+		XamlSourceLocationIndex(
+			std::wstring source,
+			const Element& root)
+			: _source(std::move(source))
+		{
+			const auto tags = XamlEditorAssist::ScanTags(_source);
+			std::vector<XamlEditorAssist::TagToken> openingTags;
+			openingTags.reserve(tags.size());
+			for (const auto& tag : tags)
+				if (tag.Kind != XamlEditorAssist::TagKind::Closing)
+					openingTags.push_back(tag);
+
+			std::vector<Element> elements;
+			CollectElements(root, elements);
+			size_t tagIndex = 0;
+			for (const auto& element : elements)
+			{
+				if (!element) continue;
+				const auto rawName = FromUtf8(element->Name());
+				while (tagIndex < openingTags.size()
+					&& openingTags[tagIndex].Name != rawName)
+					tagIndex++;
+				if (tagIndex >= openingTags.size()) break;
+				_tags.emplace(element.get(), openingTags[tagIndex++]);
+			}
+		}
+
+		void Populate(
+			const XmlElement* element,
+			const XmlAttribute* attribute,
+			XamlDocumentDiagnostic* diagnostic) const
+		{
+			if (!element || !diagnostic) return;
+			const auto found = _tags.find(element);
+			if (found == _tags.end()) return;
+
+			size_t offset = found->second.NameStart;
+			if (attribute)
+			{
+				const auto attributeOffset = FindAttributeOffset(
+					found->second, FromUtf8(attribute->Name()));
+				if (attributeOffset) offset = *attributeOffset;
+			}
+			PopulatePosition(offset, *diagnostic);
+		}
+
+	private:
+		std::wstring _source;
+		std::unordered_map<const XmlElement*, XamlEditorAssist::TagToken> _tags;
+
+		static void CollectElements(
+			const Element& element,
+			std::vector<Element>& output)
+		{
+			if (!element) return;
+			output.push_back(element);
+			for (const auto& child : ChildElements(element))
+				CollectElements(child, output);
+		}
+
+		std::optional<size_t> FindAttributeOffset(
+			const XamlEditorAssist::TagToken& tag,
+			const std::wstring& rawName) const
+		{
+			if (tag.End > _source.size() || tag.End == 0)
+				return std::nullopt;
+			size_t cursor = tag.NameStart + tag.NameLength;
+			const size_t end = tag.End - 1;
+			while (cursor < end)
+			{
+				while (cursor < end && std::iswspace(_source[cursor])) cursor++;
+				if (cursor >= end || _source[cursor] == L'/') break;
+				const size_t nameStart = cursor;
+				while (cursor < end
+					&& XamlEditorAssist::IsNameCharacter(_source[cursor])) cursor++;
+				if (cursor == nameStart)
+				{
+					cursor++;
+					continue;
+				}
+				const auto name = _source.substr(nameStart, cursor - nameStart);
+				if (name == rawName) return nameStart;
+
+				while (cursor < end && std::iswspace(_source[cursor])) cursor++;
+				if (cursor >= end || _source[cursor] != L'=') continue;
+				cursor++;
+				while (cursor < end && std::iswspace(_source[cursor])) cursor++;
+				if (cursor >= end
+					|| (_source[cursor] != L'\'' && _source[cursor] != L'"'))
+					continue;
+				const wchar_t quote = _source[cursor++];
+				while (cursor < end && _source[cursor] != quote) cursor++;
+				if (cursor < end) cursor++;
+			}
+			return std::nullopt;
+		}
+
+		void PopulatePosition(
+			size_t offset,
+			XamlDocumentDiagnostic& diagnostic) const
+		{
+			offset = (std::min)(offset, _source.size());
+			diagnostic.Line = 1;
+			diagnostic.Column = 1;
+			diagnostic.Utf16Offset = offset;
+			for (size_t i = 0; i < offset;)
+			{
+				if (_source[i] == L'\r')
+				{
+					diagnostic.Line++;
+					diagnostic.Column = 1;
+					i++;
+					if (i < offset && _source[i] == L'\n') i++;
+					continue;
+				}
+				if (_source[i] == L'\n')
+				{
+					diagnostic.Line++;
+					diagnostic.Column = 1;
+					i++;
+					continue;
+				}
+				if (i + 1 < offset
+					&& _source[i] >= 0xD800 && _source[i] <= 0xDBFF
+					&& _source[i + 1] >= 0xDC00 && _source[i + 1] <= 0xDFFF)
+					i += 2;
+				else
+					i++;
+				diagnostic.Column++;
+			}
+		}
+	};
 
 	bool TryParseBool(const std::wstring& value, bool& output)
 	{
@@ -635,11 +841,19 @@ namespace
 	class Parser final
 	{
 	public:
-		Parser(DesignDocument& document, const XamlDocumentParseOptions& options)
-			: _document(document), _options(options) {}
+		Parser(
+			DesignDocument& document,
+			const XamlDocumentParseOptions& options,
+			const XamlSourceLocationIndex& sourceLocations,
+			XamlDocumentDiagnostic* diagnostic)
+			: _document(document),
+			  _options(options),
+			  _sourceLocations(sourceLocations),
+			  _diagnostic(diagnostic) {}
 
 		bool Parse(const Element& root, std::wstring& error)
 		{
+			DiagnosticContext context(*this, root);
 			if (!root)
 				return Fail(L"XAML 没有根元素。", error);
 			const auto rootName = FromUtf8(root->LocalName());
@@ -649,6 +863,7 @@ namespace
 			// Property elements are order-independent: schema/resources first.
 			for (const auto& child : ChildElements(root))
 			{
+				DiagnosticContext childContext(*this, child);
 				const auto name = FromUtf8(child->LocalName());
 				if (IsRootPropertyElement(name, L"Resources")
 					|| IsRootPropertyElement(name, L"Styles"))
@@ -664,6 +879,7 @@ namespace
 			if (!ParseFormAttributes(root, error)) return false;
 			for (const auto& child : ChildElements(root))
 			{
+				DiagnosticContext childContext(*this, child);
 				const auto name = FromUtf8(child->LocalName());
 				if (IsRootPropertyElement(name, L"Resources")
 					|| IsRootPropertyElement(name, L"Styles")
@@ -677,18 +893,29 @@ namespace
 			DesignerDataContextSchemaUtils::Canonicalize(_document.DataContextSchema);
 			DesignerStyleSheetUtils::Canonicalize(_document.StyleSheet);
 			if (!DesignerDataContextSchemaUtils::Validate(
-				_document.DataContextSchema, &error)) return false;
+				_document.DataContextSchema, &error)) return Fail(error, error);
 			if (!DesignerStyleSheetUtils::ValidateAgainstPropertyMetadata(
 				_document.StyleSheet,
 				DesignDocumentMaterializer::CreateRuntimeControl,
-				&error)) return false;
+				&error)) return Fail(error, error);
 			_document.RecalculateNextStableId();
 			DesignDocumentGraph graph;
-			if (!DesignDocumentGraph::Build(_document, graph, &error)) return false;
+			if (!DesignDocumentGraph::Build(_document, graph, &error))
+				return Fail(error, error);
 			DesignDocumentEventIndex eventIndex;
 			if (!DesignDocumentEventIndex::Build(
-				_document, eventIndex, &error)) return false;
+				_document, eventIndex, &error)) return Fail(error, error);
 			return true;
+		}
+
+		void FinalizeFailure(
+			const Element& root,
+			const std::wstring& message)
+		{
+			if (!_diagnostic) return;
+			_diagnostic->Message = message;
+			if (!_diagnostic->HasSourceOffset())
+				_sourceLocations.Populate(root.get(), nullptr, _diagnostic);
 		}
 
 	private:
@@ -700,14 +927,52 @@ namespace
 
 		DesignDocument& _document;
 		const XamlDocumentParseOptions& _options;
+		const XamlSourceLocationIndex& _sourceLocations;
+		XamlDocumentDiagnostic* _diagnostic = nullptr;
+		const XmlElement* _diagnosticElement = nullptr;
+		const XmlAttribute* _diagnosticAttribute = nullptr;
 		std::unordered_set<int> _usedIds;
 		std::unordered_set<std::wstring> _usedNames;
 		std::unordered_map<std::wstring, int> _nameCounters;
 		std::vector<std::wstring> _bindingPaths;
 
-		static bool Fail(std::wstring message, std::wstring& error)
+		class DiagnosticContext final
+		{
+		public:
+			DiagnosticContext(
+				Parser& parser,
+				const Element& element,
+				const XmlAttribute* attribute = nullptr)
+				: _parser(parser),
+				  _previousElement(parser._diagnosticElement),
+				  _previousAttribute(parser._diagnosticAttribute)
+			{
+				_parser._diagnosticElement = element.get();
+				_parser._diagnosticAttribute = attribute;
+			}
+
+			~DiagnosticContext()
+			{
+				_parser._diagnosticElement = _previousElement;
+				_parser._diagnosticAttribute = _previousAttribute;
+			}
+
+		private:
+			Parser& _parser;
+			const XmlElement* _previousElement = nullptr;
+			const XmlAttribute* _previousAttribute = nullptr;
+		};
+
+		bool Fail(std::wstring message, std::wstring& error)
 		{
 			error = std::move(message);
+			if (_diagnostic)
+			{
+				_diagnostic->Message = error;
+				if (!_diagnostic->HasSourceOffset())
+					_sourceLocations.Populate(
+						_diagnosticElement, _diagnosticAttribute, _diagnostic);
+			}
 			return false;
 		}
 
@@ -734,6 +999,7 @@ namespace
 
 		bool ParseFormAttributes(const Element& root, std::wstring& error)
 		{
+			DiagnosticContext context(*this, root);
 			if (const auto name = Attribute(root, L"Name"))
 				_document.Form.Name = Trim(*name);
 			if (const auto xName = Attribute(root, L"Name", L"x"))
@@ -743,19 +1009,20 @@ namespace
 			if (const auto className = Attribute(root, L"Class", L"x"))
 				if (!DesignCodeBehindModel::TryNormalizeClassName(
 					Trim(*className), _document.CodeBehind.ClassName, &error))
-					return false;
+					return Fail(error, error);
 			if (const auto relativePath = Attribute(root, L"CodeBehind", L"d"))
 			{
 				if (!DesignCodeBehindModel::TryNormalizeRelativeBasePath(
 					Trim(*relativePath),
 					_document.CodeBehind.RelativeBasePath, &error))
-					return false;
+					return Fail(error, error);
 			}
-			if (!_document.CodeBehind.Validate(&error)) return false;
+			if (!_document.CodeBehind.Validate(&error)) return Fail(error, error);
 
 			for (const auto& attribute : root->Attributes())
 			{
 				if (!attribute || IsNamespaceAttribute(*attribute)) continue;
+				DiagnosticContext attributeContext(*this, root, attribute.get());
 				const auto prefix = FromUtf8(attribute->Prefix());
 				const auto name = FromUtf8(attribute->LocalName());
 				const auto value = FromUtf8(attribute->Value());
@@ -797,8 +1064,10 @@ namespace
 
 		bool ParseDataContextSchema(const Element& container, std::wstring& error)
 		{
+			DiagnosticContext context(*this, container);
 			for (const auto& item : ChildElements(container))
 			{
+				DiagnosticContext itemContext(*this, item);
 				if (!Equals(FromUtf8(item->LocalName()), L"Property"))
 					return Fail(L"DataContextSchema 仅支持 Property 元素。", error);
 				DesignerDataContextProperty property;
@@ -828,9 +1097,11 @@ namespace
 			DesignNode& node,
 			std::wstring& error)
 		{
+			DiagnosticContext context(*this, controlElement);
 			Element container;
 			for (const auto& child : ChildElements(controlElement))
 			{
+				DiagnosticContext childContext(*this, child);
 				if (!Equals(FromUtf8(child->LocalName()), L"CustomEvents"))
 					continue;
 				if (!Equals(FromUtf8(child->Prefix()), L"d")
@@ -844,12 +1115,15 @@ namespace
 			if (!container) return true;
 			for (const auto& attribute : container->Attributes())
 			{
+				DiagnosticContext attributeContext(
+					*this, container, attribute.get());
 				if (attribute && !IsNamespaceAttribute(*attribute))
 					return Fail(L"d:CustomEvents 不支持属性。", error);
 			}
 
 			for (const auto& item : ChildElements(container))
 			{
+				DiagnosticContext itemContext(*this, item);
 				if (!Equals(FromUtf8(item->LocalName()), L"Event")
 					|| (!Equals(FromUtf8(item->Prefix()), L"d")
 						&& !Equals(FromUtf8(item->NamespaceURI()),
@@ -861,6 +1135,8 @@ namespace
 				for (const auto& attribute : item->Attributes())
 				{
 					if (!attribute || IsNamespaceAttribute(*attribute)) continue;
+					DiagnosticContext attributeContext(
+						*this, item, attribute.get());
 					const auto prefix = FromUtf8(attribute->Prefix());
 					const auto name = FromUtf8(attribute->LocalName());
 					if (!prefix.empty()
@@ -909,8 +1185,10 @@ namespace
 
 		bool ParseResources(const Element& container, std::wstring& error)
 		{
+			DiagnosticContext context(*this, container);
 			for (const auto& item : ChildElements(container))
 			{
+				DiagnosticContext itemContext(*this, item);
 				const auto name = FromUtf8(item->LocalName());
 				if (Equals(name, L"Style"))
 				{
@@ -949,6 +1227,7 @@ namespace
 
 		bool ParseStyle(const Element& element, std::wstring& error)
 		{
+			DiagnosticContext context(*this, element);
 			DesignerStyleRule rule;
 			if (const auto target = Attribute(element, L"TargetType"))
 			{
@@ -976,6 +1255,7 @@ namespace
 			if (!probe) return Fail(L"Style TargetType 尚无运行时控件工厂。", error);
 			for (const auto& child : ChildElements(element))
 			{
+				DiagnosticContext childContext(*this, child);
 				if (!Equals(FromUtf8(child->LocalName()), L"Setter"))
 					return Fail(L"Style 仅支持 Setter 子元素。", error);
 				const auto rawProperty = Trim(Attribute(child, L"Property").value_or(L""));
@@ -1042,6 +1322,7 @@ namespace
 			int& id,
 			std::wstring& error)
 		{
+			DiagnosticContext context(*this, element);
 			name = Trim(Attribute(element, L"Name", L"x").value_or(
 				Attribute(element, L"Name").value_or(L"")));
 			if (name.empty()) name = MakeControlName(type);
@@ -1078,6 +1359,7 @@ namespace
 			std::wstring& error,
 			const std::string& forcedSplitRegion = {})
 		{
+			DiagnosticContext context(*this, element);
 			const auto elementName = FromUtf8(element->LocalName());
 			UIClass type = UIClass::UI_Base;
 			DesignerCustomControlType customType;
@@ -1166,20 +1448,23 @@ namespace
 				_document.Nodes[nodeIndex].Name };
 			for (const auto& child : ChildElements(element))
 			{
+				DiagnosticContext childContext(*this, child);
 				const auto childName = FromUtf8(child->LocalName());
 				if (Equals(childName, L"DesignProps")
 					|| Equals(childName, L"DesignExtra")
 					|| Equals(childName, L"DesignBindings"))
 				{
 					DesignValue bag;
-					if (!ReadDesignValue(child, bag, error)) return false;
+					if (!ReadDesignValue(child, bag, error))
+						return Fail(error, error);
 					auto& destination = Equals(childName, L"DesignProps")
 						? _document.Nodes[nodeIndex].Props
 						: (Equals(childName, L"DesignBindings")
 							? _document.Nodes[nodeIndex].Bindings
 							: _document.Nodes[nodeIndex].Extra);
 					if (!MergeDesignObject(
-						destination, bag, childName, error)) return false;
+						destination, bag, childName, error))
+						return Fail(error, error);
 					continue;
 				}
 				if (Equals(childName, L"CustomEvents")
@@ -1222,6 +1507,107 @@ namespace
 					return Fail(L"不支持的控件属性元素：" + childName, error);
 				if (!ParseControl(child, childParent, error)) return false;
 			}
+			return ReconcileProjectedProperties(
+				element, nodeIndex, error);
+		}
+
+		bool ReconcileProjectedProperties(
+			const Element& element,
+			size_t nodeIndex,
+			std::wstring& error)
+		{
+			DiagnosticContext context(*this, element);
+			const auto projected = Split(
+				Attribute(element, L"ProjectedProperties", L"d")
+					.value_or(L""), L',');
+			if (projected.empty()) return true;
+
+			DesignDocument probeDocument;
+			auto probeNode = _document.Nodes[nodeIndex];
+			probeNode.ParentId = 0;
+			probeNode.ParentRef.clear();
+			probeNode.Order = 0;
+			probeDocument.Nodes.push_back(std::move(probeNode));
+			probeDocument.NextStableId = _document.Nodes[nodeIndex].Id + 1;
+			DesignDocumentMaterializationOptions materializationOptions;
+			materializationOptions.CustomControlFactory =
+				_options.CustomControlFactory;
+			materializationOptions.AllowCustomControlProxy = true;
+			materializationOptions.AllowDeferredCustomMetadata = true;
+			MaterializedControlTree probeTree;
+			std::wstring materializationError;
+			if (!DesignDocumentMaterializer::Materialize(
+				probeDocument, probeTree, materializationOptions,
+				&materializationError)
+				|| probeTree.Roots.size() != 1 || !probeTree.Roots.front())
+				return Fail(L"无法核对控件 "
+					+ _document.Nodes[nodeIndex].Name
+					+ L" 的 XAML 投影属性：" + materializationError, error);
+
+			auto* const target = probeTree.Roots.front().get();
+			const auto descriptors =
+				DesignerPropertyCatalog::GetStyleProperties(*target);
+			for (const auto& projectedName : projected)
+			{
+				if (projectedName.empty()) continue;
+				std::optional<std::wstring> projectedValue;
+				for (const auto& attribute : element->Attributes())
+				{
+					if (!attribute || IsNamespaceAttribute(*attribute)) continue;
+					if (Equals(FromUtf8(attribute->Name()), projectedName))
+					{
+						projectedValue = FromUtf8(attribute->Value());
+						break;
+					}
+				}
+				// A projection is a readable mirror of an exact legacy value. If the
+				// attribute is still present and unchanged, keep that legacy value so
+				// canonical XAML round-trips byte-for-model. A human edit becomes an
+				// explicit metadata override and therefore remains authoritative.
+				if (!projectedValue) continue;
+				auto propertyName = NormalizePropertyName(
+					projectedName, *projectedValue);
+				auto propertyValue = *projectedValue;
+				if (Equals(projectedName, L"Visibility"))
+				{
+					bool recognized = false;
+					propertyValue = NormalizeVisibility(
+						propertyValue, recognized);
+					if (!recognized)
+						return Fail(L"Visibility 必须为 Visible、Hidden 或 Collapsed。", error);
+				}
+				const auto* descriptor = DesignerPropertyCatalog::Find(
+					descriptors, propertyName);
+				if (!descriptor)
+					return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
+						+ L" 不包含投影属性：" + projectedName, error);
+
+				std::wstring canonicalName;
+				DesignerStyleValue currentValue;
+				std::wstring propertyError;
+				if (!DesignerPropertyCatalog::CaptureValue(
+					*target, descriptor->Name, &canonicalName,
+					currentValue, &propertyError))
+					return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
+						+ L" 的投影属性 " + projectedName + L"："
+						+ propertyError, error);
+
+				DesignerStyleValue requested{
+					descriptor->ValueKind,
+					NormalizePropertyText(
+						projectedName, propertyValue, *descriptor) };
+				DesignerStyleValue effectiveValue;
+				if (!DesignerPropertyCatalog::ApplyValue(
+					*target, descriptor->Name, requested,
+					&canonicalName, &effectiveValue, &propertyError))
+					return Fail(L"控件 " + _document.Nodes[nodeIndex].Name
+						+ L" 的投影属性 " + projectedName + L"："
+						+ propertyError, error);
+				if (effectiveValue != currentValue)
+					StoreMetadata(
+						_document.Nodes[nodeIndex],
+						canonicalName, effectiveValue);
+			}
 			return true;
 		}
 
@@ -1240,6 +1626,7 @@ namespace
 			Control& probe,
 			std::wstring& error)
 		{
+			DiagnosticContext context(*this, element);
 			std::unordered_set<std::wstring> assignedProperties;
 			std::unordered_set<std::wstring> projectedProperties;
 			for (const auto& name : Split(
@@ -1248,6 +1635,8 @@ namespace
 			for (const auto& attribute : element->Attributes())
 			{
 				if (!attribute || IsNamespaceAttribute(*attribute)) continue;
+				DiagnosticContext attributeContext(
+					*this, element, attribute.get());
 				const auto prefix = FromUtf8(attribute->Prefix());
 				const auto name = FromUtf8(attribute->LocalName());
 				const auto rawName = FromUtf8(attribute->Name());
@@ -1258,6 +1647,14 @@ namespace
 					&& (Equals(name, L"CppType") || Equals(name, L"Header")
 						|| Equals(name, L"BaseType") || Equals(name, L"Constructor")))
 					continue;
+				if (Equals(prefix, L"d") && Equals(name, L"Locked"))
+				{
+					bool locked = false;
+					if (!TryParseBool(value, locked))
+						return Fail(L"d:Locked 必须是布尔值。", error);
+					_document.Nodes[nodeIndex].Locked = locked;
+					continue;
+				}
 				if (projectedProperties.contains(Lower(rawName))) continue;
 				if (Equals(name, L"Name") || Equals(name, L"DesignId")
 					|| (Equals(prefix, L"x") && Equals(name, L"Uid"))) continue;
@@ -1427,6 +1824,7 @@ namespace
 			Control& probe,
 			std::wstring& error)
 		{
+			DiagnosticContext context(*this, element);
 			std::wstring text;
 			for (const auto& child : element->ChildNodes())
 			{
@@ -1461,9 +1859,11 @@ namespace
 			bool rows,
 			std::wstring& error)
 		{
+			DiagnosticContext context(*this, container);
 			DesignValue definitions = DesignValue::array();
 			for (const auto& item : ChildElements(container))
 			{
+				DiagnosticContext itemContext(*this, item);
 				const auto expected = rows ? L"RowDefinition" : L"ColumnDefinition";
 				if (!Equals(FromUtf8(item->LocalName()), expected))
 					return Fail(std::wstring(L"网格定义仅支持 ") + expected + L"。", error);
@@ -1502,6 +1902,7 @@ namespace
 			size_t tabIndex,
 			std::wstring& error)
 		{
+			DiagnosticContext context(*this, page);
 			auto& extra = _document.Nodes[tabIndex].Extra;
 			auto& pages = extra["pages"];
 			if (!pages.is_array()) pages = DesignValue::array();
@@ -1520,6 +1921,7 @@ namespace
 			for (const auto& attribute : page->Attributes())
 			{
 				if (!attribute || IsNamespaceAttribute(*attribute)) continue;
+				DiagnosticContext attributeContext(*this, page, attribute.get());
 				const auto name = FromUtf8(attribute->LocalName());
 				const auto prefix = FromUtf8(attribute->Prefix());
 				if (!Equals(name, L"Name") && !Equals(name, L"Header")
@@ -1528,7 +1930,10 @@ namespace
 					return Fail(L"TabPage 尚不支持属性：" + name, error);
 			}
 			for (const auto& child : ChildElements(page))
+			{
+				DiagnosticContext childContext(*this, child);
 				if (!ParseControl(child, Parent{ 0, pageId }, error)) return false;
+			}
 			return true;
 		}
 
@@ -1556,42 +1961,61 @@ namespace
 bool XamlDocumentParser::FromXaml(
 	const std::string& xaml,
 	DesignDocument& output,
-	std::wstring* outError)
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
 
 {
-	return FromXaml(xaml, output, XamlDocumentParseOptions{}, outError);
+	return FromXaml(
+		xaml, output, XamlDocumentParseOptions{}, outError, outDiagnostic);
 }
 
 bool XamlDocumentParser::FromXaml(
 	const std::string& xaml,
 	DesignDocument& output,
 	const XamlDocumentParseOptions& options,
-	std::wstring* outError)
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
 {
+	ResetDiagnostic(outDiagnostic);
 	try
 	{
 		XmlDocument xml;
 		xml.LoadXml(xaml);
+		const auto root = xml.DocumentElement();
+		XamlSourceLocationIndex sourceLocations(FromUtf8(xaml), root);
 		DesignDocument candidate;
-		Parser parser(candidate, options);
+		Parser parser(candidate, options, sourceLocations, outDiagnostic);
 		std::wstring error;
-		if (!parser.Parse(xml.DocumentElement(), error))
+		if (!parser.Parse(root, error))
 		{
-			if (outError) *outError = std::move(error);
+			parser.FinalizeFailure(root, error);
+			ReportFailure(error, outError, outDiagnostic);
 			return false;
 		}
 		output = std::move(candidate);
 		if (outError) outError->clear();
 		return true;
 	}
+	catch (const System::Xml::XmlException& exception)
+	{
+		const auto message = L"XAML 解析失败："
+			+ FromUtf8(XmlExceptionMessageWithoutLocation(exception));
+		ReportFailure(message, outError, outDiagnostic);
+		PopulateXmlLocation(xaml, exception, outDiagnostic);
+		return false;
+	}
 	catch (const std::exception& exception)
 	{
-		if (outError) *outError = L"XAML 解析失败：" + FromUtf8(exception.what());
+		ReportFailure(
+			L"XAML 解析失败：" + FromUtf8(exception.what()),
+			outError, outDiagnostic);
 		return false;
 	}
 	catch (...)
 	{
-		if (outError) *outError = L"XAML 解析失败：发生未知异常。";
+		ReportFailure(
+			L"XAML 解析失败：发生未知异常。",
+			outError, outDiagnostic);
 		return false;
 	}
 }
@@ -1599,44 +2023,56 @@ bool XamlDocumentParser::FromXaml(
 bool XamlDocumentParser::LoadFromFile(
 	const std::wstring& filePath,
 	DesignDocument& output,
-	std::wstring* outError)
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
 
 {
 	return LoadFromFile(
-		filePath, output, XamlDocumentParseOptions{}, outError);
+		filePath, output, XamlDocumentParseOptions{}, outError, outDiagnostic);
 }
 
 bool XamlDocumentParser::LoadFromFile(
 	const std::wstring& filePath,
 	DesignDocument& output,
 	const XamlDocumentParseOptions& options,
-	std::wstring* outError)
+	std::wstring* outError,
+	XamlDocumentDiagnostic* outDiagnostic)
 {
+	ResetDiagnostic(outDiagnostic);
 	try
 	{
 		std::ifstream stream(std::filesystem::path(filePath), std::ios::binary);
 		if (!stream)
 		{
-			if (outError) *outError = L"无法打开 XAML 文件：" + filePath;
+			ReportFailure(
+				L"无法打开 XAML 文件：" + filePath,
+				outError, outDiagnostic);
 			return false;
 		}
 		std::ostringstream buffer;
 		buffer << stream.rdbuf();
 		if (!stream.good() && !stream.eof())
 		{
-			if (outError) *outError = L"读取 XAML 文件失败：" + filePath;
+			ReportFailure(
+				L"读取 XAML 文件失败：" + filePath,
+				outError, outDiagnostic);
 			return false;
 		}
-		return FromXaml(buffer.str(), output, options, outError);
+		return FromXaml(
+			buffer.str(), output, options, outError, outDiagnostic);
 	}
 	catch (const std::exception&)
 	{
-		if (outError) *outError = L"读取 XAML 文件时发生异常：" + filePath;
+		ReportFailure(
+			L"读取 XAML 文件时发生异常：" + filePath,
+			outError, outDiagnostic);
 		return false;
 	}
 	catch (...)
 	{
-		if (outError) *outError = L"读取 XAML 文件时发生未知异常。";
+		ReportFailure(
+			L"读取 XAML 文件时发生未知异常。",
+			outError, outDiagnostic);
 		return false;
 	}
 }

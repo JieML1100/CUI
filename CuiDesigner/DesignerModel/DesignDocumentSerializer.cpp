@@ -733,6 +733,7 @@ std::string DesignDocumentSerializer::ToXml(const DesignDocument& document)
 			}
 		}
 		control->SetAttribute("order", std::to_string(node.Order));
+		if (node.Locked) control->SetAttribute("locked", "true");
 		if (node.ParentId > 0)
 		{
 			control->SetAttribute("parentId", std::to_string(node.ParentId));
@@ -1149,6 +1150,13 @@ bool DesignDocumentSerializer::FromXml(const std::string& xmlText, DesignDocumen
 		if (!TryReadIntegralAttribute(control, "order", node.Order))
 		{
 			node.Order = -1;
+		}
+		if (control->HasAttribute("locked")
+			&& !TryReadBoolAttribute(control, "locked", node.Locked))
+		{
+			if (outError) *outError = L"Control entry has an invalid locked value: "
+				+ node.Name;
+			return false;
 		}
 
 		auto props = FindChildElement(control, "props");

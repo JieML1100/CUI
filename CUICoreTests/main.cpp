@@ -6,6 +6,7 @@
 #include <ColorPicker.h>
 #include <ComboBox.h>
 #include <ContextMenu.h>
+#include <Convert.h>
 #include <Core/Geometry.h>
 #include <DateTimePicker.h>
 #include <Expander.h>
@@ -46,6 +47,8 @@
 #include <TabControl.h>
 #include <Taskbar.h>
 #include <TextBox.h>
+#include <TextEditCore.h>
+#include <RichTextBox.h>
 #include <ToolBar.h>
 #include <TreeView.h>
 #include <WebBrowser.h>
@@ -67,6 +70,7 @@
 #include "../CuiDesigner/DesignerModel/DesignCodeGenerationService.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentControlPool.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentGraph.h"
+#include "../CuiDesigner/DesignerModel/DesignDocumentClipboard.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentEventIndex.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentMaterializer.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentSerializer.h"
@@ -75,6 +79,7 @@
 #include "../CuiDesigner/DesignerModel/RuntimeEventHandlerRegistry.h"
 #include "../CuiDesigner/DesignerModel/XamlDocumentParser.h"
 #include "../CuiDesigner/DesignerModel/XamlDocumentSerializer.h"
+#include "../CuiDesigner/DesignerModel/XamlEditorAssist.h"
 #include "../CuiDesigner/DesignerModel/DesignRecoveryStore.h"
 #include <algorithm>
 #include <chrono>
@@ -3258,9 +3263,10 @@ int main()
 		};
 
 		const auto properties = DesignerControlPropertyCatalog::GetProperties(target);
-		CUI_EXPECT_EQ(6ULL, properties.size());
+		CUI_EXPECT_EQ(7ULL, properties.size());
 		CUI_EXPECT_EQ(std::wstring(L"Name"), properties[0].Name);
-		CUI_EXPECT_EQ(std::wstring(L"Anchor"), properties[1].Name);
+		CUI_EXPECT_EQ(std::wstring(L"Locked"), properties[1].Name);
+		CUI_EXPECT_EQ(std::wstring(L"Anchor"), properties[2].Name);
 		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
 			target, L"styleclasses") != nullptr);
 		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
@@ -3269,6 +3275,9 @@ int main()
 			target, L"Name")->CanReset);
 		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
 			target, L"Anchor")->CanReset);
+		CUI_EXPECT_EQ(DesignerControlPropertyEditorKind::Boolean,
+			DesignerControlPropertyCatalog::Find(
+				target, L"Locked")->Editor);
 
 		DesignerStyleValue current;
 		DesignerStyleValue effective;
@@ -3287,6 +3296,16 @@ int main()
 		CUI_EXPECT_EQ(std::wstring(L"button2"), target.Name);
 		CUI_EXPECT_EQ(target.Name, synchronizedName);
 		CUI_EXPECT_EQ(target.Name, effective.Text);
+
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ApplyValue(
+			target, context, L"Locked",
+			{ DesignerStyleValueKind::Bool, L"true" }, &effective, &error));
+		CUI_EXPECT_TRUE(target.IsLocked);
+		CUI_EXPECT_EQ(std::wstring(L"true"), effective.Text);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ResetValue(
+			target, context, L"Locked", &effective, &error));
+		CUI_EXPECT_FALSE(target.IsLocked);
+		CUI_EXPECT_EQ(std::wstring(L"false"), effective.Text);
 
 		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ApplyValue(
 			target, context, L"StyleId",
@@ -3336,7 +3355,7 @@ int main()
 			&media, L"mediaPlayer1", UIClass::UI_MediaPlayer);
 		const auto mediaProperties =
 			DesignerControlPropertyCatalog::GetProperties(mediaTarget);
-		CUI_EXPECT_EQ(7ULL, mediaProperties.size());
+		CUI_EXPECT_EQ(8ULL, mediaProperties.size());
 		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::ApplyValue(
 			mediaTarget, context, L"MediaFile",
 			{ DesignerStyleValueKind::String, L"  C:\\media\\clip.mp4  " },
@@ -3440,16 +3459,19 @@ int main()
 		}
 
 		const auto* name = DesignerPropertyRowCatalog::Find(rows, L"Name");
+		const auto* locked = DesignerPropertyRowCatalog::Find(rows, L"Locked");
 		const auto* text = DesignerPropertyRowCatalog::Find(rows, L"Text");
 		const auto* anchor = DesignerPropertyRowCatalog::Find(rows, L"Anchor");
 		const auto* fontName = DesignerPropertyRowCatalog::Find(rows, L"FontName");
 		const auto* horizontal = DesignerPropertyRowCatalog::Find(rows, L"HAlign");
 		CUI_EXPECT_TRUE(name != nullptr);
+		CUI_EXPECT_TRUE(locked != nullptr);
 		CUI_EXPECT_TRUE(text != nullptr);
 		CUI_EXPECT_TRUE(anchor != nullptr);
 		CUI_EXPECT_TRUE(fontName != nullptr);
 		CUI_EXPECT_TRUE(horizontal != nullptr);
 		CUI_EXPECT_EQ(DesignerPropertyRowSource::ControlDesign, name->Source);
+		CUI_EXPECT_EQ(DesignerPropertyRowEditorKind::Boolean, locked->Editor);
 		CUI_EXPECT_EQ(DesignerPropertyRowSource::RuntimeMetadata, text->Source);
 		CUI_EXPECT_FALSE(name->CanReset);
 		CUI_EXPECT_TRUE(text->CanReset);
@@ -6043,6 +6065,15 @@ int main()
 		CUI_EXPECT_TRUE(propertyGrid.BeginEdit(0));
 		CUI_EXPECT_TRUE(propertyGrid.IsEditing());
 		CUI_EXPECT_TRUE(propertyGrid.CommitEdit());
+		propertyGrid.Items[0].Value = L"<Multiple Values>";
+		propertyGrid.Items[0].IsMixed = true;
+		CUI_EXPECT_TRUE(propertyGrid.BeginEdit(0));
+		CUI_EXPECT_TRUE(propertyGrid.GetEditingText().empty());
+		CUI_EXPECT_TRUE(propertyGrid.SetEditingText(L"HandleShared"));
+		CUI_EXPECT_TRUE(propertyGrid.CommitEdit());
+		CUI_EXPECT_EQ(std::wstring(L"HandleShared"),
+			propertyGrid.Items[0].Value);
+		CUI_EXPECT_FALSE(propertyGrid.Items[0].IsMixed);
 		CUI_EXPECT_TRUE(propertyGrid.HandlesNavigationKey(VK_F4));
 	});
 
@@ -8218,6 +8249,984 @@ int main()
 			constRoot.FindControlByDesignId(30));
 	});
 
+	runner.Add("Designer clipboard preserves nested XAML subtrees and remaps identity", []
+	{
+		DesignerModel::DesignDocument source;
+		source.NextStableId = 6;
+		DesignerModel::DesignNode panel;
+		panel.Id = 1;
+		panel.Name = L"panel1";
+		panel.Type = UIClass::UI_Panel;
+		panel.Order = 0;
+		panel.Props["location"] = { { "x", 10 }, { "y", 20 } };
+		panel.Props["size"] = { { "w", 300 }, { "h", 200 } };
+		DesignerModel::DesignNode label;
+		label.Id = 2;
+		label.ParentId = 1;
+		label.ParentRef = L"panel1";
+		label.Name = L"label1";
+		label.Type = UIClass::UI_Label;
+		label.Order = 0;
+		label.Props["location"] = { { "x", 5 }, { "y", 6 } };
+		label.Events["OnMouseClick"] = "label1_OnMouseClick";
+		label.Events["OnMouseDoubleClick"] =
+			"pageButton1_OnMouseClick";
+		label.Events["OnMouseDown"] = "KeepSharedMouseHandler";
+		label.Events["OnMouseEnter"] = "yes";
+		DesignerModel::DesignNode tab;
+		tab.Id = 3;
+		tab.ParentId = 1;
+		tab.ParentRef = L"panel1";
+		tab.Name = L"tab1";
+		tab.Type = UIClass::UI_TabControl;
+		tab.Order = 1;
+		tab.Extra["pages"] = DesignerModel::DesignValue::array();
+		tab.Extra["pages"].push_back({
+			{ "id", "tab1#page0" }, { "text", "General" } });
+		DesignerModel::DesignNode pageButton;
+		pageButton.Id = 4;
+		pageButton.ParentRef = L"tab1#page0";
+		pageButton.Name = L"pageButton1";
+		pageButton.Type = UIClass::UI_Button;
+		pageButton.Order = 0;
+		pageButton.Events["OnMouseClick"] =
+			"pageButton1_OnMouseClick";
+		pageButton.Events["OnMouseEnter"] = "label1_OnMouseEnter";
+		DesignerModel::DesignNode sibling;
+		sibling.Id = 5;
+		sibling.Name = L"button1";
+		sibling.Type = UIClass::UI_Button;
+		sibling.Order = 1;
+		source.Nodes = { panel, label, tab, pageButton, sibling };
+
+		DesignerModel::DesignDocument fragment;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			source, { 1, 2, 4 }, fragment, &error));
+		CUI_EXPECT_EQ(4ULL, fragment.Nodes.size());
+		CUI_EXPECT_EQ(1ULL, static_cast<unsigned long long>(
+			std::count_if(fragment.Nodes.begin(), fragment.Nodes.end(),
+				[](const auto& node)
+				{
+					return node.ParentId == 0 && node.ParentRef.empty();
+				})));
+		CUI_EXPECT_EQ(0, fragment.Nodes.front().ParentId);
+		CUI_EXPECT_TRUE(fragment.Nodes.front().ParentRef.empty());
+
+		const auto clipboardXaml =
+			DesignerModel::XamlDocumentSerializer::ToXaml(fragment);
+		DesignerModel::DesignDocument parsedFragment;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			clipboardXaml, parsedFragment, &error));
+		CUI_EXPECT_EQ(4ULL, parsedFragment.Nodes.size());
+
+		const auto sourceBeforePaste = source;
+		DesignerModel::DesignDocument merged;
+		DesignerModel::DesignClipboardPasteResult paste;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			source, parsedFragment, 12, 14, merged, &paste, &error));
+		CUI_EXPECT_TRUE(source == sourceBeforePaste);
+		CUI_EXPECT_EQ(9ULL, merged.Nodes.size());
+		CUI_EXPECT_EQ(1ULL, paste.RootNames.size());
+		CUI_EXPECT_EQ(std::wstring(L"panel2"), paste.RootNames.front());
+		CUI_EXPECT_EQ(10, merged.NextStableId);
+
+		auto findNode = [](const auto& document, const std::wstring& name)
+			-> const DesignerModel::DesignNode*
+		{
+			const auto found = std::find_if(
+				document.Nodes.begin(), document.Nodes.end(),
+				[&](const auto& node) { return node.Name == name; });
+			return found == document.Nodes.end() ? nullptr : &*found;
+		};
+		const auto* pastedPanel = findNode(merged, L"panel2");
+		const auto* pastedLabel = findNode(merged, L"label2");
+		const auto* pastedTab = findNode(merged, L"tab2");
+		const auto* pastedPageButton = findNode(merged, L"pageButton2");
+		CUI_EXPECT_TRUE(pastedPanel != nullptr);
+		CUI_EXPECT_TRUE(pastedLabel != nullptr);
+		CUI_EXPECT_TRUE(pastedTab != nullptr);
+		CUI_EXPECT_TRUE(pastedPageButton != nullptr);
+		if (pastedPanel)
+		{
+			CUI_EXPECT_EQ(22, pastedPanel->Props["location"]["x"].get<int>());
+			CUI_EXPECT_EQ(34, pastedPanel->Props["location"]["y"].get<int>());
+		}
+		if (pastedPanel && pastedLabel)
+		{
+			CUI_EXPECT_EQ(pastedPanel->Id, pastedLabel->ParentId);
+			CUI_EXPECT_EQ(std::wstring(L"panel2"), pastedLabel->ParentRef);
+			CUI_EXPECT_EQ(std::string("label2_OnMouseClick"),
+				pastedLabel->Events["OnMouseClick"].get<std::string>());
+			CUI_EXPECT_EQ(std::string("pageButton2_OnMouseClick"),
+				pastedLabel->Events[
+					"OnMouseDoubleClick"].get<std::string>());
+			CUI_EXPECT_EQ(std::string("KeepSharedMouseHandler"),
+				pastedLabel->Events["OnMouseDown"].get<std::string>());
+			CUI_EXPECT_EQ(std::string("1"),
+				pastedLabel->Events["OnMouseEnter"].get<std::string>());
+		}
+		if (pastedTab)
+		{
+			CUI_EXPECT_EQ(std::string("tab2#page0"),
+				pastedTab->Extra["pages"][size_t{ 0 }]["id"].get<std::string>());
+		}
+		if (pastedPageButton)
+		{
+			CUI_EXPECT_EQ(std::wstring(L"tab2#page0"),
+				pastedPageButton->ParentRef);
+			CUI_EXPECT_EQ(std::string("pageButton2_OnMouseClick"),
+				pastedPageButton->Events[
+					"OnMouseClick"].get<std::string>());
+			CUI_EXPECT_EQ(std::string("label2_OnMouseEnter"),
+				pastedPageButton->Events[
+					"OnMouseEnter"].get<std::string>());
+		}
+
+		DesignerModel::DesignDocument pastedAgain;
+		DesignerModel::DesignClipboardPasteResult secondPaste;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			merged, parsedFragment, 24, 28,
+			pastedAgain, &secondPaste, &error));
+		CUI_EXPECT_EQ(std::wstring(L"panel3"), secondPaste.RootNames.front());
+		CUI_EXPECT_TRUE(findNode(pastedAgain, L"tab3") != nullptr);
+		const auto* secondLabel = findNode(pastedAgain, L"label3");
+		const auto* secondPageButton = findNode(
+			pastedAgain, L"pageButton3");
+		CUI_EXPECT_TRUE(secondLabel != nullptr);
+		CUI_EXPECT_TRUE(secondPageButton != nullptr);
+		if (secondLabel && secondPageButton)
+		{
+			CUI_EXPECT_EQ(std::string("label3_OnMouseClick"),
+				secondLabel->Events["OnMouseClick"].get<std::string>());
+			CUI_EXPECT_EQ(std::string("pageButton3_OnMouseClick"),
+				secondLabel->Events[
+					"OnMouseDoubleClick"].get<std::string>());
+			CUI_EXPECT_EQ(secondLabel->Events["OnMouseDoubleClick"],
+				secondPageButton->Events["OnMouseClick"]);
+			CUI_EXPECT_EQ(std::string("1"),
+				secondLabel->Events["OnMouseEnter"].get<std::string>());
+			CUI_EXPECT_EQ(std::string("label3_OnMouseEnter"),
+				secondPageButton->Events[
+					"OnMouseEnter"].get<std::string>());
+		}
+		DesignerModel::DesignDocument unchanged = merged;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentClipboard::Capture(
+			source, { 999 }, unchanged, &error));
+		CUI_EXPECT_TRUE(unchanged == merged);
+	});
+
+	runner.Add("Designer clipboard carries binding schema dependencies across documents", []
+	{
+		DesignerModel::DesignDocument source;
+		source.NextStableId = 3;
+		source.DataContextSchema = {
+			{ L"Profile", BindingValueKind::Object, true, false, true },
+			{ L"Profile.DisplayName", BindingValueKind::String,
+				true, false, true },
+			{ L"Unused", BindingValueKind::Bool, true, true, true }
+		};
+		DesignerModel::DesignNode bound;
+		bound.Id = 1;
+		bound.Name = L"nameBox1";
+		bound.Type = UIClass::UI_TextBox;
+		bound.Order = 0;
+		bound.Bindings["Text"] = {
+			{ "source", "Profile.DisplayName" },
+			{ "mode", static_cast<int>(BindingMode::OneWay) },
+			{ "updateMode", static_cast<int>(
+				DataSourceUpdateMode::OnPropertyChanged) }
+		};
+		DesignerModel::DesignNode unrelated;
+		unrelated.Id = 2;
+		unrelated.Name = L"unusedCheck1";
+		unrelated.Type = UIClass::UI_CheckBox;
+		unrelated.Order = 1;
+		source.Nodes = { bound, unrelated };
+
+		DesignerModel::DesignDocument fragment;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			source, { bound.Id }, fragment, &error));
+		CUI_EXPECT_EQ(2ULL, fragment.DataContextSchema.size());
+		CUI_EXPECT_TRUE(DesignerDataContextSchemaUtils::Find(
+			fragment.DataContextSchema, L"Profile") != nullptr);
+		const auto* fragmentName = DesignerDataContextSchemaUtils::Find(
+			fragment.DataContextSchema, L"Profile.DisplayName");
+		CUI_EXPECT_TRUE(fragmentName != nullptr);
+		if (fragmentName)
+		{
+			CUI_EXPECT_EQ(BindingValueKind::String, fragmentName->ValueKind);
+			CUI_EXPECT_FALSE(fragmentName->CanWrite);
+			CUI_EXPECT_TRUE(fragmentName->CanObserve);
+		}
+		CUI_EXPECT_TRUE(DesignerDataContextSchemaUtils::Find(
+			fragment.DataContextSchema, L"Unused") == nullptr);
+
+		const auto xaml = DesignerModel::XamlDocumentSerializer::ToXaml(fragment);
+		DesignerModel::DesignDocument parsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, parsed, &error));
+		const auto* parsedName = DesignerDataContextSchemaUtils::Find(
+			parsed.DataContextSchema, L"Profile.DisplayName");
+		CUI_EXPECT_TRUE(parsedName != nullptr);
+		if (parsedName)
+		{
+			CUI_EXPECT_EQ(BindingValueKind::String, parsedName->ValueKind);
+			CUI_EXPECT_FALSE(parsedName->CanWrite);
+		}
+
+		DesignerModel::DesignDocument target;
+		target.NextStableId = 11;
+		DesignerModel::DesignNode existing;
+		existing.Id = 10;
+		existing.Name = L"existingLabel1";
+		existing.Type = UIClass::UI_Label;
+		existing.Order = 0;
+		existing.Bindings["Text"] = {
+			{ "source", "Existing.Caption" },
+			{ "mode", static_cast<int>(BindingMode::OneWay) },
+			{ "updateMode", static_cast<int>(
+				DataSourceUpdateMode::OnPropertyChanged) }
+		};
+		target.Nodes = { existing };
+
+		DesignerModel::DesignDocument merged;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			target, parsed, 12, 12, merged, nullptr, &error));
+		CUI_EXPECT_EQ(4ULL, merged.DataContextSchema.size());
+		const auto* existingRoot = DesignerDataContextSchemaUtils::Find(
+			merged.DataContextSchema, L"Existing");
+		const auto* existingCaption = DesignerDataContextSchemaUtils::Find(
+			merged.DataContextSchema, L"Existing.Caption");
+		const auto* mergedName = DesignerDataContextSchemaUtils::Find(
+			merged.DataContextSchema, L"Profile.DisplayName");
+		CUI_EXPECT_TRUE(existingRoot != nullptr);
+		CUI_EXPECT_TRUE(existingCaption != nullptr);
+		CUI_EXPECT_TRUE(mergedName != nullptr);
+		if (existingRoot)
+			CUI_EXPECT_EQ(BindingValueKind::Empty, existingRoot->ValueKind);
+		if (existingCaption)
+			CUI_EXPECT_EQ(BindingValueKind::Empty, existingCaption->ValueKind);
+		if (mergedName)
+			CUI_EXPECT_EQ(BindingValueKind::String, mergedName->ValueKind);
+
+		DesignerModel::DesignDocument authoritativeTarget;
+		authoritativeTarget.DataContextSchema = {
+			{ L"Profile", BindingValueKind::Object, true, true, true },
+			{ L"Profile.DisplayName", BindingValueKind::String,
+				false, true, false }
+		};
+		DesignerModel::DesignDocument authoritativeMerged;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			authoritativeTarget, parsed, 0, 0,
+			authoritativeMerged, nullptr, &error));
+		const auto* authoritativeName = DesignerDataContextSchemaUtils::Find(
+			authoritativeMerged.DataContextSchema, L"Profile.DisplayName");
+		CUI_EXPECT_TRUE(authoritativeName != nullptr);
+		if (authoritativeName)
+		{
+			CUI_EXPECT_FALSE(authoritativeName->CanRead);
+			CUI_EXPECT_TRUE(authoritativeName->CanWrite);
+			CUI_EXPECT_FALSE(authoritativeName->CanObserve);
+		}
+
+		auto invalidSource = source;
+		invalidSource.Nodes.front().Bindings["Text"]["source"] = 42;
+		auto unchanged = fragment;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentClipboard::Capture(
+			invalidSource, { bound.Id }, unchanged, &error));
+		CUI_EXPECT_TRUE(unchanged == fragment);
+	});
+
+	runner.Add("Designer clipboard trims reuses and isolates style dependencies", []
+	{
+		auto literalSetter = [](
+			std::wstring property,
+			DesignerStyleValueKind kind,
+			std::wstring value)
+		{
+			return DesignerStyleSetter{
+				std::move(property), false, {}, { kind, std::move(value) } };
+		};
+		auto resourceSetter = [](
+			std::wstring property,
+			std::wstring resource)
+		{
+			return DesignerStyleSetter{
+				std::move(property), true, std::move(resource), {} };
+		};
+
+		DesignerModel::DesignDocument source;
+		source.NextStableId = 3;
+		source.StyleSheet.Resources = {
+			{ L"Accent", { DesignerStyleValueKind::Color, L"#FFFF0000" } },
+			{ L"Unused", { DesignerStyleValueKind::Color, L"#FF00FF00" } }
+		};
+		DesignerStyleRule typed;
+		typed.HasType = true;
+		typed.Type = UIClass::UI_Button;
+		typed.Setters.push_back(literalSetter(
+			L"BorderThickness", DesignerStyleValueKind::Float, L"1"));
+		DesignerStyleRule primary;
+		primary.HasType = true;
+		primary.Type = UIClass::UI_Button;
+		primary.Classes = { L"primary" };
+		primary.Setters = {
+			literalSetter(L"BorderThickness", DesignerStyleValueKind::Float, L"2"),
+			resourceSetter(L"UnderMouseColor", L"Accent")
+		};
+		DesignerStyleRule identified;
+		identified.HasType = true;
+		identified.Type = UIClass::UI_Button;
+		identified.Id = L"PrimaryButton";
+		identified.Setters.push_back(literalSetter(
+			L"BorderThickness", DesignerStyleValueKind::Float, L"3"));
+		DesignerStyleRule hovered = identified;
+		hovered.RequiredStates = ControlStyleState::Hovered;
+		hovered.Setters.front().Literal.Text = L"4";
+		DesignerStyleRule unrelated;
+		unrelated.HasType = true;
+		unrelated.Type = UIClass::UI_Label;
+		unrelated.Setters.push_back(resourceSetter(L"ForeColor", L"Unused"));
+		source.StyleSheet.Rules = {
+			typed, primary, identified, hovered, unrelated };
+
+		DesignerModel::DesignNode button;
+		button.Id = 1;
+		button.Name = L"button1";
+		button.Type = UIClass::UI_Button;
+		button.Order = 0;
+		button.Props["styleId"] = "PrimaryButton";
+		button.Props["styleClasses"] = DesignerModel::DesignValue::array();
+		button.Props["styleClasses"].push_back("primary");
+		DesignerModel::DesignNode label;
+		label.Id = 2;
+		label.Name = L"label1";
+		label.Type = UIClass::UI_Label;
+		label.Order = 1;
+		source.Nodes = { button, label };
+
+		DesignerModel::DesignDocument fragment;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			source, { button.Id }, fragment, &error));
+		CUI_EXPECT_EQ(1ULL, fragment.StyleSheet.Resources.size());
+		CUI_EXPECT_EQ(std::wstring(L"Accent"),
+			fragment.StyleSheet.Resources.front().Key);
+		CUI_EXPECT_EQ(4ULL, fragment.StyleSheet.Rules.size());
+		CUI_EXPECT_TRUE(std::none_of(
+			fragment.StyleSheet.Rules.begin(), fragment.StyleSheet.Rules.end(),
+			[](const DesignerStyleRule& rule)
+			{
+				return rule.HasType && rule.Type == UIClass::UI_Label;
+			}));
+
+		const auto xaml = DesignerModel::XamlDocumentSerializer::ToXaml(fragment);
+		DesignerModel::DesignDocument parsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, parsed, &error));
+		CUI_EXPECT_EQ(fragment.StyleSheet, parsed.StyleSheet);
+
+		DesignerModel::DesignDocument reused;
+		DesignerModel::DesignClipboardPasteResult reusedResult;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			source, parsed, 8, 8, reused, &reusedResult, &error));
+		CUI_EXPECT_EQ(source.StyleSheet, reused.StyleSheet);
+		const auto reusedNode = std::find_if(
+			reused.Nodes.begin(), reused.Nodes.end(),
+			[&](const DesignerModel::DesignNode& node)
+			{
+				return node.Id == reusedResult.RootIds.front();
+			});
+		CUI_EXPECT_TRUE(reusedNode != reused.Nodes.end());
+		if (reusedNode != reused.Nodes.end())
+		{
+			CUI_EXPECT_EQ(std::string("PrimaryButton"),
+				reusedNode->Props["styleId"].get<std::string>());
+			CUI_EXPECT_EQ(std::string("primary"),
+				reusedNode->Props["styleClasses"][size_t{ 0 }].get<std::string>());
+		}
+
+		DesignerModel::DesignDocument target;
+		target.NextStableId = 11;
+		target.StyleSheet.Resources = {
+			{ L"Accent", { DesignerStyleValueKind::Color, L"#FF0000FF" } }
+		};
+		DesignerStyleRule targetType = typed;
+		targetType.Setters.front().Literal.Text = L"80";
+		DesignerStyleRule targetClass = primary;
+		targetClass.Setters.erase(targetClass.Setters.begin());
+		DesignerStyleRule targetId = identified;
+		targetId.Setters.front().Literal.Text = L"90";
+		target.StyleSheet.Rules = { targetType, targetClass, targetId };
+		DesignerModel::DesignNode existing = button;
+		existing.Id = 10;
+		existing.Name = L"existingButton1";
+		target.Nodes = { existing };
+		const auto targetStyleSheet = target.StyleSheet;
+
+		DesignerModel::DesignDocument isolated;
+		DesignerModel::DesignClipboardPasteResult isolatedResult;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			target, parsed, 12, 12,
+			isolated, &isolatedResult, &error));
+		CUI_EXPECT_EQ(2ULL, isolated.StyleSheet.Resources.size());
+		CUI_EXPECT_EQ(7ULL, isolated.StyleSheet.Rules.size());
+		CUI_EXPECT_TRUE(std::equal(
+			targetStyleSheet.Resources.begin(), targetStyleSheet.Resources.end(),
+			isolated.StyleSheet.Resources.begin()));
+		CUI_EXPECT_TRUE(std::equal(
+			targetStyleSheet.Rules.begin(), targetStyleSheet.Rules.end(),
+			isolated.StyleSheet.Rules.begin()));
+		const auto isolatedNode = std::find_if(
+			isolated.Nodes.begin(), isolated.Nodes.end(),
+			[&](const DesignerModel::DesignNode& node)
+			{
+				return node.Id == isolatedResult.RootIds.front();
+			});
+		CUI_EXPECT_TRUE(isolatedNode != isolated.Nodes.end());
+		std::wstring isolatedStyleId;
+		std::vector<std::wstring> isolatedClasses;
+		if (isolatedNode != isolated.Nodes.end())
+		{
+			isolatedStyleId = Convert::Utf8ToUnicode(
+				isolatedNode->Props["styleId"].get<std::string>());
+			CUI_EXPECT_TRUE(isolatedStyleId.starts_with(L"CuiPasteStyle_"));
+			for (const auto& value
+				: isolatedNode->Props["styleClasses"].ArrayItems())
+				isolatedClasses.push_back(Convert::Utf8ToUnicode(
+					value.get<std::string>()));
+			CUI_EXPECT_EQ(3ULL, isolatedClasses.size());
+			CUI_EXPECT_TRUE(std::none_of(
+				isolatedClasses.begin(), isolatedClasses.end(),
+				[](const std::wstring& value)
+				{
+					return _wcsicmp(value.c_str(), L"primary") == 0;
+				}));
+		}
+		CUI_EXPECT_TRUE(isolated.StyleSheet.Resources.back().Key.starts_with(
+			L"CuiPasteResource_Accent"));
+		for (size_t index = targetStyleSheet.Rules.size();
+			index < isolated.StyleSheet.Rules.size(); ++index)
+		{
+			const auto& rule = isolated.StyleSheet.Rules[index];
+			CUI_EXPECT_EQ(isolatedStyleId, rule.Id);
+			for (const auto& setter : rule.Setters)
+				if (setter.UsesResource)
+					CUI_EXPECT_EQ(isolated.StyleSheet.Resources.back().Key,
+						setter.ResourceKey);
+		}
+
+		std::shared_ptr<ControlStyleSheet> runtime;
+		CUI_EXPECT_TRUE(DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
+			isolated.StyleSheet, runtime, &error));
+		Button pastedButton(L"Pasted", 0, 0);
+		pastedButton.SetStyleId(isolatedStyleId);
+		for (const auto& value : isolatedClasses)
+			CUI_EXPECT_TRUE(pastedButton.AddStyleClass(value));
+		CUI_EXPECT_TRUE(pastedButton.SetStyleSheet(runtime));
+		CUI_EXPECT_EQ(3.0f, pastedButton.BorderThickness);
+		CUI_EXPECT_EQ(1.0f, pastedButton.UnderMouseColor.r);
+		CUI_EXPECT_EQ(0.0f, pastedButton.UnderMouseColor.b);
+		pastedButton.SetStyleState(ControlStyleState::Hovered);
+		CUI_EXPECT_EQ(4.0f, pastedButton.BorderThickness);
+
+		Button targetButton(L"Existing", 0, 0);
+		targetButton.SetStyleId(L"PrimaryButton");
+		CUI_EXPECT_TRUE(targetButton.AddStyleClass(L"primary"));
+		CUI_EXPECT_TRUE(targetButton.SetStyleSheet(runtime));
+		CUI_EXPECT_EQ(90.0f, targetButton.BorderThickness);
+		CUI_EXPECT_EQ(0.0f, targetButton.UnderMouseColor.r);
+		CUI_EXPECT_EQ(1.0f, targetButton.UnderMouseColor.b);
+
+		DesignerModel::DesignDocument isolatedAgain;
+		DesignerModel::DesignClipboardPasteResult secondResult;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			isolated, parsed, 24, 24,
+			isolatedAgain, &secondResult, &error));
+		CUI_EXPECT_EQ(3ULL, isolatedAgain.StyleSheet.Resources.size());
+		CUI_EXPECT_EQ(11ULL, isolatedAgain.StyleSheet.Rules.size());
+		const auto secondNode = std::find_if(
+			isolatedAgain.Nodes.begin(), isolatedAgain.Nodes.end(),
+			[&](const DesignerModel::DesignNode& node)
+			{
+				return node.Id == secondResult.RootIds.front();
+			});
+		CUI_EXPECT_TRUE(secondNode != isolatedAgain.Nodes.end());
+		if (secondNode != isolatedAgain.Nodes.end())
+			CUI_EXPECT_TRUE(Convert::Utf8ToUnicode(
+				secondNode->Props["styleId"].get<std::string>())
+				!= isolatedStyleId);
+
+		auto invalidFragment = parsed;
+		invalidFragment.StyleSheet.Resources.clear();
+		auto unchanged = isolated;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			target, invalidFragment, 0, 0, unchanged, nullptr, &error));
+		CUI_EXPECT_EQ(isolated, unchanged);
+	});
+
+	runner.Add("Designer clipboard targets containers pages and split regions transactionally", []
+	{
+		DesignerModel::DesignDocument source;
+		source.NextStableId = 7;
+		DesignerModel::DesignNode panel1;
+		panel1.Id = 1;
+		panel1.Name = L"panel1";
+		panel1.Type = UIClass::UI_Panel;
+		panel1.Order = 0;
+		DesignerModel::DesignNode panel2 = panel1;
+		panel2.Id = 2;
+		panel2.Name = L"panel2";
+		panel2.Order = 1;
+		DesignerModel::DesignNode button;
+		button.Id = 3;
+		button.ParentId = panel1.Id;
+		button.ParentRef = panel1.Name;
+		button.Name = L"button1";
+		button.Type = UIClass::UI_Button;
+		button.Order = 0;
+		button.Props["location"] = { { "x", 5 }, { "y", 6 } };
+		DesignerModel::DesignNode split;
+		split.Id = 4;
+		split.Name = L"split1";
+		split.Type = UIClass::UI_SplitContainer;
+		split.Order = 2;
+		DesignerModel::DesignNode label;
+		label.Id = 5;
+		label.ParentId = split.Id;
+		label.ParentRef = split.Name;
+		label.Name = L"label1";
+		label.Type = UIClass::UI_Label;
+		label.Order = 0;
+		label.Extra["splitRegion"] = "panel2";
+		DesignerModel::DesignNode tabs;
+		tabs.Id = 6;
+		tabs.Name = L"tabs1";
+		tabs.Type = UIClass::UI_TabControl;
+		tabs.Order = 3;
+		tabs.Extra["pages"] = DesignerModel::DesignValue::array();
+		tabs.Extra["pages"].push_back({
+			{ "id", "tabs1#page0" }, { "text", "General" } });
+		source.Nodes = { panel1, panel2, button, split, label, tabs };
+
+		DesignerModel::DesignDocument fragment;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			source, { button.Id, label.Id }, fragment, &error));
+		std::vector<DesignerModel::DesignClipboardRootTarget> targets;
+		DesignerModel::DesignClipboardRootTarget intoPanel;
+		intoPanel.FragmentRootId = button.Id;
+		intoPanel.ParentId = panel2.Id;
+		intoPanel.SplitRegion = std::string{};
+		targets.push_back(intoPanel);
+		DesignerModel::DesignClipboardRootTarget besideSplitChild;
+		besideSplitChild.FragmentRootId = label.Id;
+		besideSplitChild.ParentId = split.Id;
+		besideSplitChild.SplitRegion = std::nullopt;
+		targets.push_back(besideSplitChild);
+
+		DesignerModel::DesignDocument merged;
+		DesignerModel::DesignClipboardPasteResult result;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Paste(
+			source, fragment, targets, 12, 14, merged, &result, &error));
+		CUI_EXPECT_EQ(8ULL, merged.Nodes.size());
+		auto find = [](const auto& document, const std::wstring& name)
+			-> const DesignerModel::DesignNode*
+		{
+			const auto found = std::find_if(
+				document.Nodes.begin(), document.Nodes.end(),
+				[&](const auto& node) { return node.Name == name; });
+			return found == document.Nodes.end() ? nullptr : &*found;
+		};
+		const auto* pastedButton = find(merged, L"button2");
+		const auto* pastedLabel = find(merged, L"label2");
+		CUI_EXPECT_TRUE(pastedButton != nullptr);
+		CUI_EXPECT_TRUE(pastedLabel != nullptr);
+		if (pastedButton)
+		{
+			CUI_EXPECT_EQ(panel2.Id, pastedButton->ParentId);
+			CUI_EXPECT_EQ(panel2.Name, pastedButton->ParentRef);
+			CUI_EXPECT_EQ(17,
+				pastedButton->Props["location"]["x"].get<int>());
+			CUI_EXPECT_FALSE(pastedButton->Extra.contains("splitRegion"));
+		}
+		if (pastedLabel)
+		{
+			CUI_EXPECT_EQ(split.Id, pastedLabel->ParentId);
+			CUI_EXPECT_EQ(std::string("panel2"),
+				pastedLabel->Extra["splitRegion"].get<std::string>());
+		}
+
+		DesignerModel::DesignDocument buttonFragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			source, { button.Id }, buttonFragment, &error));
+		DesignerModel::DesignClipboardRootTarget intoPage;
+		intoPage.FragmentRootId = button.Id;
+		intoPage.ParentRef = L"tabs1#page0";
+		DesignerModel::DesignDocument pagePaste;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Paste(
+			source, buttonFragment, { intoPage }, 0, 0,
+			pagePaste, nullptr, &error));
+		const auto* pageButton = find(pagePaste, L"button2");
+		CUI_EXPECT_TRUE(pageButton != nullptr);
+		if (pageButton)
+		{
+			CUI_EXPECT_EQ(0, pageButton->ParentId);
+			CUI_EXPECT_EQ(std::wstring(L"tabs1#page0"),
+				pageButton->ParentRef);
+		}
+
+		DesignerModel::DesignClipboardRootTarget missingPage = intoPage;
+		missingPage.ParentRef = L"tabs1#page99";
+		DesignerModel::DesignDocument unchanged = source;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentClipboard::Paste(
+			source, buttonFragment, { missingPage }, 0, 0,
+			unchanged, nullptr, &error));
+		CUI_EXPECT_TRUE(unchanged == source);
+	});
+
+	runner.Add("Designer clipboard inserts roots at a stable sibling index", []
+	{
+		DesignerModel::DesignDocument source;
+		source.NextStableId = 5;
+		DesignerModel::DesignNode stack;
+		stack.Id = 1;
+		stack.Name = L"stack1";
+		stack.Type = UIClass::UI_StackPanel;
+		stack.Order = 0;
+		DesignerModel::DesignNode button;
+		button.Id = 2;
+		button.ParentId = stack.Id;
+		button.ParentRef = stack.Name;
+		button.Name = L"button1";
+		button.Type = UIClass::UI_Button;
+		button.Order = 0;
+		DesignerModel::DesignNode label = button;
+		label.Id = 3;
+		label.Name = L"label1";
+		label.Type = UIClass::UI_Label;
+		label.Order = 1;
+		DesignerModel::DesignNode textBox = button;
+		textBox.Id = 4;
+		textBox.Name = L"textBox1";
+		textBox.Type = UIClass::UI_TextBox;
+		textBox.Order = 2;
+		source.Nodes = { stack, button, label, textBox };
+
+		DesignerModel::DesignDocument fragment;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			source, { button.Id, label.Id }, fragment, &error));
+		std::vector<DesignerModel::DesignClipboardRootTarget> targets;
+		for (const auto& root : fragment.Nodes)
+		{
+			if (root.ParentId != 0 || !root.ParentRef.empty()) continue;
+			DesignerModel::DesignClipboardRootTarget target;
+			target.FragmentRootId = root.Id;
+			target.ParentId = stack.Id;
+			target.InsertIndex = 1;
+			targets.push_back(std::move(target));
+		}
+		DesignerModel::DesignDocument merged;
+		DesignerModel::DesignClipboardPasteResult result;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Paste(
+			source, fragment, targets, 0, 0,
+			merged, &result, &error));
+		std::vector<std::wstring> siblings;
+		std::vector<const DesignerModel::DesignNode*> ordered;
+		for (const auto& node : merged.Nodes)
+			if (node.ParentId == stack.Id) ordered.push_back(&node);
+		std::stable_sort(ordered.begin(), ordered.end(),
+			[](const auto* left, const auto* right)
+			{
+				return left->Order < right->Order;
+			});
+		for (const auto* node : ordered) siblings.push_back(node->Name);
+		CUI_EXPECT_EQ((std::vector<std::wstring>{
+			L"button1", L"button2", L"label2", L"label1", L"textBox1" }),
+			siblings);
+		for (size_t index = 0; index < ordered.size(); ++index)
+			CUI_EXPECT_EQ(static_cast<int>(index), ordered[index]->Order);
+
+		auto invalidTargets = targets;
+		for (auto& target : invalidTargets) target.InsertIndex = 4;
+		DesignerModel::DesignDocument unchanged = source;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentClipboard::Paste(
+			source, fragment, invalidTargets, 0, 0,
+			unchanged, nullptr, &error));
+		CUI_EXPECT_TRUE(unchanged == source);
+	});
+
+	runner.Add("Designer clipboard offsets human-authored coordinate metadata", []
+	{
+		DesignerModel::DesignDocument target;
+		DesignerModel::DesignDocument fragment;
+		fragment.NextStableId = 2;
+		DesignerModel::DesignNode button;
+		button.Id = 1;
+		button.Name = L"button1";
+		button.Type = UIClass::UI_Button;
+		button.Order = 0;
+		button.Props["metadata"]["Left"] = {
+			{ "kind", "Int" }, { "value", "40" } };
+		button.Props["metadata"]["Top"] = {
+			{ "kind", "Int" }, { "value", "50" } };
+		fragment.Nodes.push_back(button);
+
+		DesignerModel::DesignDocument merged;
+		DesignerModel::DesignClipboardPasteResult paste;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			target, fragment, 12, 14, merged, &paste, &error));
+		CUI_EXPECT_EQ(1ULL, merged.Nodes.size());
+		CUI_EXPECT_EQ(std::string("52"),
+			merged.Nodes.front().Props["metadata"]["Left"]["value"]
+				.get<std::string>());
+		CUI_EXPECT_EQ(std::string("64"),
+			merged.Nodes.front().Props["metadata"]["Top"]["value"]
+				.get<std::string>());
+		CUI_EXPECT_EQ(std::string("40"),
+			fragment.Nodes.front().Props["metadata"]["Left"]["value"]
+				.get<std::string>());
+
+		auto dualFragment = fragment;
+		dualFragment.Nodes.front().Props["location"] = {
+			{ "x", 40 }, { "y", 50 } };
+		DesignerModel::DesignDocument dualMerged;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			target, dualFragment, -5, 7,
+			dualMerged, nullptr, &error));
+		CUI_EXPECT_EQ(35,
+			dualMerged.Nodes.front().Props["location"]["x"].get<int>());
+		CUI_EXPECT_EQ(57,
+			dualMerged.Nodes.front().Props["location"]["y"].get<int>());
+		CUI_EXPECT_EQ(std::string("35"),
+			dualMerged.Nodes.front().Props["metadata"]["Left"]["value"]
+				.get<std::string>());
+		CUI_EXPECT_EQ(std::string("57"),
+			dualMerged.Nodes.front().Props["metadata"]["Top"]["value"]
+				.get<std::string>());
+
+		auto overflowFragment = fragment;
+		overflowFragment.Nodes.front().Props["metadata"]["Left"]["value"] =
+			std::to_string((std::numeric_limits<int>::max)());
+		DesignerModel::DesignDocument unchanged = target;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			target, overflowFragment, 1, 0,
+			unchanged, nullptr, &error));
+		CUI_EXPECT_TRUE(unchanged == target);
+		CUI_EXPECT_FALSE(error.empty());
+	});
+
+	runner.Add("Canonical XAML projected properties honor source edits", []
+	{
+		DesignerModel::DesignDocument document;
+		document.NextStableId = 2;
+		DesignerModel::DesignNode button;
+		button.Id = 1;
+		button.Name = L"button1";
+		button.Type = UIClass::UI_Button;
+		button.Order = 0;
+		button.Locked = true;
+		button.Props["text"] = "Paste";
+		document.Nodes.push_back(std::move(button));
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("d:ProjectedProperties=")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("d:Locked=\"true\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument unchanged;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto edited = canonical;
+		const auto text = edited.find(" Text=\"Paste\"");
+		CUI_EXPECT_TRUE(text != std::string::npos);
+		if (text != std::string::npos)
+			edited.replace(text, std::string(" Text=\"Paste\"").size(),
+				" Text=\"Live Preview\"");
+		DesignerModel::DesignDocument changed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			edited, changed, &error));
+		CUI_EXPECT_EQ(std::string("Paste"),
+			changed.Nodes.front().Props["text"].get<std::string>());
+		CUI_EXPECT_EQ(std::string("Live Preview"), changed.Nodes.front()
+			.Props["metadata"]["Text"]["value"].get<std::string>());
+
+		DesignerModel::MaterializedControlTree tree;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentMaterializer::Materialize(
+			changed, tree, &error));
+		CUI_EXPECT_EQ(1ULL, tree.Roots.size());
+		if (!tree.Roots.empty())
+			CUI_EXPECT_EQ(std::wstring(L"Live Preview"),
+				tree.Roots.front()->Text);
+		CUI_EXPECT_EQ(1ULL, tree.Controls.size());
+		if (!tree.Controls.empty())
+			CUI_EXPECT_TRUE(tree.Controls.front()->IsLocked);
+
+		auto invalidLocked = canonical;
+		const auto lockedValue = invalidLocked.find("d:Locked=\"true\"");
+		CUI_EXPECT_TRUE(lockedValue != std::string::npos);
+		if (lockedValue != std::string::npos)
+			invalidLocked.replace(
+				lockedValue, std::string("d:Locked=\"true\"").size(),
+				"d:Locked=\"sometimes\"");
+		DesignerModel::DesignDocument preserved = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidLocked, preserved, &error));
+		CUI_EXPECT_EQ(document, preserved);
+	});
+
+	runner.Add("XAML syntax diagnostics expose Unicode editor coordinates transactionally", []
+	{
+		std::string malformed =
+			"<Form xmlns=\"urn:cui\">\n  <Button Text=\"";
+		malformed += "\xE4\xB8\xAD\xE6\x96\x87";
+		malformed += "\" Broken=>\n</Form>";
+		const std::wstring utf16Source =
+			L"<Form xmlns=\"urn:cui\">\n  <Button Text=\""
+			L"\x4E2D\x6587" L"\" Broken=>\n</Form>";
+		const auto expectedOffset = utf16Source.find(L"=>") + 1;
+		const auto secondLine = utf16Source.find(L'\n') + 1;
+
+		DesignerModel::DesignDocument document;
+		document.Form.Name = L"PreserveMe";
+		const auto baseline = document;
+		std::wstring error;
+		DesignerModel::XamlDocumentDiagnostic diagnostic;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			malformed, document, &error, &diagnostic));
+		CUI_EXPECT_EQ(baseline, document);
+		CUI_EXPECT_FALSE(error.empty());
+		CUI_EXPECT_EQ(error, diagnostic.Message);
+		CUI_EXPECT_TRUE(diagnostic.HasLocation());
+		CUI_EXPECT_TRUE(diagnostic.HasSourceOffset());
+		CUI_EXPECT_EQ(2ULL, static_cast<unsigned long long>(diagnostic.Line));
+		CUI_EXPECT_EQ(
+			static_cast<unsigned long long>(expectedOffset - secondLine + 1),
+			static_cast<unsigned long long>(diagnostic.Column));
+		CUI_EXPECT_EQ(
+			static_cast<unsigned long long>(expectedOffset),
+			static_cast<unsigned long long>(diagnostic.Utf16Offset));
+	});
+
+	runner.Add("XAML semantic diagnostics locate failing attributes and elements", []
+	{
+		std::string invalidProperty =
+			"<Form xmlns=\"urn:cui\">\r\n  <Button Text=\"";
+		invalidProperty += "\xE4\xB8\xAD\xE6\x96\x87";
+		invalidProperty += "\" Visibility=\"Vanished\"/>\r\n</Form>";
+		const std::wstring propertySource =
+			L"<Form xmlns=\"urn:cui\">\r\n  <Button Text=\""
+			L"\x4E2D\x6587" L"\" Visibility=\"Vanished\"/>\r\n</Form>";
+		const auto propertyOffset = propertySource.find(L"Visibility");
+		const auto propertyPosition = CuiTextEdit::GetTextPosition(
+			propertySource, propertyOffset);
+
+		DesignerModel::DesignDocument document;
+		document.Form.Name = L"PreserveSemanticBaseline";
+		const auto baseline = document;
+		std::wstring error;
+		DesignerModel::XamlDocumentDiagnostic diagnostic;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidProperty, document, &error, &diagnostic));
+		CUI_EXPECT_EQ(baseline, document);
+		CUI_EXPECT_EQ(error, diagnostic.Message);
+		CUI_EXPECT_TRUE(diagnostic.HasLocation());
+		CUI_EXPECT_TRUE(diagnostic.HasSourceOffset());
+		CUI_EXPECT_EQ(
+			static_cast<unsigned long long>(propertyOffset),
+			static_cast<unsigned long long>(diagnostic.Utf16Offset));
+		CUI_EXPECT_EQ(
+			static_cast<unsigned long long>(propertyPosition.line),
+			static_cast<unsigned long long>(diagnostic.Line));
+		CUI_EXPECT_EQ(
+			static_cast<unsigned long long>(propertyPosition.column),
+			static_cast<unsigned long long>(diagnostic.Column));
+
+		const std::string invalidElement =
+			"<Form xmlns=\"urn:cui\">\n  <UnknownWidget/>\n</Form>";
+		const std::wstring elementSource =
+			L"<Form xmlns=\"urn:cui\">\n  <UnknownWidget/>\n</Form>";
+		const auto elementOffset = elementSource.find(L"UnknownWidget");
+		diagnostic = {};
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidElement, document, &error, &diagnostic));
+		CUI_EXPECT_EQ(baseline, document);
+		CUI_EXPECT_EQ(
+			static_cast<unsigned long long>(elementOffset),
+			static_cast<unsigned long long>(diagnostic.Utf16Offset));
+	});
+
+	runner.Add("Text search replace and caret coordinates stay editor consistent", []
+	{
+		const std::wstring text = L"Alpha alpha ALPHA";
+		CuiTextEdit::FindOptions insensitive;
+		CUI_EXPECT_EQ(0, CuiTextEdit::FindText(text, L"alpha", 0, false, insensitive));
+		CUI_EXPECT_EQ(6, CuiTextEdit::FindText(text, L"alpha", 1, false, insensitive));
+		CUI_EXPECT_EQ(12, CuiTextEdit::FindText(text, L"alpha", -1, true, insensitive));
+
+		CuiTextEdit::FindOptions exact;
+		exact.matchCase = true;
+		exact.wrap = false;
+		CUI_EXPECT_EQ(6, CuiTextEdit::FindText(text, L"alpha", 0, false, exact));
+		CUI_EXPECT_EQ(-1, CuiTextEdit::FindText(text, L"alpha", 7, false, exact));
+		CUI_EXPECT_FALSE(CuiTextEdit::MatchesAt(text, L"alpha", 0, true));
+		CUI_EXPECT_TRUE(CuiTextEdit::MatchesAt(text, L"alpha", 0, false));
+
+		const auto replaced = CuiTextEdit::ReplaceAllText(
+			text, L"alpha", L"item", false);
+		CUI_EXPECT_EQ(3ULL,
+			static_cast<unsigned long long>(replaced.replacements));
+		CUI_EXPECT_EQ(std::wstring(L"item item item"), replaced.text);
+		const auto nonOverlapping = CuiTextEdit::ReplaceAllText(
+			L"aaaa", L"aa", L"b", true);
+		CUI_EXPECT_EQ(2ULL,
+			static_cast<unsigned long long>(nonOverlapping.replacements));
+		CUI_EXPECT_EQ(std::wstring(L"bb"), nonOverlapping.text);
+		const auto unchanged = CuiTextEdit::ReplaceAllText(
+			text, L"", L"ignored", false);
+		CUI_EXPECT_EQ(0ULL,
+			static_cast<unsigned long long>(unchanged.replacements));
+		CUI_EXPECT_EQ(text, unchanged.text);
+
+		const std::wstring positions = L"A\r\n\xD83D\xDE00" L"B\nZ";
+		const auto firstLine = CuiTextEdit::GetTextPosition(positions, 1);
+		CUI_EXPECT_EQ(1ULL, static_cast<unsigned long long>(firstLine.line));
+		CUI_EXPECT_EQ(2ULL, static_cast<unsigned long long>(firstLine.column));
+		const auto secondLine = CuiTextEdit::GetTextPosition(positions, 3);
+		CUI_EXPECT_EQ(2ULL, static_cast<unsigned long long>(secondLine.line));
+		CUI_EXPECT_EQ(1ULL, static_cast<unsigned long long>(secondLine.column));
+		const auto afterEmoji = CuiTextEdit::GetTextPosition(positions, 5);
+		CUI_EXPECT_EQ(2ULL, static_cast<unsigned long long>(afterEmoji.line));
+		CUI_EXPECT_EQ(2ULL, static_cast<unsigned long long>(afterEmoji.column));
+		const auto thirdLine = CuiTextEdit::GetTextPosition(positions, 7);
+		CUI_EXPECT_EQ(3ULL, static_cast<unsigned long long>(thirdLine.line));
+		CUI_EXPECT_EQ(1ULL, static_cast<unsigned long long>(thirdLine.column));
+
+		RichTextBox editor(L"alpha beta", 0, 0, 240, 100);
+		int selectionChanges = 0;
+		editor.OnSelectionChanged +=
+			[&selectionChanges](Control*) { selectionChanges++; };
+		editor.Select(0, 5);
+		CUI_EXPECT_EQ(1, selectionChanges);
+		editor.Select(0, 5);
+		CUI_EXPECT_EQ(1, selectionChanges);
+		editor.InsertText(L"");
+		CUI_EXPECT_EQ(std::wstring(L" beta"), editor.Text);
+		CUI_EXPECT_EQ(2, selectionChanges);
+		editor.Undo();
+		CUI_EXPECT_EQ(std::wstring(L"alpha beta"), editor.Text);
+		CUI_EXPECT_EQ(3, selectionChanges);
+		CUI_EXPECT_EQ(5, editor.GetSelectionLength());
+	});
+
 	runner.Add("Designer document graph centralizes identity parent and order resolution", []
 	{
 		DesignerModel::DesignDocument document;
@@ -8373,6 +9382,7 @@ int main()
 		node.Id = document.AllocateNodeId();
 		node.Name = L"nameInput";
 		node.Type = UIClass::UI_TextBox;
+		node.Locked = true;
 		node.Props["showValidationBorder"] = false;
 		node.Props["showValidationToolTip"] = true;
 		node.Props["validationBorderThickness"] = 3.5;
@@ -8410,6 +9420,7 @@ int main()
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("id=\"1\"") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("parentId=\"1\"") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("locked=\"true\"") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("<dataContext>") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("<styleSheet>") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("requiredStates=\"Focused\"") != std::string::npos);
@@ -12220,6 +13231,232 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(cpp.find(
 			"fancy->OnSeverityInvoked.Subscribe(std::bind_front(&CustomCodeFormGenerated::HandleSeverityInvoked, this))")
 			!= std::string::npos);
+	});
+
+	runner.Add("XAML editor assistance handles lexical context, matching, and indentation", []
+	{
+		using namespace DesignerModel::XamlEditorAssist;
+		const std::wstring markup =
+			L"<Panel Text=\"1 > 0\"><!-- <Ignored /> --><Button /></Panel>";
+		const auto tags = ScanTags(markup);
+		CUI_EXPECT_EQ(static_cast<size_t>(3), tags.size());
+		CUI_EXPECT_EQ(std::wstring(L"Panel"), tags.front().Name);
+		CUI_EXPECT_EQ(TagKind::SelfClosing, tags[1].Kind);
+		const auto match = FindTagMatch(markup, 2);
+		CUI_EXPECT_TRUE(match.HasMatch());
+		CUI_EXPECT_EQ(static_cast<size_t>(2), match.Ranges.size());
+
+		const auto element = GetCompletionContext(L"<Bu", 3);
+		CUI_EXPECT_EQ(CompletionKind::Element, element.Kind);
+		CUI_EXPECT_EQ(std::wstring(L"Bu"), element.Prefix);
+		const auto attribute = GetCompletionContext(L"<Button Te", 10);
+		CUI_EXPECT_EQ(CompletionKind::Attribute, attribute.Kind);
+		CUI_EXPECT_EQ(std::wstring(L"Button"), attribute.ElementName);
+		CUI_EXPECT_EQ(std::wstring(L"Te"), attribute.Prefix);
+		const std::wstring valueText = L"<Button Checked=\"tr";
+		const auto value = GetCompletionContext(valueText, valueText.size());
+		CUI_EXPECT_EQ(CompletionKind::AttributeValue, value.Kind);
+		CUI_EXPECT_EQ(std::wstring(L"Checked"), value.AttributeName);
+		CUI_EXPECT_EQ(std::wstring(L"tr"), value.Prefix);
+
+		const std::wstring closingText = L"<Form><Panel></Pa";
+		const auto closing = GetCompletionContext(
+			closingText, closingText.size());
+		CUI_EXPECT_EQ(CompletionKind::ClosingElement, closing.Kind);
+		const auto open = OpenElementNames(closingText, closingText.size());
+		CUI_EXPECT_EQ(static_cast<size_t>(2), open.size());
+		CUI_EXPECT_EQ(std::wstring(L"Panel"), open.front());
+
+		CompletionContext filteredContext;
+		filteredContext.Kind = CompletionKind::Attribute;
+		filteredContext.Prefix = L"T";
+		filteredContext.UsedAttributes = { L"Text" };
+		const auto filtered = FilterSuggestions(
+			{ L"Text", L"Top", L"Tag", L"top" }, filteredContext);
+		CUI_EXPECT_EQ(static_cast<size_t>(2), filtered.size());
+		CUI_EXPECT_EQ(std::wstring(L"Tag"), filtered.front());
+		CUI_EXPECT_EQ(std::wstring(L"Top"), filtered.back());
+
+		const auto between = BuildNewLineEdit(L"<Panel></Panel>", 7, 7);
+		CUI_EXPECT_EQ(std::wstring(L"\r\n\t\r\n"), between.Text);
+		CUI_EXPECT_EQ(static_cast<size_t>(3), between.CaretOffset);
+		const std::wstring nested = L"\t<Button>";
+		const auto nestedLine = BuildNewLineEdit(
+			nested, nested.size(), nested.size());
+		CUI_EXPECT_EQ(std::wstring(L"\r\n\t\t"), nestedLine.Text);
+
+		const std::wstring navigable =
+			LR"(<Form xmlns="urn:cui" xmlns:x="urn:x" xmlns:d="urn:d" x:Name="MainForm">
+	<Panel x:Name="layout" DesignId="7">
+		<Button x:Name="runButton" DesignId="9" Text="Run > Stop" />
+		<d:DesignProps><d:Member name="notAControl">value</d:Member></d:DesignProps>
+	</Panel>
+</Form>)";
+		const auto buttonPosition = navigable.find(L"Run > Stop");
+		const auto buttonElement = FindElementAtPosition(
+			navigable, buttonPosition);
+		CUI_EXPECT_TRUE(buttonElement.has_value());
+		CUI_EXPECT_EQ(9, buttonElement->StableId);
+		CUI_EXPECT_EQ(std::wstring(L"runButton"), buttonElement->Name);
+		const auto betweenPosition = navigable.find(L"</Panel>") - 1;
+		const auto parentElement = FindElementAtPosition(
+			navigable, betweenPosition);
+		CUI_EXPECT_TRUE(parentElement.has_value());
+		CUI_EXPECT_EQ(7, parentElement->StableId);
+		const auto byStableId = FindElementByDesignIdentity(
+			navigable, 9, L"staleName");
+		const auto byName = FindElementByDesignIdentity(
+			navigable, 0, L"LAYOUT");
+		CUI_EXPECT_TRUE(byStableId.has_value());
+		CUI_EXPECT_EQ(std::wstring(L"Button"), byStableId->ElementName);
+		CUI_EXPECT_TRUE(byName.has_value());
+		CUI_EXPECT_EQ(7, byName->StableId);
+		const auto metadataPosition = navigable.find(L"notAControl");
+		const auto metadataOwner = FindElementAtPosition(
+			navigable, metadataPosition);
+		CUI_EXPECT_TRUE(metadataOwner.has_value());
+		CUI_EXPECT_EQ(7, metadataOwner->StableId);
+	});
+
+	runner.Add("XAML syntax coloring is tolerant and editor-history neutral", []
+	{
+		using namespace DesignerModel::XamlEditorAssist;
+		const std::wstring source =
+			L"<?xml version=\"1.0\"?><Form xmlns=\"urn:cui\">"
+			L"<local:Button x:Name=\"run\" Text=\"1 > 0\">&amp;"
+			L"<!-- <Ignored Value=\"x\"/> --><![CDATA[<raw/>]]>"
+			L"</local:Button></Form>";
+		const auto syntax = ScanXamlSyntax(source);
+		auto hasSpan = [&](XamlSyntaxKind kind, const std::wstring& value)
+		{
+			return std::any_of(syntax.begin(), syntax.end(),
+				[&](const XamlSyntaxSpan& span)
+				{
+					return span.Kind == kind
+						&& source.substr(span.Start, span.Length) == value;
+				});
+		};
+		CUI_EXPECT_TRUE(hasSpan(
+			XamlSyntaxKind::ProcessingInstruction,
+			L"<?xml version=\"1.0\"?>"));
+		CUI_EXPECT_TRUE(hasSpan(XamlSyntaxKind::ElementName, L"local:Button"));
+		CUI_EXPECT_TRUE(hasSpan(XamlSyntaxKind::AttributeName, L"x:Name"));
+		CUI_EXPECT_TRUE(hasSpan(XamlSyntaxKind::AttributeValue, L"\"1 > 0\""));
+		CUI_EXPECT_TRUE(hasSpan(XamlSyntaxKind::EntityReference, L"&amp;"));
+		CUI_EXPECT_TRUE(hasSpan(
+			XamlSyntaxKind::Comment,
+			L"<!-- <Ignored Value=\"x\"/> -->"));
+		CUI_EXPECT_TRUE(hasSpan(XamlSyntaxKind::CData, L"<![CDATA[<raw/>]]>"));
+		CUI_EXPECT_FALSE(hasSpan(XamlSyntaxKind::ElementName, L"Ignored"));
+		CUI_EXPECT_FALSE(hasSpan(XamlSyntaxKind::ElementName, L"raw"));
+
+		const std::wstring incomplete = L"<Button Text=\"unfinished";
+		const auto incompleteSyntax = ScanXamlSyntax(incomplete);
+		CUI_EXPECT_TRUE(std::any_of(
+			incompleteSyntax.begin(), incompleteSyntax.end(),
+			[&](const XamlSyntaxSpan& span)
+			{
+				return span.Kind == XamlSyntaxKind::AttributeValue
+					&& incomplete.substr(span.Start, span.Length)
+						== L"\"unfinished";
+			}));
+
+		RichTextBox editor(source, 0, 0, 400, 200);
+		editor.Select(3, 5);
+		editor.SetTextStyleRanges({
+			{ -4, 5, Colors::DarkGreen },
+			{ static_cast<int>(source.size() - 2), 50, Colors::Sienna4 },
+			{ 2, 0, Colors::DimGrey } });
+		const auto& styles = editor.GetTextStyleRanges();
+		CUI_EXPECT_EQ(static_cast<size_t>(2), styles.size());
+		CUI_EXPECT_EQ(0, styles[0].Start);
+		CUI_EXPECT_EQ(5, styles[0].Length);
+		CUI_EXPECT_EQ(2, styles[1].Length);
+		CUI_EXPECT_EQ(3, editor.SelectionStart);
+		CUI_EXPECT_EQ(8, editor.SelectionEnd);
+		CUI_EXPECT_FALSE(editor.CanUndo());
+		editor.InsertText(L"X");
+		CUI_EXPECT_TRUE(editor.GetTextStyleRanges().empty());
+		CUI_EXPECT_TRUE(editor.CanUndo());
+	});
+
+	runner.Add("XAML line indentation preserves touched lines and one-step history", []
+	{
+		using namespace DesignerModel::XamlEditorAssist;
+		auto apply = [](const std::wstring& source, const LineIndentEdit& edit)
+			{
+				return source.substr(0, edit.ReplaceStart) + edit.Text
+					+ source.substr(edit.ReplaceStart + edit.ReplaceLength);
+			};
+
+		const std::wstring firstTwo = L"A\r\nB";
+		const auto firstLine = BuildLineIndentEdit(firstTwo, 0, 3, false);
+		CUI_EXPECT_TRUE(firstLine.Changed);
+		CUI_EXPECT_EQ(3ULL,
+			static_cast<unsigned long long>(firstLine.ReplaceLength));
+		CUI_EXPECT_EQ(std::wstring(L"\tA\r\nB"), apply(firstTwo, firstLine));
+
+		const std::wstring mixed =
+			L"\t<Button/>\r\n    <Label/>\r\n<Next/>";
+		const auto mixedEnd = mixed.find(L"<Next/>");
+		const auto outdented = BuildLineIndentEdit(
+			mixed, 0, mixedEnd, true);
+		CUI_EXPECT_TRUE(outdented.Changed);
+		CUI_EXPECT_EQ(
+			std::wstring(L"<Button/>\r\n<Label/>\r\n<Next/>"),
+			apply(mixed, outdented));
+		const auto unchanged = BuildLineIndentEdit(
+			L"<Button/>", 4, 4, true);
+		CUI_EXPECT_FALSE(unchanged.Changed);
+
+		const std::wstring source =
+			L"<Form>\r\n\t<Button/>\r\n\t<Label/>\r\n</Form>";
+		const size_t selectionStart = source.find(L"\t<Button/>");
+		const size_t selectionEnd = source.find(L"\r\n</Form>");
+		const auto indented = BuildLineIndentEdit(
+			source, selectionStart, selectionEnd, false);
+		const auto expected = apply(source, indented);
+		RichTextBox editor(source, 0, 0, 400, 200);
+		editor.Select(
+			static_cast<int>(indented.ReplaceStart),
+			static_cast<int>(indented.ReplaceLength));
+		editor.InsertTextAndSelect(
+			indented.Text,
+			static_cast<int>(indented.SelectionStart),
+			static_cast<int>(
+				indented.SelectionEnd - indented.SelectionStart));
+		CUI_EXPECT_EQ(expected, editor.Text);
+		CUI_EXPECT_TRUE(editor.CanUndo());
+		CUI_EXPECT_FALSE(editor.CanRedo());
+		CUI_EXPECT_EQ(
+			static_cast<int>(indented.SelectionStart), editor.SelectionStart);
+		CUI_EXPECT_EQ(
+			static_cast<int>(indented.SelectionEnd), editor.SelectionEnd);
+
+		editor.Undo();
+		CUI_EXPECT_EQ(source, editor.Text);
+		CUI_EXPECT_TRUE(editor.CanRedo());
+		editor.Redo();
+		CUI_EXPECT_EQ(expected, editor.Text);
+		CUI_EXPECT_EQ(
+			static_cast<int>(indented.SelectionStart), editor.SelectionStart);
+		CUI_EXPECT_EQ(
+			static_cast<int>(indented.SelectionEnd), editor.SelectionEnd);
+
+		const std::wstring replacement = L"<Form><Button/></Form>";
+		editor.Select(3, 5);
+		editor.ReplaceAllTextAndSelect(replacement, 7, 2);
+		CUI_EXPECT_EQ(replacement, editor.Text);
+		CUI_EXPECT_EQ(7, editor.SelectionStart);
+		CUI_EXPECT_EQ(9, editor.SelectionEnd);
+		editor.Undo();
+		CUI_EXPECT_EQ(expected, editor.Text);
+		CUI_EXPECT_EQ(3, editor.SelectionStart);
+		CUI_EXPECT_EQ(8, editor.SelectionEnd);
+		editor.Redo();
+		CUI_EXPECT_EQ(replacement, editor.Text);
+		CUI_EXPECT_EQ(7, editor.SelectionStart);
+		CUI_EXPECT_EQ(9, editor.SelectionEnd);
 	});
 
 	runner.Add("Registered custom probes validate direct properties and canonicalize tool metadata", []

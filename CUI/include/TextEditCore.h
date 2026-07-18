@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cwctype>
 #include <string>
 
 namespace CuiTextEdit
@@ -36,6 +37,24 @@ namespace CuiTextEdit
 		int caret = 0;
 		std::wstring removedText;
 		std::wstring insertedText;
+	};
+
+	struct FindOptions
+	{
+		bool matchCase = false;
+		bool wrap = true;
+	};
+
+	struct ReplaceAllResult
+	{
+		std::wstring text;
+		size_t replacements = 0;
+	};
+
+	struct TextPosition
+	{
+		size_t line = 1;
+		size_t column = 1;
 	};
 
 	inline int ClampIndex(int index, size_t textLength)
@@ -221,6 +240,147 @@ namespace CuiTextEdit
 				return i;
 		}
 		return static_cast<int>(text.size());
+	}
+
+	inline wchar_t FoldSearchCharacter(wchar_t ch)
+	{
+		return static_cast<wchar_t>(std::towlower(static_cast<wint_t>(ch)));
+	}
+
+	inline bool MatchesAt(
+		const std::wstring& text,
+		const std::wstring& query,
+		size_t position,
+		bool matchCase = false)
+	{
+		if (query.empty() || position > text.size()
+			|| query.size() > text.size() - position)
+		{
+			return false;
+		}
+
+		for (size_t i = 0; i < query.size(); i++)
+		{
+			wchar_t actual = text[position + i];
+			wchar_t expected = query[i];
+			if (!matchCase)
+			{
+				actual = FoldSearchCharacter(actual);
+				expected = FoldSearchCharacter(expected);
+			}
+			if (actual != expected)
+				return false;
+		}
+		return true;
+	}
+
+	/** Finds a UTF-16 substring from startIndex, optionally backwards and wrapping. */
+	inline int FindText(
+		const std::wstring& text,
+		const std::wstring& query,
+		int startIndex,
+		bool backwards = false,
+		const FindOptions& options = {})
+	{
+		if (query.empty() || query.size() > text.size())
+			return -1;
+
+		const int lastStart = static_cast<int>(text.size() - query.size());
+		if (!backwards)
+		{
+			const int first = (std::max)(0, startIndex);
+			for (int i = first; i <= lastStart; i++)
+			{
+				if (MatchesAt(text, query, static_cast<size_t>(i), options.matchCase))
+					return i;
+			}
+			if (!options.wrap) return -1;
+			const int wrappedEnd = (std::min)(lastStart, first - 1);
+			for (int i = 0; i <= wrappedEnd; i++)
+			{
+				if (MatchesAt(text, query, static_cast<size_t>(i), options.matchCase))
+					return i;
+			}
+			return -1;
+		}
+
+		const int first = (std::min)(startIndex, lastStart);
+		for (int i = first; i >= 0; i--)
+		{
+			if (MatchesAt(text, query, static_cast<size_t>(i), options.matchCase))
+				return i;
+		}
+		if (!options.wrap) return -1;
+		const int wrappedEnd = (std::max)(0, first + 1);
+		for (int i = lastStart; i >= wrappedEnd; i--)
+		{
+			if (MatchesAt(text, query, static_cast<size_t>(i), options.matchCase))
+				return i;
+		}
+		return -1;
+	}
+
+	inline ReplaceAllResult ReplaceAllText(
+		const std::wstring& text,
+		const std::wstring& query,
+		const std::wstring& replacement,
+		bool matchCase = false)
+	{
+		ReplaceAllResult result;
+		if (query.empty() || query.size() > text.size())
+		{
+			result.text = text;
+			return result;
+		}
+
+		result.text.reserve(text.size());
+		size_t copiedUntil = 0;
+		for (size_t i = 0; i + query.size() <= text.size();)
+		{
+			if (!MatchesAt(text, query, i, matchCase))
+			{
+				i++;
+				continue;
+			}
+			result.text.append(text, copiedUntil, i - copiedUntil);
+			result.text.append(replacement);
+			result.replacements++;
+			i += query.size();
+			copiedUntil = i;
+		}
+		result.text.append(text, copiedUntil, std::wstring::npos);
+		return result;
+	}
+
+	/** Returns a 1-based user-facing line/column for a UTF-16 caret offset. */
+	inline TextPosition GetTextPosition(const std::wstring& text, size_t index)
+	{
+		index = (std::min)(index, text.size());
+		TextPosition result;
+		for (size_t i = 0; i < index;)
+		{
+			if (text[i] == L'\r')
+			{
+				result.line++;
+				result.column = 1;
+				i++;
+				if (i < index && text[i] == L'\n') i++;
+				continue;
+			}
+			if (text[i] == L'\n')
+			{
+				result.line++;
+				result.column = 1;
+				i++;
+				continue;
+			}
+			if (i + 1 < index && HasSurrogatePairAt(text, static_cast<int>(i)))
+				i += 2;
+			else
+				i++;
+			result.column++;
+		}
+		return result;
 	}
 
 	inline std::wstring LimitReplacementForMaxLength(

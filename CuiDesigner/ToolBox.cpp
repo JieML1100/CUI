@@ -3,6 +3,7 @@
 #include "../CUI/include/Form.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cwctype>
 #include <sstream>
 
@@ -538,6 +539,15 @@ ToolBox::ToolBox(
 		{
 			OnControlSelected(item->Descriptor);
 		};
+		item->OnMouseDown += [this, item](Control*, MouseEventArgs args)
+		{
+			if (args.Buttons != MouseButtons::Left) return;
+			const auto origin = item->GetAbsoluteLocationDip();
+			POINT formPoint{
+				static_cast<LONG>(std::lround(origin.x)) + args.X,
+				static_cast<LONG>(std::lround(origin.y)) + args.Y };
+			OnControlDragReady(item->Descriptor, formPoint);
+		};
 		_itemsHost->AddControl(item);
 		_items.push_back(item);
 	}
@@ -674,6 +684,18 @@ void ToolBox::SetFilterText(const std::wstring& value)
 	if (_filterBox && _filterBox->Text != value)
 		_filterBox->Text = value;
 	ApplyFilterLayout();
+}
+
+void ToolBox::CancelActiveItemPress()
+{
+	if (!this->ParentForm) return;
+	for (auto* item : _items)
+	{
+		if (!item || this->ParentForm->Selected != item) continue;
+		(void)item->ProcessMessage(WM_CANCELMODE, 0, 0, 0, 0);
+		item->InvalidateVisual();
+		break;
+	}
 }
 
 size_t ToolBox::GetVisibleItemCount() const noexcept
