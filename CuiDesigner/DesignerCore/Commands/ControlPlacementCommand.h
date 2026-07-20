@@ -25,6 +25,7 @@ struct DesignerControlPlacementState
 		DesignerPlacementParentKind::Root;
 	std::wstring ParentName;
 	UIClass ParentType = UIClass::UI_Base;
+	std::wstring ComponentContentProperty;
 	int ParentPageIndex = -1;
 	int ChildIndex = -1;
 	POINT Location{ 0, 0 };

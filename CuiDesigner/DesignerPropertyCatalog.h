@@ -10,9 +10,9 @@
 class ResourceLoadContext;
 
 /**
- * Designer-facing projection of one writable runtime property. The runtime
- * metadata remains authoritative; this descriptor only adds an editable
- * literal kind and a representative text value.
+ * Designer-facing projection of one readable runtime property. The runtime
+ * metadata remains authoritative; this descriptor adds a literal kind and a
+ * representative text value. Metadata decides whether the row is editable.
  */
 struct DesignerPropertyDescriptor
 {
@@ -49,13 +49,16 @@ namespace DesignerPropertyCatalog
 	/** Returns writable properties whose value types the Designer can persist. */
 	std::vector<DesignerPropertyDescriptor> GetStyleProperties(Control& target);
 
+	/** Returns readable observable properties, including read-only transient state. */
+	std::vector<DesignerPropertyDescriptor> GetConditionProperties(Control& target);
+
 	/** Returns generic PropertyGrid entries after design visibility/persistence filtering. */
 	std::vector<DesignerPropertyDescriptor> GetBrowsableProperties(Control& target);
 
 	/**
 	 * Returns every Designer-browsable scalar property for the ordinary property
 	 * panel. Unlike GetBrowsableProperties, this includes legacy-serialized
-	 * properties; transient runtime state remains excluded.
+	 * and read-only properties; transient runtime state remains excluded.
 	 */
 	std::vector<DesignerPropertyDescriptor> GetPropertyGridProperties(Control& target);
 
@@ -68,6 +71,15 @@ namespace DesignerPropertyCatalog
 	 * Binding and ControlStyleSheet, without mutating the target.
 	 */
 	bool ValidateStyleValue(
+		Control& target,
+		const std::wstring& propertyName,
+		const DesignerStyleValue& value,
+		std::wstring* outError = nullptr,
+		const std::wstring& resourceBasePath = {},
+		const std::shared_ptr<ResourceLoadContext>& resources = {});
+
+	/** Validates a readable/observable metadata value used by Style Trigger. */
+	bool ValidateConditionValue(
 		Control& target,
 		const std::wstring& propertyName,
 		const DesignerStyleValue& value,
@@ -91,7 +103,8 @@ namespace DesignerPropertyCatalog
 		std::wstring* outCanonicalName = nullptr,
 		DesignerStyleValue* outEffective = nullptr,
 		std::wstring* outError = nullptr,
-		const std::wstring& resourceBasePath = {});
+		const std::wstring& resourceBasePath = {},
+		const std::shared_ptr<ResourceLoadContext>& resources = {});
 
 	/** True when a design edit belongs in the generic typed metadata bag. */
 	bool UsesMetadataPersistence(const BindingPropertyMetadata& metadata) noexcept;
@@ -118,7 +131,8 @@ namespace DesignerPropertyCatalog
 		std::wstring* outCanonicalName = nullptr,
 		DesignerStyleValue* outEffective = nullptr,
 		std::wstring* outError = nullptr,
-		const std::wstring& resourceBasePath = {});
+		const std::wstring& resourceBasePath = {},
+		const std::shared_ptr<ResourceLoadContext>& resources = {});
 
 	/** Clears the Local value, exposes the next value source, and untracks it. */
 	bool ResetAndUntrackValue(

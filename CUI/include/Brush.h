@@ -1,7 +1,10 @@
 #pragma once
 
+#include "Transform.h"
+
 #include <d2d1.h>
 #include <memory>
+#include <optional>
 #include <vector>
 
 class D2DGraphics;
@@ -78,6 +81,10 @@ struct Brush
 	float RadiusX = 0.5f;
 	float RadiusY = 0.5f;
 	std::vector<GradientStop> GradientStops;
+	/** Applied after the brush output is mapped to the painted area. */
+	std::optional<cui::drawing::Transform> Transform;
+	/** Applied in normalized 1x1 brush-output coordinates before mapping. */
+	std::optional<cui::drawing::Transform> RelativeTransform;
 	std::shared_ptr<BitmapSource> ImageSource;
 	ImageBrushStretch Stretch = ImageBrushStretch::Fill;
 	ImageBrushAlignmentX AlignmentX = ImageBrushAlignmentX::Center;
@@ -86,5 +93,6 @@ struct Brush
 	ID2D1Brush* CreateBrush(
 		D2DGraphics& graphics,
 		D2D1_SIZE_F bounds) const;
+	D2D1_MATRIX_3X2_F ToTransformMatrix(D2D1_SIZE_F bounds) const noexcept;
 };
 }

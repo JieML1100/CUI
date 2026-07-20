@@ -6,6 +6,10 @@
 #include <CalendarView.h>
 #include <ColorPicker.h>
 #include <ComboBox.h>
+#include <CollectionViewSource.h>
+#include <ContentControl.h>
+#include <ContentPresenter.h>
+#include <HeaderedContentControl.h>
 #include <ContextMenu.h>
 #include <Convert.h>
 #include <Core/Geometry.h>
@@ -23,11 +27,15 @@
 #include <Layout/StackPanel.h>
 #include <Layout/WrapPanel.h>
 #include <ListView.h>
+#include <ListBox.h>
+#include <ItemsControl.h>
+#include <ItemsPresenter.h>
 #include <LinkLabel.h>
 #include <LoadingRing.h>
 #include <MediaPlayer.h>
 #include <Menu.h>
 #include <NavigationView.h>
+#include <NativeSurface.h>
 #include <NotifyIcon.h>
 #include <NumericUpDown.h>
 #include <ObservableCollection.h>
@@ -36,6 +44,7 @@
 #include <PasswordBox.h>
 #include <ProgressBar.h>
 #include <ProgressRing.h>
+#include <PropertyPath.h>
 #include <PropertyGrid.h>
 #include <PictureBox.h>
 #include <RadioBox.h>
@@ -75,6 +84,7 @@
 #include "../CuiDesigner/DesignerModel/DesignDocumentClipboard.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentEventIndex.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentMaterializer.h"
+#include "../CuiDesigner/DesignerModel/DesignDataResourceEditorModel.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentSerializer.h"
 #include "../CuiDesigner/DesignerModel/DesignDocumentCodeGenInputBuilder.h"
 #include "../CuiDesigner/DesignerModel/RuntimeDocument.h"
@@ -262,6 +272,41 @@ namespace
 
         friend bool operator==(const BindingPayload&, const BindingPayload&) = default;
     };
+
+	class TestItemTemplate final : public IItemTemplate
+	{
+	public:
+		explicit TestItemTemplate(std::wstring dataType)
+			: _dataType(std::move(dataType)) {}
+
+		const std::wstring& DataTypeName() const noexcept override
+		{
+			return _dataType;
+		}
+		std::unique_ptr<Control> Build(
+			const BindingSourceReference& item,
+			size_t,
+			std::wstring* outError) const override
+		{
+			if (!item)
+			{
+				if (outError) *outError = L"missing item";
+				return {};
+			}
+			auto label = std::make_unique<Label>(L"", 0, 0);
+			if (!label->DataBindings.Add(
+				L"Text", *item.Get(), L"Name", BindingMode::OneWay))
+			{
+				if (outError) *outError = L"binding failed";
+				return {};
+			}
+			if (outError) outError->clear();
+			return label;
+		}
+
+	private:
+		std::wstring _dataType;
+	};
 
 	class MetadataObservableObject final : public ObservableObject
 	{
@@ -1810,13 +1855,6 @@ int main()
 		CUI_EXPECT_EQ(2, icons.HitTestItem(10, 10));
 		CUI_EXPECT_EQ(3, icons.HitTestItem(90, 10));
 
-		ListBox listBox(0, 0, 240, 180);
-		listBox.ViewMode = ListViewViewMode::Icon;
-		listBox.RowHeight = 40.0f;
-		listBox.SetItems(items);
-		listBox.GetVisibleItemRange(start, end);
-		CUI_EXPECT_EQ(0, start);
-		CUI_EXPECT_EQ(5, end);
 	});
 
 	runner.Add("ListView incremental batches keep identity and selection bounded", []
@@ -2159,6 +2197,800 @@ int main()
             source.GetValue<BindingPayload>(L"Payload"));
     });
 
+	runner.Add("Typed ItemsSource projects observable records into list controls", []
+	{
+		auto people = std::make_shared<ObservableBindingList>(L"Person");
+		auto alice = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(alice->DefineProperty(L"Name", std::wstring(L"Alice")));
+		auto aliceDetails = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(aliceDetails->DefineProperty(
+			L"Role", std::wstring(L"Admin")));
+		CUI_EXPECT_TRUE(alice->DefineProperty(
+			L"Details", BindingSourceReference(aliceDetails)));
+		people->Items.push_back(BindingSourceReference(alice));
+
+		ObservableObject viewModel;
+		CUI_EXPECT_TRUE(viewModel.DefineProperty(
+			L"People", BindingListReference(people)));
+		BindingSourcePropertyMetadata peopleMetadata;
+		CUI_EXPECT_TRUE(viewModel.TryGetPropertyMetadata(
+			L"People", peopleMetadata));
+		CUI_EXPECT_EQ(BindingValueKind::Object, peopleMetadata.ValueKind);
+		CUI_EXPECT_EQ(std::type_index(typeid(BindingListReference)),
+			peopleMetadata.ValueType);
+
+		ComboBox combo(L"", 0, 0, 180, 28);
+		combo.SetDisplayMemberPath(L"Name");
+		CUI_EXPECT_TRUE(combo.DataBindings.Add(
+			L"ItemsSource", viewModel, L"People", BindingMode::OneWay) != nullptr);
+		CUI_EXPECT_EQ(1, combo.GetItemCount());
+		CUI_EXPECT_EQ(std::wstring(L"Alice"), combo.Items[0]);
+
+		ListView list(0, 0, 240, 120);
+		list.SetDisplayMemberPath(L"Name");
+		list.SetSecondaryMemberPath(L"Details.Role");
+		CUI_EXPECT_TRUE(list.DataBindings.Add(
+			L"ItemsSource", viewModel, L"People", BindingMode::OneWay) != nullptr);
+		CUI_EXPECT_EQ(1ULL, list.Items.size());
+		CUI_EXPECT_EQ(std::wstring(L"Alice"), list.Items[0].Text);
+		CUI_EXPECT_EQ(std::wstring(L"Admin"), list.Items[0].SubText);
+		CUI_EXPECT_TRUE(combo.SelectItem(0));
+		CUI_EXPECT_TRUE(list.SelectItem(0));
+		const auto aliceAccessibilityId = list.Items[0].AccessibilityId;
+
+		CUI_EXPECT_TRUE(alice->SetValue(L"Name", std::wstring(L"Alicia")));
+		CUI_EXPECT_TRUE(aliceDetails->SetValue(
+			L"Role", std::wstring(L"Owner")));
+		CUI_EXPECT_EQ(std::wstring(L"Alicia"), combo.Items[0]);
+		CUI_EXPECT_EQ(std::wstring(L"Alicia"), list.Items[0].Text);
+		CUI_EXPECT_EQ(std::wstring(L"Owner"), list.Items[0].SubText);
+		CUI_EXPECT_EQ(0, combo.SelectedIndex);
+		CUI_EXPECT_EQ(0, list.SelectedIndex);
+		CUI_EXPECT_EQ(aliceAccessibilityId, list.Items[0].AccessibilityId);
+
+		auto bob = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(bob->DefineProperty(L"Name", std::wstring(L"Bob")));
+		auto bobDetails = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(bobDetails->DefineProperty(
+			L"Role", std::wstring(L"Guest")));
+		CUI_EXPECT_TRUE(bob->DefineProperty(
+			L"Details", BindingSourceReference(bobDetails)));
+		people->Items.push_back(BindingSourceReference(bob));
+		CUI_EXPECT_EQ(2, combo.GetItemCount());
+		CUI_EXPECT_EQ(std::wstring(L"Bob"), combo.Items[1]);
+		CUI_EXPECT_EQ(2ULL, list.Items.size());
+		CUI_EXPECT_EQ(std::wstring(L"Guest"), list.Items[1].SubText);
+
+		combo.Items.push_back(L"manual");
+		CUI_EXPECT_FALSE(combo.GetItemsSource());
+		people->Items.push_back(BindingSourceReference(alice));
+		CUI_EXPECT_EQ(3, combo.GetItemCount());
+		CUI_EXPECT_EQ(3ULL, list.Items.size());
+
+		list.Items.push_back(ListViewItem(L"manual"));
+		CUI_EXPECT_FALSE(list.GetItemsSource());
+		people->Items.clear();
+		CUI_EXPECT_EQ(4ULL, list.Items.size());
+	});
+
+	runner.Add("Selector SelectedValue is typed path based and TwoWay", []
+	{
+		auto people = std::make_shared<ObservableBindingList>(L"Person");
+		auto alice = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(alice->DefineProperty(L"Id", 1));
+		CUI_EXPECT_TRUE(alice->DefineProperty(
+			L"Name", std::wstring(L"Alice")));
+		auto bob = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(bob->DefineProperty(L"Id", 2));
+		CUI_EXPECT_TRUE(bob->DefineProperty(
+			L"Name", std::wstring(L"Bob")));
+		people->Items.push_back(BindingSourceReference(alice));
+		people->Items.push_back(BindingSourceReference(bob));
+
+		ObservableObject state;
+		CUI_EXPECT_TRUE(state.DefineProperty(L"SelectedId", 2));
+		ComboBox combo(L"", 0, 0, 180, 28);
+		CUI_EXPECT_EQ(-1, combo.SelectedIndex);
+		combo.SetDisplayMemberPath(L"Name");
+		combo.SetSelectedValuePath(L"Id");
+		CUI_EXPECT_TRUE(combo.DataBindings.Add(
+			L"SelectedValue", state, L"SelectedId", BindingMode::TwoWay)
+			!= nullptr);
+		CUI_EXPECT_EQ(-1, combo.SelectedIndex);
+		combo.SetItemsSource(BindingListReference(people));
+		CUI_EXPECT_EQ(1, combo.SelectedIndex);
+		CUI_EXPECT_EQ(std::wstring(L"Bob"), combo.Text);
+		int selectedId = 0;
+		CUI_EXPECT_TRUE(combo.GetSelectedValue().TryGet(selectedId));
+		CUI_EXPECT_EQ(2, selectedId);
+
+		CUI_EXPECT_TRUE(combo.SelectItem(0));
+		CUI_EXPECT_EQ(1, state.GetValue<int>(L"SelectedId"));
+		CUI_EXPECT_TRUE(alice->SetValue(L"Id", 3));
+		CUI_EXPECT_EQ(3, state.GetValue<int>(L"SelectedId"));
+		CUI_EXPECT_TRUE(state.SetValue(L"SelectedId", 2));
+		CUI_EXPECT_EQ(1, combo.SelectedIndex);
+
+		ListView list(0, 0, 240, 120);
+		list.SetDisplayMemberPath(L"Name");
+		list.SetSelectedValuePath(L"Id");
+		list.SetItemsSource(BindingListReference(people));
+		CUI_EXPECT_TRUE(list.DataBindings.Add(
+			L"SelectedValue", state, L"SelectedId", BindingMode::TwoWay)
+			!= nullptr);
+		CUI_EXPECT_EQ(1, list.SelectedIndex);
+		CUI_EXPECT_TRUE(list.SelectItem(0));
+		CUI_EXPECT_EQ(3, state.GetValue<int>(L"SelectedId"));
+		CUI_EXPECT_EQ(0, combo.SelectedIndex);
+
+		ListBox box(0, 0, 200, 120);
+		box.SetDisplayMemberPath(L"Name");
+		box.SetSelectedValuePath(L"Id");
+		box.SetItemsSource(BindingListReference(people));
+		box.SetSelectedValue(BindingValue(2));
+		CUI_EXPECT_EQ(1, box.SelectedIndex);
+		CUI_EXPECT_TRUE(box.GetSelectedValue().TryGet(selectedId));
+		CUI_EXPECT_EQ(2, selectedId);
+		BindingSourceReference selectedRecord;
+		CUI_EXPECT_TRUE(box.GetSelectedItem().TryGet(selectedRecord));
+		CUI_EXPECT_TRUE(selectedRecord.Shared() == bob);
+		CUI_EXPECT_EQ(2ULL, box.GeneratedItemCount());
+		CUI_EXPECT_TRUE(dynamic_cast<SelectorItem*>(
+			box.GetGeneratedItem(0)) != nullptr);
+		CUI_EXPECT_TRUE(people->Items.Move(1, 0));
+		CUI_EXPECT_EQ(0, box.SelectedIndex);
+		CUI_EXPECT_TRUE(box.GetSelectedItem().TryGet(selectedRecord));
+		CUI_EXPECT_TRUE(selectedRecord.Shared() == bob);
+		CUI_EXPECT_TRUE(bob->SetValue(L"Id", 4));
+		CUI_EXPECT_TRUE(box.GetSelectedValue().TryGet(selectedId));
+		CUI_EXPECT_EQ(4, selectedId);
+		auto* selectedContainer = dynamic_cast<SelectorItem*>(
+			box.GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(selectedContainer != nullptr);
+		CUI_EXPECT_TRUE(selectedContainer->IsSelected);
+
+		ComboBox manual(L"", 0, 0, 180, 28);
+		manual.Items = std::vector<std::wstring>{ L"One", L"Two" };
+		manual.SetSelectedValue(BindingValue(L"Two"));
+		CUI_EXPECT_EQ(1, manual.SelectedIndex);
+		std::wstring manualValue;
+		CUI_EXPECT_TRUE(manual.GetSelectedValue().TryGet(manualValue));
+		CUI_EXPECT_EQ(std::wstring(L"Two"), manualValue);
+	});
+
+	runner.Add("SelectorItem containers scroll navigate and expose selection state", []
+	{
+		auto records = std::make_shared<ObservableBindingList>(L"Row");
+		for (int index = 0; index < 1000; ++index)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(index)));
+			records->Items.push_back(BindingSourceReference(record));
+		}
+
+		ListBox box(0, 0, 180, 72);
+		box.SetDisplayMemberPath(L"Name");
+		auto panel = std::make_shared<ItemsPanelTemplate>();
+		panel->Kind = ItemsPanelKind::VirtualizingStack;
+		panel->ItemHeight = 24.0f;
+		panel->Spacing = 2.5f;
+		panel->CacheLength = 1.0f;
+		box.SetItemsPanel(ItemsPanelTemplateReference(panel));
+		box.SetItemsSource(BindingListReference(records));
+		box.ApplyLayout(cui::core::Rect{ 0.0f, 0.0f, 180.0f, 72.0f });
+		CUI_EXPECT_EQ(1000ULL, box.ItemCount());
+		CUI_EXPECT_TRUE(box.IsVirtualizing());
+		CUI_EXPECT_TRUE(box.GeneratedItemCount() < 20ULL);
+		CUI_EXPECT_TRUE(box.ProcessMessage(WM_KEYDOWN, VK_END, 0, 0, 0));
+		CUI_EXPECT_EQ(999, box.SelectedIndex);
+		CUI_EXPECT_TRUE(box.ScrollYOffset > 0);
+		auto* last = dynamic_cast<SelectorItem*>(box.GetGeneratedItem(999));
+		CUI_EXPECT_TRUE(last != nullptr);
+		CUI_EXPECT_TRUE(last->IsSelected);
+		CUI_EXPECT_TRUE(box.GeneratedItemCount() < 20ULL);
+		CUI_EXPECT_TRUE(box.RecycledItemCount() < 40ULL);
+
+		const int endOffset = box.ScrollYOffset;
+		CUI_EXPECT_TRUE(box.ProcessMessage(
+			WM_MOUSEWHEEL, MAKEWPARAM(0, WHEEL_DELTA), 0, 10, 10));
+		CUI_EXPECT_TRUE(box.ScrollYOffset < endOffset);
+		CUI_EXPECT_TRUE(box.ProcessMessage(WM_KEYDOWN, VK_HOME, 0, 0, 0));
+		CUI_EXPECT_EQ(0, box.SelectedIndex);
+		CUI_EXPECT_EQ(0, box.ScrollYOffset);
+		auto* first = dynamic_cast<SelectorItem*>(box.GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(first != nullptr);
+		CUI_EXPECT_TRUE(first->IsSelected);
+		box.OnGotFocus(&box);
+		CUI_EXPECT_TRUE(HasControlStyleState(
+			first->GetEffectiveStyleState(), ControlStyleState::Focused));
+		box.OnLostFocus(&box);
+		CUI_EXPECT_FALSE(HasControlStyleState(
+			first->GetEffectiveStyleState(), ControlStyleState::Focused));
+	});
+
+	runner.Add("ItemContainerGenerator preserves identity across precise changes", []
+	{
+		auto makeRecord = [](const std::wstring& name)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Name", name));
+			return BindingSourceReference(record);
+		};
+		auto records = std::make_shared<ObservableBindingList>(L"Row");
+		for (const auto* name : { L"A", L"B", L"C", L"D" })
+			records->Items.push_back(makeRecord(name));
+
+		ListBox box(0, 0, 180, 160);
+		box.SetDisplayMemberPath(L"Name");
+		box.SetItemsSource(BindingListReference(records));
+		box.ApplyLayout(cui::core::Rect{ 0.0f, 0.0f, 180.0f, 160.0f });
+		box.SetSelectedIndex(2);
+		auto* cContainer = dynamic_cast<SelectorItem*>(
+			box.GetGeneratedItem(2));
+		CUI_EXPECT_TRUE(cContainer != nullptr);
+
+		records->Items.insert(records->Items.begin(), makeRecord(L"Zero"));
+		CUI_EXPECT_EQ(5ULL, box.ItemCount());
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(3) == cContainer);
+		CUI_EXPECT_EQ(3ULL, cContainer->ItemIndex());
+		CUI_EXPECT_EQ(3, box.SelectedIndex);
+
+		CUI_EXPECT_TRUE(records->Items.Move(3, 1));
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(1) == cContainer);
+		CUI_EXPECT_EQ(1ULL, cContainer->ItemIndex());
+		CUI_EXPECT_EQ(1, box.SelectedIndex);
+
+		auto* oldSelectedAddress = box.GetGeneratedItem(1);
+		CUI_EXPECT_TRUE(records->Items.Replace(1, makeRecord(L"C2")));
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(1) != oldSelectedAddress);
+		CUI_EXPECT_EQ(1, box.SelectedIndex);
+		CUI_EXPECT_EQ(5ULL, box.GeneratedItemCount());
+		auto* host = box.GetItemsHost();
+		CUI_EXPECT_TRUE(host != nullptr);
+		CUI_EXPECT_EQ(5ULL, host->Children.size());
+		for (size_t index = 0; index < box.ItemCount(); ++index)
+			CUI_EXPECT_TRUE(host->Children[index]
+				== box.GetGeneratedItem(index));
+
+		records->Items.erase(records->Items.begin());
+		CUI_EXPECT_EQ(4ULL, box.ItemCount());
+		CUI_EXPECT_EQ(0, box.SelectedIndex);
+		for (size_t index = 0; index < box.ItemCount(); ++index)
+		{
+			auto* item = dynamic_cast<SelectorItem*>(
+				box.GetGeneratedItem(index));
+			CUI_EXPECT_TRUE(item != nullptr);
+			CUI_EXPECT_EQ(index, item->ItemIndex());
+		}
+		auto* changedAddress = box.GetGeneratedItem(0);
+		auto* unrelatedAddress = box.GetGeneratedItem(2);
+		CUI_EXPECT_TRUE(records->Items[0].Get()->TrySetValue(
+			L"Name", BindingValue(L"C3")));
+		// WPF-style ContentPresenter updates the item visual in place; a record
+		// property change must not replace its ListBoxItem container identity.
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(0) == changedAddress);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(2) == unrelatedAddress);
+		auto* refreshed = dynamic_cast<SelectorItem*>(box.GetGeneratedItem(0));
+		auto* refreshedLabel = refreshed
+			? dynamic_cast<Label*>(refreshed->Content()) : nullptr;
+		CUI_EXPECT_TRUE(refreshedLabel != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"C3"), refreshedLabel->Text);
+	});
+
+	runner.Add("Virtual generator anchors scroll and remaps realized containers", []
+	{
+		auto makeRecord = [](int value)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(value)));
+			return BindingSourceReference(record);
+		};
+		auto records = std::make_shared<ObservableBindingList>(L"Row");
+		for (int index = 0; index < 1000; ++index)
+			records->Items.push_back(makeRecord(index));
+		auto panel = std::make_shared<ItemsPanelTemplate>();
+		panel->Kind = ItemsPanelKind::VirtualizingStack;
+		panel->ItemHeight = 20.0f;
+		panel->CacheLength = 0.0f;
+
+		ListBox box(0, 0, 180, 100);
+		box.SetDisplayMemberPath(L"Name");
+		box.SetItemsPanel(ItemsPanelTemplateReference(panel));
+		box.SetItemsSource(BindingListReference(records));
+		box.ApplyLayout(cui::core::Rect{ 0.0f, 0.0f, 180.0f, 100.0f });
+		box.UpdateLayout();
+		box.SetScrollOffset(0, 400);
+		box.SetSelectedIndex(20);
+		auto* anchor = dynamic_cast<SelectorItem*>(box.GetGeneratedItem(20));
+		CUI_EXPECT_TRUE(anchor != nullptr);
+
+		records->Items.insert(records->Items.begin(), makeRecord(-1));
+		CUI_EXPECT_EQ(420, box.ScrollYOffset);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(21) == anchor);
+		CUI_EXPECT_EQ(21ULL, anchor->ItemIndex());
+		CUI_EXPECT_EQ(21, box.SelectedIndex);
+
+		CUI_EXPECT_TRUE(records->Items.Move(21, 25));
+		CUI_EXPECT_EQ(500, box.ScrollYOffset);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(25) == anchor);
+		CUI_EXPECT_EQ(25ULL, anchor->ItemIndex());
+		CUI_EXPECT_EQ(25, box.SelectedIndex);
+
+		records->Items.erase(records->Items.begin());
+		CUI_EXPECT_EQ(480, box.ScrollYOffset);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(24) == anchor);
+		CUI_EXPECT_EQ(24, box.SelectedIndex);
+
+		auto* replacedAddress = box.GetGeneratedItem(24);
+		CUI_EXPECT_TRUE(records->Items.Replace(24, makeRecord(2000)));
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(24) != replacedAddress);
+		CUI_EXPECT_EQ(24, box.SelectedIndex);
+		CUI_EXPECT_TRUE(box.GeneratedItemCount() <= 8ULL);
+		CUI_EXPECT_TRUE(box.RecycledItemCount() <= 16ULL);
+
+		std::vector<BindingSourceReference> snapshot(
+			records->Items.begin(), records->Items.end());
+		records->Items.assign(snapshot.begin(), snapshot.end());
+		CUI_EXPECT_EQ(1000ULL, box.ItemCount());
+		CUI_EXPECT_TRUE(box.GeneratedItemCount() <= 8ULL);
+	});
+
+	runner.Add("CollectionViewSource filters sorts and preserves item identity", []
+	{
+		auto makeRecord = [](const std::wstring& name, int score, bool active)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Name", name));
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Score", score));
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Active", active));
+			return record;
+		};
+		auto alice = makeRecord(L"Alice", 20, true);
+		auto bob = makeRecord(L"Bob", 30, true);
+		auto carol = makeRecord(L"Carol", 40, false);
+		auto dora = makeRecord(L"Dora", 30, true);
+		auto source = std::make_shared<ObservableBindingList>(L"Person");
+		for (const auto& record : { alice, bob, carol, dora })
+			source->Items.push_back(BindingSourceReference(record));
+
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetFilterDescriptions({ CollectionFilterDescription{
+			L"Active", CollectionFilterOperator::Equals, BindingValue(true), false } });
+		view->SetSortDescriptions({
+			CollectionSortDescription{
+				L"Score", CollectionSortDirection::Descending, false },
+			CollectionSortDescription{
+				L"Name", CollectionSortDirection::Ascending, true } });
+		std::vector<CollectionChangeAction> changes;
+		auto changed = view->SubscribeChanged(
+			[&](const CollectionChangedEventArgs& change)
+			{ changes.push_back(change.Action); });
+		view->SetSource(BindingListReference(source));
+		CUI_EXPECT_EQ(3ULL, view->Count());
+		BindingSourceReference item;
+		CUI_EXPECT_TRUE(view->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == bob);
+		CUI_EXPECT_TRUE(view->TryGetItem(1, item));
+		CUI_EXPECT_TRUE(item.Shared() == dora);
+		CUI_EXPECT_TRUE(view->TryGetItem(2, item));
+		CUI_EXPECT_TRUE(item.Shared() == alice);
+		CUI_EXPECT_TRUE(std::none_of(changes.begin(), changes.end(),
+			[](auto action) { return action == CollectionChangeAction::Reset; }));
+
+		ListBox box(0, 0, 180, 120);
+		box.SetDisplayMemberPath(L"Name");
+		box.SetItemsSource(BindingListReference(view));
+		box.SetSelectedIndex(1);
+		auto* bobContainer = box.GetGeneratedItem(0);
+		auto* doraContainer = box.GetGeneratedItem(1);
+		auto* aliceContainer = box.GetGeneratedItem(2);
+		CUI_EXPECT_TRUE(view->MoveCurrentToPosition(1));
+		CUI_EXPECT_TRUE(view->CurrentItem().Shared() == dora);
+
+		CUI_EXPECT_TRUE(alice->SetValue(L"Score", 50));
+		CUI_EXPECT_TRUE(view->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == alice);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(0) == aliceContainer);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(1) == bobContainer);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(2) == doraContainer);
+		CUI_EXPECT_EQ(2, box.SelectedIndex);
+		CUI_EXPECT_EQ(2, view->CurrentPosition());
+		CUI_EXPECT_TRUE(view->CurrentItem().Shared() == dora);
+
+		CUI_EXPECT_TRUE(dora->SetValue(L"Active", false));
+		CUI_EXPECT_EQ(2ULL, view->Count());
+		CUI_EXPECT_EQ(1, view->CurrentPosition());
+		CUI_EXPECT_TRUE(view->CurrentItem().Shared() == bob);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(0) == aliceContainer);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(1) == bobContainer);
+		CUI_EXPECT_EQ(1, box.SelectedIndex);
+
+		auto erin = makeRecord(L"Erin", 35, true);
+		source->Items.push_back(BindingSourceReference(erin));
+		CUI_EXPECT_EQ(3ULL, view->Count());
+		CUI_EXPECT_TRUE(view->TryGetItem(1, item));
+		CUI_EXPECT_TRUE(item.Shared() == erin);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(0) == aliceContainer);
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(2) == bobContainer);
+		CUI_EXPECT_EQ(2, box.SelectedIndex);
+		CUI_EXPECT_TRUE(std::none_of(changes.begin(), changes.end(),
+			[](auto action) { return action == CollectionChangeAction::Reset; }));
+	});
+
+	runner.Add("CollectionViewSource builds hierarchical live groups", []
+	{
+		auto makeRecord = [](const std::wstring& name,
+			const std::wstring& department, const std::wstring& team, int score)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Name", name));
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Department", department));
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Team", team));
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Score", score));
+			return record;
+		};
+		auto alice = makeRecord(L"Alice", L"Engineering", L"Core", 20);
+		auto bob = makeRecord(L"Bob", L"Sales", L"East", 30);
+		auto carol = makeRecord(L"Carol", L"Engineering", L"UI", 40);
+		auto dora = makeRecord(L"Dora", L"Engineering", L"Core", 50);
+		auto source = std::make_shared<ObservableBindingList>(L"Person");
+		for (const auto& item : { alice, bob, carol, dora })
+			source->Items.push_back(BindingSourceReference(item));
+
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetGroupDescriptions({
+			{ L"Department", CollectionSortDirection::Ascending, true },
+			{ L"Team", CollectionSortDirection::Descending, true } });
+		view->SetAggregateDescriptions({
+			{ L"RecordCount", L"", CollectionAggregateFunction::Count },
+			{ L"TotalScore", L"Score", CollectionAggregateFunction::Sum },
+			{ L"AverageScore", L"Score", CollectionAggregateFunction::Average },
+			{ L"MaxScore", L"Score", CollectionAggregateFunction::Max } });
+		view->SetSortDescriptions({
+			{ L"Score", CollectionSortDirection::Descending, false } });
+		int groupsChanged = 0;
+		auto groupConnection = view->SubscribeGroupsChanged(
+			[&] { ++groupsChanged; });
+		std::vector<CollectionChangeAction> changes;
+		auto itemConnection = view->SubscribeChanged(
+			[&](const auto& change) { changes.push_back(change.Action); });
+		view->SetSource(BindingListReference(source));
+		CUI_EXPECT_EQ(4ULL, view->Count());
+		CUI_EXPECT_EQ(5ULL, view->Groups().size());
+		CUI_EXPECT_EQ(std::wstring(L"Engineering"),
+			view->Groups()[0].Key.ToString());
+		CUI_EXPECT_EQ(0ULL, view->Groups()[0].Level);
+		CUI_EXPECT_EQ(0ULL, view->Groups()[0].StartIndex);
+		CUI_EXPECT_EQ(3ULL, view->Groups()[0].ItemCount);
+		CUI_EXPECT_EQ(std::wstring(L"3"),
+			view->Groups()[0].Aggregates.at(L"RecordCount").ToString());
+		double aggregateValue = 0.0;
+		CUI_EXPECT_TRUE(view->Groups()[0].Aggregates.at(
+			L"TotalScore").TryGetDouble(aggregateValue));
+		CUI_EXPECT_EQ(110.0, aggregateValue);
+		CUI_EXPECT_TRUE(view->Groups()[0].Aggregates.at(
+			L"AverageScore").TryGetDouble(aggregateValue));
+		CUI_EXPECT_NEAR(110.0 / 3.0, aggregateValue, 0.0001);
+		CUI_EXPECT_EQ(std::wstring(L"50"),
+			view->Groups()[0].Aggregates.at(L"MaxScore").ToString());
+		CUI_EXPECT_EQ(std::wstring(L"UI"), view->Groups()[1].Key.ToString());
+		CUI_EXPECT_EQ(1ULL, view->Groups()[1].Level);
+		CUI_EXPECT_EQ(1, groupsChanged);
+
+		BindingSourceReference item;
+		CUI_EXPECT_TRUE(view->TryGetItem(0, item));
+		CUI_EXPECT_TRUE(item.Shared() == carol);
+		CUI_EXPECT_TRUE(view->TryGetItem(1, item));
+		CUI_EXPECT_TRUE(item.Shared() == dora);
+		CUI_EXPECT_TRUE(view->TryGetItem(2, item));
+		CUI_EXPECT_TRUE(item.Shared() == alice);
+
+		CUI_EXPECT_TRUE(bob->SetValue(L"Department", std::wstring(L"Engineering")));
+		CUI_EXPECT_TRUE(groupsChanged >= 2);
+		CUI_EXPECT_EQ(4ULL, view->Groups().front().ItemCount);
+		CUI_EXPECT_TRUE(view->Groups().front().Aggregates.at(
+			L"TotalScore").TryGetDouble(aggregateValue));
+		CUI_EXPECT_EQ(140.0, aggregateValue);
+		const int beforeAggregateChange = groupsChanged;
+		CUI_EXPECT_TRUE(alice->SetValue(L"Score", 25));
+		CUI_EXPECT_TRUE(groupsChanged > beforeAggregateChange);
+		CUI_EXPECT_TRUE(view->Groups().front().Aggregates.at(
+			L"TotalScore").TryGetDouble(aggregateValue));
+		CUI_EXPECT_EQ(145.0, aggregateValue);
+		CUI_EXPECT_TRUE(std::none_of(changes.begin(), changes.end(),
+			[](auto action) { return action == CollectionChangeAction::Reset; }));
+	});
+
+	runner.Add("ItemsControl renders live group headers without replacing item containers", []
+	{
+		auto makeRecord = [](const std::wstring& name,
+			const std::wstring& department, int score)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Name", name));
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Department", department));
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Score", score));
+			return record;
+		};
+		auto alice = makeRecord(L"Alice", L"Engineering", 20);
+		auto bob = makeRecord(L"Bob", L"Sales", 30);
+		auto carol = makeRecord(L"Carol", L"Engineering", 40);
+		auto source = std::make_shared<ObservableBindingList>(L"Person");
+		for (const auto& item : { alice, bob, carol })
+			source->Items.push_back(BindingSourceReference(item));
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetGroupDescriptions({
+			{ L"Department", CollectionSortDirection::Ascending, true } });
+		view->SetSortDescriptions({
+			{ L"Score", CollectionSortDirection::Descending, false } });
+		view->SetSource(BindingListReference(source));
+
+		ListBox box(0, 0, 240, 180);
+		box.SetDisplayMemberPath(L"Name");
+		box.SetItemsSource(BindingListReference(view));
+		auto groupStyle = std::make_shared<GroupStyle>();
+		groupStyle->HeaderIndent = 12.0f;
+		groupStyle->HeaderSpacing = 3.0f;
+		box.SetGroupStyle(GroupStyleReference(groupStyle));
+		CUI_EXPECT_TRUE(box.LastTemplateError().empty());
+		CUI_EXPECT_EQ(3ULL, box.GeneratedItemCount());
+		auto* host = box.GetItemsHost();
+		CUI_EXPECT_TRUE(host != nullptr);
+		auto* firstEntry = dynamic_cast<StackPanel*>(host->Children[0]);
+		CUI_EXPECT_TRUE(firstEntry != nullptr);
+		CUI_EXPECT_EQ(2, firstEntry->Count);
+		auto* engineeringHeader = dynamic_cast<Label*>(firstEntry->GetChild(0));
+		CUI_EXPECT_TRUE(engineeringHeader != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Engineering"), engineeringHeader->Text);
+		auto* bobContainer = dynamic_cast<SelectorItem*>(box.GetGeneratedItem(2));
+		CUI_EXPECT_TRUE(bobContainer != nullptr);
+		box.SetSelectedIndex(2);
+
+		CUI_EXPECT_TRUE(bob->SetValue(
+			L"Department", std::wstring(L"Engineering")));
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(1) == bobContainer);
+		CUI_EXPECT_EQ(1, box.SelectedIndex);
+		CUI_EXPECT_EQ(1ULL, view->Groups().size());
+		firstEntry = dynamic_cast<StackPanel*>(host->Children[0]);
+		CUI_EXPECT_TRUE(firstEntry != nullptr);
+		CUI_EXPECT_EQ(2, firstEntry->Count);
+		auto* middleEntry = dynamic_cast<StackPanel*>(host->Children[1]);
+		CUI_EXPECT_TRUE(middleEntry != nullptr);
+		CUI_EXPECT_EQ(1, middleEntry->Count);
+
+		auto virtualPanel = std::make_shared<ItemsPanelTemplate>();
+		virtualPanel->Kind = ItemsPanelKind::VirtualizingStack;
+		virtualPanel->ItemHeight = 30.0f;
+		box.SetItemsPanel(ItemsPanelTemplateReference(virtualPanel));
+		CUI_EXPECT_TRUE(box.IsVirtualizing());
+		CUI_EXPECT_TRUE(box.LastTemplateError().empty());
+		box.ApplyLayout(cui::core::Rect{ 0.0f, 0.0f, 240.0f, 90.0f });
+		CUI_EXPECT_TRUE(box.GetGeneratedItem(0) != nullptr);
+	});
+
+	runner.Add("Grouped virtual lists index header and item segments", []
+	{
+		auto source = std::make_shared<ObservableBindingList>(L"Row");
+		for (int index = 0; index < 200; ++index)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(
+				L"Name", L"Row " + std::to_wstring(index)));
+			CUI_EXPECT_TRUE(record->DefineProperty(
+				L"Group", L"Group " + std::to_wstring(index / 10)));
+			source->Items.push_back(BindingSourceReference(record));
+		}
+		auto view = std::make_shared<CollectionViewSource>();
+		view->SetGroupDescriptions({
+			{ L"Group", CollectionSortDirection::Ascending, false } });
+		view->SetSource(BindingListReference(source));
+
+		ListBox box(0, 0, 220, 100);
+		box.SetDisplayMemberPath(L"Name");
+		auto style = std::make_shared<GroupStyle>();
+		style->HeaderHeight = 12.0f;
+		style->HeaderSpacing = 1.0f;
+		box.SetGroupStyle(GroupStyleReference(style));
+		auto panel = std::make_shared<ItemsPanelTemplate>();
+		panel->Kind = ItemsPanelKind::VirtualizingStack;
+		panel->ItemHeight = 20.0f;
+		panel->CacheLength = 0.0f;
+		box.SetItemsPanel(ItemsPanelTemplateReference(panel));
+		box.SetItemsSource(BindingListReference(view));
+		box.ApplyLayout(cui::core::Rect{ 0.0f, 0.0f, 220.0f, 100.0f });
+		box.UpdateLayout();
+		CUI_EXPECT_TRUE(box.LastTemplateError().empty());
+		CUI_EXPECT_TRUE(box.IsVirtualizing());
+		CUI_EXPECT_TRUE(box.GeneratedItemCount() <= 7ULL);
+		auto* firstHost = dynamic_cast<StackPanel*>(
+			box.GetItemsHost()->Children.front());
+		CUI_EXPECT_TRUE(firstHost != nullptr);
+		CUI_EXPECT_EQ(2, firstHost->Count);
+
+		CUI_EXPECT_TRUE(box.ProcessMessage(WM_KEYDOWN, VK_END, 0, 0, 0));
+		CUI_EXPECT_EQ(199, box.SelectedIndex);
+		CUI_EXPECT_TRUE(box.ScrollYOffset > 4000);
+		CUI_EXPECT_TRUE(dynamic_cast<SelectorItem*>(
+			box.GetGeneratedItem(199)) != nullptr);
+		CUI_EXPECT_TRUE(box.GeneratedItemCount() <= 7ULL);
+	});
+
+	runner.Add("ItemsControl materializes typed item templates atomically", []
+	{
+		auto people = std::make_shared<ObservableBindingList>(L"Person");
+		auto alice = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(alice->DefineProperty(L"Name", std::wstring(L"Alice")));
+		people->Items.push_back(BindingSourceReference(alice));
+
+		ItemsControl control(0, 0, 240, 160);
+		control.SetDisplayMemberPath(L"Name");
+		control.SetItemsSource(BindingListReference(people));
+		CUI_EXPECT_EQ(1ULL, control.GeneratedItemCount());
+		auto* fallback = dynamic_cast<Label*>(control.GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(fallback != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Alice"), fallback->Text);
+
+		auto personTemplate = std::make_shared<TestItemTemplate>(L"Person");
+		control.SetItemTemplate(ItemTemplateReference(personTemplate));
+		CUI_EXPECT_TRUE(control.GetItemTemplate());
+		auto* templated = dynamic_cast<Label*>(control.GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(templated != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Alice"), templated->Text);
+		CUI_EXPECT_TRUE(alice->SetValue(L"Name", std::wstring(L"Alicia")));
+		CUI_EXPECT_EQ(std::wstring(L"Alicia"), templated->Text);
+
+		auto bob = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(bob->DefineProperty(L"Name", std::wstring(L"Bob")));
+		people->Items.push_back(BindingSourceReference(bob));
+		CUI_EXPECT_EQ(2ULL, control.GeneratedItemCount());
+		auto* bobVisual = dynamic_cast<Label*>(control.GetGeneratedItem(1));
+		CUI_EXPECT_TRUE(bobVisual != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Bob"), bobVisual->Text);
+
+		auto wrongTemplate = std::make_shared<TestItemTemplate>(L"Order");
+		control.SetItemTemplate(ItemTemplateReference(wrongTemplate));
+		CUI_EXPECT_TRUE(control.GetItemTemplate().Get() == personTemplate.get());
+		CUI_EXPECT_EQ(2ULL, control.GeneratedItemCount());
+		CUI_EXPECT_TRUE(control.LastTemplateError().find(L"DataType")
+			!= std::wstring::npos);
+	});
+
+	runner.Add("ContentPresenter materializes one typed object atomically", []
+	{
+		auto alice = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(alice->DefineProperty(
+			L"Name", std::wstring(L"Alice")));
+
+		ContentPresenter presenter(0, 0, 240, 80);
+		presenter.SetContent(BindingValue(42));
+		auto* scalar = dynamic_cast<Label*>(presenter.GetGeneratedContent());
+		CUI_EXPECT_TRUE(scalar != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"42"),
+			scalar ? scalar->Text : std::wstring{});
+		presenter.SetDisplayMemberPath(L"Name");
+		presenter.SetContent(BindingValue(BindingSourceReference(alice)));
+		auto* fallback = dynamic_cast<Label*>(presenter.GetGeneratedContent());
+		CUI_EXPECT_TRUE(fallback != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Alice"), fallback->Text);
+		CUI_EXPECT_TRUE(alice->SetValue(L"Name", std::wstring(L"Alicia")));
+		fallback = dynamic_cast<Label*>(presenter.GetGeneratedContent());
+		CUI_EXPECT_TRUE(fallback != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Alicia"), fallback->Text);
+
+		presenter.SetContentTypeName(L"Person");
+		auto personTemplate = std::make_shared<TestItemTemplate>(L"Person");
+		presenter.SetContentTemplate(ItemTemplateReference(personTemplate));
+		auto* templated = dynamic_cast<Label*>(presenter.GetGeneratedContent());
+		CUI_EXPECT_TRUE(templated != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Alicia"), templated->Text);
+		CUI_EXPECT_TRUE(alice->SetValue(L"Name", std::wstring(L"Alice 2")));
+		CUI_EXPECT_EQ(std::wstring(L"Alice 2"), templated->Text);
+
+		auto wrongTemplate = std::make_shared<TestItemTemplate>(L"Order");
+		presenter.SetContentTemplate(ItemTemplateReference(wrongTemplate));
+		CUI_EXPECT_TRUE(presenter.GetContentTemplate().Get()
+			== personTemplate.get());
+		CUI_EXPECT_TRUE(presenter.LastTemplateError().find(L"DataType")
+			!= std::wstring::npos);
+
+		auto bob = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(bob->DefineProperty(L"Name", std::wstring(L"Bob")));
+		presenter.SetContent(BindingValue(BindingSourceReference(bob)));
+		templated = dynamic_cast<Label*>(presenter.GetGeneratedContent());
+		CUI_EXPECT_TRUE(templated != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Bob"), templated->Text);
+		presenter.SetContent({});
+		CUI_EXPECT_TRUE(presenter.GetGeneratedContent() == nullptr);
+		CUI_EXPECT_EQ(0, presenter.Count);
+	});
+
+	runner.Add("ContentControl owns either one visual child or data content", []
+	{
+		ContentControl literal(0, 0, 240, 80);
+		literal.SetContent(BindingValue(L"Hello content"));
+		CUI_EXPECT_TRUE(literal.GetGeneratedPresenter() != nullptr);
+		auto* literalLabel = dynamic_cast<Label*>(literal.GetGeneratedContent());
+		CUI_EXPECT_TRUE(literalLabel != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Hello content"),
+			literalLabel ? literalLabel->Text : std::wstring{});
+
+		ContentControl visual(0, 0, 240, 80);
+		auto authored = std::make_unique<Label>(L"Authored", 0, 0);
+		auto* authoredPointer = authored.get();
+		visual.AddOwned(std::move(authored));
+		CUI_EXPECT_EQ(authoredPointer, visual.GetVisualContent());
+		CUI_EXPECT_TRUE(visual.GetGeneratedPresenter() == nullptr);
+		visual.SetContent(BindingValue(L"Rejected"));
+		CUI_EXPECT_TRUE(!visual.LastContentError().empty());
+		CUI_EXPECT_EQ(authoredPointer, visual.GetVisualContent());
+		bool rejectedSecondChild = false;
+		try
+		{
+			visual.AddOwned(std::make_unique<Label>(L"Second", 0, 0));
+		}
+		catch (const std::logic_error&)
+		{
+			rejectedSecondChild = true;
+		}
+		CUI_EXPECT_TRUE(rejectedSecondChild);
+
+		auto alice = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(alice->DefineProperty(
+			L"Name", std::wstring(L"Alice")));
+		ContentControl data(0, 0, 240, 80);
+		data.SetContentTypeName(L"Person");
+		data.SetContentTemplate(ItemTemplateReference(
+			std::make_shared<TestItemTemplate>(L"Person")));
+		data.SetContent(BindingValue(BindingSourceReference(alice)));
+		auto* templated = dynamic_cast<Label*>(data.GetGeneratedContent());
+		CUI_EXPECT_TRUE(templated != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Alice"),
+			templated ? templated->Text : std::wstring{});
+		CUI_EXPECT_TRUE(alice->SetValue(
+			L"Name", std::wstring(L"Alicia")));
+		CUI_EXPECT_EQ(std::wstring(L"Alicia"), templated->Text);
+		const auto acceptedTemplate = data.GetContentTemplate();
+		data.SetContentTemplate(ItemTemplateReference(
+			std::make_shared<TestItemTemplate>(L"Order")));
+		CUI_EXPECT_TRUE(data.GetContentTemplate() == acceptedTemplate);
+		CUI_EXPECT_TRUE(data.LastContentError().find(L"DataType")
+			!= std::wstring::npos);
+	});
+
+	runner.Add("HeaderedContentControl keeps independent Header and Content slots", []
+	{
+		HeaderedContentControl host(0, 0, 260, 140);
+		host.SetHeader(BindingValue(L"Account"));
+		auto* generatedHeader = dynamic_cast<Label*>(
+			host.GetGeneratedHeaderContent());
+		CUI_EXPECT_TRUE(generatedHeader != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Account"),
+			generatedHeader ? generatedHeader->Text : std::wstring{});
+
+		auto content = std::make_unique<Label>(L"Body", 0, 0);
+		auto* contentPointer = content.get();
+		host.AddOwned(std::move(content));
+		CUI_EXPECT_EQ(contentPointer, host.GetVisualContent());
+		CUI_EXPECT_EQ(2, host.Count);
+		CUI_EXPECT_EQ(1, contentPointer->GridRow);
+
+		host.SetHeader({});
+		auto visualHeader = std::make_unique<Label>(L"Visual header", 0, 0);
+		auto* headerPointer = visualHeader.get();
+		CUI_EXPECT_EQ(headerPointer,
+			host.SetVisualHeader(std::move(visualHeader)));
+		CUI_EXPECT_EQ(headerPointer, host.GetVisualHeader());
+		CUI_EXPECT_EQ(0, headerPointer->GridRow);
+		CUI_EXPECT_EQ(contentPointer, host.GetVisualContent());
+		CUI_EXPECT_EQ(2, host.Count);
+
+		host.SetHeader(BindingValue(L"Rejected"));
+		CUI_EXPECT_TRUE(!host.LastHeaderError().empty());
+		CUI_EXPECT_EQ(headerPointer, host.GetVisualHeader());
+	});
+
 	runner.Add("Control property metadata coerces defaults and invalidates layout", []
 	{
 		using namespace cui::core;
@@ -2240,6 +3072,319 @@ int main()
 		CUI_EXPECT_EQ(8, target.GetLevel());
 	});
 
+	runner.Add("Declarative properties share control metadata and value precedence", []
+	{
+		Control target;
+		DynamicControlPropertyDefinition definition;
+		definition.Name = L"Severity";
+		definition.ValueKind = BindingValueKind::Int;
+		definition.DefaultValue = BindingValue(2);
+		definition.Flags = ControlPropertyFlags::AffectsRender;
+		definition.Design.DisplayName = L"Severity";
+		definition.Design.Category = L"Component";
+		definition.Design.Editor = ControlPropertyEditorKind::Number;
+		std::wstring error;
+		CUI_EXPECT_TRUE(target.DefineDynamicProperty(definition, &error));
+		CUI_EXPECT_TRUE(error.empty());
+
+		const auto* metadata = target.FindPropertyMetadata(L"severity");
+		CUI_EXPECT_TRUE(metadata != nullptr);
+		CUI_EXPECT_EQ(BindingValueKind::Int, metadata->ValueKind());
+		CUI_EXPECT_TRUE(metadata->CanRead());
+		CUI_EXPECT_TRUE(metadata->CanWrite());
+		CUI_EXPECT_TRUE(metadata->CanObserve());
+		CUI_EXPECT_EQ(ControlPropertyPersistence::Metadata,
+			metadata->Design().Persistence);
+
+		BindingValue value;
+		int severity = 0;
+		CUI_EXPECT_TRUE(target.TryGetPropertyValue(L"Severity", value));
+		CUI_EXPECT_TRUE(value.TryGet(severity));
+		CUI_EXPECT_EQ(2, severity);
+
+		int notifications = 0;
+		auto connection = target.OnPropertyValueChanged.Subscribe(
+			[&](Control*, const ControlPropertyChangedEventArgs& args)
+			{
+				if (args.PropertyName == L"Severity") ++notifications;
+			});
+		CUI_EXPECT_TRUE(target.TrySetPropertyValue(
+			L"Severity", BindingValue(4), ControlPropertyValueSource::Style));
+		CUI_EXPECT_TRUE(target.TrySetPropertyValue(L"Severity", BindingValue(7)));
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Local,
+			target.GetPropertyValueSource(L"Severity"));
+		CUI_EXPECT_TRUE(target.TryGetPropertyValue(L"Severity", value));
+		CUI_EXPECT_TRUE(value.TryGet(severity));
+		CUI_EXPECT_EQ(7, severity);
+		CUI_EXPECT_EQ(2, notifications);
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(
+			L"Severity", ControlPropertyValueSource::Local));
+		CUI_EXPECT_TRUE(target.TryGetPropertyValue(L"Severity", value));
+		CUI_EXPECT_TRUE(value.TryGet(severity));
+		CUI_EXPECT_EQ(4, severity);
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(
+			L"Severity", ControlPropertyValueSource::Style));
+		CUI_EXPECT_TRUE(target.TryGetPropertyValue(L"Severity", value));
+		CUI_EXPECT_TRUE(value.TryGet(severity));
+		CUI_EXPECT_EQ(2, severity);
+
+		const auto properties = BindingPropertyRegistry::GetProperties(target);
+		CUI_EXPECT_TRUE(std::any_of(properties.begin(), properties.end(),
+			[](const BindingPropertyMetadata* property)
+			{
+				return property && property->Name() == L"Severity";
+			}));
+		CUI_EXPECT_FALSE(target.DefineDynamicProperty(definition, &error));
+		definition.Name = L"Text";
+		CUI_EXPECT_FALSE(target.DefineDynamicProperty(definition, &error));
+		definition.Name = L"Bad.Name";
+		CUI_EXPECT_FALSE(target.DefineDynamicProperty(definition, &error));
+		definition.Name = L"BadUpdateMode";
+		definition.DefaultUpdateMode = DataSourceUpdateMode::Default;
+		CUI_EXPECT_FALSE(target.DefineDynamicProperty(definition, &error));
+	});
+
+	runner.Add("Declarative property metadata inherits and invalidates parent layout", []
+	{
+		auto makeInherited = [](const std::wstring& identity)
+		{
+			DynamicControlPropertyDefinition definition;
+			definition.Name = L"AccentLevel";
+			definition.ValueKind = BindingValueKind::Int;
+			definition.DefaultValue = BindingValue(1);
+			definition.Flags = ControlPropertyFlags::Inherits;
+			definition.InheritanceKey = identity;
+			return definition;
+		};
+		auto readInt = [](Control& target, const wchar_t* property)
+		{
+			BindingValue value;
+			int result = -1;
+			CUI_EXPECT_TRUE(target.TryGetPropertyValue(property, value));
+			CUI_EXPECT_TRUE(value.TryGet(result));
+			return result;
+		};
+
+		Control root;
+		auto* bridge = new Panel(0, 0, 200, 100);
+		auto* nested = new Control();
+		auto* leaf = new Control();
+		auto* unrelated = new Control();
+		std::wstring error;
+		CUI_EXPECT_TRUE(root.DefineDynamicProperty(
+			makeInherited(L"urn:test|ThemeScope|AccentLevel"), &error));
+		CUI_EXPECT_TRUE(nested->DefineDynamicProperty(
+			makeInherited(L"urn:test|ThemeScope|AccentLevel"), &error));
+		CUI_EXPECT_TRUE(leaf->DefineDynamicProperty(
+			makeInherited(L"urn:test|ThemeScope|AccentLevel"), &error));
+		CUI_EXPECT_TRUE(unrelated->DefineDynamicProperty(
+			makeInherited(L"urn:test|OtherScope|AccentLevel"), &error));
+		nested->AddControl(leaf);
+		bridge->AddControl(nested);
+		bridge->AddControl(unrelated);
+		root.AddControl(bridge);
+
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Inherited,
+			nested->GetPropertyValueSource(L"AccentLevel"));
+		CUI_EXPECT_EQ(1, readInt(*nested, L"AccentLevel"));
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Inherited,
+			leaf->GetPropertyValueSource(L"AccentLevel"));
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Default,
+			unrelated->GetPropertyValueSource(L"AccentLevel"));
+
+		CUI_EXPECT_TRUE(root.TrySetPropertyValue(
+			L"AccentLevel", BindingValue(7)));
+		CUI_EXPECT_EQ(7, readInt(*nested, L"AccentLevel"));
+		CUI_EXPECT_EQ(7, readInt(*leaf, L"AccentLevel"));
+		CUI_EXPECT_EQ(1, readInt(*unrelated, L"AccentLevel"));
+		CUI_EXPECT_TRUE(nested->TrySetPropertyValue(
+			L"AccentLevel", BindingValue(9)));
+		CUI_EXPECT_EQ(9, readInt(*leaf, L"AccentLevel"));
+		CUI_EXPECT_TRUE(root.TrySetPropertyValue(
+			L"AccentLevel", BindingValue(5)));
+		CUI_EXPECT_EQ(9, readInt(*nested, L"AccentLevel"));
+		CUI_EXPECT_EQ(9, readInt(*leaf, L"AccentLevel"));
+		CUI_EXPECT_TRUE(nested->ClearPropertyValue(
+			L"AccentLevel", ControlPropertyValueSource::Local));
+		CUI_EXPECT_EQ(5, readInt(*nested, L"AccentLevel"));
+		CUI_EXPECT_EQ(5, readInt(*leaf, L"AccentLevel"));
+
+		auto detached = root.DetachControl(bridge);
+		CUI_EXPECT_TRUE(detached != nullptr);
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Default,
+			nested->GetPropertyValueSource(L"AccentLevel"));
+		CUI_EXPECT_EQ(1, readInt(*nested, L"AccentLevel"));
+		root.AddControl(detached.release());
+		CUI_EXPECT_EQ(5, readInt(*nested, L"AccentLevel"));
+
+		DynamicControlPropertyDefinition invalid =
+			makeInherited(std::wstring{});
+		invalid.Name = L"MissingIdentity";
+		CUI_EXPECT_FALSE(root.DefineDynamicProperty(invalid, &error));
+
+		Panel layoutParent(0, 0, 240, 160);
+		auto* layoutChild = layoutParent.AddControl(new Control());
+		DynamicControlPropertyDefinition parentMeasure;
+		parentMeasure.Name = L"ParentMeasureToken";
+		parentMeasure.ValueKind = BindingValueKind::Int;
+		parentMeasure.DefaultValue = BindingValue(0);
+		parentMeasure.Flags = ControlPropertyFlags::AffectsParentMeasure;
+		CUI_EXPECT_TRUE(layoutChild->DefineDynamicProperty(parentMeasure, &error));
+		DynamicControlPropertyDefinition parentArrange;
+		parentArrange.Name = L"ParentArrangeToken";
+		parentArrange.ValueKind = BindingValueKind::Int;
+		parentArrange.DefaultValue = BindingValue(0);
+		parentArrange.Flags = ControlPropertyFlags::AffectsParentArrange;
+		CUI_EXPECT_TRUE(layoutChild->DefineDynamicProperty(parentArrange, &error));
+		layoutParent.Measure(cui::core::Constraints{
+			cui::core::Size{ 240.0f, 160.0f } });
+		layoutParent.ApplyLayout(cui::core::Rect{
+			0.0f, 0.0f, 240.0f, 160.0f });
+		CUI_EXPECT_FALSE(layoutParent.GetComputedLayout().NeedsMeasure());
+		CUI_EXPECT_TRUE(layoutChild->TrySetPropertyValue(
+			L"ParentMeasureToken", BindingValue(1)));
+		CUI_EXPECT_TRUE(layoutParent.GetComputedLayout().NeedsMeasure());
+		layoutParent.Measure(cui::core::Constraints{
+			cui::core::Size{ 240.0f, 160.0f } });
+		layoutParent.ApplyLayout(cui::core::Rect{
+			0.0f, 0.0f, 240.0f, 160.0f });
+		CUI_EXPECT_TRUE(layoutChild->TrySetPropertyValue(
+			L"ParentArrangeToken", BindingValue(1)));
+		CUI_EXPECT_FALSE(layoutParent.GetComputedLayout().NeedsMeasure());
+		CUI_EXPECT_TRUE(layoutParent.GetComputedLayout().NeedsArrange());
+	});
+
+	runner.Add("Read-only property metadata separates behavior writes from public writes", []
+	{
+		Panel root;
+		auto* child = root.AddControl(new Control());
+		CUI_EXPECT_TRUE(child != nullptr);
+		auto makeStatus = []
+		{
+			DynamicControlPropertyDefinition definition;
+			definition.Name = L"Status";
+			definition.ValueKind = BindingValueKind::String;
+			definition.DefaultValue = BindingValue(std::wstring(L"Idle"));
+			definition.Flags = ControlPropertyFlags::Inherits
+				| ControlPropertyFlags::AffectsRender;
+			definition.InheritanceKey = L"tests|Status";
+			definition.IsReadOnly = true;
+			return definition;
+		};
+		std::wstring error;
+		CUI_EXPECT_TRUE(root.DefineDynamicProperty(makeStatus(), &error));
+		CUI_EXPECT_TRUE(child->DefineDynamicProperty(makeStatus(), &error));
+		const auto* metadata = root.FindPropertyMetadata(L"Status");
+		CUI_EXPECT_TRUE(metadata != nullptr);
+		if (metadata)
+		{
+			CUI_EXPECT_TRUE(metadata->CanRead());
+			CUI_EXPECT_FALSE(metadata->CanWrite());
+			CUI_EXPECT_TRUE(metadata->CanObserve());
+			CUI_EXPECT_TRUE(metadata->IsReadOnly());
+		}
+
+		auto readStatus = [](Control& control)
+		{
+			BindingValue value;
+			std::wstring text;
+			CUI_EXPECT_TRUE(control.TryGetPropertyValue(L"Status", value));
+			CUI_EXPECT_TRUE(value.TryGet(text));
+			return text;
+		};
+		CUI_EXPECT_EQ(std::wstring(L"Idle"), readStatus(root));
+		CUI_EXPECT_FALSE(root.TrySetPropertyValue(
+			L"Status", BindingValue(std::wstring(L"Public"))));
+		CUI_EXPECT_FALSE(root.TrySetCurrentPropertyValue(
+			L"Status", BindingValue(std::wstring(L"Public"))));
+		CUI_EXPECT_TRUE(root.TrySetReadOnlyPropertyValue(
+			L"Status", BindingValue(std::wstring(L"Busy"))));
+		CUI_EXPECT_EQ(std::wstring(L"Busy"), readStatus(root));
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Inherited,
+			child->GetPropertyValueSource(L"Status"));
+		CUI_EXPECT_EQ(std::wstring(L"Busy"), readStatus(*child));
+
+		Control mirror;
+		auto* sourceBinding = mirror.DataBindings.Add(
+			L"Text", child, L"Status", BindingMode::OneWay);
+		CUI_EXPECT_TRUE(sourceBinding != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Busy"), mirror.Text);
+		CUI_EXPECT_TRUE(child->TrySetReadOnlyPropertyValue(
+			L"Status", BindingValue(std::wstring(L"Child"))));
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Local,
+			child->GetPropertyValueSource(L"Status"));
+		CUI_EXPECT_EQ(std::wstring(L"Child"), mirror.Text);
+		CUI_EXPECT_TRUE(root.TrySetReadOnlyPropertyValue(
+			L"Status", BindingValue(std::wstring(L"Waiting"))));
+		CUI_EXPECT_EQ(std::wstring(L"Child"), readStatus(*child));
+		CUI_EXPECT_FALSE(child->ClearPropertyValue(
+			L"Status", ControlPropertyValueSource::Local));
+		CUI_EXPECT_TRUE(child->ClearReadOnlyPropertyValue(L"Status"));
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Inherited,
+			child->GetPropertyValueSource(L"Status"));
+		CUI_EXPECT_EQ(std::wstring(L"Waiting"), mirror.Text);
+
+		ObservableObject source;
+		CUI_EXPECT_TRUE(source.DefineProperty(L"Status", std::wstring(L"Source")));
+		CUI_EXPECT_TRUE(root.DataBindings.Add(
+			L"Status", source, L"Status", BindingMode::OneWay) == nullptr);
+		CUI_EXPECT_EQ(BindingError::TargetNotWritable,
+			root.DataBindings.LastError());
+
+		auto invalid = makeStatus();
+		invalid.Name = L"InvalidTwoWay";
+		invalid.InheritanceKey = L"tests|InvalidTwoWay";
+		invalid.Flags |= ControlPropertyFlags::BindsTwoWayByDefault;
+		CUI_EXPECT_FALSE(root.DefineDynamicProperty(invalid, &error));
+		CUI_EXPECT_TRUE(error.find(L"BindsTwoWayByDefault") != std::wstring::npos);
+		invalid = makeStatus();
+		invalid.Name = L"InvalidUpdate";
+		invalid.InheritanceKey = L"tests|InvalidUpdate";
+		invalid.DefaultUpdateMode = DataSourceUpdateMode::OnValidation;
+		CUI_EXPECT_FALSE(root.DefineDynamicProperty(invalid, &error));
+		CUI_EXPECT_TRUE(error.find(L"更新触发器") != std::wstring::npos);
+	});
+
+	runner.Add("BindingMode Default resolves from target property metadata", []
+	{
+		Control target;
+		DynamicControlPropertyDefinition twoWay;
+		twoWay.Name = L"EditableValue";
+		twoWay.ValueKind = BindingValueKind::Int;
+		twoWay.DefaultValue = BindingValue(0);
+		twoWay.Flags = ControlPropertyFlags::BindsTwoWayByDefault;
+		twoWay.DefaultUpdateMode = DataSourceUpdateMode::OnValidation;
+		std::wstring error;
+		CUI_EXPECT_TRUE(target.DefineDynamicProperty(twoWay, &error));
+		DynamicControlPropertyDefinition oneWay;
+		oneWay.Name = L"DisplayValue";
+		oneWay.ValueKind = BindingValueKind::Int;
+		oneWay.DefaultValue = BindingValue(0);
+		CUI_EXPECT_TRUE(target.DefineDynamicProperty(oneWay, &error));
+
+		ObservableObject source;
+		CUI_EXPECT_TRUE(source.DefineProperty(L"Editable", 3));
+		CUI_EXPECT_TRUE(source.DefineProperty(L"Display", 4));
+		auto* editable = target.DataBindings.Add(
+			L"EditableValue", source, L"Editable");
+		auto* display = target.DataBindings.Add(
+			L"DisplayValue", source, L"Display");
+		CUI_EXPECT_TRUE(editable != nullptr);
+		CUI_EXPECT_TRUE(display != nullptr);
+		CUI_EXPECT_EQ(BindingMode::TwoWay, editable->Mode());
+		CUI_EXPECT_EQ(DataSourceUpdateMode::OnValidation,
+			editable->UpdateMode());
+		CUI_EXPECT_EQ(BindingMode::OneWay, display->Mode());
+		CUI_EXPECT_TRUE(target.TrySetPropertyValue(
+			L"EditableValue", BindingValue(8)));
+		CUI_EXPECT_EQ(3, source.GetValue<int>(L"Editable"));
+		target.OnLostFocus(&target);
+		CUI_EXPECT_EQ(8, source.GetValue<int>(L"Editable"));
+		CUI_EXPECT_TRUE(target.TrySetPropertyValue(
+			L"DisplayValue", BindingValue(9)));
+		CUI_EXPECT_EQ(4, source.GetValue<int>(L"Display"));
+	});
+
 	runner.Add("Built-in grid properties use shared property semantics", []
 	{
 		Control target;
@@ -2278,6 +3423,30 @@ int main()
 
 	runner.Add("Control property value sources follow deterministic precedence", []
 	{
+		PropertySystemControl layered;
+		CUI_EXPECT_EQ(std::wstring(L"Animation"), std::wstring(
+			ControlPropertyValueSourceName(
+				ControlPropertyValueSource::Animation)));
+		CUI_EXPECT_TRUE(layered.TrySetPropertyValue(
+			L"Level", BindingValue(6), ControlPropertyValueSource::Local));
+		CUI_EXPECT_TRUE(layered.TrySetPropertyValue(
+			L"Level", BindingValue(7),
+			ControlPropertyValueSource::VisualState));
+		CUI_EXPECT_TRUE(layered.TrySetPropertyValue(
+			L"Level", BindingValue(9),
+			ControlPropertyValueSource::Animation));
+		CUI_EXPECT_EQ(9, layered.GetLevel());
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Animation,
+			layered.GetPropertyValueSource(L"Level"));
+		CUI_EXPECT_TRUE(layered.ClearPropertyValue(
+			L"Level", ControlPropertyValueSource::Animation));
+		CUI_EXPECT_EQ(7, layered.GetLevel());
+		CUI_EXPECT_EQ(ControlPropertyValueSource::VisualState,
+			layered.GetPropertyValueSource(L"Level"));
+		CUI_EXPECT_TRUE(layered.ClearPropertyValue(
+			L"Level", ControlPropertyValueSource::VisualState));
+		CUI_EXPECT_EQ(6, layered.GetLevel());
+
 		PropertySystemControl target;
 		CUI_EXPECT_EQ(std::wstring(L"Binding"), std::wstring(
 			ControlPropertyValueSourceName(ControlPropertyValueSource::Binding)));
@@ -2584,6 +3753,103 @@ int main()
 		CUI_EXPECT_EQ(6, target.GetLevel());
 	});
 
+	runner.Add("DynamicResource is a live Local expression with scoped fallback", []
+	{
+		PropertySystemControl target;
+		CUI_EXPECT_TRUE(target.SetDynamicResource(L"Level", L"Control.Level"));
+		CUI_EXPECT_EQ(4, target.GetLevel());
+		std::wstring key;
+		CUI_EXPECT_TRUE(target.TryGetDynamicResourceKey(L"level", key));
+		CUI_EXPECT_EQ(std::wstring(L"Control.Level"), key);
+
+		auto theme = std::make_shared<ControlStyleSheet>();
+		CUI_EXPECT_TRUE(theme->SetResource(L"control.level", BindingValue(2)));
+		CUI_EXPECT_TRUE(target.SetThemeStyleSheet(theme));
+		CUI_EXPECT_EQ(2, target.GetLevel());
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Local,
+			target.GetPropertyValueSource(L"Level"));
+
+		auto document = std::make_shared<ControlStyleSheet>();
+		CUI_EXPECT_TRUE(document->SetResource(L"Control.Level", BindingValue(3)));
+		CUI_EXPECT_TRUE(target.SetStyleSheet(document));
+		CUI_EXPECT_EQ(3, target.GetLevel());
+		CUI_EXPECT_TRUE(document->SetResource(L"CONTROL.LEVEL", BindingValue(5)));
+		CUI_EXPECT_EQ(5, target.GetLevel());
+		CUI_EXPECT_TRUE(document->RemoveResource(L"control.level"));
+		CUI_EXPECT_EQ(2, target.GetLevel());
+
+		// A regular Local assignment replaces the expression, matching WPF's
+		// SetValue semantics. Later resource changes must no longer affect it.
+		CUI_EXPECT_TRUE(target.TrySetPropertyValue(L"Level", BindingValue(8)));
+		CUI_EXPECT_FALSE(target.TryGetDynamicResourceKey(L"Level", key));
+		CUI_EXPECT_TRUE(theme->SetResource(L"Control.Level", BindingValue(6)));
+		CUI_EXPECT_EQ(8, target.GetLevel());
+		CUI_EXPECT_TRUE(target.ClearPropertyValue(
+			L"Level", ControlPropertyValueSource::Local));
+		CUI_EXPECT_EQ(4, target.GetLevel());
+
+		CUI_EXPECT_TRUE(target.SetDynamicResource(L"Level", L"Missing"));
+		CUI_EXPECT_EQ(4, target.GetLevel());
+		CUI_EXPECT_TRUE(target.ClearPropertyValues(
+			ControlPropertyValueSource::Local) >= 1);
+		CUI_EXPECT_FALSE(target.TryGetDynamicResourceKey(L"Level", key));
+	});
+
+	runner.Add("Local ResourceDictionary scopes follow the logical parent chain", []
+	{
+		Panel root(0, 0, 400, 300);
+		auto* left = new Panel(0, 0, 180, 300);
+		auto* right = new Panel(200, 0, 180, 300);
+		auto* direct = new PropertySystemControl();
+		auto* styled = new PropertySystemControl();
+		root.AddControl(left);
+		root.AddControl(right);
+		left->AddControl(direct);
+		left->AddControl(styled);
+		direct->SetStyleId(L"ScopedTarget");
+		styled->SetStyleId(L"ScopedTarget");
+
+		auto document = std::make_shared<ControlStyleSheet>();
+		CUI_EXPECT_TRUE(document->SetResource(L"Scoped.Level", BindingValue(1)));
+		ControlStyleSelector scopedTargets;
+		scopedTargets.Id = L"ScopedTarget";
+		document->AddRule(scopedTargets, {
+			ControlStyleSetter::DynamicResource(L"Level", L"Scoped.Level") });
+		CUI_EXPECT_TRUE(root.SetStyleSheet(document, true));
+
+		CUI_EXPECT_TRUE(direct->SetDynamicResource(L"Level", L"Scoped.Level"));
+		CUI_EXPECT_EQ(1, direct->GetLevel());
+		CUI_EXPECT_EQ(1, styled->GetLevel());
+
+		auto leftResources = std::make_shared<ControlStyleSheet>();
+		CUI_EXPECT_TRUE(leftResources->SetResource(
+			L"scoped.level", BindingValue(2)));
+		CUI_EXPECT_TRUE(left->SetResourceDictionary(leftResources));
+		CUI_EXPECT_EQ(2, direct->GetLevel());
+		CUI_EXPECT_EQ(2, styled->GetLevel());
+
+		auto directResources = std::make_shared<ControlStyleSheet>();
+		CUI_EXPECT_TRUE(directResources->SetResource(
+			L"Scoped.Level", BindingValue(3)));
+		CUI_EXPECT_TRUE(direct->SetResourceDictionary(directResources));
+		CUI_EXPECT_EQ(3, direct->GetLevel());
+		CUI_EXPECT_TRUE(directResources->SetResource(
+			L"SCOPED.LEVEL", BindingValue(4)));
+		CUI_EXPECT_EQ(4, direct->GetLevel());
+
+		auto rightResources = std::make_shared<ControlStyleSheet>();
+		CUI_EXPECT_TRUE(rightResources->SetResource(
+			L"Scoped.Level", BindingValue(5)));
+		CUI_EXPECT_TRUE(right->SetResourceDictionary(rightResources));
+		CUI_EXPECT_TRUE(direct->SetResourceDictionary(nullptr));
+		auto moved = left->DetachControl(direct);
+		CUI_EXPECT_TRUE(moved != nullptr);
+		right->AddControl(moved.release());
+		CUI_EXPECT_EQ(5, direct->GetLevel());
+		CUI_EXPECT_TRUE(right->SetResourceDictionary(nullptr));
+		CUI_EXPECT_EQ(1, direct->GetLevel());
+	});
+
 	runner.Add("Style states refresh automatically from control events", []
 	{
 		PropertySystemControl target;
@@ -2631,6 +3897,67 @@ int main()
 		CUI_EXPECT_EQ(5, target.GetLevel());
 	});
 
+	runner.Add("Style property triggers observe metadata and drive state actions", []
+	{
+		PropertySystemControl target;
+		auto sheet = std::make_shared<ControlStyleSheet>();
+		ControlStyleSelector selector;
+		selector.PropertyConditions.push_back({ L"Level", BindingValue(7) });
+		CUI_EXPECT_TRUE(sheet->AddRule(std::move(selector), {
+			ControlStyleSetter(L"Visible", BindingValue(false)) }) != 0);
+		CUI_EXPECT_TRUE(sheet->UsesPropertyCondition(L"level"));
+		CUI_EXPECT_TRUE(target.SetStyleSheet(sheet));
+		CUI_EXPECT_TRUE(target.Visible);
+		target.SetLevel(7);
+		CUI_EXPECT_FALSE(target.Visible);
+		target.SetLevel(6);
+		CUI_EXPECT_TRUE(target.Visible);
+
+		DeclarativeVisualStateAnimation animation;
+		animation.Kind = DeclarativeAnimationKind::Double;
+		animation.PropertyName = L"Round";
+		animation.From = BindingValue(4.0f);
+		animation.To = BindingValue(12.0f);
+		animation.DurationMilliseconds = 100;
+		DeclarativeEventTriggerActionDefinition begin;
+		begin.Kind = DeclarativeStoryboardActionKind::Begin;
+		begin.StoryboardName = L"PropertyPulse";
+		begin.Animations.push_back(std::move(animation));
+		DeclarativeEventTriggerActionDefinition stop;
+		stop.Kind = DeclarativeStoryboardActionKind::Stop;
+		stop.StoryboardName = L"PropertyPulse";
+
+		auto actionSheet = std::make_shared<ControlStyleSheet>();
+		ControlStyleSelector actionSelector;
+		actionSelector.Type = UIClass::UI_Button;
+		actionSelector.RequiredStates = ControlStyleState::Hovered;
+		actionSelector.PropertyConditions.push_back({
+			L"Text", BindingValue(std::wstring(L"Ready")) });
+		CUI_EXPECT_TRUE(actionSheet->AddRule(std::move(actionSelector), {
+			ControlStyleSetter(L"Round", BindingValue(4.0f)) },
+			{ begin }, { stop }) != 0);
+
+		Button button(L"Ready", 0, 0);
+		button.Round = 2.0f;
+		CUI_EXPECT_TRUE(button.SetStyleSheet(actionSheet));
+		CUI_EXPECT_FALSE(button.HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(2.0f, button.Round, 0.0001f);
+		MouseEventArgs mouse(MouseButtons::None, 0, 0, 0, 0);
+		button.OnMouseEnter(&button, mouse);
+		CUI_EXPECT_TRUE(button.HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(4.0f, button.Round, 0.0001f);
+		CUI_EXPECT_TRUE(button.AdvanceVisualStateAnimations(
+			::GetTickCount64() + 150));
+		CUI_EXPECT_NEAR(12.0f, button.Round, 0.0001f);
+		button.OnMouseLeave(&button, mouse);
+		CUI_EXPECT_FALSE(button.HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(2.0f, button.Round, 0.0001f);
+		button.Text = L"Idle";
+		button.OnMouseEnter(&button, mouse);
+		CUI_EXPECT_FALSE(button.HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(2.0f, button.Round, 0.0001f);
+	});
+
 	runner.Add("Control trees inherit attached sheets and follow rule lifetime", []
 	{
 		Control root;
@@ -2656,6 +3983,453 @@ int main()
 		CUI_EXPECT_EQ(4, child->GetLevel());
 		CUI_EXPECT_TRUE(root.SetStyleSheet(nullptr));
 		CUI_EXPECT_TRUE(child->GetStyleSheet() == nullptr);
+	});
+
+	runner.Add("Style DataTriggers use each target inherited DataContext", []
+	{
+		auto sheet = std::make_shared<ControlStyleSheet>();
+		ControlStyleSelector selector;
+		selector.Type = UIClass::UI_Button;
+		selector.DataConditions.push_back({
+			L"Profile.Status", BindingValue(std::wstring(L"Ready")) });
+		CUI_EXPECT_TRUE(sheet->AddRule(std::move(selector), {
+			ControlStyleSetter(L"Visible", BindingValue(false)) }) != 0);
+		CUI_EXPECT_EQ(1ULL, sheet->DataConditionPaths().size());
+
+		auto makeContext = [](std::wstring status)
+		{
+			auto profile = std::make_shared<ObservableObject>();
+			profile->SetValue(L"Status", std::move(status));
+			auto context = std::make_shared<ObservableObject>();
+			context->SetValue(L"Profile", BindingSourceReference(profile));
+			return std::pair{ std::move(context), std::move(profile) };
+		};
+		auto [firstContext, firstProfile] = makeContext(L"Ready");
+		auto [secondContext, secondProfile] = makeContext(L"Pending");
+		Button first(L"First", 0, 0);
+		Button second(L"Second", 0, 0);
+		CUI_EXPECT_TRUE(first.SetDataContext(
+			BindingSourceReference(firstContext)));
+		CUI_EXPECT_TRUE(second.SetDataContext(
+			BindingSourceReference(secondContext)));
+		CUI_EXPECT_TRUE(first.SetStyleSheet(sheet));
+		CUI_EXPECT_TRUE(second.SetStyleSheet(sheet));
+		CUI_EXPECT_FALSE(first.Visible);
+		CUI_EXPECT_TRUE(second.Visible);
+
+		secondProfile->SetValue(L"Status", std::wstring(L"Ready"));
+		CUI_EXPECT_FALSE(first.Visible);
+		CUI_EXPECT_FALSE(second.Visible);
+		firstProfile->SetValue(L"Status", std::wstring(L"Pending"));
+		CUI_EXPECT_TRUE(first.Visible);
+		CUI_EXPECT_FALSE(second.Visible);
+
+		auto replacementProfile = std::make_shared<ObservableObject>();
+		replacementProfile->SetValue(L"Status", std::wstring(L"Pending"));
+		firstContext->SetValue(
+			L"Profile", BindingSourceReference(replacementProfile));
+		CUI_EXPECT_TRUE(first.Visible);
+		firstProfile->SetValue(L"Status", std::wstring(L"Ready"));
+		CUI_EXPECT_TRUE(first.Visible);
+		replacementProfile->SetValue(L"Status", std::wstring(L"Ready"));
+		CUI_EXPECT_FALSE(first.Visible);
+
+		auto fallbackProfile = std::make_shared<ObservableObject>();
+		fallbackProfile->SetValue(L"Status", std::wstring(L"Ready"));
+		ObservableObject fallbackContext;
+		fallbackContext.SetValue(
+			L"Profile", BindingSourceReference(fallbackProfile));
+		sheet->SetDataContext(&fallbackContext);
+		Button fallback(L"Fallback", 0, 0);
+		CUI_EXPECT_TRUE(fallback.SetStyleSheet(sheet));
+		CUI_EXPECT_FALSE(fallback.Visible);
+		secondProfile->SetValue(L"Status", std::wstring(L"Pending"));
+		CUI_EXPECT_TRUE(second.Visible);
+		CUI_EXPECT_FALSE(fallback.Visible);
+
+		auto [inheritedContext, inheritedProfile] = makeContext(L"Ready");
+		Control root;
+		CUI_EXPECT_TRUE(root.SetDataContext(
+			BindingSourceReference(inheritedContext)));
+		CUI_EXPECT_TRUE(root.SetStyleSheet(sheet));
+		auto owned = std::make_unique<Button>(L"Inherited", 0, 0);
+		auto* inherited = dynamic_cast<Button*>(root.AddOwned(std::move(owned)));
+		CUI_EXPECT_TRUE(inherited != nullptr);
+		CUI_EXPECT_FALSE(inherited->Visible);
+		inheritedProfile->SetValue(L"Status", std::wstring(L"Pending"));
+		CUI_EXPECT_TRUE(inherited->Visible);
+	});
+
+	runner.Add("Style DataTrigger actions own target-local Storyboard clocks", []
+	{
+		auto makeContext = [](bool ready)
+		{
+			auto context = std::make_shared<ObservableObject>();
+			context->SetValue(L"Ready", ready);
+			return context;
+		};
+		auto makeAnimation = [](float from, float to,
+			unsigned long long duration)
+		{
+			DeclarativeVisualStateAnimation animation;
+			animation.Kind = DeclarativeAnimationKind::Double;
+			animation.PropertyName = L"Round";
+			animation.From = BindingValue(from);
+			animation.To = BindingValue(to);
+			animation.DurationMilliseconds = duration;
+			return animation;
+		};
+
+		DeclarativeEventTriggerActionDefinition begin;
+		begin.Kind = DeclarativeStoryboardActionKind::Begin;
+		begin.StoryboardName = L"ReadyPulse";
+		begin.Animations.push_back(makeAnimation(4.0f, 12.0f, 100));
+		DeclarativeEventTriggerActionDefinition stop;
+		stop.Kind = DeclarativeStoryboardActionKind::Stop;
+		stop.StoryboardName = L"ReadyPulse";
+
+		auto sheet = std::make_shared<ControlStyleSheet>();
+		ControlStyleSelector selector;
+		selector.Type = UIClass::UI_Button;
+		selector.DataConditions.push_back({ L"Ready", BindingValue(true) });
+		const auto ruleId = sheet->AddRule(std::move(selector), {
+			ControlStyleSetter(L"Round", BindingValue(4.0f)) },
+			{ begin }, { stop });
+		CUI_EXPECT_TRUE(ruleId != 0);
+
+		auto firstContext = makeContext(false);
+		auto secondContext = makeContext(true);
+		Button first(L"First", 0, 0);
+		Button second(L"Second", 0, 0);
+		first.Round = 2.0f;
+		second.Round = 3.0f;
+		CUI_EXPECT_TRUE(first.SetDataContext(
+			BindingSourceReference(firstContext)));
+		CUI_EXPECT_TRUE(second.SetDataContext(
+			BindingSourceReference(secondContext)));
+		CUI_EXPECT_TRUE(first.SetStyleSheet(sheet));
+		CUI_EXPECT_TRUE(second.SetStyleSheet(sheet));
+		CUI_EXPECT_FALSE(first.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(second.HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(2.0f, first.Round, 0.0001f);
+		CUI_EXPECT_NEAR(4.0f, second.Round, 0.0001f);
+
+		const auto secondTick = ::GetTickCount64();
+		CUI_EXPECT_TRUE(second.AdvanceVisualStateAnimations(secondTick + 50));
+		CUI_EXPECT_TRUE(second.Round > 4.0f && second.Round < 12.0f);
+		const auto secondHalf = second.Round;
+		CUI_EXPECT_TRUE(second.RefreshStyleValues(false));
+		CUI_EXPECT_NEAR(secondHalf, second.Round, 0.0001f);
+		CUI_EXPECT_TRUE(second.AdvanceVisualStateAnimations(secondTick + 150));
+		CUI_EXPECT_NEAR(12.0f, second.Round, 0.0001f);
+
+		CUI_EXPECT_TRUE(firstContext->SetValue(L"Ready", true));
+		CUI_EXPECT_TRUE(first.HasActiveVisualStateAnimations());
+		const auto firstTick = ::GetTickCount64();
+		CUI_EXPECT_TRUE(first.AdvanceVisualStateAnimations(firstTick + 50));
+		CUI_EXPECT_TRUE(first.Round > 4.0f && first.Round < 12.0f);
+		CUI_EXPECT_NEAR(12.0f, second.Round, 0.0001f);
+
+		CUI_EXPECT_TRUE(firstContext->SetValue(L"Ready", false));
+		CUI_EXPECT_FALSE(first.HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(2.0f, first.Round, 0.0001f);
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Local,
+			first.GetPropertyValueSource(L"Round"));
+
+		CUI_EXPECT_TRUE(secondContext->SetValue(L"Ready", false));
+		CUI_EXPECT_NEAR(3.0f, second.Round, 0.0001f);
+		CUI_EXPECT_TRUE(secondContext->SetValue(L"Ready", true));
+		CUI_EXPECT_TRUE(second.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(second.SetStyleSheet(nullptr));
+		CUI_EXPECT_FALSE(second.HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(3.0f, second.Round, 0.0001f);
+
+		Button coexisting(L"Coexisting", 0, 0);
+		coexisting.Round = 2.0f;
+		auto coexistingContext = makeContext(true);
+		CUI_EXPECT_TRUE(coexisting.SetDataContext(
+			BindingSourceReference(coexistingContext)));
+		CUI_EXPECT_TRUE(coexisting.SetStyleSheet(sheet));
+		CUI_EXPECT_TRUE(coexisting.HasActiveVisualStateAnimations());
+		DeclarativeVisualStateDefinition idleState;
+		idleState.Name = L"Idle";
+		DeclarativeVisualStateGroupDefinition modeGroup;
+		modeGroup.Name = L"ModeStates";
+		modeGroup.States.push_back(std::move(idleState));
+		std::wstring interactionError;
+		CUI_EXPECT_TRUE(coexisting.DefineDeclarativeInteractions(
+			{ std::move(modeGroup) }, {}, &interactionError));
+		CUI_EXPECT_TRUE(interactionError.empty());
+		CUI_EXPECT_TRUE(coexisting.HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(coexisting.AdvanceVisualStateAnimations(
+			::GetTickCount64() + 150));
+		CUI_EXPECT_NEAR(12.0f, coexisting.Round, 0.0001f);
+
+		auto invalidSheet = std::make_shared<ControlStyleSheet>();
+		ControlStyleSelector invalidSelector;
+		invalidSelector.Type = UIClass::UI_Button;
+		invalidSelector.DataConditions.push_back({
+			L"Ready", BindingValue(true) });
+		auto invalidBegin = begin;
+		invalidBegin.Animations.front().TargetName = L"namedPart";
+		CUI_EXPECT_TRUE(invalidSheet->AddRule(std::move(invalidSelector), {},
+			{ invalidBegin }, {}) != 0);
+		Button invalid(L"Invalid", 0, 0);
+		CUI_EXPECT_TRUE(invalid.SetDataContext(
+			BindingSourceReference(secondContext)));
+		CUI_EXPECT_FALSE(invalid.SetStyleSheet(invalidSheet));
+	});
+
+	runner.Add("XAML Style DataTrigger actions round-trip and animate", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="StyleActionForm">
+  <Form.Resources>
+    <Double x:Key="HotRound">12</Double>
+    <Style x:Key="AnimatedButton" TargetType="Button">
+      <Setter Property="Round" Value="2" />
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding Ready}" Value="true">
+          <Setter Property="Round" Value="4" />
+          <DataTrigger.EnterActions>
+            <BeginStoryboard x:Name="ReadyPulse">
+              <Storyboard>
+                <DoubleAnimation Storyboard.TargetProperty="Round"
+                  From="4" To="{StaticResource HotRound}"
+                  Duration="0:0:0.1" />
+              </Storyboard>
+            </BeginStoryboard>
+          </DataTrigger.EnterActions>
+          <DataTrigger.ExitActions>
+            <StopStoryboard BeginStoryboardName="ReadyPulse" />
+          </DataTrigger.ExitActions>
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+  </Form.Resources>
+  <Form.DataContextSchema>
+    <Property Path="Ready" Kind="Bool" />
+  </Form.DataContextSchema>
+  <Button x:Name="animated" Style="{StaticResource AnimatedButton}" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(1ULL, document.StyleSheet.Rules.size());
+		CUI_EXPECT_EQ(1ULL,
+			document.StyleSheet.Rules.front().Triggers.size());
+		const auto& trigger =
+			document.StyleSheet.Rules.front().Triggers.front();
+		CUI_EXPECT_EQ(1ULL, trigger.EnterActions.size());
+		CUI_EXPECT_EQ(1ULL, trigger.ExitActions.size());
+		CUI_EXPECT_EQ(std::wstring(L"ReadyPulse"),
+			trigger.EnterActions.front().StoryboardName);
+		CUI_EXPECT_TRUE(trigger.EnterActions.front()
+			.Animations.front().ToUsesResource);
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto marker : {
+			"<DataTrigger.EnterActions>",
+			"<BeginStoryboard x:Name=\"ReadyPulse\">",
+			"Storyboard.TargetProperty=\"Round\"",
+			"<DataTrigger.ExitActions>",
+			"<StopStoryboard BeginStoryboardName=\"ReadyPulse\"" })
+			CUI_EXPECT_TRUE(canonical.find(marker) != std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+
+		const auto snapshot =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(snapshot.find("enterActions") != std::string::npos);
+		CUI_EXPECT_TRUE(snapshot.find("stopStoryboard") != std::string::npos);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+
+		auto dataContext = std::make_shared<ObservableObject>();
+		dataContext->SetValue(L"Ready", false);
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.DataContext = dataContext;
+		DesignerModel::RuntimeDocument runtime;
+		if (!DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error))
+			throw std::runtime_error("Style action runtime load failed: "
+				+ Convert::WStringToString(error));
+		auto* button = dynamic_cast<Button*>(
+			runtime.FindControlByName(L"animated"));
+		CUI_EXPECT_TRUE(button != nullptr);
+		CUI_EXPECT_NEAR(2.0f, button->Round, 0.0001f);
+		CUI_EXPECT_FALSE(button->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(dataContext->SetValue(L"Ready", true));
+		CUI_EXPECT_TRUE(button->HasActiveVisualStateAnimations());
+		const auto tick = ::GetTickCount64();
+		CUI_EXPECT_TRUE(button->AdvanceVisualStateAnimations(tick + 150));
+		CUI_EXPECT_NEAR(12.0f, button->Round, 0.0001f);
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Animation,
+			button->GetPropertyValueSource(L"Round"));
+		CUI_EXPECT_TRUE(dataContext->SetValue(L"Ready", false));
+		CUI_EXPECT_FALSE(button->HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(2.0f, button->Round, 0.0001f);
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Style,
+			button->GetPropertyValueSource(L"Round"));
+
+		auto reloadedDocument = document;
+		reloadedDocument.StyleSheet.Resources.front().Value.Text = L"16";
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloadedDocument, runtime, options, &reloadMode, &error));
+		button = dynamic_cast<Button*>(runtime.FindControlByName(L"animated"));
+		CUI_EXPECT_TRUE(button != nullptr);
+		CUI_EXPECT_TRUE(dataContext->SetValue(L"Ready", true));
+		CUI_EXPECT_TRUE(button->AdvanceVisualStateAnimations(
+			::GetTickCount64() + 150));
+		CUI_EXPECT_NEAR(16.0f, button->Round, 0.0001f);
+
+		auto invalidTarget = xaml;
+		const auto animationAt = invalidTarget.find(
+			"Storyboard.TargetProperty=\"Round\"");
+		CUI_EXPECT_TRUE(animationAt != std::string::npos);
+		invalidTarget.insert(animationAt,
+			"Storyboard.TargetName=\"animated\" ");
+		DesignerModel::DesignDocument rejected;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidTarget, rejected, &error));
+		CUI_EXPECT_TRUE(!error.empty());
+
+		auto invalidReference = xaml;
+		const auto stopAt = invalidReference.find(
+			"BeginStoryboardName=\"ReadyPulse\"");
+		CUI_EXPECT_TRUE(stopAt != std::string::npos);
+		if (stopAt != std::string::npos)
+		{
+			const auto nameAt = invalidReference.find("ReadyPulse", stopAt);
+			invalidReference.replace(nameAt,
+				std::string("ReadyPulse").size(), "MissingPulse");
+		}
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidReference, rejected, &error));
+		CUI_EXPECT_TRUE(error.find(L"MissingPulse") != std::wstring::npos);
+	});
+
+	runner.Add("XAML metadata Trigger round-trips and observes target properties", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="PropertyTriggerForm">
+  <Form.Resources>
+    <Style TargetType="Button">
+      <Setter Property="Round" Value="2" />
+      <Setter Property="Raised" Value="true" />
+      <Style.Triggers>
+        <Trigger Property="Text" Value="Ready">
+          <Setter Property="Round" Value="4" />
+          <Trigger.EnterActions>
+            <BeginStoryboard x:Name="TextPulse">
+              <Storyboard>
+                <DoubleAnimation Storyboard.TargetProperty="Round"
+                  From="4" To="12" Duration="0:0:0.1" />
+              </Storyboard>
+            </BeginStoryboard>
+          </Trigger.EnterActions>
+          <Trigger.ExitActions>
+            <StopStoryboard BeginStoryboardName="TextPulse" />
+          </Trigger.ExitActions>
+        </Trigger>
+        <MultiTrigger>
+          <MultiTrigger.Conditions>
+            <Condition Property="Text" Value="Ready" />
+            <Condition Property="IsMouseOver" Value="true" />
+          </MultiTrigger.Conditions>
+          <Setter Property="Raised" Value="false" />
+        </MultiTrigger>
+      </Style.Triggers>
+    </Style>
+  </Form.Resources>
+  <Button x:Name="target" Text="Idle" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(2ULL, document.StyleSheet.Rules.front().Triggers.size());
+		CUI_EXPECT_EQ(1ULL, document.StyleSheet.Rules.front()
+			.Triggers.front().PropertyConditions.size());
+		CUI_EXPECT_EQ(1ULL, document.StyleSheet.Rules.front()
+			.Triggers[1].PropertyConditions.size());
+		CUI_EXPECT_EQ(1ULL, document.StyleSheet.Rules.front()
+			.Triggers[1].Conditions.size());
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto marker : {
+			"<Trigger Property=\"Text\" Value=\"Ready\">",
+			"<Trigger.EnterActions>",
+			"<Trigger.ExitActions>",
+			"<Condition Property=\"Text\" Value=\"Ready\"",
+			"<Condition Property=\"IsMouseOver\" Value=\"true\"" })
+			CUI_EXPECT_TRUE(canonical.find(marker) != std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+
+		const auto snapshot =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(snapshot.find("propertyConditions") != std::string::npos);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+
+		DesignerModel::RuntimeDocument runtime;
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		if (!DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error))
+			throw std::runtime_error("Property Trigger runtime load failed: "
+				+ Convert::WStringToString(error));
+		auto* button = dynamic_cast<Button*>(runtime.FindControlByName(L"target"));
+		CUI_EXPECT_TRUE(button != nullptr);
+		CUI_EXPECT_NEAR(2.0f, button->Round, 0.0001f);
+		CUI_EXPECT_TRUE(button->Raised);
+		button->Text = L"Ready";
+		CUI_EXPECT_TRUE(button->HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(4.0f, button->Round, 0.0001f);
+		CUI_EXPECT_TRUE(button->AdvanceVisualStateAnimations(
+			::GetTickCount64() + 150));
+		CUI_EXPECT_NEAR(12.0f, button->Round, 0.0001f);
+		MouseEventArgs mouse(MouseButtons::None, 0, 0, 0, 0);
+		button->OnMouseEnter(button, mouse);
+		CUI_EXPECT_FALSE(button->Raised);
+		button->OnMouseLeave(button, mouse);
+		CUI_EXPECT_TRUE(button->Raised);
+		button->Text = L"Idle";
+		CUI_EXPECT_FALSE(button->HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(2.0f, button->Round, 0.0001f);
+
+		auto reloadedDocument = document;
+		reloadedDocument.StyleSheet.Rules.front().Triggers.front()
+			.PropertyConditions.front().Value.Text = L"Go";
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloadedDocument, runtime, options, &reloadMode, &error));
+		button = dynamic_cast<Button*>(runtime.FindControlByName(L"target"));
+		CUI_EXPECT_TRUE(button != nullptr);
+		CUI_EXPECT_NEAR(2.0f, button->Round, 0.0001f);
+		button->Text = L"Go";
+		CUI_EXPECT_TRUE(button->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(button->AdvanceVisualStateAnimations(
+			::GetTickCount64() + 150));
+		CUI_EXPECT_NEAR(12.0f, button->Round, 0.0001f);
 	});
 
 	runner.Add("Common interactive appearance properties share value-source metadata", []
@@ -3435,12 +5209,19 @@ int main()
 		};
 
 		const auto properties = DesignerControlPropertyCatalog::GetProperties(target);
-		CUI_EXPECT_EQ(7ULL, properties.size());
+		CUI_EXPECT_EQ(10ULL, properties.size());
 		CUI_EXPECT_EQ(std::wstring(L"Name"), properties[0].Name);
 		CUI_EXPECT_EQ(std::wstring(L"Locked"), properties[1].Name);
-		CUI_EXPECT_EQ(std::wstring(L"Anchor"), properties[2].Name);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
+			target, L"Anchor") != nullptr);
 		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
 			target, L"styleclasses") != nullptr);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
+			target, L"ContentTemplate") != nullptr);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
+			target, L"Template") != nullptr);
+		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
+			target, L"Content") != nullptr);
 		CUI_EXPECT_TRUE(DesignerControlPropertyCatalog::Find(
 			target, L"MediaFile") == nullptr);
 		CUI_EXPECT_FALSE(DesignerControlPropertyCatalog::Find(
@@ -3676,6 +5457,76 @@ int main()
 		CUI_EXPECT_EQ(DesignerPropertyRowSource::ControlDesign,
 			mediaFile->Source);
 		CUI_EXPECT_EQ(std::wstring(L"Data"), mediaFile->Category);
+
+		ItemsControl itemsControl(0, 0, 240, 160);
+		DesignerControl itemsTarget(
+			&itemsControl, L"people", UIClass::UI_ItemsControl);
+		itemsTarget.DesignStrings[L"itemsSourceResource"] = L"People";
+		std::vector<DesignerModel::DesignDataTemplate> templates{
+			{ L"PersonRow", L"Person", {} },
+			{ L"ProductRow", L"Product", {} },
+			{ L"", L"Person", {} }
+		};
+		std::vector<DesignerModel::DesignDataList> lists{
+			{ L"People", L"Person", {} },
+			{ L"Products", L"Product", {} }
+		};
+		DesignerControlPropertyContext dataContext;
+		dataContext.DataTemplates = &templates;
+		dataContext.DataLists = &lists;
+		const auto dataRows = DesignerPropertyRowCatalog::GetControlRows(
+			itemsTarget, dataContext);
+		const auto* sourceResource = DesignerPropertyRowCatalog::Find(
+			dataRows, L"ItemsSourceResource");
+		const auto* itemTemplate = DesignerPropertyRowCatalog::Find(
+			dataRows, L"ItemTemplate");
+		CUI_EXPECT_TRUE(sourceResource != nullptr);
+		CUI_EXPECT_TRUE(itemTemplate != nullptr);
+		CUI_EXPECT_EQ(DesignerPropertyRowEditorKind::Choice,
+			sourceResource->Editor);
+		CUI_EXPECT_EQ(3ULL, sourceResource->Choices.size());
+		CUI_EXPECT_EQ(2ULL, itemTemplate->Choices.size());
+		CUI_EXPECT_EQ(std::wstring(L"(自动)"),
+			itemTemplate->Choices.front().DisplayName);
+		CUI_EXPECT_EQ(std::wstring(L"PersonRow"),
+			itemTemplate->Choices.back().ValueText);
+		dataContext.ScopedDataTemplates = {
+			{ L"ProductRow", L"Product", {} },
+			{ L"LocalPersonRow", L"Person", {} },
+			{ L"", L"Person", {} }
+		};
+		std::vector<DesignerModel::DesignItemsPanelTemplate> panels(1);
+		panels.front().Key = L"GlobalPanel";
+		std::vector<DesignerModel::DesignGroupStyle> groupStyles(1);
+		groupStyles.front().Key = L"GlobalGroups";
+		dataContext.ItemsPanelTemplates = &panels;
+		dataContext.GroupStyles = &groupStyles;
+		DesignerModel::DesignItemsPanelTemplate localPanel;
+		localPanel.Key = L"LocalPanel";
+		dataContext.ScopedItemsPanelTemplates = { localPanel };
+		DesignerModel::DesignGroupStyle localGroups;
+		localGroups.Key = L"LocalGroups";
+		dataContext.ScopedGroupStyles = { localGroups };
+		const auto scopedDataRows = DesignerPropertyRowCatalog::GetControlRows(
+			itemsTarget, dataContext);
+		const auto* scopedItemTemplate = DesignerPropertyRowCatalog::Find(
+			scopedDataRows, L"ItemTemplate");
+		CUI_EXPECT_TRUE(scopedItemTemplate != nullptr);
+		CUI_EXPECT_EQ(2ULL, scopedItemTemplate->Choices.size());
+		CUI_EXPECT_EQ(std::wstring(L"LocalPersonRow"),
+			scopedItemTemplate->Choices.back().ValueText);
+		const auto* scopedPanel = DesignerPropertyRowCatalog::Find(
+			scopedDataRows, L"ItemsPanel");
+		const auto* scopedGroups = DesignerPropertyRowCatalog::Find(
+			scopedDataRows, L"GroupStyle");
+		CUI_EXPECT_TRUE(scopedPanel != nullptr);
+		CUI_EXPECT_TRUE(scopedGroups != nullptr);
+		CUI_EXPECT_EQ(2ULL, scopedPanel->Choices.size());
+		CUI_EXPECT_EQ(std::wstring(L"LocalPanel"),
+			scopedPanel->Choices.back().ValueText);
+		CUI_EXPECT_EQ(2ULL, scopedGroups->Choices.size());
+		CUI_EXPECT_EQ(std::wstring(L"LocalGroups"),
+			scopedGroups->Choices.back().ValueText);
 	});
 
 	runner.Add("Designer property rows expose value sources and tokenized filtering", []
@@ -4647,7 +6498,7 @@ int main()
 		const auto autoPosition = cpp.find(
 			"scrollPanel->TrySetPropertyValue(L\"AutoContentSize\", BindingValue(false))");
 		const auto sizePosition = cpp.find(
-			"scrollPanel->TrySetPropertyValue(L\"ContentSize\", BindingValue(SIZE{ 320, 240 }))");
+			"scrollPanel->TrySetPropertyValue(L\"ContentSize\", BindingValue(cui::core::Size{ 320.f, 240.f }))");
 		CUI_EXPECT_TRUE(autoPosition != std::string::npos);
 		CUI_EXPECT_TRUE(sizePosition != std::string::npos);
 		CUI_EXPECT_TRUE(autoPosition < sizePosition);
@@ -5386,7 +7237,7 @@ int main()
 		CUI_EXPECT_TRUE(equalUpdates.SelectItem(0));
 		equalUpdates.SetExpanded(false);
 		equalUpdates.ScrollBy(1);
-		CUI_EXPECT_EQ(ControlPropertyValueSource::Default,
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Local,
 			equalUpdates.GetPropertyValueSource(L"SelectedIndex"));
 		CUI_EXPECT_EQ(ControlPropertyValueSource::Default,
 			equalUpdates.GetPropertyValueSource(L"Expand"));
@@ -5483,19 +7334,14 @@ int main()
 			listBoxProperties, L"ViewMode") == nullptr);
 		CUI_EXPECT_TRUE(DesignerPropertyCatalog::Find(
 			listBoxProperties, L"ShowColumnHeaders") == nullptr);
-		CUI_EXPECT_FALSE(listBox.ShowColumnHeaders);
-		const auto* listBoxHeadersMetadata =
-			listBox.FindPropertyMetadata(L"ShowColumnHeaders");
-		CUI_EXPECT_TRUE(listBoxHeadersMetadata != nullptr);
-		BindingValue listBoxHeadersDefault;
-		CUI_EXPECT_TRUE(listBoxHeadersMetadata->TryGetDefaultValue(
-			listBoxHeadersDefault));
-		bool listBoxHeadersDefaultValue = true;
-		CUI_EXPECT_TRUE(listBoxHeadersDefault.TryGet(
-			listBoxHeadersDefaultValue));
-		CUI_EXPECT_FALSE(listBoxHeadersDefaultValue);
-		listBox.ShowColumnHeaders = true;
-		CUI_EXPECT_FALSE(listBox.ShowColumnHeaders);
+		CUI_EXPECT_TRUE(listBox.FindPropertyMetadata(L"ShowColumnHeaders") == nullptr);
+		CUI_EXPECT_TRUE(listBox.FindPropertyMetadata(L"ItemTemplate") != nullptr);
+		CUI_EXPECT_TRUE(listBox.FindPropertyMetadata(L"SelectedItem") != nullptr);
+		const auto* listBoxIndexMetadata =
+			listBox.FindPropertyMetadata(L"SelectedIndex");
+		CUI_EXPECT_TRUE(listBoxIndexMetadata != nullptr);
+		CUI_EXPECT_EQ(ControlPropertyPersistence::Metadata,
+			listBoxIndexMetadata->Design().Persistence);
 
 		list.RowHeight = 33.5f;
 		list.RowHeight = std::numeric_limits<float>::quiet_NaN();
@@ -8250,6 +10096,14 @@ int main()
 		CUI_EXPECT_TRUE(DesignerBindingUtils::TryParseUpdateMode(
 			L"OnValidation", updateMode));
 		CUI_EXPECT_EQ(DataSourceUpdateMode::OnValidation, updateMode);
+		CUI_EXPECT_TRUE(DesignerBindingUtils::TryParseUpdateMode(
+			L"Default", updateMode));
+		CUI_EXPECT_EQ(DataSourceUpdateMode::Default, updateMode);
+		CUI_EXPECT_TRUE(DesignerBindingUtils::TryParseUpdateMode(
+			L"LostFocus", updateMode));
+		CUI_EXPECT_EQ(DataSourceUpdateMode::OnValidation, updateMode);
+		CUI_EXPECT_EQ(std::wstring(L"LostFocus"), std::wstring(
+			DesignerBindingUtils::UpdateSourceTriggerName(updateMode)));
 	});
 
 	runner.Add("Designer DataContext schema canonicalizes nested paths", []
@@ -8266,6 +10120,8 @@ int main()
 		CUI_EXPECT_EQ(std::wstring(L"Count"), schema[0].Path);
 		CUI_EXPECT_EQ(std::wstring(L"Profile"), schema[1].Path);
 		CUI_EXPECT_EQ(std::wstring(L"Profile.DisplayName"), schema[2].Path);
+		CUI_EXPECT_EQ(DesignerDataObjectKind::BindingSource,
+			schema[1].ObjectKind);
 
 		const auto* displayName = DesignerDataContextSchemaUtils::Find(
 			schema, L"profile.displayname");
@@ -8288,6 +10144,20 @@ int main()
 			{ L"Profile..Name", BindingValueKind::String }
 		};
 		CUI_EXPECT_FALSE(DesignerDataContextSchemaUtils::Validate(invalidPath, &error));
+
+		DesignerDataContextProperty people{
+			L"People", BindingValueKind::Object, true, false, true };
+		people.ObjectKind = DesignerDataObjectKind::BindingList;
+		people.ItemType = L"Person";
+		DesignerDataContextSchema collectionSchema{ people };
+		CUI_EXPECT_TRUE(DesignerDataContextSchemaUtils::Validate(
+			collectionSchema, &error));
+		CUI_EXPECT_EQ(std::wstring(L"People : Object/BindingList<Person>  [RO]"),
+			DesignerDataContextSchemaUtils::Describe(collectionSchema.front()));
+		collectionSchema.front().ItemType.clear();
+		CUI_EXPECT_FALSE(DesignerDataContextSchemaUtils::Validate(
+			collectionSchema, &error));
+		CUI_EXPECT_TRUE(error.find(L"ItemType") != std::wstring::npos);
 	});
 
 	runner.Add("Designer DataContext schema imports runtime source metadata", []
@@ -8302,6 +10172,9 @@ int main()
 		MetadataObservableObject source;
 		source.SetValue(L"Count", 3);
 		source.SetValue(L"Profile", BindingSourceReference(profile));
+		auto people = std::make_shared<ObservableBindingList>(L"Person");
+		people->Items.push_back(BindingSourceReference(profile));
+		source.SetValue(L"People", BindingListReference(people));
 		CUI_EXPECT_TRUE(source.DefineProperty(
 			{ L"Title", BindingValueKind::String,
 				std::type_index(typeid(std::wstring)), true, false, true },
@@ -8311,19 +10184,26 @@ int main()
 		std::wstring error;
 		CUI_EXPECT_TRUE(DesignerDataContextSchemaUtils::BuildFromBindingSource(
 			source, schema, &error));
-		CUI_EXPECT_EQ(5ULL, schema.size());
+		CUI_EXPECT_EQ(6ULL, schema.size());
 		const auto* count = DesignerDataContextSchemaUtils::Find(schema, L"Count");
 		const auto* profileNode = DesignerDataContextSchemaUtils::Find(schema, L"Profile");
 		const auto* displayName = DesignerDataContextSchemaUtils::Find(
 			schema, L"Profile.DisplayName");
 		const auto* id = DesignerDataContextSchemaUtils::Find(schema, L"Profile.Id");
 		const auto* title = DesignerDataContextSchemaUtils::Find(schema, L"Title");
+		const auto* peopleNode = DesignerDataContextSchemaUtils::Find(schema, L"People");
 		CUI_EXPECT_TRUE(count != nullptr);
 		CUI_EXPECT_TRUE(profileNode != nullptr);
 		CUI_EXPECT_TRUE(displayName != nullptr);
 		CUI_EXPECT_TRUE(id != nullptr);
 		CUI_EXPECT_TRUE(title != nullptr);
+		CUI_EXPECT_TRUE(peopleNode != nullptr);
 		CUI_EXPECT_EQ(BindingValueKind::Object, profileNode->ValueKind);
+		CUI_EXPECT_EQ(DesignerDataObjectKind::BindingSource,
+			profileNode->ObjectKind);
+		CUI_EXPECT_EQ(DesignerDataObjectKind::BindingList,
+			peopleNode->ObjectKind);
+		CUI_EXPECT_EQ(std::wstring(L"Person"), peopleNode->ItemType);
 		CUI_EXPECT_FALSE(id->CanWrite);
 		CUI_EXPECT_FALSE(id->CanObserve);
 		CUI_EXPECT_FALSE(title->CanWrite);
@@ -8396,6 +10276,3515 @@ int main()
 		binding.Converter.clear();
 		CUI_EXPECT_TRUE(DesignerBindingUtils::Validate(
 			target, L"Text", binding, nullptr, &error, &noSchema));
+
+		DesignerDataContextProperty people{
+			L"People", BindingValueKind::Object, true, false, true };
+		people.ObjectKind = DesignerDataObjectKind::BindingList;
+		people.ItemType = L"Person";
+		DesignerDataContextSchema itemSchema{ people };
+		ComboBox combo(L"", 0, 0, 160, 28);
+		binding.SourceProperty = L"People";
+		binding.Mode = BindingMode::OneWay;
+		CUI_EXPECT_TRUE(DesignerBindingUtils::Validate(
+			combo, L"ItemsSource", binding, nullptr, &error, &itemSchema));
+		itemSchema.front().ObjectKind = DesignerDataObjectKind::Opaque;
+		itemSchema.front().ItemType.clear();
+		CUI_EXPECT_FALSE(DesignerBindingUtils::Validate(
+			combo, L"ItemsSource", binding, nullptr, &error, &itemSchema));
+		CUI_EXPECT_TRUE(error.find(L"BindingList") != std::wstring::npos);
+	});
+
+	runner.Add("XAML persists typed DataContext collection contracts", []
+	{
+		DesignerModel::DesignDocument source;
+		DesignerDataContextProperty people{
+			L"People", BindingValueKind::Object, true, false, true };
+		people.ObjectKind = DesignerDataObjectKind::BindingList;
+		people.ItemType = L"Person";
+		source.DataContextSchema.push_back(people);
+		DesignerModel::DesignDataTypeDefinition person;
+		person.Name = L"Person";
+		person.Properties = {
+			{ L"Name", BindingValueKind::String, true, true, true }
+		};
+		source.DataTypes.push_back(std::move(person));
+		const auto xaml = DesignerModel::XamlDocumentSerializer::ToXaml(source);
+		CUI_EXPECT_TRUE(xaml.find("ObjectType=\"BindingList\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(xaml.find("ItemType=\"Person\"")
+			!= std::string::npos);
+
+		DesignerModel::DesignDocument parsed;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, parsed, &error));
+		CUI_EXPECT_EQ(source.DataContextSchema, parsed.DataContextSchema);
+		CUI_EXPECT_EQ(source.DataTypes, parsed.DataTypes);
+
+		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(source);
+		CUI_EXPECT_TRUE(xml.find("objectType=\"BindingList\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("itemType=\"Person\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument parsedXml;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			xml, parsedXml, &error));
+		CUI_EXPECT_EQ(source.DataContextSchema, parsedXml.DataContextSchema);
+		CUI_EXPECT_EQ(source.DataTypes, parsedXml.DataTypes);
+	});
+
+	runner.Add("ElementName bindings use local XAML namescopes end to end", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="ElementForm">
+  <TextBox x:Name="sourceText" Text="Initial" />
+  <Label x:Name="targetText"
+         Text="{Binding Text, ElementName=sourceText, Mode=OneWay}" />
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_EQ(2ULL, document.Nodes.size());
+		const auto& bindingValue = document.Nodes[1].Bindings["Text"];
+		CUI_EXPECT_EQ(std::string("sourceText"),
+			bindingValue["elementName"].get<std::string>());
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(
+			document);
+		CUI_EXPECT_TRUE(canonical.find("ElementName=sourceText")
+			!= std::string::npos);
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_EQ(document, reparsed);
+		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument fromXml;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			xml, fromXml, &error));
+		CUI_EXPECT_EQ(document, fromXml);
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* source = runtime.FindControlByName(L"sourceText");
+		auto* target = runtime.FindControlByName(L"targetText");
+		CUI_EXPECT_TRUE(source != nullptr);
+		CUI_EXPECT_TRUE(target != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Initial"), target->Text);
+		source->Text = L"Updated";
+		CUI_EXPECT_EQ(std::wstring(L"Updated"), target->Text);
+		auto oneTimeDocument = document;
+		oneTimeDocument.Nodes[1].Bindings["Text"]["mode"] =
+			static_cast<int>(BindingMode::OneTime);
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			oneTimeDocument, runtime, {}, &reloadMode, &error));
+		source = runtime.FindControlByName(L"sourceText");
+		target = runtime.FindControlByName(L"targetText");
+		CUI_EXPECT_TRUE(source != nullptr);
+		CUI_EXPECT_TRUE(target != nullptr);
+		const auto oneTimeValue = target->Text;
+		source->Text = L"OneTimeDoesNotFollow";
+		CUI_EXPECT_EQ(oneTimeValue, target->Text);
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			document, runtime, {}, &reloadMode, &error));
+		source = runtime.FindControlByName(L"sourceText");
+		target = runtime.FindControlByName(L"targetText");
+		CUI_EXPECT_TRUE(source != nullptr);
+		CUI_EXPECT_TRUE(target != nullptr);
+		CUI_EXPECT_EQ(source->Text, target->Text);
+		source->Text = L"FollowsAgain";
+		CUI_EXPECT_EQ(std::wstring(L"FollowsAgain"), target->Text);
+
+		auto invalidXaml = xaml;
+		const auto sourceName = invalidXaml.find("ElementName=sourceText");
+		CUI_EXPECT_TRUE(sourceName != std::string::npos);
+		invalidXaml.replace(sourceName,
+			std::string("ElementName=sourceText").size(),
+			"ElementName=missingText");
+		DesignerModel::DesignDocument unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"namescope") != std::wstring::npos);
+
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { document.Nodes[0].Id, document.Nodes[1].Id },
+			fragment, &error));
+		DesignerModel::DesignDocument externalFragment;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { document.Nodes[1].Id }, externalFragment, &error));
+		CUI_EXPECT_TRUE(error.find(L"复制范围外") != std::wstring::npos);
+
+		DesignerModel::DesignDocument occupied = document;
+		DesignerModel::DesignDocument pasted;
+		DesignerModel::DesignClipboardPasteResult pasteResult;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			occupied, fragment, 20, 20, pasted, &pasteResult, &error));
+		CUI_EXPECT_EQ(2ULL, pasteResult.RootNames.size());
+		const auto pastedTarget = std::find_if(
+			pasted.Nodes.begin(), pasted.Nodes.end(), [&](const auto& node)
+			{
+				return node.Name == pasteResult.RootNames[1];
+			});
+		CUI_EXPECT_TRUE(pastedTarget != pasted.Nodes.end());
+		CUI_EXPECT_EQ(
+			Convert::UnicodeToUtf8(pasteResult.RootNames[0]),
+			pastedTarget->Bindings["Text"]["elementName"].get<std::string>());
+	});
+
+	runner.Add("Inherited DataContext and RelativeSource follow WPF source precedence", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="ScopeForm">
+  <Form.DataContextSchema>
+    <Property Path="Profile" Kind="Object" ObjectType="BindingSource" />
+    <Property Path="Profile.Name" Kind="String" />
+  </Form.DataContextSchema>
+  <StackPanel x:Name="profileScope" DataContext="{Binding Profile}">
+    <Label x:Name="profileName" Text="{Binding Name}" />
+    <Label x:Name="selfSource" Text="Self value"
+           AccessibleName="{Binding Text, RelativeSource={RelativeSource Self}}" />
+  </StackPanel>
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(DesignerDataContextSchemaUtils::Find(
+			document.DataContextSchema, L"Profile.Name") != nullptr);
+		CUI_EXPECT_TRUE(DesignerDataContextSchemaUtils::Find(
+			document.DataContextSchema, L"Name") == nullptr);
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(
+			document);
+		CUI_EXPECT_TRUE(canonical.find(
+			"RelativeSource={RelativeSource Self}") != std::string::npos);
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_EQ(document, reparsed);
+
+		auto profile = std::make_shared<ObservableObject>();
+		profile->SetValue(L"Name", std::wstring(L"Ada"));
+		auto root = std::make_shared<ObservableObject>();
+		root->SetValue(L"Profile", BindingSourceReference(profile));
+		DesignerModel::RuntimeDocument runtime;
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.DataContext = root;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error));
+		auto* scope = runtime.FindControlByName(L"profileScope");
+		auto* name = runtime.FindControlByName(L"profileName");
+		auto* self = runtime.FindControlByName(L"selfSource");
+		CUI_EXPECT_TRUE(scope != nullptr);
+		CUI_EXPECT_TRUE(name != nullptr);
+		CUI_EXPECT_TRUE(self != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Ada"), name->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Self value"), self->AccessibleName);
+		profile->SetValue(L"Name", std::wstring(L"Grace"));
+		CUI_EXPECT_EQ(std::wstring(L"Grace"), name->Text);
+
+		auto replacement = std::make_shared<ObservableObject>();
+		replacement->SetValue(L"Name", std::wstring(L"Lin"));
+		root->SetValue(L"Profile", BindingSourceReference(replacement));
+		CUI_EXPECT_EQ(std::wstring(L"Lin"), name->Text);
+		replacement->SetValue(L"Name", std::wstring(L"Margaret"));
+		CUI_EXPECT_EQ(std::wstring(L"Margaret"), name->Text);
+
+		auto local = std::make_shared<ObservableObject>();
+		local->SetValue(L"Name", std::wstring(L"Local"));
+		CUI_EXPECT_TRUE(scope->SetDataContext(BindingSourceReference(local)));
+		CUI_EXPECT_EQ(std::wstring(L"Local"), name->Text);
+		CUI_EXPECT_TRUE(scope->ClearDataContext());
+		CUI_EXPECT_EQ(std::wstring(L"Margaret"), name->Text);
+		self->Text = L"Changed self";
+		CUI_EXPECT_EQ(std::wstring(L"Changed self"), self->AccessibleName);
+
+		auto oneTime = document;
+		const auto scopedName = std::find_if(oneTime.Nodes.begin(),
+			oneTime.Nodes.end(), [](const auto& node)
+			{ return node.Name == L"profileName"; });
+		CUI_EXPECT_TRUE(scopedName != oneTime.Nodes.end());
+		scopedName->Bindings["Text"]["mode"] =
+			static_cast<int>(BindingMode::OneTime);
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			oneTime, runtime, options, &reloadMode, &error));
+		name = runtime.FindControlByName(L"profileName");
+		const auto oneTimeName = name->Text;
+		auto afterReload = std::make_shared<ObservableObject>();
+		afterReload->SetValue(L"Name", std::wstring(L"After reload"));
+		root->SetValue(L"Profile", BindingSourceReference(afterReload));
+		CUI_EXPECT_EQ(oneTimeName, name->Text);
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			document, runtime, options, &reloadMode, &error));
+		name = runtime.FindControlByName(L"profileName");
+		CUI_EXPECT_EQ(std::wstring(L"After reload"), name->Text);
+
+		auto invalid = xaml;
+		const auto selfSource = invalid.find(
+			"RelativeSource={RelativeSource Self}");
+		CUI_EXPECT_TRUE(selfSource != std::string::npos);
+		invalid.replace(selfSource,
+			std::string("RelativeSource={RelativeSource Self}").size(),
+			"RelativeSource={RelativeSource TemplatedParent}");
+		DesignerModel::DesignDocument unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalid, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"组件模板") != std::wstring::npos);
+	});
+
+	runner.Add("Binding PropertyPath indexers track lists and keyed records", []
+	{
+		std::vector<BindingPathStep> steps;
+		CUI_EXPECT_TRUE(TryParseBindingPropertyPath(
+			L"People[0].Name", steps));
+		CUI_EXPECT_EQ(3ULL, steps.size());
+		CUI_EXPECT_EQ(BindingPathStepKind::Property, steps[0].Kind);
+		CUI_EXPECT_EQ(std::wstring(L"People"), steps[0].Value);
+		CUI_EXPECT_EQ(BindingPathStepKind::Indexer, steps[1].Kind);
+		CUI_EXPECT_EQ(std::wstring(L"0"), steps[1].Value);
+		CUI_EXPECT_TRUE(TryParseBindingPropertyPath(
+			L"Settings['accent.color']", steps));
+		CUI_EXPECT_EQ(std::wstring(L"accent.color"), steps.back().Value);
+		CUI_EXPECT_TRUE(TryParseBindingPropertyPath(
+			L"Settings['can''t']", steps));
+		CUI_EXPECT_EQ(std::wstring(L"can't"), steps.back().Value);
+		CUI_EXPECT_TRUE(TryParseBindingPropertyPath(L"[root]", steps));
+		CUI_EXPECT_FALSE(TryParseBindingPropertyPath(L"People[].Name", steps));
+		CUI_EXPECT_FALSE(TryParseBindingPropertyPath(
+			L"Settings['unterminated]", steps));
+		CUI_EXPECT_FALSE(TryParseBindingPropertyPath(L"People[0]Name", steps));
+		CUI_EXPECT_FALSE(TryParseBindingPropertyPath(L"People.[0]", steps));
+
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="IndexerForm">
+  <Form.Resources>
+    <DataType x:Key="Person">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+  </Form.Resources>
+  <Form.DataContextSchema>
+    <Property Path="People" Kind="Object" ObjectType="BindingList"
+              ItemType="Person" CanWrite="false" />
+    <Property Path="Settings" Kind="Object" ObjectType="BindingSource" />
+  </Form.DataContextSchema>
+  <StackPanel x:Name="root">
+    <Label x:Name="firstPerson"
+           Text="{Binding People[0].Name, FallbackValue='No person'}" />
+    <TextBox x:Name="firstPersonEditor"
+             Text="{Binding People[0].Name, Mode=TwoWay,
+                            UpdateSourceTrigger=PropertyChanged,
+                            FallbackValue='No person'}" />
+    <Label x:Name="accent" Text="{Binding Settings['accent.color']}" />
+    <TextBox x:Name="title"
+             Text="{Binding Settings[title], Mode=TwoWay,
+                            UpdateSourceTrigger=PropertyChanged}" />
+  </StackPanel>
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(
+			document);
+		CUI_EXPECT_TRUE(canonical.find("People[0].Name") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"Settings[&apos;accent.color&apos;]") != std::string::npos);
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_EQ(document, reparsed);
+		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument fromXml;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			xml, fromXml, &error));
+		CUI_EXPECT_EQ(document, fromXml);
+
+		auto people = std::make_shared<ObservableBindingList>(L"Person");
+		auto settings = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(settings->DefineProperty(
+			L"accent.color", std::wstring(L"Blue")));
+		CUI_EXPECT_TRUE(settings->DefineProperty(
+			L"title", std::wstring(L"Initial")));
+		auto viewModel = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(viewModel->DefineProperty(
+			L"People", BindingListReference(people), true, false, true));
+		CUI_EXPECT_TRUE(viewModel->DefineProperty(
+			L"Settings", BindingSourceReference(settings)));
+
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.DataContext = viewModel;
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error));
+		auto* firstPerson = runtime.FindControlByName(L"firstPerson");
+		auto* firstPersonEditor = dynamic_cast<TextBox*>(
+			runtime.FindControlByName(L"firstPersonEditor"));
+		auto* accent = runtime.FindControlByName(L"accent");
+		auto* title = dynamic_cast<TextBox*>(
+			runtime.FindControlByName(L"title"));
+		CUI_EXPECT_TRUE(firstPerson && firstPersonEditor && accent && title);
+		CUI_EXPECT_EQ(std::wstring(L"No person"), firstPerson->Text);
+		CUI_EXPECT_EQ(std::wstring(L"No person"), firstPersonEditor->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Blue"), accent->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Initial"), title->Text);
+
+		auto alice = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(alice->DefineProperty(
+			L"Name", std::wstring(L"Alice")));
+		people->Items.push_back(BindingSourceReference(alice));
+		CUI_EXPECT_EQ(std::wstring(L"Alice"), firstPerson->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Alice"), firstPersonEditor->Text);
+		BindingValue indexedName;
+		CUI_EXPECT_TRUE(TryGetBindingPathValue(
+			*viewModel, L"People[0].Name", indexedName));
+		CUI_EXPECT_EQ(std::wstring(L"Alice"), indexedName.ToString());
+		CUI_EXPECT_TRUE(firstPersonEditor->TrySetPropertyValue(
+			L"Text", BindingValue(std::wstring(L"Alice edited"))));
+		BindingValue aliceName;
+		CUI_EXPECT_TRUE(alice->TryGetValue(L"Name", aliceName));
+		CUI_EXPECT_EQ(std::wstring(L"Alice edited"), aliceName.ToString());
+		CUI_EXPECT_TRUE(alice->SetValue(
+			L"Name", std::wstring(L"Alicia")));
+		CUI_EXPECT_EQ(std::wstring(L"Alicia"), firstPerson->Text);
+
+		auto bob = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(bob->DefineProperty(
+			L"Name", std::wstring(L"Bob")));
+		CUI_EXPECT_TRUE(people->Items.Replace(0, BindingSourceReference(bob)));
+		CUI_EXPECT_EQ(std::wstring(L"Bob"), firstPerson->Text);
+		people->Items.clear();
+		CUI_EXPECT_EQ(std::wstring(L"No person"), firstPerson->Text);
+		people->Items.push_back(BindingSourceReference(alice));
+		CUI_EXPECT_EQ(std::wstring(L"Alicia"), firstPerson->Text);
+
+		CUI_EXPECT_TRUE(settings->SetValue(
+			L"accent.color", std::wstring(L"Green")));
+		CUI_EXPECT_EQ(std::wstring(L"Green"), accent->Text);
+		CUI_EXPECT_TRUE(title->TrySetPropertyValue(
+			L"Text", BindingValue(std::wstring(L"Edited"))));
+		BindingValue storedTitle;
+		CUI_EXPECT_TRUE(settings->TryGetValue(L"title", storedTitle));
+		CUI_EXPECT_EQ(std::wstring(L"Edited"), storedTitle.ToString());
+
+		auto invalid = xaml;
+		const auto invalidOffset = invalid.find("People[0].Name");
+		CUI_EXPECT_TRUE(invalidOffset != std::string::npos);
+		invalid.replace(invalidOffset, std::string("People[0].Name").size(),
+			"People[].Name");
+		DesignerModel::DesignDocument unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalid, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"路径") != std::wstring::npos);
+	});
+
+	runner.Add("Binding FallbackValue and TargetNullValue recover dynamically", []
+	{
+		class NullableSource final : public IBindingSource
+		{
+		public:
+			bool TryGetValue(const std::wstring& propertyName,
+				BindingValue& out) const override
+			{
+				const auto found = Values.find(propertyName);
+				if (found == Values.end()) return false;
+				out = found->second;
+				return true;
+			}
+			bool TrySetValue(const std::wstring& propertyName,
+				const BindingValue& value) override
+			{
+				Set(propertyName, value);
+				return true;
+			}
+			PropertyChangedEvent& PropertyChanged() override { return Changed; }
+			void Set(std::wstring propertyName, BindingValue value)
+			{
+				Values[propertyName] = std::move(value);
+				Changed.Notify(propertyName);
+			}
+			void Remove(const std::wstring& propertyName)
+			{
+				Values.erase(propertyName);
+				Changed.Notify(propertyName);
+			}
+
+		private:
+			std::map<std::wstring, BindingValue> Values;
+			PropertyChangedEvent Changed;
+		};
+
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="FallbackForm">
+  <StackPanel x:Name="root">
+    <Label x:Name="fallback" Text="{Binding Missing, FallbackValue='Loading, please wait'}" />
+    <Label x:Name="nullable" Text="{Binding Nullable, FallbackValue='broken', TargetNullValue='(none)'}" />
+    <NumericUpDown x:Name="numeric" SnapToStep="false"
+                   Value="{Binding MissingNumber, FallbackValue='7.5'}" />
+  </StackPanel>
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(
+			document);
+		CUI_EXPECT_TRUE(canonical.find(
+			"FallbackValue=&apos;Loading, please wait&apos;") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"TargetNullValue=&apos;(none)&apos;") != std::string::npos);
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_EQ(document, reparsed);
+		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument fromXml;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			xml, fromXml, &error));
+		CUI_EXPECT_EQ(document, fromXml);
+
+		auto source = std::make_shared<NullableSource>();
+		source->Set(L"Nullable", BindingValue{});
+		DesignerModel::RuntimeDocument runtime;
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.DataContext = source;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error));
+		auto* fallback = runtime.FindControlByName(L"fallback");
+		auto* nullable = runtime.FindControlByName(L"nullable");
+		auto* numeric = dynamic_cast<NumericUpDown*>(
+			runtime.FindControlByName(L"numeric"));
+		CUI_EXPECT_TRUE(fallback && nullable && numeric);
+		CUI_EXPECT_EQ(std::wstring(L"Loading, please wait"), fallback->Text);
+		CUI_EXPECT_EQ(std::wstring(L"(none)"), nullable->Text);
+		CUI_EXPECT_TRUE(std::abs(numeric->Value - 7.5) < 0.0001);
+
+		source->Set(L"Missing", BindingValue(std::wstring(L"Ready")));
+		source->Set(L"Nullable", BindingValue(std::wstring(L"Available")));
+		source->Set(L"MissingNumber", BindingValue(12.25));
+		CUI_EXPECT_EQ(std::wstring(L"Ready"), fallback->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Available"), nullable->Text);
+		CUI_EXPECT_TRUE(std::abs(numeric->Value - 12.25) < 0.0001);
+		source->Set(L"MissingNumber", BindingValue(std::wstring(L"bad")));
+		CUI_EXPECT_TRUE(std::abs(numeric->Value - 7.5) < 0.0001);
+		source->Remove(L"Missing");
+		source->Set(L"Nullable", BindingValue{});
+		CUI_EXPECT_EQ(std::wstring(L"Loading, please wait"), fallback->Text);
+		CUI_EXPECT_EQ(std::wstring(L"(none)"), nullable->Text);
+
+		auto invalid = xaml;
+		const auto number = invalid.find("FallbackValue='7.5'");
+		CUI_EXPECT_TRUE(number != std::string::npos);
+		invalid.replace(number, std::string("FallbackValue='7.5'").size(),
+			"FallbackValue='not-a-number'");
+		DesignerModel::DesignDocument unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalid, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"FallbackValue") != std::wstring::npos);
+	});
+
+	runner.Add("Binding ConverterParameter and StringFormat round-trip and update", []
+	{
+		std::wstring formatted;
+		CUI_EXPECT_TRUE(IsValidBindingStringFormat(L"{}{0,10:N2}"));
+		CUI_EXPECT_TRUE(TryFormatBindingValue(
+			BindingValue(1234.5), L"{}{0,10:N2}", formatted));
+		CUI_EXPECT_EQ(std::wstring(L"  1,234.50"), formatted);
+		CUI_EXPECT_TRUE(TryFormatBindingValue(
+			BindingValue(12), L"{{{0:D4}}}", formatted));
+		CUI_EXPECT_EQ(std::wstring(L"{0012}"), formatted);
+		CUI_EXPECT_TRUE(TryFormatBindingValue(
+			BindingValue(0.125), L"{0:P1}", formatted));
+		CUI_EXPECT_EQ(std::wstring(L"12.5%"), formatted);
+		CUI_EXPECT_FALSE(IsValidBindingStringFormat(L"{0:Q2}"));
+		CUI_EXPECT_FALSE(TryFormatBindingValue(
+			BindingValue(L"text"), L"{0:N2}", formatted));
+
+		constexpr const wchar_t* converterName = L"Tests.ScaleByParameter";
+		BindingValueConverterRegistry::Unregister(converterName);
+		struct RegistrationGuard
+		{
+			const wchar_t* Name;
+			~RegistrationGuard()
+			{
+				BindingValueConverterRegistry::Unregister(Name);
+			}
+		} registration{ converterName };
+		auto convert = [](
+			const BindingValue& value,
+			const BindingValueConverterContext& context,
+			BindingValue& out)
+		{
+			double amount = 0.0;
+			double factor = 0.0;
+			if (!value.TryGetDouble(amount) || !context.Parameter
+				|| !context.Parameter->TryGetDouble(factor)) return false;
+			out = BindingValue(amount * factor);
+			return true;
+		};
+		auto convertBack = [](
+			const BindingValue& value,
+			const BindingValueConverterContext& context,
+			BindingValue& out)
+		{
+			double amount = 0.0;
+			double factor = 0.0;
+			if (!value.TryGetDouble(amount) || !context.Parameter
+				|| !context.Parameter->TryGetDouble(factor) || factor == 0.0)
+				return false;
+			out = BindingValue(amount / factor);
+			return true;
+		};
+		CUI_EXPECT_TRUE(BindingValueConverterRegistry::Register(
+			{ converterName, BindingValueKind::Double,
+				BindingValueKind::Empty, true },
+			[convert, convertBack]
+			{
+				return std::make_shared<DelegateBindingValueConverter>(
+					convert, convertBack);
+			}));
+
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="FormatForm">
+  <Label x:Name="amount" Text="{Binding Amount, Mode=TwoWay, Converter=Tests.ScaleByParameter, ConverterParameter='2', StringFormat='{}{0:N2}', FallbackValue='unavailable'}" />
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(
+			document);
+		CUI_EXPECT_TRUE(canonical.find(
+			"ConverterParameter=&apos;2&apos;") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"StringFormat=&apos;{}{0:N2}&apos;") != std::string::npos);
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_EQ(document, reparsed);
+		const auto nativeXml = DesignerModel::DesignDocumentSerializer::ToXml(
+			document);
+		DesignerModel::DesignDocument fromXml;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			nativeXml, fromXml, &error));
+		CUI_EXPECT_EQ(document, fromXml);
+
+		class FlexibleSource final : public IBindingSource
+		{
+		public:
+			bool TryGetValue(const std::wstring& propertyName,
+				BindingValue& out) const override
+			{
+				const auto found = Values.find(propertyName);
+				if (found == Values.end()) return false;
+				out = found->second;
+				return true;
+			}
+			bool TrySetValue(const std::wstring& propertyName,
+				const BindingValue& value) override
+			{
+				Set(propertyName, value);
+				return true;
+			}
+			PropertyChangedEvent& PropertyChanged() override { return Changed; }
+			void Set(std::wstring propertyName, BindingValue value)
+			{
+				Values[std::move(propertyName)] = std::move(value);
+				Changed.Notify(L"Amount");
+			}
+
+		private:
+			std::map<std::wstring, BindingValue> Values;
+			PropertyChangedEvent Changed;
+		};
+		auto source = std::make_shared<FlexibleSource>();
+		source->Set(L"Amount", BindingValue(1234.5));
+		DesignerModel::RuntimeDocument runtime;
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.DataContext = source;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error));
+		auto* amount = runtime.FindControlByName(L"amount");
+		CUI_EXPECT_TRUE(amount != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"2,469.00"), amount->Text);
+		amount->Text = L"100.00";
+		BindingValue sourceAmount;
+		double numericAmount = 0.0;
+		CUI_EXPECT_TRUE(source->TryGetValue(L"Amount", sourceAmount));
+		CUI_EXPECT_TRUE(sourceAmount.TryGetDouble(numericAmount));
+		CUI_EXPECT_TRUE(std::abs(numericAmount - 50.0) < 0.0001);
+		source->Set(L"Amount", BindingValue(2.5));
+		CUI_EXPECT_EQ(std::wstring(L"5.00"), amount->Text);
+		source->Set(L"Amount", BindingValue(std::wstring(L"not numeric")));
+		CUI_EXPECT_EQ(std::wstring(L"unavailable"), amount->Text);
+
+		auto invalidFormat = xaml;
+		const auto formatOffset = invalidFormat.find("{0:N2}");
+		CUI_EXPECT_TRUE(formatOffset != std::string::npos);
+		invalidFormat.replace(formatOffset, std::string("{0:N2}").size(),
+			"{0:Q2}");
+		DesignerModel::DesignDocument unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidFormat, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"StringFormat") != std::wstring::npos);
+
+		const std::string nonStringTarget = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="InvalidFormatForm">
+  <NumericUpDown x:Name="amount" Value="{Binding Amount, StringFormat='{}{0:N2}'}" />
+</Form>)XAML";
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			nonStringTarget, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"字符串目标属性") != std::wstring::npos);
+	});
+
+	runner.Add("MultiBinding formats, converts back, and round-trips XAML", []
+	{
+		std::wstring formatted;
+		CUI_EXPECT_TRUE(IsValidMultiBindingStringFormat(L"{}{0} / {1:D3}", 2));
+		CUI_EXPECT_TRUE(TryFormatBindingValues(
+			{ BindingValue(std::wstring(L"Item")), BindingValue(7) },
+			L"{}{0} / {1:D3}", formatted));
+		CUI_EXPECT_EQ(std::wstring(L"Item / 007"), formatted);
+		CUI_EXPECT_FALSE(IsValidMultiBindingStringFormat(L"{2}", 2));
+
+		constexpr const wchar_t* converterName = L"Tests.FullName";
+		MultiBindingValueConverterRegistry::Unregister(converterName);
+		struct RegistrationGuard
+		{
+			~RegistrationGuard()
+			{
+				MultiBindingValueConverterRegistry::Unregister(L"Tests.FullName");
+			}
+		} registration;
+		auto convert = [](const std::vector<BindingValue>& values,
+			const MultiBindingValueConverterContext&, BindingValue& out)
+		{
+			if (values.size() != 2) return false;
+			out = BindingValue(values[0].ToString() + L" " + values[1].ToString());
+			return true;
+		};
+		auto convertBack = [](const BindingValue& value, size_t targetCount,
+			const MultiBindingValueConverterContext&,
+			std::vector<BindingValue>& out)
+		{
+			if (targetCount != 2) return false;
+			const auto text = value.ToString();
+			const auto separator = text.find(L' ');
+			if (separator == std::wstring::npos) return false;
+			out = { BindingValue(text.substr(0, separator)),
+				BindingValue(text.substr(separator + 1)) };
+			return true;
+		};
+		CUI_EXPECT_TRUE(MultiBindingValueConverterRegistry::Register(
+			{ converterName, 2, BindingValueKind::String, true },
+			[convert, convertBack]
+			{
+				return std::make_shared<DelegateMultiBindingValueConverter>(
+					convert, convertBack);
+			}));
+
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="MultiForm">
+  <StackPanel x:Name="root">
+    <Label x:Name="summary">
+      <Label.Text>
+        <MultiBinding StringFormat="{}{0} / {1}">
+          <Binding Path="First" />
+          <Binding Path="Last" />
+        </MultiBinding>
+      </Label.Text>
+    </Label>
+    <TextBox x:Name="fullName">
+      <TextBox.Text>
+        <MultiBinding Mode="TwoWay" Converter="Tests.FullName">
+          <Binding Path="First" />
+          <Binding Path="Last" />
+        </MultiBinding>
+      </TextBox.Text>
+    </TextBox>
+    <TextBox x:Name="explicitName">
+      <TextBox.Text>
+        <MultiBinding Mode="TwoWay" UpdateSourceTrigger="Explicit"
+                      Converter="Tests.FullName">
+          <Binding Path="First" />
+          <Binding Path="Last" />
+        </MultiBinding>
+      </TextBox.Text>
+    </TextBox>
+    <TextBox x:Name="snapshotName">
+      <TextBox.Text>
+        <MultiBinding Mode="OneTime" Converter="Tests.FullName">
+          <Binding Path="First" />
+          <Binding Path="Last" />
+        </MultiBinding>
+      </TextBox.Text>
+    </TextBox>
+    <TextBox x:Name="liveName"
+             Text="{Binding First, Mode=TwoWay, UpdateMode=OnPropertyChanged}" />
+  </StackPanel>
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("<Label.Text>") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("<MultiBinding") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("<Binding Path=\"First\"") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"UpdateSourceTrigger=PropertyChanged") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"UpdateSourceTrigger=\"Explicit\"") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("UpdateMode=") == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"UpdateSourceTrigger=Default") == std::string::npos);
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_EQ(document, reparsed);
+		const auto nativeXml = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument fromXml;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			nativeXml, fromXml, &error));
+		CUI_EXPECT_EQ(document, fromXml);
+
+		auto source = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(source->DefineProperty(L"First", std::wstring(L"Ada")));
+		CUI_EXPECT_TRUE(source->DefineProperty(L"Last", std::wstring(L"Lovelace")));
+		DesignerModel::RuntimeDocument runtime;
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.DataContext = source;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error));
+		auto* summary = runtime.FindControlByName(L"summary");
+		auto* fullName = runtime.FindControlByName(L"fullName");
+		auto* explicitName = runtime.FindControlByName(L"explicitName");
+		auto* snapshotName = runtime.FindControlByName(L"snapshotName");
+		CUI_EXPECT_TRUE(summary && fullName && explicitName && snapshotName);
+		auto* fullNameBinding = fullName
+			? fullName->DataBindings.FindMulti(L"Text") : nullptr;
+		CUI_EXPECT_TRUE(fullNameBinding != nullptr);
+		if (fullNameBinding)
+		{
+			CUI_EXPECT_EQ(BindingMode::TwoWay, fullNameBinding->Mode());
+			CUI_EXPECT_EQ(DataSourceUpdateMode::OnValidation,
+				fullNameBinding->UpdateMode());
+		}
+		CUI_EXPECT_EQ(std::wstring(L"Ada / Lovelace"), summary->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Ada Lovelace"), fullName->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Ada Lovelace"), explicitName->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Ada Lovelace"), snapshotName->Text);
+		CUI_EXPECT_TRUE(source->SetValue(L"First", std::wstring(L"Augusta")));
+		CUI_EXPECT_EQ(std::wstring(L"Augusta / Lovelace"), summary->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Augusta Lovelace"), fullName->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Augusta Lovelace"), explicitName->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Ada Lovelace"), snapshotName->Text);
+		CUI_EXPECT_TRUE(snapshotName->DataBindings.UpdateTarget(L"Text"));
+		CUI_EXPECT_EQ(std::wstring(L"Augusta Lovelace"), snapshotName->Text);
+		fullName->Text = L"Grace Hopper";
+		BindingValue first;
+		BindingValue last;
+		CUI_EXPECT_TRUE(source->TryGetValue(L"First", first));
+		CUI_EXPECT_TRUE(source->TryGetValue(L"Last", last));
+		CUI_EXPECT_EQ(std::wstring(L"Augusta"), first.ToString());
+		CUI_EXPECT_EQ(std::wstring(L"Lovelace"), last.ToString());
+		fullName->OnLostFocus(fullName);
+		CUI_EXPECT_TRUE(source->TryGetValue(L"First", first));
+		CUI_EXPECT_TRUE(source->TryGetValue(L"Last", last));
+		CUI_EXPECT_EQ(std::wstring(L"Grace"), first.ToString());
+		CUI_EXPECT_EQ(std::wstring(L"Hopper"), last.ToString());
+		CUI_EXPECT_EQ(std::wstring(L"Grace / Hopper"), summary->Text);
+		explicitName->Text = L"Invalid";
+		CUI_EXPECT_FALSE(explicitName->DataBindings.UpdateSource(L"Text"));
+		CUI_EXPECT_EQ(BindingError::MultiBindingConverterFailed,
+			explicitName->DataBindings.LastError());
+		CUI_EXPECT_TRUE(source->TryGetValue(L"First", first));
+		CUI_EXPECT_TRUE(source->TryGetValue(L"Last", last));
+		CUI_EXPECT_EQ(std::wstring(L"Grace"), first.ToString());
+		CUI_EXPECT_EQ(std::wstring(L"Hopper"), last.ToString());
+		explicitName->Text = L"Adele Goldberg";
+		CUI_EXPECT_TRUE(explicitName->DataBindings.UpdateSource(L"Text"));
+		CUI_EXPECT_EQ(BindingError::None,
+			explicitName->DataBindings.LastError());
+		CUI_EXPECT_TRUE(source->TryGetValue(L"First", first));
+		CUI_EXPECT_TRUE(source->TryGetValue(L"Last", last));
+		CUI_EXPECT_EQ(std::wstring(L"Adele"), first.ToString());
+		CUI_EXPECT_EQ(std::wstring(L"Goldberg"), last.ToString());
+		CUI_EXPECT_EQ(std::wstring(L"Adele / Goldberg"), summary->Text);
+		CUI_EXPECT_FALSE(explicitName->DataBindings.UpdateSource(L"Missing"));
+		CUI_EXPECT_EQ(BindingError::TargetPropertyNotFound,
+			explicitName->DataBindings.LastError());
+
+		auto invalid = xaml;
+		const auto second = invalid.find("          <Binding Path=\"Last\" />\n",
+			invalid.find("summary"));
+		CUI_EXPECT_TRUE(second != std::string::npos);
+		invalid.erase(second, std::string("          <Binding Path=\"Last\" />\n").size());
+		DesignerModel::DesignDocument unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalid, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"至少需要两个") != std::wstring::npos);
+	});
+
+	runner.Add("RelativeSource FindAncestor tracks level and reparenting", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="AncestorForm">
+  <StackPanel x:Name="outer" Text="Outer">
+    <StackPanel x:Name="inner" Text="Inner">
+      <Label x:Name="nearest"
+             AccessibleName="{Binding Text, FallbackValue='Detached', RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type StackPanel}}}" />
+      <Label x:Name="second"
+             AccessibleName="{Binding Text, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type Panel}, AncestorLevel=2}}" />
+    </StackPanel>
+    <StackPanel x:Name="alternate" Text="Alternate" />
+  </StackPanel>
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(
+			document);
+		CUI_EXPECT_TRUE(canonical.find(
+			"RelativeSource FindAncestor, AncestorType={x:Type StackPanel}")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"AncestorType={x:Type Panel}, AncestorLevel=2")
+			!= std::string::npos);
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_EQ(document, reparsed);
+		const auto nativeXml = DesignerModel::DesignDocumentSerializer::ToXml(
+			document);
+		DesignerModel::DesignDocument fromXml;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			nativeXml, fromXml, &error));
+		CUI_EXPECT_EQ(document, fromXml);
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* outer = runtime.FindControlByName(L"outer");
+		auto* inner = runtime.FindControlByName(L"inner");
+		auto* alternate = runtime.FindControlByName(L"alternate");
+		auto* nearest = runtime.FindControlByName(L"nearest");
+		auto* second = runtime.FindControlByName(L"second");
+		CUI_EXPECT_TRUE(outer && inner && alternate && nearest && second);
+		CUI_EXPECT_EQ(std::wstring(L"Inner"), nearest->AccessibleName);
+		CUI_EXPECT_EQ(std::wstring(L"Outer"), second->AccessibleName);
+		inner->Text = L"Inner updated";
+		outer->Text = L"Outer updated";
+		CUI_EXPECT_EQ(std::wstring(L"Inner updated"), nearest->AccessibleName);
+		CUI_EXPECT_EQ(std::wstring(L"Outer updated"), second->AccessibleName);
+
+		const auto position = std::find(
+			inner->Children.begin(), inner->Children.end(), nearest);
+		CUI_EXPECT_TRUE(position != inner->Children.end());
+		inner->Children.erase(position);
+		CUI_EXPECT_EQ(std::wstring(L"Detached"), nearest->AccessibleName);
+		alternate->Children.push_back(nearest);
+		CUI_EXPECT_EQ(std::wstring(L"Alternate"), nearest->AccessibleName);
+		alternate->Text = L"Alternate updated";
+		CUI_EXPECT_EQ(std::wstring(L"Alternate updated"), nearest->AccessibleName);
+
+		auto invalid = xaml;
+		const auto level = invalid.find("AncestorLevel=2");
+		CUI_EXPECT_TRUE(level != std::string::npos);
+		invalid.replace(level, std::string("AncestorLevel=2").size(),
+			"AncestorLevel=0");
+		DesignerModel::DesignDocument unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalid, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"AncestorLevel") != std::wstring::npos);
+	});
+
+	runner.Add("Component templates resolve RelativeSource TemplatedParent", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:relative-component" x:Name="TemplateForm">
+  <Form.Resources>
+	    <ComponentDefinition x:Key="local:CaptionSurface" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Caption" Type="String" Default="Default" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <StackPanel x:Name="captionLayout">
+          <Label x:Name="captionPresenter"
+                 Text="{Binding Caption, RelativeSource={RelativeSource TemplatedParent}}" />
+		  <Label x:Name="ancestorPresenter"
+				 AccessibleName="{Binding Caption, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type local:CaptionSurface}}}" />
+		  <Label x:Name="combinedPresenter">
+			<Label.Text>
+			  <MultiBinding StringFormat="{}{0} / {1}">
+				<Binding Path="Caption" RelativeSource="{RelativeSource TemplatedParent}" />
+				<Binding Path="Text" ElementName="captionPresenter" />
+			  </MultiBinding>
+			</Label.Text>
+		  </Label>
+        </StackPanel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:CaptionSurface x:Name="surface" Caption="From owner" />
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		DesignerModel::MaterializedControlTree tree;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentMaterializer::Materialize(
+			document, tree, {}, &error));
+		CUI_EXPECT_EQ(1ULL, tree.Controls.size());
+		auto* owner = tree.Controls.front()->ControlInstance;
+		CUI_EXPECT_TRUE(owner != nullptr);
+		CUI_EXPECT_EQ(1ULL, owner->Children.size());
+		auto* layout = owner->Children.front();
+		CUI_EXPECT_TRUE(layout != nullptr);
+		CUI_EXPECT_EQ(3ULL, layout->Children.size());
+		auto* presenter = layout->Children[0];
+		auto* ancestorPresenter = layout->Children[1];
+		auto* combinedPresenter = layout->Children[2];
+		CUI_EXPECT_TRUE(presenter != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"From owner"), presenter->Text);
+		CUI_EXPECT_EQ(std::wstring(L"From owner"),
+			ancestorPresenter->AccessibleName);
+		CUI_EXPECT_EQ(std::wstring(L"From owner / From owner"),
+			combinedPresenter->Text);
+		CUI_EXPECT_TRUE(owner->TrySetPropertyValue(
+			L"Caption", BindingValue(std::wstring(L"Updated owner"))));
+		CUI_EXPECT_EQ(std::wstring(L"Updated owner"), presenter->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Updated owner"),
+			ancestorPresenter->AccessibleName);
+		CUI_EXPECT_EQ(std::wstring(L"Updated owner / Updated owner"),
+			combinedPresenter->Text);
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(
+			document);
+		CUI_EXPECT_TRUE(canonical.find(
+			"RelativeSource={RelativeSource TemplatedParent}")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"AncestorType={x:Type local:CaptionSurface}")
+			!= std::string::npos);
+	});
+
+	runner.Add("XAML DataTemplate binds each ItemsControl visual to its record", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="PeopleForm">
+  <Form.Resources>
+    <DataType x:Key="Person">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+        <Property Path="Role" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <DataTemplate x:Key="PersonRow" DataType="Person">
+      <StackPanel x:Name="row" Orientation="Horizontal" Spacing="8">
+		<Label x:Name="name" Text="{Binding Name}" />
+		<Label x:Name="role" Text="{Binding Role}" />
+		<Label x:Name="summary">
+		  <Label.Text>
+			<MultiBinding StringFormat="{}{0} · {1}">
+			  <Binding Path="Name" />
+			  <Binding Path="Role" />
+			</MultiBinding>
+		  </Label.Text>
+		</Label>
+      </StackPanel>
+    </DataTemplate>
+    <Style TargetType="StackPanel">
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding Role}" Value="Admin">
+          <Setter Property="Visible" Value="false" />
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+  </Form.Resources>
+  <Form.DataContextSchema>
+    <Property Path="People" Kind="Object" ObjectType="BindingList"
+              ItemType="Person" CanWrite="false" />
+  </Form.DataContextSchema>
+  <ItemsControl x:Name="peopleList" Width="300" Height="180"
+                ItemsSource="{Binding People}"
+                ItemTemplate="{StaticResource PersonRow}" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_EQ(1ULL, document.DataTypes.size());
+		CUI_EXPECT_EQ(1ULL, document.DataTemplates.size());
+		CUI_EXPECT_EQ(4ULL, document.DataTemplates.front().Template.size());
+		CUI_EXPECT_EQ(UIClass::UI_ItemsControl, document.Nodes.front().Type);
+		CUI_EXPECT_EQ(std::string("PersonRow"),
+			document.Nodes.front().Extra["itemTemplate"].get<std::string>());
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("<DataType x:Key=\"Person\">")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("<DataTemplate x:Key=\"PersonRow\" DataType=\"Person\">")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"ItemTemplate=\"{StaticResource PersonRow}\"") != std::string::npos);
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_EQ(document, reparsed);
+
+		auto people = std::make_shared<ObservableBindingList>(L"Person");
+		auto alice = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(alice->DefineProperty(L"Name", std::wstring(L"Alice")));
+		CUI_EXPECT_TRUE(alice->DefineProperty(L"Role", std::wstring(L"Admin")));
+		people->Items.push_back(BindingSourceReference(alice));
+		auto viewModel = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(viewModel->DefineProperty(
+			L"People", BindingListReference(people), true, false, true));
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.DataContext = viewModel;
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error));
+		auto* items = dynamic_cast<ItemsControl*>(
+			runtime.FindControlByName(L"peopleList"));
+		CUI_EXPECT_TRUE(items != nullptr);
+		CUI_EXPECT_EQ(1ULL, items->GeneratedItemCount());
+		auto* row = dynamic_cast<StackPanel*>(items->GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(row != nullptr);
+		CUI_EXPECT_FALSE(row->Visible);
+		auto* name = row ? dynamic_cast<Label*>(row->GetChild(0)) : nullptr;
+		auto* role = row ? dynamic_cast<Label*>(row->GetChild(1)) : nullptr;
+		auto* summary = row ? dynamic_cast<Label*>(row->GetChild(2)) : nullptr;
+		CUI_EXPECT_TRUE(name != nullptr);
+		CUI_EXPECT_TRUE(role != nullptr);
+		CUI_EXPECT_TRUE(summary != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Alice"), name->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Admin"), role->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Alice · Admin"), summary->Text);
+		CUI_EXPECT_TRUE(alice->SetValue(L"Name", std::wstring(L"Alicia")));
+		CUI_EXPECT_EQ(std::wstring(L"Alicia"), name->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Alicia · Admin"), summary->Text);
+
+		auto bob = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(bob->DefineProperty(L"Name", std::wstring(L"Bob")));
+		CUI_EXPECT_TRUE(bob->DefineProperty(L"Role", std::wstring(L"Guest")));
+		people->Items.push_back(BindingSourceReference(bob));
+		CUI_EXPECT_EQ(2ULL, items->GeneratedItemCount());
+		auto* bobRow = dynamic_cast<StackPanel*>(items->GetGeneratedItem(1));
+		auto* bobName = bobRow
+			? dynamic_cast<Label*>(bobRow->GetChild(0)) : nullptr;
+		CUI_EXPECT_TRUE(bobName != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Bob"), bobName->Text);
+		CUI_EXPECT_TRUE(bobRow->Visible);
+		CUI_EXPECT_TRUE(bob->SetValue(L"Role", std::wstring(L"Admin")));
+		CUI_EXPECT_FALSE(bobRow->Visible);
+		CUI_EXPECT_TRUE(alice->SetValue(L"Role", std::wstring(L"Guest")));
+		CUI_EXPECT_TRUE(row->Visible);
+
+		auto updated = document;
+		updated.DataTemplates.front().Template[2].Bindings["Text"]["source"] =
+			"Name";
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			updated, runtime, options, &reloadMode, &error));
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentReloadMode::Replaced,
+			reloadMode);
+		auto* updatedItems = dynamic_cast<ItemsControl*>(
+			runtime.FindControlByName(L"peopleList"));
+		CUI_EXPECT_TRUE(updatedItems != nullptr);
+		CUI_EXPECT_TRUE(updatedItems != items);
+		auto* updatedRow = updatedItems
+			? dynamic_cast<StackPanel*>(updatedItems->GetGeneratedItem(0)) : nullptr;
+		auto* updatedRole = updatedRow
+			? dynamic_cast<Label*>(updatedRow->GetChild(1)) : nullptr;
+		CUI_EXPECT_TRUE(updatedRole != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Alicia"), updatedRole->Text);
+		CodeGenInput legacyCodeGen;
+		CUI_EXPECT_FALSE(
+			DesignerModel::DesignDocumentCodeGenInputBuilder::Build(
+				updated, legacyCodeGen, &error));
+		CUI_EXPECT_TRUE(error.find(L"DataTemplate") != std::wstring::npos);
+	});
+
+	runner.Add("Implicit DataTemplates select by type and honor lexical scope", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="PeopleForm">
+  <Form.Resources>
+    <DataType x:Key="Person">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="People" ItemType="Person">
+      <DataRecord Name="Alice" />
+    </DataList>
+    <DataTemplate DataType="Person">
+      <Label x:Name="globalPerson" Text="{Binding Name}"
+             AccessibleName="Global implicit" />
+    </DataTemplate>
+    <DataTemplate x:Key="ExplicitPerson" DataType="Person">
+      <Label x:Name="explicitPerson" Text="{Binding Name}"
+             AccessibleName="Explicit" />
+    </DataTemplate>
+  </Form.Resources>
+  <Form.DataContextSchema>
+    <Property Path="DynamicPeople" Kind="Object" ObjectType="BindingList"
+              ItemType="Person" />
+  </Form.DataContextSchema>
+  <StackPanel x:Name="root">
+    <ItemsControl x:Name="globalList"
+                  ItemsSource="{Binding DynamicPeople}" />
+    <StackPanel x:Name="localScope">
+      <StackPanel.Resources>
+        <DataTemplate DataType="Person">
+          <Label x:Name="localPerson" Text="{Binding Name}"
+                 AccessibleName="Local implicit" />
+        </DataTemplate>
+      </StackPanel.Resources>
+      <ItemsControl x:Name="localList"
+                    ItemsSource="{StaticResource People}" />
+      <ItemsControl x:Name="explicitList"
+                    ItemsSource="{StaticResource People}"
+                    ItemTemplate="{StaticResource ExplicitPerson}" />
+    </StackPanel>
+  </StackPanel>
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_EQ(2ULL, document.DataTemplates.size());
+		const auto* globalTemplate = document.FindImplicitDataTemplate(L"Person");
+		CUI_EXPECT_TRUE(globalTemplate != nullptr);
+		CUI_EXPECT_TRUE(globalTemplate && globalTemplate->IsImplicit());
+		CUI_EXPECT_EQ(std::wstring(L"{DataType Person}"),
+			globalTemplate ? globalTemplate->DisplayName() : std::wstring{});
+		const auto localListNode = std::find_if(
+			document.Nodes.begin(), document.Nodes.end(), [](const auto& node)
+			{ return node.Name == L"localList"; });
+		CUI_EXPECT_TRUE(localListNode != document.Nodes.end());
+		const auto* localTemplate = localListNode == document.Nodes.end()
+			? nullptr : document.FindImplicitDataTemplate(
+				document.Nodes, *localListNode, L"Person");
+		CUI_EXPECT_TRUE(localTemplate != nullptr);
+		CUI_EXPECT_TRUE(localTemplate != globalTemplate);
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find(
+			"<DataTemplate DataType=\"Person\">") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"<DataTemplate x:Key=\"ExplicitPerson\" DataType=\"Person\">")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"x:Key=\"\" DataType=\"Person\"") == std::string::npos);
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_EQ(document, reparsed);
+		const auto native = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(native.find("version=\"29\"") != std::string::npos);
+		DesignerModel::DesignDocument nativeRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			native, nativeRoundTrip, &error));
+		CUI_EXPECT_EQ(document, nativeRoundTrip);
+
+		auto dynamicPeople = std::make_shared<ObservableBindingList>(L"Person");
+		auto dynamicAlice = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(dynamicAlice->DefineProperty(
+			L"Name", std::wstring(L"Alice")));
+		dynamicPeople->Items.push_back(BindingSourceReference(dynamicAlice));
+		auto viewModel = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(viewModel->DefineProperty(
+			L"DynamicPeople", BindingListReference(dynamicPeople)));
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.DataContext = viewModel;
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error));
+		auto labelFor = [&](const wchar_t* name) -> Label*
+		{
+			auto* list = dynamic_cast<ItemsControl*>(
+				runtime.FindControlByName(name));
+			CUI_EXPECT_TRUE(list != nullptr);
+			CUI_EXPECT_TRUE(list && list->GetItemTemplate());
+			CUI_EXPECT_EQ(1ULL, list ? list->GeneratedItemCount() : 0ULL);
+			return list ? dynamic_cast<Label*>(list->GetGeneratedItem(0)) : nullptr;
+		};
+		auto* globalLabel = labelFor(L"globalList");
+		auto* localLabel = labelFor(L"localList");
+		auto* explicitLabel = labelFor(L"explicitList");
+		CUI_EXPECT_TRUE(globalLabel != nullptr);
+		CUI_EXPECT_TRUE(localLabel != nullptr);
+		CUI_EXPECT_TRUE(explicitLabel != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Global implicit"),
+			globalLabel ? globalLabel->AccessibleName : std::wstring{});
+		CUI_EXPECT_EQ(std::wstring(L"Local implicit"),
+			localLabel ? localLabel->AccessibleName : std::wstring{});
+		CUI_EXPECT_EQ(std::wstring(L"Explicit"),
+			explicitLabel ? explicitLabel->AccessibleName : std::wstring{});
+		CUI_EXPECT_EQ(std::wstring(L"Alice"),
+			localLabel ? localLabel->Text : std::wstring{});
+
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(localListNode != document.Nodes.end()
+			&& DesignerModel::DesignDocumentClipboard::Capture(
+				document, { localListNode->Id }, fragment, &error));
+		CUI_EXPECT_TRUE(fragment.FindImplicitDataTemplate(L"Person") != nullptr);
+		CUI_EXPECT_EQ(1ULL, fragment.Nodes.size());
+		CUI_EXPECT_EQ(1ULL,
+			fragment.Nodes.front().LocalObjectResources.DataTemplates.size());
+		CUI_EXPECT_TRUE(fragment.Nodes.front().LocalObjectResources.
+			DataTemplates.front().IsImplicit());
+		DesignerModel::DesignDocument pasted;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			DesignerModel::DesignDocument{}, fragment, 0, 0,
+			pasted, nullptr, &error));
+		DesignerModel::RuntimeDocument pastedRuntime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			pasted, pastedRuntime, {}, &error));
+		auto* pastedList = dynamic_cast<ItemsControl*>(
+			pastedRuntime.FindControlByName(L"localList"));
+		auto* pastedLabel = pastedList
+			? dynamic_cast<Label*>(pastedList->GetGeneratedItem(0)) : nullptr;
+		CUI_EXPECT_TRUE(pastedLabel != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Local implicit"),
+			pastedLabel ? pastedLabel->AccessibleName : std::wstring{});
+
+		auto conflict = DesignerModel::DesignDocument{};
+		conflict.DataTypes = document.DataTypes;
+		auto conflictingImplicit = *globalTemplate;
+		conflictingImplicit.Template.front().Name = L"conflictingPerson";
+		conflict.DataTemplates.push_back(std::move(conflictingImplicit));
+		DesignerModel::DesignDocument rejected;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			conflict, fragment, 0, 0, rejected, nullptr, &error));
+		CUI_EXPECT_TRUE(error.find(L"隐式 DataTemplate") != std::wstring::npos);
+	});
+
+	runner.Add("ContentPresenter resolves typed DataTemplates and lexical scope", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="PersonForm">
+  <Form.Resources>
+    <DataType x:Key="Person">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+        <Property Path="Role" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <DataType x:Key="Order">
+      <DataType.Properties>
+        <Property Path="Id" Kind="Int" />
+      </DataType.Properties>
+    </DataType>
+    <DataTemplate DataType="Person">
+      <StackPanel x:Name="globalPersonCard" AccessibleName="Global implicit">
+        <Label x:Name="globalPersonName" Text="{Binding Name}" />
+        <Label x:Name="globalPersonRole" Text="{Binding Role}" />
+      </StackPanel>
+    </DataTemplate>
+    <DataTemplate x:Key="ExplicitPerson" DataType="Person">
+      <Label x:Name="explicitPerson" Text="{Binding Name}"
+             AccessibleName="Explicit" />
+    </DataTemplate>
+    <DataTemplate x:Key="OrderCard" DataType="Order">
+      <Label x:Name="orderId" Text="{Binding Id}" />
+    </DataTemplate>
+  </Form.Resources>
+  <Form.DataContextSchema>
+    <Property Path="CurrentPerson" Kind="Object"
+              ObjectType="BindingSource" DataType="Person" />
+  </Form.DataContextSchema>
+  <StackPanel x:Name="root">
+    <ContentPresenter x:Name="globalPresenter"
+                      Content="{Binding CurrentPerson}" />
+    <StackPanel x:Name="localScope">
+      <StackPanel.Resources>
+        <DataTemplate DataType="Person">
+          <Label x:Name="localPerson" Text="{Binding Role}"
+                 AccessibleName="Local implicit" />
+        </DataTemplate>
+      </StackPanel.Resources>
+      <ContentPresenter x:Name="localPresenter"
+                        Content="{Binding CurrentPerson}" />
+      <ContentPresenter x:Name="explicitPresenter"
+                        Content="{Binding CurrentPerson}"
+                        ContentTemplate="{StaticResource ExplicitPerson}" />
+    </StackPanel>
+  </StackPanel>
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		const auto* currentPerson = DesignerDataContextSchemaUtils::Find(
+			document.DataContextSchema, L"CurrentPerson");
+		CUI_EXPECT_TRUE(currentPerson != nullptr);
+		CUI_EXPECT_EQ(DesignerDataObjectKind::BindingSource,
+			currentPerson ? currentPerson->ObjectKind
+				: DesignerDataObjectKind::Opaque);
+		CUI_EXPECT_EQ(std::wstring(L"Person"),
+			currentPerson ? currentPerson->DataType : std::wstring{});
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find(
+			"ObjectType=\"BindingSource\" DataType=\"Person\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"ContentTemplate=\"{StaticResource ExplicitPerson}\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_EQ(document, reparsed);
+		const auto native = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(native.find("version=\"29\"") != std::string::npos);
+		CUI_EXPECT_TRUE(native.find("dataType=\"Person\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument nativeRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			native, nativeRoundTrip, &error));
+		CUI_EXPECT_EQ(document, nativeRoundTrip);
+
+		auto alice = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(alice->DefineProperty(
+			L"Name", std::wstring(L"Alice")));
+		CUI_EXPECT_TRUE(alice->DefineProperty(
+			L"Role", std::wstring(L"Admin")));
+		auto viewModel = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(viewModel->DefineProperty(
+			L"CurrentPerson", BindingSourceReference(alice)));
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.DataContext = viewModel;
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error));
+		auto presenterFor = [&](const wchar_t* name) -> ContentPresenter*
+		{
+			auto* presenter = dynamic_cast<ContentPresenter*>(
+				runtime.FindControlByName(name));
+			CUI_EXPECT_TRUE(presenter != nullptr);
+			CUI_EXPECT_TRUE(presenter && presenter->GetContentTemplate());
+			CUI_EXPECT_EQ(std::wstring(L"Person"),
+				presenter ? presenter->ContentTypeName() : std::wstring{});
+			return presenter;
+		};
+		auto* globalPresenter = presenterFor(L"globalPresenter");
+		auto* localPresenter = presenterFor(L"localPresenter");
+		auto* explicitPresenter = presenterFor(L"explicitPresenter");
+		auto* globalCard = globalPresenter
+			? dynamic_cast<StackPanel*>(globalPresenter->GetGeneratedContent())
+			: nullptr;
+		auto* globalName = globalCard
+			? dynamic_cast<Label*>(globalCard->GetChild(0)) : nullptr;
+		auto* globalRole = globalCard
+			? dynamic_cast<Label*>(globalCard->GetChild(1)) : nullptr;
+		auto* localLabel = localPresenter
+			? dynamic_cast<Label*>(localPresenter->GetGeneratedContent()) : nullptr;
+		auto* explicitLabel = explicitPresenter
+			? dynamic_cast<Label*>(explicitPresenter->GetGeneratedContent()) : nullptr;
+		CUI_EXPECT_TRUE(globalCard != nullptr);
+		CUI_EXPECT_TRUE(globalName != nullptr);
+		CUI_EXPECT_TRUE(globalRole != nullptr);
+		CUI_EXPECT_TRUE(localLabel != nullptr);
+		CUI_EXPECT_TRUE(explicitLabel != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Global implicit"),
+			globalCard ? globalCard->AccessibleName : std::wstring{});
+		CUI_EXPECT_EQ(std::wstring(L"Alice"),
+			globalName ? globalName->Text : std::wstring{});
+		CUI_EXPECT_EQ(std::wstring(L"Admin"),
+			localLabel ? localLabel->Text : std::wstring{});
+		CUI_EXPECT_EQ(std::wstring(L"Local implicit"),
+			localLabel ? localLabel->AccessibleName : std::wstring{});
+		CUI_EXPECT_EQ(std::wstring(L"Explicit"),
+			explicitLabel ? explicitLabel->AccessibleName : std::wstring{});
+
+		CUI_EXPECT_TRUE(alice->SetValue(
+			L"Role", std::wstring(L"Owner")));
+		CUI_EXPECT_EQ(std::wstring(L"Owner"), globalRole->Text);
+		CUI_EXPECT_EQ(std::wstring(L"Owner"), localLabel->Text);
+		auto bob = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(bob->DefineProperty(L"Name", std::wstring(L"Bob")));
+		CUI_EXPECT_TRUE(bob->DefineProperty(L"Role", std::wstring(L"Guest")));
+		CUI_EXPECT_TRUE(viewModel->SetValue(
+			L"CurrentPerson", BindingSourceReference(bob)));
+		globalCard = globalPresenter
+			? dynamic_cast<StackPanel*>(globalPresenter->GetGeneratedContent())
+			: nullptr;
+		globalName = globalCard
+			? dynamic_cast<Label*>(globalCard->GetChild(0)) : nullptr;
+		localLabel = localPresenter
+			? dynamic_cast<Label*>(localPresenter->GetGeneratedContent()) : nullptr;
+		CUI_EXPECT_EQ(std::wstring(L"Bob"),
+			globalName ? globalName->Text : std::wstring{});
+		CUI_EXPECT_EQ(std::wstring(L"Guest"),
+			localLabel ? localLabel->Text : std::wstring{});
+
+		const auto localNode = std::find_if(
+			document.Nodes.begin(), document.Nodes.end(), [](const auto& node)
+			{ return node.Name == L"localPresenter"; });
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(localNode != document.Nodes.end()
+			&& DesignerModel::DesignDocumentClipboard::Capture(
+				document, { localNode->Id }, fragment, &error));
+		CUI_EXPECT_TRUE(fragment.FindDataType(L"Person") != nullptr);
+		CUI_EXPECT_EQ(1ULL, fragment.Nodes.size());
+		CUI_EXPECT_EQ(1ULL, fragment.Nodes.front().LocalObjectResources.
+			DataTemplates.size());
+		CUI_EXPECT_TRUE(fragment.Nodes.front().LocalObjectResources.
+			DataTemplates.front().IsImplicit());
+		DesignerModel::DesignDocument pasted;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			DesignerModel::DesignDocument{}, fragment, 0, 0,
+			pasted, nullptr, &error));
+		DesignerModel::RuntimeDocument pastedRuntime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			pasted, pastedRuntime, options, &error));
+		auto* pastedPresenter = dynamic_cast<ContentPresenter*>(
+			pastedRuntime.FindControlByName(L"localPresenter"));
+		auto* pastedLabel = pastedPresenter
+			? dynamic_cast<Label*>(pastedPresenter->GetGeneratedContent()) : nullptr;
+		CUI_EXPECT_TRUE(pastedLabel != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Guest"),
+			pastedLabel ? pastedLabel->Text : std::wstring{});
+
+		ContentPresenter rowControl(0, 0, 200, 80);
+		DesignerControl rowTarget(
+			&rowControl, L"presenter", UIClass::UI_ContentPresenter);
+		DesignerDataBinding contentBinding;
+		contentBinding.SourceProperty = L"CurrentPerson";
+		rowTarget.DataBindings[L"Content"] = std::move(contentBinding);
+		DesignerControlPropertyContext rowContext;
+		rowContext.DataTemplates = &document.DataTemplates;
+		rowContext.DataContextSchema = &document.DataContextSchema;
+		const auto rows = DesignerPropertyRowCatalog::GetControlRows(
+			rowTarget, rowContext);
+		const auto* contentTemplateRow = DesignerPropertyRowCatalog::Find(
+			rows, L"ContentTemplate");
+		CUI_EXPECT_TRUE(contentTemplateRow != nullptr);
+		CUI_EXPECT_EQ(2ULL,
+			contentTemplateRow ? contentTemplateRow->Choices.size() : 0ULL);
+		CUI_EXPECT_EQ(std::wstring(L"ExplicitPerson"),
+			contentTemplateRow ? contentTemplateRow->Choices.back().ValueText
+				: std::wstring{});
+		auto scalarSchema = document.DataContextSchema;
+		scalarSchema.push_back({
+			L"Title", BindingValueKind::String, true, true, true });
+		rowTarget.DataBindings[L"Content"].SourceProperty = L"Title";
+		rowContext.DataContextSchema = &scalarSchema;
+		const auto scalarRows = DesignerPropertyRowCatalog::GetControlRows(
+			rowTarget, rowContext);
+		const auto* scalarTemplateRow = DesignerPropertyRowCatalog::Find(
+			scalarRows, L"ContentTemplate");
+		CUI_EXPECT_TRUE(scalarTemplateRow != nullptr);
+		CUI_EXPECT_EQ(1ULL, scalarTemplateRow
+			? scalarTemplateRow->Choices.size() : 0ULL);
+
+		auto updatedXaml = xaml;
+		const auto marker = updatedXaml.find("Global implicit");
+		CUI_EXPECT_TRUE(marker != std::string::npos);
+		updatedXaml.replace(marker, std::string("Global implicit").size(),
+			"Global updated");
+		DesignerModel::DesignDocument updated;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			updatedXaml, updated, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			updated, runtime, options, &reloadMode, &error));
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentReloadMode::Replaced,
+			reloadMode);
+		auto* updatedPresenter = dynamic_cast<ContentPresenter*>(
+			runtime.FindControlByName(L"globalPresenter"));
+		auto* updatedCard = updatedPresenter
+			? dynamic_cast<StackPanel*>(updatedPresenter->GetGeneratedContent())
+			: nullptr;
+		CUI_EXPECT_TRUE(updatedCard != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Global updated"),
+			updatedCard ? updatedCard->AccessibleName : std::wstring{});
+
+		DesignerModel::DesignDocument rejected;
+		const std::string directChild = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="BadForm">
+  <ContentPresenter x:Name="badPresenter">
+    <Label x:Name="illegalChild" />
+  </ContentPresenter>
+</Form>)XAML";
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			directChild, rejected, &error));
+		CUI_EXPECT_TRUE(error.find(L"不接受直接视觉子节点")
+			!= std::wstring::npos);
+		const std::string mismatched = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="BadTypeForm">
+  <Form.Resources>
+    <DataType x:Key="Person"><DataType.Properties>
+      <Property Path="Name" Kind="String" />
+    </DataType.Properties></DataType>
+    <DataType x:Key="Order"><DataType.Properties>
+      <Property Path="Id" Kind="Int" />
+    </DataType.Properties></DataType>
+    <DataTemplate x:Key="OrderCard" DataType="Order">
+      <Label x:Name="orderLabel" Text="{Binding Id}" />
+    </DataTemplate>
+  </Form.Resources>
+  <Form.DataContextSchema>
+    <Property Path="CurrentPerson" Kind="Object"
+              ObjectType="BindingSource" DataType="Person" />
+  </Form.DataContextSchema>
+  <ContentPresenter x:Name="badTypePresenter"
+                    Content="{Binding CurrentPerson}"
+                    ContentTemplate="{StaticResource OrderCard}" />
+</Form>)XAML";
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			mismatched, rejected, &error));
+		CUI_EXPECT_TRUE(error.find(L"类型不一致") != std::wstring::npos);
+	});
+
+	runner.Add("ContentControl XAML supports default visual text and typed data content", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="ContentForm">
+  <Form.Resources>
+    <DataType x:Key="Person">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <DataTemplate DataType="Person">
+      <Label x:Name="globalName" Text="{Binding Name}"
+             AccessibleName="Global content" />
+    </DataTemplate>
+  </Form.Resources>
+  <Form.DataContextSchema>
+    <Property Path="CurrentPerson" Kind="Object"
+              ObjectType="BindingSource" DataType="Person" />
+  </Form.DataContextSchema>
+  <StackPanel x:Name="root">
+    <ContentControl x:Name="visualHost">
+      <Label x:Name="authoredContent" Text="Authored visual" />
+    </ContentControl>
+    <ContentControl x:Name="literalHost">Literal content</ContentControl>
+	<Button x:Name="literalButton" Content="Run action" />
+	<Button x:Name="visualButton">
+	  <StackPanel x:Name="buttonContent">
+	    <Label x:Name="buttonIcon" Text="+" />
+	    <Label x:Name="buttonCaption" Text="Create" />
+	  </StackPanel>
+	</Button>
+    <StackPanel x:Name="localScope">
+      <StackPanel.Resources>
+        <DataTemplate DataType="Person">
+          <Label x:Name="localName" Text="{Binding Name}"
+                 AccessibleName="Local content" />
+        </DataTemplate>
+      </StackPanel.Resources>
+      <ContentControl x:Name="dataHost"
+                      Content="{Binding CurrentPerson}" />
+	  <Button x:Name="dataButton"
+	          Content="{Binding CurrentPerson}" />
+    </StackPanel>
+  </StackPanel>
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("<ContentControl x:Name=\"visualHost\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"Content=\"Literal content\"")
+			!= std::string::npos);
+		const auto literalButtonTag = canonical.find("<Button");
+		CUI_EXPECT_TRUE(literalButtonTag != std::string::npos
+			&& canonical.find("x:Name=\"literalButton\"", literalButtonTag)
+				!= std::string::npos
+			&& canonical.find("Content=\"Run action\"", literalButtonTag)
+				!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"Content=\"{Binding CurrentPerson}\"") != std::string::npos);
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_EQ(document, reparsed);
+		const auto native = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(native.find("version=\"29\"") != std::string::npos);
+		DesignerModel::DesignDocument nativeRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			native, nativeRoundTrip, &error));
+		CUI_EXPECT_EQ(document, nativeRoundTrip);
+
+		auto alice = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(alice->DefineProperty(
+			L"Name", std::wstring(L"Alice")));
+		auto viewModel = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(viewModel->DefineProperty(
+			L"CurrentPerson", BindingSourceReference(alice)));
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.DataContext = viewModel;
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error));
+		auto* visual = dynamic_cast<ContentControl*>(
+			runtime.FindControlByName(L"visualHost"));
+		auto* authored = visual
+			? dynamic_cast<Label*>(visual->GetVisualContent()) : nullptr;
+		auto* literal = dynamic_cast<ContentControl*>(
+			runtime.FindControlByName(L"literalHost"));
+		auto* literalLabel = literal
+			? dynamic_cast<Label*>(literal->GetGeneratedContent()) : nullptr;
+		auto* data = dynamic_cast<ContentControl*>(
+			runtime.FindControlByName(L"dataHost"));
+		auto* dataLabel = data
+			? dynamic_cast<Label*>(data->GetGeneratedContent()) : nullptr;
+		auto* literalButton = dynamic_cast<Button*>(
+			runtime.FindControlByName(L"literalButton"));
+		auto* literalButtonLabel = literalButton
+			? dynamic_cast<Label*>(literalButton->GetGeneratedContent()) : nullptr;
+		auto* visualButton = dynamic_cast<Button*>(
+			runtime.FindControlByName(L"visualButton"));
+		auto* buttonContent = visualButton
+			? dynamic_cast<StackPanel*>(visualButton->GetVisualContent()) : nullptr;
+		auto* dataButton = dynamic_cast<Button*>(
+			runtime.FindControlByName(L"dataButton"));
+		auto* dataButtonLabel = dataButton
+			? dynamic_cast<Label*>(dataButton->GetGeneratedContent()) : nullptr;
+		CUI_EXPECT_TRUE(authored != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Authored visual"),
+			authored ? authored->Text : std::wstring{});
+		CUI_EXPECT_TRUE(literalLabel != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Literal content"),
+			literalLabel ? literalLabel->Text : std::wstring{});
+		CUI_EXPECT_TRUE(data != nullptr && data->GetContentTemplate());
+		CUI_EXPECT_TRUE(dataLabel != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Alice"),
+			dataLabel ? dataLabel->Text : std::wstring{});
+		CUI_EXPECT_EQ(std::wstring(L"Local content"),
+			dataLabel ? dataLabel->AccessibleName : std::wstring{});
+		CUI_EXPECT_EQ(std::wstring(L"Run action"),
+			literalButtonLabel ? literalButtonLabel->Text : std::wstring{});
+		CUI_EXPECT_TRUE(buttonContent != nullptr);
+		CUI_EXPECT_TRUE(dataButton != nullptr && dataButton->GetContentTemplate());
+		CUI_EXPECT_EQ(std::wstring(L"Alice"),
+			dataButtonLabel ? dataButtonLabel->Text : std::wstring{});
+
+		auto bob = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(bob->DefineProperty(L"Name", std::wstring(L"Bob")));
+		CUI_EXPECT_TRUE(viewModel->SetValue(
+			L"CurrentPerson", BindingSourceReference(bob)));
+		dataLabel = data
+			? dynamic_cast<Label*>(data->GetGeneratedContent()) : nullptr;
+		CUI_EXPECT_EQ(std::wstring(L"Bob"),
+			dataLabel ? dataLabel->Text : std::wstring{});
+
+		const auto dataNode = std::find_if(
+			document.Nodes.begin(), document.Nodes.end(), [](const auto& node)
+			{ return node.Name == L"dataHost"; });
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(dataNode != document.Nodes.end()
+			&& DesignerModel::DesignDocumentClipboard::Capture(
+				document, { dataNode->Id }, fragment, &error));
+		CUI_EXPECT_TRUE(fragment.FindDataType(L"Person") != nullptr);
+		CUI_EXPECT_EQ(1ULL, fragment.Nodes.size());
+		CUI_EXPECT_EQ(1ULL, fragment.Nodes.front().LocalObjectResources.
+			DataTemplates.size());
+		DesignerModel::DesignDocument pasted;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			DesignerModel::DesignDocument{}, fragment, 0, 0,
+			pasted, nullptr, &error));
+		DesignerModel::RuntimeDocument pastedRuntime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			pasted, pastedRuntime, options, &error));
+		auto* pastedHost = dynamic_cast<ContentControl*>(
+			pastedRuntime.FindControlByName(L"dataHost"));
+		auto* pastedLabel = pastedHost
+			? dynamic_cast<Label*>(pastedHost->GetGeneratedContent()) : nullptr;
+		CUI_EXPECT_EQ(std::wstring(L"Local content"),
+			pastedLabel ? pastedLabel->AccessibleName : std::wstring{});
+
+		auto updatedXaml = xaml;
+		const auto marker = updatedXaml.find("Local content");
+		CUI_EXPECT_TRUE(marker != std::string::npos);
+		updatedXaml.replace(marker, std::string("Local content").size(),
+			"Reloaded content");
+		DesignerModel::DesignDocument updated;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			updatedXaml, updated, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			updated, runtime, options, &reloadMode, &error));
+		CUI_EXPECT_TRUE(reloadMode
+			== DesignerModel::RuntimeDocumentReloadMode::Recomposed
+			|| reloadMode == DesignerModel::RuntimeDocumentReloadMode::Replaced);
+		data = dynamic_cast<ContentControl*>(
+			runtime.FindControlByName(L"dataHost"));
+		dataLabel = data
+			? dynamic_cast<Label*>(data->GetGeneratedContent()) : nullptr;
+		CUI_EXPECT_EQ(std::wstring(L"Reloaded content"),
+			dataLabel ? dataLabel->AccessibleName : std::wstring{});
+
+		DesignerModel::DesignDocument rejected;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			R"XAML(<Form xmlns="urn:cui"><ContentControl>
+  <Label /><Button />
+</ContentControl></Form>)XAML", rejected, &error));
+		CUI_EXPECT_TRUE(error.find(L"最多接受一个") != std::wstring::npos);
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			R"XAML(<Form xmlns="urn:cui"><ContentControl Content="Data">
+  <Label />
+</ContentControl></Form>)XAML", rejected, &error));
+		CUI_EXPECT_TRUE(error.find(L"不能与 Content") != std::wstring::npos);
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			R"XAML(<Form xmlns="urn:cui"><Button>
+  <Label /><Label />
+</Button></Form>)XAML", rejected, &error));
+		CUI_EXPECT_TRUE(error.find(L"最多接受一个") != std::wstring::npos);
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Form.Resources>
+    <DataType x:Key="Person"><DataType.Properties>
+      <Property Path="Name" Kind="String" />
+    </DataType.Properties></DataType>
+  </Form.Resources>
+  <Form.DataContextSchema>
+    <Property Path="CurrentPerson" Kind="Object"
+              ObjectType="BindingSource" DataType="Person" />
+  </Form.DataContextSchema>
+  <ContentControl Content="{Binding CurrentPerson}"
+                  DisplayMemberPath="Missing" />
+</Form>)XAML", rejected, &error));
+		CUI_EXPECT_TRUE(error.find(L"DisplayMemberPath") != std::wstring::npos);
+	});
+
+	runner.Add("XAML DataList is a typed live ItemsSource and design preview", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="PeopleForm">
+  <Form.Resources>
+    <DataType x:Key="Person">
+      <DataType.Properties>
+		<Property Path="Id" Kind="Int" />
+		<Property Path="Rank" Kind="Int" />
+        <Property Path="Name" Kind="String" />
+        <Property Path="Role" Kind="String" />
+        <Property Path="Active" Kind="Bool" />
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="People" ItemType="Person">
+      <DataRecord Id="1" Rank="10" Name="Alice" Role="Admin" Active="true" />
+      <DataRecord Id="2" Rank="20" Name="Bob" Role="Guest" />
+    </DataList>
+		<CollectionViewSource x:Key="ActivePeople" Source="{StaticResource People}">
+		  <CollectionViewSource.FilterDescriptions>
+			<FilterDescription PropertyName="Active" Value="true" />
+		  </CollectionViewSource.FilterDescriptions>
+		  <CollectionViewSource.SortDescriptions>
+			<SortDescription PropertyName="Rank" Direction="Descending" />
+		  </CollectionViewSource.SortDescriptions>
+		</CollectionViewSource>
+		<DataTemplate x:Key="PersonRow" DataType="Person">
+		  <Label x:Name="name" Text="{Binding Name}" />
+		</DataTemplate>
+		<ItemsPanelTemplate x:Key="PersonItemsPanel">
+		  <VirtualizingStackPanel ItemHeight="30" Spacing="3" CacheLength="0.5" />
+		</ItemsPanelTemplate>
+		<Style TargetType="ListBoxItem" x:Key="PersonContainer">
+		  <Setter Property="Padding" Value="9,5" />
+		  <Style.Triggers>
+			<Trigger Property="IsSelected" Value="true">
+			  <Setter Property="BorderThickness" Value="2" />
+			</Trigger>
+		  </Style.Triggers>
+		</Style>
+  </Form.Resources>
+  <Form.DataContextSchema>
+    <Property Path="SelectedId" Kind="Int" />
+  </Form.DataContextSchema>
+  <StackPanel x:Name="root">
+    <ItemsControl x:Name="people" ItemsSource="{StaticResource People}"
+                  ItemTemplate="{StaticResource PersonRow}" />
+    <ComboBox x:Name="peopleCombo" ItemsSource="{StaticResource People}"
+              DisplayMemberPath="Name" SelectedValuePath="Id"
+              SelectedValue="{Binding SelectedId, Mode=TwoWay}" />
+    <ListView x:Name="peopleView" ItemsSource="{StaticResource People}"
+              DisplayMemberPath="Name" SecondaryMemberPath="Role"
+              SelectedValuePath="Id" />
+	<ListBox x:Name="peopleBox" ItemsSource="{StaticResource People}"
+			 ItemTemplate="{StaticResource PersonRow}"
+			 ItemContainerStyle="{StaticResource PersonContainer}"
+			 ItemsPanel="{StaticResource PersonItemsPanel}"
+			 DisplayMemberPath="Name" SelectedValuePath="Id" />
+	<ListBox x:Name="activePeople" ItemsSource="{StaticResource ActivePeople}"
+			 DisplayMemberPath="Name" SelectedValuePath="Id" />
+  </StackPanel>
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_EQ(1ULL, document.DataLists.size());
+		CUI_EXPECT_EQ(2ULL, document.DataLists.front().Records.size());
+		CUI_EXPECT_EQ(1ULL, document.CollectionViews.size());
+		CUI_EXPECT_EQ(std::wstring(L"People"),
+			document.CollectionViews.front().SourceResource);
+		CUI_EXPECT_EQ(std::wstring(L"People"),
+			document.FindDataList(L"people")->Key);
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find(
+			"<DataList x:Key=\"People\" ItemType=\"Person\">")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"<CollectionViewSource x:Key=\"ActivePeople\" Source=\"{StaticResource People}\">")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"ItemsSource=\"{StaticResource People}\"") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("DisplayMemberPath=\"Name\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("SelectedValuePath=\"Id\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"ItemContainerStyle=\"{StaticResource PersonContainer}\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"ItemsPanel=\"{StaticResource PersonItemsPanel}\"")
+			!= std::string::npos);
+		CUI_EXPECT_EQ(1ULL, document.ItemsPanelTemplates.size());
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, reparsed, &error));
+		CUI_EXPECT_EQ(document, reparsed);
+		DesignerModel::DesignDocument authoredContainer;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			R"XAML(<Form xmlns="urn:cui"><ListBoxItem /></Form>)XAML",
+			authoredContainer, &error));
+
+		auto state = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(state->DefineProperty(L"SelectedId", 2));
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.DataContext = state;
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error));
+		auto* items = dynamic_cast<ItemsControl*>(
+			runtime.FindControlByName(L"people"));
+		auto* combo = dynamic_cast<ComboBox*>(
+			runtime.FindControlByName(L"peopleCombo"));
+		auto* view = dynamic_cast<ListView*>(
+			runtime.FindControlByName(L"peopleView"));
+		auto* box = dynamic_cast<ListBox*>(
+			runtime.FindControlByName(L"peopleBox"));
+		auto* activePeople = dynamic_cast<ListBox*>(
+			runtime.FindControlByName(L"activePeople"));
+		CUI_EXPECT_TRUE(items != nullptr);
+		CUI_EXPECT_TRUE(combo != nullptr);
+		CUI_EXPECT_TRUE(view != nullptr);
+		CUI_EXPECT_TRUE(box != nullptr);
+		CUI_EXPECT_TRUE(activePeople != nullptr);
+		CUI_EXPECT_EQ(1ULL, activePeople->ItemCount());
+		CUI_EXPECT_TRUE(box->GetItemTemplate());
+		CUI_EXPECT_EQ(std::wstring(L"PersonContainer"),
+			box->GetItemContainerStyle());
+		CUI_EXPECT_TRUE(box->IsVirtualizing());
+		CUI_EXPECT_TRUE(box->GetItemsPanel());
+		CUI_EXPECT_EQ(30.0f, box->GetItemsPanel().Get()->ItemHeight);
+		CUI_EXPECT_EQ(3.0f, box->GetItemsPanel().Get()->Spacing);
+		CUI_EXPECT_EQ(2ULL, items->GeneratedItemCount());
+		CUI_EXPECT_EQ(2ULL, combo->GetItemsSource().Get()->Count());
+		CUI_EXPECT_EQ(2ULL, view->GetItemsSource().Get()->Count());
+		CUI_EXPECT_EQ(1, combo->SelectedIndex);
+		CUI_EXPECT_TRUE(combo->SelectItem(0));
+		CUI_EXPECT_EQ(1, state->GetValue<int>(L"SelectedId"));
+		CUI_EXPECT_EQ(std::wstring(L"Alice"), combo->Items[0]);
+		CUI_EXPECT_EQ(std::wstring(L"Admin"), view->Items[0].SubText);
+		combo->SetSelectedValue(BindingValue(2));
+		view->SetSelectedValue(BindingValue(2));
+		box->SetSelectedValue(BindingValue(2));
+		CUI_EXPECT_EQ(1, combo->SelectedIndex);
+		CUI_EXPECT_EQ(1, view->SelectedIndex);
+		CUI_EXPECT_EQ(1, box->SelectedIndex);
+		CUI_EXPECT_EQ(2ULL, box->GeneratedItemCount());
+		auto* boxContainer = dynamic_cast<SelectorItem*>(
+			box->GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(boxContainer != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"PersonContainer"),
+			boxContainer->GetStyleId());
+		CUI_EXPECT_FALSE(boxContainer->IsSelected);
+		auto* selectedBoxContainer = dynamic_cast<SelectorItem*>(
+			box->GetGeneratedItem(1));
+		CUI_EXPECT_TRUE(selectedBoxContainer != nullptr);
+		CUI_EXPECT_TRUE(selectedBoxContainer->IsSelected);
+		CUI_EXPECT_EQ(2.0f, selectedBoxContainer->BorderThickness);
+		auto* boxLabel = dynamic_cast<Label*>(boxContainer->Content());
+		CUI_EXPECT_TRUE(boxLabel != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Alice"), boxLabel->Text);
+		auto* first = dynamic_cast<Label*>(items->GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(first != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Alice"), first->Text);
+
+		auto source = std::dynamic_pointer_cast<ObservableBindingList>(
+			items->GetItemsSource().Shared());
+		CUI_EXPECT_TRUE(source != nullptr);
+		auto charlie = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(charlie->DefineProperty(
+			L"Name", std::wstring(L"Charlie")));
+		source->Items.push_back(BindingSourceReference(charlie));
+		CUI_EXPECT_EQ(3ULL, items->GeneratedItemCount());
+		auto* third = dynamic_cast<Label*>(items->GetGeneratedItem(2));
+		CUI_EXPECT_TRUE(third != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Charlie"), third->Text);
+
+		auto invalidPath = xaml;
+		const auto selectedPathAt = invalidPath.find("SelectedValuePath=\"Id\"");
+		CUI_EXPECT_TRUE(selectedPathAt != std::string::npos);
+		invalidPath.replace(selectedPathAt,
+			std::string("SelectedValuePath=\"Id\"").size(),
+			"SelectedValuePath=\"Missing\"");
+		DesignerModel::DesignDocument invalidPathDocument;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidPath, invalidPathDocument, &error));
+		CUI_EXPECT_TRUE(error.find(L"SelectedValuePath") != std::wstring::npos);
+
+		auto changed = document;
+		changed.DataLists.front().Records.front().Fields[L"Name"] = L"Alicia";
+		for (auto& node : changed.Nodes)
+			if (node.Name == L"peopleCombo")
+				node.Props["metadata"]["SelectedValuePath"]["value"] = "Rank";
+		CUI_EXPECT_TRUE(state->SetValue(L"SelectedId", 20));
+		DesignerModel::RuntimeDocumentReloadMode mode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			changed, runtime, options, &mode, &error));
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentReloadMode::Replaced, mode);
+		auto* reloadedCombo = dynamic_cast<ComboBox*>(
+			runtime.FindControlByName(L"peopleCombo"));
+		CUI_EXPECT_TRUE(reloadedCombo != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Rank"),
+			reloadedCombo->GetSelectedValuePath());
+		CUI_EXPECT_EQ(1, reloadedCombo->SelectedIndex);
+
+		auto invalidLiteral = xaml;
+		const auto literalAt = invalidLiteral.find("Active=\"true\"");
+		CUI_EXPECT_TRUE(literalAt != std::string::npos);
+		invalidLiteral.replace(literalAt, std::string("Active=\"true\"").size(),
+			"Active=\"not-a-bool\"");
+		DesignerModel::DesignDocument rejected;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidLiteral, rejected, &error));
+		CUI_EXPECT_TRUE(error.find(L"Active") != std::wstring::npos);
+		auto invalidPanel = xaml;
+		const auto panelHeightAt = invalidPanel.find("ItemHeight=\"30\"");
+		CUI_EXPECT_TRUE(panelHeightAt != std::string::npos);
+		invalidPanel.replace(panelHeightAt, std::string("ItemHeight=\"30\"").size(),
+			"ItemHeight=\"0\"");
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidPanel, rejected, &error));
+		CUI_EXPECT_TRUE(error.find(L"VirtualizingStackPanel")
+			!= std::wstring::npos);
+	});
+
+	runner.Add("XAML DynamicResource round-trips and refreshes in place", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="DynamicForm">
+  <Form.Resources>
+    <Color x:Key="AccentText">#FF123456</Color>
+  </Form.Resources>
+  <Label x:Name="dynamicLabel" Text="Live"
+    ForeColor="{DynamicResource AccentText}" />
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_EQ(std::string("AccentText"),
+			document.Nodes.front().Props["metadata"]["ForeColor"]
+				["dynamicResourceKey"].get<std::string>());
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(
+			document);
+		CUI_EXPECT_TRUE(canonical.find(
+			"ForeColor=\"{DynamicResource AccentText}\"")
+			!= std::string::npos);
+
+		const auto native = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument restored;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			native, restored, &error));
+		CUI_EXPECT_EQ(std::string("AccentText"),
+			restored.Nodes.front().Props["metadata"]["ForeColor"]
+				["dynamicResourceKey"].get<std::string>());
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* label = dynamic_cast<Label*>(
+			runtime.FindControlByName(L"dynamicLabel"));
+		CUI_EXPECT_TRUE(label != nullptr);
+		CUI_EXPECT_NEAR(0x12 / 255.0f, label->ForeColor.r, 0.0001f);
+		CUI_EXPECT_NEAR(0x34 / 255.0f, label->ForeColor.g, 0.0001f);
+		CUI_EXPECT_NEAR(0x56 / 255.0f, label->ForeColor.b, 0.0001f);
+		std::wstring dynamicKey;
+		CUI_EXPECT_TRUE(label->TryGetDynamicResourceKey(
+			L"ForeColor", dynamicKey));
+
+		auto updatedXaml = xaml;
+		const auto colorAt = updatedXaml.find("#FF123456");
+		CUI_EXPECT_TRUE(colorAt != std::string::npos);
+		updatedXaml.replace(colorAt, std::string("#FF123456").size(),
+			"#FFABCDEF");
+		DesignerModel::RuntimeDocumentReloadMode mode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::ReloadXaml(
+			updatedXaml, runtime, {}, &mode, &error));
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentReloadMode::InPlace, mode);
+		CUI_EXPECT_TRUE(label == runtime.FindControlByName(L"dynamicLabel"));
+		CUI_EXPECT_NEAR(0xAB / 255.0f, label->ForeColor.r, 0.0001f);
+		CUI_EXPECT_NEAR(0xCD / 255.0f, label->ForeColor.g, 0.0001f);
+		CUI_EXPECT_NEAR(0xEF / 255.0f, label->ForeColor.b, 0.0001f);
+
+		const std::string missing = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="MissingForm">
+  <Label x:Name="missingLabel" ForeColor="{DynamicResource Later}" />
+</Form>)XAML";
+		DesignerModel::DesignDocument unresolved;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			missing, unresolved, &error));
+		CUI_EXPECT_EQ(std::string("Later"),
+			unresolved.Nodes.front().Props["metadata"]["ForeColor"]
+				["dynamicResourceKey"].get<std::string>());
+
+		const std::string setterXaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="SetterForm">
+  <Form.Resources>
+    <Style TargetType="Label">
+      <Setter Property="ForeColor" Value="{DynamicResource LaterAccent}" />
+    </Style>
+  </Form.Resources>
+  <Label x:Name="setterLabel" Text="Deferred" />
+</Form>)XAML";
+		DesignerModel::DesignDocument setterDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			setterXaml, setterDocument, &error));
+		CUI_EXPECT_EQ(1ULL, setterDocument.StyleSheet.Rules.size());
+		CUI_EXPECT_TRUE(setterDocument.StyleSheet.Rules.front()
+			.Setters.front().UsesDynamicResource);
+		const auto setterRoundTrip =
+			DesignerModel::XamlDocumentSerializer::ToXaml(setterDocument);
+		CUI_EXPECT_TRUE(setterRoundTrip.find(
+			"{DynamicResource LaterAccent}") != std::string::npos);
+		const auto setterNative =
+			DesignerModel::DesignDocumentSerializer::ToXml(setterDocument);
+		DesignerModel::DesignDocument restoredSetter;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			setterNative, restoredSetter, &error));
+		CUI_EXPECT_TRUE(restoredSetter.StyleSheet.Rules.front()
+			.Setters.front().UsesDynamicResource);
+
+		DesignerModel::MaterializedControlTree setterTree;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentMaterializer::Materialize(
+			setterDocument, setterTree, &error));
+		const auto setterControl = std::find_if(
+			setterTree.Controls.begin(), setterTree.Controls.end(),
+			[](const auto& control)
+			{
+				return control && control->Name == L"setterLabel";
+			});
+		CUI_EXPECT_TRUE(setterControl != setterTree.Controls.end());
+		auto* setterLabel = setterControl != setterTree.Controls.end()
+			? dynamic_cast<Label*>((*setterControl)->ControlInstance) : nullptr;
+		CUI_EXPECT_TRUE(setterLabel != nullptr);
+		auto mutableSheet = setterLabel
+			? std::const_pointer_cast<ControlStyleSheet>(
+				setterLabel->GetStyleSheet()) : nullptr;
+		CUI_EXPECT_TRUE(mutableSheet != nullptr);
+		if (mutableSheet && setterLabel)
+		{
+			CUI_EXPECT_TRUE(mutableSheet->SetResource(L"LaterAccent",
+				BindingValue(D2D1_COLOR_F{ 0.25f, 0.5f, 0.75f, 1.0f })));
+			CUI_EXPECT_NEAR(0.25f, setterLabel->ForeColor.r, 0.0001f);
+			CUI_EXPECT_NEAR(0.5f, setterLabel->ForeColor.g, 0.0001f);
+			CUI_EXPECT_NEAR(0.75f, setterLabel->ForeColor.b, 0.0001f);
+		}
+	});
+
+	runner.Add("Control Resources preserve nested lexical scope in XAML and v29", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="ScopeForm">
+  <Form.Resources>
+    <Color x:Key="Accent">#FF101010</Color>
+  </Form.Resources>
+  <StackPanel x:Name="outer">
+    <StackPanel.Resources>
+      <Color x:Key="Accent">#FFFF0000</Color>
+    </StackPanel.Resources>
+    <Label x:Name="outerValue" ForeColor="{DynamicResource Accent}" />
+    <StackPanel x:Name="inner">
+      <StackPanel.Resources>
+        <Color x:Key="Accent">#FF00FF00</Color>
+      </StackPanel.Resources>
+      <Label x:Name="innerValue" ForeColor="{StaticResource Accent}" />
+    </StackPanel>
+    <Label x:Name="outerSibling" ForeColor="{StaticResource Accent}" />
+  </StackPanel>
+  <Label x:Name="rootValue" ForeColor="{DynamicResource Accent}" />
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		const auto outerNode = std::find_if(document.Nodes.begin(),
+			document.Nodes.end(), [](const auto& node)
+			{ return node.Name == L"outer"; });
+		const auto innerNode = std::find_if(document.Nodes.begin(),
+			document.Nodes.end(), [](const auto& node)
+			{ return node.Name == L"inner"; });
+		CUI_EXPECT_TRUE(outerNode != document.Nodes.end());
+		CUI_EXPECT_TRUE(innerNode != document.Nodes.end());
+		CUI_EXPECT_EQ(1ULL, outerNode->LocalResources.Resources.size());
+		CUI_EXPECT_EQ(1ULL, innerNode->LocalResources.Resources.size());
+		CUI_EXPECT_EQ(1ULL, document.StyleSheet.Resources.size());
+
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(
+			document);
+		CUI_EXPECT_TRUE(canonical.find("<StackPanel.Resources>")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("{DynamicResource Accent}")
+			!= std::string::npos);
+		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(xml.find("version=\"29\"") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("<localResources>") != std::string::npos);
+		DesignerModel::DesignDocument restored;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			xml, restored, &error));
+		CUI_EXPECT_TRUE(document == restored);
+		auto version25 = xml;
+		const auto versionAt = version25.find("version=\"29\"");
+		CUI_EXPECT_TRUE(versionAt != std::string::npos);
+		if (versionAt != std::string::npos)
+			version25.replace(versionAt, std::string("version=\"29\"").size(),
+				"version=\"25\"");
+		DesignerModel::DesignDocument upgradedVersion25;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			version25, upgradedVersion25, &error));
+		CUI_EXPECT_TRUE(document == upgradedVersion25);
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* outerValue = dynamic_cast<Label*>(
+			runtime.FindControlByName(L"outerValue"));
+		auto* innerValue = dynamic_cast<Label*>(
+			runtime.FindControlByName(L"innerValue"));
+		auto* outerSibling = dynamic_cast<Label*>(
+			runtime.FindControlByName(L"outerSibling"));
+		auto* rootValue = dynamic_cast<Label*>(
+			runtime.FindControlByName(L"rootValue"));
+		CUI_EXPECT_TRUE(outerValue && innerValue && outerSibling && rootValue);
+		CUI_EXPECT_NEAR(1.0f, outerValue->ForeColor.r, 0.0001f);
+		CUI_EXPECT_NEAR(0.0f, outerValue->ForeColor.g, 0.0001f);
+		CUI_EXPECT_NEAR(0.0f, innerValue->ForeColor.r, 0.0001f);
+		CUI_EXPECT_NEAR(1.0f, innerValue->ForeColor.g, 0.0001f);
+		CUI_EXPECT_NEAR(1.0f, outerSibling->ForeColor.r, 0.0001f);
+		CUI_EXPECT_NEAR(0x10 / 255.0f, rootValue->ForeColor.r, 0.0001f);
+
+		auto updated = xaml;
+		const auto red = updated.find("#FFFF0000");
+		CUI_EXPECT_TRUE(red != std::string::npos);
+		updated.replace(red, std::string("#FFFF0000").size(), "#FF0000FF");
+		DesignerModel::RuntimeDocumentReloadMode mode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::ReloadXaml(
+			updated, runtime, {}, &mode, &error));
+		CUI_EXPECT_TRUE(mode == DesignerModel::RuntimeDocumentReloadMode::Recomposed
+			|| mode == DesignerModel::RuntimeDocumentReloadMode::Replaced);
+		outerValue = dynamic_cast<Label*>(
+			runtime.FindControlByName(L"outerValue"));
+		outerSibling = dynamic_cast<Label*>(
+			runtime.FindControlByName(L"outerSibling"));
+		CUI_EXPECT_NEAR(0.0f, outerValue->ForeColor.r, 0.0001f);
+		CUI_EXPECT_NEAR(1.0f, outerValue->ForeColor.b, 0.0001f);
+		CUI_EXPECT_NEAR(1.0f, outerSibling->ForeColor.b, 0.0001f);
+	});
+
+	runner.Add("Control Resources scope DataTemplate and ComponentDefinition", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:local-object-scope" x:Name="ObjectScopeForm">
+  <Form.Resources>
+    <DataType x:Key="Row">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="Rows" ItemType="Row">
+      <DataRecord Name="One" />
+    </DataList>
+    <DataTemplate x:Key="RowView" DataType="Row">
+      <Label Text="global row" />
+    </DataTemplate>
+    <ComponentDefinition x:Key="local:Badge" BaseType="Panel">
+      <ComponentDefinition.Template>
+        <Label Text="global badge" />
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <StackPanel x:Name="scope">
+    <StackPanel.Resources>
+      <Color x:Key="LocalAccent">#FF123456</Color>
+      <DataTemplate x:Key="RowView" DataType="Row">
+        <StackPanel>
+          <StackPanel.Resources>
+            <ComponentDefinition x:Key="local:InnerBadge" BaseType="Panel">
+              <ComponentDefinition.Template>
+                <Label Text="nested badge" />
+              </ComponentDefinition.Template>
+            </ComponentDefinition>
+          </StackPanel.Resources>
+          <Label Text="local row" ForeColor="{StaticResource LocalAccent}" />
+          <local:InnerBadge />
+        </StackPanel>
+      </DataTemplate>
+	  <DataTemplate x:Key="LocalOnlyRow" DataType="Row">
+		<Label Text="local-only row"
+		       ForeColor="{StaticResource LocalAccent}" />
+	  </DataTemplate>
+      <ComponentDefinition x:Key="local:Badge" BaseType="Panel">
+        <ComponentDefinition.Properties>
+          <ComponentProperty Name="Accent" Type="Color"
+                             Default="{StaticResource LocalAccent}" />
+        </ComponentDefinition.Properties>
+        <ComponentDefinition.Template>
+          <Label Text="local badge" ForeColor="{TemplateBinding Accent}" />
+        </ComponentDefinition.Template>
+      </ComponentDefinition>
+	  <ComponentDefinition x:Key="local:LocalOnlyBadge" BaseType="Panel">
+		<ComponentDefinition.Template>
+		  <Label Text="local-only badge"
+		         ForeColor="{StaticResource LocalAccent}" />
+		</ComponentDefinition.Template>
+	  </ComponentDefinition>
+    </StackPanel.Resources>
+    <ItemsControl x:Name="localRows" ItemsSource="{StaticResource Rows}"
+                  ItemTemplate="{StaticResource RowView}" />
+	<ItemsControl x:Name="localOnlyRows" ItemsSource="{StaticResource Rows}"
+	              ItemTemplate="{StaticResource LocalOnlyRow}" />
+    <local:Badge x:Name="localBadge" />
+	<local:LocalOnlyBadge x:Name="localOnlyBadge" />
+  </StackPanel>
+  <ItemsControl x:Name="globalRows" ItemsSource="{StaticResource Rows}"
+                ItemTemplate="{StaticResource RowView}" />
+  <local:Badge x:Name="globalBadge" />
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		CUI_EXPECT_EQ(1ULL, document.DataTemplates.size());
+		const auto scope = std::find_if(document.Nodes.begin(),
+			document.Nodes.end(), [](const auto& node)
+			{ return node.Name == L"scope"; });
+		CUI_EXPECT_TRUE(scope != document.Nodes.end());
+		if (scope == document.Nodes.end()) return;
+		CUI_EXPECT_EQ(2ULL, scope->LocalObjectResources.Components.size());
+		CUI_EXPECT_EQ(2ULL, scope->LocalObjectResources.DataTemplates.size());
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(
+			document);
+		CUI_EXPECT_TRUE(canonical.find("<StackPanel.Resources>")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("local row") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("global row") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("local badge") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("global badge") != std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+
+		const auto native = DesignerModel::DesignDocumentSerializer::ToXml(
+			document);
+		CUI_EXPECT_TRUE(native.find("objectResourcesSnapshot")
+			!= std::string::npos);
+		DesignerModel::DesignDocument nativeRoundTrip;
+		if (!DesignerModel::DesignDocumentSerializer::FromXml(
+			native, nativeRoundTrip, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_EQ(document, nativeRoundTrip);
+
+		DesignerModel::RuntimeDocument runtime;
+		if (!DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto* localRows = dynamic_cast<ItemsControl*>(
+			runtime.FindControlByName(L"localRows"));
+		auto* globalRows = dynamic_cast<ItemsControl*>(
+			runtime.FindControlByName(L"globalRows"));
+		auto* localOnlyRows = dynamic_cast<ItemsControl*>(
+			runtime.FindControlByName(L"localOnlyRows"));
+		auto* localBadge = runtime.FindControlByName(L"localBadge");
+		auto* localOnlyBadge = runtime.FindControlByName(L"localOnlyBadge");
+		auto* globalBadge = runtime.FindControlByName(L"globalBadge");
+		CUI_EXPECT_TRUE(localRows && globalRows && localOnlyRows
+			&& localBadge && localOnlyBadge && globalBadge);
+		CUI_EXPECT_EQ(1ULL, localRows->GeneratedItemCount());
+		CUI_EXPECT_EQ(1ULL, globalRows->GeneratedItemCount());
+		CUI_EXPECT_EQ(1ULL, localOnlyRows->GeneratedItemCount());
+		auto* localRowPanel = dynamic_cast<StackPanel*>(
+			localRows->GetGeneratedItem(0));
+		auto* localRow = localRowPanel
+			? dynamic_cast<Label*>(localRowPanel->GetChild(0)) : nullptr;
+		auto* nestedBadge = localRowPanel
+			? localRowPanel->GetChild(1) : nullptr;
+		auto* nestedBadgeLabel = nestedBadge
+			? dynamic_cast<Label*>(nestedBadge->GetChild(0)) : nullptr;
+		auto* globalRow = dynamic_cast<Label*>(globalRows->GetGeneratedItem(0));
+		auto* localOnlyRow = dynamic_cast<Label*>(
+			localOnlyRows->GetGeneratedItem(0));
+		auto* localBadgeLabel = localBadge
+			? dynamic_cast<Label*>(localBadge->GetChild(0)) : nullptr;
+		auto* localOnlyBadgeLabel = localOnlyBadge
+			? dynamic_cast<Label*>(localOnlyBadge->GetChild(0)) : nullptr;
+		auto* globalBadgeLabel = globalBadge
+			? dynamic_cast<Label*>(globalBadge->GetChild(0)) : nullptr;
+		CUI_EXPECT_TRUE(localRow && globalRow && localOnlyRow && nestedBadgeLabel
+			&& localBadgeLabel && localOnlyBadgeLabel && globalBadgeLabel);
+		if (localRow) CUI_EXPECT_EQ(std::wstring(L"local row"), localRow->Text);
+		if (localRow)
+			CUI_EXPECT_NEAR(0x12 / 255.0f, localRow->ForeColor.r, 0.0001f);
+		if (globalRow) CUI_EXPECT_EQ(std::wstring(L"global row"), globalRow->Text);
+		if (localOnlyRow)
+		{
+			CUI_EXPECT_EQ(std::wstring(L"local-only row"), localOnlyRow->Text);
+			CUI_EXPECT_NEAR(0x12 / 255.0f,
+				localOnlyRow->ForeColor.r, 0.0001f);
+		}
+		if (nestedBadgeLabel)
+			CUI_EXPECT_EQ(std::wstring(L"nested badge"), nestedBadgeLabel->Text);
+		if (localBadgeLabel)
+		{
+			CUI_EXPECT_EQ(std::wstring(L"local badge"), localBadgeLabel->Text);
+			CUI_EXPECT_NEAR(0x12 / 255.0f,
+				localBadgeLabel->ForeColor.r, 0.0001f);
+			CUI_EXPECT_NEAR(0x34 / 255.0f,
+				localBadgeLabel->ForeColor.g, 0.0001f);
+			CUI_EXPECT_NEAR(0x56 / 255.0f,
+				localBadgeLabel->ForeColor.b, 0.0001f);
+		}
+		if (globalBadgeLabel)
+			CUI_EXPECT_EQ(std::wstring(L"global badge"), globalBadgeLabel->Text);
+		if (localOnlyBadgeLabel)
+		{
+			CUI_EXPECT_EQ(std::wstring(L"local-only badge"),
+				localOnlyBadgeLabel->Text);
+			CUI_EXPECT_NEAR(0x12 / 255.0f,
+				localOnlyBadgeLabel->ForeColor.r, 0.0001f);
+		}
+
+		auto findNode = [&](const std::wstring& name)
+			-> const DesignerModel::DesignNode*
+		{
+			const auto found = std::find_if(document.Nodes.begin(),
+				document.Nodes.end(), [&](const auto& node)
+				{ return node.Name == name; });
+			return found == document.Nodes.end() ? nullptr : &*found;
+		};
+		const auto* localRowsNode = findNode(L"localRows");
+		const auto* localOnlyRowsNode = findNode(L"localOnlyRows");
+		const auto* localBadgeNode = findNode(L"localBadge");
+		const auto* localOnlyBadgeNode = findNode(L"localOnlyBadge");
+		CUI_EXPECT_TRUE(localRowsNode && localOnlyRowsNode
+			&& localBadgeNode && localOnlyBadgeNode);
+
+		auto captureAndPaste = [&](const DesignerModel::DesignNode& node,
+			DesignerModel::DesignDocument& pasted)
+		{
+			DesignerModel::DesignDocument fragment;
+			if (!DesignerModel::DesignDocumentClipboard::Capture(
+				document, { node.Id }, fragment, &error))
+				throw std::runtime_error(Convert::UnicodeToUtf8(
+					node.Name + L": " + error));
+			CUI_EXPECT_EQ(1ULL, fragment.Nodes.size());
+			CUI_EXPECT_TRUE(!fragment.Nodes.front().LocalResources.Resources.empty());
+			DesignerModel::DesignDocument target;
+			CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+				target, fragment, 0, 0, pasted, nullptr, &error));
+		};
+		if (localRowsNode)
+		{
+			DesignerModel::DesignDocument pasted;
+			captureAndPaste(*localRowsNode, pasted);
+			CUI_EXPECT_EQ(1ULL,
+				pasted.Nodes.front().LocalObjectResources.DataTemplates.size());
+			DesignerModel::RuntimeDocument pastedRuntime;
+			CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+				pasted, pastedRuntime, {}, &error));
+			auto* rows = dynamic_cast<ItemsControl*>(
+				pastedRuntime.FindControlByName(L"localRows"));
+			auto* rowPanel = rows && rows->GeneratedItemCount() == 1
+				? dynamic_cast<StackPanel*>(rows->GetGeneratedItem(0)) : nullptr;
+			auto* rowLabel = rowPanel
+				? dynamic_cast<Label*>(rowPanel->GetChild(0)) : nullptr;
+			CUI_EXPECT_TRUE(rowLabel != nullptr);
+			if (rowLabel)
+				CUI_EXPECT_EQ(std::wstring(L"local row"), rowLabel->Text);
+		}
+		if (localOnlyRowsNode)
+		{
+			DesignerModel::DesignDocument pasted;
+			captureAndPaste(*localOnlyRowsNode, pasted);
+			CUI_EXPECT_EQ(std::wstring(L"LocalOnlyRow"),
+				pasted.Nodes.front().LocalObjectResources.DataTemplates.front().Key);
+			DesignerModel::RuntimeDocument pastedRuntime;
+			CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+				pasted, pastedRuntime, {}, &error));
+			auto* rows = dynamic_cast<ItemsControl*>(
+				pastedRuntime.FindControlByName(L"localOnlyRows"));
+			auto* rowLabel = rows && rows->GeneratedItemCount() == 1
+				? dynamic_cast<Label*>(rows->GetGeneratedItem(0)) : nullptr;
+			CUI_EXPECT_TRUE(rowLabel != nullptr);
+			if (rowLabel)
+				CUI_EXPECT_EQ(std::wstring(L"local-only row"), rowLabel->Text);
+		}
+		for (const auto* badgeNode : { localBadgeNode, localOnlyBadgeNode })
+			if (badgeNode)
+			{
+				DesignerModel::DesignDocument pasted;
+				captureAndPaste(*badgeNode, pasted);
+				CUI_EXPECT_EQ(1ULL,
+					pasted.Nodes.front().LocalObjectResources.Components.size());
+				DesignerModel::RuntimeDocument pastedRuntime;
+				CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+					pasted, pastedRuntime, {}, &error));
+				auto* badge = pastedRuntime.FindControlByName(badgeNode->Name);
+				auto* label = badge
+					? dynamic_cast<Label*>(badge->GetChild(0)) : nullptr;
+				CUI_EXPECT_TRUE(label != nullptr);
+				if (label)
+					CUI_EXPECT_EQ(badgeNode->Name == L"localBadge"
+						? std::wstring(L"local badge")
+						: std::wstring(L"local-only badge"), label->Text);
+			}
+	});
+
+	runner.Add("Control Resources scope ItemsPanelTemplate and GroupStyle", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="CollectionScopeForm">
+  <Form.Resources>
+    <DataType x:Key="Row">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+        <Property Path="Department" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="Rows" ItemType="Row">
+      <DataRecord Name="Ada" Department="Engineering" />
+    </DataList>
+    <CollectionViewSource x:Key="GroupedRows"
+                          Source="{StaticResource Rows}">
+      <CollectionViewSource.GroupDescriptions>
+        <GroupDescription PropertyName="Department" />
+      </CollectionViewSource.GroupDescriptions>
+    </CollectionViewSource>
+    <DataTemplate x:Key="SharedHeader" DataType="CollectionViewGroup">
+      <Label Text="global header" />
+    </DataTemplate>
+    <GroupStyle x:Key="SharedGroups"
+                HeaderTemplate="{StaticResource SharedHeader}"
+                HeaderIndent="5" HeaderSpacing="1" HeaderHeight="21" />
+    <ItemsPanelTemplate x:Key="SharedPanel">
+      <StackPanel Orientation="Vertical" Spacing="1" />
+    </ItemsPanelTemplate>
+  </Form.Resources>
+  <StackPanel x:Name="scope">
+    <StackPanel.Resources>
+      <DataTemplate x:Key="SharedHeader" DataType="CollectionViewGroup">
+        <Label Text="local header" />
+      </DataTemplate>
+      <DataTemplate x:Key="LocalOnlyHeader" DataType="CollectionViewGroup">
+        <Label Text="local-only header" />
+      </DataTemplate>
+      <GroupStyle x:Key="SharedGroups"
+                  HeaderTemplate="{StaticResource SharedHeader}"
+                  HeaderIndent="17" HeaderSpacing="3" HeaderHeight="25" />
+      <GroupStyle x:Key="LocalOnlyGroups"
+                  HeaderTemplate="{StaticResource LocalOnlyHeader}"
+                  HeaderIndent="23" HeaderSpacing="4" HeaderHeight="27" />
+      <ItemsPanelTemplate x:Key="SharedPanel">
+        <WrapPanel Orientation="Horizontal" ItemWidth="81" ItemHeight="31" />
+      </ItemsPanelTemplate>
+      <ItemsPanelTemplate x:Key="LocalOnlyPanel">
+        <StackPanel Orientation="Vertical" Spacing="7" />
+      </ItemsPanelTemplate>
+    </StackPanel.Resources>
+    <ListBox x:Name="localRows" ItemsSource="{StaticResource GroupedRows}"
+             GroupStyle="{StaticResource SharedGroups}"
+             ItemsPanel="{StaticResource SharedPanel}"
+             DisplayMemberPath="Name">
+      <ListBox.Resources>
+        <DataTemplate x:Key="SharedHeader" DataType="CollectionViewGroup">
+          <Label Text="use-site header must not win" />
+        </DataTemplate>
+      </ListBox.Resources>
+    </ListBox>
+    <ListBox x:Name="localOnlyRows" ItemsSource="{StaticResource GroupedRows}"
+             GroupStyle="{StaticResource LocalOnlyGroups}"
+             ItemsPanel="{StaticResource LocalOnlyPanel}"
+             DisplayMemberPath="Name" />
+  </StackPanel>
+  <ListBox x:Name="globalRows" ItemsSource="{StaticResource GroupedRows}"
+           GroupStyle="{StaticResource SharedGroups}"
+           ItemsPanel="{StaticResource SharedPanel}"
+           DisplayMemberPath="Name" />
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_EQ(1ULL, document.ItemsPanelTemplates.size());
+		CUI_EXPECT_EQ(1ULL, document.GroupStyles.size());
+		const auto scope = std::find_if(document.Nodes.begin(),
+			document.Nodes.end(), [](const auto& node)
+			{ return node.Name == L"scope"; });
+		CUI_EXPECT_TRUE(scope != document.Nodes.end());
+		if (scope == document.Nodes.end()) return;
+		CUI_EXPECT_EQ(2ULL,
+			scope->LocalObjectResources.ItemsPanelTemplates.size());
+		CUI_EXPECT_EQ(2ULL, scope->LocalObjectResources.GroupStyles.size());
+
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(
+			document);
+		CUI_EXPECT_TRUE(canonical.find("<WrapPanel") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("LocalOnlyGroups") != std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+		const auto native = DesignerModel::DesignDocumentSerializer::ToXml(
+			document);
+		CUI_EXPECT_TRUE(native.find("version=\"29\"") != std::string::npos);
+		CUI_EXPECT_TRUE(native.find("itemsPanelTemplateCount=\"2\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(native.find("groupStyleCount=\"2\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument nativeRoundTrip;
+		if (!DesignerModel::DesignDocumentSerializer::FromXml(
+			native, nativeRoundTrip, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_EQ(document, nativeRoundTrip);
+
+		auto headerText = [](ListBox* list) -> std::wstring
+		{
+			if (!list || !list->GetItemsHost()
+				|| list->GetItemsHost()->Count == 0) return {};
+			auto* groupHost = dynamic_cast<StackPanel*>(
+				list->GetItemsHost()->GetChild(0));
+			auto* header = groupHost && groupHost->Count > 0
+				? dynamic_cast<Label*>(groupHost->GetChild(0)) : nullptr;
+			return header ? header->Text : std::wstring{};
+		};
+		DesignerModel::RuntimeDocument runtime;
+		if (!DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error))
+			throw std::runtime_error(Convert::UnicodeToUtf8(error));
+		auto* localRows = dynamic_cast<ListBox*>(
+			runtime.FindControlByName(L"localRows"));
+		auto* localOnlyRows = dynamic_cast<ListBox*>(
+			runtime.FindControlByName(L"localOnlyRows"));
+		auto* globalRows = dynamic_cast<ListBox*>(
+			runtime.FindControlByName(L"globalRows"));
+		CUI_EXPECT_TRUE(localRows && localOnlyRows && globalRows);
+		if (localRows)
+		{
+			CUI_EXPECT_TRUE(localRows->GetItemsPanel());
+			CUI_EXPECT_TRUE(localRows->GetGroupStyle());
+			CUI_EXPECT_EQ(ItemsPanelKind::Wrap,
+				localRows->GetItemsPanel().Get()->Kind);
+			CUI_EXPECT_NEAR(81.0f,
+				localRows->GetItemsPanel().Get()->ItemWidth, 0.0001f);
+			CUI_EXPECT_NEAR(17.0f,
+				localRows->GetGroupStyle().Get()->HeaderIndent, 0.0001f);
+			CUI_EXPECT_EQ(std::wstring(L"local header"),
+				headerText(localRows));
+		}
+		if (localOnlyRows)
+		{
+			CUI_EXPECT_EQ(ItemsPanelKind::Stack,
+				localOnlyRows->GetItemsPanel().Get()->Kind);
+			CUI_EXPECT_NEAR(7.0f,
+				localOnlyRows->GetItemsPanel().Get()->Spacing, 0.0001f);
+			CUI_EXPECT_NEAR(23.0f,
+				localOnlyRows->GetGroupStyle().Get()->HeaderIndent, 0.0001f);
+			CUI_EXPECT_EQ(std::wstring(L"local-only header"),
+				headerText(localOnlyRows));
+		}
+		if (globalRows)
+		{
+			CUI_EXPECT_EQ(ItemsPanelKind::Stack,
+				globalRows->GetItemsPanel().Get()->Kind);
+			CUI_EXPECT_NEAR(1.0f,
+				globalRows->GetItemsPanel().Get()->Spacing, 0.0001f);
+			CUI_EXPECT_NEAR(5.0f,
+				globalRows->GetGroupStyle().Get()->HeaderIndent, 0.0001f);
+			CUI_EXPECT_EQ(std::wstring(L"global header"),
+				headerText(globalRows));
+		}
+
+		const auto localNode = std::find_if(document.Nodes.begin(),
+			document.Nodes.end(), [](const auto& node)
+			{ return node.Name == L"localRows"; });
+		CUI_EXPECT_TRUE(localNode != document.Nodes.end());
+		if (localNode != document.Nodes.end())
+		{
+			DesignerModel::DesignDocument fragment;
+			if (!DesignerModel::DesignDocumentClipboard::Capture(
+				document, { localNode->Id }, fragment, &error))
+				throw std::runtime_error(Convert::UnicodeToUtf8(error));
+			CUI_EXPECT_EQ(1ULL, fragment.Nodes.size());
+			CUI_EXPECT_EQ(1ULL, fragment.Nodes.front().LocalObjectResources.
+				ItemsPanelTemplates.size());
+			CUI_EXPECT_EQ(1ULL,
+				fragment.Nodes.front().LocalObjectResources.GroupStyles.size());
+			CUI_EXPECT_EQ(1ULL, fragment.Nodes.front().LocalObjectResources.
+				DataTemplates.size());
+			DesignerModel::DesignDocument pasted;
+			if (!DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+				{}, fragment, 0, 0, pasted, nullptr, &error))
+				throw std::runtime_error(Convert::UnicodeToUtf8(error));
+			DesignerModel::RuntimeDocument pastedRuntime;
+			if (!DesignerModel::RuntimeDocumentLoader::Load(
+				pasted, pastedRuntime, {}, &error))
+				throw std::runtime_error(Convert::UnicodeToUtf8(error));
+			auto* pastedRows = dynamic_cast<ListBox*>(
+				pastedRuntime.FindControlByName(L"localRows"));
+			CUI_EXPECT_TRUE(pastedRows != nullptr);
+			if (pastedRows)
+			{
+				CUI_EXPECT_EQ(ItemsPanelKind::Wrap,
+					pastedRows->GetItemsPanel().Get()->Kind);
+				CUI_EXPECT_EQ(std::wstring(L"local header"),
+					headerText(pastedRows));
+			}
+		}
+	});
+
+	runner.Add("Control Resources apply lexical Style rules and BasedOn", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="StyleScopeForm">
+  <Form.Resources>
+    <Style x:Key="BaseLabel" TargetType="Label">
+      <Setter Property="BackColor" Value="#FF010203" />
+    </Style>
+    <Style TargetType="Label">
+      <Setter Property="ForeColor" Value="#FF404040" />
+    </Style>
+    <DataType x:Key="ScopedRow">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <DataTemplate x:Key="ScopedRowTemplate" DataType="ScopedRow">
+      <StackPanel>
+        <StackPanel.Resources>
+          <Style TargetType="Label" BasedOn="{StaticResource BaseLabel}">
+            <Setter Property="ForeColor" Value="#FF556677" />
+          </Style>
+        </StackPanel.Resources>
+        <Label Text="{Binding Name}" />
+      </StackPanel>
+    </DataTemplate>
+  </Form.Resources>
+  <StackPanel x:Name="styledScope">
+    <StackPanel.Resources>
+      <Color x:Key="Accent">#FFFF0000</Color>
+      <Style TargetType="Label" BasedOn="{StaticResource BaseLabel}">
+        <Setter Property="ForeColor" Value="{DynamicResource Accent}" />
+      </Style>
+    </StackPanel.Resources>
+    <Label x:Name="outerStyled" />
+    <StackPanel x:Name="innerScope">
+      <StackPanel.Resources>
+        <Color x:Key="Accent">#FF00FF00</Color>
+      </StackPanel.Resources>
+      <Label x:Name="innerStyled" />
+    </StackPanel>
+  </StackPanel>
+  <Label x:Name="documentStyled" />
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		const auto owner = std::find_if(document.Nodes.begin(),
+			document.Nodes.end(), [](const auto& node)
+			{ return node.Name == L"styledScope"; });
+		CUI_EXPECT_TRUE(owner != document.Nodes.end());
+		if (owner != document.Nodes.end())
+		{
+			CUI_EXPECT_EQ(1ULL, owner->LocalResources.Rules.size());
+			CUI_EXPECT_EQ(std::wstring(L"BaseLabel"),
+				owner->LocalResources.Rules.front().BasedOn);
+		}
+
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(
+			document);
+		CUI_EXPECT_TRUE(canonical.find("<StackPanel.Resources>")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"BasedOn=\"{StaticResource BaseLabel}\"") != std::string::npos);
+		DesignerModel::DesignDocument roundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, roundTrip, &error));
+		CUI_EXPECT_TRUE(document == roundTrip);
+		const auto snapshot =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(snapshot.find("<rulesSnapshot") != std::string::npos);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error));
+		CUI_EXPECT_TRUE(document == snapshotRoundTrip);
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* outer = dynamic_cast<Label*>(
+			runtime.FindControlByName(L"outerStyled"));
+		auto* inner = dynamic_cast<Label*>(
+			runtime.FindControlByName(L"innerStyled"));
+		auto* root = dynamic_cast<Label*>(
+			runtime.FindControlByName(L"documentStyled"));
+		CUI_EXPECT_TRUE(outer && inner && root);
+		if (outer)
+		{
+			CUI_EXPECT_NEAR(1.0f, outer->ForeColor.r, 0.0001f);
+			CUI_EXPECT_NEAR(0.0f, outer->ForeColor.g, 0.0001f);
+			CUI_EXPECT_NEAR(0x01 / 255.0f, outer->BackColor.r, 0.0001f);
+		}
+		if (inner)
+		{
+			CUI_EXPECT_NEAR(0.0f, inner->ForeColor.r, 0.0001f);
+			CUI_EXPECT_NEAR(1.0f, inner->ForeColor.g, 0.0001f);
+			CUI_EXPECT_NEAR(0x02 / 255.0f, inner->BackColor.g, 0.0001f);
+		}
+		if (root)
+			CUI_EXPECT_NEAR(0x40 / 255.0f, root->ForeColor.r, 0.0001f);
+
+		auto updated = xaml;
+		const auto red = updated.find("#FFFF0000");
+		CUI_EXPECT_TRUE(red != std::string::npos);
+		updated.replace(red, std::string("#FFFF0000").size(), "#FF0000FF");
+		DesignerModel::RuntimeDocumentReloadMode mode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::ReloadXaml(
+			updated, runtime, {}, &mode, &error));
+		outer = dynamic_cast<Label*>(runtime.FindControlByName(L"outerStyled"));
+		inner = dynamic_cast<Label*>(runtime.FindControlByName(L"innerStyled"));
+		CUI_EXPECT_TRUE(outer && inner);
+		if (outer)
+		{
+			CUI_EXPECT_NEAR(0.0f, outer->ForeColor.r, 0.0001f);
+			CUI_EXPECT_NEAR(1.0f, outer->ForeColor.b, 0.0001f);
+		}
+		if (inner)
+			CUI_EXPECT_NEAR(1.0f, inner->ForeColor.g, 0.0001f);
+
+		auto rebased = updated;
+		const auto baseColor = rebased.find("#FF010203");
+		CUI_EXPECT_TRUE(baseColor != std::string::npos);
+		rebased.replace(baseColor, std::string("#FF010203").size(), "#FF112233");
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::ReloadXaml(
+			rebased, runtime, {}, &mode, &error));
+		outer = dynamic_cast<Label*>(runtime.FindControlByName(L"outerStyled"));
+		inner = dynamic_cast<Label*>(runtime.FindControlByName(L"innerStyled"));
+		CUI_EXPECT_TRUE(outer && inner);
+		if (outer)
+			CUI_EXPECT_NEAR(0x11 / 255.0f, outer->BackColor.r, 0.0001f);
+		if (inner)
+			CUI_EXPECT_NEAR(0x22 / 255.0f, inner->BackColor.g, 0.0001f);
+	});
+
+	runner.Add("XAML CollectionViewSource binds dynamic list sources", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="ViewForm">
+  <Form.Resources>
+	<Color x:Key="TextMuted">#FF748399</Color>
+    <DataType x:Key="Person">
+      <DataType.Properties>
+		<Property Path="Name" Kind="String" />
+		<Property Path="Department" Kind="String" />
+		<Property Path="Score" Kind="Int" />
+      </DataType.Properties>
+    </DataType>
+		<CollectionViewSource x:Key="RankedPeople" Source="{Binding People}">
+		  <CollectionViewSource.GroupDescriptions>
+			<GroupDescription PropertyName="Department" />
+		  </CollectionViewSource.GroupDescriptions>
+		  <CollectionViewSource.AggregateDescriptions>
+			<AggregateDescription Name="TotalScore" PropertyName="Score" Function="Sum" />
+		  </CollectionViewSource.AggregateDescriptions>
+      <CollectionViewSource.FilterDescriptions>
+        <FilterDescription PropertyName="Score" Operator="GreaterThanOrEqual" Value="20" />
+      </CollectionViewSource.FilterDescriptions>
+      <CollectionViewSource.SortDescriptions>
+        <SortDescription PropertyName="Score" Direction="Descending" />
+      </CollectionViewSource.SortDescriptions>
+		</CollectionViewSource>
+		<DataTemplate DataType="CollectionViewGroup">
+		  <StackPanel Orientation="Horizontal">
+			<Label Text="{Binding Key}" />
+			<Label Text="{Binding ItemCount}"
+				ForeColor="{StaticResource TextMuted}" />
+			<Label Text="{Binding FirstItem.Name}" />
+			<Label Text="{Binding Aggregates.TotalScore}" />
+		  </StackPanel>
+		</DataTemplate>
+		<GroupStyle x:Key="DepartmentGroups"
+			HeaderIndent="12" HeaderSpacing="3" HeaderHeight="22" />
+		<ItemsPanelTemplate x:Key="DepartmentPanel">
+		  <VirtualizingStackPanel ItemHeight="28" CacheLength="0" />
+		</ItemsPanelTemplate>
+  </Form.Resources>
+  <Form.DataContextSchema>
+    <Property Path="People" Kind="Object" ObjectType="BindingList" ItemType="Person" />
+  </Form.DataContextSchema>
+	  <ListBox x:Name="ranked" ItemsSource="{StaticResource RankedPeople}"
+		   GroupStyle="{StaticResource DepartmentGroups}"
+		   ItemsPanel="{StaticResource DepartmentPanel}"
+		   ForeColor="{StaticResource TextMuted}"
+		   DisplayMemberPath="Name" />
+</Form>)XAML";
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_EQ(1ULL, document.CollectionViews.size());
+		CUI_EXPECT_EQ(std::wstring(L"People"),
+			document.CollectionViews.front().SourceBindingPath);
+		CUI_EXPECT_EQ(1ULL,
+			document.CollectionViews.front().GroupDescriptions.size());
+		CUI_EXPECT_EQ(1ULL, document.GroupStyles.size());
+		CUI_EXPECT_TRUE(document.FindImplicitDataTemplate(
+			std::wstring(CollectionViewGroupDataTypeName)) != nullptr);
+		CUI_EXPECT_TRUE(document.GroupStyles.front().HeaderTemplate.empty());
+		CUI_EXPECT_EQ(std::string("TextMuted"),
+			document.Nodes.front().Props["metadata"]["ForeColor"]
+				["resourceKey"].get<std::string>());
+		DesignerModel::MaterializedControlTree designTree;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentMaterializer::Materialize(
+			document, designTree, &error));
+		const auto rankedDesignControl = std::find_if(
+			designTree.Controls.begin(), designTree.Controls.end(),
+			[](const auto& control)
+			{
+				return control && control->Name == L"ranked";
+			});
+		CUI_EXPECT_TRUE(rankedDesignControl != designTree.Controls.end());
+		if (rankedDesignControl != designTree.Controls.end())
+			CUI_EXPECT_EQ(std::wstring(L"TextMuted"),
+				(*rankedDesignControl)->MetadataPropertyResourceKeys.at(
+					L"ForeColor"));
+		const auto roundTrip = DesignerModel::XamlDocumentSerializer::ToXaml(
+			document);
+		CUI_EXPECT_TRUE(roundTrip.find("CollectionViewSource.GroupDescriptions")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(roundTrip.find("GroupStyle x:Key=\"DepartmentGroups\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(roundTrip.find(
+			"CollectionViewSource.AggregateDescriptions") != std::string::npos);
+		CUI_EXPECT_TRUE(roundTrip.find("HeaderHeight=\"22\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(roundTrip.find(
+			"ForeColor=\"{StaticResource TextMuted}\"") != std::string::npos);
+		// Canonical XAML groups template resources ahead of scalar resources.
+		// Parsing must therefore resolve StaticResource references independently
+		// of the serializer's category order; otherwise a document saved by the
+		// designer cannot be loaded again.
+		const auto serializedTemplate = roundTrip.find(
+			"<DataTemplate DataType=\"CollectionViewGroup\"");
+		const auto serializedColor = roundTrip.find(
+			"<Color x:Key=\"TextMuted\"");
+		CUI_EXPECT_TRUE(serializedTemplate != std::string::npos);
+		CUI_EXPECT_TRUE(serializedColor != std::string::npos);
+		CUI_EXPECT_TRUE(serializedTemplate < serializedColor);
+		DesignerModel::DesignDocument reparsedRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			roundTrip, reparsedRoundTrip, &error));
+		CUI_EXPECT_EQ(1ULL, reparsedRoundTrip.DataTemplates.size());
+		const auto reparsedResourceLabel = std::find_if(
+			reparsedRoundTrip.DataTemplates.front().Template.begin(),
+			reparsedRoundTrip.DataTemplates.front().Template.end(),
+			[](const auto& node)
+			{
+				return node.Props.contains("metadata")
+					&& node.Props["metadata"].contains("ForeColor");
+			});
+		CUI_EXPECT_TRUE(reparsedResourceLabel
+			!= reparsedRoundTrip.DataTemplates.front().Template.end());
+		if (reparsedResourceLabel
+			!= reparsedRoundTrip.DataTemplates.front().Template.end())
+			CUI_EXPECT_EQ(std::string("TextMuted"),
+				reparsedResourceLabel->Props["metadata"]["ForeColor"]
+					["resourceKey"].get<std::string>());
+		auto invalidPropertyResource = xaml;
+		const auto propertyResourceAt = invalidPropertyResource.find(
+			"{StaticResource TextMuted}");
+		CUI_EXPECT_TRUE(propertyResourceAt != std::string::npos);
+		invalidPropertyResource.replace(propertyResourceAt,
+			std::string("{StaticResource TextMuted}").size(),
+			"{StaticResource MissingColor}");
+		DesignerModel::DesignDocument rejectedPropertyResource;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidPropertyResource, rejectedPropertyResource, &error));
+		CUI_EXPECT_TRUE(error.find(L"MissingColor") != std::wstring::npos);
+		auto invalidGroupPath = xaml;
+		const auto groupPathAt = invalidGroupPath.find("FirstItem.Name");
+		CUI_EXPECT_TRUE(groupPathAt != std::string::npos);
+		invalidGroupPath.replace(groupPathAt,
+			std::string("FirstItem.Name").size(), "FirstItem.Unknown");
+		DesignerModel::DesignDocument rejectedGroupPath;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidGroupPath, rejectedGroupPath, &error));
+		CUI_EXPECT_TRUE(error.find(L"FirstItem.Unknown") != std::wstring::npos);
+		auto invalidAggregatePath = xaml;
+		const auto aggregatePathAt = invalidAggregatePath.find(
+			"Aggregates.TotalScore");
+		CUI_EXPECT_TRUE(aggregatePathAt != std::string::npos);
+		invalidAggregatePath.replace(aggregatePathAt,
+			std::string("Aggregates.TotalScore").size(),
+			"Aggregates.Unknown");
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidAggregatePath, rejectedGroupPath, &error));
+		CUI_EXPECT_TRUE(error.find(L"Aggregates.Unknown") != std::wstring::npos);
+		auto invalidGroupType = xaml;
+		const auto groupTypeAt = invalidGroupType.find(
+			"DataType=\"CollectionViewGroup\"");
+		CUI_EXPECT_TRUE(groupTypeAt != std::string::npos);
+		invalidGroupType.replace(groupTypeAt,
+			std::string("DataType=\"CollectionViewGroup\"").size(),
+			"DataType=\"Person\"");
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidGroupType, rejectedGroupPath, &error));
+		CUI_EXPECT_TRUE(!error.empty());
+
+		auto makeRecord = [](const std::wstring& name,
+			const std::wstring& department, int score)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Name", name));
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Department", department));
+			CUI_EXPECT_TRUE(record->DefineProperty(L"Score", score));
+			return BindingSourceReference(record);
+		};
+		auto people = std::make_shared<ObservableBindingList>(L"Person");
+		people->Items.push_back(makeRecord(L"Alice", L"Sales", 10));
+		people->Items.push_back(makeRecord(L"Bob", L"Engineering", 30));
+		auto viewModel = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(viewModel->DefineProperty(
+			L"People", BindingListReference(people)));
+
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.DataContext = viewModel;
+		DesignerModel::RuntimeDocument runtime;
+		// Exercise the same ordering produced by the canonical XAML serializer:
+		// DataTemplate resources can precede the Color resources they reference.
+		// The reparsed document must retain the StaticResource identity through
+		// template instantiation instead of treating the markup as a Color literal.
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			reparsedRoundTrip, runtime, options, &error));
+		auto* list = dynamic_cast<ListBox*>(
+			runtime.FindControlByName(L"ranked"));
+		CUI_EXPECT_TRUE(list != nullptr);
+		CUI_EXPECT_EQ(1ULL, list->ItemCount());
+		auto* bob = dynamic_cast<SelectorItem*>(list->GetGeneratedItem(0));
+		CUI_EXPECT_TRUE(bob != nullptr);
+		auto* bobLabel = bob ? dynamic_cast<Label*>(bob->Content()) : nullptr;
+		CUI_EXPECT_TRUE(bobLabel != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Bob"), bobLabel->Text);
+		auto* firstHost = list->GetItemsHost()
+			? dynamic_cast<StackPanel*>(list->GetItemsHost()->GetChild(0)) : nullptr;
+		auto* firstHeader = firstHost
+			? dynamic_cast<StackPanel*>(firstHost->GetChild(0)) : nullptr;
+		auto* headerKey = firstHeader
+			? dynamic_cast<Label*>(firstHeader->GetChild(0)) : nullptr;
+		auto* headerCount = firstHeader
+			? dynamic_cast<Label*>(firstHeader->GetChild(1)) : nullptr;
+		auto* headerFirstItem = firstHeader
+			? dynamic_cast<Label*>(firstHeader->GetChild(2)) : nullptr;
+		auto* headerTotal = firstHeader
+			? dynamic_cast<Label*>(firstHeader->GetChild(3)) : nullptr;
+		CUI_EXPECT_TRUE(headerKey != nullptr);
+		CUI_EXPECT_TRUE(headerCount != nullptr);
+		CUI_EXPECT_TRUE(headerFirstItem != nullptr);
+		CUI_EXPECT_TRUE(headerTotal != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Engineering"), headerKey->Text);
+		CUI_EXPECT_EQ(std::wstring(L"1"), headerCount->Text);
+		CUI_EXPECT_NEAR(0x74 / 255.0f, headerCount->ForeColor.r, 0.0001f);
+		CUI_EXPECT_NEAR(0x83 / 255.0f, headerCount->ForeColor.g, 0.0001f);
+		CUI_EXPECT_NEAR(0x99 / 255.0f, headerCount->ForeColor.b, 0.0001f);
+		CUI_EXPECT_NEAR(1.0f, headerCount->ForeColor.a, 0.0001f);
+		CUI_EXPECT_EQ(std::wstring(L"Bob"), headerFirstItem->Text);
+		CUI_EXPECT_EQ(std::wstring(L"30"), headerTotal->Text);
+
+		auto replacement = std::make_shared<ObservableBindingList>(L"Person");
+		replacement->Items.push_back(makeRecord(L"Carol", L"Engineering", 40));
+		replacement->Items.push_back(makeRecord(L"Dora", L"Sales", 25));
+		CUI_EXPECT_TRUE(viewModel->SetValue(
+			L"People", BindingListReference(replacement)));
+		CUI_EXPECT_EQ(2ULL, list->ItemCount());
+		auto* first = dynamic_cast<SelectorItem*>(list->GetGeneratedItem(0));
+		auto* firstLabel = first ? dynamic_cast<Label*>(first->Content()) : nullptr;
+		CUI_EXPECT_TRUE(firstLabel != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Carol"), firstLabel->Text);
+	});
+
+	runner.Add("Data resource edits rewrite typed references transactionally", []
+	{
+		DesignerModel::DesignDocument document;
+		DesignerModel::DesignDataTypeDefinition person;
+		person.Name = L"Person";
+		person.Properties = {
+			{ L"Name", BindingValueKind::String, true, true, true }
+		};
+		document.DataTypes.push_back(person);
+		DesignerModel::DesignDataList people;
+		people.Key = L"People";
+		people.ItemType = L"Person";
+		DesignerModel::DesignDataRecord alice;
+		alice.Fields[L"Name"] = L"Alice";
+		people.Records.push_back(alice);
+		document.DataLists.push_back(people);
+		DesignerModel::DesignNode label;
+		label.Id = 1;
+		label.Name = L"recordName";
+		label.Type = UIClass::UI_Label;
+		label.Bindings["Text"] = DesignerModel::DesignValue{
+			{ "source", "Name" },
+			{ "mode", static_cast<int>(BindingMode::OneWay) },
+			{ "updateMode", static_cast<int>(
+				DataSourceUpdateMode::OnPropertyChanged) }
+		};
+		DesignerModel::DesignDataTemplate row;
+		row.Key = L"PersonRow";
+		row.DataType = L"Person";
+		row.Template.push_back(label);
+		document.DataTemplates.push_back(row);
+		DesignerDataContextProperty peopleProperty{
+			L"People", BindingValueKind::Object, true, false, true };
+		peopleProperty.ObjectKind = DesignerDataObjectKind::BindingList;
+		peopleProperty.ItemType = L"Person";
+		document.DataContextSchema.push_back(peopleProperty);
+		DesignerDataContextProperty currentPersonProperty{
+			L"CurrentPerson", BindingValueKind::Object, true, false, true };
+		currentPersonProperty.ObjectKind =
+			DesignerDataObjectKind::BindingSource;
+		currentPersonProperty.DataType = L"Person";
+		document.DataContextSchema.push_back(currentPersonProperty);
+		DesignerModel::DesignNode items;
+		items.Id = 2;
+		items.Name = L"people";
+		items.Type = UIClass::UI_ItemsControl;
+		items.Extra["itemsSourceResource"] = "People";
+		items.Extra["itemTemplate"] = "PersonRow";
+		document.Nodes.push_back(items);
+		DesignerModel::DesignNode combo;
+		combo.Id = 3;
+		combo.Name = L"peopleCombo";
+		combo.Type = UIClass::UI_ComboBox;
+		combo.Extra["itemsSourceResource"] = "People";
+		combo.Props["metadata"]["DisplayMemberPath"] = {
+			{ "kind", "String" }, { "value", "Name" }
+		};
+		combo.Props["metadata"]["SelectedValuePath"] = {
+			{ "kind", "String" }, { "value", "Name" }
+		};
+		document.Nodes.push_back(combo);
+		DesignerModel::DesignNode presenter;
+		presenter.Id = 4;
+		presenter.Name = L"currentPerson";
+		presenter.Type = UIClass::UI_ContentPresenter;
+		presenter.Extra["contentTemplate"] = "PersonRow";
+		presenter.Bindings["Content"] = DesignerModel::DesignValue{
+			{ "source", "CurrentPerson" },
+			{ "mode", static_cast<int>(BindingMode::OneWay) },
+			{ "updateMode", static_cast<int>(
+				DataSourceUpdateMode::OnPropertyChanged) }
+		};
+		document.Nodes.push_back(presenter);
+
+		std::wstring error;
+		auto renamedType = person;
+		renamedType.Name = L"Contact";
+		CUI_EXPECT_TRUE(DesignerModel::DesignDataResourceEditorModel::
+			UpsertDataType(document, L"Person", renamedType, &error));
+		CUI_EXPECT_TRUE(document.FindDataType(L"Contact") != nullptr);
+		const auto* renamedPeople = DesignerDataContextSchemaUtils::Find(
+			document.DataContextSchema, L"People");
+		const auto* renamedCurrentPerson = DesignerDataContextSchemaUtils::Find(
+			document.DataContextSchema, L"CurrentPerson");
+		CUI_EXPECT_EQ(std::wstring(L"Contact"),
+			renamedPeople ? renamedPeople->ItemType : std::wstring{});
+		CUI_EXPECT_EQ(std::wstring(L"Contact"),
+			renamedCurrentPerson ? renamedCurrentPerson->DataType : std::wstring{});
+		CUI_EXPECT_EQ(std::wstring(L"Contact"),
+			document.DataLists.front().ItemType);
+		CUI_EXPECT_EQ(std::wstring(L"Contact"),
+			document.DataTemplates.front().DataType);
+
+		DesignerDataContextProperty displayName{
+			L"DisplayName", BindingValueKind::String, true, true, true };
+		CUI_EXPECT_TRUE(DesignerModel::DesignDataResourceEditorModel::
+			UpsertDataTypeProperty(
+				document, L"Contact", L"Name", displayName, &error));
+		CUI_EXPECT_TRUE(document.DataLists.front().Records.front().Fields.contains(
+			L"DisplayName"));
+		CUI_EXPECT_FALSE(document.DataLists.front().Records.front().Fields.contains(
+			L"Name"));
+		CUI_EXPECT_EQ(std::string("DisplayName"),
+			document.DataTemplates.front().Template.front().Bindings[
+				"Text"]["source"].get<std::string>());
+		CUI_EXPECT_EQ(std::string("DisplayName"),
+			document.Nodes[1].Props["metadata"]["DisplayMemberPath"]
+				["value"].get<std::string>());
+		CUI_EXPECT_EQ(std::string("DisplayName"),
+			document.Nodes[1].Props["metadata"]["SelectedValuePath"]
+				["value"].get<std::string>());
+
+		auto renamedList = document.DataLists.front();
+		renamedList.Key = L"Contacts";
+		CUI_EXPECT_TRUE(DesignerModel::DesignDataResourceEditorModel::
+			UpsertDataList(document, L"People", renamedList, &error));
+		CUI_EXPECT_EQ(std::string("Contacts"),
+			document.Nodes.front().Extra[
+				"itemsSourceResource"].get<std::string>());
+		auto renamedTemplate = document.DataTemplates.front();
+		renamedTemplate.Key = L"ContactRow";
+		CUI_EXPECT_TRUE(DesignerModel::DesignDataResourceEditorModel::
+			UpsertDataTemplate(
+				document, L"PersonRow", renamedTemplate, &error));
+		CUI_EXPECT_EQ(std::string("ContactRow"),
+			document.Nodes.front().Extra["itemTemplate"].get<std::string>());
+		CUI_EXPECT_EQ(std::string("ContactRow"),
+			document.Nodes[2].Extra["contentTemplate"].get<std::string>());
+
+		const auto beforeRejectedRemovals = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDataResourceEditorModel::
+			RemoveDataList(document, L"Contacts", &error));
+		CUI_EXPECT_EQ(beforeRejectedRemovals, document);
+		CUI_EXPECT_FALSE(DesignerModel::DesignDataResourceEditorModel::
+			RemoveDataType(document, L"Contact", &error));
+		CUI_EXPECT_EQ(beforeRejectedRemovals, document);
+		CUI_EXPECT_FALSE(DesignerModel::DesignDataResourceEditorModel::
+			RemoveDataTemplate(document, L"ContactRow", &error));
+		CUI_EXPECT_EQ(beforeRejectedRemovals, document);
+
+		auto external = document;
+		external.DataLists.front().SourceDictionary = L"Shared.xaml";
+		auto editedExternal = external.DataLists.front();
+		editedExternal.Records.clear();
+		CUI_EXPECT_FALSE(DesignerModel::DesignDataResourceEditorModel::
+			UpsertDataList(external, L"Contacts", editedExternal, &error));
+		CUI_EXPECT_EQ(1ULL, external.DataLists.front().Records.size());
+	});
+
+	runner.Add("Clipboard carries and isolates ItemsControl data resources", []
+	{
+		DesignerModel::DesignDocument source;
+		DesignerDataContextProperty people{
+			L"People", BindingValueKind::Object, true, false, true };
+		people.ObjectKind = DesignerDataObjectKind::BindingList;
+		people.ItemType = L"Person";
+		source.DataContextSchema.push_back(people);
+		DesignerModel::DesignDataTypeDefinition person;
+		person.Name = L"Person";
+		person.Properties = {
+			{ L"Name", BindingValueKind::String, true, true, true }
+		};
+		source.DataTypes.push_back(person);
+		DesignerModel::DesignNode row;
+		row.Id = 1;
+		row.Name = L"sourceRow";
+		row.Type = UIClass::UI_Label;
+		DesignerModel::DesignValue rowClasses =
+			DesignerModel::DesignValue::array();
+		rowClasses.push_back("personRow");
+		row.Props["styleClasses"] = std::move(rowClasses);
+		row.Bindings["Text"] = DesignerModel::DesignValue{
+			{ "source", "Name" },
+			{ "mode", static_cast<int>(BindingMode::OneWay) },
+			{ "updateMode", static_cast<int>(
+				DataSourceUpdateMode::OnPropertyChanged) }
+		};
+		DesignerModel::DesignDataTemplate dataTemplate;
+		dataTemplate.Key = L"PersonRow";
+		dataTemplate.DataType = L"Person";
+		dataTemplate.Template.push_back(row);
+		source.DataTemplates.push_back(dataTemplate);
+		DesignerModel::DesignNode groupHeaderNode;
+		groupHeaderNode.Id = 2;
+		groupHeaderNode.Name = L"sourceGroupHeader";
+		groupHeaderNode.Type = UIClass::UI_Label;
+		groupHeaderNode.Bindings["Text"] = DesignerModel::DesignValue{
+			{ "source", "Key" },
+			{ "mode", static_cast<int>(BindingMode::OneWay) },
+			{ "updateMode", static_cast<int>(
+				DataSourceUpdateMode::OnPropertyChanged) }
+		};
+		groupHeaderNode.Props["metadata"]["ForeColor"] = {
+			{ "kind", "Color" }, { "value", "#FF748399" },
+			{ "resourceKey", "TextMuted" }
+		};
+		DesignerModel::DesignDataTemplate groupHeaderTemplate;
+		groupHeaderTemplate.Key = L"PersonGroupHeader";
+		groupHeaderTemplate.DataType = L"CollectionViewGroup";
+		groupHeaderTemplate.Template.push_back(groupHeaderNode);
+		source.DataTemplates.push_back(groupHeaderTemplate);
+		DesignerModel::DesignDataList peopleList;
+		peopleList.Key = L"People";
+		peopleList.ItemType = L"Person";
+		peopleList.Records.push_back({ { { L"Name", L"Alice" } } });
+		source.DataLists.push_back(peopleList);
+		DesignerModel::DesignCollectionViewSource peopleView;
+		peopleView.Key = L"VisiblePeople";
+		peopleView.SourceResource = L"People";
+		peopleView.FilterDescriptions.push_back({
+			L"Name", CollectionFilterOperator::StartsWith, L"A", true });
+		source.CollectionViews.push_back(peopleView);
+		DesignerModel::DesignItemsPanelTemplate sourcePanel;
+		sourcePanel.Key = L"PeoplePanel";
+		sourcePanel.Value.Kind = ItemsPanelKind::VirtualizingStack;
+		sourcePanel.Value.ItemHeight = 30.0f;
+		sourcePanel.Value.Spacing = 2.0f;
+		source.ItemsPanelTemplates.push_back(sourcePanel);
+		DesignerModel::DesignGroupStyle sourceGroupStyle;
+		sourceGroupStyle.Key = L"PeopleGroups";
+		sourceGroupStyle.HeaderTemplate = L"PersonGroupHeader";
+		sourceGroupStyle.HeaderSpacing = 3.0f;
+		source.GroupStyles.push_back(sourceGroupStyle);
+		source.StyleSheet.Resources.push_back({
+			L"TextMuted", { DesignerStyleValueKind::Color, L"#FF748399" } });
+		DesignerStyleRule rowStyle;
+		rowStyle.HasType = true;
+		rowStyle.Type = UIClass::UI_Label;
+		rowStyle.Classes = { L"personRow" };
+		rowStyle.Setters = {
+			{ L"FontSize", false, L"", { DesignerStyleValueKind::Float, L"18" } }
+		};
+		source.StyleSheet.Rules.push_back(rowStyle);
+		DesignerStyleRule containerStyle;
+		containerStyle.HasType = true;
+		containerStyle.Type = UIClass::UI_SelectorItem;
+		containerStyle.Id = L"PersonContainer";
+		containerStyle.Setters = {
+			{ L"Padding", false, L"",
+				{ DesignerStyleValueKind::Thickness, L"8,4" } }
+		};
+		source.StyleSheet.Rules.push_back(containerStyle);
+		DesignerModel::DesignNode list;
+		list.Id = source.AllocateNodeId();
+		list.Name = L"peopleList";
+		list.Type = UIClass::UI_ListBox;
+		list.Extra["itemTemplate"] = "PersonRow";
+		list.Extra["itemsSourceResource"] = "VisiblePeople";
+		list.Extra["itemsPanel"] = "PeoplePanel";
+		list.Extra["groupStyle"] = "PeopleGroups";
+		list.Extra["itemContainerStyle"] = "PersonContainer";
+		source.Nodes.push_back(list);
+
+		DesignerModel::DesignDocument fragment;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			source, { list.Id }, fragment, &error));
+		CUI_EXPECT_EQ(1ULL, fragment.DataTypes.size());
+		CUI_EXPECT_EQ(2ULL, fragment.DataTemplates.size());
+		CUI_EXPECT_EQ(1ULL, fragment.ItemsPanelTemplates.size());
+		CUI_EXPECT_EQ(1ULL, fragment.GroupStyles.size());
+		CUI_EXPECT_EQ(1ULL, fragment.DataLists.size());
+		CUI_EXPECT_EQ(1ULL, fragment.CollectionViews.size());
+		CUI_EXPECT_EQ(2ULL, fragment.StyleSheet.Rules.size());
+		CUI_EXPECT_EQ(1ULL, fragment.StyleSheet.Resources.size());
+		CUI_EXPECT_EQ(std::wstring(L"TextMuted"),
+			fragment.StyleSheet.Resources.front().Key);
+
+		DesignerModel::DesignDocument target;
+		target.DataTypes.push_back(person);
+		auto conflictingTemplate = dataTemplate;
+		conflictingTemplate.Template.front().Name = L"targetRow";
+		target.DataTemplates.push_back(std::move(conflictingTemplate));
+		auto conflictingGroupHeader = groupHeaderTemplate;
+		conflictingGroupHeader.Template.front().Name = L"targetGroupHeader";
+		target.DataTemplates.push_back(std::move(conflictingGroupHeader));
+		auto conflictingList = peopleList;
+		conflictingList.Records.front().Fields[L"Name"] = L"Existing";
+		target.DataLists.push_back(std::move(conflictingList));
+		auto conflictingView = peopleView;
+		conflictingView.FilterDescriptions.front().Value = L"E";
+		target.CollectionViews.push_back(std::move(conflictingView));
+		auto conflictingPanel = sourcePanel;
+		conflictingPanel.Value.ItemHeight = 44.0f;
+		target.ItemsPanelTemplates.push_back(std::move(conflictingPanel));
+		auto conflictingGroupStyle = sourceGroupStyle;
+		conflictingGroupStyle.HeaderSpacing = 9.0f;
+		target.GroupStyles.push_back(std::move(conflictingGroupStyle));
+		target.StyleSheet.Resources.push_back({
+			L"TextMuted", { DesignerStyleValueKind::Color, L"#FF112233" } });
+		DesignerModel::DesignDocument merged;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			target, fragment, 0, 0, merged, nullptr, &error));
+		CUI_EXPECT_EQ(1ULL, merged.DataTypes.size());
+		CUI_EXPECT_EQ(4ULL, merged.DataTemplates.size());
+		CUI_EXPECT_EQ(2ULL, merged.ItemsPanelTemplates.size());
+		CUI_EXPECT_EQ(2ULL, merged.GroupStyles.size());
+		CUI_EXPECT_EQ(2ULL, merged.DataLists.size());
+		CUI_EXPECT_EQ(2ULL, merged.CollectionViews.size());
+		CUI_EXPECT_TRUE(merged.FindDataTemplate(L"PersonRow_Copy") != nullptr);
+		CUI_EXPECT_TRUE(merged.FindDataList(L"People_Copy") != nullptr);
+		const auto* copiedView = merged.FindCollectionView(L"VisiblePeople_Copy");
+		CUI_EXPECT_TRUE(copiedView != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"People_Copy"), copiedView->SourceResource);
+		CUI_EXPECT_TRUE(merged.FindItemsPanelTemplate(
+			L"PeoplePanel_Copy") != nullptr);
+		const auto* copiedGroupStyle = merged.FindGroupStyle(L"PeopleGroups_Copy");
+		CUI_EXPECT_TRUE(copiedGroupStyle != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"PersonGroupHeader_Copy"),
+			copiedGroupStyle->HeaderTemplate);
+		const auto* copiedHeaderTemplate = merged.FindDataTemplate(
+			L"PersonGroupHeader_Copy");
+		CUI_EXPECT_TRUE(copiedHeaderTemplate != nullptr);
+		const auto copiedHeaderResource = copiedHeaderTemplate
+			? Convert::Utf8ToUnicode(copiedHeaderTemplate->Template.front()
+				.Props["metadata"]["ForeColor"]["resourceKey"]
+				.get<std::string>())
+			: std::wstring{};
+		CUI_EXPECT_TRUE(!copiedHeaderResource.empty());
+		CUI_EXPECT_TRUE(_wcsicmp(
+			copiedHeaderResource.c_str(), L"TextMuted") != 0);
+		CUI_EXPECT_TRUE(std::any_of(
+			merged.StyleSheet.Resources.begin(), merged.StyleSheet.Resources.end(),
+			[&](const auto& resource)
+			{
+				return _wcsicmp(resource.Key.c_str(),
+					copiedHeaderResource.c_str()) == 0
+					&& resource.Value.Text == L"#FF748399";
+			}));
+		CUI_EXPECT_EQ(std::string("PersonRow_Copy"),
+			merged.Nodes.front().Extra["itemTemplate"].get<std::string>());
+		CUI_EXPECT_EQ(std::string("VisiblePeople_Copy"),
+			merged.Nodes.front().Extra["itemsSourceResource"].get<std::string>());
+		CUI_EXPECT_EQ(std::string("PeoplePanel_Copy"),
+			merged.Nodes.front().Extra["itemsPanel"].get<std::string>());
+		CUI_EXPECT_EQ(std::string("PeopleGroups_Copy"),
+			merged.Nodes.front().Extra["groupStyle"].get<std::string>());
+		const auto pastedContainerStyle = Convert::Utf8ToUnicode(
+			merged.Nodes.front().Extra["itemContainerStyle"].get<std::string>());
+		CUI_EXPECT_TRUE(!pastedContainerStyle.empty());
+		CUI_EXPECT_TRUE(_wcsicmp(
+			pastedContainerStyle.c_str(), L"PersonContainer") != 0);
+		CUI_EXPECT_TRUE(std::any_of(
+			merged.StyleSheet.Rules.begin(), merged.StyleSheet.Rules.end(),
+			[&](const auto& rule)
+			{
+				return rule.Type == UIClass::UI_SelectorItem
+					&& _wcsicmp(rule.Id.c_str(),
+						pastedContainerStyle.c_str()) == 0;
+			}));
+	});
+
+	runner.Add("Merged dictionaries resolve DataTemplates independent of file order", []
+	{
+		namespace fs = std::filesystem;
+		const auto root = fs::temp_directory_path()
+			/ ("cui-data-template-order-" + std::to_string(
+				std::chrono::steady_clock::now().time_since_epoch().count()));
+		fs::create_directories(root);
+		auto write = [](const fs::path& path, const std::string& text)
+		{
+			std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+			stream << text;
+			CUI_EXPECT_TRUE(stream.good());
+		};
+		write(root / "templates.xaml", R"XAML(<ResourceDictionary xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <DataTemplate x:Key="PersonRow" DataType="Person">
+    <Label Text="{Binding Name}" />
+  </DataTemplate>
+</ResourceDictionary>)XAML");
+		write(root / "types.xaml", R"XAML(<ResourceDictionary xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <DataType x:Key="Person">
+    <DataType.Properties>
+      <Property Path="Name" Kind="String" />
+    </DataType.Properties>
+  </DataType>
+	</ResourceDictionary>)XAML");
+		write(root / "lists.xaml", R"XAML(<ResourceDictionary xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <DataList x:Key="People" ItemType="Person">
+    <DataRecord Name="Alice" />
+  </DataList>
+</ResourceDictionary>)XAML");
+		const auto main = root / "Main.cui.xaml";
+		write(main, R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="MainForm">
+  <Form.Resources>
+    <ResourceDictionary>
+			<ResourceDictionary.MergedDictionaries>
+			  <ResourceDictionary Source="templates.xaml" />
+			  <ResourceDictionary Source="lists.xaml" />
+			  <ResourceDictionary Source="types.xaml" />
+      </ResourceDictionary.MergedDictionaries>
+    </ResourceDictionary>
+  </Form.Resources>
+	  <ItemsControl x:Name="people" ItemsSource="{StaticResource People}"
+	                ItemTemplate="{StaticResource PersonRow}" />
+</Form>)XAML");
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::LoadFromFile(
+			main.wstring(), document, &error));
+		CUI_EXPECT_EQ(1ULL, document.DataTypes.size());
+		CUI_EXPECT_EQ(1ULL, document.DataTemplates.size());
+		CUI_EXPECT_EQ(1ULL, document.DataLists.size());
+		CUI_EXPECT_EQ(std::string("PersonRow"),
+			document.Nodes.front().Extra["itemTemplate"].get<std::string>());
+		CUI_EXPECT_EQ(std::string("People"),
+			document.Nodes.front().Extra["itemsSourceResource"].get<std::string>());
+		fs::remove_all(root);
 	});
 
 	runner.Add("Controls support stable design-id lookup across nested ownership", []
@@ -8713,6 +14102,161 @@ int main()
 		CUI_EXPECT_TRUE(unchanged == fragment);
 	});
 
+	runner.Add("Designer clipboard preserves lexical local resource scopes", []
+	{
+		DesignerModel::DesignDocument source;
+		source.NextStableId = 4;
+		source.StyleSheet.Resources.push_back({
+			L"Accent", { DesignerStyleValueKind::Color, L"#FFFF0000" } });
+		source.StyleSheet.Resources.push_back({
+			L"GlobalTone", { DesignerStyleValueKind::Color, L"#FFFFFF00" } });
+		DesignerStyleRule baseLabel;
+		baseLabel.HasType = true;
+		baseLabel.Type = UIClass::UI_Label;
+		baseLabel.Id = L"BaseLabel";
+		DesignerStyleSetter baseSetter;
+		baseSetter.PropertyName = L"BackColor";
+		baseSetter.UsesResource = true;
+		baseSetter.ResourceKey = L"GlobalTone";
+		baseLabel.Setters.push_back(std::move(baseSetter));
+		source.StyleSheet.Rules.push_back(std::move(baseLabel));
+		DesignerModel::DesignNode panel;
+		panel.Id = 1;
+		panel.Name = L"localPanel";
+		panel.Type = UIClass::UI_Panel;
+		panel.Order = 0;
+		panel.LocalResources.Resources.push_back({
+			L"Accent", { DesignerStyleValueKind::Color, L"#FF00FF00" } });
+		DesignerStyleRule localStyle;
+		localStyle.HasType = true;
+		localStyle.Type = UIClass::UI_Label;
+		localStyle.BasedOn = L"BaseLabel";
+		DesignerStyleSetter localSetter;
+		localSetter.PropertyName = L"ForeColor";
+		localSetter.UsesResource = true;
+		localSetter.UsesDynamicResource = true;
+		localSetter.ResourceKey = L"Accent";
+		localStyle.Setters.push_back(std::move(localSetter));
+		panel.LocalResources.Rules.push_back(std::move(localStyle));
+		DesignerModel::DesignNode localLabel;
+		localLabel.Id = 2;
+		localLabel.ParentId = panel.Id;
+		localLabel.ParentRef = panel.Name;
+		localLabel.Name = L"localLabel";
+		localLabel.Type = UIClass::UI_Label;
+		localLabel.Order = 0;
+		localLabel.Props["metadata"]["ForeColor"] = {
+			{ "kind", "Color" }, { "value", "#FF00FF00" },
+			{ "resourceKey", "Accent" }
+		};
+		DesignerModel::DesignNode globalLabel;
+		globalLabel.Id = 3;
+		globalLabel.Name = L"globalLabel";
+		globalLabel.Type = UIClass::UI_Label;
+		globalLabel.Order = 1;
+		globalLabel.Props["metadata"]["ForeColor"] = {
+			{ "kind", "Color" }, { "value", "#FFFF0000" },
+			{ "resourceKey", "Accent" }
+		};
+		source.Nodes = { panel, localLabel, globalLabel };
+
+		std::wstring error;
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			source, { panel.Id, globalLabel.Id }, fragment, &error));
+		CUI_EXPECT_EQ(1ULL, fragment.StyleSheet.Resources.size());
+		CUI_EXPECT_EQ(2ULL,
+			fragment.Nodes.front().LocalResources.Resources.size());
+		CUI_EXPECT_EQ(1ULL,
+			fragment.Nodes.front().LocalResources.Rules.size());
+		CUI_EXPECT_TRUE(
+			fragment.Nodes.front().LocalResources.Rules.front().BasedOn.empty());
+
+		DesignerModel::DesignDocument target;
+		target.StyleSheet.Resources.push_back({
+			L"Accent", { DesignerStyleValueKind::Color, L"#FF0000FF" } });
+		DesignerModel::DesignDocument merged;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			target, fragment, 0, 0, merged, nullptr, &error));
+		const auto find = [&](const std::wstring& name)
+			-> const DesignerModel::DesignNode*
+		{
+			const auto found = std::find_if(
+				merged.Nodes.begin(), merged.Nodes.end(),
+				[&](const auto& node) { return node.Name == name; });
+			return found == merged.Nodes.end() ? nullptr : &*found;
+		};
+		const auto* pastedPanel = find(L"localPanel");
+		const auto* pastedLocal = find(L"localLabel");
+		const auto* pastedGlobal = find(L"globalLabel");
+		CUI_EXPECT_TRUE(pastedPanel && pastedLocal && pastedGlobal);
+		if (pastedPanel)
+		{
+			CUI_EXPECT_TRUE(std::any_of(
+				pastedPanel->LocalResources.Resources.begin(),
+				pastedPanel->LocalResources.Resources.end(), [](const auto& resource)
+				{ return resource.Key == L"Accent"; }));
+			CUI_EXPECT_TRUE(std::any_of(
+				pastedPanel->LocalResources.Resources.begin(),
+				pastedPanel->LocalResources.Resources.end(), [](const auto& resource)
+				{
+					return resource.Key.starts_with(L"CuiClipboardStatic_")
+						&& resource.Value.Text == L"#FFFFFF00";
+				}));
+		}
+		if (pastedLocal)
+			CUI_EXPECT_EQ(std::string("Accent"),
+				pastedLocal->Props["metadata"]["ForeColor"]
+					["resourceKey"].get<std::string>());
+		std::wstring importedGlobalKey;
+		if (pastedGlobal)
+		{
+			importedGlobalKey = Convert::Utf8ToUnicode(
+				pastedGlobal->Props["metadata"]["ForeColor"]
+					["resourceKey"].get<std::string>());
+			CUI_EXPECT_TRUE(_wcsicmp(
+				importedGlobalKey.c_str(), L"Accent") != 0);
+		}
+		CUI_EXPECT_TRUE(std::any_of(
+			merged.StyleSheet.Resources.begin(),
+			merged.StyleSheet.Resources.end(), [&](const auto& resource)
+			{
+				return _wcsicmp(resource.Key.c_str(),
+					importedGlobalKey.c_str()) == 0
+					&& resource.Value.Text == L"#FFFF0000";
+			}));
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			merged, runtime, {}, &error));
+		auto* runtimeLocal = dynamic_cast<Label*>(
+			runtime.FindControlByName(L"localLabel"));
+		auto* runtimeGlobal = dynamic_cast<Label*>(
+			runtime.FindControlByName(L"globalLabel"));
+		CUI_EXPECT_TRUE(runtimeLocal && runtimeGlobal);
+		if (runtimeLocal)
+		{
+			CUI_EXPECT_NEAR(0.0f, runtimeLocal->ForeColor.r, 0.0001f);
+			CUI_EXPECT_NEAR(1.0f, runtimeLocal->ForeColor.g, 0.0001f);
+			CUI_EXPECT_NEAR(1.0f, runtimeLocal->BackColor.r, 0.0001f);
+			CUI_EXPECT_NEAR(1.0f, runtimeLocal->BackColor.g, 0.0001f);
+		}
+		if (runtimeGlobal)
+		{
+			CUI_EXPECT_NEAR(1.0f, runtimeGlobal->ForeColor.r, 0.0001f);
+			CUI_EXPECT_NEAR(0.0f, runtimeGlobal->ForeColor.g, 0.0001f);
+		}
+
+		DesignerModel::DesignDocument detachedFragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			source, { localLabel.Id }, detachedFragment, &error));
+		CUI_EXPECT_EQ(1ULL, detachedFragment.StyleSheet.Resources.size());
+		CUI_EXPECT_EQ(std::wstring(L"Accent"),
+			detachedFragment.StyleSheet.Resources.front().Key);
+		CUI_EXPECT_EQ(std::wstring(L"#FF00FF00"),
+			detachedFragment.StyleSheet.Resources.front().Value.Text);
+	});
+
 	runner.Add("Designer clipboard trims reuses and isolates style dependencies", []
 	{
 		auto literalSetter = [](
@@ -8735,6 +14279,7 @@ int main()
 		source.NextStableId = 3;
 		source.StyleSheet.Resources = {
 			{ L"Accent", { DesignerStyleValueKind::Color, L"#FFFF0000" } },
+			{ L"PulseAccent", { DesignerStyleValueKind::Color, L"#FF00FF00" } },
 			{ L"Unused", { DesignerStyleValueKind::Color, L"#FF00FF00" } }
 		};
 		DesignerStyleRule typed;
@@ -8756,12 +14301,20 @@ int main()
 		identified.Id = L"PrimaryButton";
 		identified.Setters.push_back(literalSetter(
 			L"BorderThickness", DesignerStyleValueKind::Float, L"3"));
+		identified.Setters.push_back(literalSetter(
+			L"Raised", DesignerStyleValueKind::Bool, L"true"));
 		DesignerStyleTrigger hovered;
 		hovered.Conditions = {
 			{ L"IsMouseOver", true }, { L"IsChecked", false } };
 		hovered.Setters.push_back(literalSetter(
 			L"BorderThickness", DesignerStyleValueKind::Float, L"4"));
 		identified.Triggers.push_back(std::move(hovered));
+		DesignerStyleTrigger textReady;
+		textReady.PropertyConditions.push_back({ L"Text",
+			{ DesignerStyleValueKind::String, L"Ready" } });
+		textReady.Setters.push_back(literalSetter(
+			L"Raised", DesignerStyleValueKind::Bool, L"false"));
+		identified.Triggers.push_back(std::move(textReady));
 		DesignerStyleTrigger readyAdmin;
 		readyAdmin.DataConditions = {
 			{ L"Status", { DesignerStyleValueKind::String, L"Ready" } },
@@ -8769,6 +14322,22 @@ int main()
 		};
 		readyAdmin.Setters.push_back(literalSetter(
 			L"Round", DesignerStyleValueKind::Float, L"10"));
+		DesignerEventTriggerAction readyEnter;
+		readyEnter.Kind = DesignerStoryboardActionKind::Begin;
+		readyEnter.StoryboardName = L"ReadyPulse";
+		DesignerVisualStateAnimation readyAnimation;
+		readyAnimation.Kind = DesignerAnimationKind::Color;
+		readyAnimation.PropertyName = L"UnderMouseColor";
+		readyAnimation.HasTo = true;
+		readyAnimation.ToUsesResource = true;
+		readyAnimation.ToResourceKey = L"PulseAccent";
+		readyAnimation.DurationMilliseconds = 0;
+		readyEnter.Animations.push_back(std::move(readyAnimation));
+		readyAdmin.EnterActions.push_back(std::move(readyEnter));
+		DesignerEventTriggerAction readyExit;
+		readyExit.Kind = DesignerStoryboardActionKind::Stop;
+		readyExit.StoryboardName = L"ReadyPulse";
+		readyAdmin.ExitActions.push_back(std::move(readyExit));
 		identified.Triggers.push_back(std::move(readyAdmin));
 		DesignerStyleRule unrelated;
 		unrelated.HasType = true;
@@ -8795,10 +14364,12 @@ int main()
 		std::wstring error;
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
 			source, { button.Id }, fragment, &error));
-		CUI_EXPECT_EQ(1ULL, fragment.StyleSheet.Resources.size());
+		CUI_EXPECT_EQ(2ULL, fragment.StyleSheet.Resources.size());
 		CUI_EXPECT_EQ(std::wstring(L"Accent"),
 			fragment.StyleSheet.Resources.front().Key);
-		CUI_EXPECT_EQ(5ULL, fragment.StyleSheet.Rules.size());
+		CUI_EXPECT_EQ(std::wstring(L"PulseAccent"),
+			fragment.StyleSheet.Resources.back().Key);
+		CUI_EXPECT_EQ(6ULL, fragment.StyleSheet.Rules.size());
 		CUI_EXPECT_TRUE(std::none_of(
 			fragment.StyleSheet.Rules.begin(), fragment.StyleSheet.Rules.end(),
 			[](const DesignerStyleRule& rule)
@@ -8835,7 +14406,8 @@ int main()
 		DesignerModel::DesignDocument target;
 		target.NextStableId = 11;
 		target.StyleSheet.Resources = {
-			{ L"Accent", { DesignerStyleValueKind::Color, L"#FF0000FF" } }
+			{ L"Accent", { DesignerStyleValueKind::Color, L"#FF0000FF" } },
+			{ L"PulseAccent", { DesignerStyleValueKind::Color, L"#FF000000" } }
 		};
 		DesignerStyleRule targetType = typed;
 		targetType.Setters.front().Literal.Text = L"80";
@@ -8855,8 +14427,8 @@ int main()
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
 			target, parsed, 12, 12,
 			isolated, &isolatedResult, &error));
-		CUI_EXPECT_EQ(2ULL, isolated.StyleSheet.Resources.size());
-		CUI_EXPECT_EQ(8ULL, isolated.StyleSheet.Rules.size());
+		CUI_EXPECT_EQ(4ULL, isolated.StyleSheet.Resources.size());
+		CUI_EXPECT_EQ(9ULL, isolated.StyleSheet.Rules.size());
 		CUI_EXPECT_TRUE(std::equal(
 			targetStyleSheet.Resources.begin(), targetStyleSheet.Resources.end(),
 			isolated.StyleSheet.Resources.begin()));
@@ -8889,8 +14461,22 @@ int main()
 					return _wcsicmp(value.c_str(), L"primary") == 0;
 				}));
 		}
-		CUI_EXPECT_TRUE(isolated.StyleSheet.Resources.back().Key.starts_with(
-			L"CuiPasteResource_Accent"));
+		const auto importedAccent = std::find_if(
+			isolated.StyleSheet.Resources.begin(),
+			isolated.StyleSheet.Resources.end(), [](const auto& resource)
+			{
+				return resource.Key.starts_with(L"CuiPasteResource_Accent");
+			});
+		const auto importedPulseAccent = std::find_if(
+			isolated.StyleSheet.Resources.begin(),
+			isolated.StyleSheet.Resources.end(), [](const auto& resource)
+			{
+				return resource.Key.starts_with(
+					L"CuiPasteResource_PulseAccent");
+			});
+		CUI_EXPECT_TRUE(importedAccent != isolated.StyleSheet.Resources.end());
+		CUI_EXPECT_TRUE(importedPulseAccent
+			!= isolated.StyleSheet.Resources.end());
 		for (size_t index = targetStyleSheet.Rules.size();
 			index < isolated.StyleSheet.Rules.size(); ++index)
 		{
@@ -8898,8 +14484,13 @@ int main()
 			CUI_EXPECT_EQ(isolatedStyleId, rule.Id);
 			for (const auto& setter : rule.Setters)
 				if (setter.UsesResource)
-					CUI_EXPECT_EQ(isolated.StyleSheet.Resources.back().Key,
+					CUI_EXPECT_EQ(importedAccent->Key,
 						setter.ResourceKey);
+			for (const auto& action : rule.EnterActions)
+				for (const auto& animation : action.Animations)
+					if (animation.ToUsesResource)
+						CUI_EXPECT_EQ(importedPulseAccent->Key,
+							animation.ToResourceKey);
 		}
 
 		std::shared_ptr<ControlStyleSheet> runtime;
@@ -8915,6 +14506,11 @@ int main()
 		CUI_EXPECT_EQ(0.0f, pastedButton.UnderMouseColor.b);
 		pastedButton.SetStyleState(ControlStyleState::Hovered);
 		CUI_EXPECT_EQ(4.0f, pastedButton.BorderThickness);
+		CUI_EXPECT_TRUE(pastedButton.Raised);
+		pastedButton.Text = L"Ready";
+		CUI_EXPECT_FALSE(pastedButton.Raised);
+		pastedButton.Text = L"Pasted";
+		CUI_EXPECT_TRUE(pastedButton.Raised);
 		ObservableObject pastedDataContext;
 		pastedDataContext.SetValue(L"Status", std::wstring(L"Ready"));
 		pastedDataContext.SetValue(L"IsAdmin", false);
@@ -8922,8 +14518,12 @@ int main()
 		CUI_EXPECT_FALSE(std::fabs(pastedButton.Round - 10.0f) < 0.001f);
 		pastedDataContext.SetValue(L"IsAdmin", true);
 		CUI_EXPECT_EQ(10.0f, pastedButton.Round);
+		CUI_EXPECT_EQ(0.0f, pastedButton.UnderMouseColor.r);
+		CUI_EXPECT_EQ(1.0f, pastedButton.UnderMouseColor.g);
 		pastedDataContext.SetValue(L"Status", std::wstring(L"Pending"));
 		CUI_EXPECT_FALSE(std::fabs(pastedButton.Round - 10.0f) < 0.001f);
+		CUI_EXPECT_EQ(1.0f, pastedButton.UnderMouseColor.r);
+		CUI_EXPECT_EQ(0.0f, pastedButton.UnderMouseColor.g);
 
 		Button targetButton(L"Existing", 0, 0);
 		targetButton.SetStyleId(L"PrimaryButton");
@@ -8938,8 +14538,8 @@ int main()
 		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
 			isolated, parsed, 24, 24,
 			isolatedAgain, &secondResult, &error));
-		CUI_EXPECT_EQ(3ULL, isolatedAgain.StyleSheet.Resources.size());
-		CUI_EXPECT_EQ(13ULL, isolatedAgain.StyleSheet.Rules.size());
+		CUI_EXPECT_EQ(6ULL, isolatedAgain.StyleSheet.Resources.size());
+		CUI_EXPECT_EQ(15ULL, isolatedAgain.StyleSheet.Rules.size());
 		const auto secondNode = std::find_if(
 			isolatedAgain.Nodes.begin(), isolatedAgain.Nodes.end(),
 			[&](const DesignerModel::DesignNode& node)
@@ -9211,6 +14811,10806 @@ int main()
 			unchanged, nullptr, &error));
 		CUI_EXPECT_TRUE(unchanged == target);
 		CUI_EXPECT_FALSE(error.empty());
+	});
+
+	runner.Add("ControlTemplate resources own built-in appearance and preserve Content", []
+	{
+		const std::string xaml = R"XAML(<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Name="TemplateForm">
+  <Form.Resources>
+    <ControlTemplate x:Key="AccentButtonTemplate" TargetType="Button">
+      <Panel x:Name="chrome"
+             BackColor="{TemplateBinding BackColor}"
+             BorderColor="{TemplateBinding BorderColor}"
+             BorderThickness="{TemplateBinding BorderThickness}"
+             CornerRadius="{TemplateBinding Round}">
+        <VisualStateManager.VisualStateGroups>
+          <VisualStateGroup x:Name="CommonStates">
+            <VisualState x:Name="Normal" />
+            <VisualState x:Name="Checked">
+              <VisualState.StateTriggers>
+                <StateTrigger Property="Checked" Value="true" />
+              </VisualState.StateTriggers>
+              <VisualState.Setters>
+                <Setter TargetName="caption" Property="Text" Value="Checked" />
+                <Setter TargetName="chrome" Property="BackColor" Value="#FF336699" />
+              </VisualState.Setters>
+            </VisualState>
+          </VisualStateGroup>
+        </VisualStateManager.VisualStateGroups>
+        <Label x:Name="caption"
+               Text="{TemplateBinding Text}"
+               ForeColor="{TemplateBinding ForeColor}" />
+        <ContentPresenter x:Name="contentHost"
+                          ContentSource="Content" />
+      </Panel>
+    </ControlTemplate>
+    <ControlTemplate TargetType="ContentControl">
+      <Panel x:Name="implicitChrome"
+             BackColor="{TemplateBinding BackColor}">
+        <Label x:Name="implicitCaption"
+               Text="{TemplateBinding Text}" />
+      </Panel>
+    </ControlTemplate>
+  </Form.Resources>
+  <Button x:Name="templatedButton"
+          DesignId="1"
+          Text="Run"
+          BackColor="#FF123456"
+          BorderColor="#FFABCDEF"
+          BorderThickness="2.5"
+          Round="9"
+          Template="{StaticResource AccentButtonTemplate}">
+    <Label x:Name="authoredContent" DesignId="2" Text="Content" />
+  </Button>
+  <ContentControl x:Name="implicitHost"
+                  DesignId="3"
+                  Text="Implicit"
+                  BackColor="#FF224466" />
+  <Button x:Name="dataButton"
+          DesignId="4"
+          Content="Data content"
+          Template="{StaticResource AccentButtonTemplate}" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(2ULL, document.ControlTemplates.size());
+		CUI_EXPECT_FALSE(document.ControlTemplates.front().IsImplicit());
+		CUI_EXPECT_TRUE(document.ControlTemplates.back().IsImplicit());
+		CUI_EXPECT_EQ(UIClass::UI_Button,
+			document.ControlTemplates.front().TargetType);
+		CUI_EXPECT_EQ(std::wstring(L"BackColor"),
+			document.ControlTemplates.front().Template.front()
+				.TemplateBindings.at(L"BackColor"));
+		CUI_EXPECT_EQ(std::string("AccentButtonTemplate"),
+			document.Nodes.front().Extra["controlTemplate"].get<std::string>());
+
+		DesignerModel::MaterializedControlTree tree;
+		const bool materialized =
+			DesignerModel::DesignDocumentMaterializer::Materialize(
+				document, tree, &error);
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_TRUE(materialized);
+		CUI_EXPECT_EQ(3ULL, tree.Roots.size());
+		CUI_EXPECT_EQ(4ULL, tree.Controls.size());
+		auto* button = dynamic_cast<Button*>(tree.Roots[0].get());
+		CUI_EXPECT_TRUE(button != nullptr);
+		if (button)
+		{
+			auto* chrome = button->GetControlTemplateRoot();
+			CUI_EXPECT_TRUE(chrome != nullptr);
+			CUI_EXPECT_TRUE(button->GetVisualContent() != nullptr);
+			CUI_EXPECT_EQ(1, button->Count);
+			CUI_EXPECT_TRUE(chrome == button->FindDeclarativeTemplatePart(L"chrome"));
+			auto* contentHost = dynamic_cast<ContentPresenter*>(
+				button->FindDeclarativeTemplatePart(L"contentHost"));
+			CUI_EXPECT_TRUE(contentHost != nullptr);
+			CUI_EXPECT_TRUE(contentHost == button->GetTemplateContentPresenter());
+			CUI_EXPECT_TRUE(contentHost
+				&& contentHost->GetVisualContent() == button->GetVisualContent());
+			CUI_EXPECT_TRUE(button->GetVisualContent()
+				&& button->GetVisualContent()->Parent == contentHost);
+			CUI_EXPECT_EQ(0x12 / 255.0f, chrome->BackColor.r);
+			CUI_EXPECT_EQ(2.5f, dynamic_cast<Panel*>(chrome)->BorderThickness);
+			CUI_EXPECT_EQ(9.0f, dynamic_cast<Panel*>(chrome)->CornerRadius);
+			auto* caption = dynamic_cast<Label*>(
+				button->FindDeclarativeTemplatePart(L"caption"));
+			CUI_EXPECT_TRUE(caption != nullptr);
+			if (caption)
+			{
+				CUI_EXPECT_EQ(std::wstring(L"Run"), caption->Text);
+				button->Text = L"Updated";
+				CUI_EXPECT_EQ(std::wstring(L"Updated"), caption->Text);
+				CUI_EXPECT_TRUE(button->TrySetPropertyValue(
+					L"Checked", BindingValue(true)));
+				CUI_EXPECT_EQ(std::wstring(L"Checked"), caption->Text);
+			}
+		}
+		auto* implicitHost = dynamic_cast<ContentControl*>(tree.Roots[1].get());
+		CUI_EXPECT_TRUE(implicitHost != nullptr);
+		if (implicitHost)
+		{
+			CUI_EXPECT_TRUE(implicitHost->GetControlTemplateRoot() != nullptr);
+			CUI_EXPECT_TRUE(implicitHost->FindDeclarativeTemplatePart(
+				L"implicitCaption") != nullptr);
+		}
+		auto* dataButton = tree.Roots.size() < 3 ? nullptr
+			: dynamic_cast<Button*>(tree.Roots[2].get());
+		CUI_EXPECT_TRUE(dataButton != nullptr);
+		if (dataButton)
+		{
+			auto* presenter = dataButton->GetTemplateContentPresenter();
+			auto* generated = presenter
+				? dynamic_cast<Label*>(presenter->GetGeneratedContent()) : nullptr;
+			CUI_EXPECT_TRUE(presenter != nullptr);
+			CUI_EXPECT_TRUE(dataButton->GetGeneratedPresenter() == nullptr);
+			CUI_EXPECT_TRUE(generated != nullptr);
+			if (generated)
+			{
+				CUI_EXPECT_EQ(std::wstring(L"Data content"), generated->Text);
+				dataButton->SetContent(BindingValue(std::wstring(L"Updated content")));
+				generated = dynamic_cast<Label*>(presenter->GetGeneratedContent());
+				CUI_EXPECT_TRUE(generated != nullptr);
+				if (generated)
+					CUI_EXPECT_EQ(std::wstring(L"Updated content"), generated->Text);
+			}
+		}
+
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { 1 }, fragment, &error));
+		CUI_EXPECT_EQ(1ULL, fragment.Nodes.front()
+			.LocalObjectResources.ControlTemplates.size());
+		CUI_EXPECT_TRUE(fragment.ControlTemplates.empty());
+		const auto fragmentXaml =
+			DesignerModel::XamlDocumentSerializer::ToXaml(fragment);
+		DesignerModel::DesignDocument portableFragment;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			fragmentXaml, portableFragment, &error));
+		CUI_EXPECT_TRUE(portableFragment == fragment);
+		const auto fragmentXml =
+			DesignerModel::DesignDocumentSerializer::ToXml(fragment);
+		DesignerModel::DesignDocument fragmentSnapshot;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			fragmentXml, fragmentSnapshot, &error));
+		CUI_EXPECT_TRUE(fragmentSnapshot == fragment);
+		DesignerModel::DesignDocument pasteTarget;
+		DesignerModel::DesignDocument pasted;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			pasteTarget, portableFragment, 10, 10, pasted, nullptr, &error));
+		DesignerModel::MaterializedControlTree pastedTree;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentMaterializer::Materialize(
+			pasted, pastedTree, &error));
+		auto* pastedButton = pastedTree.Roots.empty() ? nullptr
+			: dynamic_cast<Button*>(pastedTree.Roots.front().get());
+		CUI_EXPECT_TRUE(pastedButton != nullptr);
+		if (pastedButton)
+			CUI_EXPECT_TRUE(pastedButton->FindDeclarativeTemplatePart(
+				L"caption") != nullptr);
+
+		const auto serialized =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		DesignerModel::DesignDocument reparsed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			serialized, reparsed, &error));
+		CUI_EXPECT_TRUE(reparsed == document);
+
+		const auto snapshotXml =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshotXml, snapshotRoundTrip, &error));
+		CUI_EXPECT_TRUE(snapshotRoundTrip == document);
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* previousButton = dynamic_cast<Button*>(
+			runtime.FindControlByName(L"templatedButton"));
+		CUI_EXPECT_TRUE(previousButton != nullptr);
+		auto changedXaml = xaml;
+		const auto bindingText = changedXaml.find(
+			"Text=\"{TemplateBinding Text}\"");
+		CUI_EXPECT_TRUE(bindingText != std::string::npos);
+		if (bindingText != std::string::npos)
+			changedXaml.replace(bindingText,
+				std::string("Text=\"{TemplateBinding Text}\"").size(),
+				"Text=\"Reloaded template\"");
+		DesignerModel::DesignDocument changedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			changedXaml, changedDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			changedDocument, runtime, {}, &reloadMode, &error));
+		CUI_EXPECT_TRUE(reloadMode
+			!= DesignerModel::RuntimeDocumentReloadMode::InPlace);
+		auto* changedButton = dynamic_cast<Button*>(
+			runtime.FindControlByName(L"templatedButton"));
+		CUI_EXPECT_TRUE(changedButton != nullptr);
+		CUI_EXPECT_TRUE(changedButton != previousButton);
+		if (changedButton)
+		{
+			auto* changedCaption = dynamic_cast<Label*>(
+				changedButton->FindDeclarativeTemplatePart(L"caption"));
+			CUI_EXPECT_TRUE(changedCaption != nullptr);
+			if (changedCaption)
+				CUI_EXPECT_EQ(std::wstring(L"Reloaded template"),
+					changedCaption->Text);
+		}
+
+		const std::string recursiveXaml = R"XAML(
+<Form xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Name="RecursiveTemplateForm">
+  <Form.Resources>
+    <ControlTemplate TargetType="Button">
+      <Button x:Name="recursivePart" Text="Recursive" />
+    </ControlTemplate>
+  </Form.Resources>
+  <Button x:Name="recursiveHost" DesignId="1" />
+</Form>)XAML";
+		DesignerModel::DesignDocument recursiveDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			recursiveXaml, recursiveDocument, &error));
+		DesignerModel::MaterializedControlTree rejectedTree;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentMaterializer::Materialize(
+			recursiveDocument, rejectedTree, &error));
+		CUI_EXPECT_TRUE(error.find(L"递归") != std::wstring::npos);
+	});
+
+	runner.Add("ControlTemplate ContentSource owns Content and Header slots", []
+	{
+		const std::string xaml = R"XAML(<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Name="TemplateSlotForm">
+  <Form.Resources>
+    <ControlTemplate x:Key="HeaderedTemplate" TargetType="GroupBox">
+      <Panel x:Name="slotRoot">
+        <ContentPresenter x:Name="headerPresenter"
+                          ContentSource="Header" />
+        <ContentPresenter x:Name="contentPresenter"
+                          ContentSource="Content" />
+      </Panel>
+    </ControlTemplate>
+  </Form.Resources>
+  <GroupBox x:Name="visualHost" DesignId="1"
+            Template="{StaticResource HeaderedTemplate}">
+    <GroupBox.Header>
+      <Label x:Name="visualHeader" DesignId="2" Text="Visual header" />
+    </GroupBox.Header>
+    <Panel x:Name="visualBody" DesignId="3" />
+  </GroupBox>
+  <GroupBox x:Name="dataHost" DesignId="4"
+            Header="Header data" Content="Body data"
+            Template="{StaticResource HeaderedTemplate}" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(1ULL, document.ControlTemplates.size());
+		const auto& templateNodes = document.ControlTemplates.front().Template;
+		CUI_EXPECT_EQ(3ULL, templateNodes.size());
+		CUI_EXPECT_EQ(std::wstring(L"Header"),
+			templateNodes[1].TemplateContentSource);
+		CUI_EXPECT_EQ(std::wstring(L"Content"),
+			templateNodes[2].TemplateContentSource);
+
+		DesignerModel::MaterializedControlTree tree;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentMaterializer::Materialize(
+			document, tree, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(2ULL, tree.Roots.size());
+		CUI_EXPECT_EQ(4ULL, tree.Controls.size());
+		auto controlById = [&](int id) -> Control*
+		{
+			const auto found = std::find_if(
+				tree.Controls.begin(), tree.Controls.end(),
+				[id](const auto& control)
+				{
+					return control && control->StableId == id;
+				});
+			return found == tree.Controls.end() || !*found
+				? nullptr : (*found)->ControlInstance;
+		};
+		auto* visual = tree.Roots.empty() ? nullptr
+			: dynamic_cast<GroupBox*>(tree.Roots[0].get());
+		CUI_EXPECT_TRUE(visual != nullptr);
+		if (visual)
+		{
+			auto* headerPresenter = visual->GetTemplateHeaderPresenter();
+			auto* contentPresenter = visual->GetTemplateContentPresenter();
+			auto* header = dynamic_cast<Label*>(controlById(2));
+			auto* body = dynamic_cast<Panel*>(controlById(3));
+			CUI_EXPECT_TRUE(headerPresenter != nullptr);
+			CUI_EXPECT_TRUE(contentPresenter != nullptr);
+			CUI_EXPECT_TRUE(header != nullptr && header->Parent == headerPresenter);
+			CUI_EXPECT_TRUE(body != nullptr && body->Parent == contentPresenter);
+			CUI_EXPECT_TRUE(headerPresenter
+				&& headerPresenter->GetVisualContent() == header);
+			CUI_EXPECT_TRUE(contentPresenter
+				&& contentPresenter->GetVisualContent() == body);
+			CUI_EXPECT_TRUE(visual->GetVisualContent() == body);
+			CUI_EXPECT_EQ(1, visual->Count);
+		}
+
+		auto* data = tree.Roots.size() < 2 ? nullptr
+			: dynamic_cast<GroupBox*>(tree.Roots[1].get());
+		CUI_EXPECT_TRUE(data != nullptr);
+		if (data)
+		{
+			auto* headerPresenter = data->GetTemplateHeaderPresenter();
+			auto* contentPresenter = data->GetTemplateContentPresenter();
+			auto* header = headerPresenter
+				? dynamic_cast<Label*>(headerPresenter->GetGeneratedContent()) : nullptr;
+			auto* content = contentPresenter
+				? dynamic_cast<Label*>(contentPresenter->GetGeneratedContent()) : nullptr;
+			CUI_EXPECT_TRUE(header != nullptr);
+			CUI_EXPECT_TRUE(content != nullptr);
+			if (header) CUI_EXPECT_EQ(std::wstring(L"Header data"), header->Text);
+			if (content) CUI_EXPECT_EQ(std::wstring(L"Body data"), content->Text);
+			data->SetHeader(BindingValue(std::wstring(L"Updated header")));
+			data->SetContent(BindingValue(std::wstring(L"Updated body")));
+			header = headerPresenter
+				? dynamic_cast<Label*>(headerPresenter->GetGeneratedContent()) : nullptr;
+			content = contentPresenter
+				? dynamic_cast<Label*>(contentPresenter->GetGeneratedContent()) : nullptr;
+			CUI_EXPECT_TRUE(header != nullptr);
+			CUI_EXPECT_TRUE(content != nullptr);
+			if (header) CUI_EXPECT_EQ(std::wstring(L"Updated header"), header->Text);
+			if (content) CUI_EXPECT_EQ(std::wstring(L"Updated body"), content->Text);
+		}
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("ContentSource=\"Header\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("ContentSource=\"Content\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error));
+		CUI_EXPECT_TRUE(xamlRoundTrip == document);
+		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument xmlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			xml, xmlRoundTrip, &error));
+		CUI_EXPECT_TRUE(xmlRoundTrip == document);
+		auto version23 = xml;
+		const auto versionAt = version23.find("version=\"29\"");
+		CUI_EXPECT_TRUE(versionAt != std::string::npos);
+		if (versionAt != std::string::npos)
+			version23.replace(versionAt, std::string("version=\"29\"").size(),
+				"version=\"23\"");
+		DesignerModel::DesignDocument upgradedVersion23;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			version23, upgradedVersion23, &error));
+		CUI_EXPECT_TRUE(upgradedVersion23 == document);
+
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { 1 }, fragment, &error));
+		CUI_EXPECT_EQ(1ULL, fragment.Nodes.front()
+			.LocalObjectResources.ControlTemplates.size());
+		DesignerModel::DesignDocument pasted;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			{}, fragment, 0, 0, pasted, nullptr, &error));
+		DesignerModel::MaterializedControlTree pastedTree;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentMaterializer::Materialize(
+			pasted, pastedTree, &error));
+
+		const std::string duplicate = R"XAML(
+<Form xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Form.Resources>
+    <ControlTemplate TargetType="Button">
+      <Panel><ContentPresenter ContentSource="Content" />
+             <ContentPresenter ContentSource="Content" /></Panel>
+    </ControlTemplate>
+  </Form.Resources>
+  <Button />
+</Form>)XAML";
+		DesignerModel::DesignDocument rejected;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			duplicate, rejected, &error));
+		CUI_EXPECT_TRUE(error.find(L"只能拥有一个") != std::wstring::npos);
+
+		const std::string wrongHeader = R"XAML(
+<Form xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Form.Resources><ControlTemplate TargetType="Button">
+    <ContentPresenter ContentSource="Header" />
+  </ControlTemplate></Form.Resources><Button />
+</Form>)XAML";
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			wrongHeader, rejected, &error));
+
+		const std::string outside = R"XAML(
+<Form xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <ContentPresenter ContentSource="Content" />
+</Form>)XAML";
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			outside, rejected, &error));
+
+		const std::string missing = R"XAML(
+<Form xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Form.Resources><ControlTemplate TargetType="Button">
+    <Panel x:Name="chrome" />
+  </ControlTemplate></Form.Resources>
+  <Button x:Name="host" DesignId="1"><Label DesignId="2" /></Button>
+</Form>)XAML";
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			missing, rejected, &error));
+		DesignerModel::MaterializedControlTree rejectedTree;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentMaterializer::Materialize(
+			rejected, rejectedTree, &error));
+		CUI_EXPECT_TRUE(error.find(L"ContentPresenter") != std::wstring::npos);
+	});
+
+	runner.Add("ItemsPresenter owns the ItemsHost inside list ControlTemplates", []
+	{
+		const std::string xaml = R"XAML(<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Name="ItemsTemplateForm">
+  <Form.Resources>
+    <DataType x:Key="Row">
+      <DataType.Properties>
+        <Property Path="Text" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="Rows" ItemType="Row">
+      <DataRecord Text="One" />
+      <DataRecord Text="Two" />
+      <DataRecord Text="Three" />
+      <DataRecord Text="Four" />
+    </DataList>
+    <ItemsPanelTemplate x:Key="VirtualRows">
+      <VirtualizingStackPanel ItemHeight="24" CacheLength="0" />
+    </ItemsPanelTemplate>
+    <ControlTemplate x:Key="ListChrome" TargetType="ListBox">
+      <GridPanel x:Name="chrome">
+        <ScrollView x:Name="scrollHost"
+                    AlwaysShowVScroll="{TemplateBinding AlwaysShowVScroll}">
+          <ItemsPresenter x:Name="itemsPresenter" />
+        </ScrollView>
+      </GridPanel>
+    </ControlTemplate>
+    <ControlTemplate x:Key="HiddenItems" TargetType="ItemsControl">
+      <Panel x:Name="emptyChrome" />
+    </ControlTemplate>
+  </Form.Resources>
+  <ListBox x:Name="rows" DesignId="1" Width="200" Height="72"
+           AlwaysShowVScroll="true" DisplayMemberPath="Text"
+           ItemsSource="{StaticResource Rows}"
+           ItemsPanel="{StaticResource VirtualRows}"
+           Template="{StaticResource ListChrome}" />
+  <ItemsControl x:Name="hiddenRows" DesignId="2"
+                ItemsSource="{StaticResource Rows}"
+                DisplayMemberPath="Text"
+                Template="{StaticResource HiddenItems}" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(2ULL, document.ControlTemplates.size());
+		CUI_EXPECT_TRUE(std::any_of(
+			document.ControlTemplates.front().Template.begin(),
+			document.ControlTemplates.front().Template.end(),
+			[](const auto& node)
+			{ return node.Type == UIClass::UI_ItemsPresenter; }));
+
+		DesignerModel::MaterializedControlTree tree;
+		if (!DesignerModel::DesignDocumentMaterializer::Materialize(
+			document, tree, &error))
+			throw std::runtime_error("ItemsPresenter materialization failed: "
+				+ Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_TRUE(error.empty());
+		auto findRoot = [&](int designId) -> Control*
+		{
+			const auto found = std::find_if(tree.Roots.begin(), tree.Roots.end(),
+				[&](const auto& control)
+				{ return control && control->DesignId == designId; });
+			return found == tree.Roots.end() ? nullptr : found->get();
+		};
+		auto* list = dynamic_cast<ListBox*>(findRoot(1));
+		CUI_EXPECT_TRUE(list != nullptr);
+		if (list)
+		{
+			auto* presenter = list->GetTemplateItemsPresenter();
+			auto* scroll = presenter
+				? dynamic_cast<ScrollView*>(presenter->Parent) : nullptr;
+			CUI_EXPECT_TRUE(list->GetControlTemplateRoot() != nullptr);
+			CUI_EXPECT_EQ(1, list->Count);
+			CUI_EXPECT_TRUE(presenter != nullptr);
+			CUI_EXPECT_TRUE(presenter == list->FindDeclarativeTemplatePart(
+				L"itemsPresenter"));
+			CUI_EXPECT_TRUE(scroll != nullptr);
+			CUI_EXPECT_TRUE(scroll && scroll->AlwaysShowVScroll);
+			CUI_EXPECT_TRUE(presenter
+				&& presenter->GetItemsHost() == list->GetItemsHost());
+			CUI_EXPECT_TRUE(list->GetItemsHost()
+				&& list->GetItemsHost()->Parent == presenter);
+			CUI_EXPECT_EQ(4ULL, list->ItemCount());
+
+			auto replacement = std::make_shared<ItemsPanelTemplate>();
+			replacement->Kind = ItemsPanelKind::Stack;
+			replacement->Orientation = Orientation::Vertical;
+			replacement->Spacing = 3.0f;
+			auto* previousHost = list->GetItemsHost();
+			list->SetItemsPanel(ItemsPanelTemplateReference(replacement));
+			CUI_EXPECT_TRUE(list->GetItemsHost() != nullptr);
+			CUI_EXPECT_TRUE(list->GetItemsHost() != previousHost);
+			CUI_EXPECT_TRUE(list->GetItemsHost()->Parent == presenter);
+			CUI_EXPECT_TRUE(presenter->GetItemsHost() == list->GetItemsHost());
+			CUI_EXPECT_EQ(4ULL, list->GeneratedItemCount());
+		}
+
+		auto* hidden = dynamic_cast<ItemsControl*>(findRoot(2));
+		CUI_EXPECT_TRUE(hidden != nullptr);
+		if (hidden)
+		{
+			CUI_EXPECT_TRUE(hidden->GetControlTemplateRoot() != nullptr);
+			CUI_EXPECT_TRUE(hidden->GetTemplateItemsPresenter() == nullptr);
+			CUI_EXPECT_TRUE(hidden->GetItemsHost() != nullptr);
+			CUI_EXPECT_TRUE(hidden->GetItemsHost()->Parent == nullptr);
+			CUI_EXPECT_EQ(4ULL, hidden->GeneratedItemCount());
+		}
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("<ItemsPresenter") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"Template=\"{StaticResource ListChrome}\"") != std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error));
+		CUI_EXPECT_TRUE(xamlRoundTrip == document);
+
+		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(xml.find("ItemsPresenter") != std::string::npos);
+		DesignerModel::DesignDocument xmlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			xml, xmlRoundTrip, &error));
+		CUI_EXPECT_TRUE(xmlRoundTrip == document);
+		auto version24 = xml;
+		const auto version24At = version24.find("version=\"29\"");
+		CUI_EXPECT_TRUE(version24At != std::string::npos);
+		if (version24At != std::string::npos)
+			version24.replace(version24At,
+				std::string("version=\"29\"").size(), "version=\"24\"");
+		DesignerModel::DesignDocument upgradedVersion24;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			version24, upgradedVersion24, &error));
+		CUI_EXPECT_TRUE(upgradedVersion24 == document);
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { 1 }, fragment, &error));
+		CUI_EXPECT_EQ(1ULL, fragment.Nodes.front()
+			.LocalObjectResources.ControlTemplates.size());
+		CUI_EXPECT_TRUE(std::any_of(fragment.Nodes.front()
+			.LocalObjectResources.ControlTemplates.front().Template.begin(),
+			fragment.Nodes.front().LocalObjectResources.ControlTemplates.front()
+				.Template.end(), [](const auto& node)
+				{ return node.Type == UIClass::UI_ItemsPresenter; }));
+		DesignerModel::DesignDocument pasted;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			{}, fragment, 0, 0, pasted, nullptr, &error));
+		DesignerModel::MaterializedControlTree pastedTree;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentMaterializer::Materialize(
+			pasted, pastedTree, &error));
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* previousList = dynamic_cast<ListBox*>(
+			runtime.FindControlByName(L"rows"));
+		CUI_EXPECT_TRUE(previousList != nullptr);
+		auto changedXaml = xaml;
+		const auto presenterName = changedXaml.find(
+			"x:Name=\"itemsPresenter\"");
+		CUI_EXPECT_TRUE(presenterName != std::string::npos);
+		if (presenterName != std::string::npos)
+			changedXaml.replace(presenterName,
+				std::string("x:Name=\"itemsPresenter\"").size(),
+				"x:Name=\"itemsPresenterReloaded\"");
+		DesignerModel::DesignDocument changedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			changedXaml, changedDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			changedDocument, runtime, {}, &reloadMode, &error));
+		CUI_EXPECT_TRUE(reloadMode
+			!= DesignerModel::RuntimeDocumentReloadMode::InPlace);
+		auto* reloadedList = dynamic_cast<ListBox*>(
+			runtime.FindControlByName(L"rows"));
+		CUI_EXPECT_TRUE(reloadedList != nullptr);
+		CUI_EXPECT_TRUE(reloadedList != previousList);
+		if (reloadedList)
+		{
+			auto* reloadedPresenter = reloadedList->GetTemplateItemsPresenter();
+			CUI_EXPECT_TRUE(reloadedPresenter != nullptr);
+			CUI_EXPECT_TRUE(reloadedPresenter
+				== reloadedList->FindDeclarativeTemplatePart(
+					L"itemsPresenterReloaded"));
+			CUI_EXPECT_TRUE(reloadedList->GetItemsHost()
+				&& reloadedList->GetItemsHost()->Parent == reloadedPresenter);
+		}
+
+		auto reject = [&](const std::string& invalid,
+			const wchar_t* expected)
+		{
+			DesignerModel::DesignDocument rejected;
+			error.clear();
+			CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+				invalid, rejected, &error));
+			CUI_EXPECT_TRUE(error.find(expected) != std::wstring::npos);
+		};
+		reject(R"XAML(<Form xmlns="urn:cui"><ItemsPresenter /></Form>)XAML",
+			L"ItemsPresenter");
+		reject(R"XAML(<Form xmlns="urn:cui"><Form.Resources>
+  <ControlTemplate TargetType="Button"><ItemsPresenter /></ControlTemplate>
+</Form.Resources><Button /></Form>)XAML", L"ItemsPresenter");
+		reject(R"XAML(<Form xmlns="urn:cui"><Form.Resources>
+  <ControlTemplate TargetType="ListBox"><Panel>
+    <ItemsPresenter /><ItemsPresenter />
+  </Panel></ControlTemplate>
+</Form.Resources><ListBox /></Form>)XAML", L"最多");
+		reject(R"XAML(<Form xmlns="urn:cui"><Form.Resources>
+  <ControlTemplate TargetType="ItemsControl">
+    <ItemsPresenter><Label /></ItemsPresenter>
+  </ControlTemplate>
+</Form.Resources><ItemsControl /></Form>)XAML", L"不能手工声明");
+		reject(R"XAML(<Form xmlns="urn:cui"><Form.Resources>
+  <ControlTemplate TargetType="ItemsControl"><Panel><Panel.Resources>
+    <DataTemplate DataType="CollectionViewGroup"><ItemsPresenter /></DataTemplate>
+  </Panel.Resources></Panel></ControlTemplate>
+</Form.Resources><ItemsControl /></Form>)XAML", L"ItemsPresenter");
+	});
+
+	runner.Add("ListBoxItem ControlTemplates own content and interaction states", []
+	{
+		const std::string xaml = R"XAML(<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Name="ItemContainerTemplateForm">
+  <Form.Resources>
+    <DataType x:Key="Person">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="People" ItemType="Person">
+      <DataRecord Name="Alice" />
+      <DataRecord Name="Bob" />
+    </DataList>
+    <DataTemplate x:Key="PersonRow" DataType="Person">
+      <Label x:Name="personName" Text="{Binding Name}" />
+    </DataTemplate>
+    <ControlTemplate x:Key="StyledItemTemplate" TargetType="ListBoxItem">
+      <GridPanel x:Name="styledChrome"
+                 Padding="{TemplateBinding Padding}"
+                 BackColor="#00000000"
+                 BorderColor="#00000000"
+                 BorderThickness="1">
+        <VisualStateManager.VisualStateGroups>
+          <VisualStateGroup x:Name="SelectionStates">
+            <VisualState x:Name="Unselected" />
+            <VisualState x:Name="Selected">
+              <VisualState.StateTriggers>
+                <StateTrigger Property="IsSelected" Value="true" />
+              </VisualState.StateTriggers>
+              <VisualState.Setters>
+                <Setter TargetName="styledChrome"
+                        Property="BackColor" Value="#FF336699" />
+              </VisualState.Setters>
+            </VisualState>
+          </VisualStateGroup>
+          <VisualStateGroup x:Name="PointerStates">
+            <VisualState x:Name="PointerNormal" />
+            <VisualState x:Name="PointerOver">
+              <VisualState.StateTriggers>
+                <StateTrigger Property="IsMouseOver" Value="true" />
+              </VisualState.StateTriggers>
+              <VisualState.Setters>
+                <Setter TargetName="styledChrome"
+                        Property="BorderColor" Value="#FF22AA44" />
+              </VisualState.Setters>
+            </VisualState>
+          </VisualStateGroup>
+          <VisualStateGroup x:Name="FocusStates">
+            <VisualState x:Name="Unfocused" />
+            <VisualState x:Name="Focused">
+              <VisualState.StateTriggers>
+                <StateTrigger Property="IsKeyboardFocusWithin" Value="true" />
+              </VisualState.StateTriggers>
+              <VisualState.Setters>
+                <Setter TargetName="styledChrome"
+                        Property="BorderThickness" Value="3" />
+              </VisualState.Setters>
+            </VisualState>
+          </VisualStateGroup>
+        </VisualStateManager.VisualStateGroups>
+        <ContentPresenter x:Name="styledContent"
+                          ContentSource="Content" />
+      </GridPanel>
+    </ControlTemplate>
+    <ControlTemplate TargetType="ListBoxItem">
+      <Panel x:Name="implicitItemChrome">
+        <ContentPresenter x:Name="implicitItemContent"
+                          ContentSource="Content" />
+      </Panel>
+    </ControlTemplate>
+    <Style x:Key="PersonContainer" TargetType="ListBoxItem">
+      <Setter Property="Padding" Value="9, 5" />
+      <Setter Property="Template"
+              Value="{StaticResource StyledItemTemplate}" />
+    </Style>
+  </Form.Resources>
+  <ListBox x:Name="styledPeople" DesignId="1"
+           ItemsSource="{StaticResource People}"
+           ItemTemplate="{StaticResource PersonRow}"
+           ItemContainerStyle="{StaticResource PersonContainer}" />
+  <ListBox x:Name="implicitPeople" DesignId="2"
+           ItemsSource="{StaticResource People}"
+           ItemTemplate="{StaticResource PersonRow}" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error("ListBoxItem parse failed: "
+				+ Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_EQ(2ULL, document.ControlTemplates.size());
+		CUI_EXPECT_EQ(UIClass::UI_SelectorItem,
+			document.ControlTemplates.front().TargetType);
+		CUI_EXPECT_TRUE(document.StyleSheet.Rules.front().HasType);
+		CUI_EXPECT_EQ(UIClass::UI_SelectorItem,
+			document.StyleSheet.Rules.front().Type);
+
+		DesignerModel::MaterializedControlTree tree;
+		if (!DesignerModel::DesignDocumentMaterializer::Materialize(
+			document, tree, &error))
+			throw std::runtime_error("ListBoxItem materialization failed: "
+				+ Convert::UnicodeToUtf8(error));
+		auto findList = [&](int id) -> ListBox*
+		{
+			const auto found = std::find_if(tree.Roots.begin(), tree.Roots.end(),
+				[&](const auto& root) { return root && root->DesignId == id; });
+			return found == tree.Roots.end()
+				? nullptr : dynamic_cast<ListBox*>(found->get());
+		};
+		auto* styled = findList(1);
+		auto* implicit = findList(2);
+		CUI_EXPECT_TRUE(styled != nullptr);
+		CUI_EXPECT_TRUE(implicit != nullptr);
+		CUI_EXPECT_TRUE(styled && styled->GetItemContainerTemplate());
+		CUI_EXPECT_TRUE(implicit && implicit->GetItemContainerTemplate());
+		CUI_EXPECT_EQ(2ULL, styled ? styled->GeneratedItemCount() : 0ULL);
+
+		auto* first = styled
+			? dynamic_cast<ListBoxItem*>(styled->GetGeneratedItem(0)) : nullptr;
+		auto* second = styled
+			? dynamic_cast<ListBoxItem*>(styled->GetGeneratedItem(1)) : nullptr;
+		CUI_EXPECT_TRUE(first != nullptr);
+		CUI_EXPECT_TRUE(second != nullptr);
+		if (first)
+		{
+			auto* chrome = dynamic_cast<GridPanel*>(
+				first->FindDeclarativeTemplatePart(L"styledChrome"));
+			auto* presenter = dynamic_cast<ContentPresenter*>(
+				first->FindDeclarativeTemplatePart(L"styledContent"));
+			auto* label = dynamic_cast<Label*>(first->Content());
+			CUI_EXPECT_TRUE(first->GetControlTemplateRoot() == chrome);
+			CUI_EXPECT_TRUE(first->GetGeneratedPresenter() == nullptr);
+			CUI_EXPECT_TRUE(first->GetTemplateContentPresenter() == presenter);
+			CUI_EXPECT_TRUE(presenter != nullptr);
+			CUI_EXPECT_TRUE(label != nullptr);
+			CUI_EXPECT_TRUE(label && label->Parent == presenter);
+			if (label) CUI_EXPECT_EQ(std::wstring(L"Alice"), label->Text);
+			CUI_EXPECT_TRUE(chrome != nullptr);
+			if (chrome)
+			{
+				CUI_EXPECT_EQ(9.0f, chrome->Padding.Left);
+				CUI_EXPECT_EQ(5.0f, chrome->Padding.Top);
+			}
+			first->SetMouseOver(true);
+			CUI_EXPECT_TRUE(first->IsMouseOver);
+			if (chrome) CUI_EXPECT_EQ(0x22 / 255.0f, chrome->BorderColor.r);
+			first->SetKeyboardFocusWithin(true);
+			CUI_EXPECT_TRUE(first->IsKeyboardFocusWithin);
+			if (chrome) CUI_EXPECT_EQ(3.0f, chrome->BorderThickness);
+		}
+		CUI_EXPECT_TRUE(styled && styled->SelectIndex(1));
+		CUI_EXPECT_TRUE(second && second->IsSelected);
+		if (second)
+		{
+			auto* chrome = second->FindDeclarativeTemplatePart(L"styledChrome");
+			CUI_EXPECT_TRUE(chrome != nullptr);
+			if (chrome) CUI_EXPECT_EQ(0x33 / 255.0f, chrome->BackColor.r);
+		}
+
+		auto* implicitItem = implicit
+			? dynamic_cast<ListBoxItem*>(implicit->GetGeneratedItem(0)) : nullptr;
+		CUI_EXPECT_TRUE(implicitItem != nullptr);
+		CUI_EXPECT_TRUE(implicitItem && implicitItem->FindDeclarativeTemplatePart(
+			L"implicitItemChrome") != nullptr);
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("TargetType=\"ListBoxItem\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("TargetType=\"SelectorItem\"")
+			== std::string::npos);
+		DesignerModel::DesignDocument roundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, roundTrip, &error));
+		CUI_EXPECT_TRUE(roundTrip == document);
+		const auto native = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(native.find("version=\"29\"") != std::string::npos);
+		CUI_EXPECT_TRUE(native.find("TargetType=\"ListBoxItem\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument nativeRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			native, nativeRoundTrip, &error));
+		CUI_EXPECT_TRUE(nativeRoundTrip == document);
+		auto version26 = native;
+		const auto version26At = version26.find("version=\"29\"");
+		CUI_EXPECT_TRUE(version26At != std::string::npos);
+		if (version26At != std::string::npos)
+			version26.replace(version26At,
+				std::string("version=\"29\"").size(), "version=\"26\"");
+		DesignerModel::DesignDocument upgradedVersion26;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			version26, upgradedVersion26, &error));
+		CUI_EXPECT_TRUE(upgradedVersion26 == document);
+
+		DesignerModel::DesignDocument styledFragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { 1 }, styledFragment, &error));
+		CUI_EXPECT_TRUE(std::any_of(styledFragment.Nodes.front()
+			.LocalObjectResources.ControlTemplates.begin(),
+			styledFragment.Nodes.front().LocalObjectResources.ControlTemplates.end(),
+			[](const auto& item) { return item.Key == L"StyledItemTemplate"; }));
+		DesignerModel::DesignDocument implicitFragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { 2 }, implicitFragment, &error));
+		CUI_EXPECT_TRUE(std::any_of(implicitFragment.Nodes.front()
+			.LocalObjectResources.ControlTemplates.begin(),
+			implicitFragment.Nodes.front().LocalObjectResources.ControlTemplates.end(),
+			[](const auto& item)
+			{ return item.IsImplicit()
+				&& item.TargetType == UIClass::UI_SelectorItem; }));
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* previous = dynamic_cast<ListBox*>(
+			runtime.FindControlByName(L"styledPeople"));
+		CUI_EXPECT_TRUE(previous != nullptr);
+		auto changedXaml = xaml;
+		const std::string oldPartName = "styledChrome";
+		const std::string newPartName = "styledChromeReloaded";
+		auto partAt = changedXaml.find(oldPartName);
+		CUI_EXPECT_TRUE(partAt != std::string::npos);
+		while (partAt != std::string::npos)
+		{
+			changedXaml.replace(partAt, oldPartName.size(), newPartName);
+			partAt = changedXaml.find(oldPartName,
+				partAt + newPartName.size());
+		}
+		DesignerModel::DesignDocument changed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			changedXaml, changed, &error));
+		DesignerModel::RuntimeDocumentReloadMode mode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			changed, runtime, {}, &mode, &error));
+		CUI_EXPECT_TRUE(mode != DesignerModel::RuntimeDocumentReloadMode::InPlace);
+		auto* reloaded = dynamic_cast<ListBox*>(
+			runtime.FindControlByName(L"styledPeople"));
+		CUI_EXPECT_TRUE(reloaded != nullptr);
+		CUI_EXPECT_TRUE(reloaded != previous);
+		auto* reloadedItem = reloaded
+			? dynamic_cast<ListBoxItem*>(reloaded->GetGeneratedItem(0)) : nullptr;
+		CUI_EXPECT_TRUE(reloadedItem != nullptr);
+		CUI_EXPECT_TRUE(reloadedItem && reloadedItem->FindDeclarativeTemplatePart(
+			L"styledChromeReloaded") != nullptr);
+
+		auto reject = [&](const std::string& invalid,
+			const wchar_t* expected)
+		{
+			DesignerModel::DesignDocument rejected;
+			error.clear();
+			CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+				invalid, rejected, &error));
+			CUI_EXPECT_TRUE(error.find(expected) != std::wstring::npos);
+		};
+		reject(R"XAML(<Form xmlns="urn:cui"><ListBoxItem /></Form>)XAML",
+			L"ListBoxItem");
+		reject(R"XAML(<Form xmlns="urn:cui"><Form.Resources>
+  <ControlTemplate TargetType="ListBoxItem">
+    <ContentPresenter ContentSource="Header" />
+  </ControlTemplate>
+</Form.Resources></Form>)XAML", L"Header");
+		reject(R"XAML(<Form xmlns="urn:cui"><Form.Resources>
+  <ControlTemplate x:Key="ButtonTemplate" TargetType="Button"><Panel /></ControlTemplate>
+  <Style TargetType="ListBoxItem"><Setter Property="Template"
+    Value="{StaticResource ButtonTemplate}" /></Style>
+</Form.Resources></Form>)XAML", L"不兼容");
+	});
+
+	runner.Add("ComboBoxItem templates own data content and popup states", []
+	{
+		const std::string xaml = R"XAML(<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Name="ComboItemTemplateForm">
+  <Form.Resources>
+    <DataType x:Key="Person">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="People" ItemType="Person">
+      <DataRecord Name="Alice" />
+      <DataRecord Name="Bob" />
+    </DataList>
+    <DataTemplate x:Key="PersonChoice" DataType="Person">
+      <Label x:Name="choiceName" Text="{Binding Name}" />
+    </DataTemplate>
+    <ControlTemplate x:Key="ChoiceChrome" TargetType="ComboBoxItem">
+      <GridPanel x:Name="choiceChrome"
+                 Padding="{TemplateBinding Padding}"
+                 BackColor="#00000000"
+                 BorderColor="#00000000"
+                 BorderThickness="1">
+        <VisualStateManager.VisualStateGroups>
+          <VisualStateGroup x:Name="SelectionStates">
+            <VisualState x:Name="Unselected" />
+            <VisualState x:Name="Selected">
+              <VisualState.StateTriggers>
+                <StateTrigger Property="IsSelected" Value="true" />
+              </VisualState.StateTriggers>
+              <VisualState.Setters>
+                <Setter TargetName="choiceChrome"
+                        Property="BackColor" Value="#FF884422" />
+              </VisualState.Setters>
+            </VisualState>
+          </VisualStateGroup>
+          <VisualStateGroup x:Name="PointerStates">
+            <VisualState x:Name="Normal" />
+            <VisualState x:Name="Over">
+              <VisualState.StateTriggers>
+                <StateTrigger Property="IsMouseOver" Value="true" />
+              </VisualState.StateTriggers>
+              <VisualState.Setters>
+                <Setter TargetName="choiceChrome"
+                        Property="BorderColor" Value="#FF11AA55" />
+              </VisualState.Setters>
+            </VisualState>
+          </VisualStateGroup>
+          <VisualStateGroup x:Name="FocusStates">
+            <VisualState x:Name="Unfocused" />
+            <VisualState x:Name="Focused">
+              <VisualState.StateTriggers>
+                <StateTrigger Property="IsKeyboardFocusWithin" Value="true" />
+              </VisualState.StateTriggers>
+              <VisualState.Setters>
+                <Setter TargetName="choiceChrome"
+                        Property="BorderThickness" Value="3" />
+              </VisualState.Setters>
+            </VisualState>
+          </VisualStateGroup>
+        </VisualStateManager.VisualStateGroups>
+        <ContentPresenter x:Name="choiceContent"
+                          ContentSource="Content" />
+      </GridPanel>
+    </ControlTemplate>
+    <ControlTemplate TargetType="ComboBoxItem">
+      <Panel x:Name="implicitChoiceChrome">
+        <ContentPresenter x:Name="implicitChoiceContent"
+                          ContentSource="Content" />
+      </Panel>
+    </ControlTemplate>
+    <Style x:Key="ChoiceContainer" TargetType="ComboBoxItem">
+      <Setter Property="Padding" Value="11, 6" />
+      <Setter Property="Template"
+              Value="{StaticResource ChoiceChrome}" />
+    </Style>
+  </Form.Resources>
+  <ComboBox x:Name="styledChoices" DesignId="101"
+            ItemsSource="{StaticResource People}"
+            ItemTemplate="{StaticResource PersonChoice}"
+            ItemContainerStyle="{StaticResource ChoiceContainer}" />
+  <ComboBox x:Name="implicitChoices" DesignId="102"
+            ItemsSource="{StaticResource People}"
+            ItemTemplate="{StaticResource PersonChoice}" />
+  <ComboBox x:Name="staticChoices" DesignId="103">
+    <ComboBoxItem Content="One" />
+    <ComboBoxItem Content="Two" />
+  </ComboBox>
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error("ComboBoxItem parse failed: "
+				+ Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_EQ(2ULL, document.ControlTemplates.size());
+		CUI_EXPECT_EQ(UIClass::UI_ComboBoxItem,
+			document.ControlTemplates.front().TargetType);
+		CUI_EXPECT_TRUE(document.StyleSheet.Rules.front().HasType);
+		CUI_EXPECT_EQ(UIClass::UI_ComboBoxItem,
+			document.StyleSheet.Rules.front().Type);
+
+		DesignerModel::MaterializedControlTree tree;
+		if (!DesignerModel::DesignDocumentMaterializer::Materialize(
+			document, tree, &error))
+			throw std::runtime_error("ComboBoxItem materialization failed: "
+				+ Convert::UnicodeToUtf8(error));
+		auto findCombo = [&](int id) -> ComboBox*
+		{
+			const auto found = std::find_if(tree.Roots.begin(), tree.Roots.end(),
+				[&](const auto& root) { return root && root->DesignId == id; });
+			return found == tree.Roots.end()
+				? nullptr : dynamic_cast<ComboBox*>(found->get());
+		};
+		auto* styled = findCombo(101);
+		auto* implicit = findCombo(102);
+		auto* staticItems = findCombo(103);
+		CUI_EXPECT_TRUE(styled && styled->UsesGeneratedItemContainers());
+		CUI_EXPECT_TRUE(implicit && implicit->UsesGeneratedItemContainers());
+		CUI_EXPECT_TRUE(staticItems && staticItems->UsesGeneratedItemContainers());
+		CUI_EXPECT_TRUE(styled && styled->GetItemContainerTemplate());
+		CUI_EXPECT_TRUE(implicit && implicit->GetItemContainerTemplate());
+		CUI_EXPECT_EQ(2ULL, styled ? styled->GeneratedItemCount() : 0ULL);
+		CUI_EXPECT_EQ(2ULL, staticItems
+			? staticItems->GeneratedItemCount() : 0ULL);
+
+		auto* first = styled ? styled->GetGeneratedItem(0) : nullptr;
+		auto* second = styled ? styled->GetGeneratedItem(1) : nullptr;
+		CUI_EXPECT_TRUE(first != nullptr);
+		CUI_EXPECT_TRUE(second != nullptr);
+		if (first)
+		{
+			auto* chrome = dynamic_cast<GridPanel*>(
+				first->FindDeclarativeTemplatePart(L"choiceChrome"));
+			auto* presenter = dynamic_cast<ContentPresenter*>(
+				first->FindDeclarativeTemplatePart(L"choiceContent"));
+			auto* label = dynamic_cast<Label*>(first->Content());
+			CUI_EXPECT_TRUE(first->GetControlTemplateRoot() == chrome);
+			CUI_EXPECT_TRUE(first->GetTemplateContentPresenter() == presenter);
+			CUI_EXPECT_TRUE(label != nullptr);
+			if (label) CUI_EXPECT_EQ(std::wstring(L"Alice"), label->Text);
+			CUI_EXPECT_TRUE(chrome != nullptr);
+			if (chrome)
+			{
+				CUI_EXPECT_EQ(11.0f, chrome->Padding.Left);
+				CUI_EXPECT_EQ(6.0f, chrome->Padding.Top);
+			}
+			first->SetMouseOver(true);
+			CUI_EXPECT_TRUE(first->IsMouseOver);
+			if (chrome) CUI_EXPECT_EQ(0x11 / 255.0f, chrome->BorderColor.r);
+			first->SetKeyboardFocusWithin(true);
+			if (chrome) CUI_EXPECT_EQ(3.0f, chrome->BorderThickness);
+		}
+		CUI_EXPECT_TRUE(styled && styled->SelectItem(1));
+		CUI_EXPECT_TRUE(second && second->IsSelected);
+		if (second)
+		{
+			auto* chrome = second->FindDeclarativeTemplatePart(L"choiceChrome");
+			CUI_EXPECT_TRUE(chrome != nullptr);
+			if (chrome) CUI_EXPECT_EQ(0x88 / 255.0f, chrome->BackColor.r);
+		}
+
+		auto* implicitItem = implicit ? implicit->GetGeneratedItem(0) : nullptr;
+		CUI_EXPECT_TRUE(implicitItem != nullptr);
+		CUI_EXPECT_TRUE(implicitItem
+			&& implicitItem->FindDeclarativeTemplatePart(
+				L"implicitChoiceChrome") != nullptr);
+		auto* staticItem = staticItems
+			? staticItems->GetGeneratedItem(0) : nullptr;
+		auto* staticLabel = staticItem
+			? dynamic_cast<Label*>(staticItem->Content()) : nullptr;
+		CUI_EXPECT_TRUE(staticLabel != nullptr);
+		if (staticLabel) CUI_EXPECT_EQ(std::wstring(L"One"), staticLabel->Text);
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("TargetType=\"ComboBoxItem\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("ItemTemplate=\"{StaticResource PersonChoice}\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument roundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, roundTrip, &error));
+		CUI_EXPECT_TRUE(roundTrip == document);
+		const auto native = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(native.find("TargetType=\"ComboBoxItem\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument nativeRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			native, nativeRoundTrip, &error));
+		CUI_EXPECT_TRUE(nativeRoundTrip == document);
+
+		DesignerModel::DesignDocument styledFragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { 101 }, styledFragment, &error));
+		CUI_EXPECT_TRUE(std::any_of(styledFragment.Nodes.front()
+			.LocalObjectResources.ControlTemplates.begin(),
+			styledFragment.Nodes.front().LocalObjectResources.ControlTemplates.end(),
+			[](const auto& item) { return item.Key == L"ChoiceChrome"; }));
+		DesignerModel::DesignDocument implicitFragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { 102 }, implicitFragment, &error));
+		CUI_EXPECT_TRUE(std::any_of(implicitFragment.Nodes.front()
+			.LocalObjectResources.ControlTemplates.begin(),
+			implicitFragment.Nodes.front().LocalObjectResources.ControlTemplates.end(),
+			[](const auto& item)
+			{ return item.IsImplicit()
+				&& item.TargetType == UIClass::UI_ComboBoxItem; }));
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* previous = dynamic_cast<ComboBox*>(
+			runtime.FindControlByName(L"styledChoices"));
+		CUI_EXPECT_TRUE(previous != nullptr);
+		auto changedXaml = xaml;
+		const std::string oldPartName = "choiceChrome";
+		const std::string newPartName = "choiceChromeReloaded";
+		auto partAt = changedXaml.find(oldPartName);
+		while (partAt != std::string::npos)
+		{
+			changedXaml.replace(partAt, oldPartName.size(), newPartName);
+			partAt = changedXaml.find(oldPartName,
+				partAt + newPartName.size());
+		}
+		DesignerModel::DesignDocument changed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			changedXaml, changed, &error));
+		DesignerModel::RuntimeDocumentReloadMode mode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			changed, runtime, {}, &mode, &error));
+		CUI_EXPECT_TRUE(mode != DesignerModel::RuntimeDocumentReloadMode::InPlace);
+		auto* reloaded = dynamic_cast<ComboBox*>(
+			runtime.FindControlByName(L"styledChoices"));
+		CUI_EXPECT_TRUE(reloaded != nullptr);
+		CUI_EXPECT_TRUE(reloaded != previous);
+		CUI_EXPECT_TRUE(reloaded && reloaded->GetGeneratedItem(0)
+			&& reloaded->GetGeneratedItem(0)->FindDeclarativeTemplatePart(
+				L"choiceChromeReloaded") != nullptr);
+
+		auto reject = [&](const std::string& invalid,
+			const wchar_t* expected)
+		{
+			DesignerModel::DesignDocument rejected;
+			error.clear();
+			CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+				invalid, rejected, &error));
+			CUI_EXPECT_TRUE(error.find(expected) != std::wstring::npos);
+		};
+		reject(R"XAML(<Form xmlns="urn:cui"><ComboBoxItem /></Form>)XAML",
+			L"ComboBoxItem");
+		reject(R"XAML(<Form xmlns="urn:cui"><Form.Resources>
+  <ControlTemplate x:Key="Wrong" TargetType="Button"><Panel /></ControlTemplate>
+  <Style TargetType="ComboBoxItem"><Setter Property="Template"
+    Value="{StaticResource Wrong}" /></Style>
+</Form.Resources></Form>)XAML", L"不兼容");
+	});
+
+	runner.Add("TreeViewItem templates own headers hierarchy and interaction states", []
+	{
+		const std::string xaml = R"XAML(<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Name="TreeItemTemplateForm">
+  <Form.Resources>
+    <ControlTemplate x:Key="TreeChrome" TargetType="TreeViewItem">
+      <GridPanel x:Name="treeChrome"
+                 BackColor="#00000000"
+                 BorderColor="#00000000"
+                 BorderThickness="1">
+        <VisualStateManager.VisualStateGroups>
+          <VisualStateGroup x:Name="ExpansionStates">
+            <VisualState x:Name="Collapsed" />
+            <VisualState x:Name="Expanded">
+              <VisualState.StateTriggers>
+                <StateTrigger Property="IsExpanded" Value="true" />
+              </VisualState.StateTriggers>
+              <VisualState.Setters>
+                <Setter TargetName="treeChrome"
+                        Property="BackColor" Value="#FF224466" />
+              </VisualState.Setters>
+            </VisualState>
+          </VisualStateGroup>
+          <VisualStateGroup x:Name="ChildStates">
+            <VisualState x:Name="Leaf" />
+            <VisualState x:Name="Branch">
+              <VisualState.StateTriggers>
+                <StateTrigger Property="HasItems" Value="true" />
+              </VisualState.StateTriggers>
+              <VisualState.Setters>
+                <Setter TargetName="treeChrome"
+                        Property="BorderThickness" Value="2" />
+              </VisualState.Setters>
+            </VisualState>
+          </VisualStateGroup>
+          <VisualStateGroup x:Name="SelectionStates">
+            <VisualState x:Name="Unselected" />
+            <VisualState x:Name="Selected">
+              <VisualState.StateTriggers>
+                <StateTrigger Property="IsSelected" Value="true" />
+              </VisualState.StateTriggers>
+              <VisualState.Setters>
+                <Setter TargetName="treeChrome"
+                        Property="BorderColor" Value="#FF22AA55" />
+              </VisualState.Setters>
+            </VisualState>
+          </VisualStateGroup>
+        </VisualStateManager.VisualStateGroups>
+        <ContentPresenter x:Name="treeHeader" ContentSource="Header" />
+      </GridPanel>
+    </ControlTemplate>
+    <ControlTemplate TargetType="TreeViewItem">
+      <Panel x:Name="implicitTreeChrome">
+        <ContentPresenter ContentSource="Header" />
+      </Panel>
+    </ControlTemplate>
+    <Style x:Key="TreeContainer" TargetType="TreeViewItem">
+      <Setter Property="Template" Value="{StaticResource TreeChrome}" />
+    </Style>
+  </Form.Resources>
+  <TreeView x:Name="styledTree" DesignId="201"
+            ItemContainerStyle="{StaticResource TreeContainer}">
+    <TreeView.Items>
+      <TreeViewItem Header="Root" IsExpanded="true">
+		<TreeViewItem Header="Child" />
+      </TreeViewItem>
+    </TreeView.Items>
+  </TreeView>
+  <TreeView x:Name="implicitTree" DesignId="202">
+    <TreeView.Items>
+      <TreeViewItem Header="Implicit" />
+    </TreeView.Items>
+  </TreeView>
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("TreeViewItem parse failed: "
+				+ Convert::UnicodeToUtf8(error));
+		CUI_EXPECT_EQ(2ULL, document.ControlTemplates.size());
+		CUI_EXPECT_EQ(UIClass::UI_TreeViewItem,
+			document.ControlTemplates.front().TargetType);
+		CUI_EXPECT_EQ(UIClass::UI_TreeViewItem,
+			document.StyleSheet.Rules.front().Type);
+
+		DesignerModel::MaterializedControlTree materialized;
+		if (!DesignerModel::DesignDocumentMaterializer::Materialize(
+			document, materialized, &error))
+			throw std::runtime_error("TreeViewItem materialization failed: "
+				+ Convert::UnicodeToUtf8(error));
+		auto findTree = [&](int id) -> TreeView*
+		{
+			const auto found = std::find_if(materialized.Roots.begin(),
+				materialized.Roots.end(), [&](const auto& root)
+				{ return root && root->DesignId == id; });
+			return found == materialized.Roots.end()
+				? nullptr : dynamic_cast<TreeView*>(found->get());
+		};
+		auto* styled = findTree(201);
+		auto* implicit = findTree(202);
+		CUI_EXPECT_TRUE(styled && styled->UsesGeneratedItemContainers());
+		CUI_EXPECT_TRUE(implicit && implicit->UsesGeneratedItemContainers());
+		CUI_EXPECT_TRUE(styled && styled->GetItemContainerTemplate());
+		CUI_EXPECT_TRUE(implicit && implicit->GetItemContainerTemplate());
+		CUI_EXPECT_EQ(2ULL, styled ? styled->GeneratedItemCount() : 0ULL);
+		auto* rootNode = styled && styled->Root
+			&& !styled->Root->Children.empty()
+			? styled->Root->Children.front() : nullptr;
+		auto* childNode = rootNode && !rootNode->Children.empty()
+			? rootNode->Children.front() : nullptr;
+		auto* rootItem = styled ? styled->GetGeneratedItem(rootNode) : nullptr;
+		auto* childItem = styled ? styled->GetGeneratedItem(childNode) : nullptr;
+		CUI_EXPECT_TRUE(rootItem != nullptr);
+		CUI_EXPECT_TRUE(childItem != nullptr);
+		CUI_EXPECT_TRUE(rootItem && rootItem->HasItems);
+		CUI_EXPECT_TRUE(rootItem && rootItem->IsExpanded);
+		CUI_EXPECT_EQ(0, rootItem ? rootItem->Level : -1);
+		CUI_EXPECT_EQ(1, childItem ? childItem->Level : -1);
+		if (rootItem)
+		{
+			auto* chrome = dynamic_cast<GridPanel*>(
+				rootItem->FindDeclarativeTemplatePart(L"treeChrome"));
+			auto* presenter = dynamic_cast<ContentPresenter*>(
+				rootItem->FindDeclarativeTemplatePart(L"treeHeader"));
+			auto* label = dynamic_cast<Label*>(
+				rootItem->GetGeneratedHeaderContent());
+			CUI_EXPECT_TRUE(chrome != nullptr);
+			CUI_EXPECT_TRUE(presenter != nullptr);
+			CUI_EXPECT_TRUE(rootItem->GetTemplateHeaderPresenter() == presenter);
+			CUI_EXPECT_TRUE(label != nullptr);
+			if (label) CUI_EXPECT_EQ(std::wstring(L"Root"), label->Text);
+			if (chrome)
+			{
+				CUI_EXPECT_EQ(0x22 / 255.0f, chrome->BackColor.r);
+				CUI_EXPECT_EQ(2.0f, chrome->BorderThickness);
+			}
+		}
+		CUI_EXPECT_TRUE(styled && childNode
+			&& styled->SelectAccessibilityVirtualNode(childNode->AccessibilityId,
+				AccessibilitySelectionAction::Select));
+		CUI_EXPECT_TRUE(childItem && childItem->IsSelected);
+		if (childItem)
+		{
+			auto* chrome = childItem->FindDeclarativeTemplatePart(L"treeChrome");
+			CUI_EXPECT_TRUE(chrome != nullptr);
+			if (chrome) CUI_EXPECT_EQ(0x22 / 255.0f, chrome->BorderColor.r);
+		}
+		if (rootItem) rootItem->SetIsExpanded(false);
+		CUI_EXPECT_FALSE(rootNode && rootNode->Expand);
+		CUI_EXPECT_FALSE(rootItem && rootItem->IsExpanded);
+		auto* implicitNode = implicit && implicit->Root
+			&& !implicit->Root->Children.empty()
+			? implicit->Root->Children.front() : nullptr;
+		auto* implicitItem = implicit
+			? implicit->GetGeneratedItem(implicitNode) : nullptr;
+		CUI_EXPECT_TRUE(implicitItem != nullptr);
+		CUI_EXPECT_TRUE(implicitItem
+			&& implicitItem->FindDeclarativeTemplatePart(
+				L"implicitTreeChrome") != nullptr);
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("TargetType=\"TreeViewItem\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"ItemContainerStyle=\"{StaticResource TreeContainer}\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument roundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, roundTrip, &error));
+		CUI_EXPECT_TRUE(roundTrip == document);
+		const auto native =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(native.find("TargetType=\"TreeViewItem\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument nativeRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			native, nativeRoundTrip, &error));
+		CUI_EXPECT_TRUE(nativeRoundTrip == document);
+
+		DesignerModel::DesignDocument styledFragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { 201 }, styledFragment, &error));
+		CUI_EXPECT_TRUE(std::any_of(styledFragment.Nodes.front()
+			.LocalObjectResources.ControlTemplates.begin(),
+			styledFragment.Nodes.front().LocalObjectResources.ControlTemplates.end(),
+			[](const auto& item) { return item.Key == L"TreeChrome"; }));
+		DesignerModel::DesignDocument implicitFragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { 202 }, implicitFragment, &error));
+		CUI_EXPECT_TRUE(std::any_of(implicitFragment.Nodes.front()
+			.LocalObjectResources.ControlTemplates.begin(),
+			implicitFragment.Nodes.front().LocalObjectResources.ControlTemplates.end(),
+			[](const auto& item)
+			{ return item.IsImplicit()
+				&& item.TargetType == UIClass::UI_TreeViewItem; }));
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* previous = dynamic_cast<TreeView*>(
+			runtime.FindControlByName(L"styledTree"));
+		CUI_EXPECT_TRUE(previous != nullptr);
+		auto changedXaml = xaml;
+		const std::string oldPart = "treeChrome";
+		const std::string newPart = "treeChromeReloaded";
+		auto partAt = changedXaml.find(oldPart);
+		while (partAt != std::string::npos)
+		{
+			changedXaml.replace(partAt, oldPart.size(), newPart);
+			partAt = changedXaml.find(oldPart, partAt + newPart.size());
+		}
+		DesignerModel::DesignDocument changed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			changedXaml, changed, &error));
+		DesignerModel::RuntimeDocumentReloadMode mode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			changed, runtime, {}, &mode, &error));
+		CUI_EXPECT_TRUE(mode != DesignerModel::RuntimeDocumentReloadMode::InPlace);
+		auto* reloaded = dynamic_cast<TreeView*>(
+			runtime.FindControlByName(L"styledTree"));
+		CUI_EXPECT_TRUE(reloaded != nullptr);
+		CUI_EXPECT_TRUE(reloaded != previous);
+		auto* reloadedRoot = reloaded && reloaded->Root
+			&& !reloaded->Root->Children.empty()
+			? reloaded->Root->Children.front() : nullptr;
+		CUI_EXPECT_TRUE(reloaded && reloaded->GetGeneratedItem(reloadedRoot)
+			&& reloaded->GetGeneratedItem(reloadedRoot)
+				->FindDeclarativeTemplatePart(L"treeChromeReloaded") != nullptr);
+
+		auto reject = [&](const std::string& invalid,
+			const wchar_t* expected)
+		{
+			DesignerModel::DesignDocument rejected;
+			error.clear();
+			CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+				invalid, rejected, &error));
+			CUI_EXPECT_TRUE(error.find(expected) != std::wstring::npos);
+		};
+		reject(R"XAML(<Form xmlns="urn:cui"><TreeViewItem /></Form>)XAML",
+			L"TreeViewItem");
+		reject(R"XAML(<Form xmlns="urn:cui"><Form.Resources>
+  <ControlTemplate x:Key="Wrong" TargetType="Button"><Panel /></ControlTemplate>
+  <Style TargetType="TreeViewItem"><Setter Property="Template"
+    Value="{StaticResource Wrong}" /></Style>
+</Form.Resources></Form>)XAML", L"不兼容");
+	});
+
+	runner.Add("HierarchicalDataTemplate drives data TreeView and observes child lists", []
+	{
+		const std::string xaml = R"XAML(<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Name="HierarchyForm">
+  <Form.Resources>
+    <DataType x:Key="Folder">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+        <Property Path="Children" Kind="Object" ObjectType="BindingList"
+                  ItemType="File" />
+      </DataType.Properties>
+    </DataType>
+    <DataType x:Key="File">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <HierarchicalDataTemplate DataType="Folder"
+                              ItemsSource="{Binding Path=Children}">
+      <Label x:Name="folderHeader" Text="{Binding Name}"
+             AccessibleName="Folder header" />
+    </HierarchicalDataTemplate>
+    <DataTemplate DataType="File">
+      <Label x:Name="fileHeader" Text="{Binding Name}"
+             AccessibleName="File header" />
+    </DataTemplate>
+  </Form.Resources>
+  <Form.DataContextSchema>
+    <Property Path="Roots" Kind="Object" ObjectType="BindingList"
+              ItemType="Folder" />
+  </Form.DataContextSchema>
+  <TreeView x:Name="dataTree" DesignId="301"
+            Width="320" Height="240"
+            DisplayMemberPath="Name"
+			SelectedValuePath="Name"
+            ItemsSource="{Binding Roots}" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("HierarchicalDataTemplate parse failed: "
+				+ Convert::UnicodeToUtf8(error));
+		const auto* folderTemplate = document.FindImplicitDataTemplate(L"Folder");
+		const auto* fileTemplate = document.FindImplicitDataTemplate(L"File");
+		CUI_EXPECT_TRUE(folderTemplate != nullptr);
+		CUI_EXPECT_TRUE(folderTemplate && folderTemplate->Hierarchical);
+		CUI_EXPECT_TRUE(folderTemplate && folderTemplate->ItemsSourceBinding);
+		CUI_EXPECT_EQ(std::wstring(L"Children"), folderTemplate
+			&& folderTemplate->ItemsSourceBinding
+				? folderTemplate->ItemsSourceBinding->SourceProperty
+				: std::wstring{});
+		CUI_EXPECT_TRUE(fileTemplate != nullptr);
+		CUI_EXPECT_FALSE(fileTemplate && fileTemplate->Hierarchical);
+
+		auto firstFile = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(firstFile->DefineProperty(
+			L"Name", std::wstring(L"readme.txt")));
+		auto files = std::make_shared<ObservableBindingList>(L"File");
+		files->Items.push_back(BindingSourceReference(firstFile));
+		auto folder = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(folder->DefineProperty(
+			L"Name", std::wstring(L"Documents")));
+		CUI_EXPECT_TRUE(folder->DefineProperty(
+			L"Children", BindingListReference(files)));
+		auto roots = std::make_shared<ObservableBindingList>(L"Folder");
+		roots->Items.push_back(BindingSourceReference(folder));
+		auto viewModel = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(viewModel->DefineProperty(
+			L"Roots", BindingListReference(roots)));
+
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.DataContext = viewModel;
+		DesignerModel::RuntimeDocument runtime;
+		if (!DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error))
+			throw std::runtime_error("HierarchicalDataTemplate materialization failed: "
+				+ Convert::UnicodeToUtf8(error));
+		auto* tree = dynamic_cast<TreeView*>(
+			runtime.FindControlByName(L"dataTree"));
+		CUI_EXPECT_TRUE(tree != nullptr);
+		CUI_EXPECT_TRUE(tree && tree->GetItemsSource());
+		CUI_EXPECT_TRUE(tree && tree->GetItemTemplate());
+		CUI_EXPECT_EQ(1ULL, tree ? tree->GeneratedItemCount() : 0ULL);
+		auto* rootNode = tree && tree->Root && !tree->Root->Children.empty()
+			? tree->Root->Children.front() : nullptr;
+		auto* rootItem = tree ? tree->GetGeneratedItem(rootNode) : nullptr;
+		auto* rootLabel = rootItem
+			? dynamic_cast<Label*>(rootItem->GetGeneratedHeaderContent()) : nullptr;
+		CUI_EXPECT_TRUE(rootItem != nullptr);
+		CUI_EXPECT_TRUE(rootNode && rootNode->HasItems());
+		CUI_EXPECT_TRUE(rootNode && !rootNode->ChildrenMaterialized());
+		CUI_EXPECT_TRUE(rootNode && rootNode->Children.empty());
+		CUI_EXPECT_TRUE(rootItem && rootItem->HasItems);
+		CUI_EXPECT_EQ(0, rootItem ? rootItem->Level : -1);
+		CUI_EXPECT_TRUE(rootItem
+			&& rootItem->GetDataContext().Get() == folder.get());
+		CUI_EXPECT_EQ(std::wstring(L"Documents"),
+			rootLabel ? rootLabel->Text : std::wstring{});
+		files->Items.pop_back();
+		CUI_EXPECT_TRUE(rootNode && rootNode->Children.empty());
+		CUI_EXPECT_TRUE(rootNode && !rootNode->ChildrenMaterialized());
+		CUI_EXPECT_FALSE(rootNode && rootNode->HasItems());
+		CUI_EXPECT_FALSE(rootItem && rootItem->HasItems);
+		files->Items.push_back(BindingSourceReference(firstFile));
+		CUI_EXPECT_TRUE(rootNode && rootNode->Children.empty());
+		CUI_EXPECT_TRUE(rootNode && !rootNode->ChildrenMaterialized());
+		CUI_EXPECT_TRUE(rootNode && rootNode->HasItems());
+		CUI_EXPECT_TRUE(rootItem && rootItem->HasItems);
+
+		if (rootItem) rootItem->SetIsExpanded(true);
+		auto* childNode = rootNode && !rootNode->Children.empty()
+			? rootNode->Children.front() : nullptr;
+		auto* childItem = tree ? tree->GetGeneratedItem(childNode) : nullptr;
+		auto* childLabel = childItem
+			? dynamic_cast<Label*>(childItem->GetGeneratedHeaderContent()) : nullptr;
+		CUI_EXPECT_TRUE(rootNode && rootNode->ChildrenMaterialized());
+		CUI_EXPECT_EQ(2ULL, tree ? tree->GeneratedItemCount() : 0ULL);
+		CUI_EXPECT_TRUE(childItem != nullptr);
+		CUI_EXPECT_EQ(1, childItem ? childItem->Level : -1);
+		CUI_EXPECT_TRUE(childItem
+			&& childItem->GetDataContext().Get() == firstFile.get());
+		CUI_EXPECT_EQ(std::wstring(L"readme.txt"),
+			childLabel ? childLabel->Text : std::wstring{});
+
+		const auto* selectedItemMetadata = tree
+			? BindingPropertyRegistry::Find(*tree, L"SelectedItem") : nullptr;
+		const auto* selectedValueMetadata = tree
+			? BindingPropertyRegistry::Find(*tree, L"SelectedValue") : nullptr;
+		const auto* selectedValuePathMetadata = tree
+			? BindingPropertyRegistry::Find(*tree, L"SelectedValuePath") : nullptr;
+		CUI_EXPECT_TRUE(selectedItemMetadata
+			&& selectedItemMetadata->IsReadOnly()
+			&& selectedItemMetadata->CanObserve());
+		CUI_EXPECT_TRUE(selectedValueMetadata
+			&& selectedValueMetadata->IsReadOnly()
+			&& selectedValueMetadata->CanObserve());
+		CUI_EXPECT_TRUE(selectedValuePathMetadata
+			&& selectedValuePathMetadata->CanWrite());
+		CUI_EXPECT_EQ(std::wstring(L"Name"),
+			tree ? tree->GetSelectedValuePath() : std::wstring{});
+		size_t legacySelectionChanges = 0;
+		size_t selectedItemChanges = 0;
+		size_t selectedItemPropertyChanges = 0;
+		size_t selectedValuePropertyChanges = 0;
+		auto legacySelectionConnection = tree->SelectionChanged.Subscribe(
+			[&](Control*) { ++legacySelectionChanges; });
+		auto selectedItemConnection = tree->SelectedItemChanged.Subscribe(
+			[&](Control*) { ++selectedItemChanges; });
+		auto selectedItemPropertyConnection = selectedItemMetadata->Subscribe(
+			*tree, [&] { ++selectedItemPropertyChanges; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		auto selectedValuePropertyConnection = selectedValueMetadata->Subscribe(
+			*tree, [&] { ++selectedValuePropertyChanges; },
+			DataSourceUpdateMode::OnPropertyChanged);
+		CUI_EXPECT_TRUE(tree && tree->SelectNode(childNode, false));
+		CUI_EXPECT_EQ(1ULL, legacySelectionChanges);
+		CUI_EXPECT_EQ(1ULL, selectedItemChanges);
+		CUI_EXPECT_EQ(1ULL, selectedItemPropertyChanges);
+		CUI_EXPECT_EQ(1ULL, selectedValuePropertyChanges);
+		BindingSourceReference selectedRecord;
+		CUI_EXPECT_TRUE(tree && tree->GetSelectedItem().TryGet(selectedRecord));
+		CUI_EXPECT_TRUE(selectedRecord.Get() == firstFile.get());
+		std::wstring selectedValue;
+		CUI_EXPECT_TRUE(tree && tree->GetSelectedValue().TryGet(selectedValue));
+		CUI_EXPECT_EQ(std::wstring(L"readme.txt"), selectedValue);
+		CUI_EXPECT_TRUE(firstFile->SetValue(
+			L"Name", std::wstring(L"README.md")));
+		CUI_EXPECT_EQ(1ULL, selectedItemPropertyChanges);
+		CUI_EXPECT_EQ(2ULL, selectedValuePropertyChanges);
+		selectedValue.clear();
+		CUI_EXPECT_TRUE(tree && tree->GetSelectedValue().TryGet(selectedValue));
+		CUI_EXPECT_EQ(std::wstring(L"README.md"), selectedValue);
+		auto* committedRootNode = rootNode;
+		auto* committedRootItem = rootItem;
+		auto* committedChildNode = childNode;
+		auto* committedChildItem = childItem;
+		auto secondFile = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(secondFile->DefineProperty(
+			L"Name", std::wstring(L"notes.md")));
+		files->Items.push_back(BindingSourceReference(secondFile));
+		rootNode = tree && tree->Root && !tree->Root->Children.empty()
+			? tree->Root->Children.front() : nullptr;
+		CUI_EXPECT_EQ(2ULL, rootNode ? rootNode->Children.size() : 0ULL);
+		CUI_EXPECT_EQ(3ULL, tree ? tree->GeneratedItemCount() : 0ULL);
+		CUI_EXPECT_TRUE(rootNode == committedRootNode);
+		CUI_EXPECT_TRUE(tree && tree->GetGeneratedItem(rootNode)
+			== committedRootItem);
+		CUI_EXPECT_TRUE(rootNode && rootNode->Children.front()
+			== committedChildNode);
+		CUI_EXPECT_TRUE(tree && tree->GetGeneratedItem(committedChildNode)
+			== committedChildItem);
+		CUI_EXPECT_TRUE(rootNode && rootNode->Expand);
+		CUI_EXPECT_TRUE(tree && tree->SelectedNode
+			&& tree->SelectedNode->DataItem().Get() == firstFile.get());
+		CUI_EXPECT_TRUE(files->Items.Move(0, 1));
+		CUI_EXPECT_TRUE(rootNode && rootNode->Children[1]
+			== committedChildNode);
+		CUI_EXPECT_TRUE(tree && tree->GetGeneratedItem(committedChildNode)
+			== committedChildItem);
+		CUI_EXPECT_TRUE(tree && tree->SelectedNode == committedChildNode);
+
+		auto replacementFile = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(replacementFile->DefineProperty(
+			L"Name", std::wstring(L"replacement.bin")));
+		auto replacementFiles = std::make_shared<ObservableBindingList>(L"File");
+		replacementFiles->Items.push_back(BindingSourceReference(replacementFile));
+		CUI_EXPECT_TRUE(folder->SetValue(
+			L"Children", BindingListReference(replacementFiles)));
+		rootNode = tree && tree->Root && !tree->Root->Children.empty()
+			? tree->Root->Children.front() : nullptr;
+		CUI_EXPECT_EQ(1ULL, rootNode ? rootNode->Children.size() : 0ULL);
+		CUI_EXPECT_TRUE(rootNode && rootNode->Expand);
+		CUI_EXPECT_TRUE(tree && tree->SelectedNode == nullptr);
+		CUI_EXPECT_EQ(2ULL, legacySelectionChanges);
+		CUI_EXPECT_EQ(2ULL, selectedItemChanges);
+		CUI_EXPECT_EQ(2ULL, selectedItemPropertyChanges);
+		CUI_EXPECT_EQ(3ULL, selectedValuePropertyChanges);
+		CUI_EXPECT_TRUE(rootNode && rootNode->Children.front()->DataItem().Get()
+			== replacementFile.get());
+
+		auto* committedRoot = tree ? tree->Root : nullptr;
+		auto cycle = std::make_shared<ObservableBindingList>(L"File");
+		cycle->Items.push_back(BindingSourceReference(folder));
+		CUI_EXPECT_TRUE(folder->SetValue(L"Children", BindingListReference(cycle)));
+		CUI_EXPECT_TRUE(tree && tree->Root == committedRoot);
+		CUI_EXPECT_TRUE(tree && tree->LastTemplateError().find(L"循环")
+			!= std::wstring::npos);
+		CUI_EXPECT_EQ(1ULL, tree && tree->Root
+			&& !tree->Root->Children.empty()
+				? tree->Root->Children.front()->Children.size() : 0ULL);
+		CUI_EXPECT_TRUE(folder->SetValue(
+			L"Children", BindingListReference(replacementFiles)));
+		CUI_EXPECT_TRUE(tree && tree->LastTemplateError().empty());
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find(
+			"<HierarchicalDataTemplate DataType=\"Folder\" ItemsSource=\"{Binding Children}\">")
+			!= std::string::npos);
+		DesignerModel::DesignDocument roundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, roundTrip, &error));
+		CUI_EXPECT_TRUE(roundTrip == document);
+		const auto native =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(native.find("version=\"29\"") != std::string::npos);
+		CUI_EXPECT_TRUE(native.find("hierarchical=\"true\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(native.find("<itemsSource") != std::string::npos);
+		DesignerModel::DesignDocument nativeRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			native, nativeRoundTrip, &error));
+		CUI_EXPECT_TRUE(nativeRoundTrip == document);
+
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { 301 }, fragment, &error));
+		const auto* copiedFolder = fragment.FindImplicitDataTemplate(L"Folder");
+		CUI_EXPECT_TRUE(copiedFolder && copiedFolder->Hierarchical
+			&& copiedFolder->ItemsSourceBinding);
+		CUI_EXPECT_TRUE(fragment.FindImplicitDataTemplate(L"File") != nullptr);
+
+		auto changedXaml = xaml;
+		const std::string oldAccessible = "Folder header";
+		const std::string newAccessible = "Folder header reloaded";
+		const auto accessibleAt = changedXaml.find(oldAccessible);
+		CUI_EXPECT_TRUE(accessibleAt != std::string::npos);
+		if (accessibleAt != std::string::npos)
+			changedXaml.replace(accessibleAt, oldAccessible.size(), newAccessible);
+		DesignerModel::DesignDocument changed;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			changedXaml, changed, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			changed, runtime, options, &reloadMode, &error));
+		CUI_EXPECT_TRUE(reloadMode !=
+			DesignerModel::RuntimeDocumentReloadMode::InPlace);
+		auto* reloadedTree = dynamic_cast<TreeView*>(
+			runtime.FindControlByName(L"dataTree"));
+		auto* reloadedRoot = reloadedTree && reloadedTree->Root
+			&& !reloadedTree->Root->Children.empty()
+			? reloadedTree->Root->Children.front() : nullptr;
+		auto* reloadedItem = reloadedTree
+			? reloadedTree->GetGeneratedItem(reloadedRoot) : nullptr;
+		auto* reloadedLabel = reloadedItem
+			? dynamic_cast<Label*>(reloadedItem->GetGeneratedHeaderContent())
+			: nullptr;
+		CUI_EXPECT_EQ(std::wstring(L"Folder header reloaded"),
+			reloadedLabel ? reloadedLabel->AccessibleName : std::wstring{});
+
+		auto reject = [&](const std::string& invalid,
+			const wchar_t* expected)
+		{
+			DesignerModel::DesignDocument rejected;
+			error.clear();
+			CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+				invalid, rejected, &error));
+			CUI_EXPECT_TRUE(error.find(expected) != std::wstring::npos);
+		};
+		reject(R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><Form.Resources>
+  <DataType x:Key="Bad"><DataType.Properties>
+    <Property Path="Name" Kind="String" />
+  </DataType.Properties></DataType>
+  <HierarchicalDataTemplate DataType="Bad" ItemsSource="{Binding Name}">
+    <Label Text="{Binding Name}" />
+  </HierarchicalDataTemplate>
+</Form.Resources></Form>)XAML", L"不是 BindingList");
+		reject(R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><Form.Resources>
+  <DataType x:Key="Node"><DataType.Properties>
+    <Property Path="Name" Kind="String" />
+    <Property Path="Children" Kind="Object" ObjectType="BindingList"
+              ItemType="Node" />
+  </DataType.Properties></DataType>
+  <HierarchicalDataTemplate DataType="Node"
+    ItemsSource="{Binding Path=Children, Mode=TwoWay}"><Label /></HierarchicalDataTemplate>
+</Form.Resources></Form>)XAML", L"只支持读取模式");
+		reject(R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><Form.Resources>
+  <DataType x:Key="Node"><DataType.Properties>
+    <Property Path="Name" Kind="String" />
+  </DataType.Properties></DataType>
+  <DataList x:Key="Roots" ItemType="Node"><DataRecord Name="Root" /></DataList>
+</Form.Resources><TreeView ItemsSource="{StaticResource Roots}"><TreeView.Items>
+  <TreeViewItem Header="Static" />
+	</TreeView.Items></TreeView></Form>)XAML", L"不能与 StaticResource ItemsSource");
+	});
+
+	runner.Add("TreeView virtualizes containers and anchors precise root changes", []
+	{
+		TreeView tree(0, 0, 320, 84);
+		tree.ItemHeight = 28.0f;
+		tree.SetDisplayMemberPath(L"Name");
+		auto roots = std::make_shared<ObservableBindingList>(L"Node");
+		std::vector<std::shared_ptr<ObservableObject>> records;
+		for (int index = 0; index < 100; ++index)
+		{
+			auto record = std::make_shared<ObservableObject>();
+			CUI_EXPECT_TRUE(record->DefineProperty(
+				L"Name", L"Node " + std::to_wstring(index)));
+			records.push_back(record);
+			roots->Items.push_back(BindingSourceReference(record));
+		}
+		tree.SetItemsSource(BindingListReference(roots));
+		CUI_EXPECT_TRUE(tree.LastTemplateError().empty());
+		CUI_EXPECT_EQ(100ULL, tree.Root->Children.size());
+		CUI_EXPECT_TRUE(tree.GeneratedItemCount() <= 4ULL);
+		CUI_EXPECT_TRUE(tree.GetGeneratedItem(tree.Root->Children.front())
+			!= nullptr);
+		CUI_EXPECT_TRUE(tree.GetGeneratedItem(tree.Root->Children.back())
+			== nullptr);
+		std::unordered_set<TreeViewItem*> firstViewportContainers;
+		for (size_t index = 0; index < 4; ++index)
+			if (auto* item = tree.GetGeneratedItem(tree.Root->Children[index]))
+				firstViewportContainers.insert(item);
+		CUI_EXPECT_EQ(4ULL, firstViewportContainers.size());
+		CUI_EXPECT_TRUE(tree.HitTestNode(30.0f, 14.0f)
+			== tree.Root->Children.front());
+		CUI_EXPECT_TRUE(tree.SetAccessibilityScrollPercent(
+			AccessibilityScrollNoChange, 100.0));
+		CUI_EXPECT_TRUE(tree.GetGeneratedItem(tree.Root->Children.front())
+			== nullptr);
+		CUI_EXPECT_TRUE(tree.SetAccessibilityScrollPercent(
+			AccessibilityScrollNoChange, 0.0));
+		for (size_t index = 0; index < 4; ++index)
+		{
+			auto* item = tree.GetGeneratedItem(tree.Root->Children[index]);
+			CUI_EXPECT_TRUE(item != nullptr);
+			CUI_EXPECT_TRUE(firstViewportContainers.contains(item));
+			CUI_EXPECT_TRUE(item && item->GetDataContext().Get()
+				== records[index].get());
+		}
+
+		CUI_EXPECT_TRUE(tree.SetAccessibilityScrollPercent(
+			AccessibilityScrollNoChange, 50.0));
+		CUI_EXPECT_TRUE(tree.ScrollIndex > 0);
+		CUI_EXPECT_TRUE(tree.GeneratedItemCount() <= 5ULL);
+		auto* anchorNode = tree.Root->Children[
+			static_cast<size_t>(tree.ScrollIndex)];
+		CUI_EXPECT_TRUE(tree.HitTestNode(30.0f, 14.0f) == anchorNode);
+		auto* anchorContainer = tree.GetGeneratedItem(anchorNode);
+		CUI_EXPECT_TRUE(anchorContainer != nullptr);
+		const int previousScroll = tree.ScrollIndex;
+
+		auto inserted = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(inserted->DefineProperty(
+			L"Name", std::wstring(L"Inserted")));
+		roots->Items.insert(roots->Items.begin(),
+			BindingSourceReference(inserted));
+		CUI_EXPECT_EQ(previousScroll + 1, tree.ScrollIndex);
+		CUI_EXPECT_TRUE(tree.Root->Children[
+			static_cast<size_t>(tree.ScrollIndex)] == anchorNode);
+		CUI_EXPECT_TRUE(tree.GetGeneratedItem(anchorNode) == anchorContainer);
+		CUI_EXPECT_TRUE(tree.GeneratedItemCount() <= 5ULL);
+
+		CUI_EXPECT_TRUE(roots->Items.Move(
+			static_cast<size_t>(tree.ScrollIndex), 0));
+		CUI_EXPECT_EQ(0, tree.ScrollIndex);
+		CUI_EXPECT_TRUE(tree.Root->Children.front() == anchorNode);
+		CUI_EXPECT_TRUE(tree.GetGeneratedItem(anchorNode) == anchorContainer);
+		CUI_EXPECT_TRUE(tree.GeneratedItemCount() <= 4ULL);
+
+		CUI_EXPECT_TRUE(tree.SetAccessibilityScrollPercent(
+			AccessibilityScrollNoChange, 100.0));
+		auto onlyRecord = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(onlyRecord->DefineProperty(
+			L"Name", std::wstring(L"Only")));
+		auto reducedList = std::make_shared<ObservableBindingList>(L"Node");
+		reducedList->Items.push_back(BindingSourceReference(onlyRecord));
+		tree.SetItemsSource(BindingListReference(reducedList));
+		CUI_EXPECT_EQ(0, tree.ScrollIndex);
+		CUI_EXPECT_EQ(1ULL, tree.GeneratedItemCount());
+		CUI_EXPECT_TRUE(tree.GetGeneratedItem(tree.Root->Children.front())
+			!= nullptr);
+	});
+
+	runner.Add("TreeView follows WPF visible-node keyboard navigation", []
+	{
+		TreeView tree(0, 0, 260, 56);
+		tree.ItemHeight = 28.0f;
+		auto* parent = tree.Root->AddChild(
+			std::make_unique<TreeNode>(L"Parent"));
+		auto* firstChild = parent->AddChild(
+			std::make_unique<TreeNode>(L"First"));
+		auto* secondChild = parent->AddChild(
+			std::make_unique<TreeNode>(L"Second"));
+		auto* sibling = tree.Root->AddChild(
+			std::make_unique<TreeNode>(L"Sibling"));
+		auto* last = tree.Root->AddChild(
+			std::make_unique<TreeNode>(L"Last"));
+		CUI_EXPECT_TRUE(parent && firstChild && secondChild && sibling && last);
+		CUI_EXPECT_TRUE(tree.HandlesNavigationKey(VK_LEFT));
+		CUI_EXPECT_TRUE(tree.HandlesNavigationKey(VK_RIGHT));
+		CUI_EXPECT_TRUE(tree.HandlesNavigationKey(VK_NEXT));
+		CUI_EXPECT_FALSE(tree.HandlesNavigationKey(VK_RETURN));
+
+		size_t legacyChanges = 0;
+		size_t itemChanges = 0;
+		size_t keyDowns = 0;
+		auto legacyConnection = tree.SelectionChanged.Subscribe(
+			[&](Control*) { ++legacyChanges; });
+		auto itemConnection = tree.SelectedItemChanged.Subscribe(
+			[&](Control*) { ++itemChanges; });
+		auto keyConnection = tree.OnKeyDown.Subscribe(
+			[&](Control*, KeyEventArgs) { ++keyDowns; });
+		CUI_EXPECT_TRUE(tree.SelectNode(parent, false));
+		TreeNode* selectedStatic = nullptr;
+		CUI_EXPECT_TRUE(tree.GetSelectedItem().TryGet(selectedStatic));
+		CUI_EXPECT_EQ(parent, selectedStatic);
+		CUI_EXPECT_TRUE(tree.GetSelectedValue().TryGet(selectedStatic));
+		CUI_EXPECT_EQ(parent, selectedStatic);
+
+		CUI_EXPECT_TRUE(tree.ProcessMessage(
+			WM_KEYDOWN, VK_RIGHT, 0, 0, 0));
+		CUI_EXPECT_TRUE(parent->Expand);
+		CUI_EXPECT_EQ(parent, tree.SelectedNode);
+		CUI_EXPECT_EQ(1ULL, legacyChanges);
+		CUI_EXPECT_TRUE(tree.ProcessMessage(
+			WM_KEYDOWN, VK_RIGHT, 0, 0, 0));
+		CUI_EXPECT_EQ(firstChild, tree.SelectedNode);
+		CUI_EXPECT_TRUE(tree.ProcessMessage(
+			WM_KEYDOWN, VK_DOWN, 0, 0, 0));
+		CUI_EXPECT_EQ(secondChild, tree.SelectedNode);
+		CUI_EXPECT_TRUE(tree.ProcessMessage(
+			WM_KEYDOWN, VK_DOWN, 0, 0, 0));
+		CUI_EXPECT_EQ(sibling, tree.SelectedNode);
+		CUI_EXPECT_TRUE(tree.ScrollIndex > 0);
+		CUI_EXPECT_TRUE(tree.ProcessMessage(
+			WM_KEYDOWN, VK_HOME, 0, 0, 0));
+		CUI_EXPECT_EQ(parent, tree.SelectedNode);
+		CUI_EXPECT_EQ(0, tree.ScrollIndex);
+		CUI_EXPECT_TRUE(tree.ProcessMessage(
+			WM_KEYDOWN, VK_RIGHT, 0, 0, 0));
+		CUI_EXPECT_EQ(firstChild, tree.SelectedNode);
+		CUI_EXPECT_TRUE(tree.ProcessMessage(
+			WM_KEYDOWN, VK_LEFT, 0, 0, 0));
+		CUI_EXPECT_EQ(parent, tree.SelectedNode);
+		CUI_EXPECT_TRUE(tree.ProcessMessage(
+			WM_KEYDOWN, VK_LEFT, 0, 0, 0));
+		CUI_EXPECT_FALSE(parent->Expand);
+		CUI_EXPECT_EQ(parent, tree.SelectedNode);
+		CUI_EXPECT_TRUE(tree.ProcessMessage(
+			WM_KEYDOWN, VK_END, 0, 0, 0));
+		CUI_EXPECT_EQ(last, tree.SelectedNode);
+		CUI_EXPECT_EQ(1, tree.ScrollIndex);
+		CUI_EXPECT_TRUE(tree.ProcessMessage(
+			WM_KEYDOWN, VK_PRIOR, 0, 0, 0));
+		CUI_EXPECT_EQ(parent, tree.SelectedNode);
+		CUI_EXPECT_EQ(0, tree.ScrollIndex);
+		CUI_EXPECT_EQ(legacyChanges, itemChanges);
+		CUI_EXPECT_EQ(10ULL, keyDowns);
+	});
+
+	runner.Add("Declarative component templates follow WPF template precedence", []
+	{
+		const std::string xaml = R"XAML(<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:local="urn:cui:template-components"
+      x:Name="ComponentTemplateForm">
+  <Form.Resources>
+    <ComponentDefinition x:Key="local:DefaultSurface" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Caption" Type="String" Default="Default" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Label x:Name="defaultPart" Text="{TemplateBinding Caption}" />
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+    <ComponentDefinition x:Key="local:ThemedSurface" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Caption" Type="String" Default="Themed" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Label x:Name="componentDefaultPart" Text="component default" />
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+    <ControlTemplate TargetType="local:ThemedSurface">
+      <Label x:Name="implicitPart" Text="{TemplateBinding Caption}" />
+    </ControlTemplate>
+    <ControlTemplate x:Key="StyledSurfaceTemplate"
+                     TargetType="local:ThemedSurface">
+      <Label x:Name="styledPart" Text="{TemplateBinding Caption}" />
+    </ControlTemplate>
+    <ControlTemplate x:Key="DirectSurfaceTemplate"
+                     TargetType="local:ThemedSurface">
+      <Label x:Name="directPart" Text="{TemplateBinding Caption}" />
+    </ControlTemplate>
+    <Style x:Key="StyledSurface" TargetType="local:ThemedSurface">
+      <Setter Property="Template"
+              Value="{StaticResource StyledSurfaceTemplate}" />
+    </Style>
+  </Form.Resources>
+  <local:DefaultSurface x:Name="defaultSurface" DesignId="1"
+                        Caption="Component fallback" />
+  <local:ThemedSurface x:Name="implicitSurface" DesignId="2"
+                       Caption="Implicit QName" />
+  <local:ThemedSurface x:Name="styledSurface" DesignId="3"
+                       Style="{StaticResource StyledSurface}"
+                       Caption="Style template" />
+  <local:ThemedSurface x:Name="directSurface" DesignId="4"
+                       Style="{StaticResource StyledSurface}"
+                       Template="{StaticResource DirectSurfaceTemplate}"
+                       Caption="Direct template" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(3ULL, document.ControlTemplates.size());
+		CUI_EXPECT_FALSE(document.ControlTemplates.front()
+			.TargetComponentType.Empty());
+		CUI_EXPECT_EQ(std::wstring(L"ThemedSurface"),
+			document.ControlTemplates.front().TargetComponentType.XamlName);
+		CUI_EXPECT_EQ(document.Components[1].Type,
+			document.ControlTemplates.front().TargetComponentType);
+		CUI_EXPECT_EQ(std::wstring(L"Template"),
+			document.StyleSheet.Rules.front().Setters.front().PropertyName);
+		CUI_EXPECT_EQ(std::wstring(L"StyledSurfaceTemplate"),
+			document.StyleSheet.Rules.front().Setters.front().ResourceKey);
+
+		DesignerModel::MaterializedControlTree tree;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentMaterializer::Materialize(
+			document, tree, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(4ULL, tree.Roots.size());
+		auto expectPart = [&](size_t index, const wchar_t* part,
+			const wchar_t* text)
+		{
+			CUI_EXPECT_TRUE(index < tree.Roots.size());
+			if (index >= tree.Roots.size()) return;
+			auto* label = dynamic_cast<Label*>(
+				tree.Roots[index]->FindDeclarativeTemplatePart(part));
+			CUI_EXPECT_TRUE(label != nullptr);
+			if (label) CUI_EXPECT_EQ(std::wstring(text), label->Text);
+		};
+		expectPart(0, L"defaultPart", L"Component fallback");
+		expectPart(1, L"implicitPart", L"Implicit QName");
+		expectPart(2, L"styledPart", L"Style template");
+		expectPart(3, L"directPart", L"Direct template");
+		CUI_EXPECT_TRUE(tree.Roots[2]->FindDeclarativeTemplatePart(
+			L"implicitPart") == nullptr);
+		CUI_EXPECT_TRUE(tree.Roots[3]->FindDeclarativeTemplatePart(
+			L"styledPart") == nullptr);
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* previousStyled = runtime.FindControlByName(L"styledSurface");
+		CUI_EXPECT_TRUE(previousStyled != nullptr);
+		auto retemplated = document;
+		retemplated.StyleSheet.Rules.front().Setters.front().ResourceKey =
+			L"DirectSurfaceTemplate";
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			retemplated, runtime, {}, &reloadMode, &error));
+		CUI_EXPECT_TRUE(reloadMode
+			!= DesignerModel::RuntimeDocumentReloadMode::InPlace);
+		auto* reloadedStyled = runtime.FindControlByName(L"styledSurface");
+		CUI_EXPECT_TRUE(reloadedStyled != nullptr);
+		CUI_EXPECT_TRUE(reloadedStyled != previousStyled);
+		if (reloadedStyled)
+			CUI_EXPECT_TRUE(reloadedStyled->FindDeclarativeTemplatePart(
+				L"directPart") != nullptr);
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find(
+			"<ControlTemplate TargetType=\"local:ThemedSurface\">")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"Property=\"Template\" Value=\"{StaticResource StyledSurfaceTemplate}\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error));
+		CUI_EXPECT_TRUE(xamlRoundTrip == document);
+
+		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument xmlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			xml, xmlRoundTrip, &error));
+		CUI_EXPECT_TRUE(xmlRoundTrip == document);
+
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { 3 }, fragment, &error));
+		CUI_EXPECT_EQ(1ULL, fragment.Nodes.size());
+		CUI_EXPECT_EQ(1ULL, fragment.Nodes.front()
+			.LocalObjectResources.ControlTemplates.size());
+		CUI_EXPECT_EQ(std::wstring(L"StyledSurfaceTemplate"),
+			fragment.Nodes.front().LocalObjectResources.ControlTemplates.front().Key);
+		DesignerModel::DesignDocument pasted;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			DesignerModel::DesignDocument{}, fragment, 0, 0,
+			pasted, nullptr, &error));
+		DesignerModel::MaterializedControlTree pastedTree;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentMaterializer::Materialize(
+			pasted, pastedTree, &error));
+		CUI_EXPECT_EQ(1ULL, pastedTree.Roots.size());
+		if (!pastedTree.Roots.empty())
+			CUI_EXPECT_TRUE(pastedTree.Roots.front()
+				->FindDeclarativeTemplatePart(L"styledPart") != nullptr);
+
+		const std::string invalidTrigger = R"XAML(
+<Form xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Form.Resources>
+    <ControlTemplate x:Key="T" TargetType="Button">
+      <Label x:Name="part" />
+    </ControlTemplate>
+    <Style TargetType="Button">
+      <Style.Triggers>
+        <Trigger Property="Checked" Value="true">
+          <Setter Property="Template" Value="{StaticResource T}" />
+        </Trigger>
+      </Style.Triggers>
+    </Style>
+  </Form.Resources>
+</Form>)XAML";
+		DesignerModel::DesignDocument rejected = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidTrigger, rejected, &error));
+		CUI_EXPECT_TRUE(error.find(L"动态换模板") != std::wstring::npos);
+	});
+
+	runner.Add("XAML component definitions materialize without C++ type registration", []
+	{
+		const std::string xaml = R"XAML(<?xml version="1.0" encoding="utf-8"?>
+<Form xmlns="urn:cui"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:local="urn:cui:test-components"
+      x:Name="ComponentForm">
+  <Form.Resources>
+    <Style TargetType="local:StatusSurface">
+      <Setter Property="AccentColor" Value="#FF336699" />
+      <Setter Property="ContentPadding" Value="6, 8" />
+      <Setter Property="DisplayMode" Value="Compact" />
+      <Setter Property="SurfaceTransform">
+        <Setter.Value>
+          <TranslateTransform X="3" Y="4" />
+        </Setter.Value>
+      </Setter>
+      <Style.Triggers>
+        <Trigger Property="IsMouseOver" Value="true">
+          <Setter Property="ContentPadding" Value="12" />
+        </Trigger>
+      </Style.Triggers>
+    </Style>
+    <ComponentDefinition x:Key="local:StatusSurface"
+                         BaseType="Panel"
+                         DisplayName="Status surface">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Severity"
+                           Type="Int"
+                           Default="2"
+                           Category="Status"
+                           Order="1"
+                           Editor="Number"
+                           Minimum="0"
+                           Maximum="10"
+                           Step="1"
+                           AffectsRender="true" />
+        <ComponentProperty Name="Caption"
+                           Type="String"
+                           Default="Ready"
+                           Category="Status"
+                           Order="2" />
+        <ComponentProperty Name="AccentColor"
+                           Type="Color"
+                           Default="#FF112233"
+                           Category="Appearance"
+                           Editor="Color"
+                           AffectsRender="true" />
+        <ComponentProperty Name="ContentPadding"
+                           Type="Thickness"
+                           Default="4"
+                           Category="Layout"
+                           Editor="Thickness"
+                           AffectsMeasure="true" />
+        <ComponentProperty Name="MinimumContentSize"
+                           Type="Size"
+                           Default="80, 24"
+                           Category="Layout"
+                           Editor="Size"
+                           AffectsMeasure="true" />
+        <ComponentProperty Name="PreferredWidth"
+                           Type="Length"
+                           Default="Auto"
+                           Category="Layout"
+                           Editor="Length"
+                           AffectsMeasure="true" />
+        <ComponentProperty Name="DisplayMode"
+                           Type="Enum"
+                           Default="Detailed"
+                           Category="Appearance">
+          <ComponentProperty.Choices>
+            <ComponentChoice Value="Compact" DisplayName="Compact view" />
+            <ComponentChoice Value="Detailed" DisplayName="Detailed view" />
+          </ComponentProperty.Choices>
+        </ComponentProperty>
+        <ComponentProperty Name="SurfaceBrush" Type="Brush"
+                           Default="{StaticResource ComponentSurfaceBrush}"
+                           AffectsRender="true" />
+        <ComponentProperty Name="SurfaceClip" Type="Geometry" AffectsRender="true">
+          <ComponentProperty.Default>
+            <RectangleGeometry Rect="0,0,200,40" RadiusX="6" RadiusY="6" />
+          </ComponentProperty.Default>
+        </ComponentProperty>
+        <ComponentProperty Name="SurfaceTransform" Type="Transform" AffectsRender="true">
+          <ComponentProperty.Default>
+            <RotateTransform Angle="2" CenterX="100" CenterY="20" />
+          </ComponentProperty.Default>
+        </ComponentProperty>
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.ContentProperties>
+        <ComponentContentProperty Name="Content"
+                                  Cardinality="Single"
+                                  Default="true" />
+        <ComponentContentProperty Name="Actions"
+                                  Cardinality="Multiple" />
+      </ComponentDefinition.ContentProperties>
+      <ComponentDefinition.Events>
+        <ComponentEvent Name="Invoked"
+                        DisplayName="Invoke status"
+                        Category="Action"
+                        Default="true" />
+      </ComponentDefinition.Events>
+      <ComponentDefinition.Template>
+        <StackPanel x:Name="templateRoot" DesignId="1"
+                    ForeColor="{TemplateBinding AccentColor}"
+                    Padding="{TemplateBinding ContentPadding}"
+                    MinSize="{TemplateBinding MinimumContentSize}"
+                    LayoutWidth="{TemplateBinding PreferredWidth}"
+                    Foreground="{TemplateBinding SurfaceBrush}"
+                    Clip="{TemplateBinding SurfaceClip}"
+                    RenderTransform="{TemplateBinding SurfaceTransform}"
+                    OnMouseClick="{RaiseEvent Invoked}">
+          <Label x:Name="captionText"
+                  DesignId="2"
+                  Text="{TemplateBinding Caption}" />
+          <Label x:Name="captionMirror"
+                 DesignId="6"
+                 Text="{Binding Text, ElementName=captionText}" />
+          <Label x:Name="modeText"
+                 DesignId="3"
+                 Text="{TemplateBinding DisplayMode}" />
+          <StackPanel x:Name="contentHost"
+                      DesignId="4"
+                      ComponentSlot.Presents="Content" />
+          <StackPanel x:Name="actionsHost"
+                      DesignId="5"
+                      Orientation="Horizontal"
+                      ComponentSlot.Presents="Actions" />
+        </StackPanel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+    <LinearGradientBrush x:Key="ComponentSurfaceBrush"
+                         StartPoint="0,0" EndPoint="1,0">
+      <GradientStop Color="#FF102030" Offset="0" />
+      <GradientStop Color="#FF90A0B0" Offset="1" />
+    </LinearGradientBrush>
+  </Form.Resources>
+  <local:StatusSurface x:Name="statusSurface"
+                        DesignId="1"
+                       Severity="7"
+                       Caption="Warning"
+                       MinimumContentSize="120, 32"
+                       PreferredWidth="240.5"
+                        Invoked="HandleStatusInvoked"
+                        Width="320"
+                        Height="120">
+    <Label x:Name="statusContent" DesignId="2" Text="Projected content" />
+    <local:StatusSurface.Actions>
+      <Button x:Name="primaryAction" DesignId="3" Text="Accept" />
+      <Button x:Name="secondaryAction" DesignId="4" Text="Cancel" />
+    </local:StatusSurface.Actions>
+  </local:StatusSurface>
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		CUI_EXPECT_EQ(10ULL, document.Components.front().Properties.size());
+		CUI_EXPECT_EQ(std::wstring(L"ComponentSurfaceBrush"),
+			document.Components.front().Properties[7].DefaultResourceKey);
+		CUI_EXPECT_EQ(1ULL, document.StyleSheet.Rules.size());
+		CUI_EXPECT_EQ(document.Components.front().Type,
+			document.StyleSheet.Rules.front().ComponentType);
+		CUI_EXPECT_EQ(1ULL, document.Components.front().Events.size());
+		CUI_EXPECT_EQ(2ULL, document.Components.front().ContentProperties.size());
+		CUI_EXPECT_TRUE(document.Components.front().ContentProperties.front().IsDefault);
+		CUI_EXPECT_EQ(std::wstring(L"Invoked"),
+			document.Components.front().Events.front().Name);
+		CUI_EXPECT_EQ(DesignerComponentEventPayload::None,
+			document.Components.front().Events.front().Payload);
+		CUI_EXPECT_EQ(6ULL, document.Components.front().Template.size());
+		CUI_EXPECT_EQ(std::wstring(L"Caption"),
+			document.Components.front().Template[1]
+				.TemplateBindings.at(L"Text"));
+		CUI_EXPECT_EQ(std::wstring(L"Invoked"),
+			document.Components.front().Template.front()
+				.TemplateEventBindings.at(L"OnMouseClick"));
+		CUI_EXPECT_EQ(UIClass::UI_Panel,
+			document.Components.front().BaseType);
+		CUI_EXPECT_EQ(4ULL, document.Nodes.size());
+		CUI_EXPECT_FALSE(document.Nodes.front().ComponentType.Empty());
+		CUI_EXPECT_EQ(std::wstring(L"StatusSurface"),
+			document.Nodes.front().ComponentType.XamlName);
+		CUI_EXPECT_EQ(std::string("HandleStatusInvoked"),
+			document.Nodes.front().Events["Invoked"].get<std::string>());
+		CUI_EXPECT_EQ(std::wstring(L"Content"),
+			document.Nodes[1].ComponentContentProperty);
+		CUI_EXPECT_EQ(std::wstring(L"Actions"),
+			document.Nodes[2].ComponentContentProperty);
+
+		DesignerModel::MaterializedControlTree tree;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentMaterializer::Materialize(
+			document, tree, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(1ULL, tree.Roots.size());
+		CUI_EXPECT_EQ(UIClass::UI_Panel, tree.Roots.front()->Type());
+		CUI_EXPECT_EQ(1, tree.Roots.front()->Count);
+		CUI_EXPECT_EQ(4ULL, tree.Controls.size());
+		CUI_EXPECT_EQ(1ULL, tree.Controls.front()->ComponentEvents.size());
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Style,
+			tree.Roots.front()->GetPropertyValueSource(L"AccentColor"));
+		std::shared_ptr<ControlStyleSheet> componentStyleSheet;
+		CUI_EXPECT_TRUE(DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
+			document.StyleSheet, componentStyleSheet, &error,
+			document.ResourceBasePath, document.Resources));
+		Panel ordinaryPanel;
+		CUI_EXPECT_TRUE(componentStyleSheet != nullptr);
+		if (componentStyleSheet)
+			CUI_EXPECT_TRUE(componentStyleSheet->Resolve(ordinaryPanel).Setters.empty());
+		auto* templateRoot = (*tree.Roots.front())[0];
+		CUI_EXPECT_TRUE(templateRoot != nullptr);
+		Control* captionText = nullptr;
+		Control* captionMirror = nullptr;
+		Control* modeText = nullptr;
+		if (templateRoot)
+		{
+			CUI_EXPECT_EQ(UIClass::UI_StackPanel, templateRoot->Type());
+			CUI_EXPECT_EQ(5, templateRoot->Count);
+			CUI_EXPECT_EQ(Thickness(6.0f, 8.0f), templateRoot->Padding);
+			CUI_EXPECT_EQ(120, templateRoot->MinSize.cx);
+			CUI_EXPECT_EQ(32, templateRoot->MinSize.cy);
+			CUI_EXPECT_TRUE(templateRoot->GetLayoutWidth().IsFixed());
+			CUI_EXPECT_EQ(240.5f, templateRoot->GetLayoutWidth().value);
+			CUI_EXPECT_EQ(0.2f, templateRoot->ForeColor.r);
+			CUI_EXPECT_EQ(0.4f, templateRoot->ForeColor.g);
+			CUI_EXPECT_EQ(0.6f, templateRoot->ForeColor.b);
+			const auto& foreground = templateRoot->GetForegroundBrush();
+			CUI_EXPECT_TRUE(foreground.has_value());
+			if (foreground)
+			{
+				CUI_EXPECT_EQ(cui::drawing::BrushKind::LinearGradient,
+					foreground->Kind);
+				CUI_EXPECT_EQ(2ULL, foreground->GradientStops.size());
+			}
+			const auto& clip = templateRoot->GetClip();
+			CUI_EXPECT_TRUE(clip.has_value());
+			if (clip)
+			{
+				CUI_EXPECT_EQ(cui::drawing::GeometryKind::Rectangle, clip->Kind);
+				CUI_EXPECT_EQ(6.0f, clip->RadiusX);
+			}
+			const auto& transform = templateRoot->GetRenderTransform();
+			CUI_EXPECT_TRUE(transform.has_value());
+			if (transform)
+			{
+				CUI_EXPECT_EQ(1ULL, transform->Operations.size());
+				CUI_EXPECT_EQ(cui::drawing::TransformKind::Translate,
+					transform->Operations.front().Kind);
+				CUI_EXPECT_EQ(3.0f, transform->Operations.front().X);
+			}
+			captionText = (*templateRoot)[0];
+			captionMirror = (*templateRoot)[1];
+			modeText = (*templateRoot)[2];
+			auto* contentHost = (*templateRoot)[3];
+			auto* actionsHost = (*templateRoot)[4];
+			CUI_EXPECT_TRUE(contentHost != nullptr);
+			CUI_EXPECT_TRUE(actionsHost != nullptr);
+			if (contentHost) CUI_EXPECT_EQ(1, contentHost->Count);
+			if (actionsHost) CUI_EXPECT_EQ(2, actionsHost->Count);
+			const auto contentControl = std::find_if(
+				tree.Controls.begin(), tree.Controls.end(), [](const auto& control)
+				{
+					return control && control->Name == L"statusContent";
+				});
+			CUI_EXPECT_TRUE(contentControl != tree.Controls.end());
+			if (contentControl != tree.Controls.end())
+			{
+				CUI_EXPECT_TRUE((*contentControl)->DesignerParent
+					== tree.Roots.front().get());
+				CUI_EXPECT_TRUE((*contentControl)->ControlInstance->Parent
+					== contentHost);
+			}
+		}
+		CUI_EXPECT_TRUE(captionText != nullptr);
+		if (captionText)
+			CUI_EXPECT_EQ(std::wstring(L"Warning"), captionText->Text);
+		CUI_EXPECT_TRUE(captionMirror != nullptr);
+		if (captionMirror)
+			CUI_EXPECT_EQ(std::wstring(L"Warning"), captionMirror->Text);
+		CUI_EXPECT_TRUE(modeText != nullptr);
+		if (modeText)
+			CUI_EXPECT_EQ(std::wstring(L"Compact"), modeText->Text);
+		tree.Roots.front()->SetStyleState(ControlStyleState::Hovered);
+		if (templateRoot)
+			CUI_EXPECT_EQ(Thickness(12.0f), templateRoot->Padding);
+		tree.Roots.front()->SetStyleState(ControlStyleState::Hovered, false);
+		if (templateRoot)
+			CUI_EXPECT_EQ(Thickness(6.0f, 8.0f), templateRoot->Padding);
+		const auto* modeMetadata =
+			tree.Roots.front()->FindPropertyMetadata(L"DisplayMode");
+		CUI_EXPECT_TRUE(modeMetadata != nullptr);
+		if (modeMetadata)
+		{
+			CUI_EXPECT_EQ(BindingValueKind::String, modeMetadata->ValueKind());
+			CUI_EXPECT_EQ(ControlPropertyEditorKind::Choice,
+				modeMetadata->Design().Editor);
+			CUI_EXPECT_EQ(2ULL, modeMetadata->Design().Choices.size());
+		}
+		CUI_EXPECT_TRUE(tree.Roots.front()->TrySetPropertyValue(
+			L"DisplayMode", BindingValue(std::wstring(L"detailed"))));
+		if (modeText)
+			CUI_EXPECT_EQ(std::wstring(L"Detailed"), modeText->Text);
+		CUI_EXPECT_FALSE(tree.Roots.front()->TrySetPropertyValue(
+			L"DisplayMode", BindingValue(std::wstring(L"Unknown"))));
+		if (modeText)
+			CUI_EXPECT_EQ(std::wstring(L"Detailed"), modeText->Text);
+		const auto* severityMetadata =
+			tree.Roots.front()->FindPropertyMetadata(L"Severity");
+		CUI_EXPECT_TRUE(severityMetadata != nullptr);
+		CUI_EXPECT_EQ(BindingValueKind::Int, severityMetadata->ValueKind());
+		CUI_EXPECT_TRUE(severityMetadata->CanObserve());
+		CUI_EXPECT_EQ(ControlPropertyEditorKind::Number,
+			severityMetadata->Design().Editor);
+		BindingValue severityValue;
+		int severity = 0;
+		CUI_EXPECT_TRUE(tree.Roots.front()->TryGetPropertyValue(
+			L"Severity", severityValue));
+		CUI_EXPECT_TRUE(severityValue.TryGet(severity));
+		CUI_EXPECT_EQ(7, severity);
+		const auto* colorMetadata =
+			tree.Roots.front()->FindPropertyMetadata(L"AccentColor");
+		CUI_EXPECT_TRUE(colorMetadata != nullptr);
+		if (colorMetadata)
+		{
+			CUI_EXPECT_EQ(BindingValueKind::Object, colorMetadata->ValueKind());
+			CUI_EXPECT_TRUE(colorMetadata->ValueType()
+				== std::type_index(typeid(D2D1_COLOR_F)));
+			CUI_EXPECT_EQ(ControlPropertyEditorKind::Color,
+				colorMetadata->Design().Editor);
+		}
+		CUI_EXPECT_TRUE(tree.Roots.front()->TrySetPropertyValue(
+			L"Caption", BindingValue(std::wstring(L"Updated"))));
+		if (captionText)
+			CUI_EXPECT_EQ(std::wstring(L"Updated"), captionText->Text);
+		if (captionMirror)
+			CUI_EXPECT_EQ(std::wstring(L"Updated"), captionMirror->Text);
+
+		const auto canonicalXaml =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonicalXaml.find("<ComponentDefinition")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find("<local:StatusSurface")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find("TargetType=\"local:StatusSurface\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find("{TemplateBinding Caption}")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find("ElementName=captionText")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find("<ComponentDefinition.Events>")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find("Type=\"Enum\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find("<ComponentProperty.Choices>")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find("<ComponentProperty.Default>")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find(
+			"Default=\"{StaticResource ComponentSurfaceBrush}\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find(
+			"<ComponentDefinition.ContentProperties>") != std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find(
+			"ComponentSlot.Presents=\"Content\"") != std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find(
+			"<local:StatusSurface.Content>") == std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find(
+			"<local:StatusSurface.Actions>") != std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find("{RaiseEvent Invoked}")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find("Invoked=\"HandleStatusInvoked\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonicalXaml.find("d:CppType")
+			== std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonicalXaml, xamlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+
+		const auto snapshotXml =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument xmlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshotXml, xmlRoundTrip, &error));
+		CUI_EXPECT_EQ(document.Components[0].Properties[7].DefaultValue.Kind,
+			xmlRoundTrip.Components[0].Properties[7].DefaultValue.Kind);
+		CUI_EXPECT_EQ(document.Components[0].Properties[7].DefaultValue.Text,
+			xmlRoundTrip.Components[0].Properties[7].DefaultValue.Text);
+		CUI_EXPECT_EQ(document.Components[0].Properties[7].DefaultValue.ObjectValue,
+			xmlRoundTrip.Components[0].Properties[7].DefaultValue.ObjectValue);
+		CUI_EXPECT_EQ(document.Components[0].Properties[7],
+			xmlRoundTrip.Components[0].Properties[7]);
+		CUI_EXPECT_EQ(document.Components[0].Properties[8],
+			xmlRoundTrip.Components[0].Properties[8]);
+		CUI_EXPECT_EQ(document.Components[0].Properties[9],
+			xmlRoundTrip.Components[0].Properties[9]);
+		CUI_EXPECT_EQ(document.Components[0].ContentProperties,
+			xmlRoundTrip.Components[0].ContentProperties);
+		CUI_EXPECT_EQ(document, xmlRoundTrip);
+
+		const auto findNode = [&](const std::wstring& name) -> const DesignerModel::DesignNode*
+		{
+			const auto found = std::find_if(
+				document.Nodes.begin(), document.Nodes.end(),
+				[&](const auto& node) { return node.Name == name; });
+			return found == document.Nodes.end() ? nullptr : &*found;
+		};
+		const auto* componentNode = findNode(L"statusSurface");
+		const auto* contentNode = findNode(L"statusContent");
+		const auto* actionNode = findNode(L"primaryAction");
+		CUI_EXPECT_TRUE(componentNode != nullptr);
+		CUI_EXPECT_TRUE(contentNode != nullptr);
+		CUI_EXPECT_TRUE(actionNode != nullptr);
+		if (componentNode && contentNode && actionNode)
+		{
+			DesignerModel::DesignDocument actionFragment;
+			CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+				document, { actionNode->Id }, actionFragment, &error));
+			DesignerModel::DesignClipboardRootTarget actionsTarget;
+			actionsTarget.FragmentRootId = actionNode->Id;
+			actionsTarget.ParentId = componentNode->Id;
+			actionsTarget.ComponentContentProperty = L"Actions";
+			DesignerModel::DesignDocument pastedActions;
+			DesignerModel::DesignClipboardPasteResult pasteResult;
+			CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Paste(
+				document, actionFragment, { actionsTarget }, 0, 0,
+				pastedActions, &pasteResult, &error));
+			CUI_EXPECT_EQ(1ULL, pasteResult.RootIds.size());
+			if (!pasteResult.RootIds.empty())
+			{
+				const auto pasted = std::find_if(
+					pastedActions.Nodes.begin(), pastedActions.Nodes.end(),
+					[&](const auto& node)
+					{
+						return node.Id == pasteResult.RootIds.front();
+					});
+				CUI_EXPECT_TRUE(pasted != pastedActions.Nodes.end());
+				if (pasted != pastedActions.Nodes.end())
+					CUI_EXPECT_EQ(std::wstring(L"Actions"),
+						pasted->ComponentContentProperty);
+			}
+
+			DesignerModel::DesignClipboardRootTarget occupiedDefault;
+			occupiedDefault.FragmentRootId = actionNode->Id;
+			occupiedDefault.ParentId = componentNode->Id;
+			DesignerModel::DesignDocument rejected;
+			CUI_EXPECT_FALSE(DesignerModel::DesignDocumentClipboard::Paste(
+				document, actionFragment, { occupiedDefault }, 0, 0,
+				rejected, nullptr, &error));
+			CUI_EXPECT_TRUE(error.find(L"已经被占用") != std::wstring::npos);
+
+			DesignerModel::DesignDocument contentFragment;
+			CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+				document, { contentNode->Id }, contentFragment, &error));
+			DesignerModel::DesignDocument pastedAtRoot;
+			CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+				document, contentFragment, 0, 0, pastedAtRoot,
+				&pasteResult, &error));
+			if (!pasteResult.RootIds.empty())
+			{
+				const auto pasted = std::find_if(
+					pastedAtRoot.Nodes.begin(), pastedAtRoot.Nodes.end(),
+					[&](const auto& node)
+					{
+						return node.Id == pasteResult.RootIds.front();
+					});
+				CUI_EXPECT_TRUE(pasted != pastedAtRoot.Nodes.end());
+				if (pasted != pastedAtRoot.Nodes.end())
+					CUI_EXPECT_TRUE(pasted->ComponentContentProperty.empty());
+			}
+		}
+
+		DesignerModel::RuntimeEventHandlerRegistry handlers;
+		int invocationCount = 0;
+		bool payloadWasEmpty = false;
+		CUI_EXPECT_TRUE(handlers.RegisterComponent(
+			L"HandleStatusInvoked",
+			document.Components.front().Type,
+			document.Components.front().Events.front(),
+			[&](Control* sender, const DeclarativeEventArgs& args)
+			{
+				CUI_EXPECT_TRUE(sender != nullptr);
+				++invocationCount;
+				payloadWasEmpty = args.Value.Empty();
+			}, &error));
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.ControlEventResolver = handlers.ControlResolver();
+		options.RequireControlEventResolver = true;
+		DesignerModel::RuntimeDocument runtimeDocument;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::LoadXaml(
+			xaml, runtimeDocument, options, &error));
+		auto* runtimeComponent = runtimeDocument.FindControlByName(
+			L"statusSurface");
+		CUI_EXPECT_TRUE(runtimeComponent != nullptr);
+		if (runtimeComponent && runtimeComponent->Count == 1)
+		{
+			CUI_EXPECT_FALSE(runtimeComponent->RaiseDeclarativeEvent(
+				L"Missing"));
+			CUI_EXPECT_FALSE(runtimeComponent->RaiseDeclarativeEvent(
+				L"Invoked", BindingValue(std::wstring(L"wrong payload"))));
+			auto* runtimeTemplateRoot = (*runtimeComponent)[0];
+			CUI_EXPECT_TRUE(runtimeTemplateRoot != nullptr);
+			if (runtimeTemplateRoot)
+				runtimeTemplateRoot->OnMouseClick.Invoke(
+					runtimeTemplateRoot, MouseEventArgs{});
+		}
+		CUI_EXPECT_EQ(1, invocationCount);
+		CUI_EXPECT_TRUE(payloadWasEmpty);
+		auto* previousContent = runtimeDocument.FindControlByName(
+			L"statusContent");
+		auto* previousContentParent = previousContent
+			? previousContent->Parent : nullptr;
+		DesignerModel::DesignDocument rerouted = document;
+		const auto reroutedContent = std::find_if(
+			rerouted.Nodes.begin(), rerouted.Nodes.end(),
+			[](const auto& node) { return node.Name == L"statusContent"; });
+		CUI_EXPECT_TRUE(reroutedContent != rerouted.Nodes.end());
+		if (reroutedContent != rerouted.Nodes.end())
+			reroutedContent->ComponentContentProperty = L"Actions";
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			rerouted, runtimeDocument, options, &reloadMode, &error));
+		CUI_EXPECT_TRUE(reloadMode
+			!= DesignerModel::RuntimeDocumentReloadMode::InPlace);
+		auto* reroutedControl = runtimeDocument.FindControlByName(
+			L"statusContent");
+		CUI_EXPECT_TRUE(reroutedControl != nullptr);
+		if (reroutedControl)
+			CUI_EXPECT_TRUE(reroutedControl->Parent != previousContentParent);
+		CodeGenInput legacyCodeGenInput;
+		CUI_EXPECT_FALSE(
+			DesignerModel::DesignDocumentCodeGenInputBuilder::Build(
+				document, legacyCodeGenInput, &error));
+		CUI_EXPECT_TRUE(error.find(L"动态 XAML") != std::wstring::npos);
+
+		const std::string invalid = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:test-components" x:Name="InvalidForm">
+  <Form.Resources>
+    <ComponentDefinition x:Key="local:Invalid" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Text" Type="String" Default="bad" />
+      </ComponentDefinition.Properties>
+    </ComponentDefinition>
+  </Form.Resources>
+</Form>)XAML";
+		DesignerModel::DesignDocument unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalid, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"不能覆盖") != std::wstring::npos);
+	});
+
+	runner.Add("Declarative component routed events tunnel bubble and honor handled", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:routed-events" x:Name="RoutedEventForm">
+  <Form.Resources>
+    <ComponentDefinition x:Key="local:RoutedCard" BaseType="Panel">
+      <ComponentDefinition.Events>
+        <ComponentEvent Name="Invoked" RoutingStrategy="Bubble" />
+        <ComponentEvent Name="HandledInvoked" RoutingStrategy="Bubble" />
+        <ComponentEvent Name="PreviewInvoked" RoutingStrategy="Tunnel" />
+      </ComponentDefinition.Events>
+      <ComponentDefinition.Template>
+        <StackPanel x:Name="PART_Root" />
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <StackPanel x:Name="outer" DesignId="1"
+              local:RoutedCard.Invoked="HandleOuterInvoked"
+              local:RoutedCard.HandledInvoked="HandleOuterHandled"
+              local:RoutedCard.PreviewInvoked="HandleOuterPreview">
+    <Panel x:Name="middle" DesignId="2"
+           local:RoutedCard.Invoked="HandleMiddleInvoked"
+           local:RoutedCard.HandledInvoked="HandleMiddleHandled"
+           local:RoutedCard.PreviewInvoked="HandleMiddlePreview">
+      <local:RoutedCard x:Name="card" DesignId="3"
+                        Invoked="HandleSourceInvoked"
+                        HandledInvoked="HandleSourceHandled"
+                        PreviewInvoked="HandleSourcePreview" />
+    </Panel>
+  </StackPanel>
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(3ULL, document.Components.front().Events.size());
+		CUI_EXPECT_EQ(DeclarativeEventRoutingStrategy::Bubble,
+			document.Components.front().Events[0].RoutingStrategy);
+		CUI_EXPECT_EQ(DeclarativeEventRoutingStrategy::Tunnel,
+			document.Components.front().Events[2].RoutingStrategy);
+		const auto attachedInvoked =
+			DesignerEventCatalog::MakeAttachedComponentEventKey(
+				document.Components.front().Type, L"Invoked");
+		CUI_EXPECT_EQ(std::string("HandleOuterInvoked"),
+			document.Nodes[0].Events[Convert::UnicodeToUtf8(attachedInvoked)]
+				.get<std::string>());
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("RoutingStrategy=\"Bubble\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("RoutingStrategy=\"Tunnel\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"local:RoutedCard.Invoked=\"HandleOuterInvoked\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+		DesignerModel::DesignDocument xmlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			DesignerModel::DesignDocumentSerializer::ToXml(document),
+			xmlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xmlRoundTrip);
+
+		DesignerModel::DesignDocumentEventIndex eventIndex;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentEventIndex::Build(
+			document, eventIndex, &error));
+		CUI_EXPECT_EQ(9ULL, eventIndex.References().size());
+		auto conventional = document;
+		conventional.Nodes[0].Events[
+			Convert::UnicodeToUtf8(attachedInvoked)] = "1";
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentEventIndex::Build(
+			conventional, eventIndex, &error));
+		CUI_EXPECT_TRUE(eventIndex.FindHandler(L"outer_OnInvoked") != nullptr);
+		size_t renamedReferences = 0;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentEventIndex::RenameHandler(
+			conventional, L"outer_OnInvoked", L"HandleRenamedAttached",
+			&renamedReferences, &error));
+		CUI_EXPECT_EQ(1ULL, renamedReferences);
+		CUI_EXPECT_EQ(std::string("HandleRenamedAttached"),
+			conventional.Nodes[0].Events[
+				Convert::UnicodeToUtf8(attachedInvoked)].get<std::string>());
+
+		auto dependencyDocument = document;
+		DesignerModel::DesignNode listener;
+		listener.Id = dependencyDocument.AllocateNodeId();
+		listener.Name = L"listenerOnly";
+		listener.Type = UIClass::UI_Panel;
+		listener.Order = 20;
+		listener.Events[Convert::UnicodeToUtf8(attachedInvoked)] =
+			"HandleListenerOnly";
+		dependencyDocument.Nodes.push_back(listener);
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			dependencyDocument, { listener.Id }, fragment, &error));
+		CUI_EXPECT_EQ(1ULL, fragment.Nodes.size());
+		CUI_EXPECT_EQ(1ULL, fragment.Components.size());
+		if (!fragment.Components.empty())
+			CUI_EXPECT_EQ(std::wstring(L"RoutedCard"),
+				fragment.Components.front().Type.XamlName);
+
+		DesignerModel::RuntimeEventHandlerRegistry handlers;
+		std::map<std::wstring, std::vector<std::wstring>> routes;
+		Control* card = nullptr;
+		Control* middle = nullptr;
+		Control* outer = nullptr;
+		auto findEvent = [&](const std::wstring& name)
+			-> DesignerComponentEventDescriptor
+		{
+			const auto found = std::find_if(
+				document.Components.front().Events.begin(),
+				document.Components.front().Events.end(),
+				[&](const auto& item) { return item.Name == name; });
+			CUI_EXPECT_TRUE(found != document.Components.front().Events.end());
+			return found == document.Components.front().Events.end()
+				? DesignerComponentEventDescriptor{} : *found;
+		};
+		auto registerRoute = [&](
+			const wchar_t* handlerName,
+			const wchar_t* eventName,
+			const wchar_t* token,
+			bool markHandled,
+			bool handledEventsToo)
+		{
+			auto callback = [&, event = std::wstring(eventName),
+				routeToken = std::wstring(token), markHandled](
+				Control* sender, DeclarativeEventArgs& args)
+			{
+				CUI_EXPECT_TRUE(sender == args.CurrentTarget);
+				CUI_EXPECT_TRUE(args.OriginalSource == card);
+				CUI_EXPECT_TRUE(args.Source == card);
+				CUI_EXPECT_EQ(std::wstring(L"urn:cui:routed-events"),
+					args.OwnerNamespace);
+				CUI_EXPECT_EQ(std::wstring(L"RoutedCard"), args.OwnerTypeName);
+				routes[event].push_back(routeToken);
+				if (markHandled) args.Handled = true;
+			};
+			if (handledEventsToo)
+				CUI_EXPECT_TRUE(handlers.RegisterComponent(
+					handlerName, document.Components.front().Type,
+					findEvent(eventName),
+					DesignerModel::RuntimeComponentEventRegistrationOptions{ true },
+					std::move(callback), &error));
+			else
+				CUI_EXPECT_TRUE(handlers.RegisterComponent(
+					handlerName, document.Components.front().Type,
+					findEvent(eventName), std::move(callback), &error));
+		};
+
+		registerRoute(L"HandleSourceInvoked", L"Invoked", L"source", false, false);
+		registerRoute(L"HandleMiddleInvoked", L"Invoked", L"middle", false, false);
+		registerRoute(L"HandleOuterInvoked", L"Invoked", L"outer", false, false);
+		registerRoute(L"HandleSourceHandled", L"HandledInvoked", L"source", true, false);
+		registerRoute(L"HandleMiddleHandled", L"HandledInvoked", L"middle", false, false);
+		registerRoute(L"HandleOuterHandled", L"HandledInvoked", L"outer", false, true);
+		registerRoute(L"HandleSourcePreview", L"PreviewInvoked", L"source", false, false);
+		registerRoute(L"HandleMiddlePreview", L"PreviewInvoked", L"middle", false, false);
+		registerRoute(L"HandleOuterPreview", L"PreviewInvoked", L"outer", false, false);
+
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.ControlEventResolver = handlers.ControlResolver();
+		options.RequireControlEventResolver = true;
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error));
+		card = runtime.FindControlByName(L"card");
+		middle = runtime.FindControlByName(L"middle");
+		outer = runtime.FindControlByName(L"outer");
+		CUI_EXPECT_TRUE(card != nullptr && middle != nullptr && outer != nullptr);
+		CUI_EXPECT_TRUE(card && card->RaiseDeclarativeEvent(L"Invoked"));
+		CUI_EXPECT_EQ((std::vector<std::wstring>{ L"source", L"middle", L"outer" }),
+			routes[L"Invoked"]);
+		DeclarativeEventArgs handledArgs;
+		handledArgs.Name = L"HandledInvoked";
+		CUI_EXPECT_TRUE(card && card->RaiseDeclarativeEvent(handledArgs));
+		CUI_EXPECT_TRUE(handledArgs.Handled);
+		CUI_EXPECT_TRUE(handledArgs.CurrentTarget == nullptr);
+		CUI_EXPECT_TRUE(handledArgs.OriginalSource == card);
+		CUI_EXPECT_EQ((std::vector<std::wstring>{ L"source", L"outer" }),
+			routes[L"HandledInvoked"]);
+		CUI_EXPECT_TRUE(card && card->RaiseDeclarativeEvent(L"PreviewInvoked"));
+		CUI_EXPECT_EQ((std::vector<std::wstring>{ L"outer", L"middle", L"source" }),
+			routes[L"PreviewInvoked"]);
+
+		CUI_EXPECT_TRUE(handlers.RegisterComponent(
+			L"HandleOuterInvoked2", document.Components.front().Type,
+			findEvent(L"Invoked"),
+			[&](Control* sender, DeclarativeEventArgs& args)
+			{
+				CUI_EXPECT_TRUE(sender == outer);
+				CUI_EXPECT_TRUE(args.CurrentTarget == outer);
+				routes[L"Invoked"].push_back(L"outer2");
+			}, &error));
+		auto reloaded = document;
+		reloaded.Nodes[0].Events[Convert::UnicodeToUtf8(attachedInvoked)] =
+			"HandleOuterInvoked2";
+		DesignerModel::RuntimeDocumentReloadMode mode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloaded, runtime, options, &mode, &error));
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentReloadMode::InPlace, mode);
+		CUI_EXPECT_TRUE(runtime.FindControlByName(L"card") == card);
+		routes[L"Invoked"].clear();
+		CUI_EXPECT_TRUE(card && card->RaiseDeclarativeEvent(L"Invoked"));
+		CUI_EXPECT_EQ((std::vector<std::wstring>{ L"source", L"middle", L"outer2" }),
+			routes[L"Invoked"]);
+
+		auto rejected = reloaded;
+		rejected.Nodes[0].Events[Convert::UnicodeToUtf8(attachedInvoked)] =
+			"MissingRoutedHandler";
+		CUI_EXPECT_FALSE(DesignerModel::RuntimeDocumentLoader::Reload(
+			rejected, runtime, options, &mode, &error));
+		CUI_EXPECT_TRUE(error.find(L"MissingRoutedHandler") != std::wstring::npos);
+		routes[L"Invoked"].clear();
+		CUI_EXPECT_TRUE(card && card->RaiseDeclarativeEvent(L"Invoked"));
+		CUI_EXPECT_EQ((std::vector<std::wstring>{ L"source", L"middle", L"outer2" }),
+			routes[L"Invoked"]);
+
+		auto invalidStrategy = xaml;
+		const auto routing = invalidStrategy.find("RoutingStrategy=\"Bubble\"");
+		CUI_EXPECT_TRUE(routing != std::string::npos);
+		if (routing != std::string::npos)
+			invalidStrategy.replace(routing,
+				std::string("RoutingStrategy=\"Bubble\"").size(),
+				"RoutingStrategy=\"Sideways\"");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidStrategy, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"RoutingStrategy") != std::wstring::npos);
+
+		auto invalidAttached = xaml;
+		const auto attached = invalidAttached.find("RoutedCard.Invoked");
+		CUI_EXPECT_TRUE(attached != std::string::npos);
+		if (attached != std::string::npos)
+			invalidAttached.replace(attached,
+				std::string("RoutedCard.Invoked").size(),
+				"RoutedCard.Missing");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidAttached, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"附加组件事件不存在") != std::wstring::npos);
+	});
+
+	runner.Add("Storyboard property paths parse canonical members and indices", []
+	{
+		cui::xaml::PropertyPath direct;
+		std::wstring error;
+		CUI_EXPECT_TRUE(cui::xaml::TryParsePropertyPath(
+			L" ValidationCornerRadius ", direct, &error));
+		CUI_EXPECT_TRUE(direct.IsDirectProperty());
+		CUI_EXPECT_EQ(std::wstring(L"ValidationCornerRadius"),
+			direct.CanonicalText());
+
+		cui::xaml::PropertyPath transform;
+		CUI_EXPECT_TRUE(cui::xaml::TryParsePropertyPath(
+			L"(Control.RenderTransform).(TransformGroup.Children)[12]."
+			L"(ScaleTransform.ScaleX)", transform, &error));
+		CUI_EXPECT_EQ(4ULL, transform.Segments.size());
+		CUI_EXPECT_EQ(cui::xaml::PropertyPathSegmentKind::Index,
+			transform.Segments[2].Kind);
+		CUI_EXPECT_EQ(12ULL, transform.Segments[2].Index);
+		CUI_EXPECT_EQ(std::wstring(L"ScaleTransform"),
+			transform.Segments[3].OwnerType);
+		CUI_EXPECT_EQ(std::wstring(
+			L"(Control.RenderTransform).(TransformGroup.Children)[12]."
+			L"(ScaleTransform.ScaleX)"), transform.CanonicalText());
+
+		const auto unchanged = transform;
+		CUI_EXPECT_FALSE(cui::xaml::TryParsePropertyPath(
+			L"(Control.RenderTransform).(TransformGroup.Children)[-1]."
+			L"(ScaleTransform.ScaleX)", transform, &error));
+		CUI_EXPECT_EQ(unchanged, transform);
+		CUI_EXPECT_FALSE(error.empty());
+		CUI_EXPECT_FALSE(cui::xaml::TryParsePropertyPath(
+			L"(Control.RenderTransform).Children", transform, &error));
+		CUI_EXPECT_EQ(unchanged, transform);
+	});
+
+	runner.Add("Declarative component visual states react to properties events and reload", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:visual-states" x:Name="VisualStateForm">
+  <Form.Resources>
+    <Color x:Key="ActiveColor">#FF36A269</Color>
+    <Color x:Key="ActiveTextColor">#FF225588</Color>
+    <Double x:Key="ActiveRadius">12</Double>
+    <Double x:Key="ActiveScale">1.25</Double>
+    <ComponentDefinition x:Key="local:StateCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="IsActive" Type="Bool" Default="false" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Events>
+        <ComponentEvent Name="Invoked" RoutingStrategy="Bubble" />
+      </ComponentDefinition.Events>
+      <ComponentDefinition.Template>
+        <StackPanel x:Name="PART_Root">
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="CommonStates">
+              <VisualState x:Name="Normal">
+                <VisualState.Setters>
+                  <Setter TargetName="chrome" Property="BackColor"
+                          Value="#FFF0F0F0" />
+                </VisualState.Setters>
+              </VisualState>
+              <VisualState x:Name="Active">
+                <VisualState.StateTriggers>
+                  <StateTrigger Property="IsActive" Value="true" />
+                </VisualState.StateTriggers>
+                <VisualState.Setters>
+                  <Setter TargetName="chrome" Property="BackColor"
+                          Value="{StaticResource ActiveColor}" />
+                  <Setter TargetName="caption" Property="Text" Value="Active" />
+                </VisualState.Setters>
+                <VisualState.Storyboard>
+                  <Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                                     Storyboard.TargetProperty="ValidationCornerRadius"
+                                     From="0" To="{StaticResource ActiveRadius}"
+                                     Duration="0:0:0.200">
+                      <DoubleAnimation.EasingFunction>
+                        <CubicEase EasingMode="EaseInOut" />
+                      </DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+                    <ColorAnimation Storyboard.TargetName="caption"
+                                    Storyboard.TargetProperty="ForeColor"
+                                    To="{StaticResource ActiveTextColor}"
+                                    BeginTime="0:0:0.050"
+                                    Duration="0:0:0.200">
+                      <ColorAnimation.EasingFunction>
+                        <SineEase />
+                      </ColorAnimation.EasingFunction>
+                    </ColorAnimation>
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                                     Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
+                                     To="{StaticResource ActiveScale}"
+                                     Duration="0:0:0.200" />
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                                     Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"
+                                     To="0.75" Duration="0:0:0.200" />
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                                     Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[1].(RotateTransform.Angle)"
+                                     To="15" BeginTime="0:0:0.050"
+                                     Duration="0:0:0.150" />
+                  </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Invoked">
+                <VisualState.StateTriggers>
+                  <EventTrigger Event="Invoked" />
+                </VisualState.StateTriggers>
+                <VisualState.Setters>
+                  <Setter TargetName="chrome" Property="BackColor"
+                          Value="#FF3377CC" />
+                  <Setter TargetName="caption" Property="Text" Value="Invoked" />
+                </VisualState.Setters>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+          <Panel x:Name="chrome" Width="160" Height="48"
+                 RenderTransformOrigin="0.5,0.5">
+            <Control.RenderTransform>
+              <TransformGroup>
+                <ScaleTransform ScaleX="1" ScaleY="1" />
+                <RotateTransform Angle="0" />
+              </TransformGroup>
+            </Control.RenderTransform>
+            <Label x:Name="caption" Text="Idle" />
+          </Panel>
+        </StackPanel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:StateCard x:Name="card" DesignId="1" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		CUI_EXPECT_EQ(1ULL,
+			document.Components.front().VisualStateGroups.size());
+		const auto& group =
+			document.Components.front().VisualStateGroups.front();
+		CUI_EXPECT_EQ(std::wstring(L"CommonStates"), group.Name);
+		CUI_EXPECT_EQ(3ULL, group.States.size());
+		CUI_EXPECT_EQ(std::wstring(L"IsActive"),
+			group.States[1].Conditions.front().PropertyName);
+		CUI_EXPECT_EQ(std::wstring(L"Invoked"),
+			group.States[2].EventNames.front());
+		CUI_EXPECT_TRUE(group.States[1].Setters.front().UsesResource);
+		CUI_EXPECT_EQ(std::wstring(L"ActiveColor"),
+			group.States[1].Setters.front().ResourceKey);
+		CUI_EXPECT_EQ(5ULL, group.States[1].Animations.size());
+		const auto& cornerAnimation = group.States[1].Animations[0];
+		CUI_EXPECT_EQ(DesignerAnimationKind::Double, cornerAnimation.Kind);
+		CUI_EXPECT_EQ(std::wstring(L"chrome"), cornerAnimation.TargetName);
+		CUI_EXPECT_EQ(std::wstring(L"ValidationCornerRadius"),
+			cornerAnimation.PropertyName);
+		CUI_EXPECT_TRUE(cornerAnimation.HasFrom);
+		CUI_EXPECT_TRUE(cornerAnimation.ToUsesResource);
+		CUI_EXPECT_EQ(std::wstring(L"ActiveRadius"),
+			cornerAnimation.ToResourceKey);
+		CUI_EXPECT_EQ(200ULL, cornerAnimation.DurationMilliseconds);
+		CUI_EXPECT_EQ(DesignerEasingKind::Cubic,
+			cornerAnimation.Easing);
+		CUI_EXPECT_EQ(DesignerEasingMode::EaseInOut,
+			cornerAnimation.EasingMode);
+		const auto& colorAnimation = group.States[1].Animations[1];
+		CUI_EXPECT_EQ(DesignerAnimationKind::Color, colorAnimation.Kind);
+		CUI_EXPECT_FALSE(colorAnimation.HasFrom);
+		CUI_EXPECT_TRUE(colorAnimation.ToUsesResource);
+		CUI_EXPECT_EQ(std::wstring(L"ActiveTextColor"),
+			colorAnimation.ToResourceKey);
+		CUI_EXPECT_EQ(50ULL, colorAnimation.BeginTimeMilliseconds);
+		CUI_EXPECT_EQ(200ULL, colorAnimation.DurationMilliseconds);
+		CUI_EXPECT_EQ(DesignerEasingKind::Sine, colorAnimation.Easing);
+		CUI_EXPECT_EQ(DesignerEasingMode::EaseOut,
+			colorAnimation.EasingMode);
+		const auto& scaleXAnimation = group.States[1].Animations[2];
+		CUI_EXPECT_EQ(std::wstring(
+			L"(Control.RenderTransform).(TransformGroup.Children)[0]."
+			L"(ScaleTransform.ScaleX)"), scaleXAnimation.PropertyName);
+		CUI_EXPECT_FALSE(scaleXAnimation.HasFrom);
+		CUI_EXPECT_TRUE(scaleXAnimation.ToUsesResource);
+		CUI_EXPECT_EQ(std::wstring(L"ActiveScale"),
+			scaleXAnimation.ToResourceKey);
+		CUI_EXPECT_EQ(std::wstring(
+			L"(Control.RenderTransform).(TransformGroup.Children)[0]."
+			L"(ScaleTransform.ScaleY)"),
+			group.States[1].Animations[3].PropertyName);
+		CUI_EXPECT_EQ(std::wstring(
+			L"(Control.RenderTransform).(TransformGroup.Children)[1]."
+			L"(RotateTransform.Angle)"),
+			group.States[1].Animations[4].PropertyName);
+		CUI_EXPECT_EQ(50ULL,
+			group.States[1].Animations[4].BeginTimeMilliseconds);
+		CUI_EXPECT_EQ(150ULL,
+			group.States[1].Animations[4].DurationMilliseconds);
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find(
+			"VisualStateManager.VisualStateGroups") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"<StateTrigger Property=\"IsActive\" Value=\"true\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"<EventTrigger Event=\"Invoked\"") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"TargetName=\"chrome\"") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"<VisualState.Storyboard>") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"<DoubleAnimation Storyboard.TargetName=\"chrome\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"<ColorAnimation Storyboard.TargetName=\"caption\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"Storyboard.TargetProperty=\"(Control.RenderTransform)."
+			"(TransformGroup.Children)[0].(ScaleTransform.ScaleX)\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"<CubicEase EasingMode=\"EaseInOut\"") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"Duration=\"0:00:00.200\"") != std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+		DesignerModel::DesignDocument xmlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			DesignerModel::DesignDocumentSerializer::ToXml(document),
+			xmlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xmlRoundTrip);
+
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { document.Nodes.front().Id }, fragment, &error));
+		CUI_EXPECT_EQ(1ULL, fragment.Components.size());
+		CUI_EXPECT_EQ(4ULL, fragment.StyleSheet.Resources.size());
+		if (!fragment.Components.empty())
+		{
+			CUI_EXPECT_EQ(std::wstring(L"ActiveColor"),
+				fragment.Components.front().VisualStateGroups.front()
+					.States[1].Setters.front().ResourceKey);
+			CUI_EXPECT_EQ(std::wstring(L"ActiveTextColor"),
+				fragment.Components.front().VisualStateGroups.front()
+					.States[1].Animations[1].ToResourceKey);
+			CUI_EXPECT_EQ(std::wstring(L"ActiveScale"),
+				fragment.Components.front().VisualStateGroups.front()
+					.States[1].Animations[2].ToResourceKey);
+		}
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* chrome = card
+			? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+		auto* caption = card
+			? card->FindDeclarativeTemplatePart(L"caption") : nullptr;
+		CUI_EXPECT_TRUE(card != nullptr && chrome != nullptr && caption != nullptr);
+		CUI_EXPECT_EQ(std::wstring(L"Normal"),
+			card ? card->GetCurrentVisualState(L"CommonStates") : L"");
+		CUI_EXPECT_EQ(ControlPropertyValueSource::VisualState,
+			chrome ? chrome->GetPropertyValueSource(L"BackColor")
+				: ControlPropertyValueSource::Default);
+		CUI_EXPECT_EQ(std::wstring(L"Idle"), caption ? caption->Text : L"");
+		CUI_EXPECT_TRUE(chrome->GetRenderTransform().has_value());
+		if (chrome->GetRenderTransform())
+		{
+			CUI_EXPECT_EQ(2ULL,
+				chrome->GetRenderTransform()->Operations.size());
+			if (chrome->GetRenderTransform()->Operations.size() >= 2)
+			{
+				CUI_EXPECT_NEAR(1.0f,
+					chrome->GetRenderTransform()->Operations[0].ScaleX, 0.0001f);
+				CUI_EXPECT_NEAR(1.0f,
+					chrome->GetRenderTransform()->Operations[0].ScaleY, 0.0001f);
+				CUI_EXPECT_NEAR(0.0f,
+					chrome->GetRenderTransform()->Operations[1].Angle, 0.0001f);
+			}
+		}
+
+		std::vector<std::wstring> stateChanges;
+		auto stateConnection = card->OnVisualStateChanged.Subscribe(
+			[&](Control*, const DeclarativeVisualStateChangedEventArgs& args)
+			{
+				CUI_EXPECT_EQ(std::wstring(L"CommonStates"), args.GroupName);
+				stateChanges.push_back(args.NewState);
+			});
+		CUI_EXPECT_TRUE(card->TrySetPropertyValue(L"IsActive", true));
+		CUI_EXPECT_EQ(std::wstring(L"Active"),
+			card->GetCurrentVisualState(L"CommonStates"));
+		CUI_EXPECT_EQ(std::wstring(L"Active"), caption->Text);
+		CUI_EXPECT_TRUE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_EQ(ControlPropertyValueSource::VisualState,
+			chrome->GetPropertyValueSource(L"ValidationCornerRadius"));
+		CUI_EXPECT_EQ(ControlPropertyValueSource::VisualState,
+			chrome->GetPropertyValueSource(L"RenderTransform"));
+		const auto animationTick = ::GetTickCount64();
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(animationTick + 120));
+		CUI_EXPECT_TRUE(chrome->ValidationCornerRadius > 0.0f
+			&& chrome->ValidationCornerRadius < 12.0f);
+		CUI_EXPECT_TRUE(chrome->GetRenderTransform().has_value());
+		if (chrome->GetRenderTransform())
+		{
+			const auto& operations = chrome->GetRenderTransform()->Operations;
+			CUI_EXPECT_EQ(2ULL, operations.size());
+			if (operations.size() >= 2)
+			{
+				CUI_EXPECT_TRUE(operations[0].ScaleX > 1.0f
+					&& operations[0].ScaleX < 1.25f);
+				CUI_EXPECT_TRUE(operations[0].ScaleY > 0.75f
+					&& operations[0].ScaleY < 1.0f);
+				CUI_EXPECT_TRUE(operations[1].Angle > 0.0f
+					&& operations[1].Angle < 15.0f);
+			}
+		}
+		CUI_EXPECT_TRUE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(animationTick + 2000));
+		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(12.0f, chrome->ValidationCornerRadius, 0.0001f);
+		CUI_EXPECT_TRUE(chrome->GetRenderTransform().has_value());
+		if (chrome->GetRenderTransform())
+		{
+			const auto& operations = chrome->GetRenderTransform()->Operations;
+			CUI_EXPECT_EQ(2ULL, operations.size());
+			if (operations.size() >= 2)
+			{
+				CUI_EXPECT_NEAR(1.25f, operations[0].ScaleX, 0.0001f);
+				CUI_EXPECT_NEAR(0.75f, operations[0].ScaleY, 0.0001f);
+				CUI_EXPECT_NEAR(15.0f, operations[1].Angle, 0.0001f);
+			}
+		}
+		CUI_EXPECT_NEAR(34.0f / 255.0f, caption->ForeColor.r, 0.0001f);
+		CUI_EXPECT_NEAR(85.0f / 255.0f, caption->ForeColor.g, 0.0001f);
+		CUI_EXPECT_NEAR(136.0f / 255.0f, caption->ForeColor.b, 0.0001f);
+		CUI_EXPECT_TRUE(caption->TrySetPropertyValue(
+			L"Text", std::wstring(L"Local caption"),
+			ControlPropertyValueSource::Local));
+		CUI_EXPECT_EQ(std::wstring(L"Active"), caption->Text);
+		CUI_EXPECT_EQ(ControlPropertyValueSource::VisualState,
+			caption->GetPropertyValueSource(L"Text"));
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Invoked"));
+		CUI_EXPECT_EQ(std::wstring(L"Invoked"),
+			card->GetCurrentVisualState(L"CommonStates"));
+		CUI_EXPECT_EQ(std::wstring(L"Invoked"), caption->Text);
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Default,
+			chrome->GetPropertyValueSource(L"ValidationCornerRadius"));
+		CUI_EXPECT_TRUE(chrome->GetPropertyValueSource(L"RenderTransform")
+			!= ControlPropertyValueSource::VisualState);
+		CUI_EXPECT_TRUE(chrome->GetRenderTransform().has_value());
+		if (chrome->GetRenderTransform())
+		{
+			const auto& operations = chrome->GetRenderTransform()->Operations;
+			CUI_EXPECT_EQ(2ULL, operations.size());
+			if (operations.size() >= 2)
+			{
+				CUI_EXPECT_NEAR(1.0f, operations[0].ScaleX, 0.0001f);
+				CUI_EXPECT_NEAR(1.0f, operations[0].ScaleY, 0.0001f);
+				CUI_EXPECT_NEAR(0.0f, operations[1].Angle, 0.0001f);
+			}
+		}
+		CUI_EXPECT_TRUE(caption->GetPropertyValueSource(L"ForeColor")
+			!= ControlPropertyValueSource::VisualState);
+		CUI_EXPECT_TRUE(card->TrySetPropertyValue(L"IsActive", false));
+		CUI_EXPECT_EQ(std::wstring(L"Normal"),
+			card->GetCurrentVisualState(L"CommonStates"));
+		CUI_EXPECT_EQ(std::wstring(L"Local caption"), caption->Text);
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Local,
+			caption->GetPropertyValueSource(L"Text"));
+		CUI_EXPECT_TRUE(card->GoToVisualState(L"Active", &error));
+		CUI_EXPECT_EQ(std::wstring(L"Active"),
+			card->GetCurrentVisualState(L"CommonStates"));
+		CUI_EXPECT_EQ((std::vector<std::wstring>{
+			L"Active", L"Invoked", L"Normal", L"Active" }), stateChanges);
+
+		auto activeXaml = canonical;
+		const auto cardTag = activeXaml.find(
+			"<local:StateCard x:Name=\"card\" DesignId=\"1\"");
+		CUI_EXPECT_TRUE(cardTag != std::string::npos);
+		if (cardTag != std::string::npos)
+		{
+			const auto close = activeXaml.find("/>", cardTag);
+			CUI_EXPECT_TRUE(close != std::string::npos);
+			if (close != std::string::npos)
+				activeXaml.insert(close, " IsActive=\"true\"");
+		}
+		DesignerModel::DesignDocument activeDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			activeXaml, activeDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			activeDocument, runtime, {}, &reloadMode, &error));
+		CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentReloadMode::InPlace,
+			reloadMode);
+		CUI_EXPECT_TRUE(runtime.FindControlByName(L"card") == card);
+		CUI_EXPECT_EQ(std::wstring(L"Active"),
+			card->GetCurrentVisualState(L"CommonStates"));
+
+		auto resourceReload = activeDocument;
+		for (auto& resource : resourceReload.StyleSheet.Resources)
+		{
+			if (_wcsicmp(resource.Key.c_str(), L"ActiveColor") == 0)
+				resource.Value.Text = L"#FFCC6633";
+			else if (_wcsicmp(resource.Key.c_str(), L"ActiveTextColor") == 0)
+				resource.Value.Text = L"#FF884422";
+			else if (_wcsicmp(resource.Key.c_str(), L"ActiveRadius") == 0)
+				resource.Value.Text = L"16";
+			else if (_wcsicmp(resource.Key.c_str(), L"ActiveScale") == 0)
+				resource.Value.Text = L"1.5";
+		}
+		auto* previousCard = card;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			resourceReload, runtime, {}, &reloadMode, &error));
+		CUI_EXPECT_TRUE(reloadMode
+			!= DesignerModel::RuntimeDocumentReloadMode::InPlace);
+		card = runtime.FindControlByName(L"card");
+		chrome = card ? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+		caption = card ? card->FindDeclarativeTemplatePart(L"caption") : nullptr;
+		CUI_EXPECT_TRUE(card != nullptr && chrome != nullptr && caption != nullptr);
+		CUI_EXPECT_TRUE(card != previousCard);
+		CUI_EXPECT_EQ(std::wstring(L"Active"),
+			card ? card->GetCurrentVisualState(L"CommonStates") : L"");
+		if (chrome)
+		{
+			CUI_EXPECT_NEAR(0.8f, chrome->BackColor.r, 0.0001f);
+			CUI_EXPECT_NEAR(0.4f, chrome->BackColor.g, 0.0001f);
+			CUI_EXPECT_NEAR(0.2f, chrome->BackColor.b, 0.0001f);
+		}
+		if (card && chrome && caption)
+		{
+			card->AdvanceVisualStateAnimations(::GetTickCount64() + 2000);
+			CUI_EXPECT_NEAR(16.0f, chrome->ValidationCornerRadius, 0.0001f);
+			CUI_EXPECT_TRUE(chrome->GetRenderTransform().has_value());
+			if (chrome->GetRenderTransform()
+				&& chrome->GetRenderTransform()->Operations.size() >= 2)
+			{
+				const auto& operations = chrome->GetRenderTransform()->Operations;
+				CUI_EXPECT_NEAR(1.5f, operations[0].ScaleX, 0.0001f);
+				CUI_EXPECT_NEAR(0.75f, operations[0].ScaleY, 0.0001f);
+				CUI_EXPECT_NEAR(15.0f, operations[1].Angle, 0.0001f);
+			}
+			CUI_EXPECT_NEAR(136.0f / 255.0f, caption->ForeColor.r, 0.0001f);
+			CUI_EXPECT_NEAR(68.0f / 255.0f, caption->ForeColor.g, 0.0001f);
+			CUI_EXPECT_NEAR(34.0f / 255.0f, caption->ForeColor.b, 0.0001f);
+		}
+
+		auto invalidReload = resourceReload;
+		invalidReload.Components.front().VisualStateGroups.front()
+			.States[1].Setters.front().TargetName = L"missingPart";
+		CUI_EXPECT_FALSE(DesignerModel::RuntimeDocumentLoader::Reload(
+			invalidReload, runtime, {}, &reloadMode, &error));
+		CUI_EXPECT_TRUE(error.find(L"missingPart") != std::wstring::npos
+			|| error.find(L"模板部件") != std::wstring::npos);
+		CUI_EXPECT_TRUE(runtime.FindControlByName(L"card") == card);
+		CUI_EXPECT_EQ(std::wstring(L"Active"),
+			card->GetCurrentVisualState(L"CommonStates"));
+
+		auto invalidXaml = canonical;
+		const auto target = invalidXaml.find("TargetName=\"chrome\"");
+		CUI_EXPECT_TRUE(target != std::string::npos);
+		if (target != std::string::npos)
+			invalidXaml.replace(target,
+				std::string("TargetName=\"chrome\"").size(),
+				"TargetName=\"missingPart\"");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"模板部件") != std::wstring::npos);
+
+		auto invalidTransformIndex = canonical;
+		const auto scaleIndex = invalidTransformIndex.find(
+			"(TransformGroup.Children)[0].(ScaleTransform.ScaleX)");
+		CUI_EXPECT_TRUE(scaleIndex != std::string::npos);
+		if (scaleIndex != std::string::npos)
+			invalidTransformIndex.replace(scaleIndex,
+				std::string("(TransformGroup.Children)[0]").size(),
+				"(TransformGroup.Children)[9]");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidTransformIndex, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"RenderTransform") != std::wstring::npos
+			|| error.find(L"路径") != std::wstring::npos);
+
+		auto mismatchedTransformType = canonical;
+		const auto scaleLeaf = mismatchedTransformType.find(
+			"(ScaleTransform.ScaleX)");
+		CUI_EXPECT_TRUE(scaleLeaf != std::string::npos);
+		if (scaleLeaf != std::string::npos)
+			mismatchedTransformType.replace(scaleLeaf,
+				std::string("(ScaleTransform.ScaleX)").size(),
+				"(RotateTransform.Angle)");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			mismatchedTransformType, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"Transform") != std::wstring::npos
+			|| error.find(L"路径") != std::wstring::npos);
+
+		auto duplicateTransformLeaf = canonical;
+		const auto scaleYLeaf = duplicateTransformLeaf.find(
+			"(ScaleTransform.ScaleY)");
+		CUI_EXPECT_TRUE(scaleYLeaf != std::string::npos);
+		if (scaleYLeaf != std::string::npos)
+			duplicateTransformLeaf.replace(scaleYLeaf,
+				std::string("(ScaleTransform.ScaleY)").size(),
+				"(ScaleTransform.ScaleX)");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			duplicateTransformLeaf, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"重复") != std::wstring::npos
+			|| error.find(L"duplicated") != std::wstring::npos);
+
+		auto unsupportedTimeline = canonical;
+		const auto durationAttribute = unsupportedTimeline.find(
+			"Duration=\"0:00:00.200\"");
+		CUI_EXPECT_TRUE(durationAttribute != std::string::npos);
+		if (durationAttribute != std::string::npos)
+			unsupportedTimeline.insert(durationAttribute, "Additive=\"Sum\" ");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			unsupportedTimeline, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"Additive") != std::wstring::npos
+			|| error.find(L"属性") != std::wstring::npos);
+
+		auto incompatibleTimeline = canonical;
+		auto replaceAll = [](std::string& text,
+			const std::string& from, const std::string& to)
+		{
+			for (size_t position = 0;
+				(position = text.find(from, position)) != std::string::npos;
+				position += to.size())
+				text.replace(position, from.size(), to);
+		};
+		replaceAll(incompatibleTimeline, "ColorAnimation", "DoubleAnimation");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			incompatibleTimeline, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"类型不兼容") != std::wstring::npos);
+	});
+
+	runner.Add("Storyboard key frames interpolate compose persist and reload", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:key-frames" x:Name="KeyFrameForm">
+  <Form.Resources>
+    <Double x:Key="KeyRadius">12</Double>
+    <Color x:Key="KeyColor">#FF3366CC</Color>
+    <Double x:Key="KeyScale">1.6</Double>
+    <ComponentDefinition x:Key="local:KeyFrameCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="IsAnimated" Type="Bool" Default="false" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Panel x:Name="PART_Root">
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="CommonStates">
+              <VisualState x:Name="Normal" />
+              <VisualState x:Name="Animated">
+                <VisualState.StateTriggers>
+                  <StateTrigger Property="IsAnimated" Value="true" />
+                </VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                  <Storyboard>
+                    <DoubleAnimationUsingKeyFrames
+                        Storyboard.TargetName="chrome"
+                        Storyboard.TargetProperty="ValidationCornerRadius"
+                        BeginTime="0:0:0.010" Duration="0:0:0.400">
+                      <DiscreteDoubleKeyFrame KeyTime="0:0:0.050" Value="2" />
+                      <LinearDoubleKeyFrame KeyTime="0:0:0.150"
+                                            Value="{StaticResource KeyRadius}" />
+                      <EasingDoubleKeyFrame KeyTime="0:0:0.250" Value="18">
+                        <EasingDoubleKeyFrame.EasingFunction>
+                          <QuadraticEase EasingMode="EaseIn" />
+                        </EasingDoubleKeyFrame.EasingFunction>
+                      </EasingDoubleKeyFrame>
+                      <SplineDoubleKeyFrame KeyTime="0:0:0.400" Value="24"
+                                            KeySpline="0.25,0.1 0.25,1" />
+                    </DoubleAnimationUsingKeyFrames>
+                    <ColorAnimationUsingKeyFrames
+                        Storyboard.TargetName="caption"
+                        Storyboard.TargetProperty="ForeColor"
+                        Duration="0:0:0.400">
+                      <DiscreteColorKeyFrame KeyTime="0:0:0" Value="#FF000000" />
+                      <LinearColorKeyFrame KeyTime="0:0:0.150"
+                                           Value="{StaticResource KeyColor}" />
+                      <EasingColorKeyFrame KeyTime="0:0:0.250" Value="#FFFF0000">
+                        <EasingColorKeyFrame.EasingFunction>
+                          <SineEase />
+                        </EasingColorKeyFrame.EasingFunction>
+                      </EasingColorKeyFrame>
+                      <SplineColorKeyFrame KeyTime="0:0:0.400" Value="#FFFFFFFF"
+                                           KeySpline="0.42,0 0.58,1" />
+                    </ColorAnimationUsingKeyFrames>
+                    <DoubleAnimationUsingKeyFrames
+                        Storyboard.TargetName="chrome"
+                        Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)">
+                      <LinearDoubleKeyFrame KeyTime="0:0:0.200" Value="1.2" />
+                      <SplineDoubleKeyFrame KeyTime="0:0:0.400"
+                                            Value="{StaticResource KeyScale}"
+                                            KeySpline="0.25,0.1 0.25,1" />
+                    </DoubleAnimationUsingKeyFrames>
+                  </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+          <Panel x:Name="chrome" Width="180" Height="60">
+            <Control.RenderTransform>
+              <ScaleTransform ScaleX="1" ScaleY="1" />
+            </Control.RenderTransform>
+            <Label x:Name="caption" Text="Key frames" ForeColor="#FF112233" />
+          </Panel>
+        </Panel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:KeyFrameCard x:Name="card" DesignId="1" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		const auto& animations = document.Components.front()
+			.VisualStateGroups.front().States[1].Animations;
+		CUI_EXPECT_EQ(3ULL, animations.size());
+		CUI_EXPECT_EQ(4ULL, animations[0].KeyFrames.size());
+		if (animations[0].KeyFrames.size() >= 4)
+		{
+			CUI_EXPECT_EQ(DesignerKeyFrameKind::Discrete,
+				animations[0].KeyFrames[0].Kind);
+			CUI_EXPECT_EQ(DesignerKeyFrameKind::Linear,
+				animations[0].KeyFrames[1].Kind);
+			CUI_EXPECT_TRUE(animations[0].KeyFrames[1].UsesResource);
+			CUI_EXPECT_EQ(std::wstring(L"KeyRadius"),
+				animations[0].KeyFrames[1].ResourceKey);
+			CUI_EXPECT_EQ(DesignerKeyFrameKind::Easing,
+				animations[0].KeyFrames[2].Kind);
+			CUI_EXPECT_EQ(DesignerEasingKind::Quadratic,
+				animations[0].KeyFrames[2].Easing);
+			CUI_EXPECT_EQ(DesignerEasingMode::EaseIn,
+				animations[0].KeyFrames[2].EasingMode);
+			CUI_EXPECT_EQ(DesignerKeyFrameKind::Spline,
+				animations[0].KeyFrames[3].Kind);
+			CUI_EXPECT_NEAR(0.25f,
+				animations[0].KeyFrames[3].KeySplineX1, 0.0001f);
+		}
+		CUI_EXPECT_EQ(400ULL, animations[2].DurationMilliseconds);
+		CUI_EXPECT_EQ(std::wstring(
+			L"(Control.RenderTransform).(TransformGroup.Children)[0]."
+			L"(ScaleTransform.ScaleX)"), animations[2].PropertyName);
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto expected : { "DoubleAnimationUsingKeyFrames",
+			"ColorAnimationUsingKeyFrames", "DiscreteDoubleKeyFrame",
+			"LinearColorKeyFrame", "EasingDoubleKeyFrame.EasingFunction",
+			"SplineDoubleKeyFrame", "KeySpline=\"0.25,0.100000001 0.25,1\"" })
+			CUI_EXPECT_TRUE(canonical.find(expected) != std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+		DesignerModel::DesignDocument xmlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			DesignerModel::DesignDocumentSerializer::ToXml(document),
+			xmlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xmlRoundTrip);
+
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { document.Nodes.front().Id }, fragment, &error));
+		CUI_EXPECT_EQ(3ULL, fragment.StyleSheet.Resources.size());
+		DesignerModel::DesignDocument collisionTarget;
+		collisionTarget.StyleSheet.Resources = fragment.StyleSheet.Resources;
+		for (auto& resource : collisionTarget.StyleSheet.Resources)
+			resource.Value.Text = resource.Value.Kind == DesignerStyleValueKind::Color
+				? L"#FF010203" : L"99";
+		DesignerModel::DesignDocument isolatedPaste;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			collisionTarget, fragment, 0, 0, isolatedPaste, nullptr, &error));
+		CUI_EXPECT_EQ(6ULL, isolatedPaste.StyleSheet.Resources.size());
+		CUI_EXPECT_EQ(1ULL, isolatedPaste.Components.size());
+		if (!isolatedPaste.Components.empty())
+		{
+			const auto& pastedAnimations = isolatedPaste.Components.front()
+				.VisualStateGroups.front().States[1].Animations;
+			CUI_EXPECT_TRUE(pastedAnimations[0].KeyFrames[1].UsesResource);
+			CUI_EXPECT_TRUE(_wcsicmp(
+				pastedAnimations[0].KeyFrames[1].ResourceKey.c_str(),
+				L"KeyRadius") != 0);
+			CUI_EXPECT_TRUE(pastedAnimations[2].KeyFrames[1].UsesResource);
+			CUI_EXPECT_TRUE(_wcsicmp(
+				pastedAnimations[2].KeyFrames[1].ResourceKey.c_str(),
+				L"KeyScale") != 0);
+		}
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* chrome = card
+			? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+		auto* caption = card
+			? card->FindDeclarativeTemplatePart(L"caption") : nullptr;
+		CUI_EXPECT_TRUE(card && chrome && caption);
+		const auto baseRadius = chrome ? chrome->ValidationCornerRadius : 0.0f;
+		const auto baseColor = caption ? caption->ForeColor : D2D1_COLOR_F{};
+		CUI_EXPECT_TRUE(card && card->TrySetPropertyValue(L"IsAnimated", true));
+		CUI_EXPECT_EQ(std::wstring(L"Animated"),
+			card ? card->GetCurrentVisualState(L"CommonStates") : L"");
+		const auto tick = ::GetTickCount64();
+		CUI_EXPECT_TRUE(card && card->AdvanceVisualStateAnimations(tick + 40));
+		CUI_EXPECT_NEAR(baseRadius, chrome->ValidationCornerRadius, 0.0001f);
+		CUI_EXPECT_TRUE(card && card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_TRUE(chrome && chrome->ValidationCornerRadius > 2.0f
+			&& chrome->ValidationCornerRadius < 12.0f);
+		if (chrome && chrome->GetRenderTransform()
+			&& !chrome->GetRenderTransform()->Operations.empty())
+			CUI_EXPECT_TRUE(chrome->GetRenderTransform()->Operations[0].ScaleX > 1.0f
+				&& chrome->GetRenderTransform()->Operations[0].ScaleX < 1.2f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 220));
+		CUI_EXPECT_TRUE(chrome->ValidationCornerRadius > 12.0f
+			&& chrome->ValidationCornerRadius < 15.5f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 320));
+		CUI_EXPECT_TRUE(chrome->ValidationCornerRadius > 21.0f
+			&& chrome->ValidationCornerRadius < 24.0f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 2000));
+		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(24.0f, chrome->ValidationCornerRadius, 0.0001f);
+		CUI_EXPECT_NEAR(1.0f, caption->ForeColor.r, 0.0001f);
+		CUI_EXPECT_NEAR(1.0f, caption->ForeColor.g, 0.0001f);
+		CUI_EXPECT_NEAR(1.0f, caption->ForeColor.b, 0.0001f);
+		CUI_EXPECT_TRUE(chrome->GetRenderTransform().has_value());
+		if (chrome->GetRenderTransform()
+			&& !chrome->GetRenderTransform()->Operations.empty())
+			CUI_EXPECT_NEAR(1.6f,
+				chrome->GetRenderTransform()->Operations[0].ScaleX, 0.0001f);
+		CUI_EXPECT_TRUE(card->TrySetPropertyValue(L"IsAnimated", false));
+		CUI_EXPECT_NEAR(baseRadius, chrome->ValidationCornerRadius, 0.0001f);
+		CUI_EXPECT_NEAR(baseColor.r, caption->ForeColor.r, 0.0001f);
+		CUI_EXPECT_NEAR(baseColor.g, caption->ForeColor.g, 0.0001f);
+		CUI_EXPECT_NEAR(baseColor.b, caption->ForeColor.b, 0.0001f);
+		if (chrome->GetRenderTransform()
+			&& !chrome->GetRenderTransform()->Operations.empty())
+			CUI_EXPECT_NEAR(1.0f,
+				chrome->GetRenderTransform()->Operations[0].ScaleX, 0.0001f);
+
+		auto activeXaml = canonical;
+		const auto cardTag = activeXaml.find(
+			"<local:KeyFrameCard x:Name=\"card\" DesignId=\"1\"");
+		CUI_EXPECT_TRUE(cardTag != std::string::npos);
+		if (cardTag != std::string::npos)
+		{
+			const auto close = activeXaml.find("/>", cardTag);
+			if (close != std::string::npos)
+				activeXaml.insert(close, " IsAnimated=\"true\"");
+		}
+		DesignerModel::DesignDocument resourceReload;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			activeXaml, resourceReload, &error));
+		for (auto& resource : resourceReload.StyleSheet.Resources)
+		{
+			if (_wcsicmp(resource.Key.c_str(), L"KeyRadius") == 0)
+				resource.Value.Text = L"14";
+			else if (_wcsicmp(resource.Key.c_str(), L"KeyScale") == 0)
+				resource.Value.Text = L"1.8";
+			else if (_wcsicmp(resource.Key.c_str(), L"KeyColor") == 0)
+				resource.Value.Text = L"#FF224488";
+		}
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			resourceReload, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		chrome = card ? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+		caption = card ? card->FindDeclarativeTemplatePart(L"caption") : nullptr;
+		CUI_EXPECT_TRUE(card && chrome && caption);
+		CUI_EXPECT_TRUE(card && card->AdvanceVisualStateAnimations(
+			::GetTickCount64() + 2000));
+		CUI_EXPECT_NEAR(24.0f, chrome->ValidationCornerRadius, 0.0001f);
+		if (chrome->GetRenderTransform()
+			&& !chrome->GetRenderTransform()->Operations.empty())
+			CUI_EXPECT_NEAR(1.8f,
+				chrome->GetRenderTransform()->Operations[0].ScaleX, 0.0001f);
+
+		auto invalidKeyTime = canonical;
+		const auto keyTime = invalidKeyTime.find(" KeyTime=\"0:00:00.050\"");
+		CUI_EXPECT_TRUE(keyTime != std::string::npos);
+		if (keyTime != std::string::npos)
+			invalidKeyTime.erase(keyTime,
+				std::string(" KeyTime=\"0:00:00.050\"").size());
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidKeyTime, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"KeyTime") != std::wstring::npos);
+
+		auto invalidSpline = canonical;
+		const auto spline = invalidSpline.find(
+			"KeySpline=\"0.25,0.100000001 0.25,1\"");
+		CUI_EXPECT_TRUE(spline != std::string::npos);
+		if (spline != std::string::npos)
+			invalidSpline.replace(spline,
+				std::string("KeySpline=\"0.25,0.100000001 0.25,1\"").size(),
+				"KeySpline=\"1.5,0 0,1\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidSpline, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"KeySpline") != std::wstring::npos);
+
+		auto incompatibleFrame = canonical;
+		const auto frame = incompatibleFrame.find("<LinearDoubleKeyFrame");
+		CUI_EXPECT_TRUE(frame != std::string::npos);
+		if (frame != std::string::npos)
+			incompatibleFrame.replace(frame,
+				std::string("<LinearDoubleKeyFrame").size(),
+				"<LinearColorKeyFrame");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			incompatibleFrame, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"关键帧类型") != std::wstring::npos);
+	});
+
+	runner.Add("VisualTransition selects generates interrupts and round-trips", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:transitions" x:Name="TransitionForm">
+  <Form.Resources>
+    <Double x:Key="TransitionRadius">30</Double>
+    <Color x:Key="HotColor">#FFCC4400</Color>
+    <ComponentDefinition x:Key="local:TransitionCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="IsHot" Type="Bool" Default="false" />
+        <ComponentProperty Name="IsWarm" Type="Bool" Default="false" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Panel x:Name="PART_Root">
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="CommonStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition GeneratedDuration="0:0:0.100" />
+                <VisualTransition From="Warm" GeneratedDuration="0:0:0.300" />
+                <VisualTransition To="Hot" GeneratedDuration="0:0:0.400">
+                  <VisualTransition.GeneratedEasingFunction>
+                    <SineEase EasingMode="EaseOut" />
+                  </VisualTransition.GeneratedEasingFunction>
+                </VisualTransition>
+                <VisualTransition From="Normal" To="Hot"
+                                  GeneratedDuration="0:0:0.600">
+                  <VisualTransition.GeneratedEasingFunction>
+                    <QuadraticEase EasingMode="EaseIn" />
+                  </VisualTransition.GeneratedEasingFunction>
+                  <VisualTransition.Storyboard>
+                    <Storyboard>
+                      <DoubleAnimationUsingKeyFrames Storyboard.TargetName="chrome"
+                          Storyboard.TargetProperty="ValidationCornerRadius"
+                          Duration="0:0:0.300">
+                        <LinearDoubleKeyFrame KeyTime="0:0:0.150" Value="16" />
+                        <SplineDoubleKeyFrame KeyTime="0:0:0.300"
+                            Value="{StaticResource TransitionRadius}"
+                            KeySpline="0.25,0.1 0.25,1" />
+                      </DoubleAnimationUsingKeyFrames>
+                    </Storyboard>
+                  </VisualTransition.Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Normal">
+                <VisualState.Storyboard>
+                  <Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                        Storyboard.TargetProperty="ValidationCornerRadius"
+                        To="4" Duration="0:0:0" />
+                    <ColorAnimation Storyboard.TargetName="caption"
+                        Storyboard.TargetProperty="ForeColor"
+                        To="#FF000000" Duration="0:0:0" />
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                        Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
+                        To="1" Duration="0:0:0" />
+                  </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Warm">
+                <VisualState.StateTriggers>
+                  <StateTrigger Property="IsWarm" Value="true" />
+                </VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                  <Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                        Storyboard.TargetProperty="ValidationCornerRadius"
+                        To="8" Duration="0:0:0" />
+                    <ColorAnimation Storyboard.TargetName="caption"
+                        Storyboard.TargetProperty="ForeColor"
+                        To="#FFFFAA00" Duration="0:0:0" />
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                        Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
+                        To="1.2" Duration="0:0:0" />
+                  </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Hot">
+                <VisualState.StateTriggers>
+                  <StateTrigger Property="IsHot" Value="true" />
+                </VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                  <Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                        Storyboard.TargetProperty="ValidationCornerRadius"
+                        To="20" Duration="0:0:0" />
+                    <ColorAnimation Storyboard.TargetName="caption"
+                        Storyboard.TargetProperty="ForeColor"
+                        To="{StaticResource HotColor}" Duration="0:0:0" />
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                        Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
+                        To="1.5" Duration="0:0:0" />
+                  </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+          <Panel x:Name="chrome" ValidationCornerRadius="1">
+            <Control.RenderTransform>
+              <ScaleTransform ScaleX="1" ScaleY="1" />
+            </Control.RenderTransform>
+            <Label x:Name="caption" Text="Transition" ForeColor="#FF112233" />
+          </Panel>
+        </Panel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:TransitionCard x:Name="card" DesignId="1" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		const auto& group = document.Components.front().VisualStateGroups.front();
+		CUI_EXPECT_EQ(4ULL, group.Transitions.size());
+		if (group.Transitions.size() == 4)
+		{
+			CUI_EXPECT_EQ(std::wstring(L"Normal"),
+				group.Transitions[3].FromState);
+			CUI_EXPECT_EQ(std::wstring(L"Hot"), group.Transitions[3].ToState);
+			CUI_EXPECT_EQ(600ULL,
+				group.Transitions[3].GeneratedDurationMilliseconds);
+			CUI_EXPECT_EQ(DesignerEasingKind::Quadratic,
+				group.Transitions[3].GeneratedEasing);
+			CUI_EXPECT_EQ(DesignerEasingMode::EaseIn,
+				group.Transitions[3].GeneratedEasingMode);
+			CUI_EXPECT_EQ(1ULL, group.Transitions[3].Animations.size());
+			CUI_EXPECT_EQ(2ULL,
+				group.Transitions[3].Animations.front().KeyFrames.size());
+			CUI_EXPECT_TRUE(group.Transitions[3].Animations.front()
+				.KeyFrames[1].UsesResource);
+		}
+		CUI_EXPECT_TRUE(document.HasResourceBackedVisualStates());
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto expected : { "VisualStateGroup.Transitions",
+			"From=\"Normal\" To=\"Hot\"",
+			"GeneratedDuration=\"0:00:00.600\"",
+			"VisualTransition.GeneratedEasingFunction",
+			"VisualTransition.Storyboard" })
+			CUI_EXPECT_TRUE(canonical.find(expected) != std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+		DesignerModel::DesignDocument xmlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			DesignerModel::DesignDocumentSerializer::ToXml(document),
+			xmlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xmlRoundTrip);
+
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { document.Nodes.front().Id }, fragment, &error));
+		CUI_EXPECT_EQ(2ULL, fragment.StyleSheet.Resources.size());
+		DesignerModel::DesignDocument collisionTarget;
+		collisionTarget.StyleSheet.Resources = fragment.StyleSheet.Resources;
+		for (auto& resource : collisionTarget.StyleSheet.Resources)
+			resource.Value.Text = resource.Value.Kind == DesignerStyleValueKind::Color
+				? L"#FF010203" : L"99";
+		DesignerModel::DesignDocument pasted;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			collisionTarget, fragment, 0, 0, pasted, nullptr, &error));
+		CUI_EXPECT_EQ(4ULL, pasted.StyleSheet.Resources.size());
+		if (!pasted.Components.empty())
+		{
+			const auto& endpoint = pasted.Components.front().VisualStateGroups.front()
+				.Transitions[3].Animations.front();
+			CUI_EXPECT_TRUE(endpoint.KeyFrames[1].UsesResource);
+			CUI_EXPECT_TRUE(_wcsicmp(endpoint.KeyFrames[1].ResourceKey.c_str(),
+				L"TransitionRadius") != 0);
+		}
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* chrome = card ? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+		auto* caption = card ? card->FindDeclarativeTemplatePart(L"caption") : nullptr;
+		CUI_EXPECT_TRUE(card && chrome && caption);
+		CUI_EXPECT_EQ(std::wstring(L"Normal"),
+			card ? card->GetCurrentVisualState(L"CommonStates") : L"");
+		CUI_EXPECT_NEAR(4.0f, chrome->ValidationCornerRadius, 0.0001f);
+
+		CUI_EXPECT_TRUE(card->TrySetPropertyValue(L"IsHot", true));
+		const auto exactTick = ::GetTickCount64();
+		CUI_EXPECT_EQ(std::wstring(L"Hot"),
+			card->GetCurrentVisualState(L"CommonStates"));
+		CUI_EXPECT_TRUE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(exactTick + 150));
+		CUI_EXPECT_TRUE(chrome->ValidationCornerRadius > 10.0f
+			&& chrome->ValidationCornerRadius < 25.0f);
+		if (chrome->GetRenderTransform()
+			&& !chrome->GetRenderTransform()->Operations.empty())
+			CUI_EXPECT_TRUE(chrome->GetRenderTransform()->Operations[0].ScaleX > 1.0f
+				&& chrome->GetRenderTransform()->Operations[0].ScaleX < 1.1f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(exactTick + 350));
+		CUI_EXPECT_NEAR(30.0f, chrome->ValidationCornerRadius, 0.0001f);
+		CUI_EXPECT_TRUE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(exactTick + 800));
+		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(20.0f, chrome->ValidationCornerRadius, 0.0001f);
+		CUI_EXPECT_NEAR(0.8f, caption->ForeColor.r, 0.001f);
+		if (chrome->GetRenderTransform()
+			&& !chrome->GetRenderTransform()->Operations.empty())
+			CUI_EXPECT_NEAR(1.5f,
+				chrome->GetRenderTransform()->Operations[0].ScaleX, 0.0001f);
+
+		CUI_EXPECT_TRUE(card->GoToVisualState(
+			L"CommonStates", L"Warm", false, &error));
+		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(8.0f, chrome->ValidationCornerRadius, 0.0001f);
+		CUI_EXPECT_TRUE(card->GoToVisualState(
+			L"CommonStates", L"Hot", true, &error));
+		const auto toOnlyTick = ::GetTickCount64();
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(toOnlyTick + 350));
+		CUI_EXPECT_TRUE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(chrome->ValidationCornerRadius > 8.0f
+			&& chrome->ValidationCornerRadius < 20.0f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(toOnlyTick + 500));
+		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+
+		CUI_EXPECT_TRUE(card->GoToVisualState(
+			L"CommonStates", L"Normal", false, &error));
+		CUI_EXPECT_TRUE(card->GoToVisualState(
+			L"CommonStates", L"Hot", true, &error));
+		const auto interruptedTick = ::GetTickCount64();
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(interruptedTick + 180));
+		CUI_EXPECT_TRUE(card->GoToVisualState(
+			L"CommonStates", L"Warm", true, &error));
+		const auto recoveryTick = ::GetTickCount64();
+		CUI_EXPECT_EQ(std::wstring(L"Warm"),
+			card->GetCurrentVisualState(L"CommonStates"));
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(recoveryTick + 150));
+		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(8.0f, chrome->ValidationCornerRadius, 0.0001f);
+
+		auto resourceReload = document;
+		for (auto& resource : resourceReload.StyleSheet.Resources)
+			if (_wcsicmp(resource.Key.c_str(), L"TransitionRadius") == 0)
+				resource.Value.Text = L"34";
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			resourceReload, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		chrome = card ? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+		CUI_EXPECT_TRUE(card && chrome);
+		CUI_EXPECT_TRUE(card && card->TrySetPropertyValue(L"IsHot", true));
+		const auto reloadTick = ::GetTickCount64();
+		CUI_EXPECT_TRUE(card && card->AdvanceVisualStateAnimations(reloadTick + 350));
+		CUI_EXPECT_NEAR(34.0f, chrome->ValidationCornerRadius, 0.0001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(reloadTick + 800));
+		CUI_EXPECT_NEAR(20.0f, chrome->ValidationCornerRadius, 0.0001f);
+
+		auto missingTransitionResource = document;
+		missingTransitionResource.StyleSheet.Resources.erase(std::remove_if(
+			missingTransitionResource.StyleSheet.Resources.begin(),
+			missingTransitionResource.StyleSheet.Resources.end(),
+			[](const auto& resource)
+			{ return _wcsicmp(resource.Key.c_str(), L"TransitionRadius") == 0; }),
+			missingTransitionResource.StyleSheet.Resources.end());
+		DesignerModel::DesignDocument invalidSnapshotResult = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			DesignerModel::DesignDocumentSerializer::ToXml(missingTransitionResource),
+			invalidSnapshotResult, &error));
+		CUI_EXPECT_EQ(document, invalidSnapshotResult);
+		CUI_EXPECT_TRUE(error.find(L"visual-transition") != std::wstring::npos);
+
+		auto unknownState = canonical;
+		const auto from = unknownState.find("From=\"Normal\"");
+		CUI_EXPECT_TRUE(from != std::string::npos);
+		if (from != std::string::npos)
+			unknownState.replace(from, std::string("From=\"Normal\"").size(),
+				"From=\"Missing\"");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			unknownState, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"状态不存在") != std::wstring::npos);
+
+		auto duplicateSelector = canonical;
+		const auto transitions = duplicateSelector.find(
+			"<VisualStateGroup.Transitions>");
+		CUI_EXPECT_TRUE(transitions != std::string::npos);
+		if (transitions != std::string::npos)
+			duplicateSelector.insert(transitions
+				+ std::string("<VisualStateGroup.Transitions>").size(),
+				"<VisualTransition GeneratedDuration=\"0:0:0.050\" />");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			duplicateSelector, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"选择器重复") != std::wstring::npos);
+
+		auto invalidDuration = canonical;
+		const auto duration = invalidDuration.find(
+			"GeneratedDuration=\"0:00:00.600\"");
+		CUI_EXPECT_TRUE(duration != std::string::npos);
+		if (duration != std::string::npos)
+			invalidDuration.replace(duration,
+				std::string("GeneratedDuration=\"0:00:00.600\"").size(),
+				"GeneratedDuration=\"Forever\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidDuration, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"GeneratedDuration") != std::wstring::npos);
+	});
+
+	runner.Add("Timeline repeat auto-reverse and fill behaviors round-trip", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:timeline-clock" x:Name="TimelineForm">
+  <Form.Resources>
+    <ComponentDefinition x:Key="local:ClockCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Phase" Type="Int" Default="0" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Panel x:Name="chrome" ValidationCornerRadius="4">
+          <Control.RenderTransform>
+            <TransformGroup>
+              <ScaleTransform ScaleX="1" ScaleY="1" />
+            </TransformGroup>
+          </Control.RenderTransform>
+          <Label x:Name="caption" Text="Clock" FontSize="14"
+                 ValidationBorderThickness="3"
+                 ForeColor="#FF112233" />
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="ClockStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="Duration">
+                  <VisualTransition.Storyboard>
+                    <Storyboard>
+                      <DoubleAnimation Storyboard.TargetName="caption"
+                        Storyboard.TargetProperty="ValidationBorderThickness"
+						From="2" To="10" Duration="0:0:0.100"
+						RepeatBehavior="2x" AutoReverse="true"
+						FillBehavior="Stop" SpeedRatio="2"
+						AccelerationRatio="0.25" DecelerationRatio="0.25" />
+                    </Storyboard>
+                  </VisualTransition.Storyboard>
+                </VisualTransition>
+                <VisualTransition From="Idle" To="Forever">
+                  <Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="caption"
+                      Storyboard.TargetProperty="ValidationBorderThickness"
+						From="3" To="11" Duration="0:0:0.100"
+                      RepeatBehavior="Forever" AutoReverse="true" />
+                  </Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="Repeat">
+                <VisualState.StateTriggers>
+                  <StateTrigger Property="Phase" Value="1" />
+                </VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                  <Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                      Storyboard.TargetProperty="ValidationCornerRadius"
+                      From="0" To="100" BeginTime="0:0:0.050"
+					  Duration="0:0:0.100" RepeatBehavior="2x"
+					  AutoReverse="true" SpeedRatio="2"
+					  AccelerationRatio="0.25" DecelerationRatio="0.25" />
+                    <DoubleAnimationUsingKeyFrames Storyboard.TargetName="chrome"
+                      Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
+                      Duration="0:0:0.100" RepeatBehavior="2x"
+                      AutoReverse="true">
+                      <LinearDoubleKeyFrame KeyTime="0:0:0.100" Value="2" />
+                    </DoubleAnimationUsingKeyFrames>
+                  </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Duration">
+                <VisualState.StateTriggers>
+                  <StateTrigger Property="Phase" Value="2" />
+                </VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                  <Storyboard>
+                    <ColorAnimation Storyboard.TargetName="caption"
+					  Storyboard.TargetProperty="ForeColor"
+					  To="#FFFF0000" Duration="0:0:0.100"
+					  RepeatBehavior="0:0:0.250" FillBehavior="Stop"
+					  SpeedRatio="2" />
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                      Storyboard.TargetProperty="ValidationBorderThickness"
+                      From="0" To="8" Duration="0:0:0.200"
+                      RepeatBehavior="0.5x" />
+                  </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Forever">
+                <VisualState.StateTriggers>
+                  <StateTrigger Property="Phase" Value="3" />
+                </VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                  <Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                      Storyboard.TargetProperty="ValidationCornerRadius"
+                      From="4" To="14" Duration="0:0:0.100"
+                      RepeatBehavior="Forever" AutoReverse="true" />
+                  </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Transform">
+                <VisualState.StateTriggers>
+                  <StateTrigger Property="Phase" Value="4" />
+                </VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                  <Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                      Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
+                      From="1" To="2" Duration="0:0:0.100"
+                      FillBehavior="Stop" />
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                      Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"
+                      From="1" To="3" Duration="0:0:0.200" />
+                  </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </Panel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:ClockCard x:Name="card" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error))
+			throw std::runtime_error("timeline XAML parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		const auto& group = document.Components.front().VisualStateGroups.front();
+		CUI_EXPECT_EQ(5ULL, group.States.size());
+		CUI_EXPECT_EQ(2ULL, group.Transitions.size());
+		const auto& repeated = group.States[1].Animations.front();
+		CUI_EXPECT_EQ(DesignerRepeatBehaviorKind::Count,
+			repeated.RepeatBehavior);
+		CUI_EXPECT_NEAR(2.0, repeated.RepeatCount, 0.0001);
+		CUI_EXPECT_TRUE(repeated.AutoReverse);
+		CUI_EXPECT_EQ(DesignerTimelineFillBehavior::HoldEnd,
+			repeated.FillBehavior);
+		CUI_EXPECT_NEAR(2.0, repeated.SpeedRatio, 0.0001);
+		CUI_EXPECT_NEAR(0.25, repeated.AccelerationRatio, 0.0001);
+		CUI_EXPECT_NEAR(0.25, repeated.DecelerationRatio, 0.0001);
+		CUI_EXPECT_EQ(DesignerRepeatBehaviorKind::Count,
+			group.States[1].Animations[1].RepeatBehavior);
+		CUI_EXPECT_EQ(1ULL,
+			group.States[1].Animations[1].KeyFrames.size());
+		const auto& durationAnimation = group.States[2].Animations.front();
+		CUI_EXPECT_EQ(DesignerRepeatBehaviorKind::Duration,
+			durationAnimation.RepeatBehavior);
+		CUI_EXPECT_EQ(250ULL,
+			durationAnimation.RepeatDurationMilliseconds);
+		CUI_EXPECT_EQ(DesignerTimelineFillBehavior::Stop,
+			durationAnimation.FillBehavior);
+		CUI_EXPECT_NEAR(2.0, durationAnimation.SpeedRatio, 0.0001);
+		CUI_EXPECT_NEAR(0.5,
+			group.States[2].Animations[1].RepeatCount, 0.0001);
+		CUI_EXPECT_EQ(DesignerRepeatBehaviorKind::Forever,
+			group.States[3].Animations.front().RepeatBehavior);
+		CUI_EXPECT_NEAR(2.0, group.Transitions.front().Animations.front().SpeedRatio,
+			0.0001);
+		CUI_EXPECT_NEAR(0.25,
+			group.Transitions.front().Animations.front().AccelerationRatio, 0.0001);
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("RepeatBehavior=\"2x\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("RepeatBehavior=\"0:00:00.250\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("RepeatBehavior=\"Forever\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("AutoReverse=\"true\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("FillBehavior=\"Stop\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("SpeedRatio=\"2\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("AccelerationRatio=\"0.25\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("DecelerationRatio=\"0.25\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+		DesignerModel::DesignDocument xmlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			DesignerModel::DesignDocumentSerializer::ToXml(document),
+			xmlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xmlRoundTrip);
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* chrome = card
+			? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+		auto* caption = card
+			? card->FindDeclarativeTemplatePart(L"caption") : nullptr;
+		CUI_EXPECT_TRUE(card && chrome && caption);
+		const auto baseColor = caption ? caption->ForeColor : D2D1_COLOR_F{};
+
+		// Bracket the trigger dispatch and discover the exact BeginTime boundary.
+		// The runtime commits the live clock only after the initial frame succeeds,
+		// so state preparation latency is not counted as animation time.
+		const auto repeatTick = ::GetTickCount64();
+		CUI_EXPECT_TRUE(card && card->TrySetPropertyValue(L"Phase", 1));
+		CUI_EXPECT_NEAR(4.0f, chrome->ValidationCornerRadius, 0.001f);
+		const auto repeatTriggerFinished = ::GetTickCount64();
+		unsigned long long animationBeginTick = 0;
+		for (auto candidate = repeatTick;
+			candidate <= repeatTriggerFinished + 55; ++candidate)
+		{
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(candidate));
+			if (std::fabs(chrome->ValidationCornerRadius - 4.0f) > 0.001f)
+			{
+				animationBeginTick = candidate;
+				break;
+			}
+		}
+		CUI_EXPECT_TRUE(animationBeginTick != 0);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(animationBeginTick + 25));
+		CUI_EXPECT_TRUE(chrome->ValidationCornerRadius > 49.0f
+			&& chrome->ValidationCornerRadius < 51.0f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(animationBeginTick + 38));
+		CUI_EXPECT_TRUE(chrome->ValidationCornerRadius > 83.0f
+			&& chrome->ValidationCornerRadius < 87.0f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(animationBeginTick + 50));
+		CUI_EXPECT_TRUE(chrome->ValidationCornerRadius > 90.0f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(animationBeginTick + 105));
+		CUI_EXPECT_TRUE(chrome->ValidationCornerRadius < 8.0f);
+		if (chrome->GetRenderTransform())
+			CUI_EXPECT_TRUE(chrome->GetRenderTransform()->Operations.front().ScaleX
+				> 1.4f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(animationBeginTick + 205));
+		CUI_EXPECT_TRUE(chrome->ValidationCornerRadius < 15.0f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(animationBeginTick + 405));
+		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(0.0f, chrome->ValidationCornerRadius, 0.001f);
+		if (chrome->GetRenderTransform())
+			CUI_EXPECT_NEAR(1.0f,
+				chrome->GetRenderTransform()->Operations.front().ScaleX, 0.001f);
+
+		CUI_EXPECT_TRUE(card->GoToVisualState(
+			L"ClockStates", L"Duration", false, &error));
+		const auto durationTick = ::GetTickCount64();
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(durationTick + 40));
+		CUI_EXPECT_TRUE(caption->ForeColor.r > baseColor.r);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(durationTick + 140));
+		CUI_EXPECT_TRUE(caption->ForeColor.r > baseColor.r);
+		CUI_EXPECT_NEAR(4.0f, chrome->ValidationBorderThickness, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(durationTick + 260));
+		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(baseColor.r, caption->ForeColor.r, 0.0001f);
+		CUI_EXPECT_NEAR(baseColor.g, caption->ForeColor.g, 0.0001f);
+		CUI_EXPECT_NEAR(baseColor.b, caption->ForeColor.b, 0.0001f);
+
+		CUI_EXPECT_TRUE(card->GoToVisualState(
+			L"ClockStates", L"Transform", false, &error));
+		const auto transformTick = ::GetTickCount64();
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(transformTick + 110));
+		CUI_EXPECT_TRUE(chrome->GetRenderTransform().has_value());
+		if (chrome->GetRenderTransform())
+		{
+			const auto& operation = chrome->GetRenderTransform()->Operations.front();
+			CUI_EXPECT_NEAR(1.0f, operation.ScaleX, 0.001f);
+			CUI_EXPECT_TRUE(operation.ScaleY > 1.8f && operation.ScaleY < 2.3f);
+		}
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(transformTick + 220));
+		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		if (chrome->GetRenderTransform())
+		{
+			const auto& operation = chrome->GetRenderTransform()->Operations.front();
+			CUI_EXPECT_NEAR(1.0f, operation.ScaleX, 0.001f);
+			CUI_EXPECT_NEAR(3.0f, operation.ScaleY, 0.001f);
+		}
+
+		CUI_EXPECT_TRUE(card->GoToVisualState(
+			L"ClockStates", L"Idle", false, &error));
+		CUI_EXPECT_TRUE(card->GoToVisualState(
+			L"ClockStates", L"Duration", true, &error));
+		const auto transitionTick = ::GetTickCount64();
+		CUI_EXPECT_EQ(std::wstring(L"Duration"),
+			card->GetCurrentVisualState(L"ClockStates"));
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(transitionTick + 75));
+		CUI_EXPECT_TRUE(caption->ValidationBorderThickness > 4.0f
+			&& caption->ValidationBorderThickness < 8.0f);
+		CUI_EXPECT_TRUE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(transitionTick + 250));
+		CUI_EXPECT_NEAR(3.0f, caption->ValidationBorderThickness, 0.001f);
+
+		CUI_EXPECT_TRUE(card->GoToVisualState(
+			L"ClockStates", L"Idle", false, &error));
+		CUI_EXPECT_TRUE(card->GoToVisualState(
+			L"ClockStates", L"Forever", true, &error));
+		const auto foreverTransitionTick = ::GetTickCount64();
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(
+			foreverTransitionTick + 250));
+		CUI_EXPECT_TRUE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_EQ(std::wstring(L"Forever"),
+			card->GetCurrentVisualState(L"ClockStates"));
+		const auto foreverStateProbeBegin = ::GetTickCount64();
+		CUI_EXPECT_TRUE(card->GoToVisualState(
+			L"ClockStates", L"Forever", false, &error));
+		const auto foreverStateProbeEnd = ::GetTickCount64();
+		unsigned long long foreverStateTick = 0;
+		for (auto candidate = foreverStateProbeBegin;
+			candidate <= foreverStateProbeEnd + 5; ++candidate)
+		{
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(candidate));
+			if (chrome->ValidationCornerRadius > 4.05f)
+			{
+				foreverStateTick = candidate - 1;
+				break;
+			}
+		}
+		CUI_EXPECT_TRUE(foreverStateTick != 0);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(foreverStateTick + 50));
+		CUI_EXPECT_TRUE(chrome->ValidationCornerRadius > 8.0f
+			&& chrome->ValidationCornerRadius < 10.0f);
+		CUI_EXPECT_TRUE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(card->GoToVisualState(
+			L"ClockStates", L"Idle", false, &error));
+		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(4.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		auto invalidRepeat = canonical;
+		const auto repeat = invalidRepeat.find("RepeatBehavior=\"2x\"");
+		CUI_EXPECT_TRUE(repeat != std::string::npos);
+		if (repeat != std::string::npos)
+			invalidRepeat.replace(repeat,
+				std::string("RepeatBehavior=\"2x\"").size(),
+				"RepeatBehavior=\"0x\"");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidRepeat, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"RepeatBehavior") != std::wstring::npos);
+
+		auto invalidFill = canonical;
+		const auto fill = invalidFill.find("FillBehavior=\"Stop\"");
+		CUI_EXPECT_TRUE(fill != std::string::npos);
+		if (fill != std::string::npos)
+			invalidFill.replace(fill,
+				std::string("FillBehavior=\"Stop\"").size(),
+				"FillBehavior=\"Keep\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidFill, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidReverse = canonical;
+		const auto reverse = invalidReverse.find("AutoReverse=\"true\"");
+		CUI_EXPECT_TRUE(reverse != std::string::npos);
+		if (reverse != std::string::npos)
+			invalidReverse.replace(reverse,
+				std::string("AutoReverse=\"true\"").size(),
+				"AutoReverse=\"maybe\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidReverse, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidRepeatDuration = canonical;
+		const auto repeatDuration = invalidRepeatDuration.find(
+			"RepeatBehavior=\"0:00:00.250\"");
+		CUI_EXPECT_TRUE(repeatDuration != std::string::npos);
+		if (repeatDuration != std::string::npos)
+			invalidRepeatDuration.replace(repeatDuration,
+				std::string("RepeatBehavior=\"0:00:00.250\"").size(),
+				"RepeatBehavior=\"0:00:00\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidRepeatDuration, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidSpeed = canonical;
+		const auto speed = invalidSpeed.find("SpeedRatio=\"2\"");
+		CUI_EXPECT_TRUE(speed != std::string::npos);
+		if (speed != std::string::npos)
+			invalidSpeed.replace(speed, std::string("SpeedRatio=\"2\"").size(),
+				"SpeedRatio=\"0\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidSpeed, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"SpeedRatio") != std::wstring::npos);
+
+		auto invalidAcceleration = canonical;
+		const auto acceleration = invalidAcceleration.find(
+			"AccelerationRatio=\"0.25\"");
+		CUI_EXPECT_TRUE(acceleration != std::string::npos);
+		if (acceleration != std::string::npos)
+			invalidAcceleration.replace(acceleration,
+				std::string("AccelerationRatio=\"0.25\"").size(),
+				"AccelerationRatio=\"0.8\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidAcceleration, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"AccelerationRatio") != std::wstring::npos);
+
+		auto invalidSnapshot = document;
+		invalidSnapshot.Components.front().VisualStateGroups.front()
+			.States[1].Animations.front().SpeedRatio = 0.0;
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			DesignerModel::DesignDocumentSerializer::ToXml(invalidSnapshot),
+			unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		auto invalidRuntime = document;
+		invalidRuntime.Components.front().VisualStateGroups.front()
+			.States[1].Animations.front().AccelerationRatio =
+			(std::numeric_limits<double>::quiet_NaN)();
+		auto* retainedCard = runtime.FindControlByName(L"card");
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_FALSE(DesignerModel::RuntimeDocumentLoader::Reload(
+			invalidRuntime, runtime, {}, &reloadMode, &error));
+		CUI_EXPECT_TRUE(runtime.FindControlByName(L"card") == retainedCard);
+		CUI_EXPECT_TRUE(error.find(L"AccelerationRatio") != std::wstring::npos);
+	});
+
+	runner.Add("From To By animation combinations round-trip", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:animation-endpoints" x:Name="EndpointForm">
+  <Form.Resources>
+    <Double x:Key="RadiusIncrement">5</Double>
+    <ComponentDefinition x:Key="local:EndpointCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Phase" Type="Int" Default="0" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Panel x:Name="chrome" ValidationCornerRadius="4"
+               ValidationBorderThickness="3">
+          <Control.RenderTransform>
+            <TransformGroup>
+              <ScaleTransform ScaleX="1" ScaleY="1" />
+            </TransformGroup>
+          </Control.RenderTransform>
+          <Label x:Name="caption" Text="Endpoints" ForeColor="#FF102030" />
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="EndpointStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="ByOnly"
+                                  GeneratedDuration="0:0:0.100" />
+                <VisualTransition From="Idle" To="TransitionTarget">
+                  <Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                      Storyboard.TargetProperty="ValidationBorderThickness"
+                      By="5" Duration="0:0:0.100" FillBehavior="Stop" />
+                  </Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="Seed">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="1" /></VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                <Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    To="20" Duration="0:0:0" />
+                </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="FromOnly">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="2" /></VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                <Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    From="10" Duration="0:0:0.100" />
+                </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="ToOnly">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="3" /></VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                <Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    To="11" Duration="0:0:0.100" />
+                </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="ByOnly">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="4" /></VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                <Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    By="{StaticResource RadiusIncrement}"
+                    Duration="0:0:0.100" />
+                </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="FromBy">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="5" /></VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                <Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    From="2" By="5" Duration="0:0:0.100" />
+                </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="ToBy">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="6" /></VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                <Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    From="1" To="9" By="100" Duration="0:0:0.100" />
+                </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Automatic">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="7" /></VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                <Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    Duration="0:0:0.100" />
+                </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="ColorBy">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="8" /></VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                <Storyboard>
+                  <ColorAnimation Storyboard.TargetName="caption"
+                    Storyboard.TargetProperty="ForeColor"
+                    By="#00101010" Duration="0:0:0.100" />
+                </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="TransformBy">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="9" /></VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                <Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
+                    By="0.5" Duration="0:0:0.100" />
+                </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="NegativeBy">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="10" /></VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                <Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    By="-10" Duration="0:0:0.100" />
+                </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Frames">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="11" /></VisualState.StateTriggers>
+                <VisualState.Storyboard>
+                <Storyboard>
+                  <DoubleAnimationUsingKeyFrames Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    Duration="0:0:0.100">
+                    <LinearDoubleKeyFrame KeyTime="0:0:0.100" Value="12" />
+                  </DoubleAnimationUsingKeyFrames>
+                </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="TransitionTarget">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="12" /></VisualState.StateTriggers>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </Panel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:EndpointCard x:Name="card" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("endpoint XAML parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		const auto& group = document.Components.front().VisualStateGroups.front();
+		CUI_EXPECT_EQ(13ULL, group.States.size());
+		const auto findState = [&](const std::wstring& name) -> const DesignerVisualState*
+		{
+			const auto found = std::find_if(group.States.begin(), group.States.end(),
+				[&](const auto& state) { return state.Name == name; });
+			return found == group.States.end() ? nullptr : &*found;
+		};
+		const auto* byOnly = findState(L"ByOnly");
+		const auto* toBy = findState(L"ToBy");
+		const auto* automatic = findState(L"Automatic");
+		CUI_EXPECT_TRUE(byOnly && toBy && automatic);
+		if (byOnly && toBy && automatic)
+		{
+			CUI_EXPECT_FALSE(byOnly->Animations.front().HasFrom);
+			CUI_EXPECT_FALSE(byOnly->Animations.front().HasTo);
+			CUI_EXPECT_TRUE(byOnly->Animations.front().HasBy);
+			CUI_EXPECT_TRUE(byOnly->Animations.front().ByUsesResource);
+			CUI_EXPECT_EQ(std::wstring(L"RadiusIncrement"),
+				byOnly->Animations.front().ByResourceKey);
+			CUI_EXPECT_TRUE(toBy->Animations.front().HasFrom);
+			CUI_EXPECT_TRUE(toBy->Animations.front().HasTo);
+			CUI_EXPECT_TRUE(toBy->Animations.front().HasBy);
+			CUI_EXPECT_FALSE(automatic->Animations.front().HasFrom);
+			CUI_EXPECT_FALSE(automatic->Animations.front().HasTo);
+			CUI_EXPECT_FALSE(automatic->Animations.front().HasBy);
+		}
+		CUI_EXPECT_TRUE(document.HasResourceBackedVisualStates());
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find(
+			"By=\"{StaticResource RadiusIncrement}\"") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"From=\"1\" To=\"9\" By=\"100\"") != std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+		const auto snapshot =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(snapshot.find("byResource=\"RadiusIncrement\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument xmlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, xmlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xmlRoundTrip);
+
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { document.Nodes.front().Id }, fragment, &error));
+		CUI_EXPECT_EQ(1ULL, fragment.StyleSheet.Resources.size());
+		DesignerModel::DesignDocument collisionTarget;
+		collisionTarget.StyleSheet.Resources = fragment.StyleSheet.Resources;
+		collisionTarget.StyleSheet.Resources.front().Value.Text = L"99";
+		DesignerModel::DesignDocument pasted;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			collisionTarget, fragment, 0, 0, pasted, nullptr, &error));
+		CUI_EXPECT_EQ(2ULL, pasted.StyleSheet.Resources.size());
+		if (!pasted.Components.empty())
+		{
+			const auto& pastedGroup =
+				pasted.Components.front().VisualStateGroups.front();
+			const auto pastedBy = std::find_if(pastedGroup.States.begin(),
+				pastedGroup.States.end(), [](const auto& state)
+				{ return state.Name == L"ByOnly"; });
+			CUI_EXPECT_TRUE(pastedBy != pastedGroup.States.end());
+			if (pastedBy != pastedGroup.States.end())
+				CUI_EXPECT_TRUE(_wcsicmp(pastedBy->Animations.front()
+					.ByResourceKey.c_str(), L"RadiusIncrement") != 0);
+		}
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* chrome = card ? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+		auto* caption = card ? card->FindDeclarativeTemplatePart(L"caption") : nullptr;
+		if (!card || !chrome || !caption)
+			throw std::runtime_error("endpoint runtime controls are missing");
+		auto go = [&](const wchar_t* state, bool transitions = false)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"EndpointStates", state, transitions, &error));
+			return ::GetTickCount64();
+		};
+		auto finish = [&](unsigned long long tick)
+		{
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		};
+
+		(void)go(L"Idle");
+		auto tick = go(L"FromOnly");
+		CUI_EXPECT_NEAR(10.0f, chrome->ValidationCornerRadius, 0.001f);
+		finish(tick);
+		CUI_EXPECT_NEAR(4.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"ToOnly");
+		CUI_EXPECT_NEAR(4.0f, chrome->ValidationCornerRadius, 0.001f);
+		finish(tick);
+		CUI_EXPECT_NEAR(11.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		(void)go(L"Seed");
+		CUI_EXPECT_NEAR(20.0f, chrome->ValidationCornerRadius, 0.001f);
+		tick = go(L"ByOnly");
+		CUI_EXPECT_NEAR(20.0f, chrome->ValidationCornerRadius, 0.001f);
+		finish(tick);
+		CUI_EXPECT_NEAR(25.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"FromBy");
+		CUI_EXPECT_NEAR(2.0f, chrome->ValidationCornerRadius, 0.001f);
+		finish(tick);
+		CUI_EXPECT_NEAR(7.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"ToBy");
+		CUI_EXPECT_NEAR(1.0f, chrome->ValidationCornerRadius, 0.001f);
+		finish(tick);
+		CUI_EXPECT_NEAR(9.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		(void)go(L"Seed");
+		tick = go(L"Automatic");
+		CUI_EXPECT_NEAR(20.0f, chrome->ValidationCornerRadius, 0.001f);
+		finish(tick);
+		CUI_EXPECT_NEAR(4.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"ColorBy");
+		finish(tick);
+		CUI_EXPECT_NEAR(32.0f / 255.0f, caption->ForeColor.r, 0.001f);
+		CUI_EXPECT_NEAR(48.0f / 255.0f, caption->ForeColor.g, 0.001f);
+		CUI_EXPECT_NEAR(64.0f / 255.0f, caption->ForeColor.b, 0.001f);
+		CUI_EXPECT_NEAR(1.0f, caption->ForeColor.a, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"TransformBy");
+		finish(tick);
+		CUI_EXPECT_TRUE(chrome->GetRenderTransform()
+			&& !chrome->GetRenderTransform()->Operations.empty());
+		if (chrome->GetRenderTransform()
+			&& !chrome->GetRenderTransform()->Operations.empty())
+			CUI_EXPECT_NEAR(1.5f,
+				chrome->GetRenderTransform()->Operations.front().ScaleX, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"NegativeBy");
+		finish(tick);
+		CUI_EXPECT_NEAR(0.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		(void)go(L"Idle");
+		const auto generatedTick = go(L"ByOnly", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(generatedTick + 50));
+		CUI_EXPECT_NEAR(4.0f, chrome->ValidationCornerRadius, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(generatedTick + 300));
+		CUI_EXPECT_NEAR(4.0f, chrome->ValidationCornerRadius, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(generatedTick + 500));
+		CUI_EXPECT_NEAR(9.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		(void)go(L"Idle");
+		const auto transitionTick = go(L"TransitionTarget", true);
+		CUI_EXPECT_NEAR(3.0f, chrome->ValidationBorderThickness, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(transitionTick + 50));
+		CUI_EXPECT_TRUE(chrome->ValidationBorderThickness > 3.0f
+			&& chrome->ValidationBorderThickness < 8.0f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(transitionTick + 200));
+		CUI_EXPECT_NEAR(3.0f, chrome->ValidationBorderThickness, 0.001f);
+
+		auto resourceReload = document;
+		resourceReload.StyleSheet.Resources.front().Value.Text = L"7";
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			resourceReload, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		chrome = card ? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+		CUI_EXPECT_TRUE(card && chrome);
+		if (card && chrome)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"EndpointStates", L"Idle", false, &error));
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"EndpointStates", L"ByOnly", false, &error));
+			const auto reloadTick = ::GetTickCount64();
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(reloadTick + 200));
+			CUI_EXPECT_NEAR(11.0f, chrome->ValidationCornerRadius, 0.001f);
+		}
+
+		auto invalidKeyFrame = canonical;
+		const auto keyFrameAnimation = invalidKeyFrame.find(
+			"<DoubleAnimationUsingKeyFrames");
+		CUI_EXPECT_TRUE(keyFrameAnimation != std::string::npos);
+		if (keyFrameAnimation != std::string::npos)
+			invalidKeyFrame.insert(keyFrameAnimation
+				+ std::string("<DoubleAnimationUsingKeyFrames").size(), " By=\"1\"");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidKeyFrame, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidBy = canonical;
+		const auto resourceBy = invalidBy.find(
+			"By=\"{StaticResource RadiusIncrement}\"");
+		CUI_EXPECT_TRUE(resourceBy != std::string::npos);
+		if (resourceBy != std::string::npos)
+			invalidBy.replace(resourceBy,
+				std::string("By=\"{StaticResource RadiusIncrement}\"").size(),
+				"By=\"not-a-number\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidBy, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto ambiguousSnapshot = snapshot;
+		const auto persistedBy = ambiguousSnapshot.find(
+			"byResource=\"RadiusIncrement\"");
+		CUI_EXPECT_TRUE(persistedBy != std::string::npos);
+		if (persistedBy != std::string::npos)
+			ambiguousSnapshot.insert(persistedBy
+				+ std::string("byResource=\"RadiusIncrement\"").size(),
+				" byKind=\"Double\" by=\"1\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			ambiguousSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidRuntime = document;
+		auto& invalidStates = invalidRuntime.Components.front()
+			.VisualStateGroups.front().States;
+		auto invalidByState = std::find_if(invalidStates.begin(), invalidStates.end(),
+			[](const auto& state) { return state.Name == L"ByOnly"; });
+		CUI_EXPECT_TRUE(invalidByState != invalidStates.end());
+		if (invalidByState != invalidStates.end())
+		{
+			invalidByState->Animations.front().ByUsesResource = false;
+			invalidByState->Animations.front().ByResourceKey.clear();
+			invalidByState->Animations.front().By.Text = L"nan";
+		}
+		auto* retainedCard = runtime.FindControlByName(L"card");
+		CUI_EXPECT_FALSE(DesignerModel::RuntimeDocumentLoader::Reload(
+			invalidRuntime, runtime, {}, &reloadMode, &error));
+		CUI_EXPECT_TRUE(runtime.FindControlByName(L"card") == retainedCard);
+	});
+
+	runner.Add("Additive and cumulative animations follow WPF composition", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:additive-animation" x:Name="AnimationForm">
+  <Form.Resources>
+    <ComponentDefinition x:Key="local:AnimationCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Phase" Type="Int" Default="0" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Panel x:Name="chrome" ValidationCornerRadius="10"
+               ValidationBorderThickness="3">
+          <Control.RenderTransform>
+            <TransformGroup><ScaleTransform ScaleX="1" ScaleY="1" /></TransformGroup>
+          </Control.RenderTransform>
+          <Label x:Name="caption" Text="Composition" ForeColor="#FF102030" />
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="CompositionStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="GeneratedAdditive"
+                                  GeneratedDuration="0:0:0.100" />
+                <VisualTransition From="Idle" To="ExplicitAdditive">
+                  <Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="chrome"
+                      Storyboard.TargetProperty="ValidationBorderThickness"
+                      From="1" To="3" IsAdditive="true"
+                      Duration="0:0:0.100" />
+                  </Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="AddFromTo">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="1" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    From="2" To="6" IsAdditive="true" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="AddFromBy">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="2" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    From="2" By="4" IsAdditive="true" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="AddBy">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="3" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    By="4" IsAdditive="true" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="AddTo">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="4" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    To="6" IsAdditive="true" IsCumulative="false"
+                    Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="AddFromOnly">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="5" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    From="2" IsAdditive="true" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="AddAutomatic">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="6" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    IsAdditive="true" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Cumulative">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="7" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    From="2" To="5" IsCumulative="true"
+                    RepeatBehavior="2.5x" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="AutoCumulative">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="8" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    From="2" To="5" IsCumulative="true" AutoReverse="true"
+                    RepeatBehavior="2x" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="SpeedDuration">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="9" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    From="0" To="10" IsCumulative="true" SpeedRatio="2"
+                    RepeatBehavior="0:0:0.150" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Frames">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="10" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimationUsingKeyFrames Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationBorderThickness"
+                    IsAdditive="true" IsCumulative="true"
+                    RepeatBehavior="3x" Duration="0:0:0.100">
+                    <LinearDoubleKeyFrame KeyTime="0:0:0.100" Value="2" />
+                  </DoubleAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="ColorFrames">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="11" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <ColorAnimationUsingKeyFrames Storyboard.TargetName="caption"
+                    Storyboard.TargetProperty="ForeColor"
+                    IsAdditive="true" IsCumulative="true"
+                    RepeatBehavior="2x" Duration="0:0:0.100">
+                    <LinearColorKeyFrame KeyTime="0:0:0.100" Value="#00101010" />
+                  </ColorAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="TransformComposition">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="12" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
+                    From="0" By="0.5" IsAdditive="true" IsCumulative="true"
+                    RepeatBehavior="2x" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="GeneratedAdditive">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="13" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="ValidationBorderThickness"
+                    From="1" To="3" IsAdditive="true" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="ExplicitAdditive">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="14" /></VisualState.StateTriggers>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </Panel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:AnimationCard x:Name="card" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("composition XAML parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_TRUE(error.empty());
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("IsAdditive=\"true\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("IsCumulative=\"true\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("IsCumulative=\"false\"")
+			== std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+		const auto snapshot =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(snapshot.find("isAdditive=\"true\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(snapshot.find("isCumulative=\"true\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* chrome = card ? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+		auto* caption = card ? card->FindDeclarativeTemplatePart(L"caption") : nullptr;
+		if (!card || !chrome || !caption)
+			throw std::runtime_error("composition runtime controls are missing");
+		auto go = [&](const wchar_t* state, bool transitions = false)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"CompositionStates", state, transitions, &error));
+			return ::GetTickCount64();
+		};
+		auto idle = [&]() { (void)go(L"Idle"); };
+
+		idle();
+		auto tick = go(L"AddFromTo");
+		CUI_EXPECT_NEAR(12.0f, chrome->ValidationCornerRadius, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(16.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		idle();
+		tick = go(L"AddFromBy");
+		CUI_EXPECT_NEAR(12.0f, chrome->ValidationCornerRadius, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(16.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		idle();
+		tick = go(L"AddBy");
+		CUI_EXPECT_NEAR(10.0f, chrome->ValidationCornerRadius, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(14.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		idle();
+		tick = go(L"AddTo");
+		CUI_EXPECT_NEAR(10.0f, chrome->ValidationCornerRadius, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(6.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		idle();
+		tick = go(L"AddFromOnly");
+		CUI_EXPECT_NEAR(2.0f, chrome->ValidationCornerRadius, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(10.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		idle();
+		tick = go(L"AddAutomatic");
+		CUI_EXPECT_NEAR(10.0f, chrome->ValidationCornerRadius, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(10.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		idle();
+		tick = go(L"Cumulative");
+		CUI_EXPECT_NEAR(2.0f, chrome->ValidationCornerRadius, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 150));
+		CUI_EXPECT_NEAR(6.5f, chrome->ValidationCornerRadius, 0.6f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 250));
+		CUI_EXPECT_NEAR(9.5f, chrome->ValidationCornerRadius, 0.001f);
+
+		idle();
+		tick = go(L"AutoCumulative");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_NEAR(5.0f, chrome->ValidationCornerRadius, 0.6f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 300));
+		CUI_EXPECT_NEAR(8.0f, chrome->ValidationCornerRadius, 0.6f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 400));
+		CUI_EXPECT_NEAR(5.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		idle();
+		tick = go(L"SpeedDuration");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_TRUE(chrome->ValidationCornerRadius >= 10.0f
+			&& chrome->ValidationCornerRadius < 15.0f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_TRUE(chrome->ValidationCornerRadius >= 20.0f
+			&& chrome->ValidationCornerRadius < 25.0f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 150));
+		CUI_EXPECT_NEAR(30.0f, chrome->ValidationCornerRadius, 0.001f);
+
+		idle();
+		tick = go(L"Frames");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_NEAR(4.0f, chrome->ValidationBorderThickness, 0.5f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 300));
+		CUI_EXPECT_NEAR(9.0f, chrome->ValidationBorderThickness, 0.001f);
+
+		idle();
+		tick = go(L"ColorFrames");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_NEAR(48.0f / 255.0f, caption->ForeColor.r, 0.001f);
+		CUI_EXPECT_NEAR(64.0f / 255.0f, caption->ForeColor.g, 0.001f);
+		CUI_EXPECT_NEAR(80.0f / 255.0f, caption->ForeColor.b, 0.001f);
+		CUI_EXPECT_NEAR(1.0f, caption->ForeColor.a, 0.001f);
+
+		idle();
+		tick = go(L"TransformComposition");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_TRUE(chrome->GetRenderTransform()
+			&& !chrome->GetRenderTransform()->Operations.empty());
+		if (chrome->GetRenderTransform()
+			&& !chrome->GetRenderTransform()->Operations.empty())
+			CUI_EXPECT_NEAR(2.0f,
+				chrome->GetRenderTransform()->Operations.front().ScaleX, 0.001f);
+
+		idle();
+		tick = go(L"ExplicitAdditive", true);
+		CUI_EXPECT_NEAR(4.0f, chrome->ValidationBorderThickness, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_NEAR(5.0f, chrome->ValidationBorderThickness, 0.5f);
+
+		(void)go(L"Idle");
+		tick = go(L"GeneratedAdditive", true);
+		CUI_EXPECT_NEAR(3.0f, chrome->ValidationBorderThickness, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_NEAR(3.5f, chrome->ValidationBorderThickness, 0.5f);
+
+		auto invalidXaml = canonical;
+		const auto additiveAttribute = invalidXaml.find("IsAdditive=\"true\"");
+		CUI_EXPECT_TRUE(additiveAttribute != std::string::npos);
+		if (additiveAttribute != std::string::npos)
+			invalidXaml.replace(additiveAttribute,
+				std::string("IsAdditive=\"true\"").size(),
+				"IsAdditive=\"maybe\"");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"IsAdditive") != std::wstring::npos);
+
+		auto invalidSnapshot = snapshot;
+		const auto cumulativeAttribute = invalidSnapshot.find(
+			"isCumulative=\"true\"");
+		CUI_EXPECT_TRUE(cumulativeAttribute != std::string::npos);
+		if (cumulativeAttribute != std::string::npos)
+			invalidSnapshot.replace(cumulativeAttribute,
+				std::string("isCumulative=\"true\"").size(),
+				"isCumulative=\"maybe\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto reloaded = document;
+		auto& states = reloaded.Components.front().VisualStateGroups.front().States;
+		auto changed = std::find_if(states.begin(), states.end(), [](const auto& state)
+			{ return state.Name == L"AddFromTo"; });
+		CUI_EXPECT_TRUE(changed != states.end());
+		if (changed != states.end()) changed->Animations.front().IsAdditive = false;
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloaded, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		chrome = card ? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+		CUI_EXPECT_TRUE(card && chrome);
+		if (card && chrome)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"CompositionStates", L"Idle", false, &error));
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"CompositionStates", L"AddFromTo", false, &error));
+			CUI_EXPECT_NEAR(2.0f, chrome->ValidationCornerRadius, 0.001f);
+		}
+	});
+
+	runner.Add("Object key-frame animations switch metadata values and objects", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:object-animation" x:Name="ObjectAnimationForm">
+  <Form.Resources>
+    <SolidColorBrush x:Key="AccentBrush" Color="#FF336699" />
+    <ComponentDefinition x:Key="local:ObjectCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Phase" Type="Int" Default="0" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Panel x:Name="chrome" Visibility="Visible" IsEnabled="true"
+               HorizontalAlignment="Left" Margin="1">
+          <Label x:Name="caption" Text="Base" />
+          <Label x:Name="resourceBrush" Text="Resource" />
+          <Label x:Name="inlineBrush" Text="Inline" />
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="ObjectStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="ExplicitTarget">
+                  <VisualTransition.Storyboard><Storyboard>
+                    <ObjectAnimationUsingKeyFrames Storyboard.TargetName="caption"
+                      Storyboard.TargetProperty="Text" Duration="0:0:0.100">
+                      <DiscreteObjectKeyFrame KeyTime="0:0:0" Value="Transition" />
+                    </ObjectAnimationUsingKeyFrames>
+                  </Storyboard></VisualTransition.Storyboard>
+                </VisualTransition>
+                <VisualTransition From="Idle" To="GeneratedTarget"
+                                  GeneratedDuration="0:0:0.100" />
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="Objects">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="1" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+				  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="chrome"
+					Storyboard.TargetProperty="Visibility" Duration="0:0:1.000">
+					<DiscreteObjectKeyFrame KeyTime="0:0:0.500" Value="Collapsed" />
+					<DiscreteObjectKeyFrame KeyTime="0:0:1.000" Value="Visible" />
+                  </ObjectAnimationUsingKeyFrames>
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="IsEnabled" Duration="0:0:0.100">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0" Value="false" />
+                  </ObjectAnimationUsingKeyFrames>
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="HorizontalAlignment" Duration="0:0:0.100">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0" Value="Right" />
+                  </ObjectAnimationUsingKeyFrames>
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="Margin" Duration="0:0:0.100">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0" Value="2,3,4,5" />
+                  </ObjectAnimationUsingKeyFrames>
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="caption"
+                    Storyboard.TargetProperty="Text" Duration="0:0:0.100">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0" Value="First" />
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0" Value="Last" />
+                  </ObjectAnimationUsingKeyFrames>
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="resourceBrush"
+                    Storyboard.TargetProperty="Foreground" Duration="0:0:0.100">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0"
+                      Value="{StaticResource AccentBrush}" />
+                  </ObjectAnimationUsingKeyFrames>
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="inlineBrush"
+                    Storyboard.TargetProperty="Foreground" Duration="0:0:0.100">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0">
+                      <DiscreteObjectKeyFrame.Value>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                          <GradientStop Color="#FFFF0000" Offset="0" />
+                          <GradientStop Color="#FF0000FF" Offset="1" />
+                        </LinearGradientBrush>
+                      </DiscreteObjectKeyFrame.Value>
+                    </DiscreteObjectKeyFrame>
+                  </ObjectAnimationUsingKeyFrames>
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="Clip" Duration="0:0:0.100">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0">
+                      <DiscreteObjectKeyFrame.Value>
+                        <RectangleGeometry Rect="1,2,30,40" RadiusX="3" RadiusY="4" />
+                      </DiscreteObjectKeyFrame.Value>
+                    </DiscreteObjectKeyFrame>
+                  </ObjectAnimationUsingKeyFrames>
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="RenderTransform" Duration="0:0:0.100">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0">
+                      <DiscreteObjectKeyFrame.Value>
+                        <TransformGroup><RotateTransform Angle="25" CenterX="2" CenterY="3" /></TransformGroup>
+                      </DiscreteObjectKeyFrame.Value>
+                    </DiscreteObjectKeyFrame>
+                  </ObjectAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Stop">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="2" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="caption"
+                    Storyboard.TargetProperty="Text" Duration="0:0:0.050" FillBehavior="Stop">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0" Value="Temporary" />
+                  </ObjectAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="ExplicitTarget">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="3" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="caption"
+                    Storyboard.TargetProperty="Text" Duration="0:0:0.100">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0" Value="Destination" />
+                  </ObjectAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="GeneratedTarget">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="4" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="caption"
+                    Storyboard.TargetProperty="Text" Duration="0:0:0.100">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0" Value="GeneratedState" />
+                  </ObjectAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </Panel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:ObjectCard x:Name="card" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("object animation XAML parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_TRUE(error.empty());
+		const auto& animations = document.Components.front()
+			.VisualStateGroups.front().States[1].Animations;
+		CUI_EXPECT_EQ(9ULL, animations.size());
+		CUI_EXPECT_TRUE(std::all_of(animations.begin(), animations.end(),
+			[](const auto& animation)
+			{ return animation.Kind == DesignerAnimationKind::Object; }));
+		CUI_EXPECT_TRUE(animations[5].KeyFrames.front().UsesResource);
+		CUI_EXPECT_EQ(std::wstring(L"AccentBrush"),
+			animations[5].KeyFrames.front().ResourceKey);
+		CUI_EXPECT_FALSE(animations[6].KeyFrames.front().Value.ObjectValue.is_null());
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto expected : { "ObjectAnimationUsingKeyFrames",
+			"DiscreteObjectKeyFrame", "Storyboard.TargetProperty=\"Visibility\"",
+			"Value=\"Collapsed\"", "Storyboard.TargetProperty=\"IsEnabled\"",
+			"Storyboard.TargetProperty=\"HorizontalAlignment\"", "Value=\"Right\"",
+			"<DiscreteObjectKeyFrame.Value>", "<LinearGradientBrush",
+			"<RectangleGeometry", "<RotateTransform" })
+			if (canonical.find(expected) == std::string::npos)
+				throw std::runtime_error(std::string("canonical Object XAML is missing: ")
+					+ expected);
+		CUI_EXPECT_TRUE(canonical.find("IsAdditive=") == std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error))
+			throw std::runtime_error("canonical object animation parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+
+		const auto snapshot = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(snapshot.find("type=\"Object\"") != std::string::npos);
+		CUI_EXPECT_TRUE(snapshot.find("<objectValue") != std::string::npos);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { document.Nodes.front().Id }, fragment, &error));
+		CUI_EXPECT_EQ(1ULL, fragment.StyleSheet.Resources.size());
+		DesignerModel::DesignDocument collisionTarget;
+		collisionTarget.StyleSheet.Resources = fragment.StyleSheet.Resources;
+		collisionTarget.StyleSheet.Resources.front().Value.ObjectValue["color"]["r"] = 0.99;
+		DesignerModel::DesignDocument pasted;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			collisionTarget, fragment, 0, 0, pasted, nullptr, &error));
+		CUI_EXPECT_EQ(2ULL, pasted.StyleSheet.Resources.size());
+		const auto& pastedFrames = pasted.Components.front().VisualStateGroups.front()
+			.States[1].Animations[5].KeyFrames;
+		CUI_EXPECT_TRUE(pastedFrames.front().UsesResource);
+		CUI_EXPECT_TRUE(_wcsicmp(pastedFrames.front().ResourceKey.c_str(),
+			L"AccentBrush") != 0);
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* chrome = card ? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+		auto* caption = dynamic_cast<Label*>(
+			card ? card->FindDeclarativeTemplatePart(L"caption") : nullptr);
+		auto* resourceBrush = card
+			? card->FindDeclarativeTemplatePart(L"resourceBrush") : nullptr;
+		auto* inlineBrush = card
+			? card->FindDeclarativeTemplatePart(L"inlineBrush") : nullptr;
+		if (!card || !chrome || !caption || !resourceBrush || !inlineBrush)
+			throw std::runtime_error("object animation runtime controls are missing");
+		auto go = [&](const wchar_t* state, bool transitions = false)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"ObjectStates", state, transitions, &error));
+			return ::GetTickCount64();
+		};
+
+		auto tick = go(L"Objects");
+		CUI_EXPECT_TRUE(chrome->Visible);
+		CUI_EXPECT_FALSE(chrome->Enable);
+		CUI_EXPECT_EQ(HorizontalAlignment::Right, chrome->HAlign);
+		CUI_EXPECT_EQ((Thickness{ 2.0f, 3.0f, 4.0f, 5.0f }), chrome->Margin);
+		CUI_EXPECT_EQ(std::wstring(L"Last"), caption->Text);
+		CUI_EXPECT_TRUE(resourceBrush->GetForegroundBrush().has_value());
+		if (resourceBrush->GetForegroundBrush())
+		{
+			CUI_EXPECT_EQ(cui::drawing::BrushKind::Solid,
+				resourceBrush->GetForegroundBrush()->Kind);
+			CUI_EXPECT_NEAR(0.2f, resourceBrush->GetForegroundBrush()->Color.r, 0.001f);
+		}
+		CUI_EXPECT_TRUE(inlineBrush->GetForegroundBrush().has_value());
+		if (inlineBrush->GetForegroundBrush())
+			CUI_EXPECT_EQ(cui::drawing::BrushKind::LinearGradient,
+				inlineBrush->GetForegroundBrush()->Kind);
+		CUI_EXPECT_TRUE(chrome->GetClip().has_value());
+		if (chrome->GetClip())
+		{
+			CUI_EXPECT_EQ(cui::drawing::GeometryKind::Rectangle,
+				chrome->GetClip()->Kind);
+			CUI_EXPECT_NEAR(30.0f,
+				chrome->GetClip()->Rect.right - chrome->GetClip()->Rect.left, 0.001f);
+		}
+		CUI_EXPECT_TRUE(chrome->GetRenderTransform().has_value());
+		if (chrome->GetRenderTransform())
+		{
+			CUI_EXPECT_EQ(1ULL, chrome->GetRenderTransform()->Operations.size());
+			CUI_EXPECT_EQ(cui::drawing::TransformKind::Rotate,
+				chrome->GetRenderTransform()->Operations.front().Kind);
+			CUI_EXPECT_NEAR(25.0f,
+				chrome->GetRenderTransform()->Operations.front().Angle, 0.001f);
+		}
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 750));
+		CUI_EXPECT_FALSE(chrome->Visible);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 1250));
+		CUI_EXPECT_TRUE(chrome->Visible);
+
+		(void)go(L"Idle");
+		tick = go(L"Stop");
+		CUI_EXPECT_EQ(std::wstring(L"Temporary"), caption->Text);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 60));
+		CUI_EXPECT_EQ(std::wstring(L"Base"), caption->Text);
+
+		(void)go(L"Idle");
+		tick = go(L"ExplicitTarget", true);
+		CUI_EXPECT_EQ(std::wstring(L"Transition"), caption->Text);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_EQ(std::wstring(L"Destination"), caption->Text);
+
+		(void)go(L"Idle");
+		tick = go(L"GeneratedTarget", true);
+		CUI_EXPECT_EQ(std::wstring(L"Base"), caption->Text);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_EQ(std::wstring(L"Base"), caption->Text);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_EQ(std::wstring(L"GeneratedState"), caption->Text);
+
+		auto reloadedXaml = xaml;
+		const auto oldBrushColor = reloadedXaml.find("#FF336699");
+		CUI_EXPECT_TRUE(oldBrushColor != std::string::npos);
+		if (oldBrushColor != std::string::npos)
+			reloadedXaml.replace(oldBrushColor, 9, "#FFAA2200");
+		DesignerModel::DesignDocument reloadedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			reloadedXaml, reloadedDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloadedDocument, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		resourceBrush = card ? card->FindDeclarativeTemplatePart(L"resourceBrush") : nullptr;
+		CUI_EXPECT_TRUE(card && resourceBrush);
+		if (card && resourceBrush)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"ObjectStates", L"Objects", false, &error));
+			CUI_EXPECT_TRUE(resourceBrush->GetForegroundBrush().has_value());
+			if (resourceBrush->GetForegroundBrush())
+				CUI_EXPECT_NEAR(170.0f / 255.0f,
+					resourceBrush->GetForegroundBrush()->Color.r, 0.001f);
+		}
+
+		auto invalidXaml = canonical;
+		auto invalidAt = invalidXaml.find("DiscreteObjectKeyFrame");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("DiscreteObjectKeyFrame").size(), "LinearObjectKeyFrame");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = canonical;
+		invalidAt = invalidXaml.find("<ObjectAnimationUsingKeyFrames");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+		{
+			invalidAt = invalidXaml.find('>', invalidAt);
+			if (invalidAt != std::string::npos)
+				invalidXaml.insert(invalidAt, " IsAdditive=\"true\"");
+		}
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidSnapshot = snapshot;
+		invalidAt = invalidSnapshot.find("type=\"Object\"");
+		invalidAt = invalidSnapshot.find("kind=\"Discrete\"", invalidAt);
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidSnapshot.replace(invalidAt,
+				std::string("kind=\"Discrete\"").size(), "kind=\"Linear\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+
+		auto invalidRuntime = document;
+		auto& invalidAnimations = invalidRuntime.Components.front()
+			.VisualStateGroups.front().States[1].Animations;
+		auto invalidEnable = std::find_if(invalidAnimations.begin(),
+			invalidAnimations.end(), [](const auto& animation)
+			{ return animation.PropertyName == L"Enable"; });
+		CUI_EXPECT_TRUE(invalidEnable != invalidAnimations.end());
+		if (invalidEnable != invalidAnimations.end())
+			invalidEnable->KeyFrames.front().Value.Text = L"not-a-bool";
+		auto* retainedCard = runtime.FindControlByName(L"card");
+		CUI_EXPECT_FALSE(DesignerModel::RuntimeDocumentLoader::Reload(
+			invalidRuntime, runtime, {}, &reloadMode, &error));
+		CUI_EXPECT_TRUE(runtime.FindControlByName(L"card") == retainedCard);
+	});
+
+	runner.Add("Thickness animations interpolate metadata values with WPF timing", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:thickness-animation" x:Name="ThicknessAnimationForm">
+  <Form.Resources>
+    <Thickness x:Key="WideMargin">9,10,11,12</Thickness>
+    <Thickness x:Key="PaddingDelta">2,3,4,5</Thickness>
+    <ComponentDefinition x:Key="local:ThicknessCard" BaseType="Panel">
+	  <ComponentDefinition.Properties>
+		<ComponentProperty Name="Phase" Type="Int" Default="0" />
+	  </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Panel x:Name="chrome" Margin="1,2,3,4" Padding="1">
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="ThicknessStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="Simple"
+                                  GeneratedDuration="0:0:0.100" />
+                <VisualTransition From="Idle" To="Explicit">
+                  <VisualTransition.Storyboard><Storyboard>
+                    <ThicknessAnimation Storyboard.TargetName="chrome"
+                      Storyboard.TargetProperty="Padding"
+                      From="1" To="5" Duration="0:0:0.100" />
+                  </Storyboard></VisualTransition.Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="Simple">
+				<VisualState.StateTriggers><StateTrigger Property="Phase" Value="1" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <ThicknessAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="Margin"
+                    To="{StaticResource WideMargin}" Duration="0:0:0.200">
+                    <ThicknessAnimation.EasingFunction>
+                      <QuadraticEase EasingMode="EaseIn" />
+                    </ThicknessAnimation.EasingFunction>
+                  </ThicknessAnimation>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="KeyFrames">
+				<VisualState.StateTriggers><StateTrigger Property="Phase" Value="2" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <ThicknessAnimationUsingKeyFrames Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="Padding" Duration="0:0:0.400">
+					<EasingThicknessKeyFrame KeyTime="0:0:0.100" Value="5">
+					  <EasingThicknessKeyFrame.EasingFunction>
+						<QuadraticEase EasingMode="EaseIn" />
+					  </EasingThicknessKeyFrame.EasingFunction>
+					</EasingThicknessKeyFrame>
+                    <DiscreteThicknessKeyFrame KeyTime="0:0:0.200" Value="7" />
+                    <DiscreteThicknessKeyFrame KeyTime="0:0:0.200" Value="9" />
+                    <SplineThicknessKeyFrame KeyTime="0:0:0.400" Value="13"
+                                             KeySpline="0,0 1,1" />
+                  </ThicknessAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="By">
+				<VisualState.StateTriggers><StateTrigger Property="Phase" Value="3" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <ThicknessAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="Padding"
+                    By="{StaticResource PaddingDelta}" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Additive">
+				<VisualState.StateTriggers><StateTrigger Property="Phase" Value="4" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <ThicknessAnimation Storyboard.TargetName="chrome"
+                    Storyboard.TargetProperty="Margin" From="1" To="2"
+                    Duration="0:0:0.100" RepeatBehavior="2x"
+                    IsAdditive="true" IsCumulative="true" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Explicit">
+				<VisualState.StateTriggers><StateTrigger Property="Phase" Value="5" /></VisualState.StateTriggers>
+			  </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </Panel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:ThicknessCard x:Name="card" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("Thickness animation XAML parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_TRUE(error.empty());
+		const auto& group = document.Components.front().VisualStateGroups.front();
+		CUI_EXPECT_EQ(2ULL, group.Transitions.size());
+		CUI_EXPECT_EQ(DesignerAnimationKind::Thickness,
+			group.Transitions[1].Animations.front().Kind);
+		const auto simple = std::find_if(group.States.begin(), group.States.end(),
+			[](const auto& state) { return state.Name == L"Simple"; });
+		const auto keyFrames = std::find_if(group.States.begin(), group.States.end(),
+			[](const auto& state) { return state.Name == L"KeyFrames"; });
+		CUI_EXPECT_TRUE(simple != group.States.end());
+		CUI_EXPECT_TRUE(keyFrames != group.States.end());
+		if (simple != group.States.end())
+		{
+			CUI_EXPECT_EQ(DesignerAnimationKind::Thickness,
+				simple->Animations.front().Kind);
+			CUI_EXPECT_TRUE(simple->Animations.front().ToUsesResource);
+			CUI_EXPECT_EQ(std::wstring(L"WideMargin"),
+				simple->Animations.front().ToResourceKey);
+		}
+		if (keyFrames != group.States.end())
+		{
+			CUI_EXPECT_EQ(4ULL, keyFrames->Animations.front().KeyFrames.size());
+			CUI_EXPECT_EQ(DesignerKeyFrameKind::Spline,
+				keyFrames->Animations.front().KeyFrames.back().Kind);
+		}
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto expected : { "<ThicknessAnimation ",
+			"<ThicknessAnimationUsingKeyFrames ", "<EasingThicknessKeyFrame ",
+			"<DiscreteThicknessKeyFrame ", "<SplineThicknessKeyFrame ",
+			"<EasingThicknessKeyFrame.EasingFunction>",
+			"To=\"{StaticResource WideMargin}\"", "IsAdditive=\"true\"",
+			"IsCumulative=\"true\"" })
+			if (canonical.find(expected) == std::string::npos)
+				throw std::runtime_error(std::string(
+					"canonical Thickness XAML is missing: ") + expected);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error))
+			throw std::runtime_error("canonical Thickness animation parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+
+		const auto snapshot =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(snapshot.find("type=\"Thickness\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { document.Nodes.front().Id }, fragment, &error));
+		CUI_EXPECT_EQ(2ULL, fragment.StyleSheet.Resources.size());
+		DesignerModel::DesignDocument collisionTarget;
+		collisionTarget.StyleSheet.Resources = fragment.StyleSheet.Resources;
+		collisionTarget.StyleSheet.Resources.front().Value.Text = L"99";
+		DesignerModel::DesignDocument pasted;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::PasteAtRoot(
+			collisionTarget, fragment, 0, 0, pasted, nullptr, &error));
+		CUI_EXPECT_EQ(4ULL, pasted.StyleSheet.Resources.size());
+		const auto& pastedSimple = *std::find_if(
+			pasted.Components.front().VisualStateGroups.front().States.begin(),
+			pasted.Components.front().VisualStateGroups.front().States.end(),
+			[](const auto& state) { return state.Name == L"Simple"; });
+		CUI_EXPECT_TRUE(_wcsicmp(
+			pastedSimple.Animations.front().ToResourceKey.c_str(),
+			L"WideMargin") != 0);
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* chrome = card
+			? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+		if (!card || !chrome)
+			throw std::runtime_error("Thickness animation runtime controls are missing");
+		auto go = [&](const wchar_t* state, bool transitions = false)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"ThicknessStates", state, transitions, &error));
+			return ::GetTickCount64();
+		};
+		auto expectThickness = [](const Thickness& actual,
+			const Thickness& expected, float tolerance = 0.001f)
+		{
+			if (std::fabs(expected.Left - actual.Left) > tolerance
+				|| std::fabs(expected.Top - actual.Top) > tolerance
+				|| std::fabs(expected.Right - actual.Right) > tolerance
+				|| std::fabs(expected.Bottom - actual.Bottom) > tolerance)
+			{
+				std::ostringstream message;
+				message << "Thickness animation mismatch: expected {"
+					<< expected.Left << ", " << expected.Top << ", "
+					<< expected.Right << ", " << expected.Bottom << "}, actual {"
+					<< actual.Left << ", " << actual.Top << ", "
+					<< actual.Right << ", " << actual.Bottom
+					<< "}, tolerance " << tolerance;
+				throw std::runtime_error(message.str());
+			}
+		};
+
+		auto tick = go(L"Simple");
+		expectThickness(chrome->Margin, Thickness(1, 2, 3, 4), 0.2f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectThickness(chrome->Margin, Thickness(3, 4, 5, 6), 0.25f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		expectThickness(chrome->Margin, Thickness(9, 10, 11, 12), 0.01f);
+
+		(void)go(L"Idle");
+		tick = go(L"KeyFrames");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		expectThickness(chrome->Padding, Thickness(2), 0.2f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 150));
+		expectThickness(chrome->Padding, Thickness(5), 0.01f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		expectThickness(chrome->Padding, Thickness(9), 0.01f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 300));
+		expectThickness(chrome->Padding, Thickness(11), 0.2f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 400));
+		expectThickness(chrome->Padding, Thickness(13), 0.01f);
+
+		(void)go(L"Idle");
+		tick = go(L"By");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectThickness(chrome->Padding, Thickness(3, 4, 5, 6), 0.01f);
+
+		(void)go(L"Idle");
+		tick = go(L"Additive");
+		expectThickness(chrome->Margin, Thickness(2, 3, 4, 5), 0.2f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 150));
+		expectThickness(chrome->Margin, Thickness(3.5f, 4.5f, 5.5f, 6.5f), 0.25f);
+
+		(void)go(L"Idle");
+		tick = go(L"Simple", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_TRUE(chrome->Margin.Left > 1.0f
+			&& chrome->Margin.Left < 9.0f);
+
+		(void)go(L"Idle");
+		tick = go(L"Explicit", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		expectThickness(chrome->Padding, Thickness(3), 0.2f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectThickness(chrome->Padding, Thickness(1), 0.01f);
+
+		auto reloadedXaml = xaml;
+		const auto oldWide = reloadedXaml.find(">9,10,11,12<");
+		CUI_EXPECT_TRUE(oldWide != std::string::npos);
+		if (oldWide != std::string::npos)
+			reloadedXaml.replace(oldWide, std::string(">9,10,11,12<").size(),
+				">17,18,19,20<");
+		DesignerModel::DesignDocument reloadedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			reloadedXaml, reloadedDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloadedDocument, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		chrome = card ? card->FindDeclarativeTemplatePart(L"chrome") : nullptr;
+		CUI_EXPECT_TRUE(card && chrome);
+		if (card && chrome)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"ThicknessStates", L"Simple", false, &error));
+			const auto reloadTick = ::GetTickCount64();
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(reloadTick + 200));
+			expectThickness(chrome->Margin, Thickness(17, 18, 19, 20), 0.05f);
+		}
+
+		auto invalidXaml = canonical;
+		auto invalidAt = invalidXaml.find("EasingThicknessKeyFrame");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("EasingThicknessKeyFrame").size(),
+				"EasingSizeKeyFrame");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = canonical;
+		invalidAt = invalidXaml.find(
+			"Storyboard.TargetProperty=\"Margin\"");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("Storyboard.TargetProperty=\"Margin\"").size(),
+				"Storyboard.TargetProperty=\"Width\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidSnapshot = snapshot;
+		invalidAt = invalidSnapshot.find("type=\"Thickness\"");
+		invalidAt = invalidSnapshot.find("kind=\"Easing\"", invalidAt);
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidSnapshot.replace(invalidAt,
+				std::string("kind=\"Easing\"").size(), "kind=\"Bogus\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidRuntime = reloadedDocument;
+		auto& invalidStates = invalidRuntime.Components.front()
+			.VisualStateGroups.front().States;
+		auto invalidSimple = std::find_if(invalidStates.begin(), invalidStates.end(),
+			[](const auto& state) { return state.Name == L"Simple"; });
+		CUI_EXPECT_TRUE(invalidSimple != invalidStates.end());
+		if (invalidSimple != invalidStates.end())
+		{
+			invalidSimple->Animations.front().ToUsesResource = false;
+			invalidSimple->Animations.front().ToResourceKey.clear();
+			invalidSimple->Animations.front().To = {
+				DesignerStyleValueKind::Thickness, L"not-a-thickness" };
+		}
+		auto* retainedCard = runtime.FindControlByName(L"card");
+		CUI_EXPECT_FALSE(DesignerModel::RuntimeDocumentLoader::Reload(
+			invalidRuntime, runtime, {}, &reloadMode, &error));
+		CUI_EXPECT_TRUE(runtime.FindControlByName(L"card") == retainedCard);
+	});
+
+	runner.Add("Size animations use floating DIP metadata with WPF timing", []
+	{
+		Panel metadataProbe;
+		std::wstring canonicalName;
+		DesignerStyleValue effectiveValue;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ApplyValue(
+			metadataProbe, L"MinSize",
+			{ DesignerStyleValueKind::Size, L"12.5, 18.25" },
+			&canonicalName, &effectiveValue, &error));
+		CUI_EXPECT_NEAR(12.5f, metadataProbe.GetMinSizeDip().width, 0.0001f);
+		CUI_EXPECT_NEAR(18.25f, metadataProbe.GetMinSizeDip().height, 0.0001f);
+
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:size-animation" x:Name="SizeAnimationForm">
+  <Form.Resources>
+    <Size x:Key="LargeExtent">40.5,60.25</Size>
+    <Size x:Key="ExtentDelta">2.5,3.75</Size>
+    <ComponentDefinition x:Key="local:SizeCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Phase" Type="Int" Default="0" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <ScrollView x:Name="viewport" AutoContentSize="false"
+                    ContentSize="10.25,20.5">
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="SizeStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="Simple"
+                                  GeneratedDuration="0:0:0.100" />
+                <VisualTransition From="Idle" To="Explicit">
+                  <VisualTransition.Storyboard><Storyboard>
+                    <SizeAnimation Storyboard.TargetName="viewport"
+                      Storyboard.TargetProperty="ContentSize"
+                      From="10.25,20.5" To="30.25,40.5"
+                      Duration="0:0:0.100" />
+                  </Storyboard></VisualTransition.Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="Simple">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="1" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <SizeAnimation Storyboard.TargetName="viewport"
+                    Storyboard.TargetProperty="ContentSize"
+                    To="{StaticResource LargeExtent}" Duration="0:0:0.200">
+                    <SizeAnimation.EasingFunction>
+                      <QuadraticEase EasingMode="EaseIn" />
+                    </SizeAnimation.EasingFunction>
+                  </SizeAnimation>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="KeyFrames">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="2" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <SizeAnimationUsingKeyFrames Storyboard.TargetName="viewport"
+                    Storyboard.TargetProperty="ContentSize" Duration="0:0:0.400">
+                    <EasingSizeKeyFrame KeyTime="0:0:0.100" Value="20.25,30.5">
+                      <EasingSizeKeyFrame.EasingFunction>
+                        <QuadraticEase EasingMode="EaseIn" />
+                      </EasingSizeKeyFrame.EasingFunction>
+                    </EasingSizeKeyFrame>
+                    <DiscreteSizeKeyFrame KeyTime="0:0:0.200" Value="30.25,40.5" />
+                    <DiscreteSizeKeyFrame KeyTime="0:0:0.200" Value="32.25,42.5" />
+                    <LinearSizeKeyFrame KeyTime="0:0:0.300" Value="40.5,55.75" />
+                    <SplineSizeKeyFrame KeyTime="0:0:0.400" Value="50.5,70.75"
+                                        KeySpline="0,0 1,1" />
+                  </SizeAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="By">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="3" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <SizeAnimation Storyboard.TargetName="viewport"
+                    Storyboard.TargetProperty="ContentSize"
+                    By="{StaticResource ExtentDelta}" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Additive">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="4" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <SizeAnimation Storyboard.TargetName="viewport"
+                    Storyboard.TargetProperty="ContentSize"
+                    From="1.5,2.5" To="3.5,4.5" Duration="0:0:0.100"
+                    RepeatBehavior="2x" IsAdditive="true" IsCumulative="true" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Explicit">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="5" /></VisualState.StateTriggers>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </ScrollView>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:SizeCard x:Name="card" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("Size animation XAML parse failed: "
+				+ Convert::WStringToString(error));
+		const auto& group = document.Components.front().VisualStateGroups.front();
+		CUI_EXPECT_EQ(DesignerAnimationKind::Size,
+			group.Transitions[1].Animations.front().Kind);
+		const auto keyState = std::find_if(group.States.begin(), group.States.end(),
+			[](const auto& state) { return state.Name == L"KeyFrames"; });
+		CUI_EXPECT_TRUE(keyState != group.States.end());
+		if (keyState != group.States.end())
+		{
+			CUI_EXPECT_EQ(5ULL, keyState->Animations.front().KeyFrames.size());
+			CUI_EXPECT_EQ(DesignerKeyFrameKind::Easing,
+				keyState->Animations.front().KeyFrames.front().Kind);
+		}
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto expected : { "<SizeAnimation ",
+			"<SizeAnimationUsingKeyFrames ", "<DiscreteSizeKeyFrame ",
+			"<LinearSizeKeyFrame ", "<EasingSizeKeyFrame ",
+			"<SplineSizeKeyFrame ", "To=\"{StaticResource LargeExtent}\"" })
+			CUI_EXPECT_TRUE(canonical.find(expected) != std::string::npos);
+		DesignerModel::DesignDocument canonicalRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, canonicalRoundTrip, &error));
+		CUI_EXPECT_EQ(document, canonicalRoundTrip);
+
+		const auto snapshot = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(snapshot.find("type=\"Size\"") != std::string::npos);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* viewport = card
+			? dynamic_cast<ScrollView*>(card->FindDeclarativeTemplatePart(L"viewport"))
+			: nullptr;
+		if (!card || !viewport)
+			throw std::runtime_error("Size animation runtime controls are missing");
+		auto expectSize = [](cui::core::Size actual,
+			cui::core::Size expected, float tolerance = 0.02f)
+		{
+			if (std::fabs(expected.width - actual.width) > tolerance
+				|| std::fabs(expected.height - actual.height) > tolerance)
+			{
+				std::ostringstream message;
+				message << "Size animation mismatch: expected {"
+					<< expected.width << ", " << expected.height
+					<< "}, actual {" << actual.width << ", " << actual.height
+					<< "}, tolerance " << tolerance;
+				throw std::runtime_error(message.str());
+			}
+		};
+		auto go = [&](const wchar_t* state, bool transitions = false)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"SizeStates", state, transitions, &error));
+			return ::GetTickCount64();
+		};
+
+		auto tick = go(L"Simple");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectSize(viewport->GetContentSizeDip(), { 17.8125f, 30.4375f }, 0.45f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		expectSize(viewport->GetContentSizeDip(), { 40.5f, 60.25f });
+
+		(void)go(L"Idle");
+		tick = go(L"KeyFrames");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		expectSize(viewport->GetContentSizeDip(), { 12.75f, 23.0f }, 0.35f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 150));
+		expectSize(viewport->GetContentSizeDip(), { 20.25f, 30.5f }, 0.05f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		expectSize(viewport->GetContentSizeDip(), { 32.25f, 42.5f }, 0.05f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 250));
+		expectSize(viewport->GetContentSizeDip(), { 36.375f, 49.125f }, 0.35f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 350));
+		expectSize(viewport->GetContentSizeDip(), { 45.5f, 63.25f }, 0.35f);
+
+		(void)go(L"Idle");
+		tick = go(L"By");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectSize(viewport->GetContentSizeDip(), { 12.75f, 24.25f });
+
+		(void)go(L"Idle");
+		tick = go(L"Additive");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 150));
+		expectSize(viewport->GetContentSizeDip(), { 14.75f, 26.0f }, 0.35f);
+
+		(void)go(L"Idle");
+		tick = go(L"Simple", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_TRUE(viewport->GetContentSizeDip().width > 10.25f
+			&& viewport->GetContentSizeDip().width < 40.5f);
+
+		(void)go(L"Idle");
+		tick = go(L"Explicit", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		expectSize(viewport->GetContentSizeDip(), { 20.25f, 30.5f }, 0.35f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectSize(viewport->GetContentSizeDip(), { 10.25f, 20.5f });
+
+		auto reloadedXaml = xaml;
+		const auto resourceAt = reloadedXaml.find(">40.5,60.25<");
+		CUI_EXPECT_TRUE(resourceAt != std::string::npos);
+		if (resourceAt != std::string::npos)
+			reloadedXaml.replace(resourceAt, std::string(">40.5,60.25<").size(),
+				">80.5,90.25<");
+		DesignerModel::DesignDocument reloadedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			reloadedXaml, reloadedDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloadedDocument, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		viewport = card ? dynamic_cast<ScrollView*>(
+			card->FindDeclarativeTemplatePart(L"viewport")) : nullptr;
+		CUI_EXPECT_TRUE(card && viewport);
+		if (card && viewport)
+		{
+			tick = go(L"Simple");
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+			expectSize(viewport->GetContentSizeDip(), { 80.5f, 90.25f }, 0.05f);
+		}
+
+		auto invalidXaml = canonical;
+		auto invalidAt = invalidXaml.find("20.25,30.5");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt, std::string("20.25,30.5").size(),
+				"-1,30.5");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = canonical;
+		invalidAt = invalidXaml.find("Storyboard.TargetProperty=\"ContentSize\"");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("Storyboard.TargetProperty=\"ContentSize\"").size(),
+				"Storyboard.TargetProperty=\"Width\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidSnapshot = snapshot;
+		invalidAt = invalidSnapshot.find("type=\"Size\"");
+		invalidAt = invalidSnapshot.find("kind=\"Easing\"", invalidAt);
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidSnapshot.replace(invalidAt,
+				std::string("kind=\"Easing\"").size(), "kind=\"Bogus\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidRuntime = reloadedDocument;
+		auto& invalidStates = invalidRuntime.Components.front()
+			.VisualStateGroups.front().States;
+		auto invalidSimple = std::find_if(invalidStates.begin(), invalidStates.end(),
+			[](const auto& state) { return state.Name == L"Simple"; });
+		CUI_EXPECT_TRUE(invalidSimple != invalidStates.end());
+		if (invalidSimple != invalidStates.end())
+		{
+			invalidSimple->Animations.front().ToUsesResource = false;
+			invalidSimple->Animations.front().ToResourceKey.clear();
+			invalidSimple->Animations.front().To = {
+				DesignerStyleValueKind::Size, L"not-a-size" };
+		}
+		auto* retainedCard = runtime.FindControlByName(L"card");
+		CUI_EXPECT_FALSE(DesignerModel::RuntimeDocumentLoader::Reload(
+			invalidRuntime, runtime, {}, &reloadMode, &error));
+		CUI_EXPECT_TRUE(runtime.FindControlByName(L"card") == retainedCard);
+
+		ScrollView directRuntimeProbe;
+		DeclarativeVisualStateAnimation invalidDirectAnimation;
+		invalidDirectAnimation.Kind = DeclarativeAnimationKind::Size;
+		invalidDirectAnimation.PropertyName = L"ContentSize";
+		invalidDirectAnimation.To = BindingValue(cui::core::Size{ -1.0f, 10.0f });
+		invalidDirectAnimation.DurationMilliseconds = 100;
+		DeclarativeVisualStateDefinition invalidDirectState;
+		invalidDirectState.Name = L"Invalid";
+		invalidDirectState.Animations.push_back(std::move(invalidDirectAnimation));
+		DeclarativeVisualStateGroupDefinition invalidDirectGroup;
+		invalidDirectGroup.Name = L"InvalidSizeStates";
+		invalidDirectGroup.States.push_back(std::move(invalidDirectState));
+		CUI_EXPECT_FALSE(directRuntimeProbe.DefineVisualStateGroups(
+			{ std::move(invalidDirectGroup) }, &error));
+	});
+
+	runner.Add("Point values and animations target metadata-backed transform origins", []
+	{
+		Panel metadataProbe;
+		std::wstring canonicalName;
+		DesignerStyleValue effectiveValue;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerPropertyCatalog::ApplyValue(
+			metadataProbe, L"RenderTransformOrigin",
+			{ DesignerStyleValueKind::Point, L"-1.25, 2.5" },
+			&canonicalName, &effectiveValue, &error));
+		const auto metadataOrigin = metadataProbe.GetRenderTransformOriginDip();
+		CUI_EXPECT_NEAR(-1.25f, metadataOrigin.x, 0.0001f);
+		CUI_EXPECT_NEAR(2.5f, metadataOrigin.y, 0.0001f);
+		CUI_EXPECT_FALSE(metadataProbe.TrySetPropertyValue(
+			L"RenderTransformOrigin", BindingValue(cui::core::Point{
+				(std::numeric_limits<float>::quiet_NaN)(), 1.0f })));
+
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:point-animation" x:Name="PointAnimationForm">
+  <Form.Resources>
+    <Point x:Key="FinalOrigin">4.5,-6.25</Point>
+    <Point x:Key="OriginDelta">0.5,-0.75</Point>
+    <ComponentDefinition x:Key="local:PointCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="BaseOrigin" Type="Point" Default="0,0" />
+        <ComponentProperty Name="Phase" Type="Int" Default="0" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Panel x:Name="target"
+               RenderTransformOrigin="{TemplateBinding BaseOrigin}">
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="PointStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="Simple"
+                                  GeneratedDuration="0:0:0.100" />
+                <VisualTransition From="Idle" To="Explicit">
+                  <VisualTransition.Storyboard><Storyboard>
+                    <PointAnimation Storyboard.TargetName="target"
+                      Storyboard.TargetProperty="RenderTransformOrigin"
+                      From="-1.25,2.5" To="1.25,-2.5"
+                      Duration="0:0:0.100" />
+                  </Storyboard></VisualTransition.Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="Simple">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="1" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <PointAnimation Storyboard.TargetName="target"
+                    Storyboard.TargetProperty="RenderTransformOrigin"
+                    To="{StaticResource FinalOrigin}" Duration="0:0:0.200">
+                    <PointAnimation.EasingFunction>
+                      <QuadraticEase EasingMode="EaseIn" />
+                    </PointAnimation.EasingFunction>
+                  </PointAnimation>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="KeyFrames">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="2" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <PointAnimationUsingKeyFrames Storyboard.TargetName="target"
+                    Storyboard.TargetProperty="RenderTransformOrigin"
+                    Duration="0:0:0.400">
+                    <EasingPointKeyFrame KeyTime="0:0:0.100" Value="1.25,-2.5">
+                      <EasingPointKeyFrame.EasingFunction>
+                        <QuadraticEase EasingMode="EaseIn" />
+                      </EasingPointKeyFrame.EasingFunction>
+                    </EasingPointKeyFrame>
+                    <DiscretePointKeyFrame KeyTime="0:0:0.200" Value="2.25,-3.5" />
+                    <DiscretePointKeyFrame KeyTime="0:0:0.200" Value="2.5,-3.75" />
+                    <LinearPointKeyFrame KeyTime="0:0:0.300" Value="4,-5" />
+                    <SplinePointKeyFrame KeyTime="0:0:0.400" Value="6,-7"
+                                         KeySpline="0,0 1,1" />
+                  </PointAnimationUsingKeyFrames>
+				</Storyboard></VisualState.Storyboard></VisualState>
+              <VisualState x:Name="By">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="3" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <PointAnimation Storyboard.TargetName="target"
+                    Storyboard.TargetProperty="RenderTransformOrigin"
+                    By="{StaticResource OriginDelta}" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Additive">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="4" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <PointAnimation Storyboard.TargetName="target"
+                    Storyboard.TargetProperty="RenderTransformOrigin"
+                    From="1,2" To="3,4" Duration="0:0:0.100"
+                    RepeatBehavior="2x" IsAdditive="true" IsCumulative="true" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Explicit">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="5" /></VisualState.StateTriggers>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </Panel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:PointCard x:Name="card" BaseOrigin="-1.25,2.5" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("Point animation XAML parse failed: "
+				+ Convert::WStringToString(error));
+		const auto& component = document.Components.front();
+		CUI_EXPECT_EQ(DesignerStyleValueKind::Point,
+			component.Properties.front().DefaultValue.Kind);
+		CUI_EXPECT_TRUE(component.Template.front().TemplateBindings.contains(
+			L"RenderTransformOrigin"));
+		CUI_EXPECT_FALSE(component.Template.front().Extra.contains(
+			"renderTransformOrigin"));
+		const auto& group = component.VisualStateGroups.front();
+		CUI_EXPECT_EQ(DesignerAnimationKind::Point,
+			group.Transitions[1].Animations.front().Kind);
+		const auto keyState = std::find_if(group.States.begin(), group.States.end(),
+			[](const auto& state) { return state.Name == L"KeyFrames"; });
+		CUI_EXPECT_TRUE(keyState != group.States.end());
+		if (keyState != group.States.end())
+		{
+			CUI_EXPECT_EQ(5ULL, keyState->Animations.front().KeyFrames.size());
+			CUI_EXPECT_EQ(DesignerKeyFrameKind::Easing,
+				keyState->Animations.front().KeyFrames.front().Kind);
+		}
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto expected : { "<Point x:Key=\"FinalOrigin\"",
+			"Type=\"Point\"", "<PointAnimation ",
+			"<PointAnimationUsingKeyFrames ", "<DiscretePointKeyFrame ",
+			"<LinearPointKeyFrame ", "<EasingPointKeyFrame ",
+			"<SplinePointKeyFrame ", "To=\"{StaticResource FinalOrigin}\"" })
+			CUI_EXPECT_TRUE(canonical.find(expected) != std::string::npos);
+		DesignerModel::DesignDocument canonicalRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, canonicalRoundTrip, &error));
+		CUI_EXPECT_EQ(document, canonicalRoundTrip);
+
+		const auto snapshot =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(snapshot.find("type=\"Point\"") != std::string::npos);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		if (!DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error))
+			throw std::runtime_error("Point animation snapshot parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* target = card
+			? card->FindDeclarativeTemplatePart(L"target") : nullptr;
+		if (!card || !target)
+			throw std::runtime_error("Point animation runtime controls are missing");
+		auto expectPoint = [](cui::core::Point actual,
+			cui::core::Point expected, float tolerance = 0.02f)
+		{
+			CUI_EXPECT_NEAR(expected.x, actual.x, tolerance);
+			CUI_EXPECT_NEAR(expected.y, actual.y, tolerance);
+		};
+		auto go = [&](const wchar_t* state, bool transitions = false)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"PointStates", state, transitions, &error));
+			return ::GetTickCount64();
+		};
+		expectPoint(target->GetRenderTransformOriginDip(), { -1.25f, 2.5f });
+
+		auto tick = go(L"Simple");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectPoint(target->GetRenderTransformOriginDip(),
+			{ 0.1875f, 0.3125f }, 0.45f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		expectPoint(target->GetRenderTransformOriginDip(), { 4.5f, -6.25f });
+
+		(void)go(L"Idle");
+		tick = go(L"KeyFrames");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		expectPoint(target->GetRenderTransformOriginDip(),
+			{ -0.625f, 1.25f }, 0.35f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 150));
+		expectPoint(target->GetRenderTransformOriginDip(),
+			{ 1.25f, -2.5f }, 0.05f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		expectPoint(target->GetRenderTransformOriginDip(),
+			{ 2.5f, -3.75f }, 0.05f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 250));
+		expectPoint(target->GetRenderTransformOriginDip(),
+			{ 3.25f, -4.375f }, 0.35f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 350));
+		expectPoint(target->GetRenderTransformOriginDip(), { 5.0f, -6.0f }, 0.35f);
+
+		(void)go(L"Idle");
+		tick = go(L"By");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectPoint(target->GetRenderTransformOriginDip(), { -0.75f, 1.75f });
+
+		(void)go(L"Idle");
+		tick = go(L"Additive");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 150));
+		expectPoint(target->GetRenderTransformOriginDip(), { 2.75f, 7.5f }, 0.35f);
+
+		(void)go(L"Idle");
+		tick = go(L"Simple", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		const auto generated = target->GetRenderTransformOriginDip();
+		CUI_EXPECT_TRUE(generated.x > -1.25f && generated.x < 4.5f);
+
+		(void)go(L"Idle");
+		tick = go(L"Explicit", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		expectPoint(target->GetRenderTransformOriginDip(), { 0.0f, 0.0f }, 0.35f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectPoint(target->GetRenderTransformOriginDip(), { -1.25f, 2.5f });
+
+		auto reloadedXaml = xaml;
+		const auto resourceAt = reloadedXaml.find(">4.5,-6.25<");
+		CUI_EXPECT_TRUE(resourceAt != std::string::npos);
+		if (resourceAt != std::string::npos)
+			reloadedXaml.replace(resourceAt, std::string(">4.5,-6.25<").size(),
+				">8.5,-9.25<");
+		DesignerModel::DesignDocument reloadedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			reloadedXaml, reloadedDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloadedDocument, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		target = card ? card->FindDeclarativeTemplatePart(L"target") : nullptr;
+		CUI_EXPECT_TRUE(card && target);
+		if (card && target)
+		{
+			tick = go(L"Simple");
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+			expectPoint(target->GetRenderTransformOriginDip(),
+				{ 8.5f, -9.25f }, 0.05f);
+		}
+
+		auto invalidXaml = canonical;
+		auto invalidAt = invalidXaml.find("1.25,-2.5");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt, std::string("1.25,-2.5").size(),
+				"nan,-2.5");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = canonical;
+		invalidAt = invalidXaml.find(
+			"Storyboard.TargetProperty=\"RenderTransformOrigin\"");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("Storyboard.TargetProperty=\"RenderTransformOrigin\"").size(),
+				"Storyboard.TargetProperty=\"Width\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidSnapshot = snapshot;
+		invalidAt = invalidSnapshot.find("type=\"Point\"");
+		invalidAt = invalidSnapshot.find("kind=\"Easing\"", invalidAt);
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidSnapshot.replace(invalidAt,
+				std::string("kind=\"Easing\"").size(), "kind=\"Bogus\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidRuntime = reloadedDocument;
+		auto& invalidStates = invalidRuntime.Components.front()
+			.VisualStateGroups.front().States;
+		auto invalidSimple = std::find_if(invalidStates.begin(), invalidStates.end(),
+			[](const auto& state) { return state.Name == L"Simple"; });
+		CUI_EXPECT_TRUE(invalidSimple != invalidStates.end());
+		if (invalidSimple != invalidStates.end())
+		{
+			invalidSimple->Animations.front().ToUsesResource = false;
+			invalidSimple->Animations.front().ToResourceKey.clear();
+			invalidSimple->Animations.front().To = {
+				DesignerStyleValueKind::Point, L"not-a-point" };
+		}
+		auto* retainedCard = runtime.FindControlByName(L"card");
+		CUI_EXPECT_FALSE(DesignerModel::RuntimeDocumentLoader::Reload(
+			invalidRuntime, runtime, {}, &reloadMode, &error));
+		CUI_EXPECT_TRUE(runtime.FindControlByName(L"card") == retainedCard);
+
+		Panel directRuntimeProbe;
+		DeclarativeVisualStateAnimation invalidDirectAnimation;
+		invalidDirectAnimation.Kind = DeclarativeAnimationKind::Point;
+		invalidDirectAnimation.PropertyName = L"RenderTransformOrigin";
+		invalidDirectAnimation.To = BindingValue(cui::core::Point{
+			(std::numeric_limits<float>::quiet_NaN)(), 1.0f });
+		invalidDirectAnimation.DurationMilliseconds = 100;
+		DeclarativeVisualStateDefinition invalidDirectState;
+		invalidDirectState.Name = L"Invalid";
+		invalidDirectState.Animations.push_back(std::move(invalidDirectAnimation));
+		DeclarativeVisualStateGroupDefinition invalidDirectGroup;
+		invalidDirectGroup.Name = L"InvalidPointStates";
+		invalidDirectGroup.States.push_back(std::move(invalidDirectState));
+		CUI_EXPECT_FALSE(directRuntimeProbe.DefineVisualStateGroups(
+			{ std::move(invalidDirectGroup) }, &error));
+	});
+
+	runner.Add("Vector values animations and Point arithmetic follow WPF semantics", []
+	{
+		const cui::core::Point point{ 1.0f, 2.0f };
+		const cui::core::Vector offset{ 3.0f, -4.0f };
+		const auto translated = point + offset;
+		CUI_EXPECT_NEAR(4.0f, translated.x, 0.0001f);
+		CUI_EXPECT_NEAR(-2.0f, translated.y, 0.0001f);
+		const auto displacement = translated - point;
+		CUI_EXPECT_NEAR(3.0f, displacement.x, 0.0001f);
+		CUI_EXPECT_NEAR(-4.0f, displacement.y, 0.0001f);
+		const auto composed = offset + cui::core::Vector{ -1.0f, 2.0f };
+		CUI_EXPECT_NEAR(2.0f, composed.x, 0.0001f);
+		CUI_EXPECT_NEAR(-2.0f, composed.y, 0.0001f);
+		const auto scaled = 0.5f * composed;
+		CUI_EXPECT_NEAR(1.0f, scaled.x, 0.0001f);
+		CUI_EXPECT_NEAR(-1.0f, scaled.y, 0.0001f);
+
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:vector-animation" x:Name="VectorAnimationForm">
+  <Form.Resources>
+    <Vector x:Key="FinalVector">4.5,-6.25</Vector>
+    <Vector x:Key="VectorDelta">0.5,-0.75</Vector>
+    <ComponentDefinition x:Key="local:VectorCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Motion" Type="Vector" Default="0,0" />
+        <ComponentProperty Name="Phase" Type="Int" Default="0" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Panel x:Name="surface">
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="VectorStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="Simple"
+                                  GeneratedDuration="0:0:0.100" />
+                <VisualTransition From="Idle" To="Explicit">
+                  <VisualTransition.Storyboard><Storyboard>
+                    <VectorAnimation Storyboard.TargetProperty="Motion"
+                      From="-1.25,2.5" To="1.25,-2.5"
+                      Duration="0:0:0.100" />
+                  </Storyboard></VisualTransition.Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="Simple">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="1" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <VectorAnimation Storyboard.TargetProperty="Motion"
+                    To="{StaticResource FinalVector}" Duration="0:0:0.200">
+                    <VectorAnimation.EasingFunction>
+                      <QuadraticEase EasingMode="EaseIn" />
+                    </VectorAnimation.EasingFunction>
+                  </VectorAnimation>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="KeyFrames">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="2" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <VectorAnimationUsingKeyFrames Storyboard.TargetProperty="Motion"
+                    Duration="0:0:0.400">
+                    <EasingVectorKeyFrame KeyTime="0:0:0.100" Value="1.25,-2.5">
+                      <EasingVectorKeyFrame.EasingFunction>
+                        <QuadraticEase EasingMode="EaseIn" />
+                      </EasingVectorKeyFrame.EasingFunction>
+                    </EasingVectorKeyFrame>
+                    <DiscreteVectorKeyFrame KeyTime="0:0:0.200" Value="2.25,-3.5" />
+                    <DiscreteVectorKeyFrame KeyTime="0:0:0.200" Value="2.5,-3.75" />
+                    <LinearVectorKeyFrame KeyTime="0:0:0.300" Value="4,-5" />
+                    <SplineVectorKeyFrame KeyTime="0:0:0.400" Value="6,-7"
+                                          KeySpline="0,0 1,1" />
+                  </VectorAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="By">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="3" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <VectorAnimation Storyboard.TargetProperty="Motion"
+                    By="{StaticResource VectorDelta}" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Additive">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="4" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <VectorAnimation Storyboard.TargetProperty="Motion"
+                    From="1,2" To="3,4" Duration="0:0:0.100"
+                    RepeatBehavior="2x" IsAdditive="true" IsCumulative="true" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Stop">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="5" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <VectorAnimation Storyboard.TargetProperty="Motion"
+                    From="1,2" To="3,4" Duration="0:0:0.100"
+                    FillBehavior="Stop" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Explicit">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="6" /></VisualState.StateTriggers>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </Panel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:VectorCard x:Name="card" Motion="-1.25,2.5" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("Vector animation XAML parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		const auto& component = document.Components.front();
+		CUI_EXPECT_EQ(DesignerStyleValueKind::Vector,
+			component.Properties.front().DefaultValue.Kind);
+		const auto& group = component.VisualStateGroups.front();
+		CUI_EXPECT_EQ(DesignerAnimationKind::Vector,
+			group.Transitions[1].Animations.front().Kind);
+		const auto keyState = std::find_if(group.States.begin(), group.States.end(),
+			[](const auto& state) { return state.Name == L"KeyFrames"; });
+		CUI_EXPECT_TRUE(keyState != group.States.end());
+		if (keyState != group.States.end())
+		{
+			CUI_EXPECT_EQ(5ULL, keyState->Animations.front().KeyFrames.size());
+			CUI_EXPECT_EQ(DesignerKeyFrameKind::Easing,
+				keyState->Animations.front().KeyFrames.front().Kind);
+		}
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto expected : { "<Vector x:Key=\"FinalVector\"",
+			"Type=\"Vector\"", "<VectorAnimation ",
+			"<VectorAnimationUsingKeyFrames ", "<DiscreteVectorKeyFrame ",
+			"<LinearVectorKeyFrame ", "<EasingVectorKeyFrame ",
+			"<SplineVectorKeyFrame ", "To=\"{StaticResource FinalVector}\"" })
+			CUI_EXPECT_TRUE(canonical.find(expected) != std::string::npos);
+		DesignerModel::DesignDocument canonicalRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, canonicalRoundTrip, &error));
+		CUI_EXPECT_EQ(document, canonicalRoundTrip);
+
+		const auto snapshot =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(snapshot.find("type=\"Vector\"") != std::string::npos);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		if (!DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error))
+			throw std::runtime_error("Vector animation snapshot parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+
+		CodeGenInput input;
+		input.FormName = L"VectorGeneratedForm";
+		input.StyleSheet = document.StyleSheet;
+		Panel generatedRoot;
+		input.Controls.push_back(std::make_shared<DesignerControl>(
+			&generatedRoot, L"generatedRoot", UIClass::UI_Panel, nullptr, 1));
+		const auto generatedCpp = CodeGenerator(L"VectorGeneratedForm", input).GenerateCpp();
+		CUI_EXPECT_TRUE(generatedCpp.find(
+			"BindingValue(cui::core::Vector{ 4.5f, -6.25f })")
+			!= std::string::npos);
+
+		DesignerModel::RuntimeDocument runtime;
+		if (!DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error))
+			throw std::runtime_error("Vector animation runtime load failed: "
+				+ Convert::WStringToString(error));
+		auto* card = runtime.FindControlByName(L"card");
+		if (!card) throw std::runtime_error("Vector animation card is missing");
+		auto readVector = [](Control& control)
+		{
+			BindingValue value;
+			cui::core::Vector result{};
+			CUI_EXPECT_TRUE(control.TryGetPropertyValue(L"Motion", value));
+			CUI_EXPECT_TRUE(value.TryGet(result));
+			return result;
+		};
+		auto expectVector = [](cui::core::Vector actual,
+			cui::core::Vector expected, float tolerance = 0.03f)
+		{
+			CUI_EXPECT_NEAR(expected.x, actual.x, tolerance);
+			CUI_EXPECT_NEAR(expected.y, actual.y, tolerance);
+		};
+		auto go = [&](const wchar_t* state, bool transitions = false)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"VectorStates", state, transitions, &error));
+			return ::GetTickCount64();
+		};
+		expectVector(readVector(*card), { -1.25f, 2.5f });
+
+		auto tick = go(L"Simple");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectVector(readVector(*card), { 0.1875f, 0.3125f }, 0.45f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		expectVector(readVector(*card), { 4.5f, -6.25f });
+
+		(void)go(L"Idle");
+		tick = go(L"KeyFrames");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		expectVector(readVector(*card), { -0.625f, 1.25f }, 0.35f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 150));
+		expectVector(readVector(*card), { 1.25f, -2.5f });
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		expectVector(readVector(*card), { 2.5f, -3.75f });
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 250));
+		expectVector(readVector(*card), { 3.25f, -4.375f }, 0.35f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 350));
+		expectVector(readVector(*card), { 5.0f, -6.0f }, 0.35f);
+
+		(void)go(L"Idle");
+		tick = go(L"By");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectVector(readVector(*card), { -0.75f, 1.75f });
+
+		(void)go(L"Idle");
+		tick = go(L"Additive");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 150));
+		expectVector(readVector(*card), { 2.75f, 7.5f }, 0.35f);
+
+		(void)go(L"Idle");
+		tick = go(L"Stop");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		expectVector(readVector(*card), { 2.0f, 3.0f }, 0.35f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectVector(readVector(*card), { -1.25f, 2.5f });
+
+		(void)go(L"Idle");
+		tick = go(L"Simple", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		const auto generated = readVector(*card);
+		CUI_EXPECT_TRUE(generated.x > -1.25f && generated.x < 4.5f);
+
+		(void)go(L"Idle");
+		tick = go(L"Explicit", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		expectVector(readVector(*card), { 0.0f, 0.0f }, 0.35f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectVector(readVector(*card), { -1.25f, 2.5f });
+
+		auto reloadedXaml = xaml;
+		const auto resourceAt = reloadedXaml.find(">4.5,-6.25<");
+		CUI_EXPECT_TRUE(resourceAt != std::string::npos);
+		if (resourceAt != std::string::npos)
+			reloadedXaml.replace(resourceAt, std::string(">4.5,-6.25<").size(),
+				">8.5,-9.25<");
+		DesignerModel::DesignDocument reloadedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			reloadedXaml, reloadedDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloadedDocument, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		CUI_EXPECT_TRUE(card != nullptr);
+		if (card)
+		{
+			tick = go(L"Simple");
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+			expectVector(readVector(*card), { 8.5f, -9.25f });
+		}
+
+		auto invalidXaml = canonical;
+		auto invalidAt = invalidXaml.find("Value=\"1.25,-2.5\"");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt, std::string("Value=\"1.25,-2.5\"").size(),
+				"Value=\"nan,-2.5\"");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = canonical;
+		invalidAt = invalidXaml.find("Storyboard.TargetProperty=\"Motion\"");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("Storyboard.TargetProperty=\"Motion\"").size(),
+				"Storyboard.TargetProperty=\"Phase\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidSnapshot = snapshot;
+		invalidAt = invalidSnapshot.find("type=\"Vector\"");
+		invalidAt = invalidSnapshot.find("kind=\"Easing\"", invalidAt);
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidSnapshot.replace(invalidAt,
+				std::string("kind=\"Easing\"").size(), "kind=\"Bogus\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidRuntime = reloadedDocument;
+		auto& invalidStates = invalidRuntime.Components.front()
+			.VisualStateGroups.front().States;
+		auto invalidSimple = std::find_if(invalidStates.begin(), invalidStates.end(),
+			[](const auto& state) { return state.Name == L"Simple"; });
+		CUI_EXPECT_TRUE(invalidSimple != invalidStates.end());
+		if (invalidSimple != invalidStates.end())
+		{
+			invalidSimple->Animations.front().ToUsesResource = false;
+			invalidSimple->Animations.front().ToResourceKey.clear();
+			invalidSimple->Animations.front().To = {
+				DesignerStyleValueKind::Vector, L"not-a-vector" };
+		}
+		auto* retainedCard = runtime.FindControlByName(L"card");
+		CUI_EXPECT_FALSE(DesignerModel::RuntimeDocumentLoader::Reload(
+			invalidRuntime, runtime, {}, &reloadMode, &error));
+		CUI_EXPECT_TRUE(runtime.FindControlByName(L"card") == retainedCard);
+
+		Control directRuntimeProbe;
+		DynamicControlPropertyDefinition vectorProperty;
+		vectorProperty.Name = L"Motion";
+		vectorProperty.ValueKind = BindingValueKind::Object;
+		vectorProperty.DefaultValue = BindingValue(cui::core::Vector{});
+		CUI_EXPECT_TRUE(directRuntimeProbe.DefineDynamicProperty(
+			vectorProperty, &error));
+		DeclarativeVisualStateAnimation invalidDirectAnimation;
+		invalidDirectAnimation.Kind = DeclarativeAnimationKind::Vector;
+		invalidDirectAnimation.PropertyName = L"Motion";
+		invalidDirectAnimation.To = BindingValue(cui::core::Vector{
+			(std::numeric_limits<float>::quiet_NaN)(), 1.0f });
+		invalidDirectAnimation.DurationMilliseconds = 100;
+		DeclarativeVisualStateDefinition invalidDirectState;
+		invalidDirectState.Name = L"Invalid";
+		invalidDirectState.Animations.push_back(std::move(invalidDirectAnimation));
+		DeclarativeVisualStateGroupDefinition invalidDirectGroup;
+		invalidDirectGroup.Name = L"InvalidVectorStates";
+		invalidDirectGroup.States.push_back(std::move(invalidDirectState));
+		CUI_EXPECT_FALSE(directRuntimeProbe.DefineVisualStateGroups(
+			{ std::move(invalidDirectGroup) }, &error));
+	});
+
+	runner.Add("GradientStop Color and Offset animate through Brush object paths", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:gradient-stop-animation" x:Name="GradientAnimationForm">
+  <Form.Resources>
+    <Color x:Key="HotStop">#FFFFFF00</Color>
+    <Double x:Key="ShiftedOffset">0.75</Double>
+    <ComponentDefinition x:Key="local:GradientCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Phase" Type="Int" Default="0" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <StackPanel x:Name="root">
+          <Label x:Name="linearLabel" Text="Linear">
+            <Control.Foreground>
+              <LinearGradientBrush StartPoint="0.1,0.2" EndPoint="0.9,0.8" Opacity="0.8">
+                <GradientStop Color="#FFFF0000" Offset="0" />
+                <GradientStop Color="#FF0000FF" Offset="0.5" />
+                <GradientStop Color="#FF00FF00" Offset="1" />
+              </LinearGradientBrush>
+            </Control.Foreground>
+          </Label>
+          <Label x:Name="radialLabel" Text="Radial">
+            <Control.Foreground>
+              <RadialGradientBrush Center="0.4,0.6" GradientOrigin="0.3,0.7"
+                                   RadiusX="0.8" RadiusY="0.6" Opacity="0.7">
+                <GradientStop Color="#FF101010" Offset="0" />
+                <GradientStop Color="#FFFF00FF" Offset="1" />
+              </RadialGradientBrush>
+            </Control.Foreground>
+          </Label>
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="GradientStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="Explicit">
+                  <VisualTransition.Storyboard><Storyboard>
+                    <ColorAnimation Storyboard.TargetName="linearLabel"
+                      Storyboard.TargetProperty="(UIElement.Foreground).(LinearGradientBrush.GradientStops)[0].(GradientStop.Color)"
+                      From="#FFFF0000" To="#FF0000FF" Duration="0:0:0.100" />
+                    <DoubleAnimation Storyboard.TargetName="linearLabel"
+                      Storyboard.TargetProperty="(Control.Foreground).(GradientBrush.GradientStops)[1].(GradientStop.Offset)"
+                      From="0.5" To="0.7" Duration="0:0:0.100" />
+                  </Storyboard></VisualTransition.Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="Animate">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="1" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <ColorAnimation Storyboard.TargetName="linearLabel"
+                    Storyboard.TargetProperty="(UIElement.Foreground).(LinearGradientBrush.GradientStops)[0].(GradientStop.Color)"
+                    To="{StaticResource HotStop}" Duration="0:0:0.200" />
+                  <DoubleAnimation Storyboard.TargetName="linearLabel"
+                    Storyboard.TargetProperty="(Control.Foreground).(GradientBrush.GradientStops)[1].(GradientStop.Offset)"
+                    To="{StaticResource ShiftedOffset}" Duration="0:0:0.200" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Radial">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="2" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <ColorAnimation Storyboard.TargetName="radialLabel"
+                    Storyboard.TargetProperty="(Control.Foreground).(RadialGradientBrush.GradientStops)[1].(GradientStop.Color)"
+                    To="#FF00FFFF" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="KeyFrames">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="3" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <ColorAnimationUsingKeyFrames Storyboard.TargetName="linearLabel"
+                    Storyboard.TargetProperty="(Control.Foreground).(GradientBrush.GradientStops)[0].(GradientStop.Color)"
+                    Duration="0:0:0.200">
+                    <LinearColorKeyFrame KeyTime="0:0:0.100" Value="#FFFFFFFF" />
+                    <SplineColorKeyFrame KeyTime="0:0:0.200" Value="#FF000000"
+                                         KeySpline="0,0 1,1" />
+                  </ColorAnimationUsingKeyFrames>
+                  <DoubleAnimationUsingKeyFrames Storyboard.TargetName="linearLabel"
+                    Storyboard.TargetProperty="(Control.Foreground).(GradientBrush.GradientStops)[1].(GradientStop.Offset)"
+                    Duration="0:0:0.200">
+                    <EasingDoubleKeyFrame KeyTime="0:0:0.100" Value="0.6">
+                      <EasingDoubleKeyFrame.EasingFunction>
+                        <QuadraticEase EasingMode="EaseIn" />
+                      </EasingDoubleKeyFrame.EasingFunction>
+                    </EasingDoubleKeyFrame>
+                    <DiscreteDoubleKeyFrame KeyTime="0:0:0.200" Value="0.9" />
+                  </DoubleAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Stop">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="4" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <ColorAnimation Storyboard.TargetName="linearLabel"
+                    Storyboard.TargetProperty="(Control.Foreground).(GradientBrush.GradientStops)[0].(GradientStop.Color)"
+                    From="#FFFF0000" To="#FFFFFFFF" Duration="0:0:0.100"
+                    FillBehavior="Stop" />
+                  <DoubleAnimation Storyboard.TargetName="linearLabel"
+                    Storyboard.TargetProperty="(Control.Foreground).(GradientBrush.GradientStops)[1].(GradientStop.Offset)"
+                    From="0.5" To="0.9" Duration="0:0:0.100"
+                    FillBehavior="Stop" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="By">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="6" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="linearLabel"
+                    Storyboard.TargetProperty="(Control.Foreground).(GradientBrush.GradientStops)[1].(GradientStop.Offset)"
+                    By="0.75" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Explicit">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="5" /></VisualState.StateTriggers>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </StackPanel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:GradientCard x:Name="card" />
+</Form>)XAML";
+
+		std::wstring error;
+		DesignerModel::DesignDocument document;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("GradientStop animation XAML parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		const auto& group = document.Components.front().VisualStateGroups.front();
+		CUI_EXPECT_EQ(std::wstring(
+			L"(Control.Foreground).(GradientBrush.GradientStops)[0].(GradientStop.Color)"),
+			group.Transitions.front().Animations.front().PropertyName);
+		CUI_EXPECT_EQ(DesignerAnimationKind::Color,
+			group.Transitions.front().Animations.front().Kind);
+		CUI_EXPECT_EQ(DesignerAnimationKind::Double,
+			group.Transitions.front().Animations.back().Kind);
+
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto expected : {
+			"<ColorAnimation ", "<DoubleAnimation ",
+			"<ColorAnimationUsingKeyFrames ", "<DoubleAnimationUsingKeyFrames ",
+			"<LinearColorKeyFrame ", "<SplineColorKeyFrame ",
+			"Storyboard.TargetProperty=\"(Control.Foreground).(GradientBrush.GradientStops)[0].(GradientStop.Color)\"",
+			"Storyboard.TargetProperty=\"(Control.Foreground).(GradientBrush.GradientStops)[1].(GradientStop.Offset)\"",
+			"To=\"{StaticResource HotStop}\"", "To=\"{StaticResource ShiftedOffset}\"" })
+			CUI_EXPECT_TRUE(canonical.find(expected) != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("UIElement.Foreground") == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("LinearGradientBrush.GradientStops")
+			== std::string::npos);
+
+		DesignerModel::DesignDocument canonicalRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, canonicalRoundTrip, &error));
+		CUI_EXPECT_EQ(document, canonicalRoundTrip);
+		const auto snapshot = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		if (!DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error))
+			throw std::runtime_error("GradientStop animation snapshot parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+
+		DesignerModel::RuntimeDocument runtime;
+		if (!DesignerModel::RuntimeDocumentLoader::Load(document, runtime, {}, &error))
+			throw std::runtime_error("GradientStop animation runtime load failed: "
+				+ Convert::WStringToString(error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* linear = card ? card->FindDeclarativeTemplatePart(L"linearLabel") : nullptr;
+		auto* radial = card ? card->FindDeclarativeTemplatePart(L"radialLabel") : nullptr;
+		if (!card || !linear || !radial)
+			throw std::runtime_error("GradientStop animation runtime controls are missing");
+
+		auto expectColor = [](const D2D1_COLOR_F& actual,
+			const D2D1_COLOR_F& expected, float tolerance = 0.03f)
+		{
+			CUI_EXPECT_NEAR(expected.r, actual.r, tolerance);
+			CUI_EXPECT_NEAR(expected.g, actual.g, tolerance);
+			CUI_EXPECT_NEAR(expected.b, actual.b, tolerance);
+			CUI_EXPECT_NEAR(expected.a, actual.a, tolerance);
+		};
+		auto readLinear = [&]() -> const cui::drawing::Brush&
+		{
+			CUI_EXPECT_TRUE(linear->GetForegroundBrush().has_value());
+			return *linear->GetForegroundBrush();
+		};
+		auto readRadial = [&]() -> const cui::drawing::Brush&
+		{
+			CUI_EXPECT_TRUE(radial->GetForegroundBrush().has_value());
+			return *radial->GetForegroundBrush();
+		};
+		auto expectLinearStructure = [&](const cui::drawing::Brush& brush)
+		{
+			CUI_EXPECT_EQ(cui::drawing::BrushKind::LinearGradient, brush.Kind);
+			CUI_EXPECT_EQ(3ULL, brush.GradientStops.size());
+			CUI_EXPECT_NEAR(0.8f, brush.Opacity, 0.0001f);
+			CUI_EXPECT_NEAR(0.1f, brush.StartPoint.x, 0.0001f);
+			CUI_EXPECT_NEAR(0.2f, brush.StartPoint.y, 0.0001f);
+			CUI_EXPECT_NEAR(0.9f, brush.EndPoint.x, 0.0001f);
+			CUI_EXPECT_NEAR(0.8f, brush.EndPoint.y, 0.0001f);
+			expectColor(brush.GradientStops[2].Color,
+				D2D1_COLOR_F{ 0.0f, 1.0f, 0.0f, 1.0f }, 0.001f);
+		};
+		auto go = [&](const wchar_t* state, bool transitions = false)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"GradientStates", state, transitions, &error));
+			return ::GetTickCount64();
+		};
+
+		expectLinearStructure(readLinear());
+		expectColor(readLinear().GradientStops[0].Color,
+			D2D1_COLOR_F{ 1.0f, 0.0f, 0.0f, 1.0f }, 0.001f);
+		CUI_EXPECT_NEAR(0.5f, readLinear().GradientStops[1].Offset, 0.0001f);
+		auto tick = go(L"Animate");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectLinearStructure(readLinear());
+		expectColor(readLinear().GradientStops[0].Color,
+			D2D1_COLOR_F{ 1.0f, 0.5f, 0.0f, 1.0f }, 0.04f);
+		CUI_EXPECT_NEAR(0.625f, readLinear().GradientStops[1].Offset, 0.03f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		expectColor(readLinear().GradientStops[0].Color,
+			D2D1_COLOR_F{ 1.0f, 1.0f, 0.0f, 1.0f }, 0.001f);
+		CUI_EXPECT_NEAR(0.75f, readLinear().GradientStops[1].Offset, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"Radial");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		const auto& radialBrush = readRadial();
+		CUI_EXPECT_EQ(cui::drawing::BrushKind::RadialGradient, radialBrush.Kind);
+		CUI_EXPECT_EQ(2ULL, radialBrush.GradientStops.size());
+		CUI_EXPECT_NEAR(0.7f, radialBrush.Opacity, 0.0001f);
+		CUI_EXPECT_NEAR(0.4f, radialBrush.Center.x, 0.0001f);
+		CUI_EXPECT_NEAR(0.3f, radialBrush.GradientOrigin.x, 0.0001f);
+		expectColor(radialBrush.GradientStops[1].Color,
+			D2D1_COLOR_F{ 0.0f, 1.0f, 1.0f, 1.0f }, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"KeyFrames");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectColor(readLinear().GradientStops[0].Color,
+			D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 1.0f }, 0.001f);
+		CUI_EXPECT_NEAR(0.6f, readLinear().GradientStops[1].Offset, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		expectColor(readLinear().GradientStops[0].Color,
+			D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 1.0f }, 0.001f);
+		CUI_EXPECT_NEAR(0.9f, readLinear().GradientStops[1].Offset, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"Stop");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		expectColor(readLinear().GradientStops[0].Color,
+			D2D1_COLOR_F{ 1.0f, 0.5f, 0.5f, 1.0f }, 0.04f);
+		CUI_EXPECT_NEAR(0.7f, readLinear().GradientStops[1].Offset, 0.03f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectColor(readLinear().GradientStops[0].Color,
+			D2D1_COLOR_F{ 1.0f, 0.0f, 0.0f, 1.0f }, 0.001f);
+		CUI_EXPECT_NEAR(0.5f, readLinear().GradientStops[1].Offset, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"By");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_NEAR(0.875f, readLinear().GradientStops[1].Offset, 0.03f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(1.0f, readLinear().GradientStops[1].Offset, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"Explicit", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_TRUE(readLinear().GradientStops[0].Color.b > 0.2f);
+		CUI_EXPECT_TRUE(readLinear().GradientStops[1].Offset > 0.5f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectColor(readLinear().GradientStops[0].Color,
+			D2D1_COLOR_F{ 1.0f, 0.0f, 0.0f, 1.0f }, 0.001f);
+		CUI_EXPECT_NEAR(0.5f, readLinear().GradientStops[1].Offset, 0.001f);
+
+		auto reloadedXaml = xaml;
+		const auto resourceAt = reloadedXaml.find(">#FFFFFF00</Color>");
+		CUI_EXPECT_TRUE(resourceAt != std::string::npos);
+		if (resourceAt != std::string::npos)
+			reloadedXaml.replace(resourceAt, std::string(">#FFFFFF00</Color>").size(),
+				">#FF00FFFF</Color>");
+		DesignerModel::DesignDocument reloadedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			reloadedXaml, reloadedDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloadedDocument, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		linear = card ? card->FindDeclarativeTemplatePart(L"linearLabel") : nullptr;
+		radial = card ? card->FindDeclarativeTemplatePart(L"radialLabel") : nullptr;
+		CUI_EXPECT_TRUE(card && linear && radial);
+		if (card && linear && radial)
+		{
+			tick = go(L"Animate");
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+			expectColor(readLinear().GradientStops[0].Color,
+				D2D1_COLOR_F{ 0.0f, 1.0f, 1.0f, 1.0f }, 0.001f);
+		}
+
+		auto invalidXaml = canonical;
+		auto invalidAt = invalidXaml.find(
+			"(Control.Foreground).(GradientBrush.GradientStops)[0].(GradientStop.Color)");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("(Control.Foreground).(GradientBrush.GradientStops)[0].(GradientStop.Color)").size(),
+				"(Control.Foreground).(GradientBrush.GradientStops)[0].(GradientStop.Offset)");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = canonical;
+		const auto animateStateAt = invalidXaml.find(
+			"<VisualState x:Name=\"Animate\"");
+		invalidAt = animateStateAt == std::string::npos ? std::string::npos
+			: invalidXaml.find("</VisualState.Storyboard>", animateStateAt);
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+		{
+			invalidAt += std::string("</VisualState.Storyboard>").size();
+			invalidXaml.insert(invalidAt,
+				"<VisualState.Setters><Setter TargetName=\"linearLabel\" "
+				"Property=\"Foreground\" Value=\"#FFFFFFFF\" />"
+				"</VisualState.Setters>");
+		}
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = canonical;
+		invalidAt = invalidXaml.find(">0.75</Double>");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt, std::string(">0.75</Double>").size(),
+				">1.5</Double>");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = canonical;
+		invalidAt = invalidXaml.find("GradientStops)[0]");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt, std::string("GradientStops)[0]").size(),
+				"GradientStops)[99]");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidSnapshot = snapshot;
+		invalidAt = invalidSnapshot.find("GradientStop.Color");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidSnapshot.replace(invalidAt, std::string("GradientStop.Color").size(),
+				"GradientStop.Bogus");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto makeColorPathGroup = [](std::wstring path, D2D1_COLOR_F color)
+		{
+			DeclarativeVisualStateAnimation animation;
+			animation.Kind = DeclarativeAnimationKind::Color;
+			animation.PropertyName = std::move(path);
+			animation.To = BindingValue(color);
+			animation.DurationMilliseconds = 100;
+			DeclarativeVisualStateDefinition state;
+			state.Name = L"Invalid";
+			state.Animations.push_back(std::move(animation));
+			DeclarativeVisualStateGroupDefinition result;
+			result.Name = L"GradientStates";
+			result.States.push_back(std::move(state));
+			return result;
+		};
+		Panel missingBrush;
+		CUI_EXPECT_FALSE(missingBrush.DefineVisualStateGroups({ makeColorPathGroup(
+			L"(Control.Foreground).(GradientBrush.GradientStops)[0].(GradientStop.Color)",
+			D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 1.0f }) }, &error));
+		Panel solidBrush;
+		cui::drawing::Brush solid;
+		solid.Kind = cui::drawing::BrushKind::Solid;
+		solidBrush.SetForegroundBrush(solid);
+		CUI_EXPECT_FALSE(solidBrush.DefineVisualStateGroups({ makeColorPathGroup(
+			L"(Control.Foreground).(GradientBrush.GradientStops)[0].(GradientStop.Color)",
+			D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 1.0f }) }, &error));
+		Panel shortGradient;
+		cui::drawing::Brush gradient;
+		gradient.Kind = cui::drawing::BrushKind::LinearGradient;
+		gradient.GradientStops.push_back({ 0.0f,
+			D2D1_COLOR_F{ 1.0f, 0.0f, 0.0f, 1.0f } });
+		shortGradient.SetForegroundBrush(gradient);
+		CUI_EXPECT_FALSE(shortGradient.DefineVisualStateGroups({ makeColorPathGroup(
+			L"(Control.Foreground).(GradientBrush.GradientStops)[4].(GradientStop.Color)",
+			D2D1_COLOR_F{ 1.0f, 1.0f, 1.0f, 1.0f }) }, &error));
+		DeclarativeVisualStateAnimation invalidOffsetAnimation;
+		invalidOffsetAnimation.Kind = DeclarativeAnimationKind::Double;
+		invalidOffsetAnimation.PropertyName =
+			L"(Control.Foreground).(GradientBrush.GradientStops)[0].(GradientStop.Offset)";
+		invalidOffsetAnimation.To = BindingValue(1.5f);
+		invalidOffsetAnimation.DurationMilliseconds = 100;
+		DeclarativeVisualStateDefinition invalidOffsetState;
+		invalidOffsetState.Name = L"InvalidOffset";
+		invalidOffsetState.Animations.push_back(std::move(invalidOffsetAnimation));
+		DeclarativeVisualStateGroupDefinition invalidOffsetGroup;
+		invalidOffsetGroup.Name = L"GradientStates";
+		invalidOffsetGroup.States.push_back(std::move(invalidOffsetState));
+		CUI_EXPECT_FALSE(shortGradient.DefineVisualStateGroups(
+			{ std::move(invalidOffsetGroup) }, &error));
+	});
+
+	runner.Add("Brush Transform and RelativeTransform follow WPF coordinate order", []
+	{
+		cui::drawing::Brush matrixBrush;
+		cui::drawing::Transform relativeMatrix;
+		cui::drawing::TransformOperation relativeTranslate;
+		relativeTranslate.Kind = cui::drawing::TransformKind::Translate;
+		relativeTranslate.X = 0.25f;
+		relativeTranslate.Y = 0.5f;
+		relativeMatrix.Operations.push_back(relativeTranslate);
+		matrixBrush.RelativeTransform = relativeMatrix;
+		cui::drawing::Transform absoluteMatrix;
+		cui::drawing::TransformOperation absoluteTranslate;
+		absoluteTranslate.Kind = cui::drawing::TransformKind::Translate;
+		absoluteTranslate.X = 10.0f;
+		absoluteTranslate.Y = 20.0f;
+		absoluteMatrix.Operations.push_back(absoluteTranslate);
+		matrixBrush.Transform = absoluteMatrix;
+		const auto resolvedMatrix = matrixBrush.ToTransformMatrix(
+			D2D1::SizeF(200.0f, 100.0f));
+		CUI_EXPECT_NEAR(1.0f, resolvedMatrix._11, 0.0001f);
+		CUI_EXPECT_NEAR(1.0f, resolvedMatrix._22, 0.0001f);
+		CUI_EXPECT_NEAR(60.0f, resolvedMatrix._31, 0.0001f);
+		CUI_EXPECT_NEAR(70.0f, resolvedMatrix._32, 0.0001f);
+
+		cui::drawing::Brush normalizedRotationBrush;
+		cui::drawing::Transform normalizedRotation;
+		cui::drawing::TransformOperation relativeRotate;
+		relativeRotate.Kind = cui::drawing::TransformKind::Rotate;
+		relativeRotate.Angle = 90.0f;
+		normalizedRotation.Operations.push_back(relativeRotate);
+		normalizedRotationBrush.RelativeTransform = normalizedRotation;
+		normalizedRotationBrush.Transform = absoluteMatrix;
+		const auto normalizedRotationMatrix =
+			normalizedRotationBrush.ToTransformMatrix(
+				D2D1::SizeF(200.0f, 100.0f));
+		CUI_EXPECT_NEAR(0.0f, normalizedRotationMatrix._11, 0.0001f);
+		CUI_EXPECT_NEAR(0.5f, normalizedRotationMatrix._12, 0.0001f);
+		CUI_EXPECT_NEAR(-2.0f, normalizedRotationMatrix._21, 0.0001f);
+		CUI_EXPECT_NEAR(0.0f, normalizedRotationMatrix._22, 0.0001f);
+		CUI_EXPECT_NEAR(10.0f, normalizedRotationMatrix._31, 0.0001f);
+		CUI_EXPECT_NEAR(20.0f, normalizedRotationMatrix._32, 0.0001f);
+
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:brush-transform" x:Name="BrushTransformForm">
+  <Form.Resources>
+    <Double x:Key="FinalBrushAngle">50</Double>
+    <ComponentDefinition x:Key="local:BrushCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Phase" Type="Int" Default="0" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <StackPanel x:Name="root">
+          <Label x:Name="brushTarget" Text="Brush transform">
+            <Control.Foreground>
+              <LinearGradientBrush StartPoint="0.1,0.2" EndPoint="0.9,0.8" Opacity="0.75">
+                <LinearGradientBrush.RelativeTransform>
+                  <TransformGroup>
+                    <RotateTransform Angle="10" CenterX="0.5" CenterY="0.5" />
+                    <ScaleTransform ScaleX="1" ScaleY="1.25" CenterX="0.5" CenterY="0.5" />
+                  </TransformGroup>
+                </LinearGradientBrush.RelativeTransform>
+                <Brush.Transform>
+                  <TransformGroup>
+                    <TranslateTransform X="4" Y="5" />
+                    <SkewTransform AngleX="6" AngleY="7" CenterX="8" CenterY="9" />
+                  </TransformGroup>
+                </Brush.Transform>
+                <GradientStop Color="#FFFF0000" Offset="0" />
+                <GradientStop Color="#FF0000FF" Offset="1" />
+              </LinearGradientBrush>
+            </Control.Foreground>
+          </Label>
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="BrushStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="Explicit">
+                  <VisualTransition.Storyboard><Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="brushTarget"
+                      Storyboard.TargetProperty="(Control.Foreground).(Brush.RelativeTransform).(TransformGroup.Children)[0].(RotateTransform.Angle)"
+                      From="10" To="30" Duration="0:0:0.100" />
+                    <DoubleAnimation Storyboard.TargetName="brushTarget"
+                      Storyboard.TargetProperty="(Control.Foreground).(Brush.Transform).(TransformGroup.Children)[0].(TranslateTransform.Y)"
+                      From="5" To="25" Duration="0:0:0.100" />
+                  </Storyboard></VisualTransition.Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="Animate">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="1" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="brushTarget"
+                    Storyboard.TargetProperty="(UIElement.Foreground).(LinearGradientBrush.RelativeTransform).(TransformGroup.Children)[0].(RotateTransform.Angle)"
+                    To="{StaticResource FinalBrushAngle}" Duration="0:0:0.200" />
+                  <DoubleAnimation Storyboard.TargetName="brushTarget"
+                    Storyboard.TargetProperty="(Control.Foreground).(Brush.Transform).(TransformGroup.Children)[0].(TranslateTransform.X)"
+                    To="24" Duration="0:0:0.200" />
+                  <ColorAnimation Storyboard.TargetName="brushTarget"
+                    Storyboard.TargetProperty="(Control.Foreground).(GradientBrush.GradientStops)[0].(GradientStop.Color)"
+                    To="#FF00FF00" Duration="0:0:0.200" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="KeyFrames">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="2" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimationUsingKeyFrames Storyboard.TargetName="brushTarget"
+                    Storyboard.TargetProperty="(Control.Foreground).(Brush.RelativeTransform).(TransformGroup.Children)[1].(ScaleTransform.ScaleX)"
+                    Duration="0:0:0.200">
+                    <EasingDoubleKeyFrame KeyTime="0:0:0.100" Value="1.5">
+                      <EasingDoubleKeyFrame.EasingFunction>
+                        <QuadraticEase EasingMode="EaseIn" />
+                      </EasingDoubleKeyFrame.EasingFunction>
+                    </EasingDoubleKeyFrame>
+                    <SplineDoubleKeyFrame KeyTime="0:0:0.200" Value="2"
+                                          KeySpline="0,0 1,1" />
+                  </DoubleAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Explicit">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="3" /></VisualState.StateTriggers>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </StackPanel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:BrushCard x:Name="card" />
+</Form>)XAML";
+
+		std::wstring error;
+		DesignerModel::DesignDocument document;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("Brush transform XAML parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		const auto& component = document.Components.front();
+		const auto targetNode = std::find_if(component.Template.begin(),
+			component.Template.end(), [](const auto& node)
+			{ return node.Name == L"brushTarget"; });
+		CUI_EXPECT_TRUE(targetNode != component.Template.end());
+		if (targetNode != component.Template.end())
+		{
+			const auto& brush = targetNode->Extra["foregroundBrush"];
+			CUI_EXPECT_EQ(2ULL, brush["transform"].size());
+			CUI_EXPECT_EQ(2ULL, brush["relativeTransform"].size());
+		}
+		const auto& animate = component.VisualStateGroups.front().States[1];
+		CUI_EXPECT_EQ(std::wstring(
+			L"(Control.Foreground).(Brush.RelativeTransform).(TransformGroup.Children)[0].(RotateTransform.Angle)"),
+			animate.Animations[0].PropertyName);
+		const auto& keyFramesState = component.VisualStateGroups.front().States[2];
+		CUI_EXPECT_EQ(std::wstring(L"KeyFrames"), keyFramesState.Name);
+		CUI_EXPECT_EQ(1ULL, keyFramesState.Animations.size());
+		CUI_EXPECT_EQ(2ULL, keyFramesState.Animations.front().KeyFrames.size());
+		CUI_EXPECT_EQ(200ULL,
+			keyFramesState.Animations.front().DurationMilliseconds);
+
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto expected : {
+			"<LinearGradientBrush.RelativeTransform>",
+			"<LinearGradientBrush.Transform>",
+			"Storyboard.TargetProperty=\"(Control.Foreground).(Brush.RelativeTransform).(TransformGroup.Children)[0].(RotateTransform.Angle)\"",
+			"Storyboard.TargetProperty=\"(Control.Foreground).(Brush.Transform).(TransformGroup.Children)[0].(TranslateTransform.X)\"" })
+			CUI_EXPECT_TRUE(canonical.find(expected) != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("UIElement.Foreground") == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("LinearGradientBrush.RelativeTransform).(")
+			== std::string::npos);
+		DesignerModel::DesignDocument canonicalRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, canonicalRoundTrip, &error));
+		CUI_EXPECT_EQ(document, canonicalRoundTrip);
+
+		const auto snapshot = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		if (!DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error))
+			throw std::runtime_error("Brush transform snapshot parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+		DesignerModel::DesignDocument codegenDocument;
+		codegenDocument.Form.Name = L"BrushTransformCodegenForm";
+		codegenDocument.NextStableId = 2;
+		DesignerModel::DesignNode codegenNode;
+		codegenNode.Id = 1;
+		codegenNode.Name = L"brushTarget";
+		codegenNode.Type = UIClass::UI_Label;
+		if (targetNode != component.Template.end())
+			codegenNode.Extra["foregroundBrush"] =
+				targetNode->Extra["foregroundBrush"];
+		codegenDocument.Nodes.push_back(std::move(codegenNode));
+		CodeGenInput codeGenInput;
+		if (!DesignerModel::DesignDocumentCodeGenInputBuilder::Build(
+			codegenDocument, codeGenInput, &error))
+			throw std::runtime_error("Brush transform codegen input failed: "
+				+ Convert::WStringToString(error));
+		const auto generated = CodeGenerator(
+			L"BrushTransformForm", codeGenInput).GenerateCpp();
+		CUI_EXPECT_TRUE(generated.find(".Transform = [] { cui::drawing::Transform")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(generated.find(".RelativeTransform = [] { cui::drawing::Transform")
+			!= std::string::npos);
+
+		DesignerModel::RuntimeDocument runtime;
+		if (!DesignerModel::RuntimeDocumentLoader::Load(document, runtime, {}, &error))
+			throw std::runtime_error("Brush transform runtime load failed: "
+				+ Convert::WStringToString(error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* target = card
+			? card->FindDeclarativeTemplatePart(L"brushTarget") : nullptr;
+		if (!card || !target)
+			throw std::runtime_error("Brush transform runtime controls are missing");
+		auto readBrush = [&]() -> const cui::drawing::Brush&
+		{
+			CUI_EXPECT_TRUE(target->GetForegroundBrush().has_value());
+			return *target->GetForegroundBrush();
+		};
+		auto expectBaseStructure = [&](const cui::drawing::Brush& brush)
+		{
+			CUI_EXPECT_EQ(cui::drawing::BrushKind::LinearGradient, brush.Kind);
+			CUI_EXPECT_NEAR(0.75f, brush.Opacity, 0.0001f);
+			CUI_EXPECT_NEAR(0.1f, brush.StartPoint.x, 0.0001f);
+			CUI_EXPECT_NEAR(0.9f, brush.EndPoint.x, 0.0001f);
+			CUI_EXPECT_EQ(2ULL, brush.GradientStops.size());
+			CUI_EXPECT_TRUE(brush.Transform.has_value());
+			CUI_EXPECT_TRUE(brush.RelativeTransform.has_value());
+			if (brush.Transform && brush.RelativeTransform)
+			{
+				CUI_EXPECT_EQ(2ULL, brush.Transform->Operations.size());
+				CUI_EXPECT_EQ(2ULL, brush.RelativeTransform->Operations.size());
+				CUI_EXPECT_NEAR(6.0f,
+					brush.Transform->Operations[1].AngleX, 0.0001f);
+				CUI_EXPECT_NEAR(1.25f,
+					brush.RelativeTransform->Operations[1].ScaleY, 0.0001f);
+			}
+		};
+		auto go = [&](const wchar_t* state, bool transitions = false)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"BrushStates", state, transitions, &error));
+			return ::GetTickCount64();
+		};
+		expectBaseStructure(readBrush());
+		auto tick = go(L"Animate");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectBaseStructure(readBrush());
+		CUI_EXPECT_NEAR(30.0f,
+			readBrush().RelativeTransform->Operations[0].Angle, 0.2f);
+		CUI_EXPECT_NEAR(14.0f,
+			readBrush().Transform->Operations[0].X, 0.2f);
+		CUI_EXPECT_NEAR(0.5f, readBrush().GradientStops[0].Color.r, 0.03f);
+		CUI_EXPECT_NEAR(0.5f, readBrush().GradientStops[0].Color.g, 0.03f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_NEAR(50.0f,
+			readBrush().RelativeTransform->Operations[0].Angle, 0.001f);
+		CUI_EXPECT_NEAR(24.0f,
+			readBrush().Transform->Operations[0].X, 0.001f);
+		CUI_EXPECT_NEAR(1.0f, readBrush().GradientStops[0].Color.g, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"KeyFrames");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(1.5f,
+			readBrush().RelativeTransform->Operations[1].ScaleX, 0.15f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_NEAR(2.0f,
+			readBrush().RelativeTransform->Operations[1].ScaleX, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"Explicit", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_NEAR(20.0f,
+			readBrush().RelativeTransform->Operations[0].Angle, 0.2f);
+		CUI_EXPECT_NEAR(15.0f,
+			readBrush().Transform->Operations[0].Y, 0.2f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(10.0f,
+			readBrush().RelativeTransform->Operations[0].Angle, 0.001f);
+		CUI_EXPECT_NEAR(5.0f,
+			readBrush().Transform->Operations[0].Y, 0.001f);
+
+		auto reloadedXaml = xaml;
+		const auto resourceAt = reloadedXaml.find(">50</Double>");
+		CUI_EXPECT_TRUE(resourceAt != std::string::npos);
+		if (resourceAt != std::string::npos)
+			reloadedXaml.replace(resourceAt, std::string(">50</Double>").size(),
+				">70</Double>");
+		DesignerModel::DesignDocument reloadedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			reloadedXaml, reloadedDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloadedDocument, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		target = card ? card->FindDeclarativeTemplatePart(L"brushTarget") : nullptr;
+		CUI_EXPECT_TRUE(card && target);
+		if (card && target)
+		{
+			tick = go(L"Animate");
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+			CUI_EXPECT_NEAR(70.0f,
+				readBrush().RelativeTransform->Operations[0].Angle, 0.001f);
+		}
+
+		auto invalidXaml = canonical;
+		auto invalidAt = invalidXaml.find(
+			"(Brush.RelativeTransform).(TransformGroup.Children)[0]");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("(Brush.RelativeTransform).(TransformGroup.Children)[0]").size(),
+				"(Brush.RelativeTransform).(TransformGroup.Children)[99]");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = canonical;
+		invalidAt = invalidXaml.find("<LinearGradientBrush.Transform>");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("<LinearGradientBrush.Transform>").size(),
+				"<RadialGradientBrush.Transform>");
+		const auto invalidClose = invalidXaml.find("</LinearGradientBrush.Transform>");
+		if (invalidClose != std::string::npos)
+			invalidXaml.replace(invalidClose,
+				std::string("</LinearGradientBrush.Transform>").size(),
+				"</RadialGradientBrush.Transform>");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidSnapshot = snapshot;
+		invalidAt = invalidSnapshot.find("Brush.RelativeTransform");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidSnapshot.replace(invalidAt,
+				std::string("Brush.RelativeTransform").size(), "Brush.MissingTransform");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		Panel missingTransform;
+		cui::drawing::Brush plainBrush;
+		plainBrush.Kind = cui::drawing::BrushKind::Solid;
+		plainBrush.Color = D2D1::ColorF(D2D1::ColorF::White);
+		missingTransform.SetForegroundBrush(plainBrush);
+		DeclarativeVisualStateAnimation invalidAnimation;
+		invalidAnimation.Kind = DeclarativeAnimationKind::Double;
+		invalidAnimation.PropertyName =
+			L"(Control.Foreground).(Brush.Transform).(TransformGroup.Children)[0].(TranslateTransform.X)";
+		invalidAnimation.To = BindingValue(10.0f);
+		invalidAnimation.DurationMilliseconds = 100;
+		DeclarativeVisualStateDefinition invalidState;
+		invalidState.Name = L"Invalid";
+		invalidState.Animations.push_back(std::move(invalidAnimation));
+		DeclarativeVisualStateGroupDefinition invalidGroup;
+		invalidGroup.Name = L"BrushStates";
+		invalidGroup.States.push_back(std::move(invalidState));
+		CUI_EXPECT_FALSE(missingTransform.DefineVisualStateGroups(
+			{ std::move(invalidGroup) }, &error));
+	});
+
+	runner.Add("Brush Color Opacity points and radii animate through object paths", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:brush-properties" x:Name="BrushPropertiesForm">
+  <Form.Resources>
+    <Color x:Key="FinalSolidColor">#FF00FF00</Color>
+    <Double x:Key="FinalBrushOpacity">0.4</Double>
+    <Point x:Key="FinalStartPoint">0.3,0.4</Point>
+    <Point x:Key="FinalRadialCenter">0.6,0.7</Point>
+    <ComponentDefinition x:Key="local:BrushPropertyCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Phase" Type="Int" Default="0" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <StackPanel x:Name="root">
+          <Label x:Name="solidTarget" Text="Solid">
+            <Control.Foreground>
+              <SolidColorBrush Color="#FFFF0000" Opacity="0.9" />
+            </Control.Foreground>
+          </Label>
+          <Label x:Name="linearTarget" Text="Linear">
+            <Control.Foreground>
+              <LinearGradientBrush StartPoint="0.1,0.2" EndPoint="0.9,0.8" Opacity="0.8">
+                <Brush.Transform><TransformGroup>
+                  <TranslateTransform X="4" Y="5" />
+                </TransformGroup></Brush.Transform>
+                <GradientStop Color="#FFFF0000" Offset="0" />
+                <GradientStop Color="#FF0000FF" Offset="1" />
+              </LinearGradientBrush>
+            </Control.Foreground>
+          </Label>
+          <Label x:Name="radialTarget" Text="Radial">
+            <Control.Foreground>
+              <RadialGradientBrush Center="0.4,0.6" GradientOrigin="0.3,0.7"
+                                   RadiusX="0.8" RadiusY="0.6" Opacity="0.7">
+                <GradientStop Color="#FF101010" Offset="0" />
+                <GradientStop Color="#FFFFFFFF" Offset="1" />
+              </RadialGradientBrush>
+            </Control.Foreground>
+          </Label>
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="BrushPropertyStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="Animate"
+                                  GeneratedDuration="0:0:0.100" />
+                <VisualTransition From="Idle" To="Explicit">
+                  <VisualTransition.Storyboard><Storyboard>
+                    <ColorAnimation Storyboard.TargetName="solidTarget"
+                      Storyboard.TargetProperty="(Control.Foreground).(SolidColorBrush.Color)"
+                      From="#FFFF0000" To="#FF0000FF" Duration="0:0:0.100" />
+                    <PointAnimation Storyboard.TargetName="linearTarget"
+                      Storyboard.TargetProperty="(Control.Foreground).(LinearGradientBrush.EndPoint)"
+                      From="0.9,0.8" To="0.7,0.6" Duration="0:0:0.100" />
+                    <DoubleAnimation Storyboard.TargetName="radialTarget"
+                      Storyboard.TargetProperty="(Control.Foreground).(RadialGradientBrush.RadiusY)"
+                      From="0.6" To="1" Duration="0:0:0.100" />
+                  </Storyboard></VisualTransition.Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="Animate">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="1" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <ColorAnimation Storyboard.TargetName="solidTarget"
+                    Storyboard.TargetProperty="(UIElement.Foreground).(SolidColorBrush.Color)"
+                    To="{StaticResource FinalSolidColor}" Duration="0:0:0.200" />
+                  <DoubleAnimation Storyboard.TargetName="solidTarget"
+                    Storyboard.TargetProperty="(Control.Foreground).(SolidColorBrush.Opacity)"
+                    To="{StaticResource FinalBrushOpacity}" Duration="0:0:0.200" />
+                  <PointAnimation Storyboard.TargetName="linearTarget"
+                    Storyboard.TargetProperty="(Control.Foreground).(LinearGradientBrush.StartPoint)"
+                    To="{StaticResource FinalStartPoint}" Duration="0:0:0.200" />
+                  <DoubleAnimation Storyboard.TargetName="linearTarget"
+                    Storyboard.TargetProperty="(Control.Foreground).(GradientBrush.GradientStops)[0].(GradientStop.Offset)"
+                    To="0.25" Duration="0:0:0.200" />
+                  <PointAnimation Storyboard.TargetName="radialTarget"
+                    Storyboard.TargetProperty="(Control.Foreground).(RadialGradientBrush.Center)"
+                    To="{StaticResource FinalRadialCenter}" Duration="0:0:0.200" />
+                  <DoubleAnimation Storyboard.TargetName="radialTarget"
+                    Storyboard.TargetProperty="(Control.Foreground).(RadialGradientBrush.RadiusX)"
+                    To="1.2" Duration="0:0:0.200" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="KeyFrames">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="2" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <PointAnimationUsingKeyFrames Storyboard.TargetName="linearTarget"
+                    Storyboard.TargetProperty="(Control.Foreground).(LinearGradientBrush.EndPoint)"
+                    Duration="0:0:0.200">
+                    <LinearPointKeyFrame KeyTime="0:0:0.100" Value="0.7,0.6" />
+                    <SplinePointKeyFrame KeyTime="0:0:0.200" Value="0.5,0.4"
+                                         KeySpline="0,0 1,1" />
+                  </PointAnimationUsingKeyFrames>
+                  <PointAnimationUsingKeyFrames Storyboard.TargetName="radialTarget"
+                    Storyboard.TargetProperty="(Control.Foreground).(RadialGradientBrush.GradientOrigin)"
+                    Duration="0:0:0.200">
+                    <EasingPointKeyFrame KeyTime="0:0:0.100" Value="0.4,0.6">
+                      <EasingPointKeyFrame.EasingFunction>
+                        <QuadraticEase EasingMode="EaseIn" />
+                      </EasingPointKeyFrame.EasingFunction>
+                    </EasingPointKeyFrame>
+                    <DiscretePointKeyFrame KeyTime="0:0:0.200" Value="0.5,0.5" />
+                  </PointAnimationUsingKeyFrames>
+                  <DoubleAnimationUsingKeyFrames Storyboard.TargetName="radialTarget"
+                    Storyboard.TargetProperty="(Control.Foreground).(RadialGradientBrush.RadiusY)"
+                    Duration="0:0:0.200">
+                    <LinearDoubleKeyFrame KeyTime="0:0:0.100" Value="0.8" />
+                    <DiscreteDoubleKeyFrame KeyTime="0:0:0.200" Value="1" />
+                  </DoubleAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Explicit">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="3" /></VisualState.StateTriggers>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </StackPanel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:BrushPropertyCard x:Name="card" />
+</Form>)XAML";
+
+		std::wstring error;
+		DesignerModel::DesignDocument document;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("Brush property XAML parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		const auto& component = document.Components.front();
+		CUI_EXPECT_EQ(4ULL, component.VisualStateGroups.front().States.size());
+		const auto& animate = component.VisualStateGroups.front().States[1];
+		CUI_EXPECT_EQ(6ULL, animate.Animations.size());
+		CUI_EXPECT_EQ(std::wstring(
+			L"(Control.Foreground).(SolidColorBrush.Color)"),
+			animate.Animations[0].PropertyName);
+		CUI_EXPECT_EQ(std::wstring(L"(Control.Foreground).(Brush.Opacity)"),
+			animate.Animations[1].PropertyName);
+		CUI_EXPECT_EQ(std::wstring(
+			L"(Control.Foreground).(LinearGradientBrush.StartPoint)"),
+			animate.Animations[2].PropertyName);
+		const auto& keyFrames = component.VisualStateGroups.front().States[2];
+		CUI_EXPECT_EQ(3ULL, keyFrames.Animations.size());
+		CUI_EXPECT_EQ(2ULL, keyFrames.Animations[0].KeyFrames.size());
+		CUI_EXPECT_EQ(2ULL, keyFrames.Animations[1].KeyFrames.size());
+
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto expected : {
+			"Storyboard.TargetProperty=\"(Control.Foreground).(SolidColorBrush.Color)\"",
+			"Storyboard.TargetProperty=\"(Control.Foreground).(Brush.Opacity)\"",
+			"Storyboard.TargetProperty=\"(Control.Foreground).(LinearGradientBrush.StartPoint)\"",
+			"Storyboard.TargetProperty=\"(Control.Foreground).(RadialGradientBrush.Center)\"",
+			"Storyboard.TargetProperty=\"(Control.Foreground).(RadialGradientBrush.GradientOrigin)\"",
+			"Storyboard.TargetProperty=\"(Control.Foreground).(RadialGradientBrush.RadiusX)\"" })
+			CUI_EXPECT_TRUE(canonical.find(expected) != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("UIElement.Foreground") == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("SolidColorBrush.Opacity") == std::string::npos);
+		DesignerModel::DesignDocument canonicalRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, canonicalRoundTrip, &error));
+		CUI_EXPECT_EQ(document, canonicalRoundTrip);
+
+		const auto snapshot = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		if (!DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error))
+			throw std::runtime_error("Brush property snapshot parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+
+		DesignerModel::RuntimeDocument runtime;
+		if (!DesignerModel::RuntimeDocumentLoader::Load(document, runtime, {}, &error))
+			throw std::runtime_error("Brush property runtime load failed: "
+				+ Convert::WStringToString(error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto findPart = [&](const wchar_t* name)
+		{
+			return card ? card->FindDeclarativeTemplatePart(name) : nullptr;
+		};
+		auto* solid = findPart(L"solidTarget");
+		auto* linear = findPart(L"linearTarget");
+		auto* radial = findPart(L"radialTarget");
+		if (!card || !solid || !linear || !radial)
+			throw std::runtime_error("Brush property runtime controls are missing");
+		auto readBrush = [](Control* target) -> const cui::drawing::Brush&
+		{
+			CUI_EXPECT_TRUE(target && target->GetForegroundBrush().has_value());
+			return *target->GetForegroundBrush();
+		};
+		auto go = [&](const wchar_t* state, bool transitions = false)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"BrushPropertyStates", state, transitions, &error));
+			return ::GetTickCount64();
+		};
+
+		auto tick = go(L"Animate");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(0.5f, readBrush(solid).Color.r, 0.03f);
+		CUI_EXPECT_NEAR(0.5f, readBrush(solid).Color.g, 0.03f);
+		CUI_EXPECT_NEAR(0.65f, readBrush(solid).Opacity, 0.03f);
+		CUI_EXPECT_NEAR(0.2f, readBrush(linear).StartPoint.x, 0.03f);
+		CUI_EXPECT_NEAR(0.3f, readBrush(linear).StartPoint.y, 0.03f);
+		CUI_EXPECT_NEAR(0.125f, readBrush(linear).GradientStops[0].Offset, 0.03f);
+		CUI_EXPECT_NEAR(4.0f,
+			readBrush(linear).Transform->Operations[0].X, 0.001f);
+		CUI_EXPECT_NEAR(0.5f, readBrush(radial).Center.x, 0.03f);
+		CUI_EXPECT_NEAR(0.65f, readBrush(radial).Center.y, 0.03f);
+		CUI_EXPECT_NEAR(1.0f, readBrush(radial).RadiusX, 0.03f);
+		CUI_EXPECT_NEAR(0.3f, readBrush(radial).GradientOrigin.x, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_NEAR(1.0f, readBrush(solid).Color.g, 0.001f);
+		CUI_EXPECT_NEAR(0.4f, readBrush(solid).Opacity, 0.001f);
+		CUI_EXPECT_NEAR(0.3f, readBrush(linear).StartPoint.x, 0.001f);
+		CUI_EXPECT_NEAR(0.25f, readBrush(linear).GradientStops[0].Offset, 0.001f);
+		CUI_EXPECT_NEAR(0.6f, readBrush(radial).Center.x, 0.001f);
+		CUI_EXPECT_NEAR(1.2f, readBrush(radial).RadiusX, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"KeyFrames");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(0.7f, readBrush(linear).EndPoint.x, 0.03f);
+		CUI_EXPECT_NEAR(0.4f, readBrush(radial).GradientOrigin.x, 0.03f);
+		CUI_EXPECT_NEAR(0.8f, readBrush(radial).RadiusY, 0.03f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_NEAR(0.5f, readBrush(linear).EndPoint.x, 0.001f);
+		CUI_EXPECT_NEAR(0.5f, readBrush(radial).GradientOrigin.x, 0.001f);
+		CUI_EXPECT_NEAR(1.0f, readBrush(radial).RadiusY, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"Explicit", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_NEAR(0.5f, readBrush(solid).Color.r, 0.03f);
+		CUI_EXPECT_NEAR(0.5f, readBrush(solid).Color.b, 0.03f);
+		CUI_EXPECT_NEAR(0.8f, readBrush(linear).EndPoint.x, 0.03f);
+		CUI_EXPECT_NEAR(0.8f, readBrush(radial).RadiusY, 0.03f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(1.0f, readBrush(solid).Color.r, 0.001f);
+		CUI_EXPECT_NEAR(0.9f, readBrush(linear).EndPoint.x, 0.001f);
+		CUI_EXPECT_NEAR(0.6f, readBrush(radial).RadiusY, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"Animate", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		const auto generatedSolid = readBrush(solid);
+		CUI_EXPECT_TRUE(generatedSolid.Color.r > 0.0f
+			&& generatedSolid.Color.r < 1.0f);
+		CUI_EXPECT_TRUE(generatedSolid.Color.g > 0.0f
+			&& generatedSolid.Color.g < 1.0f);
+		CUI_EXPECT_TRUE(generatedSolid.Opacity > 0.4f
+			&& generatedSolid.Opacity < 0.9f);
+		CUI_EXPECT_TRUE(readBrush(linear).StartPoint.x > 0.1f
+			&& readBrush(linear).StartPoint.x < 0.3f);
+		CUI_EXPECT_TRUE(readBrush(radial).RadiusX > 0.8f
+			&& readBrush(radial).RadiusX < 1.2f);
+
+		auto reloadedXaml = xaml;
+		const auto opacityAt = reloadedXaml.find(">0.4</Double>");
+		CUI_EXPECT_TRUE(opacityAt != std::string::npos);
+		if (opacityAt != std::string::npos)
+			reloadedXaml.replace(opacityAt, std::string(">0.4</Double>").size(),
+				">0.2</Double>");
+		DesignerModel::DesignDocument reloadedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			reloadedXaml, reloadedDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloadedDocument, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		solid = findPart(L"solidTarget");
+		linear = findPart(L"linearTarget");
+		radial = findPart(L"radialTarget");
+		CUI_EXPECT_TRUE(card && solid && linear && radial);
+		if (card && solid)
+		{
+			tick = go(L"Animate");
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+			CUI_EXPECT_NEAR(0.2f, readBrush(solid).Opacity, 0.001f);
+		}
+
+		auto invalidXaml = canonical;
+		auto invalidAt = invalidXaml.find("(LinearGradientBrush.StartPoint)");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("(LinearGradientBrush.StartPoint)").size(),
+				"(RadialGradientBrush.StartPoint)");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = xaml;
+		invalidAt = invalidXaml.find(">0.4</Double>");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt, std::string(">0.4</Double>").size(),
+				">1.4</Double>");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = xaml;
+		invalidAt = invalidXaml.find("To=\"1.2\"");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt, std::string("To=\"1.2\"").size(),
+				"To=\"-1\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidSnapshot = snapshot;
+		invalidAt = invalidSnapshot.find("RadialGradientBrush.RadiusX");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidSnapshot.replace(invalidAt,
+				std::string("RadialGradientBrush.RadiusX").size(),
+				"RadialGradientBrush.BogusXX");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		Panel missingBrush;
+		DeclarativeVisualStateAnimation invalidAnimation;
+		invalidAnimation.Kind = DeclarativeAnimationKind::Double;
+		invalidAnimation.PropertyName =
+			L"(Control.Foreground).(Brush.Opacity)";
+		invalidAnimation.To = BindingValue(0.5f);
+		invalidAnimation.DurationMilliseconds = 100;
+		DeclarativeVisualStateDefinition invalidState;
+		invalidState.Name = L"Invalid";
+		invalidState.Animations.push_back(std::move(invalidAnimation));
+		DeclarativeVisualStateGroupDefinition invalidGroup;
+		invalidGroup.Name = L"BrushPropertyStates";
+		invalidGroup.States.push_back(std::move(invalidState));
+		CUI_EXPECT_FALSE(missingBrush.DefineVisualStateGroups(
+			{ std::move(invalidGroup) }, &error));
+
+		Panel invalidOpacityTarget;
+		cui::drawing::Brush solidBrush;
+		solidBrush.Kind = cui::drawing::BrushKind::Solid;
+		solidBrush.Color = D2D1::ColorF(D2D1::ColorF::Red);
+		solidBrush.Opacity = 0.8f;
+		invalidOpacityTarget.SetForegroundBrush(solidBrush);
+		DeclarativeVisualStateAnimation invalidOpacity;
+		invalidOpacity.Kind = DeclarativeAnimationKind::Double;
+		invalidOpacity.PropertyName =
+			L"(Control.Foreground).(Brush.Opacity)";
+		invalidOpacity.To = BindingValue(1.5f);
+		invalidOpacity.DurationMilliseconds = 100;
+		DeclarativeVisualStateDefinition invalidOpacityState;
+		invalidOpacityState.Name = L"Invalid";
+		invalidOpacityState.Animations.push_back(std::move(invalidOpacity));
+		DeclarativeVisualStateGroupDefinition invalidOpacityGroup;
+		invalidOpacityGroup.Name = L"BrushPropertyStates";
+		invalidOpacityGroup.States.push_back(std::move(invalidOpacityState));
+		CUI_EXPECT_FALSE(invalidOpacityTarget.DefineVisualStateGroups(
+			{ std::move(invalidOpacityGroup) }, &error));
+	});
+
+	runner.Add("Rectangle and Ellipse public geometry members animate through object paths", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:geometry-properties" x:Name="GeometryPropertiesForm">
+  <Form.Resources>
+    <Double x:Key="FinalRectRadius">10</Double>
+    <Point x:Key="FinalEllipseCenter">30,40</Point>
+    <Double x:Key="FinalEllipseRadius">24</Double>
+    <ComponentDefinition x:Key="local:GeometryPropertyCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Phase" Type="Int" Default="0" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <StackPanel x:Name="root">
+          <Panel x:Name="rectangleTarget">
+            <Control.Clip>
+              <RectangleGeometry Rect="0,0,100,60" RadiusX="4" RadiusY="6">
+                <Geometry.Transform><TransformGroup>
+                  <TranslateTransform X="2" Y="3" />
+                </TransformGroup></Geometry.Transform>
+              </RectangleGeometry>
+            </Control.Clip>
+          </Panel>
+          <Panel x:Name="ellipseTarget">
+            <Control.Clip>
+              <EllipseGeometry Center="20,20" RadiusX="10" RadiusY="12">
+                <Geometry.Transform><TransformGroup>
+                  <RotateTransform Angle="5" CenterX="20" CenterY="20" />
+                </TransformGroup></Geometry.Transform>
+              </EllipseGeometry>
+            </Control.Clip>
+          </Panel>
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="GeometryPropertyStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="Animate"
+                                  GeneratedDuration="0:0:0.100" />
+                <VisualTransition From="Idle" To="Explicit">
+                  <VisualTransition.Storyboard><Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="rectangleTarget"
+                      Storyboard.TargetProperty="(Control.Clip).(RectangleGeometry.RadiusY)"
+                      From="6" To="14" Duration="0:0:0.100" />
+                    <PointAnimation Storyboard.TargetName="ellipseTarget"
+                      Storyboard.TargetProperty="(Control.Clip).(EllipseGeometry.Center)"
+                      From="20,20" To="24,26" Duration="0:0:0.100" />
+                    <DoubleAnimation Storyboard.TargetName="ellipseTarget"
+                      Storyboard.TargetProperty="(Control.Clip).(EllipseGeometry.RadiusX)"
+                      From="10" To="18" Duration="0:0:0.100" />
+                  </Storyboard></VisualTransition.Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="Animate">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="1" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="rectangleTarget"
+                    Storyboard.TargetProperty="(UIElement.Clip).(RectangleGeometry.RadiusX)"
+                    To="{StaticResource FinalRectRadius}" Duration="0:0:0.200" />
+                  <PointAnimation Storyboard.TargetName="ellipseTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(EllipseGeometry.Center)"
+                    To="{StaticResource FinalEllipseCenter}" Duration="0:0:0.200" />
+                  <DoubleAnimation Storyboard.TargetName="ellipseTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(EllipseGeometry.RadiusY)"
+                    To="{StaticResource FinalEllipseRadius}" Duration="0:0:0.200" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="KeyFrames">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="2" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimationUsingKeyFrames Storyboard.TargetName="rectangleTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(RectangleGeometry.RadiusY)"
+                    Duration="0:0:0.200">
+                    <LinearDoubleKeyFrame KeyTime="0:0:0.100" Value="9" />
+                    <DiscreteDoubleKeyFrame KeyTime="0:0:0.200" Value="12" />
+                  </DoubleAnimationUsingKeyFrames>
+                  <PointAnimationUsingKeyFrames Storyboard.TargetName="ellipseTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(EllipseGeometry.Center)"
+                    Duration="0:0:0.200">
+                    <EasingPointKeyFrame KeyTime="0:0:0.100" Value="25,30">
+                      <EasingPointKeyFrame.EasingFunction>
+                        <QuadraticEase EasingMode="EaseIn" />
+                      </EasingPointKeyFrame.EasingFunction>
+                    </EasingPointKeyFrame>
+                    <SplinePointKeyFrame KeyTime="0:0:0.200" Value="35,45"
+                                         KeySpline="0,0 1,1" />
+                  </PointAnimationUsingKeyFrames>
+                  <DoubleAnimationUsingKeyFrames Storyboard.TargetName="ellipseTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(EllipseGeometry.RadiusX)"
+                    Duration="0:0:0.200">
+                    <LinearDoubleKeyFrame KeyTime="0:0:0.100" Value="15" />
+                    <DiscreteDoubleKeyFrame KeyTime="0:0:0.200" Value="20" />
+                  </DoubleAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Explicit">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="3" /></VisualState.StateTriggers>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </StackPanel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:GeometryPropertyCard x:Name="card" />
+</Form>)XAML";
+
+		std::wstring error;
+		DesignerModel::DesignDocument document;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("Geometry property XAML parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		const auto& group = document.Components.front().VisualStateGroups.front();
+		CUI_EXPECT_EQ(4ULL, group.States.size());
+		CUI_EXPECT_EQ(2ULL, group.Transitions.size());
+		const auto& animate = group.States[1];
+		CUI_EXPECT_EQ(3ULL, animate.Animations.size());
+		CUI_EXPECT_EQ(std::wstring(
+			L"(Control.Clip).(RectangleGeometry.RadiusX)"),
+			animate.Animations[0].PropertyName);
+		CUI_EXPECT_EQ(std::wstring(
+			L"(Control.Clip).(EllipseGeometry.Center)"),
+			animate.Animations[1].PropertyName);
+		CUI_EXPECT_EQ(DesignerAnimationKind::Point,
+			animate.Animations[1].Kind);
+
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto expected : {
+			"Storyboard.TargetProperty=\"(Control.Clip).(RectangleGeometry.RadiusX)\"",
+			"Storyboard.TargetProperty=\"(Control.Clip).(RectangleGeometry.RadiusY)\"",
+			"Storyboard.TargetProperty=\"(Control.Clip).(EllipseGeometry.Center)\"",
+			"Storyboard.TargetProperty=\"(Control.Clip).(EllipseGeometry.RadiusX)\"",
+			"Storyboard.TargetProperty=\"(Control.Clip).(EllipseGeometry.RadiusY)\"" })
+			CUI_EXPECT_TRUE(canonical.find(expected) != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("UIElement.Clip") == std::string::npos);
+		DesignerModel::DesignDocument canonicalRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, canonicalRoundTrip, &error));
+		CUI_EXPECT_EQ(document, canonicalRoundTrip);
+
+		const auto snapshot = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		if (!DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error))
+			throw std::runtime_error("Geometry property snapshot parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+
+		DesignerModel::RuntimeDocument runtime;
+		if (!DesignerModel::RuntimeDocumentLoader::Load(document, runtime, {}, &error))
+			throw std::runtime_error("Geometry property runtime load failed: "
+				+ Convert::WStringToString(error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto findPart = [&](const wchar_t* name)
+		{
+			return card ? card->FindDeclarativeTemplatePart(name) : nullptr;
+		};
+		auto* rectangle = findPart(L"rectangleTarget");
+		auto* ellipse = findPart(L"ellipseTarget");
+		if (!card || !rectangle || !ellipse)
+			throw std::runtime_error("Geometry property runtime controls are missing");
+		auto readClip = [](Control* target) -> const cui::drawing::Geometry&
+		{
+			CUI_EXPECT_TRUE(target && target->GetClip().has_value());
+			return *target->GetClip();
+		};
+		auto go = [&](const wchar_t* state, bool transitions = false)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"GeometryPropertyStates", state, transitions, &error));
+			return ::GetTickCount64();
+		};
+		auto expectTransformsPreserved = [&]()
+		{
+			const auto& rectClip = readClip(rectangle);
+			const auto& ellipseClip = readClip(ellipse);
+			CUI_EXPECT_TRUE(rectClip.LocalTransform.has_value());
+			CUI_EXPECT_TRUE(ellipseClip.LocalTransform.has_value());
+			if (rectClip.LocalTransform)
+				CUI_EXPECT_NEAR(2.0f,
+					rectClip.LocalTransform->Operations.front().X, 0.001f);
+			if (ellipseClip.LocalTransform)
+				CUI_EXPECT_NEAR(5.0f,
+					ellipseClip.LocalTransform->Operations.front().Angle, 0.001f);
+		};
+
+		auto tick = go(L"Animate");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(7.0f, readClip(rectangle).RadiusX, 0.05f);
+		CUI_EXPECT_NEAR(25.0f, readClip(ellipse).Center.x, 0.05f);
+		CUI_EXPECT_NEAR(30.0f, readClip(ellipse).Center.y, 0.05f);
+		CUI_EXPECT_NEAR(18.0f, readClip(ellipse).RadiusY, 0.05f);
+		expectTransformsPreserved();
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_NEAR(10.0f, readClip(rectangle).RadiusX, 0.001f);
+		CUI_EXPECT_NEAR(30.0f, readClip(ellipse).Center.x, 0.001f);
+		CUI_EXPECT_NEAR(40.0f, readClip(ellipse).Center.y, 0.001f);
+		CUI_EXPECT_NEAR(24.0f, readClip(ellipse).RadiusY, 0.001f);
+		CUI_EXPECT_NEAR(6.0f, readClip(rectangle).RadiusY, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"KeyFrames");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(9.0f, readClip(rectangle).RadiusY, 0.05f);
+		CUI_EXPECT_NEAR(25.0f, readClip(ellipse).Center.x, 0.05f);
+		CUI_EXPECT_NEAR(30.0f, readClip(ellipse).Center.y, 0.05f);
+		CUI_EXPECT_NEAR(15.0f, readClip(ellipse).RadiusX, 0.05f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_NEAR(12.0f, readClip(rectangle).RadiusY, 0.001f);
+		CUI_EXPECT_NEAR(35.0f, readClip(ellipse).Center.x, 0.001f);
+		CUI_EXPECT_NEAR(45.0f, readClip(ellipse).Center.y, 0.001f);
+		CUI_EXPECT_NEAR(20.0f, readClip(ellipse).RadiusX, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"Animate", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_TRUE(readClip(rectangle).RadiusX > 4.0f
+			&& readClip(rectangle).RadiusX < 10.0f);
+		CUI_EXPECT_TRUE(readClip(ellipse).Center.x > 20.0f
+			&& readClip(ellipse).Center.x < 30.0f);
+		CUI_EXPECT_TRUE(readClip(ellipse).RadiusY > 12.0f
+			&& readClip(ellipse).RadiusY < 24.0f);
+
+		(void)go(L"Idle");
+		tick = go(L"Explicit", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_NEAR(10.0f, readClip(rectangle).RadiusY, 0.08f);
+		CUI_EXPECT_NEAR(22.0f, readClip(ellipse).Center.x, 0.08f);
+		CUI_EXPECT_NEAR(23.0f, readClip(ellipse).Center.y, 0.08f);
+		CUI_EXPECT_NEAR(14.0f, readClip(ellipse).RadiusX, 0.08f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(6.0f, readClip(rectangle).RadiusY, 0.001f);
+		CUI_EXPECT_NEAR(20.0f, readClip(ellipse).Center.x, 0.001f);
+		CUI_EXPECT_NEAR(10.0f, readClip(ellipse).RadiusX, 0.001f);
+
+		auto reloadedXaml = xaml;
+		const auto resourceAt = reloadedXaml.find(">10</Double>");
+		CUI_EXPECT_TRUE(resourceAt != std::string::npos);
+		if (resourceAt != std::string::npos)
+			reloadedXaml.replace(resourceAt, std::string(">10</Double>").size(),
+				">16</Double>");
+		DesignerModel::DesignDocument reloadedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			reloadedXaml, reloadedDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloadedDocument, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		rectangle = findPart(L"rectangleTarget");
+		ellipse = findPart(L"ellipseTarget");
+		CUI_EXPECT_TRUE(card && rectangle && ellipse);
+		if (card && rectangle)
+		{
+			tick = go(L"Animate");
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+			CUI_EXPECT_NEAR(16.0f, readClip(rectangle).RadiusX, 0.001f);
+		}
+
+		auto invalidXaml = canonical;
+		auto invalidAt = invalidXaml.find("(RectangleGeometry.RadiusX)");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("(RectangleGeometry.RadiusX)").size(),
+				"(EllipseGeometry.RadiusX)");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = xaml;
+		invalidAt = invalidXaml.find(">10</Double>");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt, std::string(">10</Double>").size(),
+				">-1</Double>");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidSnapshot = snapshot;
+		invalidAt = invalidSnapshot.find("EllipseGeometry.Center");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidSnapshot.replace(invalidAt,
+				std::string("EllipseGeometry.Center").size(),
+				"EllipseGeometry.BogusX");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		Panel missingClip;
+		DeclarativeVisualStateAnimation invalidAnimation;
+		invalidAnimation.Kind = DeclarativeAnimationKind::Double;
+		invalidAnimation.PropertyName =
+			L"(Control.Clip).(EllipseGeometry.RadiusX)";
+		invalidAnimation.To = BindingValue(20.0f);
+		invalidAnimation.DurationMilliseconds = 100;
+		DeclarativeVisualStateDefinition invalidState;
+		invalidState.Name = L"Invalid";
+		invalidState.Animations.push_back(std::move(invalidAnimation));
+		DeclarativeVisualStateGroupDefinition invalidGroup;
+		invalidGroup.Name = L"GeometryPropertyStates";
+		invalidGroup.States.push_back(std::move(invalidState));
+		CUI_EXPECT_FALSE(missingClip.DefineVisualStateGroups(
+			{ std::move(invalidGroup) }, &error));
+
+		Panel invalidRadiusTarget;
+		cui::drawing::Geometry ellipseClip;
+		ellipseClip.Kind = cui::drawing::GeometryKind::Ellipse;
+		ellipseClip.Center = D2D1::Point2F(20.0f, 20.0f);
+		ellipseClip.RadiusX = 10.0f;
+		ellipseClip.RadiusY = 12.0f;
+		invalidRadiusTarget.SetClip(ellipseClip);
+		DeclarativeVisualStateAnimation negativeRadius;
+		negativeRadius.Kind = DeclarativeAnimationKind::Double;
+		negativeRadius.PropertyName =
+			L"(Control.Clip).(EllipseGeometry.RadiusX)";
+		negativeRadius.To = BindingValue(-1.0f);
+		negativeRadius.DurationMilliseconds = 100;
+		DeclarativeVisualStateDefinition negativeState;
+		negativeState.Name = L"Invalid";
+		negativeState.Animations.push_back(std::move(negativeRadius));
+		DeclarativeVisualStateGroupDefinition negativeGroup;
+		negativeGroup.Name = L"GeometryPropertyStates";
+		negativeGroup.States.push_back(std::move(negativeState));
+		CUI_EXPECT_FALSE(invalidRadiusTarget.DefineVisualStateGroups(
+			{ std::move(negativeGroup) }, &error));
+	});
+
+	runner.Add("PathFigure and PathSegment members animate through indexed object paths", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:path-members" x:Name="PathMembersForm">
+  <Form.Resources>
+    <Point x:Key="FinalPathStart">5,6</Point>
+    <Size x:Key="FinalArcSize">18,12</Size>
+    <ComponentDefinition x:Key="local:PathMemberCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Phase" Type="Int" Default="0" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Panel x:Name="root">
+          <Panel x:Name="pathTarget">
+            <Control.Clip>
+              <PathGeometry FillRule="Nonzero">
+                <Geometry.Transform><TransformGroup>
+                  <TranslateTransform X="2" Y="3" />
+                </TransformGroup></Geometry.Transform>
+                <PathFigure StartPoint="0,0" IsClosed="false" IsFilled="true">
+                  <LineSegment Point="10,0" />
+                  <BezierSegment Point1="15,0" Point2="20,5" Point3="25,10" />
+                  <QuadraticBezierSegment Point1="30,15" Point2="35,20" />
+                  <ArcSegment Point="50,20" Size="10,8" RotationAngle="5"
+                              IsLargeArc="false" SweepDirection="Counterclockwise" />
+                </PathFigure>
+              </PathGeometry>
+            </Control.Clip>
+          </Panel>
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="PathMemberStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="Animate"
+                                  GeneratedDuration="0:0:0.100" />
+                <VisualTransition From="Idle" To="Explicit">
+                  <VisualTransition.Storyboard><Storyboard>
+                    <PointAnimation Storyboard.TargetName="pathTarget"
+                      Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[0].(LineSegment.Point)"
+                      From="10,0" To="30,20" Duration="0:0:0.100" />
+                    <SizeAnimation Storyboard.TargetName="pathTarget"
+                      Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[3].(ArcSegment.Size)"
+                      From="10,8" To="20,16" Duration="0:0:0.100" />
+                    <DoubleAnimation Storyboard.TargetName="pathTarget"
+                      Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[3].(ArcSegment.RotationAngle)"
+                      From="5" To="25" Duration="0:0:0.100" />
+                  </Storyboard></VisualTransition.Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="Animate">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="1" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <PointAnimation Storyboard.TargetName="pathTarget"
+                    Storyboard.TargetProperty="(UIElement.Clip).(PathGeometry.Figures)[0].(PathFigure.StartPoint)"
+                    To="{StaticResource FinalPathStart}" Duration="0:0:0.200" />
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="pathTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.IsClosed)"
+                    Duration="0:0:0.200">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0.100" Value="true" />
+                  </ObjectAnimationUsingKeyFrames>
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="pathTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.IsFilled)"
+                    Duration="0:0:0.200">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0.100" Value="false" />
+                  </ObjectAnimationUsingKeyFrames>
+                  <PointAnimation Storyboard.TargetName="pathTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[0].(LineSegment.Point)"
+                    To="20,10" Duration="0:0:0.200" />
+                  <PointAnimation Storyboard.TargetName="pathTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[1].(BezierSegment.Point2)"
+                    To="35,15" Duration="0:0:0.200" />
+                  <PointAnimation Storyboard.TargetName="pathTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[2].(QuadraticBezierSegment.Point1)"
+                    To="50,15" Duration="0:0:0.200" />
+                  <PointAnimation Storyboard.TargetName="pathTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[3].(ArcSegment.Point)"
+                    To="80,30" Duration="0:0:0.200" />
+                  <SizeAnimation Storyboard.TargetName="pathTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[3].(ArcSegment.Size)"
+                    To="{StaticResource FinalArcSize}" Duration="0:0:0.200" />
+                  <DoubleAnimation Storyboard.TargetName="pathTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[3].(ArcSegment.RotationAngle)"
+                    To="45" Duration="0:0:0.200" />
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="pathTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[3].(ArcSegment.IsLargeArc)"
+                    Duration="0:0:0.200">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0.100" Value="true" />
+                  </ObjectAnimationUsingKeyFrames>
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="pathTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[3].(ArcSegment.SweepDirection)"
+                    Duration="0:0:0.200">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0.100" Value="Clockwise" />
+                  </ObjectAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="KeyFrames">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="2" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <PointAnimationUsingKeyFrames Storyboard.TargetName="pathTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.StartPoint)"
+                    Duration="0:0:0.200">
+                    <LinearPointKeyFrame KeyTime="0:0:0.100" Value="2,3" />
+                    <SplinePointKeyFrame KeyTime="0:0:0.200" Value="4,6"
+                                         KeySpline="0,0 1,1" />
+                  </PointAnimationUsingKeyFrames>
+                  <SizeAnimationUsingKeyFrames Storyboard.TargetName="pathTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[3].(ArcSegment.Size)"
+                    Duration="0:0:0.200">
+                    <EasingSizeKeyFrame KeyTime="0:0:0.100" Value="14,10">
+                      <EasingSizeKeyFrame.EasingFunction>
+                        <QuadraticEase EasingMode="EaseIn" />
+                      </EasingSizeKeyFrame.EasingFunction>
+                    </EasingSizeKeyFrame>
+                    <DiscreteSizeKeyFrame KeyTime="0:0:0.200" Value="18,12" />
+                  </SizeAnimationUsingKeyFrames>
+                  <DoubleAnimationUsingKeyFrames Storyboard.TargetName="pathTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.Segments)[3].(ArcSegment.RotationAngle)"
+                    Duration="0:0:0.200">
+                    <LinearDoubleKeyFrame KeyTime="0:0:0.100" Value="25" />
+                    <DiscreteDoubleKeyFrame KeyTime="0:0:0.200" Value="45" />
+                  </DoubleAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Explicit">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="3" /></VisualState.StateTriggers>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </Panel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:PathMemberCard x:Name="card" />
+</Form>)XAML";
+
+		std::wstring error;
+		DesignerModel::DesignDocument document;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("Path member XAML parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		const auto& group = document.Components.front().VisualStateGroups.front();
+		CUI_EXPECT_EQ(4ULL, group.States.size());
+		CUI_EXPECT_EQ(11ULL, group.States[1].Animations.size());
+		CUI_EXPECT_EQ(std::wstring(
+			L"(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.StartPoint)"),
+			group.States[1].Animations[0].PropertyName);
+		CUI_EXPECT_EQ(DesignerAnimationKind::Object,
+			group.States[1].Animations[1].Kind);
+		CUI_EXPECT_EQ(DesignerAnimationKind::Size,
+			group.States[1].Animations[7].Kind);
+
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto expected : {
+			"(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.StartPoint)",
+			"(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.IsClosed)",
+			"(PathFigure.Segments)[0].(LineSegment.Point)",
+			"(PathFigure.Segments)[1].(BezierSegment.Point2)",
+			"(PathFigure.Segments)[2].(QuadraticBezierSegment.Point1)",
+			"(PathFigure.Segments)[3].(ArcSegment.Point)",
+			"(PathFigure.Segments)[3].(ArcSegment.Size)",
+			"(PathFigure.Segments)[3].(ArcSegment.RotationAngle)",
+			"(PathFigure.Segments)[3].(ArcSegment.IsLargeArc)",
+			"(PathFigure.Segments)[3].(ArcSegment.SweepDirection)" })
+			CUI_EXPECT_TRUE(canonical.find(expected) != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("UIElement.Clip") == std::string::npos);
+		DesignerModel::DesignDocument canonicalRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, canonicalRoundTrip, &error));
+		CUI_EXPECT_EQ(document, canonicalRoundTrip);
+
+		const auto snapshot = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		if (!DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error))
+			throw std::runtime_error("Path member snapshot parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+
+		DesignerModel::RuntimeDocument runtime;
+		if (!DesignerModel::RuntimeDocumentLoader::Load(document, runtime, {}, &error))
+			throw std::runtime_error("Path member runtime load failed: "
+				+ Convert::WStringToString(error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* target = card
+			? card->FindDeclarativeTemplatePart(L"pathTarget") : nullptr;
+		if (!card || !target)
+			throw std::runtime_error("Path member runtime controls are missing");
+		auto readPath = [&]() -> const cui::drawing::Geometry&
+		{
+			CUI_EXPECT_TRUE(target->GetClip().has_value());
+			return *target->GetClip();
+		};
+		auto figure = [&]() -> const cui::drawing::PathFigure&
+		{
+			CUI_EXPECT_EQ(cui::drawing::GeometryKind::Path, readPath().Kind);
+			CUI_EXPECT_EQ(1ULL, readPath().Figures.size());
+			return readPath().Figures.front();
+		};
+		auto go = [&](const wchar_t* state, bool transitions = false)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"PathMemberStates", state, transitions, &error));
+			return ::GetTickCount64();
+		};
+		auto expectUntouched = [&]()
+		{
+			CUI_EXPECT_EQ(cui::drawing::GeometryFillRule::Nonzero,
+				readPath().FillRule);
+			CUI_EXPECT_TRUE(readPath().LocalTransform.has_value());
+			if (readPath().LocalTransform)
+				CUI_EXPECT_NEAR(2.0f,
+					readPath().LocalTransform->Operations.front().X, 0.001f);
+			CUI_EXPECT_NEAR(15.0f, figure().Segments[1].Point1.x, 0.001f);
+			CUI_EXPECT_NEAR(25.0f, figure().Segments[1].Point3.x, 0.001f);
+			CUI_EXPECT_NEAR(35.0f, figure().Segments[2].Point2.x, 0.001f);
+		};
+
+		auto tick = go(L"Animate");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(2.5f, figure().StartPoint.x, 0.08f);
+		CUI_EXPECT_NEAR(3.0f, figure().StartPoint.y, 0.08f);
+		CUI_EXPECT_NEAR(15.0f, figure().Segments[0].Point.x, 0.08f);
+		CUI_EXPECT_NEAR(27.5f, figure().Segments[1].Point2.x, 0.08f);
+		CUI_EXPECT_NEAR(40.0f, figure().Segments[2].Point1.x, 0.08f);
+		CUI_EXPECT_NEAR(65.0f, figure().Segments[3].Point.x, 0.08f);
+		CUI_EXPECT_NEAR(14.0f, figure().Segments[3].Size.width, 0.08f);
+		CUI_EXPECT_NEAR(25.0f, figure().Segments[3].RotationAngle, 0.08f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_NEAR(5.0f, figure().StartPoint.x, 0.001f);
+		CUI_EXPECT_TRUE(figure().IsClosed);
+		CUI_EXPECT_FALSE(figure().IsFilled);
+		CUI_EXPECT_NEAR(20.0f, figure().Segments[0].Point.x, 0.001f);
+		CUI_EXPECT_NEAR(35.0f, figure().Segments[1].Point2.x, 0.001f);
+		CUI_EXPECT_NEAR(50.0f, figure().Segments[2].Point1.x, 0.001f);
+		CUI_EXPECT_NEAR(80.0f, figure().Segments[3].Point.x, 0.001f);
+		CUI_EXPECT_NEAR(18.0f, figure().Segments[3].Size.width, 0.001f);
+		CUI_EXPECT_NEAR(45.0f, figure().Segments[3].RotationAngle, 0.001f);
+		CUI_EXPECT_TRUE(figure().Segments[3].IsLargeArc);
+		CUI_EXPECT_EQ(cui::drawing::SweepDirection::Clockwise,
+			figure().Segments[3].Sweep);
+		expectUntouched();
+
+		(void)go(L"Idle");
+		tick = go(L"KeyFrames");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(2.0f, figure().StartPoint.x, 0.08f);
+		CUI_EXPECT_NEAR(14.0f, figure().Segments[3].Size.width, 0.08f);
+		CUI_EXPECT_NEAR(25.0f, figure().Segments[3].RotationAngle, 0.08f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_NEAR(4.0f, figure().StartPoint.x, 0.001f);
+		CUI_EXPECT_NEAR(18.0f, figure().Segments[3].Size.width, 0.001f);
+		CUI_EXPECT_NEAR(45.0f, figure().Segments[3].RotationAngle, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"Animate", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_TRUE(figure().StartPoint.x > 0.0f
+			&& figure().StartPoint.x < 5.0f);
+		CUI_EXPECT_TRUE(figure().Segments[3].Size.width > 10.0f
+			&& figure().Segments[3].Size.width < 18.0f);
+		CUI_EXPECT_TRUE(figure().Segments[3].RotationAngle > 5.0f
+			&& figure().Segments[3].RotationAngle < 45.0f);
+		CUI_EXPECT_FALSE(figure().IsClosed);
+		CUI_EXPECT_FALSE(figure().Segments[3].IsLargeArc);
+
+		(void)go(L"Idle");
+		tick = go(L"Explicit", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_NEAR(20.0f, figure().Segments[0].Point.x, 0.1f);
+		CUI_EXPECT_NEAR(15.0f, figure().Segments[3].Size.width, 0.1f);
+		CUI_EXPECT_NEAR(15.0f, figure().Segments[3].RotationAngle, 0.1f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(10.0f, figure().Segments[0].Point.x, 0.001f);
+		CUI_EXPECT_NEAR(10.0f, figure().Segments[3].Size.width, 0.001f);
+		CUI_EXPECT_NEAR(5.0f, figure().Segments[3].RotationAngle, 0.001f);
+
+		auto reloadedXaml = xaml;
+		const auto resourceAt = reloadedXaml.find(">5,6</Point>");
+		CUI_EXPECT_TRUE(resourceAt != std::string::npos);
+		if (resourceAt != std::string::npos)
+			reloadedXaml.replace(resourceAt, std::string(">5,6</Point>").size(),
+				">8,9</Point>");
+		DesignerModel::DesignDocument reloadedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			reloadedXaml, reloadedDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloadedDocument, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		target = card ? card->FindDeclarativeTemplatePart(L"pathTarget") : nullptr;
+		CUI_EXPECT_TRUE(card && target);
+		if (card && target)
+		{
+			tick = go(L"Animate");
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+			CUI_EXPECT_NEAR(8.0f, figure().StartPoint.x, 0.001f);
+			CUI_EXPECT_NEAR(9.0f, figure().StartPoint.y, 0.001f);
+		}
+
+		auto invalidXaml = canonical;
+		auto invalidAt = invalidXaml.find("(BezierSegment.Point2)");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("(BezierSegment.Point2)").size(),
+				"(QuadraticBezierSegment.Point2)");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = canonical;
+		invalidAt = invalidXaml.find("(PathFigure.Segments)[3]");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("(PathFigure.Segments)[3]").size(),
+				"(PathFigure.Segments)[99]");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = xaml;
+		invalidAt = invalidXaml.find(">18,12</Size>");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt, std::string(">18,12</Size>").size(),
+				">-1,12</Size>");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = xaml;
+		invalidAt = invalidXaml.find("Value=\"Clockwise\"");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("Value=\"Clockwise\"").size(),
+				"Value=\"Sideways\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidSnapshot = snapshot;
+		invalidAt = invalidSnapshot.find("ArcSegment.RotationAngle");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidSnapshot.replace(invalidAt,
+				std::string("ArcSegment.RotationAngle").size(),
+				"ArcSegment.RotationBogus");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		Panel missingPath;
+		DeclarativeVisualStateAnimation invalidAnimation;
+		invalidAnimation.Kind = DeclarativeAnimationKind::Point;
+		invalidAnimation.PropertyName =
+			L"(Control.Clip).(PathGeometry.Figures)[0].(PathFigure.StartPoint)";
+		invalidAnimation.To = BindingValue(cui::core::Point{ 1.0f, 2.0f });
+		invalidAnimation.DurationMilliseconds = 100;
+		DeclarativeVisualStateDefinition invalidState;
+		invalidState.Name = L"Invalid";
+		invalidState.Animations.push_back(std::move(invalidAnimation));
+		DeclarativeVisualStateGroupDefinition invalidGroup;
+		invalidGroup.Name = L"PathMemberStates";
+		invalidGroup.States.push_back(std::move(invalidState));
+		CUI_EXPECT_FALSE(missingPath.DefineVisualStateGroups(
+			{ std::move(invalidGroup) }, &error));
+
+		Panel invalidSweepTarget;
+		cui::drawing::Geometry pathClip;
+		pathClip.Kind = cui::drawing::GeometryKind::Path;
+		cui::drawing::PathFigure pathFigure;
+		cui::drawing::PathSegment arc;
+		arc.Kind = cui::drawing::PathSegmentKind::Arc;
+		arc.Point = D2D1::Point2F(10.0f, 10.0f);
+		arc.Size = D2D1::SizeF(5.0f, 4.0f);
+		pathFigure.Segments.push_back(arc);
+		pathClip.Figures.push_back(std::move(pathFigure));
+		invalidSweepTarget.SetClip(pathClip);
+		DeclarativeVisualStateAnimation invalidSweep;
+		invalidSweep.Kind = DeclarativeAnimationKind::Object;
+		invalidSweep.PropertyName =
+			L"(Control.Clip).(PathGeometry.Figures)[0]."
+			L"(PathFigure.Segments)[0].(ArcSegment.SweepDirection)";
+		invalidSweep.DurationMilliseconds = 100;
+		DeclarativeAnimationKeyFrame invalidSweepFrame;
+		invalidSweepFrame.Kind = DeclarativeKeyFrameKind::Discrete;
+		invalidSweepFrame.KeyTimeMilliseconds = 0;
+		invalidSweepFrame.Value = BindingValue(std::wstring(L"Sideways"));
+		invalidSweep.KeyFrames.push_back(std::move(invalidSweepFrame));
+		DeclarativeVisualStateDefinition invalidSweepState;
+		invalidSweepState.Name = L"Invalid";
+		invalidSweepState.Animations.push_back(std::move(invalidSweep));
+		DeclarativeVisualStateGroupDefinition invalidSweepGroup;
+		invalidSweepGroup.Name = L"PathMemberStates";
+		invalidSweepGroup.States.push_back(std::move(invalidSweepState));
+		CUI_EXPECT_FALSE(invalidSweepTarget.DefineVisualStateGroups(
+			{ std::move(invalidSweepGroup) }, &error));
+	});
+
+	runner.Add("GeometryGroup children expose recursive WPF object paths", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:geometry-children" x:Name="GeometryChildrenForm">
+  <Form.Resources>
+    <Rect x:Key="FinalChildRect">4,5,40,30</Rect>
+    <Point x:Key="FinalNestedCenter">50,40</Point>
+    <ComponentDefinition x:Key="local:GeometryChildrenCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Phase" Type="Int" Default="0" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Panel x:Name="root">
+          <Panel x:Name="geometryTarget">
+            <Control.Clip>
+              <GeometryGroup FillRule="Nonzero">
+                <Geometry.Transform><TransformGroup>
+                  <TranslateTransform X="7" Y="8" />
+                </TransformGroup></Geometry.Transform>
+                <GeometryGroup.Children>
+                  <RectangleGeometry Rect="0,0,20,10" RadiusX="2" RadiusY="3">
+                    <Geometry.Transform><TransformGroup>
+                      <TranslateTransform X="1" Y="2" />
+                    </TransformGroup></Geometry.Transform>
+                  </RectangleGeometry>
+                  <GeometryGroup FillRule="EvenOdd">
+                    <Geometry.Transform><TransformGroup>
+                      <RotateTransform Angle="5" CenterX="2" CenterY="3" />
+                    </TransformGroup></Geometry.Transform>
+                    <GeometryGroup.Children>
+                      <EllipseGeometry Center="30,20" RadiusX="6" RadiusY="7" />
+                      <PathGeometry FillRule="Nonzero">
+                        <Geometry.Transform><TransformGroup>
+                          <ScaleTransform ScaleX="1" ScaleY="1"
+                                          CenterX="4" CenterY="5" />
+                        </TransformGroup></Geometry.Transform>
+                        <PathFigure StartPoint="0,0" IsClosed="false" IsFilled="true">
+                          <LineSegment Point="10,10" />
+                        </PathFigure>
+                      </PathGeometry>
+                    </GeometryGroup.Children>
+                  </GeometryGroup>
+                </GeometryGroup.Children>
+              </GeometryGroup>
+            </Control.Clip>
+          </Panel>
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="GeometryChildrenStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="Animate"
+                                  GeneratedDuration="0:0:0.100" />
+                <VisualTransition From="Idle" To="Explicit">
+                  <VisualTransition.Storyboard><Storyboard>
+                    <RectAnimation Storyboard.TargetName="geometryTarget"
+                      Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[0].(RectangleGeometry.Rect)"
+                      From="0,0,20,10" To="2,3,30,20" Duration="0:0:0.100" />
+                    <PointAnimation Storyboard.TargetName="geometryTarget"
+                      Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[1].(GeometryGroup.Children)[1].(PathGeometry.Figures)[0].(PathFigure.StartPoint)"
+                      From="0,0" To="10,12" Duration="0:0:0.100" />
+                  </Storyboard></VisualTransition.Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="Animate">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="1" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <RectAnimation Storyboard.TargetName="geometryTarget"
+                    Storyboard.TargetProperty="(UIElement.Clip).(GeometryGroup.Children)[0].(RectangleGeometry.Rect)"
+                    To="{StaticResource FinalChildRect}" Duration="0:0:0.200" />
+                  <DoubleAnimation Storyboard.TargetName="geometryTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[0].(RectangleGeometry.RadiusX)"
+                    To="8" Duration="0:0:0.200" />
+                  <PointAnimation Storyboard.TargetName="geometryTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[1].(GeometryGroup.Children)[0].(EllipseGeometry.Center)"
+                    To="{StaticResource FinalNestedCenter}" Duration="0:0:0.200" />
+                  <DoubleAnimation Storyboard.TargetName="geometryTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[1].(GeometryGroup.Children)[0].(EllipseGeometry.RadiusY)"
+                    To="12" Duration="0:0:0.200" />
+                  <PointAnimation Storyboard.TargetName="geometryTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[1].(GeometryGroup.Children)[1].(PathGeometry.Figures)[0].(PathFigure.StartPoint)"
+                    To="3,4" Duration="0:0:0.200" />
+                  <PointAnimation Storyboard.TargetName="geometryTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[1].(GeometryGroup.Children)[1].(PathGeometry.Figures)[0].(PathFigure.Segments)[0].(LineSegment.Point)"
+                    To="20,30" Duration="0:0:0.200" />
+                  <DoubleAnimation Storyboard.TargetName="geometryTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[0].(Geometry.Transform).(TransformGroup.Children)[0].(TranslateTransform.X)"
+                    To="11" Duration="0:0:0.200" />
+                  <DoubleAnimation Storyboard.TargetName="geometryTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[1].(GeometryGroup.Children)[1].(PathGeometry.Transform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
+                    To="2" Duration="0:0:0.200" />
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="geometryTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.FillRule)"
+                    Duration="0:0:0.200">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0.100" Value="EvenOdd" />
+                  </ObjectAnimationUsingKeyFrames>
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="geometryTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[1].(GeometryGroup.Children)[1].(PathGeometry.FillRule)"
+                    Duration="0:0:0.200">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0.100" Value="EvenOdd" />
+                  </ObjectAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="KeyFrames">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="2" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <RectAnimationUsingKeyFrames Storyboard.TargetName="geometryTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[0].(RectangleGeometry.Rect)"
+                    Duration="0:0:0.200">
+                    <LinearRectKeyFrame KeyTime="0:0:0.100" Value="1,2,25,15" />
+                    <DiscreteRectKeyFrame KeyTime="0:0:0.200" Value="3,4,35,25" />
+                  </RectAnimationUsingKeyFrames>
+                  <PointAnimationUsingKeyFrames Storyboard.TargetName="geometryTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[1].(GeometryGroup.Children)[0].(EllipseGeometry.Center)"
+                    Duration="0:0:0.200">
+                    <LinearPointKeyFrame KeyTime="0:0:0.100" Value="40,30" />
+                    <DiscretePointKeyFrame KeyTime="0:0:0.200" Value="45,35" />
+                  </PointAnimationUsingKeyFrames>
+                  <DoubleAnimationUsingKeyFrames Storyboard.TargetName="geometryTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[1].(GeometryGroup.Children)[1].(Geometry.Transform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
+                    Duration="0:0:0.200">
+                    <LinearDoubleKeyFrame KeyTime="0:0:0.100" Value="1.5" />
+                    <DiscreteDoubleKeyFrame KeyTime="0:0:0.200" Value="2.5" />
+                  </DoubleAnimationUsingKeyFrames>
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="geometryTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[1].(GeometryGroup.FillRule)"
+                    Duration="0:0:0.200">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0.200" Value="Nonzero" />
+                  </ObjectAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Explicit">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="3" /></VisualState.StateTriggers>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </Panel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:GeometryChildrenCard x:Name="card" />
+</Form>)XAML";
+
+		std::wstring error;
+		DesignerModel::DesignDocument document;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("Geometry children XAML parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		const auto& group = document.Components.front().VisualStateGroups.front();
+		CUI_EXPECT_EQ(4ULL, group.States.size());
+		CUI_EXPECT_EQ(10ULL, group.States[1].Animations.size());
+		CUI_EXPECT_EQ(std::wstring(
+			L"(Control.Clip).(GeometryGroup.Children)[0].(RectangleGeometry.Rect)"),
+			group.States[1].Animations[0].PropertyName);
+		CUI_EXPECT_EQ(DesignerAnimationKind::Object,
+			group.States[1].Animations[8].Kind);
+
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto expected : {
+			"(Control.Clip).(GeometryGroup.Children)[0].(RectangleGeometry.Rect)",
+			"(Control.Clip).(GeometryGroup.Children)[1].(GeometryGroup.Children)[0].(EllipseGeometry.Center)",
+			"(GeometryGroup.Children)[1].(PathGeometry.Figures)[0].(PathFigure.StartPoint)",
+			"(PathFigure.Segments)[0].(LineSegment.Point)",
+			"(GeometryGroup.Children)[0].(Geometry.Transform).(TransformGroup.Children)[0].(TranslateTransform.X)",
+			"(GeometryGroup.Children)[1].(Geometry.Transform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)",
+			"(Control.Clip).(GeometryGroup.FillRule)",
+			"(GeometryGroup.Children)[1].(PathGeometry.FillRule)" })
+			CUI_EXPECT_TRUE(canonical.find(expected) != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("UIElement.Clip") == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("PathGeometry.Transform") == std::string::npos);
+		DesignerModel::DesignDocument canonicalRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, canonicalRoundTrip, &error));
+		CUI_EXPECT_EQ(document, canonicalRoundTrip);
+
+		const auto snapshot = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		if (!DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error))
+			throw std::runtime_error("Geometry children snapshot parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+
+		DesignerModel::RuntimeDocument runtime;
+		if (!DesignerModel::RuntimeDocumentLoader::Load(document, runtime, {}, &error))
+			throw std::runtime_error("Geometry children runtime load failed: "
+				+ Convert::WStringToString(error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* target = card
+			? card->FindDeclarativeTemplatePart(L"geometryTarget") : nullptr;
+		if (!card || !target)
+			throw std::runtime_error("Geometry children runtime controls are missing");
+		auto rootGeometry = [&]() -> const cui::drawing::Geometry&
+		{
+			CUI_EXPECT_TRUE(target->GetClip().has_value());
+			return *target->GetClip();
+		};
+		auto rectangle = [&]() -> const cui::drawing::Geometry&
+		{
+			CUI_EXPECT_EQ(2ULL, rootGeometry().Children.size());
+			return rootGeometry().Children[0];
+		};
+		auto nestedGroup = [&]() -> const cui::drawing::Geometry&
+		{
+			return rootGeometry().Children[1];
+		};
+		auto ellipse = [&]() -> const cui::drawing::Geometry&
+		{
+			CUI_EXPECT_EQ(2ULL, nestedGroup().Children.size());
+			return nestedGroup().Children[0];
+		};
+		auto path = [&]() -> const cui::drawing::Geometry&
+		{
+			return nestedGroup().Children[1];
+		};
+		auto go = [&](const wchar_t* state, bool transitions = false)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"GeometryChildrenStates", state, transitions, &error));
+			return ::GetTickCount64();
+		};
+		auto expectUntouched = [&]()
+		{
+			CUI_EXPECT_TRUE(rootGeometry().LocalTransform.has_value());
+			CUI_EXPECT_NEAR(7.0f,
+				rootGeometry().LocalTransform->Operations[0].X, 0.001f);
+			CUI_EXPECT_NEAR(3.0f, rectangle().RadiusY, 0.001f);
+			CUI_EXPECT_TRUE(nestedGroup().LocalTransform.has_value());
+			CUI_EXPECT_NEAR(5.0f,
+				nestedGroup().LocalTransform->Operations[0].Angle, 0.001f);
+			CUI_EXPECT_NEAR(6.0f, ellipse().RadiusX, 0.001f);
+			CUI_EXPECT_NEAR(1.0f,
+				path().LocalTransform->Operations[0].ScaleY, 0.001f);
+			CUI_EXPECT_TRUE(path().Figures[0].IsFilled);
+		};
+
+		auto tick = go(L"Animate");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(2.0f, rectangle().Rect.left, 0.08f);
+		CUI_EXPECT_NEAR(30.0f, rectangle().Rect.right - rectangle().Rect.left, 0.08f);
+		CUI_EXPECT_NEAR(5.0f, rectangle().RadiusX, 0.08f);
+		CUI_EXPECT_NEAR(40.0f, ellipse().Center.x, 0.08f);
+		CUI_EXPECT_NEAR(9.5f, ellipse().RadiusY, 0.08f);
+		CUI_EXPECT_NEAR(1.5f, path().Figures[0].StartPoint.x, 0.08f);
+		CUI_EXPECT_NEAR(15.0f, path().Figures[0].Segments[0].Point.x, 0.08f);
+		CUI_EXPECT_NEAR(6.0f, rectangle().LocalTransform->Operations[0].X, 0.08f);
+		CUI_EXPECT_NEAR(1.5f, path().LocalTransform->Operations[0].ScaleX, 0.08f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_NEAR(4.0f, rectangle().Rect.left, 0.001f);
+		CUI_EXPECT_NEAR(40.0f, rectangle().Rect.right - rectangle().Rect.left, 0.001f);
+		CUI_EXPECT_NEAR(8.0f, rectangle().RadiusX, 0.001f);
+		CUI_EXPECT_NEAR(50.0f, ellipse().Center.x, 0.001f);
+		CUI_EXPECT_NEAR(12.0f, ellipse().RadiusY, 0.001f);
+		CUI_EXPECT_NEAR(3.0f, path().Figures[0].StartPoint.x, 0.001f);
+		CUI_EXPECT_NEAR(20.0f, path().Figures[0].Segments[0].Point.x, 0.001f);
+		CUI_EXPECT_NEAR(11.0f, rectangle().LocalTransform->Operations[0].X, 0.001f);
+		CUI_EXPECT_NEAR(2.0f, path().LocalTransform->Operations[0].ScaleX, 0.001f);
+		CUI_EXPECT_EQ(cui::drawing::GeometryFillRule::EvenOdd,
+			rootGeometry().FillRule);
+		CUI_EXPECT_EQ(cui::drawing::GeometryFillRule::EvenOdd, path().FillRule);
+		expectUntouched();
+
+		(void)go(L"Idle");
+		tick = go(L"KeyFrames");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(1.0f, rectangle().Rect.left, 0.08f);
+		CUI_EXPECT_NEAR(40.0f, ellipse().Center.x, 0.08f);
+		CUI_EXPECT_NEAR(1.5f, path().LocalTransform->Operations[0].ScaleX, 0.08f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_NEAR(3.0f, rectangle().Rect.left, 0.001f);
+		CUI_EXPECT_NEAR(45.0f, ellipse().Center.x, 0.001f);
+		CUI_EXPECT_NEAR(2.5f, path().LocalTransform->Operations[0].ScaleX, 0.001f);
+		CUI_EXPECT_EQ(cui::drawing::GeometryFillRule::Nonzero,
+			nestedGroup().FillRule);
+
+		(void)go(L"Idle");
+		tick = go(L"Animate", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_TRUE(rectangle().Rect.left > 0.0f
+			&& rectangle().Rect.left < 4.0f);
+		CUI_EXPECT_EQ(cui::drawing::GeometryFillRule::Nonzero,
+			rootGeometry().FillRule);
+
+		(void)go(L"Idle");
+		tick = go(L"Explicit", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_NEAR(1.0f, rectangle().Rect.left, 0.1f);
+		CUI_EXPECT_NEAR(5.0f, path().Figures[0].StartPoint.x, 0.1f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(0.0f, rectangle().Rect.left, 0.001f);
+		CUI_EXPECT_NEAR(0.0f, path().Figures[0].StartPoint.x, 0.001f);
+
+		auto reloadedXaml = xaml;
+		const auto resourceAt = reloadedXaml.find(">50,40</Point>");
+		CUI_EXPECT_TRUE(resourceAt != std::string::npos);
+		if (resourceAt != std::string::npos)
+			reloadedXaml.replace(resourceAt, std::string(">50,40</Point>").size(),
+				">60,45</Point>");
+		DesignerModel::DesignDocument reloadedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			reloadedXaml, reloadedDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloadedDocument, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		target = card ? card->FindDeclarativeTemplatePart(L"geometryTarget") : nullptr;
+		CUI_EXPECT_TRUE(card && target);
+		if (card && target)
+		{
+			tick = go(L"Animate");
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+			CUI_EXPECT_NEAR(60.0f, ellipse().Center.x, 0.001f);
+			CUI_EXPECT_NEAR(45.0f, ellipse().Center.y, 0.001f);
+		}
+
+		auto invalidXaml = canonical;
+		auto invalidAt = invalidXaml.find(
+			"(GeometryGroup.Children)[1].(GeometryGroup.Children)[0].(EllipseGeometry.Center)");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("(GeometryGroup.Children)[1]").size(),
+				"(GeometryGroup.Children)[0]");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = canonical;
+		invalidAt = invalidXaml.find("(GeometryGroup.Children)[0].(RectangleGeometry.Rect)");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("(GeometryGroup.Children)[0]").size(),
+				"(GeometryGroup.Children)[99]");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = xaml;
+		invalidAt = invalidXaml.find("Value=\"EvenOdd\"");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt, std::string("Value=\"EvenOdd\"").size(),
+				"Value=\"Sideways\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidSnapshot = snapshot;
+		invalidAt = invalidSnapshot.find("(RectangleGeometry.RadiusX)");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidSnapshot.replace(invalidAt,
+				std::string("(RectangleGeometry.RadiusX)").size(),
+				"(EllipseGeometry.RadiusX)");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		Panel invalidTarget;
+		cui::drawing::Geometry groupClip;
+		groupClip.Kind = cui::drawing::GeometryKind::Group;
+		groupClip.FillRule = cui::drawing::GeometryFillRule::Nonzero;
+		cui::drawing::Geometry childRect;
+		childRect.Kind = cui::drawing::GeometryKind::Rectangle;
+		childRect.Rect = D2D1::RectF(0.0f, 0.0f, 10.0f, 10.0f);
+		groupClip.Children.push_back(childRect);
+		invalidTarget.SetClip(groupClip);
+		DeclarativeVisualStateAnimation invalidChild;
+		invalidChild.Kind = DeclarativeAnimationKind::Rect;
+		invalidChild.PropertyName =
+			L"(Control.Clip).(GeometryGroup.Children)[2].(RectangleGeometry.Rect)";
+		invalidChild.To = BindingValue(cui::core::Rect{ 1.0f, 2.0f, 3.0f, 4.0f });
+		invalidChild.DurationMilliseconds = 100;
+		DeclarativeVisualStateDefinition invalidChildState;
+		invalidChildState.Name = L"Invalid";
+		invalidChildState.Animations.push_back(std::move(invalidChild));
+		DeclarativeVisualStateGroupDefinition invalidChildGroup;
+		invalidChildGroup.Name = L"GeometryChildrenStates";
+		invalidChildGroup.States.push_back(std::move(invalidChildState));
+		CUI_EXPECT_FALSE(invalidTarget.DefineVisualStateGroups(
+			{ std::move(invalidChildGroup) }, &error));
+
+		DeclarativeVisualStateAnimation invalidFill;
+		invalidFill.Kind = DeclarativeAnimationKind::Object;
+		invalidFill.PropertyName = L"(Control.Clip).(GeometryGroup.FillRule)";
+		invalidFill.DurationMilliseconds = 100;
+		DeclarativeAnimationKeyFrame invalidFillFrame;
+		invalidFillFrame.Kind = DeclarativeKeyFrameKind::Discrete;
+		invalidFillFrame.KeyTimeMilliseconds = 0;
+		invalidFillFrame.Value = BindingValue(std::wstring(L"Sideways"));
+		invalidFill.KeyFrames.push_back(std::move(invalidFillFrame));
+		DeclarativeVisualStateDefinition invalidFillState;
+		invalidFillState.Name = L"InvalidFill";
+		invalidFillState.Animations.push_back(std::move(invalidFill));
+		DeclarativeVisualStateGroupDefinition invalidFillGroup;
+		invalidFillGroup.Name = L"GeometryChildrenStates";
+		invalidFillGroup.States.push_back(std::move(invalidFillState));
+		CUI_EXPECT_FALSE(invalidTarget.DefineVisualStateGroups(
+			{ std::move(invalidFillGroup) }, &error));
+	});
+
+	runner.Add("Matrix animations compose across transform object graphs", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:matrix-animation" x:Name="MatrixAnimationForm">
+  <Form.Resources>
+    <Matrix x:Key="FinalMatrix">2,0.25,-0.5,3,40,50</Matrix>
+    <ComponentDefinition x:Key="local:MatrixCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Phase" Type="Int" Default="0" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Panel x:Name="root">
+          <Panel x:Name="renderTarget">
+            <Control.RenderTransform><TransformGroup>
+              <MatrixTransform Matrix="1,0,0,1,0,0" />
+              <TranslateTransform X="2" Y="3" />
+            </TransformGroup></Control.RenderTransform>
+          </Panel>
+          <Panel x:Name="geometryTarget">
+            <Control.Clip>
+              <GeometryGroup>
+                <GeometryGroup.Children>
+                  <RectangleGeometry Rect="0,0,100,60">
+                    <Geometry.Transform><TransformGroup>
+                      <MatrixTransform Matrix="1,0,0,1,5,6" />
+                    </TransformGroup></Geometry.Transform>
+                  </RectangleGeometry>
+                </GeometryGroup.Children>
+              </GeometryGroup>
+            </Control.Clip>
+          </Panel>
+          <Label x:Name="brushTarget" Text="Matrix brush">
+            <Control.Foreground>
+              <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                <LinearGradientBrush.RelativeTransform><TransformGroup>
+                  <MatrixTransform Matrix="1,0,0,1,0.1,0.2" />
+                </TransformGroup></LinearGradientBrush.RelativeTransform>
+                <Brush.Transform><TransformGroup>
+                  <MatrixTransform Matrix="1,0,0,1,7,8" />
+                </TransformGroup></Brush.Transform>
+                <GradientStop Color="#FFFF0000" Offset="0" />
+                <GradientStop Color="#FF0000FF" Offset="1" />
+              </LinearGradientBrush>
+            </Control.Foreground>
+          </Label>
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="MatrixStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="Animate"
+                                  GeneratedDuration="0:0:0.100" />
+                <VisualTransition From="Idle" To="Explicit">
+                  <VisualTransition.Storyboard><Storyboard>
+                    <MatrixAnimation Storyboard.TargetName="brushTarget"
+                      Storyboard.TargetProperty="(Control.Foreground).(Brush.Transform).(TransformGroup.Children)[0].(MatrixTransform.Matrix)"
+                      From="1,0,0,1,7,8" To="1.5,0,0,1.5,17,18"
+                      Duration="0:0:0.100" />
+                  </Storyboard></VisualTransition.Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="Animate">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="1" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+				  <MatrixAnimation Storyboard.TargetName="renderTarget"
+                    Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(MatrixTransform.Matrix)"
+                    To="{StaticResource FinalMatrix}" Duration="0:0:0.200" />
+                  <DoubleAnimation Storyboard.TargetName="renderTarget"
+                    Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.X)"
+                    To="12" Duration="0:0:0.200" />
+                  <MatrixAnimation Storyboard.TargetName="geometryTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(GeometryGroup.Children)[0].(RectangleGeometry.Transform).(TransformGroup.Children)[0].(MatrixTransform.Matrix)"
+                    By="0.5,0,0,0.5,10,20" Duration="0:0:0.200" />
+                  <MatrixAnimation Storyboard.TargetName="brushTarget"
+                    Storyboard.TargetProperty="(Control.Foreground).(LinearGradientBrush.Transform).(TransformGroup.Children)[0].(MatrixTransform.Matrix)"
+                    To="1.25,0.1,0.2,1.5,27,38" Duration="0:0:0.200" />
+                  <MatrixAnimation Storyboard.TargetName="brushTarget"
+                    Storyboard.TargetProperty="(Control.Foreground).(Brush.RelativeTransform).(TransformGroup.Children)[0].(MatrixTransform.Matrix)"
+                    From="1,0,0,1,0.1,0.2" To="0.5,0,0,0.5,0.3,0.4"
+                    Duration="0:0:0.200" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="KeyFrames">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="2" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <MatrixAnimationUsingKeyFrames Storyboard.TargetName="renderTarget"
+                    Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(MatrixTransform.Matrix)"
+                    Duration="0:0:0.200">
+                    <LinearMatrixKeyFrame KeyTime="0:0:0.050" Value="1.1,0,0,1.1,5,6" />
+                    <DiscreteMatrixKeyFrame KeyTime="0:0:0.100" Value="1.2,0,0,1.2,10,12" />
+                    <EasingMatrixKeyFrame KeyTime="0:0:0.150" Value="1.4,0.1,0.2,1.5,20,24">
+                      <EasingMatrixKeyFrame.EasingFunction>
+                        <QuadraticEase EasingMode="EaseInOut" />
+                      </EasingMatrixKeyFrame.EasingFunction>
+                    </EasingMatrixKeyFrame>
+                    <SplineMatrixKeyFrame KeyTime="0:0:0.200"
+                      Value="1.6,0.2,0.3,1.8,30,36" KeySpline="0,0 1,1" />
+                  </MatrixAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Explicit">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="3" /></VisualState.StateTriggers>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </Panel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:MatrixCard x:Name="card" />
+</Form>)XAML";
+
+		std::wstring error;
+		DesignerModel::DesignDocument document;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("Matrix animation XAML parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		CUI_EXPECT_EQ(DesignerStyleValueKind::Matrix,
+			document.StyleSheet.Resources.front().Value.Kind);
+		const auto& group = document.Components.front().VisualStateGroups.front();
+		CUI_EXPECT_EQ(5ULL, group.States[1].Animations.size());
+		CUI_EXPECT_EQ(DesignerAnimationKind::Matrix,
+			group.States[1].Animations[0].Kind);
+		CUI_EXPECT_EQ(std::wstring(
+			L"(Control.RenderTransform).(TransformGroup.Children)[0].(MatrixTransform.Matrix)"),
+			group.States[1].Animations[0].PropertyName);
+		CUI_EXPECT_EQ(4ULL, group.States[2].Animations[0].KeyFrames.size());
+
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto expected : { "<Matrix x:Key=\"FinalMatrix\">",
+			"<MatrixAnimation ", "<MatrixAnimationUsingKeyFrames ",
+			"<LinearMatrixKeyFrame ", "<DiscreteMatrixKeyFrame ",
+			"<EasingMatrixKeyFrame ", "<SplineMatrixKeyFrame ",
+			"Storyboard.TargetProperty=\"(Control.RenderTransform).(TransformGroup.Children)[0].(MatrixTransform.Matrix)\"",
+			"(Control.Clip).(GeometryGroup.Children)[0].(Geometry.Transform).(TransformGroup.Children)[0].(MatrixTransform.Matrix)",
+			"(Control.Foreground).(Brush.Transform).(TransformGroup.Children)[0].(MatrixTransform.Matrix)",
+			"(Control.Foreground).(Brush.RelativeTransform).(TransformGroup.Children)[0].(MatrixTransform.Matrix)" })
+			CUI_EXPECT_TRUE(canonical.find(expected) != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("UIElement.RenderTransform") == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("RectangleGeometry.Transform).(")
+			== std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("LinearGradientBrush.Transform).(")
+			== std::string::npos);
+		DesignerModel::DesignDocument canonicalRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, canonicalRoundTrip, &error));
+		CUI_EXPECT_EQ(document, canonicalRoundTrip);
+
+		const auto snapshot = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		if (!DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error))
+			throw std::runtime_error("Matrix animation snapshot parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+		CodeGenInput codeGenInput;
+		codeGenInput.FormName = L"MatrixAnimationForm";
+		codeGenInput.StyleSheet = document.StyleSheet;
+		const auto generated = CodeGenerator(
+			L"MatrixAnimationForm", codeGenInput).GenerateCpp();
+		CUI_EXPECT_TRUE(generated.find("BindingValue(D2D1::Matrix3x2F(")
+			!= std::string::npos);
+
+		DesignerModel::RuntimeDocument runtime;
+		if (!DesignerModel::RuntimeDocumentLoader::Load(document, runtime, {}, &error))
+			throw std::runtime_error("Matrix animation runtime load failed: "
+				+ Convert::WStringToString(error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* render = card
+			? card->FindDeclarativeTemplatePart(L"renderTarget") : nullptr;
+		auto* geometry = card
+			? card->FindDeclarativeTemplatePart(L"geometryTarget") : nullptr;
+		auto* brush = card
+			? card->FindDeclarativeTemplatePart(L"brushTarget") : nullptr;
+		if (!card || !render || !geometry || !brush)
+			throw std::runtime_error("Matrix animation runtime controls are missing");
+		auto renderMatrix = [&]() -> const D2D1_MATRIX_3X2_F&
+		{
+			return render->GetRenderTransform()->Operations[0].Matrix;
+		};
+		auto geometryMatrix = [&]() -> const D2D1_MATRIX_3X2_F&
+		{
+			return geometry->GetClip()->Children[0].LocalTransform->Operations[0].Matrix;
+		};
+		auto brushMatrix = [&](bool relative) -> const D2D1_MATRIX_3X2_F&
+		{
+			const auto& value = *brush->GetForegroundBrush();
+			return (relative ? *value.RelativeTransform : *value.Transform)
+				.Operations[0].Matrix;
+		};
+		auto go = [&](const wchar_t* state, bool transitions = false)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"MatrixStates", state, transitions, &error));
+			return ::GetTickCount64();
+		};
+		auto tick = go(L"Animate");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(1.5f, renderMatrix()._11, 0.08f);
+		CUI_EXPECT_NEAR(20.0f, renderMatrix()._31, 0.2f);
+		CUI_EXPECT_NEAR(7.0f,
+			render->GetRenderTransform()->Operations[1].X, 0.08f);
+		CUI_EXPECT_NEAR(1.25f, geometryMatrix()._11, 0.08f);
+		CUI_EXPECT_NEAR(10.0f, geometryMatrix()._31, 0.2f);
+		CUI_EXPECT_NEAR(1.125f, brushMatrix(false)._11, 0.08f);
+		CUI_EXPECT_NEAR(0.75f, brushMatrix(true)._11, 0.08f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_NEAR(2.0f, renderMatrix()._11, 0.001f);
+		CUI_EXPECT_NEAR(40.0f, renderMatrix()._31, 0.001f);
+		CUI_EXPECT_NEAR(12.0f,
+			render->GetRenderTransform()->Operations[1].X, 0.001f);
+		CUI_EXPECT_NEAR(1.5f, geometryMatrix()._11, 0.001f);
+		CUI_EXPECT_NEAR(15.0f, geometryMatrix()._31, 0.001f);
+		CUI_EXPECT_NEAR(1.25f, brushMatrix(false)._11, 0.001f);
+		CUI_EXPECT_NEAR(0.5f, brushMatrix(true)._11, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"KeyFrames");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(1.2f, renderMatrix()._11, 0.001f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_NEAR(1.6f, renderMatrix()._11, 0.001f);
+		CUI_EXPECT_NEAR(30.0f, renderMatrix()._31, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"Animate", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_TRUE(renderMatrix()._11 > 1.0f && renderMatrix()._11 < 2.0f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(2.0f, renderMatrix()._11, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"Explicit", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_NEAR(1.25f, brushMatrix(false)._11, 0.08f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(1.0f, brushMatrix(false)._11, 0.001f);
+		CUI_EXPECT_NEAR(7.0f, brushMatrix(false)._31, 0.001f);
+
+		auto reloadedXaml = xaml;
+		const auto resourceAt = reloadedXaml.find(
+			">2,0.25,-0.5,3,40,50</Matrix>");
+		CUI_EXPECT_TRUE(resourceAt != std::string::npos);
+		if (resourceAt != std::string::npos)
+			reloadedXaml.replace(resourceAt,
+				std::string(">2,0.25,-0.5,3,40,50</Matrix>").size(),
+				">3,0,0,4,60,70</Matrix>");
+		DesignerModel::DesignDocument reloadedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			reloadedXaml, reloadedDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloadedDocument, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		render = card ? card->FindDeclarativeTemplatePart(L"renderTarget") : nullptr;
+		geometry = card ? card->FindDeclarativeTemplatePart(L"geometryTarget") : nullptr;
+		brush = card ? card->FindDeclarativeTemplatePart(L"brushTarget") : nullptr;
+		CUI_EXPECT_TRUE(card && render && geometry && brush);
+		if (card && render && geometry && brush)
+		{
+			tick = go(L"Animate");
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+			CUI_EXPECT_NEAR(3.0f, renderMatrix()._11, 0.001f);
+			CUI_EXPECT_NEAR(60.0f, renderMatrix()._31, 0.001f);
+		}
+
+		auto invalidXaml = canonical;
+		auto invalidAt = invalidXaml.find("<MatrixAnimation ");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt, std::string("<MatrixAnimation").size(),
+				"<DoubleAnimation");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = canonical;
+		invalidAt = invalidXaml.find("1.25,0.1,0.2,1.5,27,38");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("1.25,0.1,0.2,1.5,27,38").size(), "1,0,0,1,5");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidSnapshot = snapshot;
+		invalidAt = invalidSnapshot.find("type=\"Matrix\"");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidSnapshot.replace(invalidAt, std::string("type=\"Matrix\"").size(),
+				"type=\"Double\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		Panel invalidTarget;
+		cui::drawing::Transform invalidTransform;
+		cui::drawing::TransformOperation matrixOperation;
+		matrixOperation.Kind = cui::drawing::TransformKind::Matrix;
+		invalidTransform.Operations.push_back(matrixOperation);
+		invalidTarget.SetRenderTransform(invalidTransform);
+		DeclarativeVisualStateAnimation invalidAnimation;
+		invalidAnimation.Kind = DeclarativeAnimationKind::Matrix;
+		invalidAnimation.PropertyName =
+			L"(Control.RenderTransform).(TransformGroup.Children)[0].(MatrixTransform.Matrix)";
+		D2D1_MATRIX_3X2_F invalidMatrix = D2D1::Matrix3x2F::Identity();
+		invalidMatrix._31 = std::numeric_limits<float>::quiet_NaN();
+		invalidAnimation.To = BindingValue(invalidMatrix);
+		invalidAnimation.DurationMilliseconds = 100;
+		DeclarativeVisualStateDefinition invalidState;
+		invalidState.Name = L"Invalid";
+		invalidState.Animations.push_back(std::move(invalidAnimation));
+		DeclarativeVisualStateGroupDefinition invalidGroup;
+		invalidGroup.Name = L"MatrixStates";
+		invalidGroup.States.push_back(std::move(invalidState));
+		CUI_EXPECT_FALSE(invalidTarget.DefineVisualStateGroups(
+			{ std::move(invalidGroup) }, &error));
+	});
+
+	runner.Add("Rect values and animations target RectangleGeometry Rect paths", []
+	{
+		std::wstring error;
+		BindingValue convertedRect;
+		CUI_EXPECT_TRUE(DesignerStyleSheetUtils::TryConvertValue(
+			{ DesignerStyleValueKind::Rect, L"-1.25, 2.5, 30.5, 40.75" },
+			convertedRect, &error));
+		cui::core::Rect parsedRect{};
+		CUI_EXPECT_TRUE(convertedRect.TryGet(parsedRect));
+		CUI_EXPECT_NEAR(-1.25f, parsedRect.x, 0.0001f);
+		CUI_EXPECT_NEAR(2.5f, parsedRect.y, 0.0001f);
+		CUI_EXPECT_NEAR(30.5f, parsedRect.width, 0.0001f);
+		CUI_EXPECT_NEAR(40.75f, parsedRect.height, 0.0001f);
+		CUI_EXPECT_FALSE(DesignerStyleSheetUtils::TryConvertValue(
+			{ DesignerStyleValueKind::Rect, L"0, 0, -1, 10" },
+			convertedRect, &error));
+
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:rect-animation" x:Name="RectAnimationForm">
+  <Form.Resources>
+    <Rect x:Key="FinalRect">4,6,80,40</Rect>
+    <Rect x:Key="RectDelta">1,2,3,4</Rect>
+    <Double x:Key="FinalGeometryX">22</Double>
+    <ComponentDefinition x:Key="local:RectCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="ClipBounds" Type="Rect" Default="10,20,30,40" />
+        <ComponentProperty Name="Phase" Type="Int" Default="0" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+		<Panel x:Name="clipTarget">
+		  <Control.Clip>
+			<RectangleGeometry Rect="1,2,30,40" RadiusX="3" RadiusY="4">
+			  <Geometry.Transform>
+				<TransformGroup>
+				  <TranslateTransform X="2" Y="3" />
+				  <RotateTransform Angle="10" CenterX="5" CenterY="6" />
+				</TransformGroup>
+			  </Geometry.Transform>
+			</RectangleGeometry>
+		  </Control.Clip>
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="RectStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition From="Idle" To="Clip"
+                                  GeneratedDuration="0:0:0.100" />
+                <VisualTransition From="Idle" To="Explicit">
+                  <VisualTransition.Storyboard><Storyboard>
+                    <RectAnimation Storyboard.TargetName="clipTarget"
+                      Storyboard.TargetProperty="(UIElement.Clip).(RectangleGeometry.Rect)"
+                      From="1,2,30,40" To="3,4,50,60"
+                      Duration="0:0:0.100" />
+                  </Storyboard></VisualTransition.Storyboard>
+                </VisualTransition>
+                <VisualTransition From="Idle" To="TransformExplicit">
+                  <VisualTransition.Storyboard><Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="clipTarget"
+                      Storyboard.TargetProperty="(Control.Clip).(Geometry.Transform).(TransformGroup.Children)[0].(TranslateTransform.Y)"
+                      From="3" To="23" Duration="0:0:0.100" />
+                  </Storyboard></VisualTransition.Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Idle" />
+              <VisualState x:Name="Direct">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="1" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <RectAnimation Storyboard.TargetProperty="ClipBounds"
+                    To="{StaticResource FinalRect}" Duration="0:0:0.200" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="Clip">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="2" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <RectAnimation Storyboard.TargetName="clipTarget"
+                    Storyboard.TargetProperty="(UIElement.Clip).(RectangleGeometry.Rect)"
+                    To="5,6,70,80" Duration="0:0:0.200">
+                    <RectAnimation.EasingFunction>
+                      <QuadraticEase EasingMode="EaseIn" />
+                    </RectAnimation.EasingFunction>
+                  </RectAnimation>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="KeyFrames">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="3" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <RectAnimationUsingKeyFrames Storyboard.TargetName="clipTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(RectangleGeometry.Rect)"
+                    Duration="0:0:0.400">
+                    <EasingRectKeyFrame KeyTime="0:0:0.100" Value="2,3,40,50">
+                      <EasingRectKeyFrame.EasingFunction>
+                        <QuadraticEase EasingMode="EaseIn" />
+                      </EasingRectKeyFrame.EasingFunction>
+                    </EasingRectKeyFrame>
+                    <DiscreteRectKeyFrame KeyTime="0:0:0.200" Value="4,5,60,70" />
+                    <DiscreteRectKeyFrame KeyTime="0:0:0.200" Value="5,6,70,80" />
+                    <LinearRectKeyFrame KeyTime="0:0:0.300" Value="6,7,80,90" />
+                    <SplineRectKeyFrame KeyTime="0:0:0.400" Value="8,9,100,110"
+                                        KeySpline="0,0 1,1" />
+                  </RectAnimationUsingKeyFrames>
+				</Storyboard></VisualState.Storyboard></VisualState>
+              <VisualState x:Name="By">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="4" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <RectAnimation Storyboard.TargetName="clipTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(RectangleGeometry.Rect)"
+                    By="{StaticResource RectDelta}" Duration="0:0:0.100" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+			  <VisualState x:Name="Additive">
+				<VisualState.StateTriggers><StateTrigger Property="Phase" Value="5" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <RectAnimation Storyboard.TargetName="clipTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(RectangleGeometry.Rect)"
+                    From="1,2,3,4" To="2,3,4,5" Duration="0:0:0.100"
+                    RepeatBehavior="2x" IsAdditive="true" IsCumulative="true" />
+				</Storyboard></VisualState.Storyboard>
+			  </VisualState>
+			  <VisualState x:Name="Stop">
+				<VisualState.StateTriggers><StateTrigger Property="Phase" Value="6" /></VisualState.StateTriggers>
+				<VisualState.Storyboard><Storyboard>
+				  <RectAnimation Storyboard.TargetName="clipTarget"
+					Storyboard.TargetProperty="(Control.Clip).(RectangleGeometry.Rect)"
+					From="1,2,30,40" To="3,4,50,60" Duration="0:0:0.100"
+					FillBehavior="Stop" />
+				</Storyboard></VisualState.Storyboard>
+			  </VisualState>
+			  <VisualState x:Name="Explicit">
+				<VisualState.StateTriggers><StateTrigger Property="Phase" Value="7" /></VisualState.StateTriggers>
+			  </VisualState>
+              <VisualState x:Name="Transform">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="8" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <RectAnimation Storyboard.TargetName="clipTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(RectangleGeometry.Rect)"
+                    To="5,6,70,80" Duration="0:0:0.200" />
+                  <DoubleAnimation Storyboard.TargetName="clipTarget"
+                    Storyboard.TargetProperty="(UIElement.Clip).(RectangleGeometry.Transform).(TransformGroup.Children)[0].(TranslateTransform.X)"
+                    To="{StaticResource FinalGeometryX}" Duration="0:0:0.200" />
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="TransformKeyFrames">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="9" /></VisualState.StateTriggers>
+                <VisualState.Storyboard><Storyboard>
+                  <DoubleAnimationUsingKeyFrames Storyboard.TargetName="clipTarget"
+                    Storyboard.TargetProperty="(Control.Clip).(Geometry.Transform).(TransformGroup.Children)[1].(RotateTransform.Angle)"
+                    Duration="0:0:0.200">
+                    <EasingDoubleKeyFrame KeyTime="0:0:0.100" Value="20">
+                      <EasingDoubleKeyFrame.EasingFunction>
+                        <QuadraticEase EasingMode="EaseIn" />
+                      </EasingDoubleKeyFrame.EasingFunction>
+                    </EasingDoubleKeyFrame>
+                    <SplineDoubleKeyFrame KeyTime="0:0:0.200" Value="40"
+                                          KeySpline="0,0 1,1" />
+                  </DoubleAnimationUsingKeyFrames>
+                </Storyboard></VisualState.Storyboard>
+              </VisualState>
+              <VisualState x:Name="TransformExplicit">
+                <VisualState.StateTriggers><StateTrigger Property="Phase" Value="10" /></VisualState.StateTriggers>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+        </Panel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:RectCard x:Name="card" ClipBounds="10,20,30,40" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		if (!DesignerModel::XamlDocumentParser::FromXaml(xaml, document, &error))
+			throw std::runtime_error("Rect animation XAML parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		const auto& component = document.Components.front();
+		CUI_EXPECT_EQ(DesignerStyleValueKind::Rect,
+			component.Properties.front().DefaultValue.Kind);
+		const auto& group = component.VisualStateGroups.front();
+		CUI_EXPECT_EQ(DesignerAnimationKind::Rect,
+			group.Transitions[1].Animations.front().Kind);
+		CUI_EXPECT_EQ(std::wstring(
+			L"(Control.Clip).(RectangleGeometry.Rect)"),
+			group.Transitions[1].Animations.front().PropertyName);
+		const auto keyState = std::find_if(group.States.begin(), group.States.end(),
+			[](const auto& state) { return state.Name == L"KeyFrames"; });
+		CUI_EXPECT_TRUE(keyState != group.States.end());
+		if (keyState != group.States.end())
+		{
+			CUI_EXPECT_EQ(5ULL, keyState->Animations.front().KeyFrames.size());
+			CUI_EXPECT_EQ(DesignerKeyFrameKind::Easing,
+				keyState->Animations.front().KeyFrames.front().Kind);
+		}
+		const auto transformState = std::find_if(
+			group.States.begin(), group.States.end(),
+			[](const auto& state) { return state.Name == L"Transform"; });
+		CUI_EXPECT_TRUE(transformState != group.States.end());
+		if (transformState != group.States.end())
+		{
+			CUI_EXPECT_EQ(2ULL, transformState->Animations.size());
+			CUI_EXPECT_EQ(std::wstring(
+				L"(Control.Clip).(Geometry.Transform).(TransformGroup.Children)[0].(TranslateTransform.X)"),
+				transformState->Animations[1].PropertyName);
+		}
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto expected : { "<Rect x:Key=\"FinalRect\"",
+			"Type=\"Rect\"", "<RectAnimation ",
+			"<RectAnimationUsingKeyFrames ", "<DiscreteRectKeyFrame ",
+			"<LinearRectKeyFrame ", "<EasingRectKeyFrame ",
+			"<SplineRectKeyFrame ",
+			"Storyboard.TargetProperty=\"(Control.Clip).(RectangleGeometry.Rect)\"",
+			"Storyboard.TargetProperty=\"(Control.Clip).(Geometry.Transform).(TransformGroup.Children)[0].(TranslateTransform.X)\"",
+			"Storyboard.TargetProperty=\"(Control.Clip).(Geometry.Transform).(TransformGroup.Children)[1].(RotateTransform.Angle)\"",
+			"To=\"{StaticResource FinalRect}\"" })
+			CUI_EXPECT_TRUE(canonical.find(expected) != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("UIElement.Clip") == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("RectangleGeometry.Transform).(")
+			== std::string::npos);
+		DesignerModel::DesignDocument canonicalRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, canonicalRoundTrip, &error));
+		CUI_EXPECT_EQ(document, canonicalRoundTrip);
+
+		const auto snapshot =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(snapshot.find("type=\"Rect\"") != std::string::npos);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		if (!DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error))
+			throw std::runtime_error("Rect animation snapshot parse failed: "
+				+ Convert::WStringToString(error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+
+		DesignerModel::RuntimeDocument runtime;
+		if (!DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error))
+			throw std::runtime_error("Rect animation runtime load failed: "
+				+ Convert::WStringToString(error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* target = card
+			? card->FindDeclarativeTemplatePart(L"clipTarget") : nullptr;
+		if (!card || !target)
+			throw std::runtime_error("Rect animation runtime controls are missing");
+		auto expectRect = [](cui::core::Rect actual,
+			cui::core::Rect expected, float tolerance = 0.03f)
+		{
+			CUI_EXPECT_NEAR(expected.x, actual.x, tolerance);
+			CUI_EXPECT_NEAR(expected.y, actual.y, tolerance);
+			CUI_EXPECT_NEAR(expected.width, actual.width, tolerance);
+			CUI_EXPECT_NEAR(expected.height, actual.height, tolerance);
+		};
+		auto readPropertyRect = [](Control& control, const wchar_t* property)
+		{
+			BindingValue value;
+			cui::core::Rect result{};
+			CUI_EXPECT_TRUE(control.TryGetPropertyValue(property, value));
+			CUI_EXPECT_TRUE(value.TryGet(result));
+			return result;
+		};
+		auto readClipRect = [&]()
+		{
+			CUI_EXPECT_TRUE(target->GetClip().has_value());
+			if (!target->GetClip()) return cui::core::Rect{};
+			const auto& geometry = *target->GetClip();
+			CUI_EXPECT_EQ(cui::drawing::GeometryKind::Rectangle, geometry.Kind);
+			CUI_EXPECT_NEAR(3.0f, geometry.RadiusX, 0.0001f);
+			CUI_EXPECT_NEAR(4.0f, geometry.RadiusY, 0.0001f);
+			CUI_EXPECT_TRUE(geometry.LocalTransform.has_value());
+			if (geometry.LocalTransform)
+			{
+				CUI_EXPECT_EQ(2ULL, geometry.LocalTransform->Operations.size());
+				if (geometry.LocalTransform->Operations.size() == 2)
+				{
+					CUI_EXPECT_EQ(cui::drawing::TransformKind::Translate,
+						geometry.LocalTransform->Operations[0].Kind);
+					CUI_EXPECT_EQ(cui::drawing::TransformKind::Rotate,
+						geometry.LocalTransform->Operations[1].Kind);
+				}
+			}
+			return cui::core::Rect{ geometry.Rect.left, geometry.Rect.top,
+				geometry.Rect.right - geometry.Rect.left,
+				geometry.Rect.bottom - geometry.Rect.top };
+		};
+		auto readGeometryTransform = [&](size_t index)
+		{
+			CUI_EXPECT_TRUE(target->GetClip().has_value());
+			if (!target->GetClip() || !target->GetClip()->LocalTransform
+				|| index >= target->GetClip()->LocalTransform->Operations.size())
+				return cui::drawing::TransformOperation{};
+			return target->GetClip()->LocalTransform->Operations[index];
+		};
+		auto go = [&](const wchar_t* state, bool transitions = false)
+		{
+			CUI_EXPECT_TRUE(card->GoToVisualState(
+				L"RectStates", state, transitions, &error));
+			return ::GetTickCount64();
+		};
+		expectRect(readPropertyRect(*card, L"ClipBounds"),
+			{ 10.0f, 20.0f, 30.0f, 40.0f });
+		expectRect(readClipRect(), { 1.0f, 2.0f, 30.0f, 40.0f });
+		CUI_EXPECT_NEAR(2.0f, readGeometryTransform(0).X, 0.0001f);
+		CUI_EXPECT_NEAR(3.0f, readGeometryTransform(0).Y, 0.0001f);
+		CUI_EXPECT_NEAR(10.0f, readGeometryTransform(1).Angle, 0.0001f);
+
+		auto tick = go(L"Direct");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		expectRect(readPropertyRect(*card, L"ClipBounds"),
+			{ 4.0f, 6.0f, 80.0f, 40.0f });
+
+		(void)go(L"Idle");
+		tick = go(L"Clip");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectRect(readClipRect(), { 2.0f, 3.0f, 40.0f, 50.0f }, 0.4f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		expectRect(readClipRect(), { 5.0f, 6.0f, 70.0f, 80.0f });
+
+		(void)go(L"Idle");
+		tick = go(L"KeyFrames");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		expectRect(readClipRect(), { 1.25f, 2.25f, 32.5f, 42.5f }, 0.4f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 150));
+		expectRect(readClipRect(), { 2.0f, 3.0f, 40.0f, 50.0f });
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		expectRect(readClipRect(), { 5.0f, 6.0f, 70.0f, 80.0f });
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 250));
+		expectRect(readClipRect(), { 5.5f, 6.5f, 75.0f, 85.0f }, 0.4f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 350));
+		expectRect(readClipRect(), { 7.0f, 8.0f, 90.0f, 100.0f }, 0.4f);
+
+		(void)go(L"Idle");
+		tick = go(L"By");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectRect(readClipRect(), { 2.0f, 4.0f, 33.0f, 44.0f });
+
+		(void)go(L"Idle");
+		tick = go(L"Additive");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 150));
+		expectRect(readClipRect(), { 3.5f, 5.5f, 34.5f, 45.5f }, 0.4f);
+
+		(void)go(L"Idle");
+		tick = go(L"Stop");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		expectRect(readClipRect(), { 2.0f, 3.0f, 40.0f, 50.0f }, 0.4f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectRect(readClipRect(), { 1.0f, 2.0f, 30.0f, 40.0f });
+
+		(void)go(L"Idle");
+		tick = go(L"Clip", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		const auto generated = readClipRect();
+		CUI_EXPECT_TRUE(generated.x > 1.0f && generated.x < 5.0f);
+		CUI_EXPECT_TRUE(generated.width > 30.0f && generated.width < 70.0f);
+
+		(void)go(L"Idle");
+		tick = go(L"Explicit", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		expectRect(readClipRect(), { 2.0f, 3.0f, 40.0f, 50.0f }, 0.4f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectRect(readClipRect(), { 1.0f, 2.0f, 30.0f, 40.0f });
+
+		(void)go(L"Idle");
+		tick = go(L"Transform");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		expectRect(readClipRect(), { 3.0f, 4.0f, 50.0f, 60.0f }, 0.5f);
+		CUI_EXPECT_NEAR(12.0f, readGeometryTransform(0).X, 0.5f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		expectRect(readClipRect(), { 5.0f, 6.0f, 70.0f, 80.0f });
+		CUI_EXPECT_NEAR(22.0f, readGeometryTransform(0).X, 0.001f);
+		CUI_EXPECT_NEAR(3.0f, readGeometryTransform(0).Y, 0.001f);
+		CUI_EXPECT_NEAR(10.0f, readGeometryTransform(1).Angle, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"TransformKeyFrames");
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(20.0f, readGeometryTransform(1).Angle, 0.6f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+		CUI_EXPECT_NEAR(40.0f, readGeometryTransform(1).Angle, 0.001f);
+		CUI_EXPECT_NEAR(2.0f, readGeometryTransform(0).X, 0.001f);
+
+		(void)go(L"Idle");
+		tick = go(L"TransformExplicit", true);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 50));
+		CUI_EXPECT_NEAR(13.0f, readGeometryTransform(0).Y, 0.6f);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 100));
+		CUI_EXPECT_NEAR(3.0f, readGeometryTransform(0).Y, 0.001f);
+		CUI_EXPECT_NEAR(2.0f, readGeometryTransform(0).X, 0.001f);
+
+		auto reloadedXaml = xaml;
+		auto resourceAt = reloadedXaml.find(">4,6,80,40<");
+		CUI_EXPECT_TRUE(resourceAt != std::string::npos);
+		if (resourceAt != std::string::npos)
+			reloadedXaml.replace(resourceAt, std::string(">4,6,80,40<").size(),
+				">8,10,120,60<");
+		resourceAt = reloadedXaml.find(">22</Double>");
+		CUI_EXPECT_TRUE(resourceAt != std::string::npos);
+		if (resourceAt != std::string::npos)
+			reloadedXaml.replace(resourceAt, std::string(">22</Double>").size(),
+				">32</Double>");
+		DesignerModel::DesignDocument reloadedDocument;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			reloadedXaml, reloadedDocument, &error));
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			reloadedDocument, runtime, {}, &reloadMode, &error));
+		card = runtime.FindControlByName(L"card");
+		target = card ? card->FindDeclarativeTemplatePart(L"clipTarget") : nullptr;
+		CUI_EXPECT_TRUE(card && target);
+		if (card && target)
+		{
+			tick = go(L"Direct");
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+			expectRect(readPropertyRect(*card, L"ClipBounds"),
+				{ 8.0f, 10.0f, 120.0f, 60.0f });
+			(void)go(L"Idle");
+			tick = go(L"Transform");
+			CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(tick + 200));
+			CUI_EXPECT_NEAR(32.0f, readGeometryTransform(0).X, 0.001f);
+		}
+
+		auto invalidXaml = canonical;
+		auto invalidAt = invalidXaml.find("Value=\"2,3,40,50\"");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("Value=\"2,3,40,50\"").size(),
+				"Value=\"nan,3,40,50\"");
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = canonical;
+		invalidAt = invalidXaml.find(
+			"Storyboard.TargetProperty=\"(Control.Clip).(RectangleGeometry.Rect)\"");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("Storyboard.TargetProperty=\"(Control.Clip).(RectangleGeometry.Rect)\"").size(),
+				"Storyboard.TargetProperty=\"(Control.Clip).(EllipseGeometry.Bounds)\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		const std::string geometryTransformPath =
+			"(Control.Clip).(Geometry.Transform).(TransformGroup.Children)[0].(TranslateTransform.X)";
+		invalidXaml = canonical;
+		invalidAt = invalidXaml.find(geometryTransformPath);
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt, geometryTransformPath.size(),
+				"(Control.Clip).(PathGeometry.Transform).(TransformGroup.Children)[0].(TranslateTransform.X)");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = canonical;
+		invalidAt = invalidXaml.find(geometryTransformPath);
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt, geometryTransformPath.size(),
+				"(Control.Clip).(Geometry.Transform).(TransformGroup.Children)[99].(TranslateTransform.X)");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidXaml = canonical;
+		invalidAt = invalidXaml.find("Storyboard.TargetProperty=\"ClipBounds\"");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidXaml.replace(invalidAt,
+				std::string("Storyboard.TargetProperty=\"ClipBounds\"").size(),
+				"Storyboard.TargetProperty=\"Phase\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidXaml, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidSnapshot = snapshot;
+		invalidAt = invalidSnapshot.find("type=\"Rect\"");
+		invalidAt = invalidSnapshot.find("kind=\"Easing\"", invalidAt);
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidSnapshot.replace(invalidAt,
+				std::string("kind=\"Easing\"").size(), "kind=\"Bogus\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		invalidSnapshot = snapshot;
+		invalidAt = invalidSnapshot.find("Geometry.Transform");
+		CUI_EXPECT_TRUE(invalidAt != std::string::npos);
+		if (invalidAt != std::string::npos)
+			invalidSnapshot.replace(invalidAt,
+				std::string("Geometry.Transform").size(), "Geometry.Bogus");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			invalidSnapshot, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+
+		auto invalidRuntime = reloadedDocument;
+		auto& invalidStates = invalidRuntime.Components.front()
+			.VisualStateGroups.front().States;
+		auto invalidDirect = std::find_if(invalidStates.begin(), invalidStates.end(),
+			[](const auto& state) { return state.Name == L"Direct"; });
+		CUI_EXPECT_TRUE(invalidDirect != invalidStates.end());
+		if (invalidDirect != invalidStates.end())
+		{
+			invalidDirect->Animations.front().ToUsesResource = false;
+			invalidDirect->Animations.front().ToResourceKey.clear();
+			invalidDirect->Animations.front().To = {
+				DesignerStyleValueKind::Rect, L"0,0,-1,10" };
+		}
+		auto* retainedCard = runtime.FindControlByName(L"card");
+		CUI_EXPECT_FALSE(DesignerModel::RuntimeDocumentLoader::Reload(
+			invalidRuntime, runtime, {}, &reloadMode, &error));
+		CUI_EXPECT_TRUE(runtime.FindControlByName(L"card") == retainedCard);
+
+		Control directRuntimeProbe;
+		DynamicControlPropertyDefinition rectProperty;
+		rectProperty.Name = L"Bounds";
+		rectProperty.ValueKind = BindingValueKind::Object;
+		rectProperty.DefaultValue = BindingValue(
+			cui::core::Rect{ 1.0f, 2.0f, 30.0f, 40.0f });
+		CUI_EXPECT_TRUE(directRuntimeProbe.DefineDynamicProperty(rectProperty, &error));
+		DeclarativeVisualStateAnimation invalidDirectAnimation;
+		invalidDirectAnimation.Kind = DeclarativeAnimationKind::Rect;
+		invalidDirectAnimation.PropertyName = L"Bounds";
+		invalidDirectAnimation.To = BindingValue(
+			cui::core::Rect{ 0.0f, 0.0f, -1.0f, 10.0f });
+		invalidDirectAnimation.DurationMilliseconds = 100;
+		DeclarativeVisualStateDefinition invalidDirectState;
+		invalidDirectState.Name = L"Invalid";
+		invalidDirectState.Animations.push_back(std::move(invalidDirectAnimation));
+		DeclarativeVisualStateGroupDefinition invalidDirectGroup;
+		invalidDirectGroup.Name = L"InvalidRectStates";
+		invalidDirectGroup.States.push_back(std::move(invalidDirectState));
+		CUI_EXPECT_FALSE(directRuntimeProbe.DefineVisualStateGroups(
+			{ std::move(invalidDirectGroup) }, &error));
+
+		Panel missingGeometryProbe;
+		DeclarativeVisualStateAnimation invalidPathAnimation;
+		invalidPathAnimation.Kind = DeclarativeAnimationKind::Rect;
+		invalidPathAnimation.PropertyName =
+			L"(Control.Clip).(RectangleGeometry.Rect)";
+		invalidPathAnimation.To = BindingValue(
+			cui::core::Rect{ 0.0f, 0.0f, 10.0f, 10.0f });
+		invalidPathAnimation.DurationMilliseconds = 100;
+		DeclarativeVisualStateDefinition invalidPathState;
+		invalidPathState.Name = L"Invalid";
+		invalidPathState.Animations.push_back(std::move(invalidPathAnimation));
+		DeclarativeVisualStateGroupDefinition invalidPathGroup;
+		invalidPathGroup.Name = L"MissingGeometryStates";
+		invalidPathGroup.States.push_back(std::move(invalidPathState));
+		CUI_EXPECT_FALSE(missingGeometryProbe.DefineVisualStateGroups(
+			{ std::move(invalidPathGroup) }, &error));
+
+		Panel missingGeometryTransformProbe;
+		cui::drawing::Geometry untransformedGeometry;
+		untransformedGeometry.Kind = cui::drawing::GeometryKind::Rectangle;
+		untransformedGeometry.Rect = D2D1::RectF(0.0f, 0.0f, 10.0f, 10.0f);
+		missingGeometryTransformProbe.SetClip(untransformedGeometry);
+		DeclarativeVisualStateAnimation missingTransformAnimation;
+		missingTransformAnimation.Kind = DeclarativeAnimationKind::Double;
+		missingTransformAnimation.PropertyName =
+			L"(Control.Clip).(Geometry.Transform).(TransformGroup.Children)[0].(TranslateTransform.X)";
+		missingTransformAnimation.To = BindingValue(10.0f);
+		missingTransformAnimation.DurationMilliseconds = 100;
+		DeclarativeVisualStateDefinition missingTransformState;
+		missingTransformState.Name = L"Invalid";
+		missingTransformState.Animations.push_back(
+			std::move(missingTransformAnimation));
+		DeclarativeVisualStateGroupDefinition missingTransformGroup;
+		missingTransformGroup.Name = L"MissingGeometryTransformStates";
+		missingTransformGroup.States.push_back(std::move(missingTransformState));
+		CUI_EXPECT_FALSE(missingGeometryTransformProbe.DefineVisualStateGroups(
+			{ std::move(missingTransformGroup) }, &error));
+	});
+
+	runner.Add("XAML component property behavior metadata round-trips end to end", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:test-behavior" x:Name="BehaviorForm">
+  <Form.Resources>
+    <ComponentDefinition x:Key="local:ThemeScope" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="AccentLevel" Type="Int" Default="1"
+          Inherits="true" BindsTwoWayByDefault="true"
+          DefaultUpdateSourceTrigger="LostFocus"
+          AffectsParentMeasure="true" AffectsParentArrange="true" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.ContentProperties>
+        <ComponentContentProperty Name="Content" Cardinality="Single"
+                                  Default="true" />
+      </ComponentDefinition.ContentProperties>
+      <ComponentDefinition.Template>
+        <StackPanel x:Name="contentHost"
+                    ComponentSlot.Presents="Content" />
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <Form.DataContextSchema>
+    <Property Path="AccentLevel" Kind="Int" />
+  </Form.DataContextSchema>
+  <local:ThemeScope x:Name="outerScope" DesignId="1"
+                    AccentLevel="{Binding AccentLevel}">
+    <local:ThemeScope x:Name="innerScope" DesignId="2" />
+  </local:ThemeScope>
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		CUI_EXPECT_EQ(1ULL, document.Components.front().Properties.size());
+		CUI_EXPECT_EQ(2ULL, document.Nodes.size());
+		const auto& property = document.Components.front().Properties.front();
+		CUI_EXPECT_TRUE(HasControlPropertyFlag(
+			property.Flags, ControlPropertyFlags::Inherits));
+		CUI_EXPECT_TRUE(HasControlPropertyFlag(
+			property.Flags, ControlPropertyFlags::BindsTwoWayByDefault));
+		CUI_EXPECT_TRUE(HasControlPropertyFlag(
+			property.Flags, ControlPropertyFlags::AffectsParentMeasure));
+		CUI_EXPECT_TRUE(HasControlPropertyFlag(
+			property.Flags, ControlPropertyFlags::AffectsParentArrange));
+		CUI_EXPECT_EQ(DataSourceUpdateMode::OnValidation,
+			property.DefaultUpdateMode);
+		CUI_EXPECT_EQ(static_cast<int>(BindingMode::Default),
+			document.Nodes.front().Bindings["AccentLevel"]["mode"].get<int>());
+		CUI_EXPECT_EQ(static_cast<int>(DataSourceUpdateMode::Default),
+			document.Nodes.front().Bindings["AccentLevel"]["updateMode"].get<int>());
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("Inherits=\"true\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("BindsTwoWayByDefault=\"true\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"DefaultUpdateSourceTrigger=\"LostFocus\"") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("AffectsParentMeasure=\"true\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("AffectsParentArrange=\"true\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("Mode=Default") == std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find(
+			"UpdateSourceTrigger=Default") == std::string::npos);
+		DesignerModel::DesignDocument fromXaml;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, fromXaml, &error));
+		CUI_EXPECT_EQ(document, fromXaml);
+
+		const auto snapshot =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		DesignerModel::DesignDocument fromSnapshot;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, fromSnapshot, &error));
+		CUI_EXPECT_EQ(document, fromSnapshot);
+		auto legacySnapshot = snapshot;
+		const auto persistedTrigger = legacySnapshot.find(
+			" defaultUpdateMode=\"1\"");
+		CUI_EXPECT_TRUE(persistedTrigger != std::string::npos);
+		if (persistedTrigger != std::string::npos)
+			legacySnapshot.erase(persistedTrigger,
+				std::string(" defaultUpdateMode=\"1\"").size());
+		DesignerModel::DesignDocument fromLegacySnapshot;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			legacySnapshot, fromLegacySnapshot, &error));
+		CUI_EXPECT_EQ(DataSourceUpdateMode::OnPropertyChanged,
+			fromLegacySnapshot.Components.front().Properties.front()
+				.DefaultUpdateMode);
+
+		auto source = std::make_shared<ObservableObject>();
+		CUI_EXPECT_TRUE(source->DefineProperty(L"AccentLevel", 4));
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.DataContext = source;
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, options, &error));
+		auto* outer = runtime.FindControlByName(L"outerScope");
+		auto* inner = runtime.FindControlByName(L"innerScope");
+		CUI_EXPECT_TRUE(outer != nullptr);
+		CUI_EXPECT_TRUE(inner != nullptr);
+		if (outer && inner)
+		{
+			const auto* outerMetadata = outer->FindPropertyMetadata(L"AccentLevel");
+			const auto* innerMetadata = inner->FindPropertyMetadata(L"AccentLevel");
+			CUI_EXPECT_TRUE(outerMetadata != nullptr);
+			CUI_EXPECT_TRUE(innerMetadata != nullptr);
+			if (outerMetadata && innerMetadata)
+			{
+				CUI_EXPECT_FALSE(outerMetadata->InheritanceKey().empty());
+				CUI_EXPECT_TRUE(outerMetadata->HasSameInheritanceIdentity(
+					*innerMetadata));
+				CUI_EXPECT_TRUE(HasControlPropertyFlag(outerMetadata->Flags(),
+					ControlPropertyFlags::AffectsParentMeasure));
+				CUI_EXPECT_TRUE(HasControlPropertyFlag(outerMetadata->Flags(),
+					ControlPropertyFlags::AffectsParentArrange));
+				CUI_EXPECT_EQ(DataSourceUpdateMode::OnValidation,
+					outerMetadata->DefaultUpdateMode());
+			}
+			auto* binding = outer->DataBindings.Find(L"AccentLevel");
+			CUI_EXPECT_TRUE(binding != nullptr);
+			if (binding)
+			{
+				CUI_EXPECT_EQ(BindingMode::TwoWay, binding->Mode());
+				CUI_EXPECT_EQ(DataSourceUpdateMode::OnValidation,
+					binding->UpdateMode());
+			}
+
+			auto readAccent = [](Control& control)
+			{
+				BindingValue value;
+				int result = -1;
+				CUI_EXPECT_TRUE(control.TryGetPropertyValue(L"AccentLevel", value));
+				CUI_EXPECT_TRUE(value.TryGet(result));
+				return result;
+			};
+			CUI_EXPECT_EQ(4, readAccent(*outer));
+			CUI_EXPECT_EQ(ControlPropertyValueSource::Inherited,
+				inner->GetPropertyValueSource(L"AccentLevel"));
+			CUI_EXPECT_EQ(4, readAccent(*inner));
+			CUI_EXPECT_TRUE(outer->TrySetPropertyValue(
+				L"AccentLevel", BindingValue(9)));
+			CUI_EXPECT_EQ(4, source->GetValue<int>(L"AccentLevel"));
+			outer->OnLostFocus(outer);
+			CUI_EXPECT_EQ(9, source->GetValue<int>(L"AccentLevel"));
+			CUI_EXPECT_EQ(9, readAccent(*inner));
+
+			CUI_EXPECT_TRUE(inner->Parent != nullptr);
+			CUI_EXPECT_TRUE(inner->TrySetPropertyValue(
+				L"AccentLevel", BindingValue(12)));
+			CUI_EXPECT_EQ(12, readAccent(*inner));
+		}
+
+		auto invalid = canonical;
+		const auto inherits = invalid.find("Inherits=\"true\"");
+		CUI_EXPECT_TRUE(inherits != std::string::npos);
+		if (inherits != std::string::npos)
+			invalid.replace(inherits, std::string("Inherits=\"true\"").size(),
+				"Inherits=\"invalid\"");
+		DesignerModel::DesignDocument unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalid, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"布尔值") != std::wstring::npos);
+
+		auto invalidTrigger = canonical;
+		const auto trigger = invalidTrigger.find(
+			"DefaultUpdateSourceTrigger=\"LostFocus\"");
+		CUI_EXPECT_TRUE(trigger != std::string::npos);
+		if (trigger != std::string::npos)
+			invalidTrigger.replace(trigger,
+				std::string("DefaultUpdateSourceTrigger=\"LostFocus\"").size(),
+				"DefaultUpdateSourceTrigger=\"Default\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidTrigger, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"DefaultUpdateSourceTrigger")
+			!= std::wstring::npos);
+	});
+
+	runner.Add("XAML component read-only properties round-trip and drive templates", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:test-readonly" x:Name="ReadOnlyForm">
+  <Form.Resources>
+    <ComponentDefinition x:Key="local:StatusMeter" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Status" Type="String" Default="Idle"
+                           ReadOnly="true" AffectsRender="true" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Label Text="{TemplateBinding Status}" />
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:StatusMeter x:Name="meter" DesignId="1" />
+  <Label x:Name="mirror" DesignId="2"
+         Text="{Binding Status, ElementName=meter}" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		CUI_EXPECT_EQ(1ULL, document.Components.front().Properties.size());
+		CUI_EXPECT_TRUE(document.Components.front().Properties.front().IsReadOnly);
+		const auto canonical = DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("ReadOnly=\"true\"") != std::string::npos);
+		DesignerModel::DesignDocument fromXaml;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, fromXaml, &error));
+		CUI_EXPECT_EQ(document, fromXaml);
+
+		const auto snapshot = DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(snapshot.find(" readOnly=\"1\"") != std::string::npos);
+		DesignerModel::DesignDocument fromSnapshot;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, fromSnapshot, &error));
+		CUI_EXPECT_EQ(document, fromSnapshot);
+		auto legacySnapshot = snapshot;
+		const auto readOnlyAttribute = legacySnapshot.find(" readOnly=\"1\"");
+		CUI_EXPECT_TRUE(readOnlyAttribute != std::string::npos);
+		if (readOnlyAttribute != std::string::npos)
+			legacySnapshot.erase(readOnlyAttribute,
+				std::string(" readOnly=\"1\"").size());
+		DesignerModel::DesignDocument fromLegacySnapshot;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			legacySnapshot, fromLegacySnapshot, &error));
+		CUI_EXPECT_FALSE(fromLegacySnapshot.Components.front()
+			.Properties.front().IsReadOnly);
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* meter = runtime.FindControlByName(L"meter");
+		auto* mirror = runtime.FindControlByName(L"mirror");
+		CUI_EXPECT_TRUE(meter != nullptr && mirror != nullptr);
+		if (meter && mirror)
+		{
+			const auto* metadata = meter->FindPropertyMetadata(L"Status");
+			CUI_EXPECT_TRUE(metadata != nullptr);
+			if (metadata)
+			{
+				CUI_EXPECT_TRUE(metadata->IsReadOnly());
+				CUI_EXPECT_TRUE(metadata->CanRead());
+				CUI_EXPECT_FALSE(metadata->CanWrite());
+				CUI_EXPECT_TRUE(metadata->CanObserve());
+			}
+			CUI_EXPECT_EQ(1, meter->Count);
+			auto* templateLabel = meter->Count == 1 ? (*meter)[0] : nullptr;
+			CUI_EXPECT_TRUE(templateLabel != nullptr);
+			if (templateLabel)
+				CUI_EXPECT_EQ(std::wstring(L"Idle"), templateLabel->Text);
+			CUI_EXPECT_EQ(std::wstring(L"Idle"), mirror->Text);
+			CUI_EXPECT_FALSE(meter->TrySetPropertyValue(
+				L"Status", BindingValue(std::wstring(L"Public"))));
+			CUI_EXPECT_TRUE(meter->TrySetReadOnlyPropertyValue(
+				L"Status", BindingValue(std::wstring(L"Busy"))));
+			if (templateLabel)
+				CUI_EXPECT_EQ(std::wstring(L"Busy"), templateLabel->Text);
+			CUI_EXPECT_EQ(std::wstring(L"Busy"), mirror->Text);
+
+			const auto properties =
+				DesignerPropertyCatalog::GetPropertyGridProperties(*meter);
+			const auto* status = DesignerPropertyCatalog::Find(properties, L"Status");
+			CUI_EXPECT_TRUE(status != nullptr);
+			CUI_EXPECT_TRUE(status && status->Metadata
+				&& status->Metadata->IsReadOnly());
+			DesignerControl wrapper(meter, L"meter", meter->Type());
+			DesignerControlPropertyContext context;
+			const auto rows = DesignerPropertyRowCatalog::GetControlRows(
+				wrapper, context);
+			const auto* row = DesignerPropertyRowCatalog::Find(rows, L"Status");
+			CUI_EXPECT_TRUE(row != nullptr);
+			CUI_EXPECT_TRUE(row && row->IsReadOnly);
+			CUI_EXPECT_FALSE(row && row->CanReset);
+		}
+
+		auto invalidLiteral = xaml;
+		const auto instance = invalidLiteral.find(
+			"<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" />");
+		CUI_EXPECT_TRUE(instance != std::string::npos);
+		if (instance != std::string::npos)
+			invalidLiteral.replace(instance,
+				std::string("<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" />").size(),
+				"<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" Status=\"Busy\" />");
+		DesignerModel::DesignDocument unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidLiteral, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"只读") != std::wstring::npos);
+
+		auto invalidBinding = xaml;
+		const auto bindingInstance = invalidBinding.find(
+			"<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" />");
+		if (bindingInstance != std::string::npos)
+			invalidBinding.replace(bindingInstance,
+				std::string("<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" />").size(),
+				"<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" Status=\"{Binding Status}\" />");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidBinding, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"只读") != std::wstring::npos);
+
+		auto invalidMultiBinding = xaml;
+		const auto multiBindingInstance = invalidMultiBinding.find(
+			"<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" />");
+		if (multiBindingInstance != std::string::npos)
+			invalidMultiBinding.replace(multiBindingInstance,
+				std::string("<local:StatusMeter x:Name=\"meter\" DesignId=\"1\" />").size(),
+				"<local:StatusMeter x:Name=\"meter\" DesignId=\"1\">\n"
+				"    <local:StatusMeter.Status>\n"
+				"      <MultiBinding StringFormat=\"{}{0} {1}\">\n"
+				"        <Binding Path=\"First\" />\n"
+				"        <Binding Path=\"Second\" />\n"
+				"      </MultiBinding>\n"
+				"    </local:StatusMeter.Status>\n"
+				"  </local:StatusMeter>");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidMultiBinding, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"只读") != std::wstring::npos);
+
+		auto invalidStyle = xaml;
+		const auto resourcesEnd = invalidStyle.find("  </Form.Resources>");
+		CUI_EXPECT_TRUE(resourcesEnd != std::string::npos);
+		if (resourcesEnd != std::string::npos)
+			invalidStyle.insert(resourcesEnd,
+				"    <Style TargetType=\"local:StatusMeter\">\n"
+				"      <Setter Property=\"Status\" Value=\"Busy\" />\n"
+				"    </Style>\n");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidStyle, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"只读") != std::wstring::npos);
+
+		auto invalidFlags = xaml;
+		const auto readOnly = invalidFlags.find("ReadOnly=\"true\"");
+		if (readOnly != std::string::npos)
+			invalidFlags.replace(readOnly, std::string("ReadOnly=\"true\"").size(),
+				"ReadOnly=\"true\" BindsTwoWayByDefault=\"true\"");
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidFlags, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"BindsTwoWayByDefault") != std::wstring::npos);
+	});
+
+	runner.Add("Declarative component behaviors attach by QName and survive hot reload", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:component-behavior" x:Name="BehaviorForm">
+  <Form.Resources>
+    <ComponentDefinition x:Key="local:StatusCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="State" Type="String" Default="Idle"
+                           ReadOnly="true" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.ContentProperties>
+        <ComponentContentProperty Name="Content" Cardinality="Single"
+                                  Default="true" />
+      </ComponentDefinition.ContentProperties>
+      <ComponentDefinition.Template>
+        <StackPanel x:Name="PART_Root">
+          <Label x:Name="PART_State" Text="{TemplateBinding State}" />
+          <StackPanel x:Name="PART_Content"
+                      ComponentSlot.Presents="Content" />
+        </StackPanel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:StatusCard x:Name="card" DesignId="1" Width="240" Height="120">
+    <Button x:Name="contentButton" DesignId="2" Text="Content" />
+  </local:StatusCard>
+</Form>)XAML";
+
+		struct BehaviorState
+		{
+			int Factories = 0;
+			int Attached = 0;
+			int Detached = 0;
+			int Messages = 0;
+			int DpiChanges = 0;
+			int DeviceInvalidations = 0;
+			bool FailAttach = false;
+			Control* LastHost = nullptr;
+			Control* StatePart = nullptr;
+			Control* ContentPresenter = nullptr;
+			std::wstring InstanceName;
+			int StableId = 0;
+		};
+		class CardBehavior final : public IDeclarativeComponentBehavior
+		{
+		public:
+			explicit CardBehavior(std::shared_ptr<BehaviorState> state)
+				: State(std::move(state)) {}
+
+			bool Attach(
+				Control& host,
+				const DeclarativeComponentBehaviorContext& context,
+				std::wstring* outError) override
+			{
+				++State->Attached;
+				State->LastHost = &host;
+				State->InstanceName = context.InstanceName;
+				State->StableId = context.StableId;
+				State->StatePart = host.FindDeclarativeTemplatePart(L"PART_State");
+				State->ContentPresenter =
+					host.FindDeclarativeContentPresenter(L"Content");
+				if (&context.Host != &host
+					|| context.XamlNamespace != L"urn:cui:component-behavior"
+					|| context.XamlTypeName != L"StatusCard"
+					|| !State->StatePart || !State->ContentPresenter)
+				{
+					if (outError) *outError = L"Behavior context or template parts are invalid.";
+					return false;
+				}
+				if (State->FailAttach)
+				{
+					if (outError) *outError = L"Requested attach failure.";
+					return false;
+				}
+				if (!host.TrySetReadOnlyPropertyValue(
+					L"State", BindingValue(std::wstring(L"Attached"))))
+				{
+					if (outError) *outError = L"Read-only state update failed.";
+					return false;
+				}
+				if (outError) outError->clear();
+				return true;
+			}
+
+			void Detach(Control&) noexcept override { ++State->Detached; }
+
+			bool HandleMessage(
+				Control& host,
+				UINT message,
+				WPARAM,
+				LPARAM,
+				int,
+				int) override
+			{
+				if (message != WM_APP + 37) return false;
+				++State->Messages;
+				(void)host.TrySetReadOnlyPropertyValue(
+					L"State", BindingValue(std::wstring(L"Handled")));
+				return true;
+			}
+
+			void DpiChanged(Control&, float) override
+			{
+				++State->DpiChanges;
+			}
+
+			void DeviceResourcesInvalidated(Control&) noexcept override
+			{
+				++State->DeviceInvalidations;
+			}
+
+		private:
+			std::shared_ptr<BehaviorState> State;
+		};
+
+		auto makeRegistry = [](const std::shared_ptr<BehaviorState>& state)
+		{
+			auto registry = std::make_shared<
+				DesignerModel::DeclarativeComponentBehaviorRegistry>();
+			DesignerComponentType type;
+			type.XamlPrefix = L"local";
+			type.XamlName = L"StatusCard";
+			type.XamlNamespace = L"urn:cui:component-behavior";
+			std::wstring registrationError;
+			CUI_EXPECT_TRUE(registry->Register(
+				type,
+				[state](const DeclarativeComponentBehaviorContext&)
+				{
+					++state->Factories;
+					return std::make_unique<CardBehavior>(state);
+				},
+				&registrationError));
+			CUI_EXPECT_TRUE(registrationError.empty());
+			return registry;
+		};
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		auto firstState = std::make_shared<BehaviorState>();
+		auto firstRegistry = makeRegistry(firstState);
+		DesignerModel::RuntimeDocumentLoadOptions options;
+		options.DeclarativeComponentBehaviors = firstRegistry;
+
+		auto refreshedState = std::make_shared<BehaviorState>();
+		{
+			DesignerModel::RuntimeDocument runtime;
+			CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+				document, runtime, options, &error));
+			auto* card = runtime.FindControlByName(L"card");
+			CUI_EXPECT_TRUE(card != nullptr);
+			CUI_EXPECT_TRUE(card && card->HasDeclarativeComponentBehavior());
+			CUI_EXPECT_EQ(1, firstState->Factories);
+			CUI_EXPECT_EQ(1, firstState->Attached);
+			CUI_EXPECT_EQ(0, firstState->Detached);
+			CUI_EXPECT_EQ(1, firstState->DpiChanges);
+			CUI_EXPECT_EQ(std::wstring(L"card"), firstState->InstanceName);
+			CUI_EXPECT_EQ(1, firstState->StableId);
+			auto* stateLabel = card
+				? dynamic_cast<Label*>(card->FindDeclarativeTemplatePart(
+					L"PART_State")) : nullptr;
+			CUI_EXPECT_TRUE(stateLabel != nullptr);
+			CUI_EXPECT_TRUE(card && card->FindDeclarativeTemplatePart(
+				L"PART_Root") != nullptr);
+			CUI_EXPECT_TRUE(card && card->FindDeclarativeContentPresenter(
+				L"Content") != nullptr);
+			if (stateLabel)
+				CUI_EXPECT_EQ(std::wstring(L"Attached"), stateLabel->Text);
+
+			CUI_EXPECT_TRUE(card && card->DispatchMessage(
+				WM_APP + 37, 0, 0, 5, 7));
+			CUI_EXPECT_EQ(1, firstState->Messages);
+			if (stateLabel)
+				CUI_EXPECT_EQ(std::wstring(L"Handled"), stateLabel->Text);
+			if (card)
+			{
+				card->NotifyDpiChanged(1.5f);
+				card->NotifyDeviceResourcesInvalidated();
+			}
+			CUI_EXPECT_EQ(2, firstState->DpiChanges);
+			CUI_EXPECT_EQ(1, firstState->DeviceInvalidations);
+
+			auto inPlaceDocument = document;
+			inPlaceDocument.Nodes.front().Props["size"]["width"] = 260;
+			DesignerModel::RuntimeDocumentReloadMode mode{};
+			CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+				inPlaceDocument, runtime, {}, &mode, &error));
+			CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentReloadMode::InPlace, mode);
+			CUI_EXPECT_TRUE(runtime.FindControlByName(L"card") == card);
+			CUI_EXPECT_EQ(1, firstState->Factories);
+			CUI_EXPECT_EQ(1, firstState->Attached);
+			CUI_EXPECT_EQ(0, firstState->Detached);
+
+			auto recomposedDocument = inPlaceDocument;
+			DesignerModel::DesignNode added;
+			added.Id = recomposedDocument.AllocateNodeId();
+			added.Name = L"addedLabel";
+			added.Type = UIClass::UI_Label;
+			added.Order = 10;
+			recomposedDocument.Nodes.push_back(std::move(added));
+			CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+				recomposedDocument, runtime, {}, &mode, &error));
+			CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentReloadMode::Recomposed, mode);
+			CUI_EXPECT_TRUE(runtime.FindControlByName(L"card") == card);
+			CUI_EXPECT_EQ(1, firstState->Factories);
+			CUI_EXPECT_EQ(1, firstState->Attached);
+			CUI_EXPECT_EQ(0, firstState->Detached);
+
+			auto refreshedRegistry = makeRegistry(refreshedState);
+			DesignerModel::RuntimeDocumentLoadOptions refreshOptions;
+			refreshOptions.DeclarativeComponentBehaviors = refreshedRegistry;
+			CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+				recomposedDocument, runtime, refreshOptions, &mode, &error));
+			CUI_EXPECT_EQ(DesignerModel::RuntimeDocumentReloadMode::Replaced, mode);
+			CUI_EXPECT_TRUE(runtime.FindControlByName(L"card") != card);
+			CUI_EXPECT_EQ(1, firstState->Detached);
+			CUI_EXPECT_EQ(1, refreshedState->Factories);
+			CUI_EXPECT_EQ(1, refreshedState->Attached);
+
+			auto failingState = std::make_shared<BehaviorState>();
+			failingState->FailAttach = true;
+			auto failingRegistry = makeRegistry(failingState);
+			DesignerModel::RuntimeDocumentLoadOptions failingOptions;
+			failingOptions.DeclarativeComponentBehaviors = failingRegistry;
+			auto* beforeFailure = runtime.FindControlByName(L"card");
+			CUI_EXPECT_FALSE(DesignerModel::RuntimeDocumentLoader::Reload(
+				recomposedDocument, runtime, failingOptions, &mode, &error));
+			CUI_EXPECT_TRUE(runtime.FindControlByName(L"card") == beforeFailure);
+			CUI_EXPECT_EQ(1, failingState->Factories);
+			CUI_EXPECT_EQ(1, failingState->Attached);
+			CUI_EXPECT_EQ(1, failingState->Detached);
+			CUI_EXPECT_TRUE(error.find(L"Requested attach failure")
+				!= std::wstring::npos);
+		}
+		CUI_EXPECT_EQ(1, refreshedState->Detached);
+	});
+
+	runner.Add("NativeSurface keeps XAML declarative and resolves application behavior", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="NativeSurfaceForm">
+  <NativeSurface x:Name="scene" DesignId="41"
+    BehaviorKey="Scene3D" PlaceholderText="3D scene preview"
+    Width="320" Height="180" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_EQ(1ULL, document.Nodes.size());
+		CUI_EXPECT_EQ(UIClass::UI_NativeSurface, document.Nodes.front().Type);
+		CUI_EXPECT_EQ(std::string("Scene3D"), document.Nodes.front()
+			.Props["metadata"]["BehaviorKey"]["value"].get<std::string>());
+
+		DesignerModel::MaterializedControlTree strictTree;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentMaterializer::Materialize(
+			document, strictTree, &error));
+		CUI_EXPECT_TRUE(error.find(L"Scene3D") != std::wstring::npos);
+
+		DesignerModel::DesignDocumentMaterializationOptions previewOptions;
+		previewOptions.AllowNativeSurfacePlaceholder = true;
+		DesignerModel::MaterializedControlTree previewTree;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentMaterializer::Materialize(
+			document, previewTree, previewOptions, &error));
+		CUI_EXPECT_EQ(1ULL, previewTree.Roots.size());
+		auto* previewSurface = previewTree.Roots.empty()
+			? nullptr : dynamic_cast<NativeSurface*>(previewTree.Roots.front().get());
+		CUI_EXPECT_TRUE(previewSurface != nullptr);
+		if (previewSurface)
+		{
+			CUI_EXPECT_FALSE(previewSurface->HasBehavior());
+			CUI_EXPECT_EQ(std::wstring(L"Scene3D"),
+				previewSurface->GetBehaviorKey());
+			CUI_EXPECT_EQ(std::wstring(L"3D scene preview"),
+				previewSurface->GetPlaceholderText());
+		}
+
+		struct BehaviorState
+		{
+			int Attached = 0;
+			int Detached = 0;
+			int Inputs = 0;
+			int DpiChanges = 0;
+			int DeviceInvalidations = 0;
+		};
+		class SceneBehavior final : public INativeSurfaceBehavior
+		{
+		public:
+			explicit SceneBehavior(std::shared_ptr<BehaviorState> state)
+				: State(std::move(state)) {}
+			void Attach(NativeSurface&) override { ++State->Attached; }
+			void Detach(NativeSurface&) noexcept override { ++State->Detached; }
+			void Render(NativeSurface&, NativeSurfaceRenderContext&) override {}
+			bool HandleInput(
+				NativeSurface&, NativeSurfaceInputEvent& event) override
+			{
+				if (event.Kind != NativeSurfaceInputKind::PointerDown)
+					return false;
+				++State->Inputs;
+				return true;
+			}
+			void DpiChanged(NativeSurface&, float) override
+			{
+				++State->DpiChanges;
+			}
+			void DeviceResourcesInvalidated(NativeSurface&) noexcept override
+			{
+				++State->DeviceInvalidations;
+			}
+
+			std::shared_ptr<BehaviorState> State;
+		};
+
+		auto state = std::make_shared<BehaviorState>();
+		auto registry =
+			std::make_shared<DesignerModel::NativeSurfaceBehaviorRegistry>();
+		CUI_EXPECT_TRUE(registry->Register(L"Scene3D",
+			[state](NativeSurface& host)
+			{
+				CUI_EXPECT_EQ(std::wstring(L"Scene3D"), host.GetBehaviorKey());
+				return std::make_unique<SceneBehavior>(state);
+			}, &error));
+		CUI_EXPECT_FALSE(registry->Register(L"", {}, &error));
+
+		{
+			DesignerModel::RuntimeDocumentLoadOptions options;
+			options.NativeSurfaceBehaviors = registry;
+			DesignerModel::RuntimeDocument runtime;
+			CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::LoadXaml(
+				xaml, runtime, options, &error));
+			auto* surface = runtime.FindControlByDesignId<NativeSurface>(41);
+			CUI_EXPECT_TRUE(surface != nullptr);
+			if (surface)
+			{
+				CUI_EXPECT_TRUE(surface->HasBehavior());
+				CUI_EXPECT_TRUE(surface->ProcessMessage(
+					WM_LBUTTONDOWN, 0, 0, 12, 23));
+				surface->NotifyDpiChanged(1.5f);
+				surface->NotifyDeviceResourcesInvalidated();
+			}
+			CUI_EXPECT_EQ(1, state->Attached);
+			CUI_EXPECT_EQ(1, state->Inputs);
+			CUI_EXPECT_TRUE(state->DpiChanges >= 2);
+			CUI_EXPECT_EQ(1, state->DeviceInvalidations);
+		}
+		CUI_EXPECT_EQ(1, state->Detached);
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		CUI_EXPECT_TRUE(canonical.find("<NativeSurface") != std::string::npos);
+		CUI_EXPECT_TRUE(canonical.find("BehaviorKey=\"Scene3D\"")
+			!= std::string::npos);
+		DesignerModel::DesignDocument roundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, roundTrip, &error));
+		CUI_EXPECT_EQ(document, roundTrip);
 	});
 
 	runner.Add("Canonical XAML properties are the single source of truth", []
@@ -9603,7 +26003,7 @@ int main()
 		for (const auto forbidden : { "d:ProjectedProperties", "d:DesignProps",
 			"d:DesignBindings", "d:DesignExtra" })
 			CUI_EXPECT_TRUE(canonical.find(forbidden) == std::string::npos);
-		for (const auto expected : { "RenderTransformOrigin=\"0.5,0.5\"",
+		for (const auto expected : { "RenderTransformOrigin=\"0.5, 0.5\"",
 			"<Control.Clip>", "<GeometryGroup FillRule=\"Nonzero\"",
 			"<RectangleGeometry", "<EllipseGeometry", "<PathGeometry",
 			"<Geometry.Transform>", "<PathFigure", "<LineSegment",
@@ -9639,8 +26039,11 @@ int main()
 		CUI_EXPECT_EQ(1ULL, parsedPath["transform"].size());
 		CUI_EXPECT_EQ(4ULL,
 			parsedPath["figures"][size_t{ 0 }]["segments"].size());
-		CUI_EXPECT_EQ(0.5,
-			parsed.Nodes[0].Extra["renderTransformOrigin"]["x"].get<double>());
+		CUI_EXPECT_FALSE(parsed.Nodes[0].Extra.contains("renderTransformOrigin"));
+		CUI_EXPECT_EQ(std::string("Point"), parsed.Nodes[0].Props["metadata"]
+			["RenderTransformOrigin"]["kind"].get<std::string>());
+		CUI_EXPECT_EQ(std::string("0.5, 0.5"), parsed.Nodes[0].Props["metadata"]
+			["RenderTransformOrigin"]["value"].get<std::string>());
 		CUI_EXPECT_EQ(1ULL, parsed.Nodes[1].Extra["columns"].size());
 		CUI_EXPECT_EQ(2ULL, parsed.Nodes[1].Extra["items"][size_t{ 0 }]["subItems"].size());
 		CUI_EXPECT_EQ(4, parsed.Nodes[2].Extra["columns"][size_t{ 0 }]["type"].get<int>());
@@ -9715,7 +26118,9 @@ int main()
 			"choices->SetClip",
 			"cui::drawing::Transform __renderTransform_choices",
 			"cui::drawing::TransformKind::Skew", "choices->SetRenderTransform",
-			"choices->SetRenderTransformOrigin", "cells->AddRow(__gridRow1)",
+			"TrySetPropertyValue(L\"RenderTransformOrigin\"",
+			"BindingValue(cui::core::Point{ 0.5f, 0.5f })",
+			"cells->AddRow(__gridRow1)",
 			"paged->AddRow(__gridRow1)" })
 			CUI_EXPECT_TRUE(generated.find(expected) != std::string::npos);
 		CUI_EXPECT_EQ(canonical,
@@ -10332,7 +26737,7 @@ int main()
 		}
 	});
 
-	runner.Add("Designer XML v5 persists code-behind and upgrades older versions", []
+	runner.Add("Designer XML v29 persists hierarchical templates content grouping views panels and typed data resources", []
 	{
 		DesignerModel::DesignDocument document;
 		document.Form.Name = L"SchemaForm";
@@ -10340,9 +26745,79 @@ int main()
 		document.CodeBehind.RelativeBasePath = L"generated/SchemaWindow";
 		document.DataContextSchema = {
 			{ L"Profile", BindingValueKind::Object, true, false, true },
-			{ L"Profile.DisplayName", BindingValueKind::String, true, true, true }
+			{ L"Profile.DisplayName", BindingValueKind::String, true, true, true },
+			{ L"People", BindingValueKind::Object, true, false, true,
+				DesignerDataObjectKind::BindingList, L"Person" }
 		};
 		DesignerDataContextSchemaUtils::Canonicalize(document.DataContextSchema);
+		DesignerModel::DesignDataTypeDefinition personType;
+		personType.Name = L"Person";
+		personType.Properties = {
+			{ L"Name", BindingValueKind::String, true, true, true }
+		};
+		document.DataTypes.push_back(std::move(personType));
+		DesignerModel::DesignNode rowNode;
+		rowNode.Id = 1;
+		rowNode.Name = L"personName";
+		rowNode.Type = UIClass::UI_Label;
+		rowNode.Bindings["Text"] = DesignerModel::DesignValue{
+			{ "source", "Name" },
+			{ "mode", static_cast<int>(BindingMode::OneWay) },
+			{ "updateMode", static_cast<int>(
+				DataSourceUpdateMode::OnPropertyChanged) }
+		};
+		DesignerModel::DesignDataTemplate personTemplate;
+		personTemplate.Key = L"PersonRow";
+		personTemplate.DataType = L"Person";
+		personTemplate.Template.push_back(std::move(rowNode));
+		document.DataTemplates.push_back(std::move(personTemplate));
+		DesignerModel::DesignNode groupHeaderNode;
+		groupHeaderNode.Id = 2;
+		groupHeaderNode.Name = L"groupName";
+		groupHeaderNode.Type = UIClass::UI_Label;
+		groupHeaderNode.Bindings["Text"] = DesignerModel::DesignValue{
+			{ "source", "Key" },
+			{ "mode", static_cast<int>(BindingMode::OneWay) },
+			{ "updateMode", static_cast<int>(
+				DataSourceUpdateMode::OnPropertyChanged) }
+		};
+		DesignerModel::DesignDataTemplate groupHeaderTemplate;
+		groupHeaderTemplate.Key = L"PersonGroupHeader";
+		groupHeaderTemplate.DataType = L"CollectionViewGroup";
+		groupHeaderTemplate.Template.push_back(std::move(groupHeaderNode));
+		document.DataTemplates.push_back(std::move(groupHeaderTemplate));
+		DesignerModel::DesignDataList peopleList;
+		peopleList.Key = L"People";
+		peopleList.ItemType = L"Person";
+		DesignerModel::DesignDataRecord aliceRecord;
+		aliceRecord.Fields[L"Name"] = L"Alice";
+		peopleList.Records.push_back(std::move(aliceRecord));
+		document.DataLists.push_back(std::move(peopleList));
+		DesignerModel::DesignCollectionViewSource peopleView;
+		peopleView.Key = L"SortedPeople";
+		peopleView.SourceResource = L"People";
+		peopleView.GroupDescriptions.push_back({
+			L"Name", CollectionSortDirection::Descending, false });
+		peopleView.AggregateDescriptions.push_back({
+			L"PeopleCount", L"", CollectionAggregateFunction::Count });
+		peopleView.SortDescriptions.push_back({
+			L"Name", CollectionSortDirection::Ascending, true });
+		peopleView.FilterDescriptions.push_back({
+			L"Name", CollectionFilterOperator::StartsWith, L"A", true });
+		document.CollectionViews.push_back(std::move(peopleView));
+		DesignerModel::DesignItemsPanelTemplate itemsPanel;
+		itemsPanel.Key = L"PeoplePanel";
+		itemsPanel.Value.Kind = ItemsPanelKind::VirtualizingStack;
+		itemsPanel.Value.ItemHeight = 28.5f;
+		itemsPanel.Value.Spacing = 1.25f;
+		itemsPanel.Value.CacheLength = 0.75f;
+		document.ItemsPanelTemplates.push_back(std::move(itemsPanel));
+		DesignerModel::DesignGroupStyle groupStyle;
+		groupStyle.Key = L"PeopleGroups";
+		groupStyle.HeaderTemplate = L"PersonGroupHeader";
+		groupStyle.HeaderIndent = 14.5f;
+		groupStyle.HeaderSpacing = 2.25f;
+		document.GroupStyles.push_back(std::move(groupStyle));
 		document.StyleSheet.Resources.push_back({
 			L"Accent", { DesignerStyleValueKind::Color, L"#FF336699" } });
 		DesignerStyleRule styleRule;
@@ -10391,7 +26866,7 @@ int main()
 		document.NextStableId = 17;
 
 		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
-		CUI_EXPECT_TRUE(xml.find("version=\"5\"") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("version=\"29\"") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("nextId=\"17\"") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find(
 			"<codeBehind class=\"Acme::Views::SchemaWindow\" relativeBasePath=\"generated/SchemaWindow\"")
@@ -10400,6 +26875,21 @@ int main()
 		CUI_EXPECT_TRUE(xml.find("parentId=\"1\"") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("locked=\"true\"") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("<dataContext>") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("<dataTypes>") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("<dataTemplates>") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("<dataLists>") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("<collectionViews>") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("<itemsPanelTemplates>") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("<groupStyles>") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("<group property=\"Name\" direction=\"descending\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("<aggregate name=\"PeopleCount\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(xml.find(
+			"kind=\"virtualizingStack\"") != std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("<dataList key=\"People\" itemType=\"Person\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(xml.find("key=\"PersonRow\"") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("<styleSheet>") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("requiredStates=\"Focused\"") != std::string::npos);
 		CUI_EXPECT_TRUE(xml.find("resource=\"Accent\"") != std::string::npos);
@@ -12860,9 +29350,12 @@ class FreshWindow : public FreshWindowGenerated {};
 		rule.Type = UIClass::UI_Button;
 		rule.Classes = { L"primary" };
 		rule.RequiredStates = ControlStyleState::Hovered;
+		rule.PropertyConditions.push_back({ L"Text",
+			{ DesignerStyleValueKind::String, L"Ready" } });
 		rule.Setters = {
 			{ L"UnderMouseColor", true, L"Accent", {} },
-			{ L"Round", false, L"", { DesignerStyleValueKind::Float, L"8.5" } }
+			{ L"Round", false, L"", { DesignerStyleValueKind::Float, L"8.5" } },
+			{ L"MouseDownColor", true, L"Accent", {}, true }
 		};
 		input.StyleSheet.Rules.push_back(std::move(rule));
 		Button styledRoot(L"Styled", 0, 0, 120, 32);
@@ -12876,7 +29369,12 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(cpp.find("UIClass::UI_Button") != std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find("RequiredStates = static_cast<ControlStyleState>(1u)")
 			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find(
+			"PropertyConditions.push_back({ L\"Text\", BindingValue(L\"Ready\") })")
+			!= std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find("ControlStyleSetter::Resource(L\"UnderMouseColor\", L\"Accent\")")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find("ControlStyleSetter::DynamicResource(L\"MouseDownColor\", L\"Accent\")")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find("BindingValue(8.5f)") != std::string::npos);
 		// Form is not a Control. The shared document sheet belongs on each root
@@ -12885,6 +29383,34 @@ class FreshWindow : public FreshWindowGenerated {};
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find("this->SetStyleSheet(__styleSheet);")
 			== std::string::npos);
+
+		DesignerStyleTrigger actionTrigger;
+		actionTrigger.DataConditions.push_back({
+			L"Ready", { DesignerStyleValueKind::Bool, L"true" } });
+		DesignerEventTriggerAction enter;
+		enter.Kind = DesignerStoryboardActionKind::Begin;
+		DesignerVisualStateAnimation animation;
+		animation.Kind = DesignerAnimationKind::Double;
+		animation.PropertyName = L"Round";
+		animation.HasTo = true;
+		animation.To = { DesignerStyleValueKind::Float, L"12" };
+		animation.DurationMilliseconds = 100;
+		enter.Animations.push_back(std::move(animation));
+		actionTrigger.EnterActions.push_back(std::move(enter));
+		input.StyleSheet.Rules.front().Triggers.push_back(
+			std::move(actionTrigger));
+		bool rejectedActions = false;
+		try
+		{
+			CodeGenerator actionGenerator(L"StyledForm", input);
+			(void)actionGenerator.GenerateCpp();
+		}
+		catch (const std::invalid_argument& exception)
+		{
+			rejectedActions = std::string(exception.what()).find(
+				"dynamic XAML") != std::string::npos;
+		}
+		CUI_EXPECT_TRUE(rejectedActions);
 	});
 
 	runner.Add("Designer metadata properties generate through runtime property metadata", []
@@ -12920,6 +29446,47 @@ class FreshWindow : public FreshWindowGenerated {};
 		const auto resetCpp = resetGenerator.GenerateCpp();
 		CUI_EXPECT_TRUE(resetCpp.find(
 			"metadataButton->TrySetPropertyValue(L\"Round\"") == std::string::npos);
+
+		designerControl->MetadataPropertyDynamicResourceKeys[L"Round"] =
+			L"ButtonRadius";
+		designerControl->LocalResources =
+			std::make_shared<DesignerStyleSheet>();
+		designerControl->LocalResources->Resources.push_back({
+			L"ButtonRadius", { DesignerStyleValueKind::Float, L"6.5" }, {} });
+		DesignerStyleRule baseButton;
+		baseButton.HasType = true;
+		baseButton.Type = UIClass::UI_Button;
+		baseButton.Id = L"BaseButton";
+		baseButton.Setters.push_back({ L"BackColor", false, {},
+			{ DesignerStyleValueKind::Color, L"#FF102030" } });
+		input.StyleSheet.Rules.push_back(std::move(baseButton));
+		DesignerStyleRule localButton;
+		localButton.HasType = true;
+		localButton.Type = UIClass::UI_Button;
+		localButton.BasedOn = L"BaseButton";
+		localButton.Setters.push_back({ L"Round", true,
+			L"ButtonRadius", {}, true });
+		designerControl->LocalResources->Rules.push_back(
+			std::move(localButton));
+		CodeGenerator dynamicGenerator(L"MetadataForm", input);
+		const auto dynamicCpp = dynamicGenerator.GenerateCpp();
+		const auto dictionaryAt = dynamicCpp.find(
+			"__resources_metadataButton->SetResource(L\"ButtonRadius\", BindingValue(6.5f));");
+		const auto expressionAt = dynamicCpp.find(
+			"(void)metadataButton->SetDynamicResource(L\"Round\", L\"ButtonRadius\");");
+		CUI_EXPECT_TRUE(dictionaryAt != std::string::npos);
+		CUI_EXPECT_TRUE(dynamicCpp.find(
+			"(void)metadataButton->SetDynamicResource(L\"Round\", L\"ButtonRadius\");")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(dictionaryAt < expressionAt);
+		CUI_EXPECT_TRUE(dynamicCpp.find(
+			"__resources_metadataButton->AddRule") != std::string::npos);
+		CUI_EXPECT_TRUE(dynamicCpp.find(
+			"ControlStyleSetter(L\"BackColor\", BindingValue(D2D1::ColorF")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(dynamicCpp.find(
+			"ControlStyleSetter::DynamicResource(L\"Round\", L\"ButtonRadius\")")
+			!= std::string::npos);
 	});
 
 	runner.Add("Designer binding code generation preserves and restores Local values", []
@@ -12928,9 +29495,16 @@ class FreshWindow : public FreshWindowGenerated {};
 		auto captionTarget = std::make_shared<DesignerControl>(
 			&captionButton, L"captionButton", UIClass::UI_Button);
 		captionTarget->DataBindings[L"Text"] = {
-			L"Caption", BindingMode::OneWay,
+			L"People[0].Caption", BindingMode::OneWay,
 			DataSourceUpdateMode::OnPropertyChanged, L"StringTrim"
 		};
+		captionTarget->DataBindings[L"Text"].FallbackValue =
+			DesignerStyleValue{ DesignerStyleValueKind::String, L"Fallback" };
+		captionTarget->DataBindings[L"Text"].TargetNullValue =
+			DesignerStyleValue{ DesignerStyleValueKind::String, L"" };
+		captionTarget->DataBindings[L"Text"].ConverterParameter =
+			DesignerStyleValue{ DesignerStyleValueKind::Double, L"2.5" };
+		captionTarget->DataBindings[L"Text"].StringFormat = L"{}{0:N2}";
 		CheckBox stateCheckBox(L"State", 0, 0);
 		auto stateTarget = std::make_shared<DesignerControl>(
 			&stateCheckBox, L"stateCheckBox", UIClass::UI_CheckBox);
@@ -12953,6 +29527,11 @@ class FreshWindow : public FreshWindowGenerated {};
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find(
 			"BindingValueConverterRegistry::Create(L\"StringTrim\")")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find("L\"People[0].Caption\"")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(cpp.find(
+			"__converter, BindingValue(L\"Fallback\"), BindingValue(L\"\"), BindingValue(2.5), std::optional<std::wstring>(L\"{}{0:N2}\")")
 			!= std::string::npos);
 		CUI_EXPECT_TRUE(cpp.find(
 			"ClearPropertyValue(L\"Checked\", ControlPropertyValueSource::Local")
@@ -13083,6 +29662,25 @@ class FreshWindow : public FreshWindowGenerated {};
 		target.CanObserve = true;
 		CUI_EXPECT_TRUE(DesignerBindingUtils::ValidateTarget(
 			target, twoWay, &error, &schema));
+
+		target.Flags = ControlPropertyFlags::BindsTwoWayByDefault;
+		target.DefaultUpdateMode = DataSourceUpdateMode::Never;
+		auto defaultMode = oneWay;
+		defaultMode.Mode = BindingMode::Default;
+		defaultMode.UpdateMode = DataSourceUpdateMode::Default;
+		CUI_EXPECT_EQ(BindingMode::TwoWay,
+			DesignerBindingUtils::ResolveBindingMode(
+				target, defaultMode.Mode));
+		CUI_EXPECT_TRUE(DesignerBindingUtils::ValidateTarget(
+			target, defaultMode, &error, &schema));
+		auto readOnlySchema = schema;
+		readOnlySchema.front().CanWrite = false;
+		CUI_EXPECT_TRUE(DesignerBindingUtils::ValidateTarget(
+			target, defaultMode, &error, &readOnlySchema));
+		defaultMode.UpdateMode = DataSourceUpdateMode::OnPropertyChanged;
+		CUI_EXPECT_FALSE(DesignerBindingUtils::ValidateTarget(
+			target, defaultMode, &error, &readOnlySchema));
+		CUI_EXPECT_TRUE(error.find(L"不可写") != std::wstring::npos);
 	});
 
     runner.Add("Interactive state metadata supports TwoWay binding", []
@@ -13353,16 +29951,23 @@ class FreshWindow : public FreshWindowGenerated {};
         CUI_EXPECT_NEAR(72.75f, wrap.GetItemWidth(), 0.0001f);
     });
 
-    runner.Add("Default text metadata updates TwoWay sources", []
+    runner.Add("TextBox metadata defaults to TwoWay LostFocus updates", []
     {
         ObservableObject source;
         source.SetValue(L"Name", std::wstring(L"before"));
 
-        Control target;
-        target.DataBindings.Add(L"Text", source, L"Name", BindingMode::TwoWay);
+        TextBox target(L"", 0, 0);
+		auto* binding = target.DataBindings.Add(L"Text", source, L"Name");
+		CUI_EXPECT_TRUE(binding != nullptr);
+		CUI_EXPECT_EQ(BindingMode::TwoWay, binding->Mode());
+		CUI_EXPECT_EQ(DataSourceUpdateMode::OnValidation,
+			binding->UpdateMode());
         CUI_EXPECT_EQ(std::wstring(L"before"), target.Text);
 
         target.Text = L"after";
+		CUI_EXPECT_EQ(std::wstring(L"before"),
+			source.GetValue<std::wstring>(L"Name"));
+		target.OnLostFocus(&target);
         CUI_EXPECT_EQ(std::wstring(L"after"), source.GetValue<std::wstring>(L"Name"));
     });
 
@@ -13937,7 +30542,248 @@ class FreshWindow : public FreshWindowGenerated {};
         CUI_EXPECT_NEAR(44.0f, result.height, 0.0001f);
     });
 
-	runner.Add("Custom XAML controls round-trip portable type metadata", []
+	runner.Add("Component EventTriggers control named Storyboards transactionally", []
+	{
+		const std::string xaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:event-storyboards" x:Name="EventStoryboardForm">
+  <Form.Resources>
+    <Double x:Key="PulseRadius">10</Double>
+    <ComponentDefinition x:Key="local:PulseCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="IsHot" Type="Bool" Default="false" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Events>
+        <ComponentEvent Name="Start" />
+        <ComponentEvent Name="Pause" />
+        <ComponentEvent Name="Resume" />
+        <ComponentEvent Name="Stop" />
+        <ComponentEvent Name="Flash" />
+      </ComponentDefinition.Events>
+      <ComponentDefinition.Template>
+        <StackPanel x:Name="PART_Root">
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="TemperatureStates">
+              <VisualState x:Name="Cool">
+                <VisualState.Setters>
+                  <Setter TargetName="target"
+                    Property="ValidationCornerRadius" Value="2" />
+                </VisualState.Setters>
+              </VisualState>
+              <VisualState x:Name="Hot">
+                <VisualState.StateTriggers>
+                  <StateTrigger Property="IsHot" Value="true" />
+                </VisualState.StateTriggers>
+                <VisualState.Setters>
+                  <Setter TargetName="target"
+                    Property="ValidationCornerRadius" Value="6" />
+                </VisualState.Setters>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+          <StackPanel.Triggers>
+            <EventTrigger RoutedEvent="Start">
+              <BeginStoryboard x:Name="Pulse">
+                <Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="target"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    From="2" To="{StaticResource PulseRadius}"
+                    Duration="0:0:1" />
+                  <ObjectAnimationUsingKeyFrames Storyboard.TargetName="target"
+                    Storyboard.TargetProperty="Text" Duration="0:0:1">
+                    <DiscreteObjectKeyFrame KeyTime="0:0:0.5" Value="Running" />
+                    <DiscreteObjectKeyFrame KeyTime="0:0:1" Value="Done" />
+                  </ObjectAnimationUsingKeyFrames>
+                </Storyboard>
+              </BeginStoryboard>
+            </EventTrigger>
+            <EventTrigger RoutedEvent="Pause">
+              <PauseStoryboard BeginStoryboardName="Pulse" />
+            </EventTrigger>
+            <EventTrigger RoutedEvent="Resume">
+              <ResumeStoryboard BeginStoryboardName="Pulse" />
+            </EventTrigger>
+            <EventTrigger RoutedEvent="Stop">
+              <StopStoryboard BeginStoryboardName="Pulse" />
+            </EventTrigger>
+            <EventTrigger RoutedEvent="Flash">
+              <BeginStoryboard x:Name="NoHold">
+                <Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="target"
+                    Storyboard.TargetProperty="ValidationCornerRadius"
+                    To="9" Duration="0:0:0" FillBehavior="Stop" />
+                </Storyboard>
+              </BeginStoryboard>
+            </EventTrigger>
+          </StackPanel.Triggers>
+          <Label x:Name="target" Text="Idle"
+            ValidationCornerRadius="2" />
+        </StackPanel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+  <local:PulseCard x:Name="card" DesignId="1" />
+</Form>)XAML";
+
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			xaml, document, &error));
+		CUI_EXPECT_TRUE(error.empty());
+		CUI_EXPECT_EQ(1ULL, document.Components.size());
+		const auto& component = document.Components.front();
+		CUI_EXPECT_EQ(1ULL, component.VisualStateGroups.size());
+		CUI_EXPECT_EQ(5ULL, component.EventTriggers.size());
+		CUI_EXPECT_EQ(std::wstring(L"Start"),
+			component.EventTriggers[0].EventName);
+		CUI_EXPECT_EQ(DesignerStoryboardActionKind::Begin,
+			component.EventTriggers[0].Actions[0].Kind);
+		CUI_EXPECT_EQ(std::wstring(L"Pulse"),
+			component.EventTriggers[0].Actions[0].StoryboardName);
+		CUI_EXPECT_EQ(2ULL,
+			component.EventTriggers[0].Actions[0].Animations.size());
+		CUI_EXPECT_TRUE(component.EventTriggers[0].Actions[0]
+			.Animations[0].ToUsesResource);
+		CUI_EXPECT_EQ(DesignerStoryboardActionKind::Pause,
+			component.EventTriggers[1].Actions[0].Kind);
+		CUI_EXPECT_EQ(DesignerStoryboardActionKind::Resume,
+			component.EventTriggers[2].Actions[0].Kind);
+		CUI_EXPECT_EQ(DesignerStoryboardActionKind::Stop,
+			component.EventTriggers[3].Actions[0].Kind);
+
+		const auto canonical =
+			DesignerModel::XamlDocumentSerializer::ToXaml(document);
+		for (const auto marker : {
+			"<StackPanel.Triggers>",
+			"<EventTrigger RoutedEvent=\"Start\">",
+			"<BeginStoryboard x:Name=\"Pulse\">",
+			"<PauseStoryboard BeginStoryboardName=\"Pulse\"",
+			"<ResumeStoryboard BeginStoryboardName=\"Pulse\"",
+			"<StopStoryboard BeginStoryboardName=\"Pulse\"" })
+			CUI_EXPECT_TRUE(canonical.find(marker) != std::string::npos);
+		DesignerModel::DesignDocument xamlRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+			canonical, xamlRoundTrip, &error));
+		CUI_EXPECT_EQ(document, xamlRoundTrip);
+		const auto snapshot =
+			DesignerModel::DesignDocumentSerializer::ToXml(document);
+		CUI_EXPECT_TRUE(snapshot.find("componentEventTrigger")
+			!= std::string::npos);
+		CUI_EXPECT_TRUE(snapshot.find("pauseStoryboard")
+			!= std::string::npos);
+		DesignerModel::DesignDocument snapshotRoundTrip;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
+			snapshot, snapshotRoundTrip, &error));
+		CUI_EXPECT_EQ(document, snapshotRoundTrip);
+
+		DesignerModel::DesignDocument fragment;
+		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentClipboard::Capture(
+			document, { document.Nodes.front().Id }, fragment, &error));
+		CUI_EXPECT_EQ(1ULL, fragment.Components.size());
+		CUI_EXPECT_TRUE(std::any_of(fragment.StyleSheet.Resources.begin(),
+			fragment.StyleSheet.Resources.end(), [](const auto& resource)
+			{ return _wcsicmp(resource.Key.c_str(), L"PulseRadius") == 0; }));
+
+		DesignerModel::RuntimeDocument runtime;
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
+			document, runtime, {}, &error));
+		auto* card = runtime.FindControlByName(L"card");
+		auto* target = card
+			? dynamic_cast<Label*>(card->FindDeclarativeTemplatePart(L"target"))
+			: nullptr;
+		CUI_EXPECT_TRUE(card != nullptr && target != nullptr);
+		CUI_EXPECT_NEAR(2.0f, target->ValidationCornerRadius, 0.0001f);
+		CUI_EXPECT_EQ(std::wstring(L"Idle"), target->Text);
+		CUI_EXPECT_EQ(ControlPropertyValueSource::VisualState,
+			target->GetPropertyValueSource(L"ValidationCornerRadius"));
+
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Start"));
+		CUI_EXPECT_TRUE(card->HasActiveVisualStateAnimations());
+		const auto startTick = ::GetTickCount64();
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(startTick + 250));
+		CUI_EXPECT_TRUE(target->ValidationCornerRadius > 2.0f
+			&& target->ValidationCornerRadius < 10.0f);
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Animation,
+			target->GetPropertyValueSource(L"ValidationCornerRadius"));
+		CUI_EXPECT_EQ(std::wstring(L"Idle"), target->Text);
+
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Pause"));
+		const auto pausedRadius = target->ValidationCornerRadius;
+		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_FALSE(card->AdvanceVisualStateAnimations(startTick + 900));
+		CUI_EXPECT_NEAR(pausedRadius,
+			target->ValidationCornerRadius, 0.0001f);
+
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Resume"));
+		CUI_EXPECT_TRUE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(startTick + 700));
+		CUI_EXPECT_TRUE(target->ValidationCornerRadius > pausedRadius);
+		CUI_EXPECT_EQ(std::wstring(L"Running"), target->Text);
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(startTick + 2000));
+		CUI_EXPECT_FALSE(card->HasActiveVisualStateAnimations());
+		CUI_EXPECT_NEAR(10.0f, target->ValidationCornerRadius, 0.0001f);
+		CUI_EXPECT_EQ(std::wstring(L"Done"), target->Text);
+		CUI_EXPECT_TRUE(card->TrySetPropertyValue(L"IsHot", BindingValue(true)));
+		CUI_EXPECT_NEAR(10.0f, target->ValidationCornerRadius, 0.0001f);
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Animation,
+			target->GetPropertyValueSource(L"ValidationCornerRadius"));
+
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Stop"));
+		CUI_EXPECT_NEAR(6.0f, target->ValidationCornerRadius, 0.0001f);
+		CUI_EXPECT_EQ(std::wstring(L"Idle"), target->Text);
+		CUI_EXPECT_EQ(ControlPropertyValueSource::VisualState,
+			target->GetPropertyValueSource(L"ValidationCornerRadius"));
+		CUI_EXPECT_EQ(ControlPropertyValueSource::Local,
+			target->GetPropertyValueSource(L"Text"));
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Flash"));
+		CUI_EXPECT_NEAR(6.0f, target->ValidationCornerRadius, 0.0001f);
+		CUI_EXPECT_EQ(ControlPropertyValueSource::VisualState,
+			target->GetPropertyValueSource(L"ValidationCornerRadius"));
+
+		auto resourceReload = document;
+		resourceReload.StyleSheet.Resources.front().Value.Text = L"14";
+		DesignerModel::RuntimeDocumentReloadMode reloadMode{};
+		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Reload(
+			resourceReload, runtime, {}, &reloadMode, &error));
+		CUI_EXPECT_TRUE(reloadMode
+			!= DesignerModel::RuntimeDocumentReloadMode::InPlace);
+		card = runtime.FindControlByName(L"card");
+		target = card
+			? dynamic_cast<Label*>(card->FindDeclarativeTemplatePart(L"target"))
+			: nullptr;
+		CUI_EXPECT_TRUE(card != nullptr && target != nullptr);
+		CUI_EXPECT_TRUE(card->RaiseDeclarativeEvent(L"Start"));
+		CUI_EXPECT_TRUE(card->AdvanceVisualStateAnimations(
+			::GetTickCount64() + 2000));
+		CUI_EXPECT_NEAR(14.0f, target->ValidationCornerRadius, 0.0001f);
+
+		auto invalidReference = canonical;
+		const auto stopReference = invalidReference.find(
+			"<StopStoryboard BeginStoryboardName=\"Pulse\"");
+		CUI_EXPECT_TRUE(stopReference != std::string::npos);
+		if (stopReference != std::string::npos)
+		{
+			const auto name = invalidReference.find("Pulse", stopReference);
+			if (name != std::string::npos)
+				invalidReference.replace(name, 5, "Missing");
+		}
+		auto unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
+			invalidReference, unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+		CUI_EXPECT_TRUE(error.find(L"BeginStoryboard") != std::wstring::npos);
+
+		auto invalidSnapshot = document;
+		invalidSnapshot.Components.front().EventTriggers[3]
+			.Actions.front().StoryboardName = L"Missing";
+		unchanged = document;
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			DesignerModel::DesignDocumentSerializer::ToXml(invalidSnapshot),
+			unchanged, &error));
+		CUI_EXPECT_EQ(document, unchanged);
+	});
+
+	runner.Add("Canonical XAML rejects legacy d C++ custom controls", []
 	{
 		const std::string xaml = R"(<Form xmlns="urn:cui"
 			xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -13953,92 +30799,10 @@ class FreshWindow : public FreshWindowGenerated {};
 		</Form>)";
 		DesignerModel::DesignDocument document;
 		std::wstring error;
-		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
+		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
 			xaml, document, &error));
-		CUI_EXPECT_EQ(1ULL, document.Nodes.size());
-		const auto& node = document.Nodes.front();
-		CUI_EXPECT_EQ(UIClass::UI_Button, node.Type);
-		CUI_EXPECT_EQ(std::wstring(L"local"), node.CustomType.XamlPrefix);
-		CUI_EXPECT_EQ(std::wstring(L"urn:cui:tests"),
-			node.CustomType.XamlNamespace);
-		CUI_EXPECT_EQ(std::wstring(L"Acme::Controls::FancyButton"),
-			node.CustomType.CppType);
-		CUI_EXPECT_EQ(DesignerCustomControlConstructor::Default,
-			node.CustomType.Constructor);
-
-		const auto canonical =
-			DesignerModel::XamlDocumentSerializer::ToXaml(document);
-		CUI_EXPECT_TRUE(canonical.find("xmlns:local=\"urn:cui:tests\"")
-			!= std::string::npos);
-		CUI_EXPECT_TRUE(canonical.find("<local:FancyButton")
-			!= std::string::npos);
-		CUI_EXPECT_TRUE(canonical.find(
-			"d:CppType=\"Acme::Controls::FancyButton\"") != std::string::npos);
-		DesignerModel::DesignDocument fromXaml;
-		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
-			canonical, fromXaml, &error));
-		CUI_EXPECT_EQ(document, fromXaml);
-
-		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
-		DesignerModel::DesignDocument fromXml;
-		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
-			xml, fromXml, &error));
-		CUI_EXPECT_EQ(document, fromXml);
-	});
-
-	runner.Add("Custom controls require registration at runtime and allow tool proxies", []
-	{
-		class FancyButton final : public Button
-		{
-		public:
-			FancyButton() : Button(L"", 0, 0, 1, 1) {}
-		};
-
-		DesignerModel::DesignDocument document;
-		document.Form.Name = L"CustomRuntimeForm";
-		DesignerModel::DesignNode node;
-		node.Id = 7;
-		node.Name = L"fancy";
-		node.Type = UIClass::UI_Button;
-		node.CustomType = {
-			L"local", L"FancyButton", L"urn:cui:tests",
-			L"Acme::Controls::FancyButton", L"Controls/FancyButton.h",
-			DesignerCustomControlConstructor::Default };
-		node.Props["metadata"]["Text"] = {
-			{ "kind", "String" }, { "value", "Registered" } };
-		document.Nodes.push_back(node);
-		document.NextStableId = 8;
-
-		std::wstring error;
-		DesignerModel::RuntimeDocument rejected;
-		CUI_EXPECT_FALSE(DesignerModel::RuntimeDocumentLoader::Load(
-			document, rejected, {}, &error));
-
-		auto registry =
-			std::make_shared<DesignerModel::RuntimeCustomControlRegistry>();
-		CUI_EXPECT_TRUE(registry->Register(
-			L"urn:cui:tests", L"FancyButton",
-			[](const DesignerModel::DesignNode&)
-			{ return std::make_unique<FancyButton>(); }, &error));
-		DesignerModel::RuntimeDocumentLoadOptions registeredOptions;
-		registeredOptions.CustomControls = registry;
-		DesignerModel::RuntimeDocument runtime;
-		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
-			document, runtime, registeredOptions, &error));
-		CUI_EXPECT_TRUE(dynamic_cast<FancyButton*>(
-			runtime.FindControlByDesignId(7)) != nullptr);
-		CUI_EXPECT_EQ(std::wstring(L"Registered"),
-			runtime.FindControlByDesignId(7)->Text);
-
-		DesignerModel::RuntimeDocumentLoadOptions proxyOptions;
-		proxyOptions.AllowCustomControlProxy = true;
-		DesignerModel::RuntimeDocument proxy;
-		CUI_EXPECT_TRUE(DesignerModel::RuntimeDocumentLoader::Load(
-			document, proxy, proxyOptions, &error));
-		CUI_EXPECT_TRUE(dynamic_cast<FancyButton*>(
-			proxy.FindControlByDesignId(7)) == nullptr);
-		CUI_EXPECT_EQ(std::wstring(L"Acme::Controls::FancyButton"),
-			proxy.Controls().front()->CustomType.CppType);
+		CUI_EXPECT_TRUE(document.Nodes.empty());
+		CUI_EXPECT_TRUE(error.find(L"ComponentDefinition") != std::wstring::npos);
 	});
 
 	runner.Add("Runtime typed references expire safely and preserve document identity", []
@@ -14119,217 +30883,32 @@ class FreshWindow : public FreshWindowGenerated {};
 		CUI_EXPECT_TRUE(replacementReference.Get() == nullptr);
 	});
 
-	runner.Add("Custom control code generation uses declared include type and constructor", []
+	runner.Add("Legacy C++ custom-control XML metadata is rejected", []
 	{
-		class CodegenFancyButton final : public Button
-		{
-		public:
-			CodegenFancyButton() : Button(L"", 0, 0, 120, 30) {}
-			void EnsureBindingPropertiesRegistered() override
-			{
-				Button::EnsureBindingPropertiesRegistered();
-				static const bool registered = []
-				{
-					ControlPropertyOptions<CodegenFancyButton, int> options;
-					options.DefaultValue = 0;
-					options.Design.Persistence =
-						ControlPropertyPersistence::Metadata;
-					BindingPropertyRegistry::Register<CodegenFancyButton, int>(
-						L"Severity",
-						[](CodegenFancyButton& target) { return target.Severity; },
-						[](CodegenFancyButton& target, const int& value)
-						{ target.Severity = value; }, {}, std::move(options));
-					return true;
-				}();
-				(void)registered;
-			}
-
-			int Severity = 0;
-		};
-
-		DesignerModel::DesignDocument document;
-		document.Form.Name = L"CustomCodeForm";
-		DesignerModel::DesignNode node;
-		node.Id = 9;
-		node.Name = L"fancy";
-		node.Type = UIClass::UI_Button;
-		node.Order = 0;
-		node.CustomType = {
-			L"local", L"FancyButton", L"urn:cui:tests",
-			L"Acme::Controls::FancyButton", L"Controls/FancyButton.h",
-			DesignerCustomControlConstructor::Default };
-		node.Props["location"] = { { "x", 11 }, { "y", 12 } };
-		node.Props["size"] = { { "w", 130 }, { "h", 31 } };
-		node.Props["metadata"]["Text"] = {
-			{ "kind", "String" }, { "value", "Generated" } };
-		node.Props["metadata"]["Severity"] = {
-			{ "kind", "Int" }, { "value", "4" } };
-		node.CustomEvents.push_back({
-			L"OnSeverityInvoked", L"Severity invoked", "OnSeverityInvoked",
-			DesignerEventCategory::Action,
-			DesignerCustomEventSignature::SenderInt, 5, true });
-		node.Events["OnSeverityInvoked"] = "HandleSeverityInvoked";
-		document.Nodes.push_back(std::move(node));
-		document.NextStableId = 10;
-
-		CodeGenInput input;
+		const std::string legacyAttributes =
+			"<designDocument schema=\"cui.designer\" version=\"7\" nextId=\"2\">"
+			"<controls><control id=\"1\" name=\"fancy\" type=\"Button\" order=\"0\" "
+			"customName=\"FancyButton\" customNamespace=\"urn:cui:tests\" "
+			"customCppType=\"Acme::FancyButton\" customHeader=\"FancyButton.h\">"
+			"<props/></control></controls></designDocument>";
+		DesignerModel::DesignDocument parsed;
 		std::wstring error;
-		const auto xml = DesignerModel::DesignDocumentSerializer::ToXml(document);
-		DesignerModel::DesignDocument xmlRoundTrip;
-		CUI_EXPECT_TRUE(DesignerModel::DesignDocumentSerializer::FromXml(
-			xml, xmlRoundTrip, &error));
-		CUI_EXPECT_EQ(document, xmlRoundTrip);
-		const auto xaml = DesignerModel::XamlDocumentSerializer::ToXaml(document);
-		DesignerModel::DesignDocument xamlRoundTrip;
-		DesignerModel::XamlDocumentParseOptions xamlOptions;
-		xamlOptions.CustomControlFactory = [](const DesignerModel::DesignNode&)
-			{ return std::make_unique<CodegenFancyButton>(); };
-		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
-			xaml, xamlRoundTrip, xamlOptions, &error));
-		CUI_EXPECT_EQ(xaml,
-			DesignerModel::XamlDocumentSerializer::ToXaml(xamlRoundTrip));
-		auto invalidXamlContract = xaml;
-		const auto xamlSignature = invalidXamlContract.find(
-			" Signature=\"SenderInt\"");
-		CUI_EXPECT_TRUE(xamlSignature != std::string::npos);
-		invalidXamlContract.insert(xamlSignature,
-			" Unsupported=\"manifest-cpp\"");
-		DesignerModel::DesignDocument rejectedXamlContract;
-		CUI_EXPECT_FALSE(DesignerModel::XamlDocumentParser::FromXaml(
-			invalidXamlContract, rejectedXamlContract, xamlOptions, &error));
-		auto invalidXmlContract = xml;
-		const auto xmlSignature = invalidXmlContract.find(
-			" signature=\"SenderInt\"");
-		CUI_EXPECT_TRUE(xmlSignature != std::string::npos);
-		invalidXmlContract.insert(xmlSignature,
-			" unsupported=\"manifest-cpp\"");
-		DesignerModel::DesignDocument rejectedXmlContract;
 		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
-			invalidXmlContract, rejectedXmlContract, &error));
-		auto builtInContract = document;
-		builtInContract.Nodes.front().CustomType = {};
-		DesignerModel::DesignDocumentEventIndex rejectedBuiltInContract;
-		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentEventIndex::Build(
-			builtInContract, rejectedBuiltInContract, &error));
-		CUI_EXPECT_TRUE(
-			DesignerModel::DesignDocumentCodeGenInputBuilder::Build(
-				document, input, &error));
-		CodeGenerator generator(L"CustomCodeForm", input);
-		const auto header = generator.GenerateHeader();
-		const auto cpp = generator.GenerateCpp();
-		CUI_EXPECT_TRUE(header.find(
-			"#include \"Controls/FancyButton.h\"") != std::string::npos);
-		CUI_EXPECT_TRUE(header.find(
-			"Acme::Controls::FancyButton* fancy") != std::string::npos);
-		CUI_EXPECT_TRUE(cpp.find(
-			"std::make_unique<Acme::Controls::FancyButton>()")
-			!= std::string::npos);
-		CUI_EXPECT_TRUE(cpp.find("fancy->Location = {11, 12};")
-			!= std::string::npos);
-		CUI_EXPECT_TRUE(cpp.find("fancy->Size = {130, 31};")
-			!= std::string::npos);
-		CUI_EXPECT_TRUE(cpp.find(
-			"fancy->TrySetPropertyValue(L\"Severity\", BindingValue(4))")
-			!= std::string::npos);
-		CUI_EXPECT_TRUE(header.find(
-			"virtual void HandleSeverityInvoked(Control* sender, int value) = 0;")
-			!= std::string::npos);
-		CUI_EXPECT_TRUE(header.find(
-			"RegisterGeneratedCustomControl(") != std::string::npos);
-		CUI_EXPECT_TRUE(cpp.find(
-			"fancy->OnSeverityInvoked.Subscribe(std::bind_front(&CustomCodeFormGenerated::HandleSeverityInvoked, this))")
-			!= std::string::npos);
-	});
+			legacyAttributes, parsed, &error));
+		CUI_EXPECT_TRUE(error.find(L"Legacy C++ custom-control metadata")
+			!= std::wstring::npos);
 
-	runner.Add("Registered custom probes validate direct properties and canonicalize tool metadata", []
-	{
-		class PropertyBadge final : public Button
-		{
-		public:
-			PropertyBadge() : Button(L"", 0, 0, 120, 30) {}
-			int Severity() const noexcept { return _severity; }
-			void SetSeverity(int value)
-			{
-				SetPropertyField(L"Severity", _severity, value);
-			}
-			void EnsureBindingPropertiesRegistered() override
-			{
-				Button::EnsureBindingPropertiesRegistered();
-				static const bool registered = []
-				{
-					ControlPropertyOptions<PropertyBadge, int> options;
-					options.DefaultValue = 0;
-					options.Design.Category = L"Custom";
-					options.Design.Persistence =
-						ControlPropertyPersistence::Metadata;
-					BindingPropertyRegistry::Register<PropertyBadge, int>(
-						L"Severity",
-						[](PropertyBadge& target) { return target.Severity(); },
-						[](PropertyBadge& target, const int& value)
-						{ target.SetSeverity(value); }, {}, std::move(options));
-					return true;
-				}();
-				(void)registered;
-			}
-
-		private:
-			int _severity = 0;
-		};
-
-		auto registry =
-			std::make_shared<DesignerModel::RuntimeCustomControlRegistry>();
-		std::wstring error;
-		CUI_EXPECT_TRUE(registry->Register(
-			L"urn:cui:tests", L"PropertyBadge",
-			[](const DesignerModel::DesignNode&)
-			{ return std::make_unique<PropertyBadge>(); }, &error));
-		DesignerModel::XamlDocumentParseOptions parseOptions;
-		parseOptions.CustomControlFactory = [registry](
-			const DesignerModel::DesignNode& node)
-			{ return registry->Create(node); };
-		const std::string xaml = R"(<Form xmlns="urn:cui"
-			xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-			xmlns:d="urn:cui:designer" xmlns:local="urn:cui:tests"
-			x:Name="PropertyForm">
-			<local:PropertyBadge x:Name="badge" DesignId="51"
-				d:CppType="Acme.Controls.PropertyBadge"
-				d:Header="Controls/PropertyBadge.h" d:BaseType="Button"
-				Severity="6" />
-		</Form>)";
-		DesignerModel::DesignDocument document;
-		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
-			xaml, document, parseOptions, &error));
-		CUI_EXPECT_EQ(std::string("6"), document.Nodes.front().Props
-			["metadata"]["Severity"]["value"].get<std::string>());
-		document.Nodes.front().Bindings["Severity"] = {
-			{ "source", "View.Severity" },
-			{ "mode", static_cast<int>(BindingMode::OneWay) },
-			{ "updateMode", static_cast<int>(
-				DataSourceUpdateMode::OnPropertyChanged) } };
-
-		const auto canonical =
-			DesignerModel::XamlDocumentSerializer::ToXaml(document);
-		CUI_EXPECT_TRUE(canonical.find("d:DesignProps") == std::string::npos);
-		CUI_EXPECT_TRUE(canonical.find("d:DesignBindings") == std::string::npos);
-		CUI_EXPECT_TRUE(canonical.find("Severity=\"{Binding ")
-			!= std::string::npos);
-		DesignerModel::DesignDocument headless;
-		CUI_EXPECT_TRUE(DesignerModel::XamlDocumentParser::FromXaml(
-			canonical, headless, parseOptions, &error));
-		CUI_EXPECT_TRUE(!headless.Nodes.front().Props.contains("metadata")
-			|| !headless.Nodes.front().Props["metadata"].contains("Severity"));
-		CUI_EXPECT_TRUE(headless.Nodes.front().Bindings.contains("Severity"));
-		CodeGenInput input;
-		CUI_EXPECT_TRUE(
-			DesignerModel::DesignDocumentCodeGenInputBuilder::Build(
-				headless, input, &error));
-		const auto cpp = CodeGenerator(L"PropertyForm", input).GenerateCpp();
-		CUI_EXPECT_TRUE(cpp.find(
-			"badge->TrySetPropertyValue(L\"Severity\", BindingValue(6))")
-			== std::string::npos);
-		CUI_EXPECT_TRUE(cpp.find(
-			"badge->DataBindings.Add(L\"Severity\", dataContext, L\"View.Severity\"")
-			!= std::string::npos);
+		const std::string legacyEvents =
+			"<designDocument schema=\"cui.designer\" version=\"7\" nextId=\"2\">"
+			"<controls><control id=\"1\" name=\"fancy\" type=\"Button\" order=\"0\">"
+			"<customEvents><event name=\"OnSeverityInvoked\" "
+			"signature=\"SenderInt\"/></customEvents><props/>"
+			"</control></controls></designDocument>";
+		error.clear();
+		CUI_EXPECT_FALSE(DesignerModel::DesignDocumentSerializer::FromXml(
+			legacyEvents, parsed, &error));
+		CUI_EXPECT_TRUE(error.find(L"Legacy C++ custom-control metadata")
+			!= std::wstring::npos);
 	});
 
     return runner.RunAll();

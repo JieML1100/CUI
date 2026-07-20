@@ -2,7 +2,6 @@
 
 #include "DesignDocument.h"
 
-#include <functional>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -11,8 +10,6 @@ namespace DesignerModel
 {
 struct XamlDocumentParseOptions
 {
-	/** Optional real-control probe for custom elements and their properties. */
-	std::function<std::unique_ptr<Control>(const DesignNode&)> CustomControlFactory;
 	/** Optional directory used to resolve relative image/resource URIs. */
 	std::wstring ResourceBasePath;
 	/** Optional per-load context; defaults to an Application resolver snapshot. */

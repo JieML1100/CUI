@@ -2,8 +2,11 @@
 
 #include <Button.h>
 #include <Binding.h>
+#include <BindingList.h>
 #include <Form.h>
+#include <ItemsControl.h>
 #include <Label.h>
+#include <Layout/StackPanel.h>
 
 #include <Windows.h>
 
@@ -50,39 +53,30 @@ namespace
 		}
 	};
 
-	class RuntimeStatusBadge final : public Button
+	struct RuntimeSceneState
+	{
+		int Attached = 0;
+		int Detached = 0;
+		int PointerDown = 0;
+	};
+
+	class RuntimeSceneBehavior final : public INativeSurfaceBehavior
 	{
 	public:
-		Event<void(Control*, int)> OnSeverityInvoked;
-
-		RuntimeStatusBadge() : Button(L"", 0, 0, 120, 30) {}
-		int Severity() const noexcept { return _severity; }
-		void SetSeverity(int value)
+		explicit RuntimeSceneBehavior(std::shared_ptr<RuntimeSceneState> state)
+			: _state(std::move(state)) {}
+		void Attach(NativeSurface&) override { ++_state->Attached; }
+		void Detach(NativeSurface&) noexcept override { ++_state->Detached; }
+		void Render(NativeSurface&, NativeSurfaceRenderContext&) override {}
+		bool HandleInput(NativeSurface&, NativeSurfaceInputEvent& event) override
 		{
-			SetPropertyField(L"Severity", _severity, value);
-		}
-		void EnsureBindingPropertiesRegistered() override
-		{
-			Button::EnsureBindingPropertiesRegistered();
-			static const bool registered = []
-			{
-				ControlPropertyOptions<RuntimeStatusBadge, int> options;
-				options.DefaultValue = 0;
-				options.Design.Category = L"Custom";
-				options.Design.Persistence =
-					ControlPropertyPersistence::Metadata;
-				BindingPropertyRegistry::Register<RuntimeStatusBadge, int>(
-					L"Severity",
-					[](RuntimeStatusBadge& target) { return target.Severity(); },
-					[](RuntimeStatusBadge& target, const int& value)
-					{ target.SetSeverity(value); }, {}, std::move(options));
-				return true;
-			}();
-			(void)registered;
+			if (event.Kind != NativeSurfaceInputKind::PointerDown) return false;
+			++_state->PointerDown;
+			return true;
 		}
 
 	private:
-		int _severity = 0;
+		std::shared_ptr<RuntimeSceneState> _state;
 	};
 
 	struct SessionPollThreadContext
@@ -189,7 +183,7 @@ int wmain()
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       x:Name="RuntimeSampleForm"
       Text="CUI dynamic XAML sample"
-      Width="480" Height="240"
+	  Width="480" Height="320"
       Command="HandleCommand">
   <Form.Resources>
     <Color x:Key="Accent">#FF0078D4</Color>
@@ -197,7 +191,24 @@ int wmain()
       <Setter Property="Round" Value="8" />
       <Setter Property="BackColor" Value="{StaticResource Accent}" />
     </Style>
+	<DataType x:Key="Person">
+	  <DataType.Properties>
+		<Property Path="Name" Kind="String" />
+		<Property Path="Role" Kind="String" />
+	  </DataType.Properties>
+	</DataType>
+	<DataTemplate x:Key="PersonRow" DataType="Person">
+	  <StackPanel Orientation="Horizontal" Spacing="8">
+		<Label Text="{Binding Name}" Width="120" />
+		<Label Text="{Binding Role}" Width="120" />
+	  </StackPanel>
+	</DataTemplate>
   </Form.Resources>
+	<Form.DataContextSchema>
+	  <Property Path="Caption" Kind="String" />
+	  <Property Path="People" Kind="Object" ObjectType="BindingList"
+			ItemType="Person" CanWrite="false" />
+	</Form.DataContextSchema>
   <StackPanel x:Name="rootPanel" DesignId="10"
               Width="Auto" Height="Auto"
               Orientation="Vertical" Spacing="8">
@@ -206,6 +217,10 @@ int wmain()
 			Width="180" Height="36"
 			Text="{Binding Caption, Mode=OneWay}"
 			Click="HandleAction" />
+	<ItemsControl x:Name="peopleList" DesignId="12"
+			Width="300" Height="120"
+			ItemsSource="{Binding People}"
+			ItemTemplate="{StaticResource PersonRow}" />
   </StackPanel>
 </Form>)xaml";
 
@@ -226,91 +241,72 @@ int wmain()
 		|| !(xamlRoundTripped == source))
 		return Fail(L"canonical XAML round-trip", error);
 
-	const std::string customControlXaml = R"xaml(
+	const std::string dataResourceXaml = R"xaml(
+<Form xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Form.Resources>
+    <DataType x:Key="Person">
+      <DataType.Properties>
+        <Property Path="Id" Kind="Int" />
+        <Property Path="Name" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="People" ItemType="Person">
+      <DataRecord Id="1" Name="Declarative Alice" />
+      <DataRecord Id="2" Name="Declarative Bob" />
+    </DataList>
+	<CollectionViewSource x:Key="RankedPeople" Source="{StaticResource People}">
+	  <CollectionViewSource.FilterDescriptions>
+		<FilterDescription PropertyName="Id" Operator="GreaterThan" Value="0" />
+	  </CollectionViewSource.FilterDescriptions>
+	  <CollectionViewSource.SortDescriptions>
+		<SortDescription PropertyName="Id" Direction="Descending" />
+	  </CollectionViewSource.SortDescriptions>
+	</CollectionViewSource>
+  </Form.Resources>
+  <ComboBox x:Name="peopleSeed" ItemsSource="{StaticResource RankedPeople}"
+            DisplayMemberPath="Name" SelectedValuePath="Id" />
+</Form>)xaml";
+	DesignerModel::RuntimeDocument dataResourceRuntime;
+	if (!DesignerModel::RuntimeDocumentLoader::LoadXaml(
+		dataResourceXaml, dataResourceRuntime, {}, &error))
+		return Fail(L"declarative DataList load", error);
+	auto* dataResourceCombo = dynamic_cast<ComboBox*>(
+		dataResourceRuntime.FindControlByName(L"peopleSeed"));
+	if (!dataResourceCombo || !dataResourceCombo->GetItemsSource()
+		|| dataResourceCombo->GetItemsSource().Get()->Count() != 2)
+		return Fail(L"declarative DataList materialization");
+	dataResourceCombo->SetSelectedValue(BindingValue(2));
+	if (dataResourceCombo->SelectedIndex != 0
+		|| dataResourceCombo->Text != L"Declarative Bob")
+		return Fail(L"typed selector SelectedValue projection");
+
+	const std::string nativeSurfaceXaml = R"xaml(
 <Form xmlns="urn:cui"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-      xmlns:d="urn:cui:designer"
-      xmlns:sample="urn:cui:samples"
-      x:Name="CustomControlForm">
-  <sample:StatusBadge x:Name="runtimeBadge" DesignId="19"
-      d:CppType="Acme.Controls.StatusBadge"
-      d:Header="Controls/StatusBadge.h"
-      d:BaseType="Button" d:Constructor="Bounds"
-      Text="Registered runtime custom control" Severity="3"
-      OnSeverityInvoked="HandleSeverityInvoked">
-    <d:CustomEvents>
-      <d:Event Name="OnSeverityInvoked" DisplayName="Severity invoked"
-          Field="OnSeverityInvoked" Category="Action"
-          Signature="SenderInt" Order="5" Default="true" />
-    </d:CustomEvents>
-  </sample:StatusBadge>
+      x:Name="NativeSurfaceForm">
+  <NativeSurface x:Name="runtimeScene" DesignId="19"
+      BehaviorKey="Scene3D" PlaceholderText="3D scene" Width="320" Height="180" />
 </Form>)xaml";
-	auto customControls =
-		std::make_shared<DesignerModel::RuntimeCustomControlRegistry>();
-	if (!customControls->Register(
-		L"urn:cui:samples", L"StatusBadge",
-		[](const DesignerModel::DesignNode&)
-		{ return std::make_unique<RuntimeStatusBadge>(); }, &error))
-		return Fail(L"custom control registration", error);
-	DesignerModel::RuntimeDocumentLoadOptions customOptions;
-	customOptions.CustomControls = customControls;
-	DesignerCustomControlType statusBadgeType{
-		L"sample", L"StatusBadge", L"urn:cui:samples",
-		L"Acme::Controls::StatusBadge", L"Controls/StatusBadge.h",
-		DesignerCustomControlConstructor::Bounds };
-	DesignerCustomEventDescriptor severityEvent{
-		L"OnSeverityInvoked", L"Severity invoked", "OnSeverityInvoked",
-		DesignerEventCategory::Action,
-		DesignerCustomEventSignature::SenderInt, 5, true };
-	int customEventValue = -1;
-	DesignerModel::RuntimeEventHandlerRegistry customEventHandlers;
-	if (!customEventHandlers.RegisterCustomControl(
-		L"HandleSeverityInvoked", statusBadgeType, severityEvent,
-		&RuntimeStatusBadge::OnSeverityInvoked,
-		[&customEventValue](Control*, int value) { customEventValue = value; },
-		&error))
-		return Fail(L"custom event registration", error);
-	auto wrongSeverityEvent = severityEvent;
-	wrongSeverityEvent.Signature = DesignerCustomEventSignature::SenderBool;
-	if (customEventHandlers.RegisterCustomControl(
-		L"HandleWrongSeverity", statusBadgeType, wrongSeverityEvent,
-		&RuntimeStatusBadge::OnSeverityInvoked,
-		[](Control*, int) {}, &error)
-		|| error.find(L"签名预设不一致") == std::wstring::npos)
-		return Fail(L"reject mismatched custom event preset", error);
-	customOptions.RequireControlEventResolver = true;
-	customOptions.ControlEventResolver = customEventHandlers.ControlResolver();
-	DesignerModel::RuntimeDocument customRuntime;
+	auto sceneState = std::make_shared<RuntimeSceneState>();
+	auto surfaceBehaviors =
+		std::make_shared<DesignerModel::NativeSurfaceBehaviorRegistry>();
+	if (!surfaceBehaviors->Register(L"Scene3D",
+		[sceneState](NativeSurface&)
+		{ return std::make_unique<RuntimeSceneBehavior>(sceneState); }, &error))
+		return Fail(L"NativeSurface behavior registration", error);
+	DesignerModel::RuntimeDocumentLoadOptions surfaceOptions;
+	surfaceOptions.NativeSurfaceBehaviors = surfaceBehaviors;
+	DesignerModel::RuntimeDocument surfaceRuntime;
 	if (!DesignerModel::RuntimeDocumentLoader::LoadXaml(
-		customControlXaml, customRuntime, customOptions, &error))
-		return Fail(L"registered custom control load", error);
-	auto* runtimeBadge = dynamic_cast<RuntimeStatusBadge*>(
-		customRuntime.FindControlByDesignId(19));
-	if (!runtimeBadge
-		|| runtimeBadge->Text != L"Registered runtime custom control"
-		|| runtimeBadge->Severity() != 3)
-		return Fail(L"registered custom control identity/properties");
-	runtimeBadge->OnSeverityInvoked.Invoke(runtimeBadge, 7);
-	if (customEventValue != 7 || customRuntime.BoundControlEventCount() != 1)
-		return Fail(L"registered custom control event binding");
-	auto updatedCustomControlXaml = customControlXaml;
-	const auto severityPosition = updatedCustomControlXaml.find("Severity=\"3\"");
-	if (severityPosition == std::string::npos)
-		return Fail(L"custom control reload fixture");
-	updatedCustomControlXaml.replace(
-		severityPosition, std::string("Severity=\"3\"").size(), "Severity=\"4\"");
-	DesignerModel::RuntimeDocumentReloadMode customReloadMode =
-		DesignerModel::RuntimeDocumentReloadMode::Unchanged;
-	if (!DesignerModel::RuntimeDocumentLoader::ReloadXaml(
-		updatedCustomControlXaml, customRuntime, {}, &customReloadMode, &error))
-		return Fail(L"registered custom control reload", error);
-	if (customReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
-		|| customRuntime.FindControlByDesignId(19) != runtimeBadge
-		|| runtimeBadge->Severity() != 4)
-		return Fail(L"registered custom control in-place reload");
-	runtimeBadge->OnSeverityInvoked.Invoke(runtimeBadge, 9);
-	if (customEventValue != 9 || customRuntime.BoundControlEventCount() != 1)
-		return Fail(L"registered custom event reload continuity");
+		nativeSurfaceXaml, surfaceRuntime, surfaceOptions, &error))
+		return Fail(L"NativeSurface load", error);
+	auto* runtimeScene = surfaceRuntime.FindControlByDesignId<NativeSurface>(19);
+	if (!runtimeScene || !runtimeScene->HasBehavior()
+		|| runtimeScene->GetBehaviorKey() != L"Scene3D")
+		return Fail(L"NativeSurface identity/behavior");
+	(void)runtimeScene->ProcessMessage(WM_LBUTTONDOWN, 0, 0, 8, 9);
+	if (sceneState->Attached != 1 || sceneState->PointerDown != 1)
+		return Fail(L"NativeSurface lifecycle/input");
 
 	const std::string layoutXaml = R"xaml(
 <Form xmlns="urn:cui"
@@ -419,7 +415,7 @@ int wmain()
 		return Fail(L"metadata removal in-place reload", error);
 	if (layoutReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
 		|| layoutRuntime.FindControlByName(L"insideTab") != layoutControlAfterReload
-		|| !layoutControlAfterReload->Text.empty())
+		|| layoutControlAfterReload->Text != L"标签")
 		return Fail(L"metadata removal default value");
 
 	auto structuralLayoutSource = removedMetadataLayoutSource;
@@ -682,6 +678,12 @@ int wmain()
 
 	auto viewModel = std::make_shared<ObservableObject>();
 	viewModel->SetValue(L"Caption", std::wstring(L"Loaded from DataContext"));
+	auto people = std::make_shared<ObservableBindingList>(L"Person");
+	auto alice = std::make_shared<ObservableObject>();
+	alice->SetValue(L"Name", std::wstring(L"Alice"));
+	alice->SetValue(L"Role", std::wstring(L"Admin"));
+	people->Items.push_back(BindingSourceReference(alice));
+	viewModel->SetValue(L"People", BindingListReference(people));
 
 	int clickCount = 0;
 	ControlCounterHandler clickHandler{ &clickCount };
@@ -785,6 +787,13 @@ int wmain()
 		return Fail(L"stable typed button reference");
 	if (button->Text != L"Loaded from DataContext" || !button->GetStyleSheet())
 		return Fail(L"binding/style materialization");
+	auto* peopleControl = runtime.FindControlByDesignId<ItemsControl>(12);
+	auto* firstPersonRow = peopleControl && peopleControl->GeneratedItemCount() == 1
+		? dynamic_cast<StackPanel*>(peopleControl->GetGeneratedItem(0)) : nullptr;
+	auto* firstPersonName = firstPersonRow
+		? dynamic_cast<Label*>(firstPersonRow->GetChild(0)) : nullptr;
+	if (!firstPersonName || firstPersonName->Text != L"Alice")
+		return Fail(L"typed ItemsControl DataTemplate materialization");
 	button->OnMouseClick.Invoke(button, MouseEventArgs{});
 	if (clickCount != 1) return Fail(L"control event resolver");
 	if (runtime.DataContextSchema().empty()
@@ -794,7 +803,9 @@ int wmain()
 	viewModel->SetValue(L"AlternateCaption", std::wstring(L"Reloaded binding source"));
 	auto bindingReloadSource = source;
 	bindingReloadSource.DataContextSchema = {
-		{ L"AlternateCaption", BindingValueKind::String, true, true, true }
+		{ L"AlternateCaption", BindingValueKind::String, true, true, true },
+		{ L"People", BindingValueKind::Object, true, false, true,
+			DesignerDataObjectKind::BindingList, L"Person" }
 	};
 	for (auto& node : bindingReloadSource.Nodes)
 		if (node.Id == 11)
@@ -814,8 +825,10 @@ int wmain()
 		|| reloadedBinding->Mode() != BindingMode::OneTime
 		|| reloadedBinding->SourceProperty() != L"AlternateCaption"
 		|| button->Text != L"Reloaded binding source"
-		|| runtime.DataContextSchema().size() != 1
-		|| runtime.DataContextSchema().front().Path != L"AlternateCaption"
+		|| runtime.DataContextSchema().size() != 2
+		|| std::none_of(runtime.DataContextSchema().begin(),
+			runtime.DataContextSchema().end(), [](const auto& property)
+			{ return property.Path == L"AlternateCaption"; })
 		|| runtime.BoundDataContext() != viewModel)
 		return Fail(L"in-place binding identity or attachment preservation");
 
@@ -877,8 +890,8 @@ int wmain()
 	reloadOptions.ControlEventResolver = eventHandlers.ControlResolver();
 	DesignerModel::RuntimeDocumentReloadMode eventReloadMode =
 		DesignerModel::RuntimeDocumentReloadMode::Unchanged;
-	if (!DesignerModel::RuntimeDocumentLoader::ReloadXaml(
-		DesignerModel::XamlDocumentSerializer::ToXaml(eventReloadSource),
+	if (!DesignerModel::RuntimeDocumentLoader::Reload(
+		eventReloadSource,
 		runtime, reloadOptions, &eventReloadMode, &error))
 		return Fail(L"in-place event reload", error);
 	if (eventReloadMode != DesignerModel::RuntimeDocumentReloadMode::InPlace
@@ -1185,7 +1198,7 @@ int wmain()
 	auto hostedReplacementReload = hostedTopologyReload;
 	hostedReplacementReload.Form.Text = L"Hosted replaced Form";
 	for (auto& node : hostedReplacementReload.Nodes)
-		if (node.Id == 11)
+		if (node.Id == 11 || node.Id == 12)
 			node.Extra["runtimeStructureProbe"] = 1;
 	auto* buttonBeforeHostedReplacement = button;
 	if (!DesignerModel::RuntimeDocumentLoader::Reload(
@@ -1202,7 +1215,21 @@ int wmain()
 		|| host.Controls[0] != hostPrefix
 		|| host.Controls[1] != runtime.FindControlByDesignId(10)
 		|| host.Controls[2] != hostSuffix)
-		return Fail(L"adapted-host replacement identity or placement");
+		return Fail(L"adapted-host replacement identity or placement",
+			L"mode=" + std::to_wstring(static_cast<int>(eventReloadMode))
+			+ L", button=" + std::to_wstring(button != nullptr)
+			+ L", replaced=" + std::to_wstring(button != buttonBeforeHostedReplacement)
+			+ L", adapter=" + std::to_wstring(runtime.HasRootHostAdapter())
+			+ L", reference=" + std::to_wstring(buttonReference.Get() == button)
+			+ L", visible=" + std::to_wstring(button ? button->Visible : true)
+			+ L", hostCount=" + std::to_wstring(host.Controls.size())
+			+ L", prefix=" + std::to_wstring(host.Controls.size() > 0
+				&& host.Controls[0] == hostPrefix)
+			+ L", root=" + std::to_wstring(host.Controls.size() > 1
+				&& host.Controls[1] == runtime.FindControlByDesignId(10))
+			+ L", suffix=" + std::to_wstring(host.Controls.size() > 2
+				&& host.Controls[2] == hostSuffix)
+			+ L", text=" + host.Text);
 	const auto commandsBeforeHostedReplacement = commandCount;
 	host.OnCommand.Invoke(&host, 4, 0);
 	if (commandCount != commandsBeforeHostedReplacement + 1)
@@ -1229,6 +1256,32 @@ int wmain()
 		|| host.Controls[1] != rootBeforeInvalidHostedCandidate
 		|| host.Controls[2] != hostSuffix)
 		return Fail(L"invalid adapted-host candidate rollback");
+
+	// File watching starts from a document that is actually representable by
+	// canonical XAML. The topology probes above are model-only test payloads,
+	// and a Binding intentionally does not serialize its suspended local value.
+	for (auto& node : hostedReplacementReload.Nodes)
+	{
+		if (!node.Extra.is_object()) continue;
+		auto& extra = node.Extra.ObjectItems();
+		extra.erase("runtimeTopologyProbe");
+		extra.erase("formAttachmentProbe");
+		extra.erase("hostedTopologyProbe");
+		extra.erase("runtimeStructureProbe");
+	}
+	DesignerModel::DesignDocument canonicalWatcherBaseline;
+	if (!DesignerModel::XamlDocumentParser::FromXaml(
+		DesignerModel::XamlDocumentSerializer::ToXaml(hostedReplacementReload),
+		canonicalWatcherBaseline, &error))
+		return Fail(L"watcher baseline canonicalization", error);
+	if (!DesignerModel::RuntimeDocumentLoader::Reload(
+		canonicalWatcherBaseline, runtime, transferredReloadOptions,
+		&eventReloadMode, &error))
+		return Fail(L"watcher baseline runtime alignment", error);
+	hostedReplacementReload = std::move(canonicalWatcherBaseline);
+	button = runtime.FindControlByDesignId<Button>(11);
+	if (!button || buttonReference.Get() != button)
+		return Fail(L"watcher baseline stable reference alignment");
 
 	wchar_t temporaryDirectory[MAX_PATH]{};
 	const DWORD temporaryDirectoryLength = GetTempPathW(
@@ -1458,8 +1511,8 @@ int wmain()
 		|| sessionCommandCount != 2)
 		return Fail(L"session reloaded event routing");
 
-	std::wcout << L"CuiRuntime sample passed: canonical XAML/XML round-trip, registered custom controls, lookup, "
-		L"binding/schema, style, signature-safe named events, atomic initial Form "
+	std::wcout << L"CuiRuntime sample passed: canonical XAML/XML round-trip, typed ItemsControl DataTemplate, declarative DataList/CollectionViewSource, "
+		L"NativeSurface behavior registration, lookup, binding/schema, style, signature-safe named events, atomic initial Form "
 		L"attachment/direct-Load guards, property/event in-place "
 		L"reload, compound rollback, "
 		L"topology subtree recomposition/rollback, adapted-host replacement/exact-slot "

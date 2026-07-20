@@ -15,6 +15,12 @@
 #include <utility>
 #include <vector>
 
+struct DesignerStyleSheet;
+namespace DesignerModel
+{
+	struct DesignObjectResourceDictionary;
+}
+
 // 设计器中控件的元数据
 struct ControlMetadata
 {
@@ -25,13 +31,41 @@ struct ControlMetadata
 	bool IsContainer;
 };
 
+enum class DesignerBindingRelativeSource : unsigned char
+{
+	None,
+	Self,
+	TemplatedParent,
+	FindAncestor
+};
+
 struct DesignerDataBinding
 {
 	std::wstring SourceProperty;
-	BindingMode Mode = BindingMode::OneWay;
-	DataSourceUpdateMode UpdateMode = DataSourceUpdateMode::OnPropertyChanged;
+	BindingMode Mode = BindingMode::Default;
+	DataSourceUpdateMode UpdateMode = DataSourceUpdateMode::Default;
 	/** Named runtime converter resolved through BindingValueConverterRegistry. */
 	std::wstring Converter;
+	/** Empty selects DataContext; otherwise resolves an x:Name in the local namescope. */
+	std::wstring ElementName;
+	DesignerBindingRelativeSource RelativeSource =
+		DesignerBindingRelativeSource::None;
+	/** Canonical XAML type token used by RelativeSource FindAncestor. */
+	std::wstring AncestorType;
+	/** Expanded namespace URI; empty identifies a built-in CUI control type. */
+	std::wstring AncestorTypeNamespace;
+	int AncestorLevel = 1;
+	/** Target-typed value used when the source path/value cannot be produced. */
+	std::optional<DesignerStyleValue> FallbackValue;
+	/** Target-typed replacement used when the source explicitly returns Empty. */
+	std::optional<DesignerStyleValue> TargetNullValue;
+	/** Scalar value supplied to parameter-aware converters. */
+	std::optional<DesignerStyleValue> ConverterParameter;
+	/** Single-value composite format applied after Convert and before target coercion. */
+	std::optional<std::wstring> StringFormat;
+	/** Non-empty turns this expression into a WPF-style MultiBinding. */
+	std::vector<DesignerDataBinding> ChildBindings;
+	bool IsMultiBinding() const noexcept { return !ChildBindings.empty(); }
 
 	bool operator==(const DesignerDataBinding&) const = default;
 };
@@ -51,6 +85,17 @@ struct DesignerBindingPreviewState
 	bool operator==(const DesignerBindingPreviewState&) const = default;
 };
 
+/** Exact contract carried by an Object-valued DataContext property. */
+enum class DesignerDataObjectKind : unsigned char
+{
+	/** Opaque object payload; it is neither traversable nor a collection. */
+	Opaque,
+	/** Nested IBindingSource record that may own dotted child paths. */
+	BindingSource,
+	/** Observable IBindingList consumed by ItemsSource. */
+	BindingList
+};
+
 /** One discoverable property path on the form's design-time data context. */
 struct DesignerDataContextProperty
 {
@@ -59,6 +104,11 @@ struct DesignerDataContextProperty
 	bool CanRead = true;
 	bool CanWrite = true;
 	bool CanObserve = true;
+	DesignerDataObjectKind ObjectKind = DesignerDataObjectKind::Opaque;
+	/** Required for BindingList; identifies the DataTemplate item contract. */
+	std::wstring ItemType;
+	/** Optional for BindingSource; identifies the single-object DataTemplate contract. */
+	std::wstring DataType;
 
 	bool operator==(const DesignerDataContextProperty&) const = default;
 };
@@ -69,69 +119,76 @@ struct DesignerDataContextProperty
  */
 using DesignerDataContextSchema = std::vector<DesignerDataContextProperty>;
 
-enum class DesignerCustomControlConstructor : unsigned char
-{
-	Default,
-	Bounds,
-	TextBounds,
-};
-
-/**
- * Portable identity of a control implemented outside CUI. Type remains the
- * built-in metadata/layout base used by the Designer and headless generator;
- * this descriptor selects the real runtime/C++ type.
- */
-struct DesignerCustomControlType
+/** Portable XAML identity of a component declared entirely by a document. */
+struct DesignerComponentType
 {
 	std::wstring XamlPrefix;
 	std::wstring XamlName;
 	std::wstring XamlNamespace;
-	std::wstring CppType;
-	std::wstring Header;
-	DesignerCustomControlConstructor Constructor =
-		DesignerCustomControlConstructor::Bounds;
 
 	bool Empty() const noexcept
 	{
-		return XamlName.empty() && XamlNamespace.empty()
-			&& CppType.empty() && Header.empty();
+		return XamlName.empty() && XamlNamespace.empty();
 	}
 	std::wstring RegistryKey() const
 	{
 		return XamlNamespace + L"|" + XamlName;
 	}
-	bool operator==(const DesignerCustomControlType&) const = default;
+	bool operator==(const DesignerComponentType&) const = default;
 };
 
-/** Design-time schema for a property declared by an external C++ control. */
-struct DesignerCustomPropertyDescriptor
+/** One stable string value exposed by a declarative enum property. */
+struct DesignerComponentPropertyChoice
 {
-	struct Choice
-	{
-		std::wstring DisplayName;
-		std::wstring ValueText;
+	std::wstring Value;
+	std::wstring DisplayName;
 
-		bool operator==(const Choice&) const = default;
-	};
+	bool operator==(const DesignerComponentPropertyChoice&) const = default;
+};
 
+enum class DesignerComponentContentCardinality : unsigned char
+{
+	Single,
+	Multiple
+};
+
+/** One visual child slot exposed by a declarative component. */
+struct DesignerComponentContentPropertyDescriptor
+{
 	std::wstring Name;
 	std::wstring DisplayName;
-	std::wstring Category = L"Custom";
+	DesignerComponentContentCardinality Cardinality =
+		DesignerComponentContentCardinality::Single;
+	bool IsDefault = false;
+
+	bool operator==(const DesignerComponentContentPropertyDescriptor&) const = default;
+};
+
+/** Serializable property schema owned by a document component definition. */
+struct DesignerComponentPropertyDescriptor
+{
+	std::wstring Name;
+	std::wstring DisplayName;
+	std::wstring Category = L"Component";
 	int CategoryOrder = 500;
 	int Order = 0;
 	DesignerStyleValue DefaultValue;
+	/** Optional resource-backed default, resolved before the contract is installed. */
+	std::wstring DefaultResourceKey;
 	ControlPropertyEditorKind Editor = ControlPropertyEditorKind::Auto;
-	std::vector<Choice> Choices;
+	std::vector<DesignerComponentPropertyChoice> Choices;
 	std::optional<double> Minimum;
 	std::optional<double> Maximum;
 	std::optional<double> Step;
-	bool Bindable = true;
-	bool SupportsTwoWayBinding = false;
+	ControlPropertyFlags Flags = ControlPropertyFlags::None;
+	DataSourceUpdateMode DefaultUpdateMode =
+		DataSourceUpdateMode::OnPropertyChanged;
+	bool IsReadOnly = false;
 
-	bool operator==(const DesignerCustomPropertyDescriptor&) const = default;
+	bool operator==(const DesignerComponentPropertyDescriptor&) const = default;
 };
 
-/** Stable design-time grouping shared by built-in and manifest events. */
+/** Stable design-time grouping shared by built-in and component events. */
 enum class DesignerEventCategory : unsigned char
 {
 	Action,
@@ -149,46 +206,216 @@ enum class DesignerEventCategory : unsigned char
 	Other
 };
 
-/**
- * Safe portable event signatures. The sender variants deliberately use
- * Control* rather than a manifest-provided C++ type string; the runtime
- * registry verifies the real Event::function_type before subscribing.
- */
-enum class DesignerCustomEventSignature : unsigned char
+/** Serializable payload contract for one XAML-declared component event. */
+enum class DesignerComponentEventPayload : unsigned char
 {
 	None,
-	Sender,
-	SenderBool,
-	SenderInt,
-	SenderFloat,
-	SenderDouble,
-	SenderString,
-	SenderIntInt,
-	SenderIntBool,
-	SenderDoubleDouble,
-	SenderStringString,
+	Bool,
+	Int,
+	Int64,
+	Float,
+	Double,
+	String,
 };
 
-/** Portable event contract declared by an external-control manifest. */
-struct DesignerCustomEventDescriptor
+struct DesignerComponentEventDescriptor
 {
 	std::wstring Name;
 	std::wstring DisplayName;
-	std::string EventField;
 	DesignerEventCategory Category = DesignerEventCategory::Other;
-	DesignerCustomEventSignature Signature =
-		DesignerCustomEventSignature::Sender;
+	DesignerComponentEventPayload Payload = DesignerComponentEventPayload::None;
+	DeclarativeEventRoutingStrategy RoutingStrategy =
+		DeclarativeEventRoutingStrategy::Direct;
 	int Order = 0;
 	bool IsDefault = false;
 
-	bool operator==(const DesignerCustomEventDescriptor&) const = default;
+	bool operator==(const DesignerComponentEventDescriptor&) const = default;
 };
 
-/**
- * One Designer creation/toolbox entry. Built-ins leave CustomType and
- * PreviewFactory empty; external catalogs retain their portable type identity
- * while optionally supplying a process-local real preview factory.
- */
+/** One component-host property predicate used by a VisualState. */
+struct DesignerVisualStateCondition
+{
+	std::wstring PropertyName;
+	DesignerStyleValue Value;
+
+	bool operator==(const DesignerVisualStateCondition&) const = default;
+};
+
+/** One VisualState value targeting the host or a template-local named part. */
+struct DesignerVisualStateSetter
+{
+	std::wstring TargetName;
+	std::wstring PropertyName;
+	bool UsesResource = false;
+	std::wstring ResourceKey;
+	DesignerStyleValue Literal;
+
+	bool operator==(const DesignerVisualStateSetter&) const = default;
+};
+
+enum class DesignerAnimationKind : unsigned char
+{
+	Double,
+	Color,
+	Thickness,
+	Point,
+	Vector,
+	Rect,
+	Size,
+	Matrix,
+	Object,
+};
+
+enum class DesignerEasingKind : unsigned char
+{
+	Linear,
+	Quadratic,
+	Cubic,
+	Sine,
+};
+
+enum class DesignerEasingMode : unsigned char
+{
+	EaseIn,
+	EaseOut,
+	EaseInOut,
+};
+
+enum class DesignerKeyFrameKind : unsigned char
+{
+	Discrete,
+	Linear,
+	Easing,
+	Spline,
+};
+
+enum class DesignerRepeatBehaviorKind : unsigned char
+{
+	Count,
+	Duration,
+	Forever,
+};
+
+enum class DesignerTimelineFillBehavior : unsigned char
+{
+	HoldEnd,
+	Stop,
+};
+
+struct DesignerAnimationKeyFrame
+{
+	DesignerKeyFrameKind Kind = DesignerKeyFrameKind::Linear;
+	unsigned long long KeyTimeMilliseconds = 0;
+	bool UsesResource = false;
+	std::wstring ResourceKey;
+	DesignerStyleValue Value;
+	DesignerEasingKind Easing = DesignerEasingKind::Linear;
+	DesignerEasingMode EasingMode = DesignerEasingMode::EaseOut;
+	float KeySplineX1 = 0.0f;
+	float KeySplineY1 = 0.0f;
+	float KeySplineX2 = 1.0f;
+	float KeySplineY2 = 1.0f;
+
+	bool operator==(const DesignerAnimationKeyFrame&) const = default;
+};
+
+/** One finite WPF-style animation in a VisualState Storyboard. */
+struct DesignerVisualStateAnimation
+{
+	DesignerAnimationKind Kind = DesignerAnimationKind::Double;
+	std::wstring TargetName;
+	std::wstring PropertyName;
+	bool HasFrom = false;
+	bool FromUsesResource = false;
+	std::wstring FromResourceKey;
+	DesignerStyleValue From;
+	bool HasTo = false;
+	bool ToUsesResource = false;
+	std::wstring ToResourceKey;
+	DesignerStyleValue To;
+	bool HasBy = false;
+	bool ByUsesResource = false;
+	std::wstring ByResourceKey;
+	DesignerStyleValue By;
+	bool IsAdditive = false;
+	bool IsCumulative = false;
+	unsigned long long BeginTimeMilliseconds = 0;
+	unsigned long long DurationMilliseconds = 0;
+	DesignerRepeatBehaviorKind RepeatBehavior =
+		DesignerRepeatBehaviorKind::Count;
+	double RepeatCount = 1.0;
+	unsigned long long RepeatDurationMilliseconds = 0;
+	bool AutoReverse = false;
+	DesignerTimelineFillBehavior FillBehavior =
+		DesignerTimelineFillBehavior::HoldEnd;
+	double SpeedRatio = 1.0;
+	double AccelerationRatio = 0.0;
+	double DecelerationRatio = 0.0;
+	DesignerEasingKind Easing = DesignerEasingKind::Linear;
+	DesignerEasingMode EasingMode = DesignerEasingMode::EaseOut;
+	std::vector<DesignerAnimationKeyFrame> KeyFrames;
+
+	bool operator==(const DesignerVisualStateAnimation&) const = default;
+};
+
+enum class DesignerStoryboardActionKind : unsigned char
+{
+	Begin,
+	Pause,
+	Resume,
+	Stop,
+};
+
+struct DesignerEventTriggerAction
+{
+	DesignerStoryboardActionKind Kind = DesignerStoryboardActionKind::Begin;
+	std::wstring StoryboardName;
+	std::vector<DesignerVisualStateAnimation> Animations;
+
+	bool operator==(const DesignerEventTriggerAction&) const = default;
+};
+
+struct DesignerEventTrigger
+{
+	std::wstring EventName;
+	std::vector<DesignerEventTriggerAction> Actions;
+
+	bool operator==(const DesignerEventTrigger&) const = default;
+};
+
+struct DesignerVisualState
+{
+	std::wstring Name;
+	std::vector<DesignerVisualStateCondition> Conditions;
+	std::vector<std::wstring> EventNames;
+	std::vector<DesignerVisualStateSetter> Setters;
+	std::vector<DesignerVisualStateAnimation> Animations;
+
+	bool operator==(const DesignerVisualState&) const = default;
+};
+
+struct DesignerVisualTransition
+{
+	std::wstring FromState;
+	std::wstring ToState;
+	unsigned long long GeneratedDurationMilliseconds = 0;
+	DesignerEasingKind GeneratedEasing = DesignerEasingKind::Linear;
+	DesignerEasingMode GeneratedEasingMode = DesignerEasingMode::EaseOut;
+	std::vector<DesignerVisualStateAnimation> Animations;
+
+	bool operator==(const DesignerVisualTransition&) const = default;
+};
+
+struct DesignerVisualStateGroup
+{
+	std::wstring Name;
+	std::vector<DesignerVisualState> States;
+	std::vector<DesignerVisualTransition> Transitions;
+
+	bool operator==(const DesignerVisualStateGroup&) const = default;
+};
+
+/** One built-in Designer creation/toolbox entry. */
 struct DesignerControlDescriptor
 {
 	UIClass Type = UIClass::UI_Base;
@@ -197,23 +424,12 @@ struct DesignerControlDescriptor
 	SIZE DefaultSize{ 100, 30 };
 	bool IsContainer = false;
 	std::wstring Category;
-	DesignerCustomControlType CustomType;
-	std::vector<DesignerCustomPropertyDescriptor> CustomProperties;
-	std::vector<DesignerCustomEventDescriptor> CustomEvents;
-	std::function<std::unique_ptr<Control>(int x, int y)> PreviewFactory;
-
-	bool IsCustom() const noexcept { return !CustomType.Empty(); }
 	bool IsValid() const noexcept
 	{
 		if (Type == UIClass::UI_Base || Type == UIClass::UI_TabPage
 			|| Name.empty() || DisplayName.empty()
 			|| DefaultSize.cx <= 0 || DefaultSize.cy <= 0) return false;
-		if (!IsCustom()) return true;
-		return !CustomType.XamlPrefix.empty()
-			&& !CustomType.XamlName.empty()
-			&& !CustomType.XamlNamespace.empty()
-			&& !CustomType.CppType.empty()
-			&& !CustomType.Header.empty();
+		return true;
 	}
 
 	static DesignerControlDescriptor BuiltIn(
@@ -243,14 +459,14 @@ public:
 	Control* DesignerParent = nullptr;
 	std::wstring Name;
 	UIClass Type;
-	DesignerCustomControlType CustomType;
-	// Process-local schema restored from the matching control catalog.
-	std::vector<DesignerCustomPropertyDescriptor> CustomProperties;
-	// Portable event contracts are persisted so headless codegen stays deterministic.
-	std::vector<DesignerCustomEventDescriptor> CustomEvents;
-	// Optional process-local sink (for example a plugin preview session).
-	std::function<void(
-		const std::wstring&, const DesignerStyleValue&)> PreviewPropertyChanged;
+	DesignerComponentType ComponentType;
+	// Visual content property used when this public control is parented by a
+	// declarative component. The runtime parent may instead be its presenter.
+	std::wstring ComponentContentProperty;
+	std::vector<DesignerComponentContentPropertyDescriptor>
+		ComponentContentProperties;
+	std::map<std::wstring, Control*> ComponentContentPresenters;
+	std::vector<DesignerComponentEventDescriptor> ComponentEvents;
 	bool IsSelected;
 	// Design-time only. Prevents accidental placement/tree changes while
 	// keeping the control selectable, editable, copyable and removable.
@@ -266,6 +482,20 @@ public:
 	std::map<std::wstring, std::optional<BindingValue>> BindingPreviewLocalValues;
 	// Metadata-backed properties not represented by legacy Props/Extra fields.
 	std::map<std::wstring, DesignerStyleValue> MetadataProperties;
+	// Canonical property name -> authored StaticResource key. The tracked value
+	// above remains the current effective value used by the preview, while this
+	// map preserves the XAML expression across design-time edits and saves.
+	std::map<std::wstring, std::wstring> MetadataPropertyResourceKeys;
+	// Canonical property name -> authored DynamicResource key. Kept separate
+	// from StaticResource so persistence and runtime reevaluation remain exact.
+	std::map<std::wstring, std::wstring> MetadataPropertyDynamicResourceKeys;
+	// Authored <Control.Resources> dictionary. It belongs to this logical node
+	// and is intentionally not flattened into the document resource sheet.
+	std::shared_ptr<DesignerStyleSheet> LocalResources;
+	// XAML-owned DataTemplate/ComponentDefinition declarations in this scope.
+	// Kept as model data because they have no standalone native control object.
+	std::shared_ptr<DesignerModel::DesignObjectResourceDictionary>
+		LocalObjectResources;
 
 	// 设计期附加数据（不一定映射到运行时属性）。
 	// 例如：MediaPlayer 的媒体源路径等。
@@ -305,7 +535,7 @@ public:
 		return {
 			{ UIClass::UI_Label, L"Label", L"标签", {100, 20}, false },
 			{ UIClass::UI_LinkLabel, L"LinkLabel", L"链接标签", {120, 20}, false },
-			{ UIClass::UI_Button, L"Button", L"按钮", {120, 30}, false },
+			{ UIClass::UI_Button, L"Button", L"按钮", {120, 30}, true },
 			{ UIClass::UI_TextBox, L"TextBox", L"文本框", {200, 25}, false },
 			{ UIClass::UI_PasswordBox, L"PasswordBox", L"密码框", {200, 25}, false },
 			{ UIClass::UI_RichTextBox, L"RichTextBox", L"富文本框", {300, 160}, false },
@@ -326,6 +556,9 @@ public:
 			{ UIClass::UI_ComboBox, L"ComboBox", L"下拉框", {150, 25}, false },
 			{ UIClass::UI_ListView, L"ListView", L"列表视图", {320, 220}, false },
 			{ UIClass::UI_ListBox, L"ListBox", L"列表框", {220, 180}, false },
+			{ UIClass::UI_ItemsControl, L"ItemsControl", L"模板化列表", {260, 220}, false },
+			{ UIClass::UI_ContentPresenter, L"ContentPresenter", L"内容呈现器", {260, 120}, false },
+			{ UIClass::UI_ContentControl, L"ContentControl", L"内容控件", {260, 140}, true },
 			{ UIClass::UI_GridView, L"GridView", L"表格", {360, 200}, false },
 			{ UIClass::UI_PropertyGrid, L"PropertyGrid", L"属性表", {300, 320}, false },
 			{ UIClass::UI_ChartView, L"ChartView", L"交互图表", {420, 260}, false },
@@ -346,6 +579,7 @@ public:
 			{ UIClass::UI_ToastHost, L"ToastHost", L"通知宿主", {340, 260}, false },
 			{ UIClass::UI_WebBrowser, L"WebBrowser", L"浏览器", {500, 360}, false },
 			{ UIClass::UI_MediaPlayer, L"MediaPlayer", L"媒体播放器", {640, 360}, false },
+			{ UIClass::UI_NativeSurface, L"NativeSurface", L"原生表面", {320, 180}, false },
 			{ UIClass::UI_NavigationView, L"NavigationView", L"导航视图", {220, 360}, false },
 			{ UIClass::UI_SideBar, L"SideBar", L"侧边栏", {200, 360}, false },
 			{ UIClass::UI_BreadcrumbBar, L"BreadcrumbBar", L"面包屑", {320, 32}, false },

@@ -23,6 +23,8 @@ struct DesignerPropertyValueSnapshot
 	bool UsesLegacyPersistence = false;
 	bool HasTrackedValue = false;
 	DesignerStyleValue TrackedValue;
+	std::wstring TrackedResourceKey;
+	std::wstring TrackedDynamicResourceKey;
 	std::wstring CanonicalPropertyName;
 
 	bool EquivalentTo(const DesignerPropertyValueSnapshot& other) const noexcept;
@@ -31,6 +33,7 @@ struct DesignerPropertyValueSnapshot
 
 struct DesignerPropertyTargetSnapshot
 {
+	int StableId = 0;
 	std::wstring TargetName;
 	UIClass TargetType = UIClass::UI_Base;
 	DesignerPropertyValueSnapshot Value;

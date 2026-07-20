@@ -118,6 +118,7 @@ private:
 	std::string GenerateControlInstantiation(const std::shared_ptr<DesignerControl>& dc, int indent);
 	std::string GenerateControlCommonProperties(const std::shared_ptr<DesignerControl>& dc, int indent);
 	std::string GenerateMetadataProperties(const std::shared_ptr<DesignerControl>& dc, int indent);
+	std::string GenerateLocalResources(const std::shared_ptr<DesignerControl>& dc, int indent);
 	std::string GenerateContainerProperties(const std::shared_ptr<DesignerControl>& dc, int indent);
 	std::string GenerateCppForBaseName(
 		const std::string& generatedHeaderBaseName);

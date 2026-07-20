@@ -43,18 +43,6 @@ Acme::Views::MainWindowGenerated::MainWindowGenerated()
 	(void)namespaceButton->TrySetPropertyValue(L"LayoutWidth", BindingValue(cui::layout::Length::Fixed(120.f)));
 	(void)namespaceButton->TrySetPropertyValue(L"LayoutHeight", BindingValue(cui::layout::Length::Fixed(24.f)));
 
-	// statusBadge
-	auto __owned_statusBadge = std::make_unique<Acme::Controls::StatusBadge>(140, 0, 120, 30);
-	statusBadge = __owned_statusBadge.get();
-	statusBadge->Text = L"Custom control";
-	statusBadge->DesignId = 78;
-	statusBadge->BackColor = D2D1::ColorF(1.f, 1.f, 1.f, 1.f);
-	statusBadge->ForeColor = D2D1::ColorF(0.09f, 0.125f, 0.2f, 1.f);
-	statusBadge->BorderColor = D2D1::ColorF(0.682f, 0.733f, 0.804f, 1.f);
-	// 属性元数据扩展
-	(void)statusBadge->TrySetPropertyValue(L"LayoutWidth", BindingValue(cui::layout::Length::Fixed(150.f)));
-	(void)statusBadge->TrySetPropertyValue(L"LayoutHeight", BindingValue(cui::layout::Length::Fixed(30.f)));
-
 	// 绑定事件
 	_generatedEventConnections.emplace_back(
 		this->OnShown.Subscribe(std::bind_front(&Acme::Views::MainWindowGenerated::HandleWindowShown, this)));
@@ -66,13 +54,9 @@ Acme::Views::MainWindowGenerated::MainWindowGenerated()
 		namespaceButton->OnPropertyValueChanged.Subscribe(std::bind_front(&Acme::Views::MainWindowGenerated::HandleNamespacedPropertyChanged, this)));
 	_generatedEventConnections.emplace_back(
 		namespaceButton->OnValidationStateChanged.Subscribe(std::bind_front(&Acme::Views::MainWindowGenerated::HandleNamespacedValidationChanged, this)));
-	_generatedEventConnections.emplace_back(
-		statusBadge->OnSeverityInvoked.Subscribe(std::bind_front(&Acme::Views::MainWindowGenerated::HandleSeverityInvoked, this)));
 
 	// 组装控件层级（包含布局容器）
 	this->AddOwned(std::move(__owned_namespaceButton));
-
-	this->AddOwned(std::move(__owned_statusBadge));
 
 	// 父容器先确定子控件最终矩形，再由子容器完成内部布局。
 	__layoutScope_form.Commit();
@@ -108,11 +92,5 @@ void Acme::Views::MainWindowGenerated::HandleNamespacedPropertyChanged(Control* 
 void Acme::Views::MainWindowGenerated::HandleNamespacedValidationChanged(const BindingValidationChangedEventArgs& e)
 {
 	(void)e;
-}
-
-void Acme::Views::MainWindowGenerated::HandleSeverityInvoked(Control* sender, int value)
-{
-	(void)sender;
-	(void)value;
 }
 

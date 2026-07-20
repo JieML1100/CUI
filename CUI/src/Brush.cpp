@@ -46,6 +46,37 @@ namespace
 			{ return left.position < right.position; });
 		return result;
 	}
+
+	D2D1::Matrix3x2F AsMatrix(const D2D1_MATRIX_3X2_F& value) noexcept
+	{
+		return D2D1::Matrix3x2F(
+			value._11, value._12, value._21,
+			value._22, value._31, value._32);
+	}
+}
+
+D2D1_MATRIX_3X2_F Brush::ToTransformMatrix(D2D1_SIZE_F bounds) const noexcept
+{
+	auto result = D2D1::Matrix3x2F::Identity();
+	if (RelativeTransform)
+	{
+		const float width = (std::max)(0.0001f,
+			FiniteOr(bounds.width, 0.0f));
+		const float height = (std::max)(0.0001f,
+			FiniteOr(bounds.height, 0.0f));
+		// WPF applies RelativeTransform in a normalized 1x1 rectangle before
+		// mapping the brush output to the painted area.
+		result = D2D1::Matrix3x2F::Scale(1.0f / width, 1.0f / height)
+			* AsMatrix(RelativeTransform->ToMatrix(D2D1::SizeF()))
+			* D2D1::Matrix3x2F::Scale(width, height);
+	}
+	if (Transform)
+	{
+		// Brush.Transform is expressed in post-mapping DIP coordinates and is
+		// therefore composed after the normalized relative transform.
+		result = result * AsMatrix(Transform->ToMatrix(D2D1::SizeF()));
+	}
+	return result;
 }
 
 ID2D1Brush* Brush::CreateBrush(
@@ -163,7 +194,10 @@ ID2D1Brush* Brush::CreateBrush(
 		}
 	}
 	if (result)
+	{
 		result->SetOpacity((std::clamp)(FiniteOr(Opacity, 1.0f), 0.0f, 1.0f));
+		result->SetTransform(ToTransformMatrix(bounds));
+	}
 	return result;
 }
 }

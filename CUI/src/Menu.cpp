@@ -912,7 +912,7 @@ bool Menu::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 			if (itemRect.Contains(cui::core::Point{ (float)localX, (float)localY }))
 			{
 				_hoverTopIndex = i;
-				it->ProcessMessage(
+				it->DispatchMessage(
 					message, wParam, lParam,
 					static_cast<int>(std::floor((float)localX - loc.x)),
 					static_cast<int>(std::floor((float)localY - loc.y)));

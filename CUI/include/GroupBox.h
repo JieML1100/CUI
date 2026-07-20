@@ -1,11 +1,11 @@
 #pragma once
-#include "Panel.h"
+#include "HeaderedContentControl.h"
 
 /**
  * @file GroupBox.h
  * @brief GroupBox: lightweight container with a captioned border.
  */
-class GroupBox : public Panel
+class GroupBox : public HeaderedContentControl
 {
 private:
 	float _captionMarginLeft = 12.0f;
@@ -17,6 +17,7 @@ private:
 
 protected:
 	void PerformPendingLayout() override;
+	void ConfigureHeaderVisual(Control& child) override;
 
 public:
 	GroupBox();
@@ -46,4 +47,5 @@ public:
 private:
 	void PerformGroupLayoutIfNeeded();
 	float GetCaptionBandHeight();
+	void UpdateHeaderLayout();
 };

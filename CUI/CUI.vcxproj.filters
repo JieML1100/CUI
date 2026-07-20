@@ -27,6 +27,9 @@
     <ClInclude Include="include\Control.h">
       <Filter>include</Filter>
     </ClInclude>
+	<ClInclude Include="include\ComponentBehavior.h">
+	  <Filter>include</Filter>
+	</ClInclude>
     <ClInclude Include="include\ThemePalette.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -42,6 +45,48 @@
     <ClInclude Include="include\Binding.h">
       <Filter>include</Filter>
     </ClInclude>
+	<ClInclude Include="include\BindingList.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\CollectionViewSource.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\GroupStyle.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+    <ClInclude Include="include\ItemTemplate.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\ItemsPanelTemplate.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\ItemsControl.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\ItemsPresenter.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+    <ClInclude Include="include\ContentPresenter.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ContentControl.h">
+      <Filter>include</Filter>
+    </ClInclude>
+	<ClInclude Include="include\ControlTemplate.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\ItemContainer.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\HeaderedContentControl.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\Selector.h">
+	  <Filter>include</Filter>
+	</ClInclude>
+	<ClInclude Include="include\ListBox.h">
+	  <Filter>include</Filter>
+	</ClInclude>
     <ClInclude Include="include\Brush.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -117,6 +162,12 @@
     <ClInclude Include="include\PagedGridView.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\ItemContainerGenerator.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+	<ClInclude Include="include\NativeSurface.h">
+	  <Filter>include</Filter>
+	</ClInclude>
     <ClInclude Include="include\PasswordBox.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -133,6 +184,9 @@
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\ProgressRing.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\PropertyPath.h">
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\RadioBox.h">
@@ -339,6 +393,33 @@
     <ClCompile Include="src\ListView.cpp">
       <Filter>src</Filter>
     </ClCompile>
+	<ClCompile Include="src\CollectionViewSource.cpp">
+	  <Filter>src</Filter>
+	</ClCompile>
+    <ClCompile Include="src\ItemsControl.cpp">
+	  <Filter>src</Filter>
+	</ClCompile>
+	<ClCompile Include="src\ItemsPresenter.cpp">
+	  <Filter>src</Filter>
+	</ClCompile>
+    <ClCompile Include="src\ContentPresenter.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ContentControl.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+	<ClCompile Include="src\HeaderedContentControl.cpp">
+	  <Filter>src</Filter>
+	</ClCompile>
+	<ClCompile Include="src\Selector.cpp">
+	  <Filter>src</Filter>
+	</ClCompile>
+	<ClCompile Include="src\ItemContainer.cpp">
+	  <Filter>src</Filter>
+	</ClCompile>
+	<ClCompile Include="src\ListBox.cpp">
+	  <Filter>src</Filter>
+	</ClCompile>
     <ClCompile Include="src\MessageDialog.cpp">
       <Filter>src</Filter>
     </ClCompile>
@@ -348,6 +429,12 @@
     <ClCompile Include="src\PagedGridView.cpp">
       <Filter>src</Filter>
     </ClCompile>
+    <ClCompile Include="src\ItemContainerGenerator.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+	<ClCompile Include="src\NativeSurface.cpp">
+	  <Filter>src</Filter>
+	</ClCompile>
     <ClCompile Include="src\PasswordBox.cpp">
       <Filter>src</Filter>
     </ClCompile>

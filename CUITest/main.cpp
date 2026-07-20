@@ -62,7 +62,9 @@ int main(int argc, char** argv)
 		try
 		{
 			Application::EnsureDpiAwareness();
-			DemoWindow window;
+			// Exercise the complete XAML tree, including generated data-template
+			// visuals, without starting native host data or platform services.
+			DemoWindow window(false);
 			ClearDiagnostic();
 			return 0;
 		}

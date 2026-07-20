@@ -15,6 +15,7 @@ struct ControlStyleValue
 {
 	BindingValue Literal;
 	std::wstring ResourceKey;
+	bool IsDynamicResource = false;
 
 	ControlStyleValue() = default;
 	explicit ControlStyleValue(BindingValue value)
@@ -24,6 +25,14 @@ struct ControlStyleValue
 	{
 		ControlStyleValue result;
 		result.ResourceKey = std::move(key);
+		return result;
+	}
+
+	static ControlStyleValue DynamicResource(std::wstring key)
+	{
+		ControlStyleValue result;
+		result.ResourceKey = std::move(key);
+		result.IsDynamicResource = true;
 		return result;
 	}
 
@@ -50,12 +59,28 @@ struct ControlStyleSetter
 			std::move(propertyName),
 			ControlStyleValue::Resource(std::move(resourceKey)));
 	}
+
+	static ControlStyleSetter DynamicResource(
+		std::wstring propertyName,
+		std::wstring resourceKey)
+	{
+		return ControlStyleSetter(
+			std::move(propertyName),
+			ControlStyleValue::DynamicResource(std::move(resourceKey)));
+	}
 };
 
 /** One observable DataContext path/value predicate used by DataTrigger. */
 struct ControlStyleDataCondition
 {
 	std::wstring SourceProperty;
+	BindingValue Value;
+};
+
+/** One target-property/value predicate used by Trigger or MultiTrigger. */
+struct ControlStylePropertyCondition
+{
+	std::wstring PropertyName;
 	BindingValue Value;
 };
 
@@ -66,12 +91,18 @@ struct ControlStyleDataCondition
 struct ControlStyleSelector
 {
 	std::optional<UIClass> Type;
+	/** Exact XAML component identity; empty means no component-type constraint. */
+	std::wstring DeclarativeTypeNamespace;
+	std::wstring DeclarativeTypeName;
 	std::wstring Id;
 	std::vector<std::wstring> Classes;
 	ControlStyleState RequiredStates = ControlStyleState::None;
 	ControlStyleState ExcludedStates = ControlStyleState::None;
+	std::vector<ControlStylePropertyCondition> PropertyConditions;
 	std::vector<ControlStyleDataCondition> DataConditions;
 
+	/** Matches only type/id/class qualifiers that define the target scope. */
+	bool MatchesStatic(Control& target) const;
 	bool Matches(Control& target) const;
 	uint32_t Specificity() const noexcept;
 };
@@ -81,6 +112,9 @@ struct ControlStyleRule
 	size_t Id = 0;
 	ControlStyleSelector Selector;
 	std::vector<ControlStyleSetter> Setters;
+	/** WPF TriggerBase edge actions; clocks are instantiated per target control. */
+	std::vector<DeclarativeEventTriggerActionDefinition> EnterActions;
+	std::vector<DeclarativeEventTriggerActionDefinition> ExitActions;
 };
 
 enum class ControlStyleResolutionIssueCode
@@ -108,9 +142,19 @@ struct ResolvedControlStyleSetter
 	uint32_t Specificity = 0;
 };
 
+struct ResolvedControlStyleTrigger
+{
+	size_t RuleId = 0;
+	bool IsActive = false;
+	std::vector<DeclarativeEventTriggerActionDefinition> EnterActions;
+	std::vector<DeclarativeEventTriggerActionDefinition> ExitActions;
+};
+
 struct ControlStyleResolution
 {
 	std::vector<ResolvedControlStyleSetter> Setters;
+	/** Includes active and inactive action rules so targets can detect edges. */
+	std::vector<ResolvedControlStyleTrigger> Triggers;
 	std::vector<ControlStyleResolutionIssue> Issues;
 
 	bool Success() const noexcept { return Issues.empty(); }
@@ -130,7 +174,9 @@ public:
 
 	size_t AddRule(
 		ControlStyleSelector selector,
-		std::vector<ControlStyleSetter> setters);
+		std::vector<ControlStyleSetter> setters,
+		std::vector<DeclarativeEventTriggerActionDefinition> enterActions = {},
+		std::vector<DeclarativeEventTriggerActionDefinition> exitActions = {});
 	bool RemoveRule(size_t ruleId);
 	void ClearRules();
 	const std::vector<ControlStyleRule>& Rules() const noexcept { return _rules; }
@@ -141,9 +187,15 @@ public:
 	bool TryGetResource(const std::wstring& key, BindingValue& value) const;
 
 	ControlStyleResolution Resolve(Control& target) const;
+	bool UsesPropertyCondition(const std::wstring& propertyName) const;
+	/** Unique DataTrigger paths used to build target-local DataContext observers. */
+	std::vector<std::wstring> DataConditionPaths() const;
 	uint64_t Revision() const noexcept { return _revision; }
 	EventConnection SubscribeChanged(std::function<void()> handler) const;
-	/** Attaches the DataContext evaluated by DataTrigger rules; source stays caller-owned. */
+	/**
+	 * Compatibility fallback used only when a target has no effective DataContext.
+	 * Normal DataTrigger evaluation is target-local and follows inherited DataContext.
+	 */
 	void SetDataContext(IBindingSource* source) const;
 	IBindingSource* DataContext() const noexcept;
 
@@ -162,7 +214,9 @@ private:
 	struct DataContextState;
 	mutable std::unique_ptr<DataContextState> _dataContextState;
 
-	bool MatchesDataConditions(const ControlStyleSelector& selector) const;
+	bool MatchesDataConditions(
+		const ControlStyleSelector& selector,
+		Control& target) const;
 	void RebuildDataContextSubscriptions() const;
 	void NotifyChanged() const;
 };

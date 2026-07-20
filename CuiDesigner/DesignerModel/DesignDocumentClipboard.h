@@ -22,6 +22,11 @@ struct DesignClipboardRootTarget
 	// ParentRef identifies a synthetic parent such as TabControlName#page0.
 	int ParentId = 0;
 	std::wstring ParentRef;
+	// nullopt preserves the fragment root's visual content property (used by
+	// Duplicate). An empty value selects the destination component's default
+	// content property, or clears it for an ordinary container. A non-empty
+	// value selects a named component content property.
+	std::optional<std::wstring> ComponentContentProperty = std::wstring{};
 	// nullopt preserves the fragment root's region (used by Duplicate).
 	// "" clears it; "panel1"/"panel2" selects a SplitContainer region.
 	std::optional<std::string> SplitRegion = std::string{};

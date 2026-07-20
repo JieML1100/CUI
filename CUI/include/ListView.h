@@ -1,5 +1,6 @@
 #pragma once
 #include "Control.h"
+#include "BindingList.h"
 #include "ObservableCollection.h"
 #include <unordered_map>
 #include <unordered_set>
@@ -95,6 +96,25 @@ public:
 	using ItemCollection = ObservableCollection<ListViewItem>;
 	ColumnCollection Columns;
 	ItemCollection Items;
+	BindingListReference GetItemsSource() const noexcept { return _itemsSource; }
+	void SetItemsSource(BindingListReference value);
+	const std::wstring& GetDisplayMemberPath() const noexcept
+	{
+		return _displayMemberPath;
+	}
+	void SetDisplayMemberPath(std::wstring value);
+	const std::wstring& GetSelectedValuePath() const noexcept
+	{
+		return _selectedValuePath;
+	}
+	void SetSelectedValuePath(std::wstring value);
+	BindingValue GetSelectedValue() const;
+	void SetSelectedValue(const BindingValue& value);
+	const std::wstring& GetSecondaryMemberPath() const noexcept
+	{
+		return _secondaryMemberPath;
+	}
+	void SetSecondaryMemberPath(std::wstring value);
 
 #define CUI_LIST_VIEW_PROPERTY(type, name) \
 	PROPERTY(type, name); \
@@ -233,8 +253,6 @@ public:
 	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY) override;
 
 protected:
-	virtual bool IsListBox() const { return false; }
-	void InitializeListBoxDefaults() noexcept;
 	void OnComputedLayoutSizeChanged() override;
 
 private:
@@ -312,6 +330,17 @@ private:
 	D2D1_COLOR_F _checkBorderColor = cui::theme::palette::BorderStrong;
 	D2D1_COLOR_F _scrollBackColor = cui::theme::palette::ScrollTrack;
 	D2D1_COLOR_F _scrollForeColor = cui::theme::palette::ScrollThumb;
+	BindingListReference _itemsSource;
+	EventConnection _itemsSourceChanged;
+	std::vector<BindingPathObservation> _itemSourceObservations;
+	std::wstring _displayMemberPath;
+	std::wstring _secondaryMemberPath;
+	std::wstring _selectedValuePath;
+	Event<void(ListView*)> _selectedValueChanged;
+	bool _refreshingItemsSource = false;
+	void RefreshItemsSource();
+	void RefreshItemSource(size_t index);
+	void NotifySelectedValueChanged();
 
 	Layout CalcLayout() const;
 	float GetEffectiveRowHeight() const;
@@ -362,18 +391,4 @@ private:
 	bool SetCachedItemSelected(size_t index, bool selected);
 	bool ClearCachedSelection();
 	int FindFirstCachedSelectedIndex() const;
-};
-/**
- * @file ListView.h
- * @brief ListBox：与ListView等价, 占位符, 防止无意义的额外实现。
- */
-class ListBox : public ListView
-{
-public:
-	UIClass Type() override;
-	void EnsureBindingPropertiesRegistered() override;
-	ListBox(int x = 0, int y = 0, int width = 200, int height = 160);
-
-protected:
-	bool IsListBox() const override { return true; }
 };

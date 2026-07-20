@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include "Event.h"
 #include "Binding.h"
+#include "ComponentBehavior.h"
 #include "ObservableCollection.h"
 #include <Colors.h>
 #include "ThemePalette.h"
@@ -118,6 +119,18 @@ enum class UIClass : int
 	UI_PagedGridView,
 	UI_NumericUpDown,
 	UI_Expander,
+	UI_NativeSurface,
+	UI_ItemsControl,
+	/** Generated item container for Selector controls; not an authored tree node. */
+	UI_SelectorItem,
+	/** Generated item container for ComboBox controls; not an authored tree node. */
+	UI_ComboBoxItem,
+	/** Generated hierarchical item container for TreeView controls. */
+	UI_TreeViewItem,
+	UI_ContentPresenter,
+	UI_ContentControl,
+	/** ControlTemplate slot that receives an ItemsControl's generated ItemsHost. */
+	UI_ItemsPresenter,
 	UI_CUSTOM
 };
 
@@ -509,6 +522,8 @@ typedef Event<void(class Control*)> LostFocusEvent;
 typedef Event<void(class Control*, std::vector<std::wstring>)> DropFileEvent;
 typedef Event<void(class Control*, std::wstring)> DropTextEvent;
 typedef Event<void(class Control*)> SelectionChangedEvent;
+typedef Event<void(class Control*, class Control*, class Control*)>
+	ParentChangedEvent;
 
 struct ControlPropertyChangedEventArgs
 {
@@ -520,7 +535,232 @@ struct ControlPropertyChangedEventArgs
 typedef Event<void(class Control*, const ControlPropertyChangedEventArgs&)>
 	ControlPropertyChangedEvent;
 
+/**
+ * Stable payload used by events declared in XAML component contracts.
+ * The framework intentionally exposes a value object instead of a C++ member
+ * type so dynamic documents never need reflection into application classes.
+ */
+enum class DeclarativeEventRoutingStrategy : unsigned char
+{
+	Direct,
+	Bubble,
+	Tunnel,
+};
+
+struct DeclarativeEventArgs
+{
+	std::wstring Name;
+	BindingValue Value;
+	std::wstring OwnerNamespace;
+	std::wstring OwnerTypeName;
+	DeclarativeEventRoutingStrategy RoutingStrategy =
+		DeclarativeEventRoutingStrategy::Direct;
+	class Control* OriginalSource = nullptr;
+	class Control* Source = nullptr;
+	class Control* CurrentTarget = nullptr;
+	bool Handled = false;
+};
+
+typedef Event<void(class Control*, DeclarativeEventArgs&)>
+	DeclarativeEvent;
+
+struct DynamicControlEventDefinition
+{
+	std::wstring Name;
+	BindingValueKind PayloadKind = BindingValueKind::Empty;
+	std::wstring OwnerNamespace;
+	std::wstring OwnerTypeName;
+	DeclarativeEventRoutingStrategy RoutingStrategy =
+		DeclarativeEventRoutingStrategy::Direct;
+};
+
+/** One host-property predicate that can activate a declarative visual state. */
+struct DeclarativeVisualStateCondition
+{
+	std::wstring PropertyName;
+	BindingValue Value;
+};
+
+/** One property value applied to the component host or a named template part. */
+struct DeclarativeVisualStateSetter
+{
+	/** Empty targets the component host; otherwise this is a template-local name. */
+	std::wstring TargetName;
+	std::wstring PropertyName;
+	BindingValue Value;
+};
+
+enum class DeclarativeAnimationKind : unsigned char
+{
+	Double,
+	Color,
+	Thickness,
+	Point,
+	Vector,
+	Rect,
+	Size,
+	Matrix,
+	Object,
+};
+
+enum class DeclarativeEasingKind : unsigned char
+{
+	Linear,
+	Quadratic,
+	Cubic,
+	Sine,
+};
+
+enum class DeclarativeEasingMode : unsigned char
+{
+	EaseIn,
+	EaseOut,
+	EaseInOut,
+};
+
+enum class DeclarativeKeyFrameKind : unsigned char
+{
+	Discrete,
+	Linear,
+	Easing,
+	Spline,
+};
+
+/** WPF RepeatBehavior discriminator for one animation Timeline. */
+enum class DeclarativeRepeatBehaviorKind : unsigned char
+{
+	Count,
+	Duration,
+	Forever,
+};
+
+enum class DeclarativeTimelineFillBehavior : unsigned char
+{
+	HoldEnd,
+	Stop,
+};
+
+/** One explicitly timed value in a Double/Color/Thickness/Point/Rect/Size/Object key-frame animation. */
+struct DeclarativeAnimationKeyFrame
+{
+	DeclarativeKeyFrameKind Kind = DeclarativeKeyFrameKind::Linear;
+	unsigned long long KeyTimeMilliseconds = 0;
+	BindingValue Value;
+	DeclarativeEasingKind Easing = DeclarativeEasingKind::Linear;
+	DeclarativeEasingMode EasingMode = DeclarativeEasingMode::EaseOut;
+	/** Cubic Bezier control points used only by Spline key frames. */
+	float KeySplineX1 = 0.0f;
+	float KeySplineY1 = 0.0f;
+	float KeySplineX2 = 1.0f;
+	float KeySplineY2 = 1.0f;
+};
+
+/** One finite Timeline in a VisualState Storyboard. */
+struct DeclarativeVisualStateAnimation
+{
+	DeclarativeAnimationKind Kind = DeclarativeAnimationKind::Double;
+	/** Empty targets the component host; otherwise this is a template-local name. */
+	std::wstring TargetName;
+	std::wstring PropertyName;
+	/** WPF From/To/By endpoints; missing values use the current/base animation inputs. */
+	std::optional<BindingValue> From;
+	std::optional<BindingValue> To;
+	std::optional<BindingValue> By;
+	/** Adds the timeline's local output to its default origin when WPF does so. */
+	bool IsAdditive = false;
+	/** Accumulates the timeline's iteration delta across repeat cycles. */
+	bool IsCumulative = false;
+	unsigned long long BeginTimeMilliseconds = 0;
+	unsigned long long DurationMilliseconds = 0;
+	DeclarativeRepeatBehaviorKind RepeatBehavior =
+		DeclarativeRepeatBehaviorKind::Count;
+	/** May be fractional; the WPF default is one repetition. */
+	double RepeatCount = 1.0;
+	unsigned long long RepeatDurationMilliseconds = 0;
+	bool AutoReverse = false;
+	DeclarativeTimelineFillBehavior FillBehavior =
+		DeclarativeTimelineFillBehavior::HoldEnd;
+	/** Timeline-local speed; BeginTime and duration-form RepeatBehavior stay in parent time. */
+	double SpeedRatio = 1.0;
+	/** Fractions of one simple duration; their sum may not exceed one. */
+	double AccelerationRatio = 0.0;
+	double DecelerationRatio = 0.0;
+	DeclarativeEasingKind Easing = DeclarativeEasingKind::Linear;
+	DeclarativeEasingMode EasingMode = DeclarativeEasingMode::EaseOut;
+	/** Non-empty selects the corresponding UsingKeyFrames timeline. */
+	std::vector<DeclarativeAnimationKeyFrame> KeyFrames;
+};
+
+/** WPF-style action executed by a component EventTrigger. */
+enum class DeclarativeStoryboardActionKind : unsigned char
+{
+	Begin,
+	Pause,
+	Resume,
+	Stop,
+};
+
+struct DeclarativeEventTriggerActionDefinition
+{
+	DeclarativeStoryboardActionKind Kind =
+		DeclarativeStoryboardActionKind::Begin;
+	/** BeginStoryboard x:Name, or the referenced BeginStoryboardName. */
+	std::wstring StoryboardName;
+	/** Populated only for BeginStoryboard. */
+	std::vector<DeclarativeVisualStateAnimation> Animations;
+};
+
+/** One template-root EventTrigger driven by a component-owned routed event. */
+struct DeclarativeEventTriggerDefinition
+{
+	std::wstring EventName;
+	std::vector<DeclarativeEventTriggerActionDefinition> Actions;
+};
+
+/** One mutually exclusive state inside a declarative visual-state group. */
+struct DeclarativeVisualStateDefinition
+{
+	std::wstring Name;
+	/** All conditions must match. Empty conditions and events identify the fallback state. */
+	std::vector<DeclarativeVisualStateCondition> Conditions;
+	/** A matching component-owned routed event enters this state. */
+	std::vector<std::wstring> EventNames;
+	std::vector<DeclarativeVisualStateSetter> Setters;
+	std::vector<DeclarativeVisualStateAnimation> Animations;
+};
+
+/** One WPF-style route between states in the same visual-state group. */
+struct DeclarativeVisualTransitionDefinition
+{
+	/** Empty means any source/target state. */
+	std::wstring FromState;
+	std::wstring ToState;
+	unsigned long long GeneratedDurationMilliseconds = 0;
+	DeclarativeEasingKind GeneratedEasing = DeclarativeEasingKind::Linear;
+	DeclarativeEasingMode GeneratedEasingMode = DeclarativeEasingMode::EaseOut;
+	/** Explicit transition timelines override generated timelines per target. */
+	std::vector<DeclarativeVisualStateAnimation> Animations;
+};
+
+struct DeclarativeVisualStateGroupDefinition
+{
+	std::wstring Name;
+	std::vector<DeclarativeVisualStateDefinition> States;
+	std::vector<DeclarativeVisualTransitionDefinition> Transitions;
+};
+
+struct DeclarativeVisualStateChangedEventArgs
+{
+	std::wstring GroupName;
+	std::wstring OldState;
+	std::wstring NewState;
+};
+
+typedef Event<void(class Control*, const DeclarativeVisualStateChangedEventArgs&)>
+	DeclarativeVisualStateChangedEvent;
+
 class ControlStyleSheet;
+struct ControlStyleResolution;
 class Control;
 
 /**
@@ -560,7 +800,7 @@ private:
  * - Font：通过属性 Font 设置时默认由控件接管并在替换/析构时释放；可用 SetFontEx 指定不接管。
  * - Image：改为存储 BitmapSource（设备无关），渲染时按需创建 ID2D1Bitmap 缓存。
  */
-class Control
+class Control : public IBindingSource
 {
 protected:
 	std::vector<Control*> _observedChildren;
@@ -622,8 +862,8 @@ protected:
 	{
 		BindingValue BaseValue;
 		bool HasBaseValue = false;
-		std::array<std::optional<BindingValue>, 4> Values;
-		std::array<const Binding*, 4> BindingOwners{};
+		std::array<std::optional<BindingValue>, 7> Values;
+		std::array<const Binding*, 7> BindingOwners{};
 
 		bool HasSources() const noexcept
 		{
@@ -633,9 +873,27 @@ protected:
 	};
 	std::unordered_map<const BindingPropertyMetadata*, PropertyValueEntry>
 		_propertyValues;
+	struct DynamicPropertyEntry
+	{
+		std::unique_ptr<BindingPropertyMetadata> Metadata;
+		BindingValue Value;
+	};
+	std::unordered_map<std::wstring, DynamicPropertyEntry> _dynamicProperties;
+	std::unordered_map<std::wstring, DynamicControlEventDefinition>
+		_dynamicEvents;
 	const BindingPropertyMetadata* _applyingPropertyMetadata = nullptr;
 	ControlPropertyValueSource _applyingPropertySource =
 		ControlPropertyValueSource::Default;
+	bool _refreshingInheritedProperties = false;
+	BindingSourceReference _inheritedDataContext;
+	BindingSourceReference _effectiveDataContext;
+	std::unique_ptr<BindingSourceProxy> _dataContextSource;
+	PropertyChangedEvent _dataContextChanged;
+	PropertyChangedEvent _bindingSourcePropertyChanged;
+	std::vector<EventConnection> _bindingSourceMetadataConnections;
+	bool _bindingSourceMetadataConnectionsInitialized = false;
+	std::vector<EventConnection> _retainedEventConnections;
+	// Declared after every possible binding source so bindings are destroyed first.
 	std::unique_ptr<BindingCollection> _dataBindings;
 	bool _showValidationBorder = true;
 	bool _showValidationToolTip = true;
@@ -659,18 +917,44 @@ protected:
 	// 跨线程失效回调使用的生命周期令牌：析构时置空，使已入队但尚未执行的
 	// 失效回调在 UI 线程上安全地发现控件已销毁而跳过。
 	std::shared_ptr<bool> _lifetimeToken = std::make_shared<bool>(true);
+	std::wstring _declarativeTypeNamespace;
+	std::wstring _declarativeTypeName;
 	std::wstring _styleId;
 	std::vector<std::wstring> _styleClasses;
 	ControlStyleState _styleState = ControlStyleState::None;
 	std::shared_ptr<const ControlStyleSheet> _themeStyleSheet;
 	std::shared_ptr<const ControlStyleSheet> _styleSheet;
+	// A control-owned ResourceDictionary scope. Unlike the document/theme
+	// sheets it is not copied to descendants: lookup walks the logical Parent
+	// chain so reparenting immediately changes the effective lexical scope.
+	std::shared_ptr<const ControlStyleSheet> _resourceDictionary;
 	EventConnection _themeStyleConnection;
 	EventConnection _styleSheetConnection;
+	EventConnection _resourceDictionaryConnection;
+	EventConnection _stylePropertyConditionConnection;
 	std::vector<EventConnection> _styleStateConnections;
+	std::vector<EventConnection> _styleDataContextConnections;
+	std::vector<std::shared_ptr<IBindingSource>> _styleDataContextOwners;
 	std::array<std::vector<std::wstring>, 2> _styleSheetProperties;
 	bool _refreshingStyleValues = false;
 	bool _styleRefreshPending = false;
+	// DynamicResource is a Local-value expression. The resolved value occupies
+	// the normal Local slot while the expression itself survives missing keys
+	// and is reevaluated whenever either effective resource sheet changes.
+	std::unordered_map<const BindingPropertyMetadata*, std::wstring>
+		_dynamicResourceExpressions;
+	bool _applyingDynamicResource = false;
+	bool _refreshingDynamicResources = false;
 	std::function<void(Control&, D2DGraphics&)> _renderDecorator;
+	std::unique_ptr<IDeclarativeComponentBehavior>
+		_declarativeComponentBehavior;
+	std::vector<std::pair<std::wstring, Control*>>
+		_declarativeTemplateParts;
+	std::vector<std::pair<std::wstring, Control*>>
+		_declarativeContentPresenters;
+	struct DeclarativeVisualStateRuntime;
+	std::unique_ptr<DeclarativeVisualStateRuntime> _declarativeVisualStates;
+	bool _dispatchingComponentBehaviorMessage = false;
 	std::optional<cui::drawing::Brush> _foregroundBrush;
 	std::optional<cui::drawing::Geometry> _clip;
 	std::optional<cui::drawing::Transform> _renderTransform;
@@ -684,6 +968,16 @@ protected:
 	friend class BindingCollection;
 	friend class Binding;
 	friend class BindingPropertyMetadata;
+	friend class BindingPropertyRegistry;
+	const BindingPropertyMetadata* FindDynamicPropertyMetadata(
+		const std::wstring& propertyName) const;
+	std::vector<const BindingPropertyMetadata*> GetDynamicPropertyMetadata() const;
+	bool TryGetDynamicPropertyBacking(
+		const std::wstring& propertyName,
+		BindingValue& out) const;
+	bool TrySetDynamicPropertyBacking(
+		const std::wstring& propertyName,
+		const BindingValue& value);
 	void OnBindingValidationChanged(const std::wstring& targetProperty);
 	void RenderValidationAdorner();
 	void RenderFocusAdorner();
@@ -692,6 +986,8 @@ protected:
 	void NotifyAccessibilityVirtualChanged(
 		uint32_t virtualId, AccessibilityChange change);
 	void RequestArrange();
+	void RefreshInheritedPropertiesRecursive();
+	void RefreshInheritedPropertyValues();
 	void ApplyPropertyMetadataChange(
 		const BindingPropertyMetadata& metadata,
 		const BindingValue& oldValue,
@@ -699,7 +995,8 @@ protected:
 	bool ApplyEffectivePropertyValue(
 		const BindingPropertyMetadata& metadata,
 		const BindingValue& value,
-		ControlPropertyValueSource source);
+		ControlPropertyValueSource source,
+		bool allowReadOnly = false);
 	bool TryResolveEffectivePropertyValue(
 		const BindingPropertyMetadata& metadata,
 		const PropertyValueEntry& entry,
@@ -718,18 +1015,36 @@ protected:
 		const std::wstring& propertyName,
 		const BindingValue& value,
 		ControlPropertyValueSource source,
-		const Binding* owner);
+		const Binding* owner,
+		bool allowReadOnly = false);
 	bool ClearPropertyValueOwned(
 		const std::wstring& propertyName,
 		ControlPropertyValueSource source,
-		const Binding* owner);
+		const Binding* owner,
+		bool allowReadOnly = false);
 	bool ClearBindingPropertyValue(
 		const std::wstring& propertyName,
 		const Binding* owner);
+	std::vector<std::shared_ptr<const ControlStyleSheet>>
+		VisibleAuthorStyleSheets() const;
 	bool RefreshStyleValuesForSource(
 		ControlPropertyValueSource source,
-		const std::shared_ptr<const ControlStyleSheet>& sheet,
+		const std::vector<std::shared_ptr<const ControlStyleSheet>>& sheets,
 		std::vector<std::wstring>& appliedProperties);
+	bool SynchronizeStyleTriggerActions(
+		ControlPropertyValueSource source,
+		const std::shared_ptr<const ControlStyleSheet>& sheet,
+		const ControlStyleResolution& resolution);
+	void PruneStyleTriggerActions(
+		ControlPropertyValueSource source,
+		const std::vector<std::shared_ptr<const ControlStyleSheet>>& sheets);
+	bool TryResolveDynamicResource(
+		const std::wstring& resourceKey, BindingValue& value) const;
+	bool RefreshDynamicResourceValues(bool recursive);
+	void RebuildStylePropertyConditionSubscription();
+	void RebuildStyleDataContextSubscriptions();
+	void RebuildStyleSubscriptions(bool recursive);
+	void UpdateEffectiveDataContext(BindingSourceReference value);
 
 	template<typename TValue>
 	bool SetPropertyField(
@@ -803,6 +1118,7 @@ protected:
 		(void)previousChildren;
 	}
 	void SynchronizeChildCollection(const CollectionChangedEventArgs& change);
+	void SetLogicalParent(Control* value);
 
 	// 通知父容器（Panel 或 Form）需要重新布局
 	virtual void RequestLayout();
@@ -816,8 +1132,89 @@ protected:
 	friend class Panel;
 	friend class Form;
 public:
+	/** Controls are first-class binding sources as well as binding targets. */
+	bool TryGetValue(const std::wstring& propertyName,
+		BindingValue& out) const override;
+	bool TrySetValue(const std::wstring& propertyName,
+		const BindingValue& value) override;
+	bool TryGetPropertyMetadata(const std::wstring& propertyName,
+		BindingSourcePropertyMetadata& out) const override;
+	std::vector<BindingSourcePropertyMetadata> GetProperties() const override;
+	PropertyChangedEvent& PropertyChanged() override;
+	/** Sets a local DataContext; descendants inherit its effective source. */
+	bool SetDataContext(BindingSourceReference value);
+	/** Removes the local value and resumes inheritance from Parent. */
+	bool ClearDataContext();
+	const BindingSourceReference& GetDataContext() const noexcept
+	{
+		return _effectiveDataContext;
+	}
+	/** Stable source identity used by bindings across inherited-source changes. */
+	IBindingSource& DataContextSource();
+	/** Root/runtime hook; normal descendants are synchronized by the control tree. */
+	void SetInheritedDataContext(BindingSourceReference value);
+	PropertyChangedEvent& DataContextChanged() noexcept { return _dataContextChanged; }
+	/** Raised after the logical parent changes; old and new parent may be null. */
+	ParentChangedEvent OnParentChanged;
 	/** @brief 勾选状态变化事件（CheckBox/RadioBox 等）。 */
 	CheckedEvent OnChecked = CheckedEvent();
+	/** Every node on a declarative routed-event route publishes the event here. */
+	DeclarativeEvent OnDeclarativeEvent;
+	bool DefineDynamicEvent(
+		DynamicControlEventDefinition definition,
+		std::wstring* outError = nullptr);
+	const DynamicControlEventDefinition* FindDynamicEvent(
+		const std::wstring& eventName) const noexcept;
+	bool RaiseDeclarativeEvent(
+		std::wstring eventName,
+		BindingValue value = {});
+	/** WPF-style overload that returns routed state, including Handled, to the raiser. */
+	bool RaiseDeclarativeEvent(DeclarativeEventArgs& args);
+	/** Installs one immutable set of component-template visual-state groups. */
+	bool DefineVisualStateGroups(
+		std::vector<DeclarativeVisualStateGroupDefinition> groups,
+		std::wstring* outError = nullptr);
+	/** Installs visual states and template-root EventTrigger actions atomically. */
+	bool DefineDeclarativeInteractions(
+		std::vector<DeclarativeVisualStateGroupDefinition> groups,
+		std::vector<DeclarativeEventTriggerDefinition> eventTriggers,
+		std::wstring* outError = nullptr);
+	/** Explicit state entry used by component behavior and declarative event triggers. */
+	bool GoToVisualState(
+		const std::wstring& groupName,
+		const std::wstring& stateName,
+		std::wstring* outError = nullptr);
+	/** WPF-style overload that can explicitly bypass VisualTransition objects. */
+	bool GoToVisualState(
+		const std::wstring& groupName,
+		const std::wstring& stateName,
+		bool useTransitions,
+		std::wstring* outError = nullptr);
+	/** Searches all groups; fails when the state name is absent or ambiguous. */
+	bool GoToVisualState(
+		const std::wstring& stateName,
+		std::wstring* outError = nullptr);
+	bool GoToVisualState(
+		const std::wstring& stateName,
+		bool useTransitions,
+		std::wstring* outError = nullptr);
+	std::wstring GetCurrentVisualState(
+		const std::wstring& groupName) const;
+	/** True while at least one VisualState Storyboard timeline is active. */
+	bool HasActiveVisualStateAnimations() const noexcept;
+	/** Advances active timelines using a monotonic millisecond timestamp. */
+	bool AdvanceVisualStateAnimations(unsigned long long nowMilliseconds);
+	DeclarativeVisualStateChangedEvent OnVisualStateChanged;
+	/** Retains an internal behavior/template subscription for this lifetime. */
+	void RetainEventConnection(EventConnection connection)
+	{
+		if (connection.Connected())
+			_retainedEventConnections.push_back(std::move(connection));
+	}
+	void ClearRetainedEventConnections() noexcept
+	{
+		_retainedEventConnections.clear();
+	}
 	/** @brief 鼠标滚轮事件。 */
 	MouseWheelEvent OnMouseWheel = MouseWheelEvent();
 	/** @brief 鼠标移动事件。 */
@@ -907,6 +1304,10 @@ public:
 	virtual void UpdateForeground() { Update(); }
 	/** @brief 同步控件持有的原生渲染/窗口资源；普通控件无需处理。 */
 	virtual void SyncNativeSurface() {}
+	/** Host DPI changed; device-independent controls normally need no work. */
+	virtual void NotifyDpiChanged(float dpiScale);
+	/** Host render device is about to be discarded after device loss. */
+	virtual void NotifyDeviceResourcesInvalidated() noexcept;
 	/**
 	 * @brief 在控件局部坐标系中开始渲染（设置平移变换 + 裁剪矩形）。
 	 * 结束时必须调用对应的 EndRender()。
@@ -926,6 +1327,28 @@ public:
 	bool HasRenderDecorator() const noexcept
 	{
 		return static_cast<bool>(_renderDecorator);
+	}
+	/**
+	 * Installs one application behavior on this XAML component instance.
+	 * The Control owns it and guarantees Detach before template children die.
+	 */
+	bool SetDeclarativeComponentBehavior(
+		std::unique_ptr<IDeclarativeComponentBehavior> behavior,
+		const DeclarativeComponentBehaviorContext& context,
+		std::wstring* outError = nullptr);
+	void ClearDeclarativeComponentBehavior() noexcept;
+	IDeclarativeComponentBehavior* GetDeclarativeComponentBehavior() noexcept
+	{
+		return _declarativeComponentBehavior.get();
+	}
+	const IDeclarativeComponentBehavior*
+		GetDeclarativeComponentBehavior() const noexcept
+	{
+		return _declarativeComponentBehavior.get();
+	}
+	bool HasDeclarativeComponentBehavior() const noexcept
+	{
+		return static_cast<bool>(_declarativeComponentBehavior);
 	}
 	/** Sets a device-independent brush used by brush-aware foreground rendering. */
 	void SetForegroundBrush(const cui::drawing::Brush& brush);
@@ -957,6 +1380,12 @@ public:
 	D2D1_POINT_2F GetRenderTransformOrigin() const noexcept
 	{
 		return _renderTransformOrigin;
+	}
+	/** Floating-DIP metadata projection used by XAML, binding and animation. */
+	void SetRenderTransformOriginDip(cui::core::Point origin);
+	cui::core::Point GetRenderTransformOriginDip() const noexcept
+	{
+		return { _renderTransformOrigin.x, _renderTransformOrigin.y };
 	}
 	/** @brief 结束局部坐标渲染，恢复之前的变换状态。 */
 	void EndRender();
@@ -1061,6 +1490,13 @@ public:
 	UINT EffectiveAnimationDuration(UINT configuredDurationMs) const;
 	bool ShouldShowValidationToolTip() const;
 	BindingValidationChangedEvent OnValidationStateChanged;
+	/**
+	 * Adds one instance-owned property declared by a XAML component type.
+	 * The name must not collide with native or previously declared properties.
+	 */
+	bool DefineDynamicProperty(
+		DynamicControlPropertyDefinition definition,
+		std::wstring* outError = nullptr);
 	const BindingPropertyMetadata* FindPropertyMetadata(
 		const std::wstring& propertyName);
 	bool TryGetPropertyValue(
@@ -1080,6 +1516,12 @@ public:
 	bool TrySetCurrentPropertyValue(
 		const std::wstring& propertyName,
 		const BindingValue& value);
+	/** Component/native behavior equivalent of WPF SetValue(DependencyPropertyKey). */
+	bool TrySetReadOnlyPropertyValue(
+		const std::wstring& propertyName,
+		const BindingValue& value);
+	/** Clears a behavior-owned read-only Local value and reveals inheritance/default. */
+	bool ClearReadOnlyPropertyValue(const std::wstring& propertyName);
 	bool ClearPropertyValue(
 		const std::wstring& propertyName,
 		ControlPropertyValueSource source);
@@ -1095,6 +1537,34 @@ public:
 		const std::wstring& propertyName,
 		const BindingValue& value);
 	bool IsPropertyValueDefault(const std::wstring& propertyName);
+	/** XAML component identity installed by the document materializer. */
+	void SetDeclarativeTypeIdentity(
+		std::wstring xamlNamespace,
+		std::wstring xamlName);
+	const std::wstring& GetDeclarativeTypeNamespace() const noexcept
+	{
+		return _declarativeTypeNamespace;
+	}
+	const std::wstring& GetDeclarativeTypeName() const noexcept
+	{
+		return _declarativeTypeName;
+	}
+	/** Runtime-only equivalent of WPF GetTemplateChild for the owning component. */
+	Control* FindDeclarativeTemplatePart(const std::wstring& localName) noexcept;
+	const Control* FindDeclarativeTemplatePart(
+		const std::wstring& localName) const noexcept;
+	/** Returns the generated presenter for one declared visual content property. */
+	Control* FindDeclarativeContentPresenter(
+		const std::wstring& propertyName) noexcept;
+	const Control* FindDeclarativeContentPresenter(
+		const std::wstring& propertyName) const noexcept;
+	/** Runtime infrastructure used while expanding a component template. */
+	bool RegisterDeclarativeTemplatePart(
+		std::wstring localName,
+		Control* instance);
+	bool RegisterDeclarativeContentPresenter(
+		std::wstring propertyName,
+		Control* instance);
 	const std::wstring& GetStyleId() const noexcept { return _styleId; }
 	void SetStyleId(std::wstring value);
 	std::span<const std::wstring> GetStyleClasses() const noexcept
@@ -1117,12 +1587,33 @@ public:
 	{
 		return _styleSheet;
 	}
+	/** Returns this control's local ResourceDictionary, not an inherited one. */
+	std::shared_ptr<const ControlStyleSheet> GetResourceDictionary() const noexcept
+	{
+		return _resourceDictionary;
+	}
 	bool SetThemeStyleSheet(
 		std::shared_ptr<const ControlStyleSheet> value,
 		bool recursive = true);
 	bool SetStyleSheet(
 		std::shared_ptr<const ControlStyleSheet> value,
 		bool recursive = true);
+	/** Installs one local lexical resource scope on this control. */
+	bool SetResourceDictionary(
+		std::shared_ptr<const ControlStyleSheet> value);
+	/** WPF-like lookup: self, logical ancestors, document, then theme/application. */
+	bool TryFindResource(
+		const std::wstring& resourceKey,
+		BindingValue& value) const;
+	/** Installs a WPF-like DynamicResource expression in the Local value slot. */
+	bool SetDynamicResource(
+		const std::wstring& propertyName,
+		std::wstring resourceKey);
+	/** Removes a DynamicResource expression and its current Local value. */
+	bool ClearDynamicResource(const std::wstring& propertyName);
+	bool TryGetDynamicResourceKey(
+		const std::wstring& propertyName,
+		std::wstring& resourceKey);
 	bool RefreshStyleValues(bool recursive = true);
 	/** @brief Registers metadata owned by this runtime control type. */
 	virtual void EnsureBindingPropertiesRegistered();
@@ -1362,6 +1853,11 @@ public:
 	PROPERTY(SIZE, MaxSize);
 	GET(SIZE, MaxSize);
 	SET(SIZE, MaxSize);
+	/** Floating DIP values used by metadata, XAML and layout. */
+	cui::core::Size GetMinSizeDip() const noexcept;
+	void SetMinSizeDip(cui::core::Size value);
+	cui::core::Size GetMaxSizeDip() const noexcept;
+	void SetMaxSizeDip(cui::core::Size value);
 	
 	/**
 	 * @brief 测量阶段：返回控件期望尺寸。
@@ -1493,6 +1989,9 @@ public:
 	 * @brief 处理窗口消息并分发到控件。
 	 * @return true 表示已处理。
 	 */
+	/** Routes an input message through the attached component behavior first. */
+	bool DispatchMessage(
+		UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY);
 	virtual bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY);
 };
 
@@ -1510,7 +2009,8 @@ const BindingPropertyMetadata* BindingPropertyRegistry::Register(
 	constexpr BindingValueKind valueKind = []
 	{
 		using Value = std::remove_cv_t<TValue>;
-		if constexpr (std::is_same_v<Value, bool>) return BindingValueKind::Bool;
+		if constexpr (std::is_same_v<Value, BindingValue>) return BindingValueKind::Object;
+		else if constexpr (std::is_same_v<Value, bool>) return BindingValueKind::Bool;
 		else if constexpr (std::is_same_v<Value, int>) return BindingValueKind::Int;
 		else if constexpr (std::is_same_v<Value, long long>) return BindingValueKind::Int64;
 		else if constexpr (std::is_same_v<Value, float>) return BindingValueKind::Float;
@@ -1529,7 +2029,12 @@ const BindingPropertyMetadata* BindingPropertyRegistry::Register(
 		BindingValue& out)
 	{
 		using Value = std::remove_cv_t<TValue>;
-		if constexpr (std::is_default_constructible_v<Value>)
+		if constexpr (std::is_same_v<Value, BindingValue>)
+		{
+			out = value;
+			return true;
+		}
+		else if constexpr (std::is_default_constructible_v<Value>)
 		{
 			Value converted{};
 			if (!value.TryGet(converted)) return false;
@@ -1554,7 +2059,10 @@ const BindingPropertyMetadata* BindingPropertyRegistry::Register(
 		{
 			auto* owner = dynamic_cast<TOwner*>(&target);
 			if (!owner) return false;
-			out = BindingValue(getter(*owner));
+			if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
+				out = getter(*owner);
+			else
+				out = BindingValue(getter(*owner));
 			return true;
 		};
 	}
@@ -1566,7 +2074,12 @@ const BindingPropertyMetadata* BindingPropertyRegistry::Register(
 		{
 			auto* owner = dynamic_cast<TOwner*>(&target);
 			if (!owner) return false;
-			if constexpr (std::is_default_constructible_v<TValue>)
+			if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
+			{
+				setter(*owner, value);
+				return true;
+			}
+			else if constexpr (std::is_default_constructible_v<TValue>)
 			{
 				TValue converted{};
 				if (!value.TryGet(converted)) return false;
@@ -1611,7 +2124,9 @@ const BindingPropertyMetadata* BindingPropertyRegistry::Register(
 			auto* owner = dynamic_cast<TOwner*>(&target);
 			if (!owner) return false;
 			std::optional<TValue> proposed;
-			if constexpr (std::is_default_constructible_v<TValue>)
+			if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
+				proposed = value;
+			else if constexpr (std::is_default_constructible_v<TValue>)
 			{
 				TValue converted{};
 				if (value.TryGet(converted)) proposed = std::move(converted);
@@ -1625,7 +2140,10 @@ const BindingPropertyMetadata* BindingPropertyRegistry::Register(
 			if (!proposed.has_value()) return false;
 			auto coerced = coerce(*owner, *proposed);
 			if (!coerced.has_value()) return false;
-			out = BindingValue(std::move(*coerced));
+			if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
+				out = std::move(*coerced);
+			else
+				out = BindingValue(std::move(*coerced));
 			return true;
 		};
 	}
@@ -1635,7 +2153,12 @@ const BindingPropertyMetadata* BindingPropertyRegistry::Register(
 		const BindingValue& left,
 		const BindingValue& right) -> bool
 	{
-		if constexpr (std::is_default_constructible_v<TValue>)
+		if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
+		{
+			if (equals) return equals(left, right);
+			return BindingValuesEqual(left, right);
+		}
+		else if constexpr (std::is_default_constructible_v<TValue>)
 		{
 			TValue leftValue{};
 			TValue rightValue{};
@@ -1679,7 +2202,9 @@ const BindingPropertyMetadata* BindingPropertyRegistry::Register(
 		{
 			auto* owner = dynamic_cast<TOwner*>(&target);
 			if (!owner) return;
-			if constexpr (std::is_default_constructible_v<TValue>)
+			if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
+				changed(*owner, oldValue, newValue);
+			else if constexpr (std::is_default_constructible_v<TValue>)
 			{
 				TValue typedOld{};
 				TValue typedNew{};
@@ -1701,7 +2226,12 @@ const BindingPropertyMetadata* BindingPropertyRegistry::Register(
 	BindingValue defaultValue;
 	const bool hasDefaultValue = options.DefaultValue.has_value();
 	if (hasDefaultValue)
-		defaultValue = BindingValue(std::move(*options.DefaultValue));
+	{
+		if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
+			defaultValue = std::move(*options.DefaultValue);
+		else
+			defaultValue = BindingValue(std::move(*options.DefaultValue));
+	}
 
 	return Register(BindingPropertyMetadata(
 		std::move(name),
@@ -1719,6 +2249,9 @@ const BindingPropertyMetadata* BindingPropertyRegistry::Register(
 		std::move(defaultValue),
 		hasDefaultValue,
 		options.Flags,
+		options.IsReadOnly,
+		options.DefaultUpdateMode,
+		{},
 		std::move(options.Design)));
 }
 
@@ -1751,7 +2284,9 @@ bool Control::SetPropertyField(
 	if (!metadata->TryCoerce(*this, converted, effective))
 		return false;
 	TValue typed = storage;
-	if (!effective.TryGet(typed)) return false;
+	if constexpr (std::is_same_v<std::remove_cv_t<TValue>, BindingValue>)
+		typed = effective;
+	else if (!effective.TryGet(typed)) return false;
 
 	BindingValue oldValue(storage);
 	BindingValue newValue(typed);

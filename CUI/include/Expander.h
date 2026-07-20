@@ -1,5 +1,5 @@
 #pragma once
-#include "Panel.h"
+#include "HeaderedContentControl.h"
 
 /**
  * @file Expander.h
@@ -8,10 +8,11 @@
 
 typedef Event<void(class Expander*, bool expanded)> ExpanderExpandedChangedEvent;
 
-class Expander : public Panel
+class Expander : public HeaderedContentControl
 {
 protected:
 	void PerformPendingLayout() override;
+	void ConfigureHeaderVisual(Control& child) override;
 
 private:
 	bool _isExpanded = true;
@@ -38,6 +39,7 @@ private:
 	bool HeaderHitTest(int localX, int localY) const;
 	void ApplyExpandedStateChange(bool oldValue, bool newValue);
 	void SetCurrentExpanded(bool value);
+	void UpdateHeaderLayout();
 
 public:
 	UIClass Type() override;

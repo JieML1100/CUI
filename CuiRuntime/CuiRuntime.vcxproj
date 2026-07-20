@@ -115,6 +115,8 @@
     <ClCompile Include="..\CuiDesigner\DesignerStyleSheetUtils.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\AtomicFile.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocument.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDataResourceUtils.cpp" />
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDataResourceEditorModel.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentCodeGenInputBuilder.cpp" />
     <ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentControlPool.cpp" />
@@ -132,6 +134,8 @@
   <ItemGroup>
     <ClInclude Include="include\CuiRuntime.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\DesignDocumentFileFormat.h" />
+	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDataResourceUtils.h" />
+	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDataResourceEditorModel.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeDocumentFileWatcher.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeDocumentSession.h" />
@@ -139,6 +143,7 @@
     <ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeDocumentTopologyReloader.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\XamlDocumentParser.h" />
     <ClInclude Include="..\CuiDesigner\DesignerModel\XamlDocumentSerializer.h" />
+    <ClInclude Include="..\CuiDesigner\DesignerModel\StoryboardPropertyPath.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\CUI\CUI.vcxproj">

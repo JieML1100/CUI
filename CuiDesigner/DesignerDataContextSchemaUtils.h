@@ -10,6 +10,11 @@ namespace DesignerDataContextSchemaUtils
 	bool IsValidPath(const std::wstring& path);
 	const wchar_t* ValueKindName(BindingValueKind kind) noexcept;
 	bool TryParseValueKind(const std::wstring& text, BindingValueKind& kind);
+	const wchar_t* ObjectKindName(DesignerDataObjectKind kind) noexcept;
+	bool TryParseObjectKind(
+		const std::wstring& text, DesignerDataObjectKind& kind);
+	DesignerDataObjectKind ObjectKindForValueType(
+		const std::type_index& type) noexcept;
 
 	const DesignerDataContextProperty* Find(
 		const DesignerDataContextSchema& schema,

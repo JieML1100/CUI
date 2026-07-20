@@ -745,8 +745,13 @@ bool DesignCodeGenerationService::InspectEventHandlers(
 			};
 			collectParameters(DesignerEventCatalog::GetFormEvents());
 			for (const auto& node : document.Nodes)
+			{
+				const auto* component = document.FindComponent(node.ComponentType);
 				collectParameters(DesignerEventCatalog::GetControlEvents(
-					node.Type, node.CustomEvents));
+					node.Type,
+					component ? component->Events
+						: std::vector<DesignerComponentEventDescriptor>{}));
+			}
 
 			for (const auto& parameters : parameterLists)
 			{

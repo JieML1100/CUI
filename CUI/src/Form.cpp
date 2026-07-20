@@ -182,6 +182,12 @@ namespace accessibility_detail
 		case UIClass::UI_ProgressRing: return L"CUI.ProgressRing";
 		case UIClass::UI_ListView: return L"CUI.ListView";
 		case UIClass::UI_ListBox: return L"CUI.ListBox";
+		case UIClass::UI_SelectorItem: return L"CUI.ListBoxItem";
+		case UIClass::UI_ComboBoxItem: return L"CUI.ComboBoxItem";
+		case UIClass::UI_TreeViewItem: return L"CUI.TreeViewItem";
+		case UIClass::UI_ContentPresenter: return L"CUI.ContentPresenter";
+		case UIClass::UI_ItemsPresenter: return L"CUI.ItemsPresenter";
+		case UIClass::UI_ContentControl: return L"CUI.ContentControl";
 		case UIClass::UI_GridView: return L"CUI.GridView";
 		case UIClass::UI_TreeView: return L"CUI.TreeView";
 		case UIClass::UI_TabControl: return L"CUI.TabControl";
@@ -4432,10 +4438,17 @@ void Form::RefreshAnimationTimer()
 	consider = [&](Control* control)
 		{
 			if (!control || !control->Visible || !control->IsVisual) return;
-			if (control->IsAnimationRunning())
+			const bool nativeAnimation = control->IsAnimationRunning();
+			const bool visualStateAnimation =
+				control->HasActiveVisualStateAnimations();
+			if (nativeAnimation || visualStateAnimation)
 			{
 				hasActiveAnimation = true;
-				UINT interval = control->GetAnimationIntervalMs();
+				UINT interval = visualStateAnimation
+					? 16U : control->GetAnimationIntervalMs();
+				if (nativeAnimation && visualStateAnimation)
+					interval = (std::min)(interval,
+						control->GetAnimationIntervalMs());
 				if (interval == 0) interval = 16;
 				desiredIntervalMs = desiredIntervalMs == 0 ? interval : (std::min)(desiredIntervalMs, interval);
 			}
@@ -4469,12 +4482,15 @@ void Form::RefreshAnimationTimer()
 
 void Form::InvalidateAnimatedControls(bool immediate)
 {
+	const auto nowMilliseconds = ::GetTickCount64();
 	std::function<void(Control*)> consider;
 	consider = [&](Control* control)
 		{
 			if (!control) return;
 			if (!control->Visible || !control->IsVisual) return;
-			if (control->IsAnimationRunning())
+			const bool visualStateFrame =
+				control->AdvanceVisualStateAnimations(nowMilliseconds);
+			if (control->IsAnimationRunning() || visualStateFrame)
 			{
 				D2D1_RECT_F rect{};
 				if (control->GetAnimatedInvalidRect(rect))
@@ -5555,6 +5571,15 @@ void Form::ApplyDpiChange(UINT newDpi)
 	for (auto& layer : this->_dcompD2DLayers)
 		if (layer.Render) layer.Render->SetDpi((FLOAT)newDpi, (FLOAT)newDpi);
 
+	const float dpiScale = GetDpiScale();
+	std::function<void(Control*)> notifyDpi = [&](Control* control)
+	{
+		if (!control) return;
+		control->NotifyDpiChanged(dpiScale);
+		for (auto* child : control->Children) notifyDpi(child);
+	};
+	for (auto* control : Controls) notifyDpi(control);
+
 	this->InvalidateLayout();
 	this->_hasRenderedOnce = false;
 	this->Invalidate(false);
@@ -5694,6 +5719,14 @@ void Form::RecoverRenderIfNeeded()
 		_recoveringDeviceLost = false;
 		return;
 	}
+
+	std::function<void(Control*)> notifyDeviceLoss = [&](Control* control)
+	{
+		if (!control) return;
+		control->NotifyDeviceResourcesInvalidated();
+		for (auto* child : control->Children) notifyDeviceLoss(child);
+	};
+	for (auto* control : Controls) notifyDeviceLoss(control);
 
 	// 先释放旧渲染对象
 	if (this->OverlayRender)
@@ -6344,7 +6377,7 @@ std::unique_ptr<Control> Form::DetachControl(Control* control)
 
 	ClearDetachedControlReferences(control);
 	this->Controls.erase(position);
-	control->Parent = nullptr;
+	control->SetLogicalParent(nullptr);
 	control->_isFormRoot = false;
 	Control::SetChildrenParentForm(control, nullptr);
 	this->InvalidateLayout();
@@ -6446,7 +6479,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 				this->_mouseCaptureControl, contentMouse, localX, localY))
 				return false;
 			hitControl = this->_mouseCaptureControl;
-			this->_mouseCaptureControl->ProcessMessage(
+			this->_mouseCaptureControl->DispatchMessage(
 				messageId, wParamValue, lParamValue,
 				localX, localY);
 			return true;
@@ -6543,7 +6576,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 				int localY = 0;
 				if (TryGetControlLocalPoint(
 					this->Selected, contentMouse, localX, localY))
-					this->Selected->ProcessMessage(
+					this->Selected->DispatchMessage(
 						message, wParam, lParam, localX, localY);
 				UpdateCursor(mouse, contentMouse);
 				break;
@@ -6562,7 +6595,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 			int localX = 0;
 			int localY = 0;
 			if (TryGetControlLocalPoint(hit, contentMouse, localX, localY))
-				hit->ProcessMessage(
+				hit->DispatchMessage(
 					message, wParam, lParam, localX, localY);
 		}
 		this->UnderMouse = this->_hoverControl;
@@ -6669,7 +6702,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 					int localY = 0;
 					if (TryGetControlLocalPoint(
 						this->Selected, contentMouse, localX, localY))
-						this->Selected->ProcessMessage(
+						this->Selected->DispatchMessage(
 							message, wParam, lParam, localX, localY);
 					UpdateCursor(mouse, contentMouse);
 					break;
@@ -6721,7 +6754,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 				if (!TryGetControlLocalPoint(
 					target, contentMouse, targetX, targetY)) continue;
 				if (!target->CanHandleMouseWheel(delta, targetX, targetY)) continue;
-				if (target->ProcessMessage(message, wParam, lParam, targetX, targetY))
+				if (target->DispatchMessage(message, wParam, lParam, targetX, targetY))
 				{
 					hitControl = target;
 					break;
@@ -6748,12 +6781,12 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 				const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
 				if (!hit->CanHandleMouseWheel(delta, controlLocalX, controlLocalY))
 					hitControl = nullptr;
-				else if (!hit->ProcessMessage(message, wParam, lParam, controlLocalX, controlLocalY))
+				else if (!hit->DispatchMessage(message, wParam, lParam, controlLocalX, controlLocalY))
 					hitControl = nullptr;
 			}
 			else
 			{
-				hit->ProcessMessage(
+				hit->DispatchMessage(
 					message, wParam, lParam, controlLocalX, controlLocalY);
 			}
 			if (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN)
@@ -6861,7 +6894,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 
 		if (this->Selected)
 		{
-			if (this->Selected->ProcessMessage(message, wParam, lParam, localX, localY))
+			if (this->Selected->DispatchMessage(message, wParam, lParam, localX, localY))
 			{
 				if (this->Selected->IsVisual)
 				{
@@ -6873,7 +6906,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 			else
 			{
 				auto fallbackTarget = GetScrollViewFallbackTarget(this->Selected, wParam);
-				if (fallbackTarget && fallbackTarget->ProcessMessage(message, wParam, lParam, localX, localY))
+				if (fallbackTarget && fallbackTarget->DispatchMessage(message, wParam, lParam, localX, localY))
 				{
 					hitControl = fallbackTarget;
 					KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
@@ -6919,7 +6952,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 	{
 		if (this->Selected)
 		{
-			if (this->Selected->ProcessMessage(message, wParam, lParam, localX, localY))
+			if (this->Selected->DispatchMessage(message, wParam, lParam, localX, localY))
 			{
 				hitControl = this->Selected;
 				KeyEventArgs eventArgs = KeyEventArgs((Keys)(wParam | 0));
@@ -6978,7 +7011,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 		_suppressedCharacter = L'\0';
 		if (this->Selected)
 		{
-			if (this->Selected->ProcessMessage(message, wParam, lParam, localX, localY))
+			if (this->Selected->DispatchMessage(message, wParam, lParam, localX, localY))
 			{
 				hitControl = this->Selected;
 				this->OnCharInput(this, (wchar_t)(wParam));
@@ -6996,7 +7029,7 @@ bool Form::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX
 		if (this->Selected)
 		{
 			hitControl = this->Selected;
-			this->Selected->ProcessMessage(message, wParam, lParam, localX, localY);
+			this->Selected->DispatchMessage(message, wParam, lParam, localX, localY);
 		}
 	}
 	break;

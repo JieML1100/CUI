@@ -30,9 +30,3 @@ void Acme::Views::MainWindow::HandleNamespacedValidationChanged(const BindingVal
 {
 	(void)e;
 }
-
-void Acme::Views::MainWindow::HandleSeverityInvoked(Control* sender, int value)
-{
-	(void)sender;
-	(void)value;
-}

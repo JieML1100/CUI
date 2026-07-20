@@ -13,6 +13,8 @@
     <ClCompile Include="..\CuiDesigner\DesignerStyleSheetUtils.cpp"><Filter>Runtime</Filter></ClCompile>
     <ClCompile Include="..\CuiDesigner\DesignerModel\AtomicFile.cpp"><Filter>Runtime\Model</Filter></ClCompile>
 	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocument.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDataResourceUtils.cpp"><Filter>Runtime\Model</Filter></ClCompile>
+	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDataResourceEditorModel.cpp"><Filter>Runtime\Model</Filter></ClCompile>
 	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentCodeGenInputBuilder.cpp"><Filter>Runtime\Model</Filter></ClCompile>
 	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentControlPool.cpp"><Filter>Runtime\Model</Filter></ClCompile>
 	<ClCompile Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.cpp"><Filter>Runtime\Model</Filter></ClCompile>
@@ -30,6 +32,8 @@
   <ItemGroup>
 	<ClInclude Include="include\CuiRuntime.h"><Filter>Runtime</Filter></ClInclude>
 	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDocumentFileFormat.h"><Filter>Runtime\Model</Filter></ClInclude>
+	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDataResourceUtils.h"><Filter>Runtime\Model</Filter></ClInclude>
+	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDataResourceEditorModel.h"><Filter>Runtime\Model</Filter></ClInclude>
 	<ClInclude Include="..\CuiDesigner\DesignerModel\DesignDocumentEventIndex.h"><Filter>Runtime\Model</Filter></ClInclude>
 	<ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeDocumentFileWatcher.h"><Filter>Runtime\Model</Filter></ClInclude>
 	<ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeDocumentSession.h"><Filter>Runtime\Model</Filter></ClInclude>
@@ -37,5 +41,6 @@
 	<ClInclude Include="..\CuiDesigner\DesignerModel\RuntimeDocumentTopologyReloader.h"><Filter>Runtime\Model</Filter></ClInclude>
 	<ClInclude Include="..\CuiDesigner\DesignerModel\XamlDocumentParser.h"><Filter>Runtime\Model</Filter></ClInclude>
 	<ClInclude Include="..\CuiDesigner\DesignerModel\XamlDocumentSerializer.h"><Filter>Runtime\Model</Filter></ClInclude>
+	<ClInclude Include="..\CuiDesigner\DesignerModel\StoryboardPropertyPath.h"><Filter>Runtime\Model</Filter></ClInclude>
   </ItemGroup>
 </Project>

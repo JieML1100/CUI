@@ -14,8 +14,11 @@ struct RuntimeDocumentSessionMountOptions
 {
 	/** Optional runtime data context retained by the mounted document. */
 	std::shared_ptr<IBindingSource> DataContext;
-	/** Custom controls available to the mounted XAML document and hot reloads. */
-	std::shared_ptr<const RuntimeCustomControlRegistry> CustomControls;
+	/** NativeSurface behaviors available to the mounted document and reloads. */
+	std::shared_ptr<const NativeSurfaceBehaviorRegistry> NativeSurfaceBehaviors;
+	/** Optional application behaviors for XAML-declared component QNames. */
+	std::shared_ptr<const DeclarativeComponentBehaviorRegistry>
+		DeclarativeComponentBehaviors;
 	/** Start save-driven file watching after the initial atomic mount. */
 	bool WatchFile = true;
 };
@@ -97,6 +100,8 @@ private:
 	bool CheckOwningThread(std::wstring* outError) const;
 	RuntimeDocumentLoadOptions MakeLoadOptions(
 		std::shared_ptr<IBindingSource> dataContext,
-		std::shared_ptr<const RuntimeCustomControlRegistry> customControls = {}) const;
+		std::shared_ptr<const NativeSurfaceBehaviorRegistry> nativeSurfaceBehaviors,
+		std::shared_ptr<const DeclarativeComponentBehaviorRegistry>
+			declarativeComponentBehaviors) const;
 };
 }

@@ -64,7 +64,8 @@ namespace
 		result += document.DataContextSchema.capacity()
 			* sizeof(DesignerDataContextProperty);
 		for (const auto& property : document.DataContextSchema)
-			result += WideStringMemory(property.Path);
+			result += WideStringMemory(property.Path)
+				+ WideStringMemory(property.ItemType);
 
 		result += document.StyleSheet.Resources.capacity()
 			* sizeof(DesignerStyleResource);
@@ -76,8 +77,290 @@ namespace
 			result += WideStringMemory(resource.Key)
 				+ WideStringMemory(resource.SourceDictionary)
 				+ StyleValueMemory(resource.Value);
+
+		result += document.Components.capacity()
+			* sizeof(DesignerModel::DesignComponentDefinition);
+		for (const auto& component : document.Components)
+		{
+			result += WideStringMemory(component.Type.XamlPrefix)
+				+ WideStringMemory(component.Type.XamlName)
+				+ WideStringMemory(component.Type.XamlNamespace)
+				+ WideStringMemory(component.DisplayName)
+				+ WideStringMemory(component.Category)
+				+ WideStringMemory(component.SourceDictionary)
+				+ component.Properties.capacity()
+					* sizeof(DesignerComponentPropertyDescriptor)
+				+ component.ContentProperties.capacity()
+					* sizeof(DesignerComponentContentPropertyDescriptor)
+				+ component.Events.capacity()
+					* sizeof(DesignerComponentEventDescriptor)
+				+ component.VisualStateGroups.capacity()
+					* sizeof(DesignerVisualStateGroup)
+				+ component.EventTriggers.capacity()
+					* sizeof(DesignerEventTrigger)
+				+ component.Template.capacity()
+					* sizeof(DesignerModel::DesignNode);
+			for (const auto& property : component.Properties)
+			{
+				result += WideStringMemory(property.Name)
+					+ WideStringMemory(property.DisplayName)
+					+ WideStringMemory(property.Category)
+					+ WideStringMemory(property.DefaultResourceKey)
+					+ StyleValueMemory(property.DefaultValue)
+					+ property.Choices.capacity()
+						* sizeof(DesignerComponentPropertyChoice);
+				for (const auto& choice : property.Choices)
+					result += WideStringMemory(choice.Value)
+						+ WideStringMemory(choice.DisplayName);
+			}
+			for (const auto& property : component.ContentProperties)
+				result += WideStringMemory(property.Name)
+					+ WideStringMemory(property.DisplayName);
+			for (const auto& event : component.Events)
+				result += WideStringMemory(event.Name)
+					+ WideStringMemory(event.DisplayName);
+			for (const auto& group : component.VisualStateGroups)
+			{
+				result += WideStringMemory(group.Name)
+					+ group.States.capacity() * sizeof(DesignerVisualState)
+					+ group.Transitions.capacity()
+						* sizeof(DesignerVisualTransition);
+				for (const auto& transition : group.Transitions)
+				{
+					result += WideStringMemory(transition.FromState)
+						+ WideStringMemory(transition.ToState)
+						+ transition.Animations.capacity()
+							* sizeof(DesignerVisualStateAnimation);
+					for (const auto& animation : transition.Animations)
+					{
+						result += WideStringMemory(animation.TargetName)
+							+ WideStringMemory(animation.PropertyName)
+							+ WideStringMemory(animation.FromResourceKey)
+							+ WideStringMemory(animation.ToResourceKey)
+							+ WideStringMemory(animation.ByResourceKey)
+							+ StyleValueMemory(animation.From)
+							+ StyleValueMemory(animation.To)
+							+ StyleValueMemory(animation.By)
+							+ animation.KeyFrames.capacity()
+								* sizeof(DesignerAnimationKeyFrame);
+						for (const auto& keyFrame : animation.KeyFrames)
+							result += WideStringMemory(keyFrame.ResourceKey)
+								+ StyleValueMemory(keyFrame.Value);
+					}
+				}
+				for (const auto& state : group.States)
+				{
+					result += WideStringMemory(state.Name)
+						+ state.Conditions.capacity()
+							* sizeof(DesignerVisualStateCondition)
+						+ state.EventNames.capacity() * sizeof(std::wstring)
+						+ state.Setters.capacity()
+							* sizeof(DesignerVisualStateSetter)
+						+ state.Animations.capacity()
+							* sizeof(DesignerVisualStateAnimation);
+					for (const auto& condition : state.Conditions)
+						result += WideStringMemory(condition.PropertyName)
+							+ StyleValueMemory(condition.Value);
+					for (const auto& eventName : state.EventNames)
+						result += WideStringMemory(eventName);
+					for (const auto& setter : state.Setters)
+						result += WideStringMemory(setter.TargetName)
+							+ WideStringMemory(setter.PropertyName)
+							+ WideStringMemory(setter.ResourceKey)
+							+ StyleValueMemory(setter.Literal);
+					for (const auto& animation : state.Animations)
+					{
+						result += WideStringMemory(animation.TargetName)
+							+ WideStringMemory(animation.PropertyName)
+							+ WideStringMemory(animation.FromResourceKey)
+							+ WideStringMemory(animation.ToResourceKey)
+							+ WideStringMemory(animation.ByResourceKey)
+							+ StyleValueMemory(animation.From)
+							+ StyleValueMemory(animation.To)
+							+ StyleValueMemory(animation.By)
+							+ animation.KeyFrames.capacity()
+								* sizeof(DesignerAnimationKeyFrame);
+						for (const auto& keyFrame : animation.KeyFrames)
+							result += WideStringMemory(keyFrame.ResourceKey)
+								+ StyleValueMemory(keyFrame.Value);
+					}
+				}
+			}
+			for (const auto& trigger : component.EventTriggers)
+			{
+				result += WideStringMemory(trigger.EventName)
+					+ trigger.Actions.capacity()
+						* sizeof(DesignerEventTriggerAction);
+				for (const auto& action : trigger.Actions)
+				{
+					result += WideStringMemory(action.StoryboardName)
+						+ action.Animations.capacity()
+							* sizeof(DesignerVisualStateAnimation);
+					for (const auto& animation : action.Animations)
+					{
+						result += WideStringMemory(animation.TargetName)
+							+ WideStringMemory(animation.PropertyName)
+							+ WideStringMemory(animation.FromResourceKey)
+							+ WideStringMemory(animation.ToResourceKey)
+							+ WideStringMemory(animation.ByResourceKey)
+							+ StyleValueMemory(animation.From)
+							+ StyleValueMemory(animation.To)
+							+ StyleValueMemory(animation.By)
+							+ animation.KeyFrames.capacity()
+								* sizeof(DesignerAnimationKeyFrame);
+						for (const auto& keyFrame : animation.KeyFrames)
+							result += WideStringMemory(keyFrame.ResourceKey)
+								+ StyleValueMemory(keyFrame.Value);
+					}
+				}
+			}
+			for (const auto& node : component.Template)
+			{
+				result += WideStringMemory(node.ParentRef)
+					+ WideStringMemory(node.Name)
+					+ WideStringMemory(node.ComponentContentProperty)
+					+ WideStringMemory(node.PresentedComponentContent)
+					+ DesignValueMemory(node.Props)
+					+ DesignValueMemory(node.Extra)
+					+ DesignValueMemory(node.Events)
+					+ DesignValueMemory(node.Bindings);
+				for (const auto& [target, source] : node.TemplateBindings)
+					result += WideStringMemory(target)
+						+ WideStringMemory(source) + 3 * sizeof(void*);
+				for (const auto& [sourceEvent, componentEvent]
+					: node.TemplateEventBindings)
+					result += WideStringMemory(sourceEvent)
+						+ WideStringMemory(componentEvent) + 3 * sizeof(void*);
+			}
+		}
+		result += document.ControlTemplates.capacity()
+			* sizeof(DesignerModel::DesignControlTemplate);
+		for (const auto& item : document.ControlTemplates)
+		{
+			result += WideStringMemory(item.Key)
+				+ WideStringMemory(item.SourceDictionary)
+				+ item.Template.capacity()
+					* sizeof(DesignerModel::DesignNode)
+				+ item.VisualStateGroups.capacity()
+					* sizeof(DesignerVisualStateGroup)
+				+ item.EventTriggers.capacity()
+					* sizeof(DesignerEventTrigger);
+			for (const auto& node : item.Template)
+				result += WideStringMemory(node.ParentRef)
+					+ WideStringMemory(node.Name)
+					+ DesignValueMemory(node.Props)
+					+ DesignValueMemory(node.Extra)
+					+ DesignValueMemory(node.Events)
+					+ DesignValueMemory(node.Bindings);
+		}
+		result += document.DataTypes.capacity()
+			* sizeof(DesignerModel::DesignDataTypeDefinition);
+		for (const auto& type : document.DataTypes)
+		{
+			result += WideStringMemory(type.Name)
+				+ WideStringMemory(type.SourceDictionary)
+				+ type.Properties.capacity()
+					* sizeof(DesignerDataContextProperty);
+			for (const auto& property : type.Properties)
+				result += WideStringMemory(property.Path)
+					+ WideStringMemory(property.ItemType);
+		}
+		result += document.DataTemplates.capacity()
+			* sizeof(DesignerModel::DesignDataTemplate);
+		for (const auto& item : document.DataTemplates)
+		{
+			result += WideStringMemory(item.Key)
+				+ WideStringMemory(item.DataType)
+				+ WideStringMemory(item.SourceDictionary)
+				+ item.Template.capacity()
+					* sizeof(DesignerModel::DesignNode);
+		}
+		result += document.ItemsPanelTemplates.capacity()
+			* sizeof(DesignerModel::DesignItemsPanelTemplate);
+		for (const auto& item : document.ItemsPanelTemplates)
+			result += WideStringMemory(item.Key)
+				+ WideStringMemory(item.SourceDictionary);
+		result += document.GroupStyles.capacity()
+			* sizeof(DesignerModel::DesignGroupStyle);
+		for (const auto& item : document.GroupStyles)
+			result += WideStringMemory(item.Key)
+				+ WideStringMemory(item.HeaderTemplate)
+				+ WideStringMemory(item.SourceDictionary);
+		result += document.DataLists.capacity()
+			* sizeof(DesignerModel::DesignDataList);
+		for (const auto& list : document.DataLists)
+		{
+			result += WideStringMemory(list.Key)
+				+ WideStringMemory(list.ItemType)
+				+ WideStringMemory(list.SourceDictionary)
+				+ list.Records.capacity()
+					* sizeof(DesignerModel::DesignDataRecord);
+			for (const auto& record : list.Records)
+				for (const auto& [path, value] : record.Fields)
+					result += WideStringMemory(path)
+						+ WideStringMemory(value) + 3 * sizeof(void*);
+		}
+		result += document.CollectionViews.capacity()
+			* sizeof(DesignerModel::DesignCollectionViewSource);
+		for (const auto& view : document.CollectionViews)
+		{
+			result += WideStringMemory(view.Key)
+				+ WideStringMemory(view.SourceResource)
+				+ WideStringMemory(view.SourceBindingPath)
+				+ WideStringMemory(view.SourceDictionary)
+				+ view.GroupDescriptions.capacity()
+					* sizeof(DesignerModel::DesignCollectionGroupDescription)
+				+ view.AggregateDescriptions.capacity()
+					* sizeof(DesignerModel::DesignCollectionAggregateDescription)
+				+ view.SortDescriptions.capacity()
+					* sizeof(DesignerModel::DesignCollectionSortDescription)
+				+ view.FilterDescriptions.capacity()
+					* sizeof(DesignerModel::DesignCollectionFilterDescription);
+			for (const auto& item : view.SortDescriptions)
+				result += WideStringMemory(item.PropertyName);
+			for (const auto& item : view.GroupDescriptions)
+				result += WideStringMemory(item.PropertyName);
+			for (const auto& item : view.AggregateDescriptions)
+				result += WideStringMemory(item.Name)
+					+ WideStringMemory(item.PropertyName);
+			for (const auto& item : view.FilterDescriptions)
+				result += WideStringMemory(item.PropertyName)
+					+ WideStringMemory(item.Value);
+		}
+
 		result += document.StyleSheet.Rules.capacity()
 			* sizeof(DesignerStyleRule);
+		auto animationMemory = [&](const DesignerVisualStateAnimation& animation)
+		{
+			size_t memory = WideStringMemory(animation.TargetName)
+				+ WideStringMemory(animation.PropertyName)
+				+ WideStringMemory(animation.FromResourceKey)
+				+ WideStringMemory(animation.ToResourceKey)
+				+ WideStringMemory(animation.ByResourceKey)
+				+ StyleValueMemory(animation.From)
+				+ StyleValueMemory(animation.To)
+				+ StyleValueMemory(animation.By)
+				+ animation.KeyFrames.capacity()
+					* sizeof(DesignerAnimationKeyFrame);
+			for (const auto& keyFrame : animation.KeyFrames)
+				memory += WideStringMemory(keyFrame.ResourceKey)
+					+ StyleValueMemory(keyFrame.Value);
+			return memory;
+		};
+		auto actionsMemory = [&](const auto& actions)
+		{
+			size_t memory = actions.capacity()
+				* sizeof(DesignerEventTriggerAction);
+			for (const auto& action : actions)
+			{
+				memory += WideStringMemory(action.StoryboardName)
+					+ action.Animations.capacity()
+						* sizeof(DesignerVisualStateAnimation);
+				for (const auto& animation : action.Animations)
+					memory += animationMemory(animation);
+			}
+			return memory;
+		};
 		for (const auto& rule : document.StyleSheet.Rules)
 		{
 			result += WideStringMemory(rule.Id)
@@ -85,8 +368,12 @@ namespace
 				+ WideStringMemory(rule.SourceDictionary)
 				+ rule.Classes.capacity() * sizeof(std::wstring)
 				+ rule.Setters.capacity() * sizeof(DesignerStyleSetter)
+				+ rule.PropertyConditions.capacity()
+					* sizeof(DesignerStylePropertyCondition)
 				+ rule.DataConditions.capacity() * sizeof(DesignerStyleDataCondition)
-				+ rule.Triggers.capacity() * sizeof(DesignerStyleTrigger);
+				+ rule.Triggers.capacity() * sizeof(DesignerStyleTrigger)
+				+ actionsMemory(rule.EnterActions)
+				+ actionsMemory(rule.ExitActions);
 			for (const auto& className : rule.Classes)
 				result += WideStringMemory(className);
 			for (const auto& setter : rule.Setters)
@@ -96,15 +383,25 @@ namespace
 			for (const auto& condition : rule.DataConditions)
 				result += WideStringMemory(condition.SourceProperty)
 					+ StyleValueMemory(condition.Value);
+			for (const auto& condition : rule.PropertyConditions)
+				result += WideStringMemory(condition.Property)
+					+ StyleValueMemory(condition.Value);
 			for (const auto& trigger : rule.Triggers)
 			{
 				result += trigger.Conditions.capacity()
 						* sizeof(DesignerStyleCondition)
+					+ trigger.PropertyConditions.capacity()
+						* sizeof(DesignerStylePropertyCondition)
 					+ trigger.DataConditions.capacity()
 						* sizeof(DesignerStyleDataCondition)
-					+ trigger.Setters.capacity() * sizeof(DesignerStyleSetter);
+					+ trigger.Setters.capacity() * sizeof(DesignerStyleSetter)
+					+ actionsMemory(trigger.EnterActions)
+					+ actionsMemory(trigger.ExitActions);
 				for (const auto& condition : trigger.Conditions)
 					result += WideStringMemory(condition.Property);
+				for (const auto& condition : trigger.PropertyConditions)
+					result += WideStringMemory(condition.Property)
+						+ StyleValueMemory(condition.Value);
 				for (const auto& condition : trigger.DataConditions)
 					result += WideStringMemory(condition.SourceProperty)
 						+ StyleValueMemory(condition.Value);
@@ -121,10 +418,18 @@ namespace
 		{
 			result += WideStringMemory(node.ParentRef)
 				+ WideStringMemory(node.Name)
+				+ WideStringMemory(node.ComponentType.XamlPrefix)
+				+ WideStringMemory(node.ComponentType.XamlName)
+				+ WideStringMemory(node.ComponentType.XamlNamespace)
+				+ WideStringMemory(node.ComponentContentProperty)
+				+ WideStringMemory(node.PresentedComponentContent)
 				+ DesignValueMemory(node.Props)
 				+ DesignValueMemory(node.Extra)
 				+ DesignValueMemory(node.Events)
 				+ DesignValueMemory(node.Bindings);
+			for (const auto& [target, source] : node.TemplateBindings)
+				result += WideStringMemory(target) + WideStringMemory(source)
+					+ 3 * sizeof(void*);
 		}
 		return result;
 	}

@@ -37,75 +37,6 @@ namespace
 		return valueText;
 	}
 
-	const DesignerCustomPropertyDescriptor* FindCustomProperty(
-		const DesignerControl& control,
-		const std::wstring& name)
-	{
-		const auto found = std::find_if(
-			control.CustomProperties.begin(), control.CustomProperties.end(),
-			[&](const auto& property)
-			{
-				return NamesEqual(property.Name, name);
-			});
-		return found == control.CustomProperties.end() ? nullptr : &*found;
-	}
-
-	void PublishCustomPreviewValue(
-		DesignerControl& control,
-		const std::wstring& propertyName,
-		const DesignerStyleValue& value)
-	{
-		if (control.PreviewPropertyChanged)
-			control.PreviewPropertyChanged(propertyName, value);
-	}
-
-	bool ValidateCustomValue(
-		const DesignerCustomPropertyDescriptor& property,
-		const std::wstring& valueText,
-		DesignerStyleValue& value,
-		std::wstring* outError)
-	{
-		value = { property.DefaultValue.Kind, valueText };
-		BindingValue converted;
-		if (!DesignerStyleSheetUtils::TryConvertValue(value, converted, outError))
-			return false;
-		if (property.Minimum || property.Maximum)
-		{
-			double numeric = 0.0;
-			if (!converted.TryGetDouble(numeric))
-			{
-				if (outError) *outError = L"属性声明了数值范围，但值不是数值。";
-				return false;
-			}
-			if (property.Minimum && numeric < *property.Minimum)
-			{
-				if (outError) *outError = L"值小于允许的最小值。";
-				return false;
-			}
-			if (property.Maximum && numeric > *property.Maximum)
-			{
-				if (outError) *outError = L"值大于允许的最大值。";
-				return false;
-			}
-		}
-		if (!property.Choices.empty())
-		{
-			const auto found = std::find_if(
-				property.Choices.begin(), property.Choices.end(),
-				[&](const auto& choice)
-				{
-					return choice.ValueText == valueText;
-				});
-			if (found == property.Choices.end())
-			{
-				if (outError) *outError = L"值不在自定义属性的可选集合中。";
-				return false;
-			}
-		}
-		if (outError) outError->clear();
-		return true;
-	}
-
 	bool RestoreSnapshots(
 		const std::vector<DesignerPropertyEditTarget>& targets,
 		const DesignerPropertyRow& row,
@@ -143,7 +74,9 @@ bool DesignerPropertyValueSnapshot::EquivalentTo(
 		&& (!HasLocalValue
 			|| LocalSerializedValue == other.LocalSerializedValue)
 		&& HasTrackedValue == other.HasTrackedValue
-		&& (!HasTrackedValue || TrackedValue == other.TrackedValue);
+		&& (!HasTrackedValue || TrackedValue == other.TrackedValue)
+		&& TrackedResourceKey == other.TrackedResourceKey
+		&& TrackedDynamicResourceKey == other.TrackedDynamicResourceKey;
 }
 
 size_t DesignerPropertyValueSnapshot::GetEstimatedMemoryUsage() const noexcept
@@ -153,13 +86,16 @@ size_t DesignerPropertyValueSnapshot::GetEstimatedMemoryUsage() const noexcept
 		+ LocalSerializedValue.Text.capacity() * sizeof(wchar_t)
 		+ EffectiveSerializedValue.Text.capacity() * sizeof(wchar_t)
 		+ TrackedValue.Text.capacity() * sizeof(wchar_t)
+		+ TrackedResourceKey.capacity() * sizeof(wchar_t)
+		+ TrackedDynamicResourceKey.capacity() * sizeof(wchar_t)
 		+ CanonicalPropertyName.capacity() * sizeof(wchar_t);
 }
 
 bool DesignerPropertyTargetSnapshot::EquivalentTo(
 	const DesignerPropertyTargetSnapshot& other) const noexcept
 {
-	return TargetName == other.TargetName
+	return StableId == other.StableId
+		&& TargetName == other.TargetName
 		&& TargetType == other.TargetType
 		&& Value.EquivalentTo(other.Value);
 }
@@ -230,23 +166,6 @@ bool CaptureSnapshot(
 			row.Name,
 			snapshot.DesignValue,
 			outError);
-	if (row.Source == DesignerPropertyRowSource::CustomDescriptor)
-	{
-		const auto* property = FindCustomProperty(designerControl, row.Name);
-		if (!property)
-		{
-			if (outError) *outError = L"自定义属性 schema 已失效。";
-			return false;
-		}
-		const auto tracked = designerControl.MetadataProperties.find(property->Name);
-		snapshot.DesignValue = tracked == designerControl.MetadataProperties.end()
-			? property->DefaultValue : tracked->second;
-		snapshot.HasTrackedValue =
-			tracked != designerControl.MetadataProperties.end();
-		if (snapshot.HasTrackedValue) snapshot.TrackedValue = tracked->second;
-		if (outError) outError->clear();
-		return true;
-	}
 	if (row.Source != DesignerPropertyRowSource::RuntimeMetadata)
 	{
 		if (outError) *outError = L"当前属性来源不支持控件快照。";
@@ -279,6 +198,16 @@ bool CaptureSnapshot(
 	snapshot.HasTrackedValue =
 		tracked != designerControl.MetadataProperties.end();
 	if (snapshot.HasTrackedValue) snapshot.TrackedValue = tracked->second;
+	const auto resource = designerControl.MetadataPropertyResourceKeys.find(
+		snapshot.CanonicalPropertyName);
+	if (resource != designerControl.MetadataPropertyResourceKeys.end())
+		snapshot.TrackedResourceKey = resource->second;
+	const auto dynamicResource =
+		designerControl.MetadataPropertyDynamicResourceKeys.find(
+			snapshot.CanonicalPropertyName);
+	if (dynamicResource
+		!= designerControl.MetadataPropertyDynamicResourceKeys.end())
+		snapshot.TrackedDynamicResourceKey = dynamicResource->second;
 	if (outError) outError->clear();
 	return true;
 }
@@ -308,25 +237,6 @@ bool RestoreSnapshot(
 			nullptr,
 				outError);
 	}
-	else if (row.Source == DesignerPropertyRowSource::CustomDescriptor)
-	{
-		const auto* property = FindCustomProperty(designerControl, row.Name);
-		if (!property)
-		{
-			if (outError) *outError = L"自定义属性 schema 已失效。";
-			return false;
-		}
-		if (snapshot.HasTrackedValue)
-			designerControl.MetadataProperties[property->Name]
-				= snapshot.TrackedValue;
-		else
-			designerControl.MetadataProperties.erase(property->Name);
-		PublishCustomPreviewValue(
-			designerControl, property->Name,
-			snapshot.HasTrackedValue
-				? snapshot.TrackedValue : property->DefaultValue);
-		restored = true;
-	}
 	else if (row.Source == DesignerPropertyRowSource::RuntimeMetadata)
 	{
 		const auto& canonicalName = snapshot.CanonicalPropertyName.empty()
@@ -343,8 +253,15 @@ bool RestoreSnapshot(
 				restored = runtimeControl.ClearPropertyValue(
 					canonicalName, ControlPropertyValueSource::Local);
 			if (restored)
+			{
 				designerControl.MetadataProperties.erase(canonicalName);
+				designerControl.MetadataPropertyResourceKeys.erase(canonicalName);
+				designerControl.MetadataPropertyDynamicResourceKeys.erase(canonicalName);
+			}
 		}
+		else if (!snapshot.TrackedDynamicResourceKey.empty())
+			restored = runtimeControl.SetDynamicResource(
+				canonicalName, snapshot.TrackedDynamicResourceKey);
 		else if (snapshot.HasLocalValue)
 			restored = runtimeControl.TrySetPropertyValue(
 				row.Name,
@@ -366,6 +283,16 @@ bool RestoreSnapshot(
 					= snapshot.TrackedValue;
 			else
 				designerControl.MetadataProperties.erase(canonicalName);
+			if (!snapshot.TrackedResourceKey.empty())
+				designerControl.MetadataPropertyResourceKeys[canonicalName]
+					= snapshot.TrackedResourceKey;
+			else
+				designerControl.MetadataPropertyResourceKeys.erase(canonicalName);
+			if (!snapshot.TrackedDynamicResourceKey.empty())
+				designerControl.MetadataPropertyDynamicResourceKeys[canonicalName]
+					= snapshot.TrackedDynamicResourceKey;
+			else
+				designerControl.MetadataPropertyDynamicResourceKeys.erase(canonicalName);
 		}
 		else if (outError && outError->empty())
 			*outError = L"运行时属性值无法恢复。";
@@ -425,22 +352,6 @@ DesignerPropertyEditResult Validate(
 				NormalizeDesignValue(*property, valueText)
 			};
 			if (!DesignerStyleSheetUtils::TryConvertValue(value, converted, &error))
-				return DesignerPropertyEditResult::Failure(
-					TargetPrefix(editTarget) + error);
-			continue;
-		}
-		if (row.Source == DesignerPropertyRowSource::CustomDescriptor)
-		{
-			const auto* property = FindCustomProperty(designerControl, row.Name);
-			if (!property)
-				return DesignerPropertyEditResult::Failure(
-					TargetPrefix(editTarget) + L"没有自定义属性 "
-					+ row.Name + L"。");
-			if (property->DefaultValue.Kind != row.Value.Kind)
-				return DesignerPropertyEditResult::Failure(
-					TargetPrefix(editTarget) + L"属性类型与自定义 schema 不一致。");
-			DesignerStyleValue value;
-			if (!ValidateCustomValue(*property, valueText, value, &error))
 				return DesignerPropertyEditResult::Failure(
 					TargetPrefix(editTarget) + error);
 			continue;
@@ -506,22 +417,6 @@ DesignerPropertyEditResult Apply(
 						&error);
 				}
 			}
-			else if (row.Source == DesignerPropertyRowSource::CustomDescriptor)
-			{
-				const auto* property = FindCustomProperty(
-					designerControl, row.Name);
-				DesignerStyleValue value;
-				if (property && ValidateCustomValue(
-					*property, valueText, value, &error))
-				{
-					designerControl.MetadataProperties[property->Name]
-						= std::move(value);
-					PublishCustomPreviewValue(
-						designerControl, property->Name,
-						designerControl.MetadataProperties[property->Name]);
-					succeeded = true;
-				}
-			}
 			else
 			{
 				succeeded = DesignerPropertyCatalog::ApplyAndTrackValue(
@@ -532,6 +427,14 @@ DesignerPropertyEditResult Apply(
 					nullptr,
 					nullptr,
 					&error);
+				if (succeeded)
+				{
+					const auto* metadata = runtimeControl.FindPropertyMetadata(row.Name);
+				designerControl.MetadataPropertyResourceKeys.erase(
+					metadata ? metadata->Name() : row.Name);
+				designerControl.MetadataPropertyDynamicResourceKeys.erase(
+					metadata ? metadata->Name() : row.Name);
+				}
 			}
 		}
 		catch (...)
@@ -593,20 +496,6 @@ DesignerPropertyEditResult Reset(
 				succeeded = DesignerControlPropertyCatalog::ResetValue(
 					designerControl, context, row.Name, nullptr, &error);
 			}
-			else if (row.Source == DesignerPropertyRowSource::CustomDescriptor)
-			{
-				const auto* property = FindCustomProperty(
-					designerControl, row.Name);
-				if (property)
-				{
-					designerControl.MetadataProperties.erase(property->Name);
-					PublishCustomPreviewValue(
-						designerControl, property->Name,
-						property->DefaultValue);
-					succeeded = true;
-				}
-				else error = L"自定义属性 schema 已失效。";
-			}
 			else if (row.Source == DesignerPropertyRowSource::RuntimeMetadata)
 			{
 				succeeded = DesignerPropertyCatalog::ResetAndUntrackValue(
@@ -616,6 +505,14 @@ DesignerPropertyEditResult Reset(
 					nullptr,
 					nullptr,
 					&error);
+				if (succeeded)
+				{
+					const auto* metadata = runtimeControl.FindPropertyMetadata(row.Name);
+				designerControl.MetadataPropertyResourceKeys.erase(
+					metadata ? metadata->Name() : row.Name);
+				designerControl.MetadataPropertyDynamicResourceKeys.erase(
+					metadata ? metadata->Name() : row.Name);
+				}
 			}
 		}
 		catch (...)

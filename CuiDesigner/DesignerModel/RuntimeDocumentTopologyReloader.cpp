@@ -22,19 +22,40 @@ namespace DesignerModel
 {
 namespace
 {
+	class ReusedNativeSurfacePlaceholderBehavior final
+		: public INativeSurfaceBehavior
+	{
+	public:
+		void Render(
+			NativeSurface&,
+			NativeSurfaceRenderContext&) override
+		{
+		}
+	};
+
 	DesignDocumentMaterializationOptions MaterializationOptionsFor(
 		const RuntimeDocumentLoadOptions& options)
 	{
 		DesignDocumentMaterializationOptions result;
-		result.AllowCustomControlProxy = options.AllowCustomControlProxy;
-		result.AllowDeferredCustomMetadata = options.AllowCustomControlProxy;
-		if (options.CustomControls)
+		result.AllowNativeSurfacePlaceholder =
+			options.AllowNativeSurfacePlaceholder;
+		if (options.NativeSurfaceBehaviors)
 		{
-			auto registry = options.CustomControls;
-			result.CustomControlFactory = [registry](const DesignNode& node)
-			{
-				return registry->Create(node);
-			};
+			auto registry = options.NativeSurfaceBehaviors;
+			result.NativeSurfaceBehaviorFactory =
+				[registry](const DesignNode&, NativeSurface& host)
+				{
+					return registry->Create(host.GetBehaviorKey(), host);
+				};
+		}
+		if (options.DeclarativeComponentBehaviors)
+		{
+			auto registry = options.DeclarativeComponentBehaviors;
+			result.DeclarativeComponentBehaviorFactory =
+				[registry](const DeclarativeComponentBehaviorContext& context)
+				{
+					return registry->Create(context);
+				};
 		}
 		return result;
 	}
@@ -113,9 +134,15 @@ namespace
 		return current.Id == next.Id
 			&& current.Name == next.Name
 			&& current.Type == next.Type
-			&& current.CustomType == next.CustomType
+			&& current.ComponentType == next.ComponentType
+			&& current.ComponentContentProperty
+				== next.ComponentContentProperty
+			&& current.PresentedComponentContent
+				== next.PresentedComponentContent
 			&& current.Props == next.Props
 			&& current.Extra == next.Extra
+			&& current.LocalResources == next.LocalResources
+			&& current.LocalObjectResources == next.LocalObjectResources
 			&& current.Events == next.Events
 			&& current.Bindings == next.Bindings;
 	}
@@ -137,7 +164,8 @@ namespace
 			const auto* current = _current.Find(stableId);
 			const auto* next = _next.Find(stableId);
 			bool equivalent = current && next
-				&& SameReusablePayload(*current, *next);
+				&& SameReusablePayload(*current, *next)
+				&& SameLexicalResourceScope(stableId);
 			if (equivalent)
 			{
 				const auto currentChildren = _current.Children(*current);
@@ -165,6 +193,28 @@ namespace
 		}
 
 	private:
+		bool SameLexicalResourceScope(int stableId) const
+		{
+			int currentId = stableId;
+			int nextId = stableId;
+			for (;;)
+			{
+				const auto* current = _current.Find(currentId);
+				const auto* next = _next.Find(nextId);
+				if (!current || !next
+					|| current->LocalResources != next->LocalResources
+					|| current->LocalObjectResources
+						!= next->LocalObjectResources)
+					return false;
+				const auto currentOwner = _current.OwningNodeId(*current);
+				const auto nextOwner = _next.OwningNodeId(*next);
+				if (currentOwner <= 0 || nextOwner <= 0)
+					return currentOwner <= 0 && nextOwner <= 0;
+				currentId = currentOwner;
+				nextId = nextOwner;
+			}
+		}
+
 		const DocumentTopology& _current;
 		const DocumentTopology& _next;
 		std::unordered_map<int, bool> _memo;
@@ -284,8 +334,13 @@ namespace
 			if (root) rootControls.push_back(root.get());
 		for (const auto& record : controls)
 			if (record && record->ControlInstance)
-				record->DesignerParent =
-					ResolveDesignerParent(record->ControlInstance);
+			{
+				// Component content is physically parented by a generated presenter,
+				// while its public designer parent remains the component instance.
+				if (record->ComponentContentProperty.empty())
+					record->DesignerParent =
+						ResolveDesignerParent(record->ControlInstance);
+			}
 	}
 
 	bool HasConfiguredControlEvents(const RuntimeDocument& document)
@@ -296,6 +351,31 @@ namespace
 			{
 				return control && !control->EventHandlers.empty();
 			});
+	}
+
+	bool HasLocalStyleRules(const DesignDocument& document)
+	{
+		return std::any_of(document.Nodes.begin(), document.Nodes.end(),
+			[](const DesignNode& node)
+			{ return !node.LocalResources.Rules.empty(); });
+	}
+
+	bool HasStructuralTemplateStyles(const DesignDocument& document)
+	{
+		auto hasTemplateSetter = [](const DesignerStyleSheet& sheet)
+		{
+			return std::any_of(sheet.Rules.begin(), sheet.Rules.end(),
+				[](const auto& rule)
+				{
+					return std::any_of(
+						rule.Setters.begin(), rule.Setters.end(), [](const auto& setter)
+						{ return _wcsicmp(
+							setter.PropertyName.c_str(), L"Template") == 0; });
+				});
+		};
+		return hasTemplateSetter(document.StyleSheet)
+			|| std::any_of(document.Nodes.begin(), document.Nodes.end(),
+				[&](const auto& node) { return hasTemplateSetter(node.LocalResources); });
 	}
 }
 
@@ -310,7 +390,26 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 {
 	outApplied = false;
 	outReusedControlCount = 0;
+	if (effectiveOptions.ForceBehaviorRefresh) return true;
 	if (!output._sourceDocument || output._rootsReleased) return true;
+	if (HasStructuralTemplateStyles(*output._sourceDocument)
+		|| HasStructuralTemplateStyles(document)) return true;
+	if ((output._sourceDocument->HasResourceBackedVisualStates()
+			|| document.HasResourceBackedVisualStates()
+			|| HasLocalStyleRules(*output._sourceDocument)
+			|| HasLocalStyleRules(document))
+		&& output._sourceDocument->StyleSheet != document.StyleSheet)
+		return true;
+	if (output._sourceDocument->Components != document.Components
+		|| output._sourceDocument->ControlTemplates != document.ControlTemplates
+		|| output._sourceDocument->DataTypes != document.DataTypes
+		|| output._sourceDocument->DataTemplates != document.DataTemplates
+		|| output._sourceDocument->ItemsPanelTemplates
+			!= document.ItemsPanelTemplates
+		|| output._sourceDocument->GroupStyles != document.GroupStyles
+		|| output._sourceDocument->DataLists != document.DataLists
+		|| output._sourceDocument->CollectionViews != document.CollectionViews)
+		return true;
 
 	DocumentTopology currentTopology;
 	DocumentTopology nextTopology;
@@ -330,11 +429,59 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 	std::unordered_set<int> reusedIds;
 	for (const auto stableId : reusableRoots)
 		matcher.CollectSubtreeIds(stableId, reusedIds);
+	std::vector<std::wstring> reusedRuntimePrefixes;
+	reusedRuntimePrefixes.reserve(reusedIds.size());
+	for (const auto stableId : reusedIds)
+		if (const auto* node = nextTopology.Find(stableId))
+			reusedRuntimePrefixes.push_back(node->Name);
+	auto isReusedRuntimeNode = [&reusedRuntimePrefixes](
+		const std::wstring& name)
+	{
+		return std::any_of(
+			reusedRuntimePrefixes.begin(), reusedRuntimePrefixes.end(),
+			[&](const auto& prefix)
+			{
+				return name == prefix
+					|| (name.size() > prefix.size()
+						&& name.starts_with(prefix)
+						&& name[prefix.size()] == L'@');
+			});
+	};
 
 	MaterializedControlTree materialized;
+	auto materializationOptions =
+		MaterializationOptionsFor(effectiveOptions);
+	if (materializationOptions.NativeSurfaceBehaviorFactory)
+	{
+		auto factory =
+			std::move(materializationOptions.NativeSurfaceBehaviorFactory);
+		materializationOptions.NativeSurfaceBehaviorFactory =
+			[factory = std::move(factory), isReusedRuntimeNode](
+				const DesignNode& node,
+				NativeSurface& host) mutable
+			{
+				if (isReusedRuntimeNode(node.Name))
+					return std::unique_ptr<INativeSurfaceBehavior>(
+						std::make_unique<ReusedNativeSurfacePlaceholderBehavior>());
+				return factory(node, host);
+			};
+	}
+	if (materializationOptions.DeclarativeComponentBehaviorFactory)
+	{
+		auto factory = std::move(
+			materializationOptions.DeclarativeComponentBehaviorFactory);
+		materializationOptions.DeclarativeComponentBehaviorFactory =
+			[factory = std::move(factory), isReusedRuntimeNode](
+				const DeclarativeComponentBehaviorContext& context) mutable
+			{
+				return isReusedRuntimeNode(context.InstanceName)
+					? std::unique_ptr<IDeclarativeComponentBehavior>{}
+					: factory(context);
+			};
+	}
 	if (!DesignDocumentMaterializer::Materialize(
 		document, materialized,
-		MaterializationOptionsFor(effectiveOptions), outError)) return false;
+		materializationOptions, outError)) return false;
 
 	RuntimeDocument candidate;
 	candidate._sourceDocument = document;
@@ -342,10 +489,13 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 	candidate._dataContextSchema = document.DataContextSchema;
 	DesignerDataContextSchemaUtils::Canonicalize(candidate._dataContextSchema);
 	candidate._styleSheet = document.StyleSheet;
-	candidate._customControls = effectiveOptions.CustomControls;
-	candidate._allowCustomControlProxy =
-		effectiveOptions.AllowCustomControlProxy;
+	candidate._nativeSurfaceBehaviors = effectiveOptions.NativeSurfaceBehaviors;
+	candidate._declarativeComponentBehaviors =
+		effectiveOptions.DeclarativeComponentBehaviors;
+	candidate._allowNativeSurfacePlaceholder =
+		effectiveOptions.AllowNativeSurfacePlaceholder;
 	candidate._controls = std::move(materialized.Controls);
+	candidate._collectionViews = std::move(materialized.CollectionViews);
 	candidate._ownedRoots = std::move(materialized.Roots);
 	RefreshRecordsAndRoots(
 		candidate._ownedRoots, candidate._rootControls, candidate._controls);
@@ -486,8 +636,17 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 		candidate.ClearDataBindings();
 		rollbackTopology();
 		restoreStyle(output);
-		if (oldBindingsCleared && previousDataContext)
-			(void)output.BindDataContext(previousDataContext, nullptr);
+		if (oldBindingsCleared)
+		{
+			if (previousDataContext)
+				(void)output.BindDataContext(previousDataContext, nullptr);
+			else
+			{
+				std::vector<RuntimeDocument::InstalledBinding> restored;
+				if (output.InstallDataBindings({}, restored, nullptr))
+					output._installedBindings = std::move(restored);
+			}
+		}
 	};
 
 	try
@@ -501,6 +660,18 @@ bool RuntimeDocumentTopologyReloader::TryReload(
 			rollbackRuntime();
 			SetError(outError, error);
 			return false;
+		}
+		if (!effectiveOptions.DataContext)
+		{
+			std::vector<RuntimeDocument::InstalledBinding> installed;
+			if (!candidate.InstallDataBindings({}, installed, outError))
+			{
+				const auto error = outError ? *outError : std::wstring{};
+				rollbackRuntime();
+				SetError(outError, error);
+				return false;
+			}
+			candidate._installedBindings = std::move(installed);
 		}
 
 		if (effectiveOptions.ControlEventResolver)

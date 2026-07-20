@@ -199,6 +199,11 @@ namespace
 				Application::GetResourceResolver());
 	}
 
+	bool TryConvertTransform(
+		const DesignerModel::DesignValue& value,
+		cui::drawing::Transform& output,
+		std::wstring* outError);
+
 	bool TryConvertBrush(
 		const DesignerModel::DesignValue& value,
 		cui::drawing::Brush& output,
@@ -207,6 +212,7 @@ namespace
 		const std::shared_ptr<ResourceLoadContext>& resources)
 	{
 		if (!value.is_object()) return Fail(L"画刷必须是对象。", outError);
+		output = cui::drawing::Brush{};
 		const auto type = value.value("type", std::string{});
 		if (type == "solid") output.Kind = cui::drawing::BrushKind::Solid;
 		else if (type == "linear") output.Kind = cui::drawing::BrushKind::LinearGradient;
@@ -241,6 +247,22 @@ namespace
 			static_cast<float>(value.value("originY", 0.5)));
 		output.RadiusX = static_cast<float>(value.value("radiusX", 0.5));
 		output.RadiusY = static_cast<float>(value.value("radiusY", 0.5));
+		auto convertOptionalTransform = [&](const char* key,
+			std::optional<cui::drawing::Transform>& destination,
+			const wchar_t* label)
+		{
+			if (!value.contains(key)) return true;
+			cui::drawing::Transform transform;
+			std::wstring transformError;
+			if (!TryConvertTransform(value[key], transform, &transformError))
+				return Fail(std::wstring(label) + L"：" + transformError, outError);
+			destination = std::move(transform);
+			return true;
+		};
+		if (!convertOptionalTransform(
+				"transform", output.Transform, L"Brush.Transform")
+			|| !convertOptionalTransform("relativeTransform",
+				output.RelativeTransform, L"Brush.RelativeTransform")) return false;
 		if (output.Kind == cui::drawing::BrushKind::Image)
 		{
 			const auto source = Trim(Convert::Utf8ToUnicode(
@@ -533,7 +555,11 @@ std::wstring ValueKindName(DesignerStyleValueKind kind)
 	case DesignerStyleValueKind::String: return L"String";
 	case DesignerStyleValueKind::Color: return L"Color";
 	case DesignerStyleValueKind::Thickness: return L"Thickness";
+	case DesignerStyleValueKind::Point: return L"Point";
+	case DesignerStyleValueKind::Vector: return L"Vector";
+	case DesignerStyleValueKind::Rect: return L"Rect";
 	case DesignerStyleValueKind::Size: return L"Size";
+	case DesignerStyleValueKind::Matrix: return L"Matrix";
 	case DesignerStyleValueKind::Length: return L"Length";
 	case DesignerStyleValueKind::ImageSource: return L"ImageSource";
 	case DesignerStyleValueKind::Brush: return L"Brush";
@@ -549,7 +575,11 @@ bool TryParseValueKind(const std::wstring& value, DesignerStyleValueKind& out)
 		DesignerStyleValueKind::Int64, DesignerStyleValueKind::Float,
 		DesignerStyleValueKind::Double, DesignerStyleValueKind::String,
 		DesignerStyleValueKind::Color, DesignerStyleValueKind::Thickness,
-		DesignerStyleValueKind::Size, DesignerStyleValueKind::Length,
+		DesignerStyleValueKind::Point, DesignerStyleValueKind::Vector,
+		DesignerStyleValueKind::Rect,
+		DesignerStyleValueKind::Size,
+		DesignerStyleValueKind::Matrix,
+		DesignerStyleValueKind::Length,
 		DesignerStyleValueKind::ImageSource, DesignerStyleValueKind::Brush,
 		DesignerStyleValueKind::Geometry, DesignerStyleValueKind::Transform })
 	{
@@ -565,7 +595,8 @@ bool TryParseValueKind(const std::wstring& value, DesignerStyleValueKind& out)
 std::vector<std::wstring> ValueKindNames()
 {
 	return { L"Bool", L"Int", L"Int64", L"Float", L"Double", L"String",
-		L"Color", L"Thickness", L"Size", L"Length", L"ImageSource", L"Brush",
+		L"Color", L"Thickness", L"Point", L"Vector", L"Rect", L"Size", L"Matrix",
+		L"Length", L"ImageSource", L"Brush",
 		L"Geometry", L"Transform" };
 }
 
@@ -594,7 +625,13 @@ std::wstring UIClassName(UIClass type)
 	CUI_STYLE_UI_NAME(FilterBar); CUI_STYLE_UI_NAME(NavigationView); CUI_STYLE_UI_NAME(SideBar);
 	CUI_STYLE_UI_NAME(BreadcrumbBar); CUI_STYLE_UI_NAME(CalendarView); CUI_STYLE_UI_NAME(DateRangePicker);
 	CUI_STYLE_UI_NAME(ColorPicker); CUI_STYLE_UI_NAME(PagedGridView); CUI_STYLE_UI_NAME(NumericUpDown);
-	CUI_STYLE_UI_NAME(Expander); CUI_STYLE_UI_NAME(CUSTOM);
+	CUI_STYLE_UI_NAME(Expander); CUI_STYLE_UI_NAME(NativeSurface); CUI_STYLE_UI_NAME(ItemsControl);
+	case UIClass::UI_SelectorItem: return L"ListBoxItem";
+	case UIClass::UI_ComboBoxItem: return L"ComboBoxItem";
+	case UIClass::UI_TreeViewItem: return L"TreeViewItem";
+	CUI_STYLE_UI_NAME(ContentPresenter);
+	CUI_STYLE_UI_NAME(ItemsPresenter); CUI_STYLE_UI_NAME(ContentControl);
+	CUI_STYLE_UI_NAME(CUSTOM);
 	}
 #undef CUI_STYLE_UI_NAME
 #undef CUI_STYLE_WIDEN
@@ -605,6 +642,21 @@ std::wstring UIClassName(UIClass type)
 bool TryParseUIClass(const std::wstring& value, UIClass& out)
 {
 	const auto name = Trim(value);
+	if (EqualsName(name, L"SelectorItem"))
+	{
+		out = UIClass::UI_SelectorItem;
+		return true;
+	}
+	if (EqualsName(name, L"ComboBoxItem"))
+	{
+		out = UIClass::UI_ComboBoxItem;
+		return true;
+	}
+	if (EqualsName(name, L"TreeViewItem"))
+	{
+		out = UIClass::UI_TreeViewItem;
+		return true;
+	}
 	for (int numeric = static_cast<int>(UIClass::UI_Base);
 		numeric <= static_cast<int>(UIClass::UI_CUSTOM); ++numeric)
 	{
@@ -798,17 +850,60 @@ bool TryConvertValue(
 		out = BindingValue(thickness);
 		return true;
 	}
+	case DesignerStyleValueKind::Point:
+	{
+		auto parts = Split(value.Text, L',');
+		float x = 0.0f, y = 0.0f;
+		if (parts.size() != 2 || !TryParseFloat(parts[0], x)
+			|| !TryParseFloat(parts[1], y)) return invalid();
+		out = BindingValue(cui::core::Point{ x, y });
+		return true;
+	}
+	case DesignerStyleValueKind::Vector:
+	{
+		auto parts = Split(value.Text, L',');
+		float x = 0.0f, y = 0.0f;
+		if (parts.size() != 2 || !TryParseFloat(parts[0], x)
+			|| !TryParseFloat(parts[1], y)) return invalid();
+		out = BindingValue(cui::core::Vector{ x, y });
+		return true;
+	}
+	case DesignerStyleValueKind::Rect:
+	{
+		auto parts = Split(value.Text, L',');
+		float x = 0.0f, y = 0.0f, width = 0.0f, height = 0.0f;
+		if (parts.size() != 4 || !TryParseFloat(parts[0], x)
+			|| !TryParseFloat(parts[1], y)
+			|| !TryParseFloat(parts[2], width)
+			|| !TryParseFloat(parts[3], height)
+			|| width < 0.0f || height < 0.0f) return invalid();
+		out = BindingValue(cui::core::Rect{ x, y, width, height });
+		return true;
+	}
 	case DesignerStyleValueKind::Size:
 	{
 		auto parts = Split(value.Text, L',');
-		long long width = 0, height = 0;
-		if (parts.size() != 2 || !TryParseLongLong(parts[0], width)
-			|| !TryParseLongLong(parts[1], height)
-			|| width < (std::numeric_limits<LONG>::min)()
-			|| width > (std::numeric_limits<LONG>::max)()
-			|| height < (std::numeric_limits<LONG>::min)()
-			|| height > (std::numeric_limits<LONG>::max)()) return invalid();
-		out = BindingValue(SIZE{ static_cast<LONG>(width), static_cast<LONG>(height) });
+		float width = 0.0f, height = 0.0f;
+		if (parts.size() != 2 || !TryParseFloat(parts[0], width)
+			|| !TryParseFloat(parts[1], height)
+			|| width < 0.0f || height < 0.0f) return invalid();
+		out = BindingValue(cui::core::Size{ width, height });
+		return true;
+	}
+	case DesignerStyleValueKind::Matrix:
+	{
+		auto parts = Split(value.Text, L',');
+		float m11 = 0.0f, m12 = 0.0f, m21 = 0.0f;
+		float m22 = 0.0f, offsetX = 0.0f, offsetY = 0.0f;
+		if (parts.size() != 6 || !TryParseFloat(parts[0], m11)
+			|| !TryParseFloat(parts[1], m12)
+			|| !TryParseFloat(parts[2], m21)
+			|| !TryParseFloat(parts[3], m22)
+			|| !TryParseFloat(parts[4], offsetX)
+			|| !TryParseFloat(parts[5], offsetY)) return invalid();
+		const D2D1_MATRIX_3X2_F matrix = D2D1::Matrix3x2F(
+			m11, m12, m21, m22, offsetX, offsetY);
+		out = BindingValue(matrix);
 		return true;
 	}
 	case DesignerStyleValueKind::Length:
@@ -887,6 +982,9 @@ void Canonicalize(DesignerStyleSheet& styleSheet)
 	}
 	for (auto& rule : styleSheet.Rules)
 	{
+		rule.ComponentType.XamlPrefix = Trim(rule.ComponentType.XamlPrefix);
+		rule.ComponentType.XamlName = Trim(rule.ComponentType.XamlName);
+		rule.ComponentType.XamlNamespace = Trim(rule.ComponentType.XamlNamespace);
 		rule.Id = Trim(rule.Id);
 		rule.BasedOn = Trim(rule.BasedOn);
 		rule.SourceDictionary = Trim(rule.SourceDictionary);
@@ -925,9 +1023,48 @@ void Canonicalize(DesignerStyleSheet& styleSheet)
 				break;
 			}
 		};
+		auto canonicalizePropertyCondition = [](DesignerStylePropertyCondition& condition)
+		{
+			condition.Property = Trim(condition.Property);
+			if (condition.Value.Kind != DesignerStyleValueKind::String)
+				condition.Value.Text = Trim(condition.Value.Text);
+		};
+		auto canonicalizeActions = [&](auto& actions)
+		{
+			for (auto& action : actions)
+			{
+				action.StoryboardName = Trim(action.StoryboardName);
+				for (auto& animation : action.Animations)
+				{
+					animation.TargetName = Trim(animation.TargetName);
+					animation.PropertyName = Trim(animation.PropertyName);
+					animation.FromResourceKey = Trim(
+						animation.FromResourceKey);
+					animation.ToResourceKey = Trim(animation.ToResourceKey);
+					animation.ByResourceKey = Trim(animation.ByResourceKey);
+					if (animation.From.Kind != DesignerStyleValueKind::String)
+						animation.From.Text = Trim(animation.From.Text);
+					if (animation.To.Kind != DesignerStyleValueKind::String)
+						animation.To.Text = Trim(animation.To.Text);
+					if (animation.By.Kind != DesignerStyleValueKind::String)
+						animation.By.Text = Trim(animation.By.Text);
+					for (auto& frame : animation.KeyFrames)
+					{
+						frame.ResourceKey = Trim(frame.ResourceKey);
+						if (frame.Value.Kind
+							!= DesignerStyleValueKind::String)
+							frame.Value.Text = Trim(frame.Value.Text);
+					}
+				}
+			}
+		};
 		for (auto& setter : rule.Setters) canonicalizeSetter(setter);
+		for (auto& condition : rule.PropertyConditions)
+			canonicalizePropertyCondition(condition);
 		for (auto& condition : rule.DataConditions)
 			canonicalizeDataCondition(condition);
+		canonicalizeActions(rule.EnterActions);
+		canonicalizeActions(rule.ExitActions);
 		for (auto& trigger : rule.Triggers)
 		{
 			for (auto& condition : trigger.Conditions)
@@ -936,10 +1073,87 @@ void Canonicalize(DesignerStyleSheet& styleSheet)
 				condition.Property = property.empty()
 					? Trim(condition.Property) : property;
 			}
+			for (auto& condition : trigger.PropertyConditions)
+				canonicalizePropertyCondition(condition);
 			for (auto& condition : trigger.DataConditions)
 				canonicalizeDataCondition(condition);
 			for (auto& setter : trigger.Setters) canonicalizeSetter(setter);
+			canonicalizeActions(trigger.EnterActions);
+			canonicalizeActions(trigger.ExitActions);
 		}
+	}
+}
+
+void AppendLexicalScope(
+	DesignerStyleSheet& target,
+	const DesignerStyleSheet& source)
+{
+	for (const auto& dictionary : source.MergedDictionaries)
+		if (std::none_of(target.MergedDictionaries.begin(),
+			target.MergedDictionaries.end(), [&](const auto& current)
+			{ return _wcsicmp(current.c_str(), dictionary.c_str()) == 0; }))
+			target.MergedDictionaries.push_back(dictionary);
+	for (const auto& resource : source.Resources)
+	{
+		target.Resources.erase(std::remove_if(
+			target.Resources.begin(), target.Resources.end(),
+			[&](const auto& current)
+			{ return _wcsicmp(current.Key.c_str(), resource.Key.c_str()) == 0; }),
+			target.Resources.end());
+		target.Resources.push_back(resource);
+	}
+	target.Rules.insert(
+		target.Rules.end(), source.Rules.begin(), source.Rules.end());
+}
+
+void RemapRuleResourceKeys(
+	DesignerStyleRule& rule,
+	const std::vector<std::pair<std::wstring, std::wstring>>& renames,
+	const std::function<bool(const std::wstring&)>& shouldRemap)
+{
+	auto remap = [&](std::wstring& key)
+	{
+		if (key.empty() || (shouldRemap && !shouldRemap(key))) return;
+		for (const auto& [source, destination] : renames)
+			if (_wcsicmp(key.c_str(), source.c_str()) == 0)
+			{
+				key = destination;
+				return;
+			}
+	};
+	auto rewriteAnimation = [&](DesignerVisualStateAnimation& animation)
+	{
+		if (animation.HasTo && animation.ToUsesResource)
+			remap(animation.ToResourceKey);
+		if (animation.HasFrom && animation.FromUsesResource)
+			remap(animation.FromResourceKey);
+		if (animation.HasBy && animation.ByUsesResource)
+			remap(animation.ByResourceKey);
+		for (auto& frame : animation.KeyFrames)
+			if (frame.UsesResource) remap(frame.ResourceKey);
+	};
+	auto rewriteSetters = [&](std::vector<DesignerStyleSetter>& setters)
+	{
+		for (auto& setter : setters)
+			if (setter.UsesResource
+				&& !EqualsName(setter.PropertyName, L"Template"))
+				remap(setter.ResourceKey);
+	};
+	auto rewriteActions = [&](std::vector<DesignerEventTriggerAction>& actions)
+	{
+		for (auto& action : actions)
+			for (auto& animation : action.Animations)
+				rewriteAnimation(animation);
+	};
+	remap(rule.BasedOn);
+	rewriteSetters(rule.Setters);
+	rewriteActions(rule.EnterActions);
+	rewriteActions(rule.ExitActions);
+	for (auto& trigger : rule.Triggers)
+	{
+		rewriteSetters(trigger.Setters);
+		rewriteActions(trigger.EnterActions);
+		rewriteActions(trigger.ExitActions);
 	}
 }
 
@@ -970,6 +1184,7 @@ bool ResolveInheritance(
 		return rule.Classes.empty()
 			&& rule.RequiredStates == ControlStyleState::None
 			&& rule.ExcludedStates == ControlStyleState::None
+			&& rule.PropertyConditions.empty()
 			&& rule.DataConditions.empty();
 	};
 	auto findBase = [&](size_t owner, size_t& baseIndex)
@@ -1032,7 +1247,16 @@ bool ResolveInheritance(
 			{
 				derived.HasType = true;
 				derived.Type = base.Type;
+				derived.ComponentType = base.ComponentType;
 			}
+			else if (derived.ComponentType.Empty()
+				&& !base.ComponentType.Empty()
+				&& derived.Type == base.Type)
+				derived.ComponentType = base.ComponentType;
+			else if (!derived.ComponentType.Empty()
+				&& !base.ComponentType.Empty()
+				&& derived.ComponentType != base.ComponentType)
+				return Fail(L"Style.BasedOn 的组件 TargetType 不兼容。", outError);
 			auto setters = base.Setters;
 			for (const auto& setter : derived.Setters)
 			{
@@ -1060,6 +1284,91 @@ bool ResolveInheritance(
 	return true;
 }
 
+bool PrepareLocalRuntimeStyleSheet(
+	const DesignerStyleSheet& localStyleSheet,
+	const DesignerStyleSheet& visibleStyleSheet,
+	DesignerStyleSheet& out,
+	std::wstring* outError)
+{
+	DesignerStyleSheet resolved;
+	if (!ResolveInheritance(visibleStyleSheet, resolved, outError)) return false;
+	if (resolved.Rules.size() < localStyleSheet.Rules.size())
+	{
+		if (outError) *outError = L"局部 Style 的可见规则上下文不完整。";
+		return false;
+	}
+	out = localStyleSheet;
+	out.Rules.assign(
+		resolved.Rules.end() - localStyleSheet.Rules.size(),
+		resolved.Rules.end());
+	size_t aliasIndex = 0;
+	auto hasLocalResource = [&](const std::wstring& key)
+	{
+		return std::any_of(out.Resources.begin(), out.Resources.end(),
+			[&](const auto& resource)
+			{ return _wcsicmp(resource.Key.c_str(), key.c_str()) == 0; });
+	};
+	auto aliasStaticResource = [&](std::wstring& key) -> bool
+	{
+		if (hasLocalResource(key)) return true;
+		const auto found = std::find_if(
+			visibleStyleSheet.Resources.rbegin(),
+			visibleStyleSheet.Resources.rend(),
+			[&](const auto& resource)
+			{ return _wcsicmp(resource.Key.c_str(), key.c_str()) == 0; });
+		if (found == visibleStyleSheet.Resources.rend())
+		{
+			if (outError) *outError = L"局部 Style 引用了不可见资源：" + key;
+			return false;
+		}
+		auto alias = *found;
+		alias.Key = L"__cui_static_scope_" + std::to_wstring(aliasIndex++);
+		alias.SourceDictionary.clear();
+		key = alias.Key;
+		out.Resources.push_back(std::move(alias));
+		return true;
+	};
+	auto rewriteAnimation = [&](auto& animation)
+	{
+		if (animation.HasFrom && animation.FromUsesResource
+			&& !aliasStaticResource(animation.FromResourceKey)) return false;
+		if (animation.HasTo && animation.ToUsesResource
+			&& !aliasStaticResource(animation.ToResourceKey)) return false;
+		if (animation.HasBy && animation.ByUsesResource
+			&& !aliasStaticResource(animation.ByResourceKey)) return false;
+		for (auto& frame : animation.KeyFrames)
+			if (frame.UsesResource
+				&& !aliasStaticResource(frame.ResourceKey)) return false;
+		return true;
+	};
+	auto rewriteActions = [&](auto& actions)
+	{
+		for (auto& action : actions)
+			for (auto& animation : action.Animations)
+				if (!rewriteAnimation(animation)) return false;
+		return true;
+	};
+	auto rewriteSetters = [&](auto& setters)
+	{
+		for (auto& setter : setters)
+			if (!EqualsName(setter.PropertyName, L"Template")
+				&& setter.UsesResource && !setter.UsesDynamicResource
+				&& !aliasStaticResource(setter.ResourceKey)) return false;
+		return true;
+	};
+	for (auto& rule : out.Rules)
+	{
+		if (!rewriteSetters(rule.Setters)
+			|| !rewriteActions(rule.EnterActions)
+			|| !rewriteActions(rule.ExitActions)) return false;
+		for (auto& trigger : rule.Triggers)
+			if (!rewriteSetters(trigger.Setters)
+				|| !rewriteActions(trigger.EnterActions)
+				|| !rewriteActions(trigger.ExitActions)) return false;
+	}
+	return true;
+}
+
 bool ExpandRuntimeRules(
 	const DesignerStyleSheet& source,
 	DesignerStyleSheet& out,
@@ -1081,9 +1390,12 @@ bool ExpandRuntimeRules(
 		{
 			ControlStyleState required = ControlStyleState::None;
 			ControlStyleState excluded = ControlStyleState::None;
-			if (!trigger.DataConditions.empty() && !trigger.Conditions.empty())
-				return Fail(L"数据 Trigger 不能同时包含状态 Condition。", outError);
-			if (trigger.DataConditions.empty() && trigger.Conditions.empty())
+			if (!trigger.DataConditions.empty()
+				&& (!trigger.Conditions.empty()
+					|| !trigger.PropertyConditions.empty()))
+				return Fail(L"DataTrigger 不能同时包含属性 Condition。", outError);
+			if (trigger.DataConditions.empty() && trigger.Conditions.empty()
+				&& trigger.PropertyConditions.empty())
 				return Fail(L"Style Trigger 至少需要一个 Condition。", outError);
 			for (const auto& condition : trigger.Conditions)
 			{
@@ -1100,8 +1412,13 @@ bool ExpandRuntimeRules(
 			lowered.BasedOn.clear();
 			lowered.Triggers.clear();
 			lowered.Setters = trigger.Setters;
+			lowered.EnterActions = trigger.EnterActions;
+			lowered.ExitActions = trigger.ExitActions;
 			lowered.DataConditions.insert(lowered.DataConditions.end(),
 				trigger.DataConditions.begin(), trigger.DataConditions.end());
+			lowered.PropertyConditions.insert(lowered.PropertyConditions.end(),
+				trigger.PropertyConditions.begin(),
+				trigger.PropertyConditions.end());
 			lowered.RequiredStates |= required;
 			lowered.ExcludedStates |= excluded;
 			if ((lowered.RequiredStates & lowered.ExcludedStates)
@@ -1162,12 +1479,27 @@ bool Validate(
 			return Fail(L"样式规则包含未知状态。", outError);
 		if ((required & excluded) != 0)
 			return Fail(L"同一状态不能同时出现在规则的必需和排除状态中。", outError);
-		if (rule.Setters.empty() && rule.Triggers.empty()
+		if (!rule.ComponentType.Empty()
+			&& (!rule.HasType || rule.ComponentType.XamlName.empty()
+				|| rule.ComponentType.XamlNamespace.empty()))
+			return Fail(L"组件样式必须同时保存有效 QName 和 BaseType。", outError);
+		if (rule.Setters.empty() && rule.EnterActions.empty()
+			&& rule.ExitActions.empty() && rule.Triggers.empty()
 			&& Trim(rule.BasedOn).empty())
 			return Fail(L"样式规则 " + std::to_wstring(ruleIndex + 1)
 				+ L" 没有 Setter 或 Trigger。", outError);
+		const bool hasTemplateSetter = std::any_of(
+			rule.Setters.begin(), rule.Setters.end(), [](const auto& setter)
+			{ return EqualsName(setter.PropertyName, L"Template"); });
+		if (hasTemplateSetter
+			&& (rule.RequiredStates != ControlStyleState::None
+				|| rule.ExcludedStates != ControlStyleState::None
+				|| !rule.PropertyConditions.empty()
+				|| !rule.DataConditions.empty()))
+			return Fail(L"Template Setter 目前不支持状态或数据条件；"
+				L"请使用普通 Style Setter。", outError);
 
-		auto validateSetters = [&](const std::vector<DesignerStyleSetter>& setters,
+			auto validateSetters = [&](const std::vector<DesignerStyleSetter>& setters,
 			const std::wstring& context)
 		{
 			std::vector<std::wstring> properties;
@@ -1179,10 +1511,20 @@ bool Validate(
 				if (ContainsName(properties, property))
 					return Fail(context + L" 中的 Setter 属性重复：" + property, outError);
 				properties.push_back(property);
+				if (_wcsicmp(property.c_str(), L"Template") == 0)
+				{
+					if (!setter.UsesResource || setter.UsesDynamicResource
+						|| Trim(setter.ResourceKey).empty())
+						return Fail(context
+							+ L" Template Setter 必须使用 StaticResource。", outError);
+					continue;
+				}
 				if (setter.UsesResource)
 				{
 					const auto key = Trim(setter.ResourceKey);
-					if (key.empty() || !ContainsName(resourceKeys, key))
+					if (key.empty()
+						|| (!setter.UsesDynamicResource
+							&& !ContainsName(resourceKeys, key)))
 						return Fail(L"样式 Setter 引用了不存在的资源：" + key, outError);
 				}
 				else
@@ -1215,13 +1557,139 @@ bool Validate(
 			}
 			return true;
 		};
+		auto validatePropertyConditions = [&](const auto& conditions,
+			const std::wstring& context)
+		{
+			std::vector<std::wstring> properties;
+			for (const auto& condition : conditions)
+			{
+				const auto property = Trim(condition.Property);
+				if (property.empty())
+					return Fail(context + L" 属性名不能为空。", outError);
+				if (ContainsName(properties, property))
+					return Fail(context + L" 属性重复：" + property, outError);
+				properties.push_back(property);
+				BindingValue value;
+				if (!TryConvertValue(condition.Value, value, outError,
+					resourceBasePath, resources)) return false;
+				if (value.Empty())
+					return Fail(context + L" 值不能为空：" + property, outError);
+			}
+			return true;
+		};
+		auto validateTriggerActions = [&](const DesignerStyleTrigger& trigger,
+			const std::wstring& context)
+		{
+			if (trigger.EnterActions.empty() && trigger.ExitActions.empty())
+				return true;
+			std::vector<std::wstring> beginNames;
+			std::vector<std::wstring> references;
+			auto validateActions = [&](const auto& actions)
+			{
+				for (const auto& action : actions)
+				{
+					if (action.Kind == DesignerStoryboardActionKind::Begin)
+					{
+						if (action.Animations.empty())
+							return Fail(context
+								+ L"：BeginStoryboard 不能为空。", outError);
+						if (!action.StoryboardName.empty())
+						{
+							if (ContainsName(beginNames, action.StoryboardName))
+								return Fail(context
+									+ L"：BeginStoryboard 名称重复："
+									+ action.StoryboardName, outError);
+							beginNames.push_back(action.StoryboardName);
+						}
+						for (const auto& animation : action.Animations)
+						{
+							if (!animation.TargetName.empty())
+								return Fail(context
+									+ L"：Style Storyboard 不支持 TargetName。",
+									outError);
+							if (animation.PropertyName.empty())
+								return Fail(context
+									+ L"：Storyboard.TargetProperty 不能为空。",
+									outError);
+							auto validateValue = [&](const DesignerStyleValue& literal,
+								bool usesResource, const std::wstring& resourceKey)
+							{
+								if (usesResource)
+									return !resourceKey.empty()
+										&& ContainsName(resourceKeys, resourceKey);
+								BindingValue value;
+								return TryConvertValue(literal, value, outError,
+									resourceBasePath, resources);
+							};
+							if ((animation.HasFrom && !validateValue(animation.From,
+								animation.FromUsesResource, animation.FromResourceKey))
+								|| (animation.HasTo && !validateValue(animation.To,
+									animation.ToUsesResource, animation.ToResourceKey))
+								|| (animation.HasBy && !validateValue(animation.By,
+									animation.ByUsesResource, animation.ByResourceKey)))
+								return Fail(context
+									+ L"：Storyboard 端点资源或值无效。", outError);
+							for (const auto& frame : animation.KeyFrames)
+								if (!validateValue(frame.Value, frame.UsesResource,
+									frame.ResourceKey))
+									return Fail(context
+										+ L"：Storyboard 关键帧资源或值无效。",
+										outError);
+							if (!std::isfinite(animation.RepeatCount)
+								|| !std::isfinite(animation.SpeedRatio)
+								|| animation.SpeedRatio <= 0.0
+								|| !std::isfinite(animation.AccelerationRatio)
+								|| !std::isfinite(animation.DecelerationRatio)
+								|| animation.AccelerationRatio < 0.0
+								|| animation.DecelerationRatio < 0.0
+								|| animation.AccelerationRatio
+									+ animation.DecelerationRatio > 1.0)
+								return Fail(context
+									+ L"：Storyboard 时间线参数无效。", outError);
+						}
+					}
+					else
+					{
+						if (action.StoryboardName.empty())
+							return Fail(context
+								+ L"：Storyboard 控制动作缺少 BeginStoryboardName。",
+								outError);
+						references.push_back(action.StoryboardName);
+					}
+				}
+				return true;
+			};
+			if (!validateActions(trigger.EnterActions)
+				|| !validateActions(trigger.ExitActions)) return false;
+			for (const auto& reference : references)
+				if (!ContainsName(beginNames, reference))
+					return Fail(context
+						+ L"：Storyboard 控制动作找不到 BeginStoryboard："
+						+ reference, outError);
+			return true;
+		};
 		if (!validateSetters(rule.Setters,
 			L"样式规则 " + std::to_wstring(ruleIndex + 1))) return false;
+		if (!validatePropertyConditions(rule.PropertyConditions,
+			L"样式规则 " + std::to_wstring(ruleIndex + 1)
+				+ L" 的 Trigger")) return false;
 		if (!validateDataConditions(rule.DataConditions,
 			L"样式规则 " + std::to_wstring(ruleIndex + 1)
 				+ L" 的 DataTrigger")) return false;
-		if (!rule.DataConditions.empty() && !rule.Triggers.empty())
-			return Fail(L"已降低的 DataTrigger 规则不能再包含嵌套 Trigger。",
+		if (!rule.EnterActions.empty() || !rule.ExitActions.empty())
+		{
+			DesignerStyleTrigger loweredTrigger;
+			loweredTrigger.DataConditions = rule.DataConditions;
+			loweredTrigger.PropertyConditions = rule.PropertyConditions;
+			loweredTrigger.EnterActions = rule.EnterActions;
+			loweredTrigger.ExitActions = rule.ExitActions;
+			if (!validateTriggerActions(loweredTrigger,
+				L"样式规则 " + std::to_wstring(ruleIndex + 1)
+					+ L" 的 Trigger")) return false;
+		}
+		if ((!rule.DataConditions.empty() || !rule.PropertyConditions.empty())
+			&& !rule.Triggers.empty())
+			return Fail(L"已降低的 Trigger 规则不能再包含嵌套 Trigger。",
 				outError);
 		for (size_t triggerIndex = 0;
 			triggerIndex < rule.Triggers.size(); ++triggerIndex)
@@ -1229,9 +1697,12 @@ bool Validate(
 			const auto& trigger = rule.Triggers[triggerIndex];
 			ControlStyleState triggerRequired = ControlStyleState::None;
 			ControlStyleState triggerExcluded = ControlStyleState::None;
-			if (!trigger.DataConditions.empty() && !trigger.Conditions.empty())
-				return Fail(L"数据 Trigger 不能同时包含状态 Condition。", outError);
-			if (trigger.DataConditions.empty() && trigger.Conditions.empty())
+			if (!trigger.DataConditions.empty()
+				&& (!trigger.Conditions.empty()
+					|| !trigger.PropertyConditions.empty()))
+				return Fail(L"DataTrigger 不能同时包含属性 Condition。", outError);
+			if (trigger.DataConditions.empty() && trigger.Conditions.empty()
+				&& trigger.PropertyConditions.empty())
 				return Fail(L"Style Trigger 至少需要一个 Condition。", outError);
 			std::vector<std::wstring> conditionProperties;
 			for (const auto& condition : trigger.Conditions)
@@ -1253,8 +1724,30 @@ bool Validate(
 				triggerRequired |= conditionRequired;
 				triggerExcluded |= conditionExcluded;
 			}
-			if (trigger.Setters.empty())
-				return Fail(L"Style Trigger 没有 Setter。", outError);
+			for (const auto& condition : trigger.PropertyConditions)
+			{
+				const auto property = Trim(condition.Property);
+				if (property.empty())
+					return Fail(L"Style Trigger 条件属性不能为空。", outError);
+				if (ContainsName(conditionProperties, property))
+					return Fail(L"Style MultiTrigger 的 Condition 属性重复："
+						+ property, outError);
+				conditionProperties.push_back(property);
+				BindingValue value;
+				if (!TryConvertValue(condition.Value, value, outError,
+					resourceBasePath, resources)) return false;
+				if (value.Empty())
+					return Fail(L"Style Trigger 条件值不能为空："
+						+ property, outError);
+			}
+			if (trigger.Setters.empty() && trigger.EnterActions.empty()
+				&& trigger.ExitActions.empty())
+				return Fail(L"Style Trigger 没有 Setter 或 TriggerAction。", outError);
+			if (std::any_of(trigger.Setters.begin(), trigger.Setters.end(),
+				[](const auto& setter)
+				{ return EqualsName(setter.PropertyName, L"Template"); }))
+				return Fail(L"Template Setter 目前不支持 Trigger；"
+					L"请使用 Style 的普通 Setter。", outError);
 			if (!validateDataConditions(trigger.DataConditions,
 				trigger.DataConditions.size() > 1
 					? L"Style.MultiDataTrigger" : L"Style.DataTrigger")) return false;
@@ -1265,13 +1758,18 @@ bool Validate(
 					outError);
 			if (!validateSetters(trigger.Setters,
 				L"样式规则 " + std::to_wstring(ruleIndex + 1)
-				+ L" 的 Trigger " + std::to_wstring(triggerIndex + 1))) return false;
+					+ L" 的 Trigger " + std::to_wstring(triggerIndex + 1))) return false;
+			if (!validateTriggerActions(trigger,
+				L"样式规则 " + std::to_wstring(ruleIndex + 1)
+					+ L" 的 Trigger " + std::to_wstring(triggerIndex + 1))) return false;
 		}
 	}
 	DesignerStyleSheet resolved;
 	if (!ResolveInheritance(styleSheet, resolved, outError)) return false;
 	for (size_t ruleIndex = 0; ruleIndex < resolved.Rules.size(); ++ruleIndex)
 		if (resolved.Rules[ruleIndex].Setters.empty()
+			&& resolved.Rules[ruleIndex].EnterActions.empty()
+			&& resolved.Rules[ruleIndex].ExitActions.empty()
 			&& resolved.Rules[ruleIndex].Triggers.empty())
 			return Fail(L"样式规则 " + std::to_wstring(ruleIndex + 1)
 				+ L" 的 BasedOn 链没有提供 Setter 或 Trigger。", outError);
@@ -1280,9 +1778,9 @@ bool Validate(
 	return true;
 }
 
-bool ValidateAgainstPropertyMetadata(
+bool ValidateAgainstRulePropertyMetadata(
 	const DesignerStyleSheet& styleSheet,
-	const ControlFactory& controlFactory,
+	const RuleControlFactory& controlFactory,
 	std::wstring* outError,
 	const std::wstring& resourceBasePath,
 	const std::shared_ptr<ResourceLoadContext>& resources)
@@ -1299,14 +1797,24 @@ bool ValidateAgainstPropertyMetadata(
 	for (size_t ruleIndex = 0; ruleIndex < resolved.Rules.size(); ++ruleIndex)
 	{
 		const auto& rule = resolved.Rules[ruleIndex];
-		auto target = controlFactory(rule.HasType ? rule.Type : UIClass::UI_Base);
+		auto target = controlFactory(rule);
 		// Unknown/custom runtime types may not have a Designer probe. Keep their
 		// structurally valid declarations for forward compatibility.
 		if (!target) continue;
 		const auto properties = DesignerPropertyCatalog::GetStyleProperties(*target);
+		for (const auto& condition : rule.PropertyConditions)
+		{
+			std::wstring validationError;
+			if (!DesignerPropertyCatalog::ValidateConditionValue(
+				*target, condition.Property, condition.Value, &validationError,
+				resourceBasePath, resources))
+				return Fail(L"样式规则 " + std::to_wstring(ruleIndex + 1)
+					+ L"：" + validationError, outError);
+		}
 
 		for (const auto& setter : rule.Setters)
 		{
+			if (EqualsName(setter.PropertyName, L"Template")) continue;
 			const auto* property = DesignerPropertyCatalog::Find(
 				properties, setter.PropertyName);
 			if (!property)
@@ -1324,8 +1832,11 @@ bool ValidateAgainstPropertyMetadata(
 						return EqualsName(item.Key, setter.ResourceKey);
 					});
 				if (resource == resolved.Resources.end())
+				{
+					if (setter.UsesDynamicResource) continue;
 					return Fail(L"样式 Setter 引用了不存在的资源："
 						+ setter.ResourceKey, outError);
+				}
 				value = &resource->Value;
 			}
 
@@ -1339,6 +1850,26 @@ bool ValidateAgainstPropertyMetadata(
 	}
 	if (outError) outError->clear();
 	return true;
+}
+
+bool ValidateAgainstPropertyMetadata(
+	const DesignerStyleSheet& styleSheet,
+	const ControlFactory& controlFactory,
+	std::wstring* outError,
+	const std::wstring& resourceBasePath,
+	const std::shared_ptr<ResourceLoadContext>& resources)
+{
+	RuleControlFactory adapter;
+	if (controlFactory)
+		adapter = [&controlFactory](const DesignerStyleRule& rule)
+		{
+			// Component rules need an instance-level contract and are validated by
+			// document-aware callers through the rule-aware overload.
+			if (!rule.ComponentType.Empty()) return std::unique_ptr<Control>{};
+			return controlFactory(rule.HasType ? rule.Type : UIClass::UI_Base);
+		};
+	return ValidateAgainstRulePropertyMetadata(
+		styleSheet, adapter, outError, resourceBasePath, resources);
 }
 
 bool BuildRuntimeStyleSheet(
@@ -1364,14 +1895,183 @@ bool BuildRuntimeStyleSheet(
 		if (!runtime->SetResource(resource.Key, std::move(value)))
 			return Fail(L"无法创建样式资源：" + resource.Key, outError);
 	}
+	auto materializeAnimation = [&](const DesignerVisualStateAnimation& source,
+		DeclarativeVisualStateAnimation& animation,
+		const std::wstring& context)
+	{
+		animation.Kind = source.Kind == DesignerAnimationKind::Color
+			? DeclarativeAnimationKind::Color
+			: source.Kind == DesignerAnimationKind::Thickness
+				? DeclarativeAnimationKind::Thickness
+			: source.Kind == DesignerAnimationKind::Point
+				? DeclarativeAnimationKind::Point
+			: source.Kind == DesignerAnimationKind::Vector
+				? DeclarativeAnimationKind::Vector
+			: source.Kind == DesignerAnimationKind::Rect
+				? DeclarativeAnimationKind::Rect
+			: source.Kind == DesignerAnimationKind::Size
+				? DeclarativeAnimationKind::Size
+			: source.Kind == DesignerAnimationKind::Matrix
+				? DeclarativeAnimationKind::Matrix
+			: source.Kind == DesignerAnimationKind::Object
+				? DeclarativeAnimationKind::Object
+				: DeclarativeAnimationKind::Double;
+		animation.TargetName = source.TargetName;
+		animation.PropertyName = source.PropertyName;
+		auto resolveValue = [&](const DesignerStyleValue& literal,
+			bool usesResource, const std::wstring& resourceKey,
+			BindingValue& output, const std::wstring& label)
+		{
+			const DesignerStyleValue* value = &literal;
+			if (usesResource)
+			{
+				const auto found = std::find_if(styleSheet.Resources.begin(),
+					styleSheet.Resources.end(), [&](const auto& candidate)
+					{ return EqualsName(candidate.Key, resourceKey); });
+				if (found == styleSheet.Resources.end())
+					return Fail(context + L" 引用了不存在的动画资源："
+						+ resourceKey, outError);
+				value = &found->Value;
+			}
+			std::wstring conversionError;
+			if (TryConvertValue(*value, output, &conversionError,
+				resourceBasePath, resources)) return true;
+			return Fail(context + L"." + source.PropertyName + L" " + label
+				+ L"：" + conversionError, outError);
+		};
+		if (source.HasFrom)
+		{
+			BindingValue value;
+			if (!resolveValue(source.From, source.FromUsesResource,
+				source.FromResourceKey, value, L"From")) return false;
+			animation.From = std::move(value);
+		}
+		if (source.HasTo)
+		{
+			BindingValue value;
+			if (!resolveValue(source.To, source.ToUsesResource,
+				source.ToResourceKey, value, L"To")) return false;
+			animation.To = std::move(value);
+		}
+		if (source.HasBy)
+		{
+			BindingValue value;
+			if (!resolveValue(source.By, source.ByUsesResource,
+				source.ByResourceKey, value, L"By")) return false;
+			animation.By = std::move(value);
+		}
+		for (const auto& sourceFrame : source.KeyFrames)
+		{
+			DeclarativeAnimationKeyFrame frame;
+			frame.Kind = sourceFrame.Kind == DesignerKeyFrameKind::Discrete
+				? DeclarativeKeyFrameKind::Discrete
+				: sourceFrame.Kind == DesignerKeyFrameKind::Easing
+					? DeclarativeKeyFrameKind::Easing
+				: sourceFrame.Kind == DesignerKeyFrameKind::Spline
+					? DeclarativeKeyFrameKind::Spline
+					: DeclarativeKeyFrameKind::Linear;
+			frame.KeyTimeMilliseconds = sourceFrame.KeyTimeMilliseconds;
+			if (!resolveValue(sourceFrame.Value, sourceFrame.UsesResource,
+				sourceFrame.ResourceKey, frame.Value, L"KeyFrame")) return false;
+			frame.Easing = sourceFrame.Easing == DesignerEasingKind::Quadratic
+				? DeclarativeEasingKind::Quadratic
+				: sourceFrame.Easing == DesignerEasingKind::Cubic
+					? DeclarativeEasingKind::Cubic
+				: sourceFrame.Easing == DesignerEasingKind::Sine
+					? DeclarativeEasingKind::Sine
+					: DeclarativeEasingKind::Linear;
+			frame.EasingMode = sourceFrame.EasingMode == DesignerEasingMode::EaseIn
+				? DeclarativeEasingMode::EaseIn
+				: sourceFrame.EasingMode == DesignerEasingMode::EaseInOut
+					? DeclarativeEasingMode::EaseInOut
+					: DeclarativeEasingMode::EaseOut;
+			frame.KeySplineX1 = sourceFrame.KeySplineX1;
+			frame.KeySplineY1 = sourceFrame.KeySplineY1;
+			frame.KeySplineX2 = sourceFrame.KeySplineX2;
+			frame.KeySplineY2 = sourceFrame.KeySplineY2;
+			animation.KeyFrames.push_back(std::move(frame));
+		}
+		animation.IsAdditive = source.IsAdditive;
+		animation.IsCumulative = source.IsCumulative;
+		animation.BeginTimeMilliseconds = source.BeginTimeMilliseconds;
+		animation.DurationMilliseconds = source.DurationMilliseconds;
+		animation.RepeatBehavior = source.RepeatBehavior
+			== DesignerRepeatBehaviorKind::Duration
+			? DeclarativeRepeatBehaviorKind::Duration
+			: source.RepeatBehavior == DesignerRepeatBehaviorKind::Forever
+				? DeclarativeRepeatBehaviorKind::Forever
+				: DeclarativeRepeatBehaviorKind::Count;
+		animation.RepeatCount = source.RepeatCount;
+		animation.RepeatDurationMilliseconds = source.RepeatDurationMilliseconds;
+		animation.AutoReverse = source.AutoReverse;
+		animation.FillBehavior = source.FillBehavior
+			== DesignerTimelineFillBehavior::Stop
+			? DeclarativeTimelineFillBehavior::Stop
+			: DeclarativeTimelineFillBehavior::HoldEnd;
+		animation.SpeedRatio = source.SpeedRatio;
+		animation.AccelerationRatio = source.AccelerationRatio;
+		animation.DecelerationRatio = source.DecelerationRatio;
+		animation.Easing = source.Easing == DesignerEasingKind::Quadratic
+			? DeclarativeEasingKind::Quadratic
+			: source.Easing == DesignerEasingKind::Cubic
+				? DeclarativeEasingKind::Cubic
+			: source.Easing == DesignerEasingKind::Sine
+				? DeclarativeEasingKind::Sine
+				: DeclarativeEasingKind::Linear;
+		animation.EasingMode = source.EasingMode == DesignerEasingMode::EaseIn
+			? DeclarativeEasingMode::EaseIn
+			: source.EasingMode == DesignerEasingMode::EaseInOut
+				? DeclarativeEasingMode::EaseInOut
+				: DeclarativeEasingMode::EaseOut;
+		return true;
+	};
+	auto materializeActions = [&](const auto& sourceActions,
+		std::vector<DeclarativeEventTriggerActionDefinition>& output,
+		const std::wstring& context)
+	{
+		for (const auto& sourceAction : sourceActions)
+		{
+			DeclarativeEventTriggerActionDefinition action;
+			action.Kind = sourceAction.Kind == DesignerStoryboardActionKind::Begin
+				? DeclarativeStoryboardActionKind::Begin
+				: sourceAction.Kind == DesignerStoryboardActionKind::Pause
+					? DeclarativeStoryboardActionKind::Pause
+				: sourceAction.Kind == DesignerStoryboardActionKind::Resume
+					? DeclarativeStoryboardActionKind::Resume
+					: DeclarativeStoryboardActionKind::Stop;
+			action.StoryboardName = sourceAction.StoryboardName;
+			for (const auto& sourceAnimation : sourceAction.Animations)
+			{
+				DeclarativeVisualStateAnimation animation;
+				if (!materializeAnimation(sourceAnimation, animation, context))
+					return false;
+				action.Animations.push_back(std::move(animation));
+			}
+			output.push_back(std::move(action));
+		}
+		return true;
+	};
 	for (const auto& rule : styleSheet.Rules)
 	{
 		ControlStyleSelector selector;
 		if (rule.HasType) selector.Type = rule.Type;
+		if (!rule.ComponentType.Empty())
+		{
+			selector.DeclarativeTypeNamespace = rule.ComponentType.XamlNamespace;
+			selector.DeclarativeTypeName = rule.ComponentType.XamlName;
+		}
 		selector.Id = rule.Id;
 		selector.Classes = rule.Classes;
 		selector.RequiredStates = rule.RequiredStates;
 		selector.ExcludedStates = rule.ExcludedStates;
+		for (const auto& condition : rule.PropertyConditions)
+		{
+			BindingValue value;
+			if (!TryConvertValue(condition.Value, value, outError,
+				resourceBasePath, resources)) return false;
+			selector.PropertyConditions.push_back({
+				condition.Property, std::move(value) });
+		}
 		for (const auto& condition : rule.DataConditions)
 		{
 			BindingValue value;
@@ -1384,9 +2084,13 @@ bool BuildRuntimeStyleSheet(
 		setters.reserve(rule.Setters.size());
 		for (const auto& setter : rule.Setters)
 		{
+			if (EqualsName(setter.PropertyName, L"Template")) continue;
 			if (setter.UsesResource)
-				setters.push_back(ControlStyleSetter::Resource(
-					setter.PropertyName, setter.ResourceKey));
+				setters.push_back(setter.UsesDynamicResource
+					? ControlStyleSetter::DynamicResource(
+						setter.PropertyName, setter.ResourceKey)
+					: ControlStyleSetter::Resource(
+						setter.PropertyName, setter.ResourceKey));
 			else
 			{
 				BindingValue value;
@@ -1395,7 +2099,17 @@ bool BuildRuntimeStyleSheet(
 				setters.emplace_back(setter.PropertyName, std::move(value));
 			}
 		}
-		runtime->AddRule(std::move(selector), std::move(setters));
+		std::vector<DeclarativeEventTriggerActionDefinition> enterActions;
+		std::vector<DeclarativeEventTriggerActionDefinition> exitActions;
+		if (!materializeActions(rule.EnterActions, enterActions,
+			L"Style Trigger.EnterActions")
+			|| !materializeActions(rule.ExitActions, exitActions,
+				L"Style Trigger.ExitActions")) return false;
+		if (setters.empty() && enterActions.empty() && exitActions.empty())
+			continue;
+		if (!runtime->AddRule(std::move(selector), std::move(setters),
+			std::move(enterActions), std::move(exitActions)))
+			return Fail(L"无法创建样式规则。", outError);
 	}
 	out = std::move(runtime);
 	return true;

@@ -1,6 +1,22 @@
 #pragma once
 
 #include <Resource.h>
+#include "../../CUI/include/ComponentBehavior.h"
+#include "../../CUI/include/NativeSurface.h"
+#include "../../CUI/include/BindingList.h"
+#include "../../CUI/include/CollectionViewSource.h"
+#include "../../CUI/include/ContentControl.h"
+#include "../../CUI/include/ControlTemplate.h"
+#include "../../CUI/include/ItemContainer.h"
+#include "../../CUI/include/HeaderedContentControl.h"
+#include "../../CUI/include/ContentPresenter.h"
+#include "../../CUI/include/GroupStyle.h"
+#include "../../CUI/include/ItemTemplate.h"
+#include "../../CUI/include/ItemsPanelTemplate.h"
+#include "../../CUI/include/ItemsControl.h"
+#include "../../CUI/include/ItemsPresenter.h"
+#include "../../CUI/include/Selector.h"
+#include "../../CUI/include/ListBox.h"
 
 /**
  * Public umbrella header for CUI's dynamic design-document runtime.

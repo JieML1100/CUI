@@ -1,4 +1,5 @@
 #include "DesignerDataContextSchemaUtils.h"
+#include "../CUI/include/BindingList.h"
 #include <algorithm>
 #include <cwctype>
 #include <exception>
@@ -106,6 +107,45 @@ bool TryParseValueKind(const std::wstring& text, BindingValueKind& kind)
 	return false;
 }
 
+const wchar_t* ObjectKindName(DesignerDataObjectKind kind) noexcept
+{
+	switch (kind)
+	{
+	case DesignerDataObjectKind::Opaque: return L"Opaque";
+	case DesignerDataObjectKind::BindingSource: return L"BindingSource";
+	case DesignerDataObjectKind::BindingList: return L"BindingList";
+	}
+	return L"Opaque";
+}
+
+bool TryParseObjectKind(
+	const std::wstring& text, DesignerDataObjectKind& kind)
+{
+	const auto value = Trim(text);
+	for (const auto candidate : {
+		DesignerDataObjectKind::Opaque,
+		DesignerDataObjectKind::BindingSource,
+		DesignerDataObjectKind::BindingList })
+	{
+		if (EqualsIgnoreCase(value, ObjectKindName(candidate)))
+		{
+			kind = candidate;
+			return true;
+		}
+	}
+	return false;
+}
+
+DesignerDataObjectKind ObjectKindForValueType(
+	const std::type_index& type) noexcept
+{
+	if (type == std::type_index(typeid(BindingListReference)))
+		return DesignerDataObjectKind::BindingList;
+	if (type == std::type_index(typeid(BindingSourceReference)))
+		return DesignerDataObjectKind::BindingSource;
+	return DesignerDataObjectKind::Opaque;
+}
+
 const DesignerDataContextProperty* Find(
 	const DesignerDataContextSchema& schema,
 	const std::wstring& path)
@@ -133,7 +173,37 @@ std::vector<std::wstring> GetPaths(const DesignerDataContextSchema& schema)
 void Canonicalize(DesignerDataContextSchema& schema)
 {
 	for (auto& property : schema)
+	{
 		property.Path = NormalizePath(property.Path);
+		property.ItemType = Trim(property.ItemType);
+		property.DataType = Trim(property.DataType);
+		if (property.ValueKind != BindingValueKind::Object)
+		{
+			property.ObjectKind = DesignerDataObjectKind::Opaque;
+			property.ItemType.clear();
+			property.DataType.clear();
+		}
+		else if (property.ObjectKind == DesignerDataObjectKind::BindingList)
+			property.DataType.clear();
+		else if (property.ObjectKind != DesignerDataObjectKind::BindingSource)
+		{
+			property.ItemType.clear();
+			property.DataType.clear();
+		}
+	}
+	for (auto& property : schema)
+	{
+		if (property.ValueKind != BindingValueKind::Object
+			|| property.ObjectKind != DesignerDataObjectKind::Opaque)
+			continue;
+		const auto prefix = Lower(property.Path + L".");
+		if (std::any_of(schema.begin(), schema.end(),
+			[&](const DesignerDataContextProperty& candidate)
+			{
+				return Lower(candidate.Path).starts_with(prefix);
+			}))
+			property.ObjectKind = DesignerDataObjectKind::BindingSource;
+	}
 	std::sort(schema.begin(), schema.end(),
 		[](const auto& left, const auto& right)
 		{
@@ -155,6 +225,34 @@ bool Validate(const DesignerDataContextSchema& schema, std::wstring* outError)
 			|| schema[i].ValueKind > BindingValueKind::Object)
 		{
 			if (outError) *outError = L"DataContext 属性 " + path + L" 的值类型无效。";
+			return false;
+		}
+		if (schema[i].ValueKind != BindingValueKind::Object
+			&& schema[i].ObjectKind != DesignerDataObjectKind::Opaque)
+		{
+			if (outError) *outError = L"DataContext 属性 " + path
+				+ L" 不是 Object，不能声明对象契约。";
+			return false;
+		}
+		if (schema[i].ObjectKind == DesignerDataObjectKind::BindingList
+			&& Trim(schema[i].ItemType).empty())
+		{
+			if (outError) *outError = L"DataContext 集合属性 " + path
+				+ L" 必须声明 ItemType。";
+			return false;
+		}
+		if (schema[i].ObjectKind != DesignerDataObjectKind::BindingList
+			&& !Trim(schema[i].ItemType).empty())
+		{
+			if (outError) *outError = L"DataContext 属性 " + path
+				+ L" 只有 BindingList 才能声明 ItemType。";
+			return false;
+		}
+		if (schema[i].ObjectKind != DesignerDataObjectKind::BindingSource
+			&& !Trim(schema[i].DataType).empty())
+		{
+			if (outError) *outError = L"DataContext 属性 " + path
+				+ L" 只有 BindingSource 才能声明 DataType。";
 			return false;
 		}
 
@@ -187,6 +285,14 @@ bool Validate(const DesignerDataContextSchema& schema, std::wstring* outError)
 				+ L" 包含子路径，因此类型必须为 Object 或 Unknown。";
 			return false;
 		}
+		if (hasChildren
+			&& parent.ValueKind == BindingValueKind::Object
+			&& parent.ObjectKind != DesignerDataObjectKind::BindingSource)
+		{
+			if (outError) *outError = L"DataContext 属性 " + parentPath
+				+ L" 包含子路径，因此 ObjectType 必须为 BindingSource。";
+			return false;
+		}
 	}
 
 	if (outError) outError->clear();
@@ -200,7 +306,17 @@ std::wstring Describe(const DesignerDataContextProperty& property)
 	if (property.CanWrite) capabilities += L"W";
 	if (property.CanObserve) capabilities += L"O";
 	if (capabilities.empty()) capabilities = L"-";
-	return NormalizePath(property.Path) + L" : " + ValueKindName(property.ValueKind)
+	auto type = std::wstring(ValueKindName(property.ValueKind));
+	if (property.ValueKind == BindingValueKind::Object)
+	{
+		type += L"/" + std::wstring(ObjectKindName(property.ObjectKind));
+		if (property.ObjectKind == DesignerDataObjectKind::BindingList)
+			type += L"<" + property.ItemType + L">";
+		else if (property.ObjectKind == DesignerDataObjectKind::BindingSource
+			&& !property.DataType.empty())
+			type += L"<" + property.DataType + L">";
+	}
+	return NormalizePath(property.Path) + L" : " + type
 		+ L"  [" + capabilities + L"]";
 }
 
@@ -242,10 +358,31 @@ bool BuildFromBindingSource(
 			property.CanRead = metadata.CanRead;
 			property.CanWrite = metadata.CanWrite;
 			property.CanObserve = metadata.CanObserve;
+			property.ObjectKind = ObjectKindForValueType(metadata.ValueType);
+			if (metadata.ValueKind == BindingValueKind::Object
+				&& metadata.CanRead)
+			{
+				BindingValue value;
+				if (current.TryGetValue(metadata.Name, value))
+				{
+					BindingListReference list;
+					BindingSourceReference nested;
+					if (value.TryGet(list) && list)
+					{
+						property.ObjectKind = DesignerDataObjectKind::BindingList;
+						property.ItemType = list.Get()->ItemTypeName();
+					}
+					else if (value.TryGet(nested) && nested)
+					{
+						property.ObjectKind = DesignerDataObjectKind::BindingSource;
+					}
+				}
+			}
 			discovered.push_back(std::move(property));
 
 			if (depth + 1 >= maxDepth || metadata.ValueKind != BindingValueKind::Object
-				|| !metadata.CanRead)
+				|| !metadata.CanRead
+				|| discovered.back().ObjectKind != DesignerDataObjectKind::BindingSource)
 				continue;
 
 			BindingValue value;

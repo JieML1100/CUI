@@ -25,6 +25,7 @@
 // 生成时需要访问具体控件类型的公开字段/方法
 #include "../CUI/include/ComboBox.h"
 #include "../CUI/include/ListView.h"
+#include "../CUI/include/ListBox.h"
 #include "../CUI/include/GridView.h"
 #include "../CUI/include/PagedGridView.h"
 #include "../CUI/include/PropertyGrid.h"
@@ -52,6 +53,8 @@
 #include "../CUI/include/GroupBox.h"
 #include "../CUI/include/Expander.h"
 #include "../CUI/include/SplitContainer.h"
+#include "../CUI/include/NativeSurface.h"
+#include "../CUI/include/ItemsPresenter.h"
 
 #include "../CUI/include/Layout/GridPanel.h"
 #include "../CUI/include/Layout/StackPanel.h"
@@ -157,18 +160,20 @@ namespace
 	{
 		switch (mode)
 		{
+		case BindingMode::Default: return "BindingMode::Default";
 		case BindingMode::OneWay: return "BindingMode::OneWay";
 		case BindingMode::TwoWay: return "BindingMode::TwoWay";
 		case BindingMode::OneWayToSource: return "BindingMode::OneWayToSource";
 		case BindingMode::OneTime: return "BindingMode::OneTime";
 		}
-		return "BindingMode::OneWay";
+		return "BindingMode::Default";
 	}
 
 	static const char* DataSourceUpdateModeToExpr(DataSourceUpdateMode mode)
 	{
 		switch (mode)
 		{
+		case DataSourceUpdateMode::Default: return "DataSourceUpdateMode::Default";
 		case DataSourceUpdateMode::OnPropertyChanged: return "DataSourceUpdateMode::OnPropertyChanged";
 		case DataSourceUpdateMode::OnValidation: return "DataSourceUpdateMode::OnValidation";
 		case DataSourceUpdateMode::Never: return "DataSourceUpdateMode::Never";
@@ -193,11 +198,6 @@ namespace
 		std::string EventOwnerType;
 		bool IsForm = false;
 		UIClass ControlType = UIClass::UI_Base;
-		bool IsCustom = false;
-		std::wstring CustomXamlNamespace;
-		std::wstring CustomXamlName;
-		std::string CustomCppType;
-		std::string CustomSignatureName;
 	};
 
 	static std::string LocalSanitizeCppIdentifier(const std::string& raw)
@@ -724,6 +724,11 @@ std::string CodeGenerator::GetControlTypeName(UIClass type)
 	case UIClass::UI_ToastHost: return "ToastHost";
 	case UIClass::UI_WebBrowser: return "WebBrowser";
 	case UIClass::UI_MediaPlayer: return "MediaPlayer";
+	case UIClass::UI_NativeSurface: return "NativeSurface";
+	case UIClass::UI_ItemsControl: return "ItemsControl";
+	case UIClass::UI_ContentPresenter: return "ContentPresenter";
+	case UIClass::UI_ItemsPresenter: return "ItemsPresenter";
+	case UIClass::UI_ContentControl: return "ContentControl";
 	default: return "Control";
 	}
 }
@@ -761,17 +766,13 @@ std::string CodeGenerator::GetIncludeForType(UIClass type)
 std::string CodeGenerator::GetControlTypeName(
 	const DesignerControl& control)
 {
-	return control.CustomType.Empty()
-		? GetControlTypeName(control.Type)
-		: WStringToString(control.CustomType.CppType);
+	return GetControlTypeName(control.Type);
 }
 
 std::string CodeGenerator::GetIncludeForType(
 	const DesignerControl& control)
 {
-	return control.CustomType.Empty()
-		? GetIncludeForType(control.Type)
-		: WStringToString(control.CustomType.Header);
+	return GetIncludeForType(control.Type);
 }
 
 std::string CodeGenerator::EscapeWStringLiteral(const std::wstring& s)
@@ -987,25 +988,7 @@ std::string CodeGenerator::GenerateControlInstantiation(const std::shared_ptr<De
 	code << indentStr << "// " << name << "\n";
 	code << indentStr << "auto __owned_" << name << " = std::make_unique<" << typeName << ">(";
 
-	if (!dc->CustomType.Empty())
-	{
-		switch (dc->CustomType.Constructor)
-		{
-		case DesignerCustomControlConstructor::Default:
-			break;
-		case DesignerCustomControlConstructor::TextBounds:
-			code << "L\"" << EscapeWStringLiteral(control->Text) << "\", "
-				<< control->Location.x << ", " << control->Location.y << ", "
-				<< control->Size.cx << ", " << control->Size.cy;
-			break;
-		case DesignerCustomControlConstructor::Bounds:
-		default:
-			code << control->Location.x << ", " << control->Location.y << ", "
-				<< control->Size.cx << ", " << control->Size.cy;
-			break;
-		}
-	}
-	else switch (dc->Type)
+	switch (dc->Type)
 	{
 	case UIClass::UI_Label:
 	case UIClass::UI_LinkLabel:
@@ -1059,6 +1042,11 @@ std::string CodeGenerator::GenerateControlInstantiation(const std::shared_ptr<De
 	case UIClass::UI_ToolBar:
 	case UIClass::UI_ToastHost:
 	case UIClass::UI_WebBrowser:
+	case UIClass::UI_NativeSurface:
+	case UIClass::UI_ItemsControl:
+	case UIClass::UI_ContentPresenter:
+	case UIClass::UI_ItemsPresenter:
+	case UIClass::UI_ContentControl:
 		code << control->Location.x << ", " << control->Location.y << ", "
 			<< control->Size.cx << ", " << control->Size.cy;
 		break;
@@ -1070,22 +1058,6 @@ std::string CodeGenerator::GenerateControlInstantiation(const std::shared_ptr<De
 
 	code << ");\n";
 	code << indentStr << name << " = __owned_" << name << ".get();\n";
-	if (!dc->CustomType.Empty())
-	{
-		if (dc->CustomType.Constructor
-			== DesignerCustomControlConstructor::Default)
-		{
-			code << indentStr << name << "->Location = {"
-				<< control->Location.x << ", " << control->Location.y << "};\n";
-			code << indentStr << name << "->Size = {"
-				<< control->Size.cx << ", " << control->Size.cy << "};\n";
-		}
-		if (dc->CustomType.Constructor
-			!= DesignerCustomControlConstructor::TextBounds
-			&& !control->Text.empty())
-			code << indentStr << name << "->Text = L\""
-				<< EscapeWStringLiteral(control->Text) << "\";\n";
-	}
 	if (dc->StableId > 0)
 		code << indentStr << name << "->DesignId = " << dc->StableId << ";\n";
 
@@ -1103,13 +1075,13 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 	std::string name = GetVarName(dc);
 
 	// 尺寸：Label/CheckBox/RadioBox 构造函数无 size
-	if (dc->CustomType.Empty() && (dc->Type == UIClass::UI_Label || dc->Type == UIClass::UI_LinkLabel || dc->Type == UIClass::UI_CheckBox || dc->Type == UIClass::UI_RadioBox))
+	if (dc->Type == UIClass::UI_Label || dc->Type == UIClass::UI_LinkLabel || dc->Type == UIClass::UI_CheckBox || dc->Type == UIClass::UI_RadioBox)
 	{
 		code << indentStr << name << "->Size = {" << control->Size.cx << ", " << control->Size.cy << "};\n";
 	}
 
 	// 对于不在构造函数中写入 Text 的控件：补齐 Text
-	if (dc->CustomType.Empty() && dc->Type != UIClass::UI_Label && dc->Type != UIClass::UI_LinkLabel && dc->Type != UIClass::UI_Button &&
+	if (dc->Type != UIClass::UI_Label && dc->Type != UIClass::UI_LinkLabel && dc->Type != UIClass::UI_Button &&
 		dc->Type != UIClass::UI_CheckBox && dc->Type != UIClass::UI_RadioBox &&
 		dc->Type != UIClass::UI_TextBox && dc->Type != UIClass::UI_RichTextBox &&
 		dc->Type != UIClass::UI_PasswordBox && dc->Type != UIClass::UI_DateTimePicker &&
@@ -1238,6 +1210,12 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 				code << indentStr << brushName << ".GradientStops.push_back({ "
 					<< FloatLiteral(stop.Offset) << ", " << ColorToString(stop.Color)
 					<< " });\n";
+		if (foreground->Transform)
+			code << indentStr << brushName << ".Transform = "
+				<< GenerateTransformExpression(*foreground->Transform) << ";\n";
+		if (foreground->RelativeTransform)
+			code << indentStr << brushName << ".RelativeTransform = "
+				<< GenerateTransformExpression(*foreground->RelativeTransform) << ";\n";
 		code << indentStr << name << "->SetForegroundBrush(" << brushName << ");\n";
 	}
 	auto emitTransform = [&](const cui::drawing::Transform& transform,
@@ -1461,7 +1439,14 @@ std::string CodeGenerator::GenerateControlCommonProperties(const std::shared_ptr
 			<< transformName << ");\n";
 	}
 	const auto transformOrigin = control->GetRenderTransformOrigin();
-	if (transformOrigin.x != 0.0f || transformOrigin.y != 0.0f)
+	const bool metadataOwnsTransformOrigin = std::any_of(
+		dc->MetadataProperties.begin(), dc->MetadataProperties.end(),
+		[](const auto& property)
+		{
+			return _wcsicmp(property.first.c_str(), L"RenderTransformOrigin") == 0;
+		});
+	if (!metadataOwnsTransformOrigin
+		&& (transformOrigin.x != 0.0f || transformOrigin.y != 0.0f))
 		code << indentStr << name << "->SetRenderTransformOrigin(D2D1::Point2F("
 			<< FloatLiteral(transformOrigin.x) << ", "
 			<< FloatLiteral(transformOrigin.y) << "));\n";
@@ -1729,7 +1714,8 @@ std::string CodeGenerator::GenerateMetadataProperties(
 	int indent)
 {
 	if (!dc || !dc->ControlInstance || dc->Type == UIClass::UI_TabPage
-		|| dc->MetadataProperties.empty()) return "";
+		|| (dc->MetadataProperties.empty()
+			&& dc->MetadataPropertyDynamicResourceKeys.empty())) return "";
 
 	std::ostringstream code;
 	const std::string indentStr(indent, '\t');
@@ -1737,6 +1723,17 @@ std::string CodeGenerator::GenerateMetadataProperties(
 	code << indentStr << "// 属性元数据扩展\n";
 	std::vector<std::pair<std::wstring, DesignerStyleValue>> orderedProperties(
 		dc->MetadataProperties.begin(), dc->MetadataProperties.end());
+	for (const auto& [propertyName, resourceKey]
+		: dc->MetadataPropertyDynamicResourceKeys)
+	{
+		(void)resourceKey;
+		if (std::none_of(orderedProperties.begin(), orderedProperties.end(),
+			[&](const auto& entry)
+			{
+				return _wcsicmp(entry.first.c_str(), propertyName.c_str()) == 0;
+			}))
+			orderedProperties.push_back({ propertyName, {} });
+	}
 	std::stable_sort(orderedProperties.begin(), orderedProperties.end(),
 		[&](const auto& left, const auto& right)
 		{
@@ -1760,6 +1757,25 @@ std::string CodeGenerator::GenerateMetadataProperties(
 	for (const auto& [storedName, storedValue] : orderedProperties)
 	{
 		std::wstring canonicalName = storedName;
+		const auto dynamicResource = std::find_if(
+			dc->MetadataPropertyDynamicResourceKeys.begin(),
+			dc->MetadataPropertyDynamicResourceKeys.end(),
+			[&](const auto& entry)
+			{
+				return _wcsicmp(entry.first.c_str(), storedName.c_str()) == 0;
+			});
+		if (dynamicResource
+			!= dc->MetadataPropertyDynamicResourceKeys.end())
+		{
+			if (const auto* metadata =
+				dc->ControlInstance->FindPropertyMetadata(storedName))
+				canonicalName = metadata->Name();
+			code << indentStr << "(void)" << name
+				<< "->SetDynamicResource(L\""
+				<< EscapeWStringLiteral(canonicalName) << "\", L\""
+				<< EscapeWStringLiteral(dynamicResource->second) << "\");\n";
+			continue;
+		}
 		DesignerStyleValue effectiveValue = storedValue;
 		(void)DesignerPropertyCatalog::CaptureValue(
 			*dc->ControlInstance,
@@ -1968,12 +1984,46 @@ std::string CodeGenerator::GenerateStyleValueExpression(const DesignerStyleValue
 		runtimeValue.TryGet(parsed);
 		return "BindingValue(" + ThicknessToString(parsed) + ")";
 	}
+	case DesignerStyleValueKind::Point:
+	{
+		cui::core::Point parsed{};
+		runtimeValue.TryGet(parsed);
+		return "BindingValue(cui::core::Point{ " + FloatLiteral(parsed.x)
+			+ ", " + FloatLiteral(parsed.y) + " })";
+	}
+	case DesignerStyleValueKind::Vector:
+	{
+		cui::core::Vector parsed{};
+		runtimeValue.TryGet(parsed);
+		return "BindingValue(cui::core::Vector{ " + FloatLiteral(parsed.x)
+			+ ", " + FloatLiteral(parsed.y) + " })";
+	}
+	case DesignerStyleValueKind::Rect:
+	{
+		cui::core::Rect parsed{};
+		runtimeValue.TryGet(parsed);
+		return "BindingValue(cui::core::Rect{ " + FloatLiteral(parsed.x)
+			+ ", " + FloatLiteral(parsed.y)
+			+ ", " + FloatLiteral(parsed.width)
+			+ ", " + FloatLiteral(parsed.height) + " })";
+	}
 	case DesignerStyleValueKind::Size:
 	{
-		SIZE parsed{};
+		cui::core::Size parsed{};
 		runtimeValue.TryGet(parsed);
-		return "BindingValue(SIZE{ " + std::to_string(parsed.cx) + ", "
-			+ std::to_string(parsed.cy) + " })";
+		return "BindingValue(cui::core::Size{ " + FloatLiteral(parsed.width)
+			+ ", " + FloatLiteral(parsed.height) + " })";
+	}
+	case DesignerStyleValueKind::Matrix:
+	{
+		D2D1_MATRIX_3X2_F parsed{};
+		runtimeValue.TryGet(parsed);
+		return "BindingValue(D2D1::Matrix3x2F(" + FloatLiteral(parsed._11)
+			+ ", " + FloatLiteral(parsed._12)
+			+ ", " + FloatLiteral(parsed._21)
+			+ ", " + FloatLiteral(parsed._22)
+			+ ", " + FloatLiteral(parsed._31)
+			+ ", " + FloatLiteral(parsed._32) + "))";
 	}
 	case DesignerStyleValueKind::Length:
 	{
@@ -2049,6 +2099,12 @@ std::string CodeGenerator::GenerateStyleValueExpression(const DesignerStyleValue
 				expression << "value.GradientStops.push_back({ "
 					<< FloatLiteral(stop.Offset) << ", "
 					<< ColorToString(stop.Color) << " }); ";
+		if (parsed.Transform)
+			expression << "value.Transform = "
+				<< GenerateTransformExpression(*parsed.Transform) << "; ";
+		if (parsed.RelativeTransform)
+			expression << "value.RelativeTransform = "
+				<< GenerateTransformExpression(*parsed.RelativeTransform) << "; ";
 		expression << "return value; }())";
 		return expression.str();
 	}
@@ -2083,6 +2139,14 @@ std::string CodeGenerator::GenerateStyleSheetCode(int indent)
 		styleSheet, resolvedStyleSheet, &inheritanceError))
 		throw std::invalid_argument(WStringToString(inheritanceError));
 	styleSheet = std::move(resolvedStyleSheet);
+	if (std::any_of(styleSheet.Rules.begin(), styleSheet.Rules.end(),
+		[](const DesignerStyleRule& rule)
+		{
+			return !rule.EnterActions.empty() || !rule.ExitActions.empty();
+		}))
+		throw std::invalid_argument(
+			"Style Trigger EnterActions/ExitActions require dynamic XAML; "
+			"the auxiliary static C++ generator does not emit Storyboard clocks.");
 
 	code << indentStr << "// 文档级控件样式\n";
 	code << indentStr << "auto __styleSheet = std::make_shared<ControlStyleSheet>();\n";
@@ -2114,6 +2178,11 @@ std::string CodeGenerator::GenerateStyleSheetCode(int indent)
 		if (rule.ExcludedStates != ControlStyleState::None)
 			code << indentStr << selectorName << ".ExcludedStates = static_cast<ControlStyleState>("
 				<< static_cast<uint32_t>(rule.ExcludedStates) << "u);\n";
+		for (const auto& condition : rule.PropertyConditions)
+			code << indentStr << selectorName
+				<< ".PropertyConditions.push_back({ L\""
+				<< EscapeWStringLiteral(condition.Property) << "\", "
+				<< GenerateStyleValueExpression(condition.Value) << " });\n";
 		for (const auto& condition : rule.DataConditions)
 			code << indentStr << selectorName
 				<< ".DataConditions.push_back({ L\""
@@ -2125,7 +2194,9 @@ std::string CodeGenerator::GenerateStyleSheetCode(int indent)
 			const auto& setter = rule.Setters[setterIndex];
 			code << indentStr << "\t";
 			if (setter.UsesResource)
-				code << "ControlStyleSetter::Resource(L\""
+				code << (setter.UsesDynamicResource
+					? "ControlStyleSetter::DynamicResource(L\""
+					: "ControlStyleSetter::Resource(L\"")
 					<< EscapeWStringLiteral(setter.PropertyName) << "\", L\""
 					<< EscapeWStringLiteral(setter.ResourceKey) << "\")";
 			else
@@ -2152,6 +2223,158 @@ std::string CodeGenerator::GenerateStyleSheetCode(int indent)
 	return code.str();
 }
 
+std::string CodeGenerator::GenerateLocalResources(
+	const std::shared_ptr<DesignerControl>& dc,
+	int indent)
+{
+	if (!dc || !dc->ControlInstance || !dc->LocalResources
+		|| dc->LocalResources->Empty()) return {};
+	const std::string indentStr(indent, '\t');
+	const std::string controlName = GetVarName(dc);
+	const std::string dictionaryName = "__resources_" + controlName;
+	auto appendScope = [](DesignerStyleSheet& target,
+		const DesignerStyleSheet& source)
+	{
+		for (const auto& resource : source.Resources)
+		{
+			target.Resources.erase(std::remove_if(
+				target.Resources.begin(), target.Resources.end(),
+				[&](const auto& current)
+				{
+					return _wcsicmp(
+						current.Key.c_str(), resource.Key.c_str()) == 0;
+				}), target.Resources.end());
+			target.Resources.push_back(resource);
+		}
+		target.Rules.insert(
+			target.Rules.end(), source.Rules.begin(), source.Rules.end());
+	};
+	DesignerStyleSheet visible = _styleSheet;
+	std::vector<std::shared_ptr<DesignerControl>> route;
+	for (auto scope = dc; scope;)
+	{
+		route.push_back(scope);
+		const auto parent = scope->DesignerParent;
+		if (!parent) break;
+		const auto found = std::find_if(
+			_controls.begin(), _controls.end(), [&](const auto& candidate)
+			{
+				return candidate && candidate->ControlInstance == parent;
+			});
+		scope = found == _controls.end() ? nullptr : *found;
+	}
+	for (auto scope = route.rbegin(); scope != route.rend(); ++scope)
+		if ((*scope)->LocalResources)
+			appendScope(visible, *(*scope)->LocalResources);
+	DesignerStyleSheet inherited;
+	std::wstring styleError;
+	if (!DesignerStyleSheetUtils::ResolveInheritance(
+		visible, inherited, &styleError))
+		throw std::invalid_argument(WStringToString(styleError));
+	DesignerStyleSheet local = *dc->LocalResources;
+	if (inherited.Rules.size() < local.Rules.size())
+		throw std::invalid_argument("Invalid lexical Style rule range");
+	local.Rules.assign(
+		inherited.Rules.end() - local.Rules.size(), inherited.Rules.end());
+	DesignerStyleSheet expanded;
+	if (!DesignerStyleSheetUtils::ExpandRuntimeRules(
+		local, expanded, &styleError))
+		throw std::invalid_argument(WStringToString(styleError));
+	local = std::move(expanded);
+	if (std::any_of(local.Rules.begin(), local.Rules.end(),
+		[](const DesignerStyleRule& rule)
+		{
+			return !rule.EnterActions.empty() || !rule.ExitActions.empty();
+		}))
+		throw std::invalid_argument(
+			"Control-local Style Trigger actions require dynamic XAML");
+	for (auto& rule : local.Rules)
+		for (auto& setter : rule.Setters)
+		{
+			if (!setter.UsesResource || setter.UsesDynamicResource) continue;
+			const auto found = std::find_if(
+				visible.Resources.rbegin(), visible.Resources.rend(),
+				[&](const auto& resource)
+				{
+					return _wcsicmp(resource.Key.c_str(),
+						setter.ResourceKey.c_str()) == 0;
+				});
+			if (found == visible.Resources.rend())
+				throw std::invalid_argument("Local Style StaticResource is missing");
+			setter.UsesResource = false;
+			setter.UsesDynamicResource = false;
+			setter.ResourceKey.clear();
+			setter.Literal = found->Value;
+		}
+	std::ostringstream code;
+	code << indentStr << "// 控件级词法资源作用域\n";
+	code << indentStr << "auto " << dictionaryName
+		<< " = std::make_shared<ControlStyleSheet>();\n";
+	for (const auto& resource : local.Resources)
+		code << indentStr << dictionaryName << "->SetResource(L\""
+			<< EscapeWStringLiteral(resource.Key) << "\", "
+			<< GenerateStyleValueExpression(resource.Value) << ");\n";
+	for (size_t index = 0; index < local.Rules.size(); ++index)
+	{
+		const auto& rule = local.Rules[index];
+		const auto selectorName = dictionaryName + "_selector_"
+			+ std::to_string(index + 1);
+		code << indentStr << "ControlStyleSelector " << selectorName << ";\n";
+		if (rule.HasType)
+			code << indentStr << selectorName << ".Type = UIClass::UI_"
+				<< WStringToString(DesignerStyleSheetUtils::UIClassName(rule.Type))
+				<< ";\n";
+		if (!rule.Id.empty())
+			code << indentStr << selectorName << ".Id = L\""
+				<< EscapeWStringLiteral(rule.Id) << "\";\n";
+		for (const auto& value : rule.Classes)
+			code << indentStr << selectorName << ".Classes.push_back(L\""
+				<< EscapeWStringLiteral(value) << "\");\n";
+		if (rule.RequiredStates != ControlStyleState::None)
+			code << indentStr << selectorName
+				<< ".RequiredStates = static_cast<ControlStyleState>("
+				<< static_cast<uint32_t>(rule.RequiredStates) << "u);\n";
+		if (rule.ExcludedStates != ControlStyleState::None)
+			code << indentStr << selectorName
+				<< ".ExcludedStates = static_cast<ControlStyleState>("
+				<< static_cast<uint32_t>(rule.ExcludedStates) << "u);\n";
+		for (const auto& condition : rule.PropertyConditions)
+			code << indentStr << selectorName
+				<< ".PropertyConditions.push_back({ L\""
+				<< EscapeWStringLiteral(condition.Property) << "\", "
+				<< GenerateStyleValueExpression(condition.Value) << " });\n";
+		for (const auto& condition : rule.DataConditions)
+			code << indentStr << selectorName
+				<< ".DataConditions.push_back({ L\""
+				<< EscapeWStringLiteral(condition.SourceProperty) << "\", "
+				<< GenerateStyleValueExpression(condition.Value) << " });\n";
+		code << indentStr << dictionaryName << "->AddRule(std::move("
+			<< selectorName << "), {\n";
+		for (size_t setterIndex = 0;
+			setterIndex < rule.Setters.size(); ++setterIndex)
+		{
+			const auto& setter = rule.Setters[setterIndex];
+			code << indentStr << "\t";
+			if (setter.UsesResource)
+				code << (setter.UsesDynamicResource
+					? "ControlStyleSetter::DynamicResource(L\""
+					: "ControlStyleSetter::Resource(L\"")
+					<< EscapeWStringLiteral(setter.PropertyName) << "\", L\""
+					<< EscapeWStringLiteral(setter.ResourceKey) << "\")";
+			else
+				code << "ControlStyleSetter(L\""
+					<< EscapeWStringLiteral(setter.PropertyName) << "\", "
+					<< GenerateStyleValueExpression(setter.Literal) << ")";
+			if (setterIndex + 1 < rule.Setters.size()) code << ",";
+			code << "\n";
+		}
+		code << indentStr << "});\n";
+	}
+	code << indentStr << controlName << "->SetResourceDictionary("
+		<< dictionaryName << ");\n";
+	return code.str();
+}
+
 std::string CodeGenerator::GenerateContainerProperties(const std::shared_ptr<DesignerControl>& dc, int indent)
 {
 	if (!dc || !dc->ControlInstance) return "";
@@ -2161,6 +2384,26 @@ std::string CodeGenerator::GenerateContainerProperties(const std::shared_ptr<Des
 	std::ostringstream code;
 	std::string indentStr(indent, '\t');
 	std::string name = GetVarName(dc);
+
+	if (dc->Type == UIClass::UI_ContentPresenter
+		|| dc->Type == UIClass::UI_ContentControl
+		|| dc->Type == UIClass::UI_Button
+		|| dc->Type == UIClass::UI_GroupBox
+		|| dc->Type == UIClass::UI_Expander)
+	{
+		const auto content = dc->DesignStrings.find(L"contentText");
+		if (content != dc->DesignStrings.end())
+			code << indentStr << name << "->SetContent(BindingValue(L\""
+				<< EscapeWStringLiteral(content->second) << "\"));\n";
+	}
+	if (dc->Type == UIClass::UI_GroupBox
+		|| dc->Type == UIClass::UI_Expander)
+	{
+		const auto header = dc->DesignStrings.find(L"headerText");
+		if (header != dc->DesignStrings.end())
+			code << indentStr << name << "->SetHeader(BindingValue(L\""
+				<< EscapeWStringLiteral(header->second) << "\"));\n";
+	}
 
 	// 元数据已先生成；最后 Load，确保 AutoPlay/Loop/解码策略在加载前生效。
 	if (dc->Type == UIClass::UI_MediaPlayer)
@@ -2196,7 +2439,7 @@ std::string CodeGenerator::GenerateContainerProperties(const std::shared_ptr<Des
 		}
 	}
 
-	if (dc->Type == UIClass::UI_ListView || dc->Type == UIClass::UI_ListBox)
+	if (dc->Type == UIClass::UI_ListView)
 	{
 		auto* listView = (ListView*)control;
 		if (!listView->Columns.empty())
@@ -2617,7 +2860,7 @@ bool CodeGenerator::CollectEventHandlers(
 		for (const auto& [eventName, storedHandler] : control->EventHandlers)
 			if (!add(eventName, storedHandler, subject,
 				DesignerEventCatalog::FindControlEvent(
-					control->Type, eventName, control->CustomEvents))) return false;
+					control->Type, eventName, control->ComponentEvents))) return false;
 	}
 	return true;
 }
@@ -2677,38 +2920,10 @@ std::string CodeGenerator::GenerateHeader()
 		for (const auto& [eventName, storedHandler] : control->EventHandlers)
 		{
 			const auto descriptor = DesignerEventCatalog::FindControlEvent(
-				control->Type, eventName, control->CustomEvents);
+				control->Type, eventName, control->ComponentEvents);
 			if (!descriptor) continue;
-			const auto custom = std::find_if(
-				control->CustomEvents.begin(), control->CustomEvents.end(),
-				[&](const auto& value) { return value.Name == eventName; });
-			if (custom == control->CustomEvents.end())
-			{
-				appendBuiltInRoute(false, control->Type, eventName,
-					storedHandler, subject, *descriptor);
-				continue;
-			}
-
-			const auto handler = ResolveHandlerName(
-				storedHandler, subject, eventName);
-			if (handler.empty()) continue;
-			const auto key = std::string("C|") + handler
-				+ "|" + WStringToString(control->CustomType.RegistryKey())
-				+ "|" + WStringToString(eventName)
-				+ "|" + custom->EventField;
-			if (!runtimeRouteKeys.insert(key).second) continue;
-			GeneratedRuntimeEventRoute route;
-			route.HandlerName = handler;
-			route.ParameterList = descriptor->ParameterList;
-			route.EventName = eventName;
-			route.EventField = custom->EventField;
-			route.IsCustom = true;
-			route.CustomXamlNamespace = control->CustomType.XamlNamespace;
-			route.CustomXamlName = control->CustomType.XamlName;
-			route.CustomCppType = GetControlTypeName(*control);
-			route.CustomSignatureName =
-				DesignerEventCatalog::GetCustomSignatureName(custom->Signature);
-			runtimeRoutes.push_back(std::move(route));
+			appendBuiltInRoute(false, control->Type, eventName,
+				storedHandler, subject, *descriptor);
 		}
 	}
 	
@@ -2737,7 +2952,8 @@ std::string CodeGenerator::GenerateHeader()
 		_controls.begin(), _controls.end(),
 		[](const std::shared_ptr<DesignerControl>& control)
 		{
-			return control && !control->MetadataProperties.empty();
+			return control && (!control->MetadataProperties.empty()
+				|| !control->MetadataPropertyDynamicResourceKeys.empty());
 		});
 	if (hasDataBindings || hasMetadataProperties)
 		includes.insert("Binding.h");
@@ -2794,22 +3010,7 @@ std::string CodeGenerator::GenerateHeader()
 			const auto parameterTypes = CanonicalGeneratedParameterTypes(
 				route.ParameterList);
 			header << "\t\t\t\tif (!routes.";
-			if (route.IsCustom)
-			{
-				header << "RegisterGeneratedCustomControl(\n";
-				header << "\t\t\t\t\tL\""
-					<< EscapeWStringLiteral(StringToWString(route.HandlerName))
-					<< "\", L\""
-					<< EscapeWStringLiteral(route.CustomXamlNamespace)
-					<< "\", L\""
-					<< EscapeWStringLiteral(route.CustomXamlName)
-					<< "\", L\"" << EscapeWStringLiteral(route.EventName)
-					<< "\", \"" << route.EventField << "\", L\""
-					<< route.CustomSignatureName << "\",\n";
-				header << "\t\t\t\t\t&" << route.CustomCppType
-					<< "::" << route.EventField << ",\n";
-			}
-			else if (route.IsForm)
+			if (route.IsForm)
 			{
 				header << "RegisterForm(\n";
 				header << "\t\t\t\t\tL\""
@@ -3132,6 +3333,7 @@ std::string CodeGenerator::GenerateCppForBaseName(
 	{
 		cpp << GenerateControlInstantiation(dc, 1);
 		cpp << GenerateControlCommonProperties(dc, 1);
+		cpp << GenerateLocalResources(dc, 1);
 		cpp << GenerateMetadataProperties(dc, 1);
 		cpp << GenerateContainerProperties(dc, 1);
 		if (dc && dc->ControlInstance && dc->Type != UIClass::UI_TabPage)
@@ -3191,7 +3393,7 @@ std::string CodeGenerator::GenerateCppForBaseName(
 				const auto& evNameW = kv.first;
 				if (kv.second.empty()) continue;
 				const auto descriptor = DesignerEventCatalog::FindControlEvent(
-					dc->Type, evNameW, dc->CustomEvents);
+					dc->Type, evNameW, dc->ComponentEvents);
 				if (!descriptor) continue;
 				std::string handlerName = ResolveHandlerName(kv.second, ctrlVar, evNameW);
 				auto itSig = sigOf.find(handlerName);
@@ -3328,7 +3530,17 @@ std::string CodeGenerator::GenerateCppForBaseName(
 		// 添加到父容器
 		UIClass parentType = UIClass::UI_CUSTOM;
 		if (dc->DesignerParent) parentType = dc->DesignerParent->Type();
-		if (parentType == UIClass::UI_ToolBar)
+		const auto headerRegion = dc->DesignStrings.find(L"headeredRegion");
+		const bool isVisualHeader = headerRegion != dc->DesignStrings.end()
+			&& headerRegion->second == L"header";
+		if (isVisualHeader
+			&& (parentType == UIClass::UI_GroupBox
+				|| parentType == UIClass::UI_Expander))
+		{
+			cpp << indentStr << parentExpr
+				<< "->SetVisualHeader(std::move(__owned_" << childVar << "));\n";
+		}
+		else if (parentType == UIClass::UI_ToolBar)
 		{
 			cpp << indentStr << parentExpr << "->AddOwned(std::move(__owned_" << childVar << "));\n";
 		}
@@ -3455,8 +3667,49 @@ std::string CodeGenerator::GenerateCppForBaseName(
 			cpp << "\t" << controlVar << "->DataBindings.Clear();\n";
 			for (const auto& [targetProperty, binding] : dc->DataBindings)
 			{
+				if (binding.IsMultiBinding())
+					throw std::invalid_argument(
+						"MultiBinding requires dynamic XAML materialization");
+				std::string sourceExpression = "dataContext";
+				if (!binding.ElementName.empty())
+				{
+					const auto sourceControl = std::find_if(
+						_controls.begin(), _controls.end(), [&](const auto& candidate)
+						{
+							return candidate && candidate->Name == binding.ElementName;
+						});
+					if (sourceControl == _controls.end())
+						throw std::invalid_argument(
+							"ElementName binding source is missing");
+					sourceExpression = "*" + GetVarName(*sourceControl);
+				}
+				else if (binding.RelativeSource
+					== DesignerBindingRelativeSource::Self)
+					sourceExpression = "*" + controlVar;
+				else if (binding.RelativeSource
+					== DesignerBindingRelativeSource::TemplatedParent)
+					throw std::invalid_argument(
+						"TemplatedParent requires dynamic XAML component materialization");
+				else if (binding.RelativeSource
+					== DesignerBindingRelativeSource::FindAncestor)
+					throw std::invalid_argument(
+						"FindAncestor requires dynamic XAML materialization");
 				const bool writesTarget = binding.Mode != BindingMode::OneWayToSource;
 				const auto converterName = DesignerBindingUtils::Trim(binding.Converter);
+				const auto fallbackExpression = binding.FallbackValue
+					? GenerateStyleValueExpression(*binding.FallbackValue) : "{}";
+				const auto targetNullExpression = binding.TargetNullValue
+					? GenerateStyleValueExpression(*binding.TargetNullValue) : "{}";
+				const auto converterParameterExpression = binding.ConverterParameter
+					? GenerateStyleValueExpression(*binding.ConverterParameter) : "{}";
+				const auto stringFormatExpression = binding.StringFormat
+					? "std::optional<std::wstring>(L\""
+						+ EscapeWStringLiteral(*binding.StringFormat) + "\")"
+					: "{}";
+				const bool hasExtendedOptions = binding.FallbackValue.has_value()
+					|| binding.TargetNullValue.has_value()
+					|| binding.ConverterParameter.has_value()
+					|| binding.StringFormat.has_value();
 				cpp << "\t{\n";
 				if (writesTarget)
 				{
@@ -3481,11 +3734,17 @@ std::string CodeGenerator::GenerateCppForBaseName(
 				{
 					cpp << operationIndent << "__bound = " << controlVar
 						<< "->DataBindings.Add(L\""
-						<< EscapeWStringLiteral(targetProperty) << "\", dataContext, L\""
+						<< EscapeWStringLiteral(targetProperty) << "\", "
+						<< sourceExpression << ", L\""
 						<< EscapeWStringLiteral(binding.SourceProperty) << "\", "
 						<< BindingModeToExpr(binding.Mode) << ", "
-						<< DataSourceUpdateModeToExpr(binding.UpdateMode)
-						<< ") != nullptr;\n";
+						<< DataSourceUpdateModeToExpr(binding.UpdateMode);
+					if (hasExtendedOptions)
+						cpp << ", {}, " << fallbackExpression << ", "
+							<< targetNullExpression << ", "
+							<< converterParameterExpression << ", "
+							<< stringFormatExpression;
+					cpp << ") != nullptr;\n";
 				}
 				else
 				{
@@ -3494,11 +3753,18 @@ std::string CodeGenerator::GenerateCppForBaseName(
 						<< EscapeWStringLiteral(converterName) << "\");\n";
 					cpp << operationIndent << "__bound = __converter && " << controlVar
 						<< "->DataBindings.Add(L\""
-						<< EscapeWStringLiteral(targetProperty) << "\", dataContext, L\""
+						<< EscapeWStringLiteral(targetProperty) << "\", "
+						<< sourceExpression << ", L\""
 						<< EscapeWStringLiteral(binding.SourceProperty) << "\", "
 						<< BindingModeToExpr(binding.Mode) << ", "
 						<< DataSourceUpdateModeToExpr(binding.UpdateMode)
-						<< ", __converter) != nullptr;\n";
+						<< ", __converter";
+					if (hasExtendedOptions)
+						cpp << ", " << fallbackExpression << ", "
+							<< targetNullExpression << ", "
+							<< converterParameterExpression << ", "
+							<< stringFormatExpression;
+					cpp << ") != nullptr;\n";
 				}
 				if (writesTarget)
 					cpp << "\t\t}\n";

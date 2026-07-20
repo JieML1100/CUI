@@ -84,21 +84,21 @@ public:
 	static std::vector<DesignerEventDescriptor> GetControlEvents(UIClass type);
 	static std::vector<DesignerEventDescriptor> GetControlEvents(
 		UIClass type,
-		const std::vector<DesignerCustomEventDescriptor>& customEvents);
+		const std::vector<DesignerComponentEventDescriptor>& componentEvents);
 	static const std::vector<DesignerEventDescriptor>& GetFormEvents();
 	static std::optional<DesignerEventDescriptor> FindControlEvent(
 		UIClass type, const std::wstring& eventName);
 	static std::optional<DesignerEventDescriptor> FindControlEvent(
 		UIClass type,
 		const std::wstring& eventName,
-		const std::vector<DesignerCustomEventDescriptor>& customEvents);
+		const std::vector<DesignerComponentEventDescriptor>& componentEvents);
 	static std::optional<DesignerEventDescriptor> FindFormEvent(
 		const std::wstring& eventName);
 	static std::optional<DesignerEventDescriptor> GetDefaultControlEvent(
 		UIClass type);
 	static std::optional<DesignerEventDescriptor> GetDefaultControlEvent(
 		UIClass type,
-		const std::vector<DesignerCustomEventDescriptor>& customEvents);
+		const std::vector<DesignerComponentEventDescriptor>& componentEvents);
 	static std::optional<DesignerEventDescriptor> GetDefaultFormEvent();
 	static const wchar_t* GetCategoryDisplayName(
 		DesignerEventCategory category) noexcept;
@@ -107,20 +107,32 @@ public:
 	static bool TryParseCategory(
 		const std::wstring& value,
 		DesignerEventCategory& category) noexcept;
-	static const char* GetCustomSignatureName(
-		DesignerCustomEventSignature signature) noexcept;
-	static bool TryParseCustomSignature(
+	static const char* GetComponentPayloadName(
+		DesignerComponentEventPayload payload) noexcept;
+	static bool TryParseComponentPayload(
 		const std::wstring& value,
-		DesignerCustomEventSignature& signature) noexcept;
-	static bool ValidateCustomEvents(
+		DesignerComponentEventPayload& payload) noexcept;
+	static const char* GetComponentRoutingStrategyName(
+		DeclarativeEventRoutingStrategy strategy) noexcept;
+	static bool TryParseComponentRoutingStrategy(
+		const std::wstring& value,
+		DeclarativeEventRoutingStrategy& strategy) noexcept;
+	/** Stable document key for an attached routed-component event handler. */
+	static std::wstring MakeAttachedComponentEventKey(
+		const DesignerComponentType& ownerType,
+		const std::wstring& eventName);
+	static bool TryParseAttachedComponentEventKey(
+		const std::wstring& key,
+		DesignerComponentType& ownerType,
+		std::wstring& eventName) noexcept;
+	static bool ValidateComponentEvents(
 		UIClass baseType,
-		const std::vector<DesignerCustomEventDescriptor>& events,
+		const std::vector<DesignerComponentEventDescriptor>& events,
 		std::wstring* outError = nullptr);
 	static bool IsKnownEventName(const std::wstring& eventName);
 
-	/** Builds a runtime/codegen descriptor without accepting C++ type text. */
-	static std::optional<DesignerEventDescriptor> FromCustomEvent(
-		const DesignerCustomEventDescriptor& event) noexcept;
+	static std::optional<DesignerEventDescriptor> FromComponentEvent(
+		const DesignerComponentEventDescriptor& event) noexcept;
 
 	/** Treats old boolean event values as “use the conventional name”. */
 	static bool IsLegacyEnabledValue(const std::wstring& storedValue);

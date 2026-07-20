@@ -1,9 +1,13 @@
 #include "DesignerPropertyRowCatalog.h"
 #include "DesignerBindingUtils.h"
+#include "DesignerDataContextSchemaUtils.h"
 #include "../CUI/include/Style.h"
+#include "../CUI/include/GroupStyle.h"
 #include <algorithm>
 #include <cwctype>
+#include <functional>
 #include <sstream>
+#include <unordered_set>
 
 namespace DesignerPropertyRowCatalog
 {
@@ -26,7 +30,6 @@ namespace
 		{
 		case DesignerPropertyRowSource::Form: return L"Form 窗体";
 		case DesignerPropertyRowSource::ControlDesign: return L"Designer 设计器";
-		case DesignerPropertyRowSource::CustomDescriptor: return L"Custom 自定义";
 		case DesignerPropertyRowSource::RuntimeMetadata: return L"Runtime 运行时";
 		default: return L"";
 		}
@@ -34,13 +37,16 @@ namespace
 
 	const wchar_t* ValueSourceAliases(ControlPropertyValueSource source)
 	{
-		switch (source)
-		{
-		case ControlPropertyValueSource::Theme: return L"Theme 主题";
+	switch (source)
+	{
+	case ControlPropertyValueSource::Inherited: return L"Inherited 继承";
+	case ControlPropertyValueSource::Theme: return L"Theme 主题";
 		case ControlPropertyValueSource::Style: return L"Style 样式";
-		case ControlPropertyValueSource::Binding: return L"Binding 绑定";
-		case ControlPropertyValueSource::Local: return L"Local 本地";
-		case ControlPropertyValueSource::Default:
+	case ControlPropertyValueSource::Binding: return L"Binding 绑定";
+	case ControlPropertyValueSource::Local: return L"Local 本地";
+	case ControlPropertyValueSource::VisualState: return L"VisualState 视觉状态";
+	case ControlPropertyValueSource::Animation: return L"Animation 动画";
+	case ControlPropertyValueSource::Default:
 		default:
 			return L"Default 默认";
 		}
@@ -170,8 +176,11 @@ namespace
 			{
 				row.EffectiveValueSource =
 					control->GetPropertyValueSource(row.Name);
-				row.IsReadOnly = *row.EffectiveValueSource
-					== ControlPropertyValueSource::Binding;
+				const auto* metadata = control->FindPropertyMetadata(row.Name);
+				row.IsReadOnly = row.IsReadOnly
+					|| (metadata && !metadata->CanWrite())
+					|| *row.EffectiveValueSource
+						== ControlPropertyValueSource::Binding;
 			}
 
 			const auto* configured = FindNamed(target.DataBindings, row.Name);
@@ -206,7 +215,7 @@ namespace
 					L"运行时 Binding：" + runtime->TargetProperty()
 						+ L" <- " + runtime->SourceProperty() + L"  ["
 						+ DesignerBindingUtils::BindingModeName(runtime->Mode())
-						+ L", " + DesignerBindingUtils::UpdateModeName(
+						+ L", " + DesignerBindingUtils::UpdateSourceTriggerName(
 							runtime->UpdateMode()) + L"]",
 					L"该绑定来自运行时集合，而不是设计文档配置。"
 				});
@@ -338,6 +347,8 @@ namespace
 			return DesignerPropertyRowEditorKind::FontSize;
 		case DesignerControlPropertyEditorKind::Anchor:
 			return DesignerPropertyRowEditorKind::Anchor;
+		case DesignerControlPropertyEditorKind::Choice:
+			return DesignerPropertyRowEditorKind::Choice;
 		case DesignerControlPropertyEditorKind::Text:
 		default:
 			return DesignerPropertyRowEditorKind::Text;
@@ -370,43 +381,6 @@ namespace
 		}
 	}
 
-	DesignerPropertyRowEditorKind CustomEditor(
-		const DesignerCustomPropertyDescriptor& property)
-	{
-		if (!property.Choices.empty()
-			|| property.Editor == ControlPropertyEditorKind::Choice)
-			return DesignerPropertyRowEditorKind::Choice;
-		switch (property.Editor)
-		{
-		case ControlPropertyEditorKind::Boolean:
-			return DesignerPropertyRowEditorKind::Boolean;
-		case ControlPropertyEditorKind::Color:
-			return DesignerPropertyRowEditorKind::Color;
-		case ControlPropertyEditorKind::Thickness:
-			return DesignerPropertyRowEditorKind::Thickness;
-		case ControlPropertyEditorKind::Number:
-			if (property.Minimum && property.Maximum
-				&& *property.Minimum < *property.Maximum
-				&& (property.DefaultValue.Kind == DesignerStyleValueKind::Float
-					|| property.DefaultValue.Kind == DesignerStyleValueKind::Double))
-				return DesignerPropertyRowEditorKind::FloatSlider;
-			return DesignerPropertyRowEditorKind::Text;
-		case ControlPropertyEditorKind::Auto:
-			switch (property.DefaultValue.Kind)
-			{
-			case DesignerStyleValueKind::Bool:
-				return DesignerPropertyRowEditorKind::Boolean;
-			case DesignerStyleValueKind::Color:
-				return DesignerPropertyRowEditorKind::Color;
-			case DesignerStyleValueKind::Thickness:
-				return DesignerPropertyRowEditorKind::Thickness;
-			default:
-				return DesignerPropertyRowEditorKind::Text;
-			}
-		default:
-			return DesignerPropertyRowEditorKind::Text;
-		}
-	}
 }
 
 std::vector<DesignerPropertyRow> GetFormRows(
@@ -441,6 +415,14 @@ std::vector<DesignerPropertyRow> GetControlRows(
 	const DesignerControlPropertyContext& context)
 {
 	std::vector<DesignerPropertyRow> rows;
+	const auto* dataTemplates = context.ScopedDataTemplates.empty()
+		? context.DataTemplates : &context.ScopedDataTemplates;
+	const auto* controlTemplates = context.ScopedControlTemplates.empty()
+		? context.ControlTemplates : &context.ScopedControlTemplates;
+	const auto* itemsPanelTemplates = context.ScopedItemsPanelTemplates.empty()
+		? context.ItemsPanelTemplates : &context.ScopedItemsPanelTemplates;
+	const auto* groupStyles = context.ScopedGroupStyles.empty()
+		? context.GroupStyles : &context.ScopedGroupStyles;
 	for (const auto& property :
 		DesignerControlPropertyCatalog::GetProperties(target))
 	{
@@ -457,6 +439,181 @@ std::vector<DesignerPropertyRow> GetControlRows(
 		row.Value = std::move(current);
 		row.Editor = ControlDesignEditor(property.Editor);
 		row.CanReset = property.CanReset;
+		if (property.Editor == DesignerControlPropertyEditorKind::Choice)
+		{
+			auto resourceItemType = [&](const std::wstring& key)
+			{
+				std::unordered_set<std::wstring> visited;
+				std::function<std::wstring(const std::wstring&)> resolve;
+				resolve = [&](const std::wstring& current) -> std::wstring
+				{
+					if (!visited.insert(current).second) return {};
+					if (context.DataLists)
+					{
+						const auto list = std::find_if(
+							context.DataLists->begin(), context.DataLists->end(),
+							[&](const auto& item) { return NamesEqual(item.Key, current); });
+						if (list != context.DataLists->end()) return list->ItemType;
+					}
+					if (!context.CollectionViews) return {};
+					const auto view = std::find_if(
+						context.CollectionViews->begin(), context.CollectionViews->end(),
+						[&](const auto& item) { return NamesEqual(item.Key, current); });
+					if (view == context.CollectionViews->end()) return {};
+					if (!view->SourceResource.empty())
+						return resolve(view->SourceResource);
+					const auto* property = context.DataContextSchema
+						? DesignerDataContextSchemaUtils::Find(
+							*context.DataContextSchema, view->SourceBindingPath) : nullptr;
+					return property ? property->ItemType : std::wstring{};
+				};
+				return resolve(key);
+			};
+			row.Choices.push_back({
+				NamesEqual(property.Name, L"Template")
+					|| NamesEqual(property.Name, L"ItemTemplate")
+					|| NamesEqual(property.Name, L"ContentTemplate")
+					|| NamesEqual(property.Name, L"HeaderTemplate")
+					? L"(自动)" : L"(无)",
+				L"" });
+			if (NamesEqual(property.Name, L"Template")
+				&& controlTemplates)
+			{
+				auto compatible = [&](const DesignerModel::DesignControlTemplate& item)
+				{
+					if (item.IsImplicit()) return false;
+					if (!item.TargetComponentType.Empty())
+						return !target.ComponentType.Empty()
+							&& target.ComponentType.RegistryKey()
+								== item.TargetComponentType.RegistryKey();
+					if (!target.ComponentType.Empty()) return false;
+					return target.Type == item.TargetType
+						|| (item.TargetType == UIClass::UI_ContentControl
+							&& (target.Type == UIClass::UI_Button
+								|| target.Type == UIClass::UI_GroupBox
+								|| target.Type == UIClass::UI_Expander))
+						|| (item.TargetType == UIClass::UI_ItemsControl
+							&& target.Type == UIClass::UI_ListBox);
+				};
+				for (const auto& item : *controlTemplates)
+					if (compatible(item))
+						row.Choices.push_back({ item.Key, item.Key });
+			}
+			else if (NamesEqual(property.Name, L"ItemsSourceResource"))
+			{
+				std::wstring requiredType;
+				const auto currentTemplate = target.DesignStrings.find(L"itemTemplate");
+				if (currentTemplate != target.DesignStrings.end()
+					&& dataTemplates)
+				{
+					const auto found = std::find_if(
+						dataTemplates->begin(), dataTemplates->end(),
+						[&](const auto& item)
+						{
+							return NamesEqual(item.Key, currentTemplate->second);
+						});
+					if (found != dataTemplates->end())
+						requiredType = found->DataType;
+				}
+				if (context.DataLists)
+					for (const auto& item : *context.DataLists)
+						if (requiredType.empty()
+							|| NamesEqual(item.ItemType, requiredType))
+							row.Choices.push_back({ item.Key, item.Key });
+				if (context.CollectionViews)
+					for (const auto& item : *context.CollectionViews)
+					{
+						const auto itemType = resourceItemType(item.Key);
+						if (requiredType.empty() || NamesEqual(itemType, requiredType))
+							row.Choices.push_back({ item.Key, item.Key });
+					}
+			}
+			else if (NamesEqual(property.Name, L"ItemTemplate")
+				&& dataTemplates)
+			{
+				std::wstring requiredType;
+				const auto currentList = target.DesignStrings.find(
+					L"itemsSourceResource");
+				if (currentList != target.DesignStrings.end())
+				{
+					requiredType = resourceItemType(currentList->second);
+				}
+				for (const auto& item : *dataTemplates)
+					if (!item.IsImplicit() && (requiredType.empty()
+						|| NamesEqual(item.DataType, requiredType)))
+						row.Choices.push_back({ item.Key, item.Key });
+			}
+			else if ((NamesEqual(property.Name, L"ContentTemplate")
+				|| NamesEqual(property.Name, L"HeaderTemplate"))
+				&& dataTemplates)
+			{
+				std::wstring requiredType;
+				bool supportsDataTemplate = true;
+				const auto binding = target.DataBindings.find(
+					NamesEqual(property.Name, L"HeaderTemplate")
+						? L"Header" : L"Content");
+				if (binding != target.DataBindings.end()
+					&& binding->second.ElementName.empty()
+					&& binding->second.RelativeSource
+						== DesignerBindingRelativeSource::None
+					&& !binding->second.IsMultiBinding()
+					&& context.DataContextSchema)
+					if (const auto* source = DesignerDataContextSchemaUtils::Find(
+						*context.DataContextSchema,
+						binding->second.SourceProperty))
+					{
+						supportsDataTemplate = source->ObjectKind
+							== DesignerDataObjectKind::BindingSource
+							&& !source->DataType.empty();
+						if (supportsDataTemplate) requiredType = source->DataType;
+					}
+				if (supportsDataTemplate)
+					for (const auto& item : *dataTemplates)
+						if (!item.IsImplicit() && (requiredType.empty()
+							|| NamesEqual(item.DataType, requiredType)))
+							row.Choices.push_back({ item.Key, item.Key });
+			}
+			else if (NamesEqual(property.Name, L"ItemContainerStyle")
+				&& context.StyleSheet)
+			{
+				const auto containerType = target.Type == UIClass::UI_ComboBox
+					? UIClass::UI_ComboBoxItem
+					: target.Type == UIClass::UI_TreeView
+						? UIClass::UI_TreeViewItem : UIClass::UI_SelectorItem;
+				for (const auto& rule : context.StyleSheet->Rules)
+					if (!rule.Id.empty() && rule.ComponentType.Empty()
+						&& (!rule.HasType
+							|| rule.Type == UIClass::UI_Base
+							|| rule.Type == containerType))
+						row.Choices.push_back({ rule.Id, rule.Id });
+			}
+			else if (NamesEqual(property.Name, L"GroupStyle")
+				&& groupStyles)
+			{
+				for (const auto& style : *groupStyles)
+				{
+					std::wstring headerType;
+					if (dataTemplates && !style.HeaderTemplate.empty())
+					{
+						const auto header = std::find_if(
+							dataTemplates->begin(),
+							dataTemplates->end(), [&](const auto& item)
+							{ return NamesEqual(item.Key, style.HeaderTemplate); });
+						if (header != dataTemplates->end())
+							headerType = header->DataType;
+					}
+					if (headerType.empty() || NamesEqual(headerType,
+						std::wstring(CollectionViewGroupDataTypeName)))
+						row.Choices.push_back({ style.Key, style.Key });
+				}
+			}
+			else if (NamesEqual(property.Name, L"ItemsPanel")
+				&& itemsPanelTemplates)
+			{
+				for (const auto& item : *itemsPanelTemplates)
+					row.Choices.push_back({ item.Key, item.Key });
+			}
+		}
 		rows.push_back(std::move(row));
 	}
 
@@ -481,6 +638,7 @@ std::vector<DesignerPropertyRow> GetControlRows(
 			row.Step = property.Step;
 			row.EffectiveValueSource =
 				target.ControlInstance->GetPropertyValueSource(property.Name);
+			row.IsReadOnly = property.Metadata && !property.Metadata->CanWrite();
 			row.CanReset = property.Metadata && property.Metadata->CanWrite()
 				&& property.Metadata->HasDefaultValue();
 			for (const auto& choice : property.Choices)
@@ -489,33 +647,7 @@ std::vector<DesignerPropertyRow> GetControlRows(
 		}
 	}
 
-	for (const auto& property : target.CustomProperties)
-	{
-		if (ContainsName(rows, property.Name)) continue;
-		DesignerPropertyRow row;
-		row.Source = DesignerPropertyRowSource::CustomDescriptor;
-		row.Name = property.Name;
-		row.DisplayName = property.DisplayName;
-		row.Category = property.Category;
-		row.CategoryOrder = property.CategoryOrder;
-		row.Order = property.Order;
-		const auto stored = target.MetadataProperties.find(property.Name);
-		row.Value = stored == target.MetadataProperties.end()
-			? property.DefaultValue : stored->second;
-		row.Editor = CustomEditor(property);
-		row.Minimum = property.Minimum;
-		row.Maximum = property.Maximum;
-		row.Step = property.Step;
-		row.EffectiveValueSource = stored == target.MetadataProperties.end()
-			? ControlPropertyValueSource::Default
-			: ControlPropertyValueSource::Local;
-		row.CanReset = true;
-		for (const auto& choice : property.Choices)
-			row.Choices.push_back({ choice.DisplayName, choice.ValueText });
-		rows.push_back(std::move(row));
-	}
 	AppendControlDiagnostics(target, rows);
-
 	SortRows(rows);
 	return rows;
 }

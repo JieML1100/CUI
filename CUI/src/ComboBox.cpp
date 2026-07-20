@@ -89,21 +89,56 @@ namespace
 	}
 }
 
+ComboBoxItem::ComboBoxItem() = default;
+
+bool ComboBoxItem::Initialize(
+	ComboBox& owner,
+	const BindingSourceReference& item,
+	const ItemTemplateReference& contentTemplate,
+	const std::wstring& displayMemberPath,
+	size_t index,
+	std::wstring* outError)
+{
+	_owner = &owner;
+	if (InitializeItem(item, contentTemplate, displayMemberPath,
+		index, L"ComboBoxItem", outError)) return true;
+	_owner = nullptr;
+	return false;
+}
+
+void ComboBoxItem::EnsureBindingPropertiesRegistered()
+{
+	ItemContainerControl::EnsureBindingPropertiesRegistered();
+}
+
+void ComboBoxItem::ActivateItem()
+{
+	if (!_owner) return;
+	(void)_owner->SelectItem(static_cast<int>(ItemIndex()));
+	_owner->SetExpanded(false);
+}
+
+void ComboBoxItem::FocusOwner()
+{
+	if (_owner && _owner->ParentForm)
+		_owner->ParentForm->SetSelectedControl(_owner, true);
+}
+
 void ComboBox::EnsureBindingPropertiesRegistered()
 {
 	Control::EnsureBindingPropertiesRegistered();
 	static const bool registered = []
 	{
 		auto selectedIndexOptions = ComboBoxPropertyOptions(
-			0, L"Behavior", 110, 10,
+			-1, L"Behavior", 110, 10,
 			ControlPropertyEditorKind::Number);
 		selectedIndexOptions.Coerce = [](
 			ComboBox& target, const int& proposed) -> std::optional<int>
 		{
-			const int nonNegative = (std::max)(0, proposed);
+			if (proposed < 0) return -1;
 			return target.GetItems().empty()
-				? nonNegative
-				: (std::min)(nonNegative,
+				? proposed
+				: (std::min)(proposed,
 					static_cast<int>(target.GetItems().size()) - 1);
 		};
 		selectedIndexOptions.Changed = [](
@@ -295,6 +330,94 @@ void ComboBox::EnsureBindingPropertiesRegistered()
 			[](ComboBox& target, const D2D1_COLOR_F& value) { target.ButtonBackColor = value; },
 			ComboBoxPropertySubscriber(L"ButtonBackColor"),
 			ComboBoxColorOptions(cui::theme::palette::SurfaceMuted, 140));
+
+		ControlPropertyOptions<ComboBox, BindingListReference> itemsSourceOptions;
+		itemsSourceOptions.Flags = ControlPropertyFlags::AffectsMeasure
+			| ControlPropertyFlags::AffectsRender;
+		itemsSourceOptions.Design.DisplayName = L"Items source";
+		itemsSourceOptions.Design.Category = L"Data";
+		itemsSourceOptions.Design.CategoryOrder = 80;
+		itemsSourceOptions.Design.Order = 10;
+		itemsSourceOptions.Design.Editor = ControlPropertyEditorKind::Auto;
+		itemsSourceOptions.Design.Browsable = false;
+		itemsSourceOptions.Design.Persistence = ControlPropertyPersistence::Transient;
+		BindingPropertyRegistry::Register<ComboBox, BindingListReference>(L"ItemsSource",
+			[](ComboBox& target) { return target.GetItemsSource(); },
+			[](ComboBox& target, const BindingListReference& value)
+			{ target.SetItemsSource(value); }, {}, std::move(itemsSourceOptions));
+
+		ControlPropertyOptions<ComboBox, ItemTemplateReference> itemTemplateOptions;
+		itemTemplateOptions.Flags = ControlPropertyFlags::AffectsMeasure
+			| ControlPropertyFlags::AffectsRender;
+		itemTemplateOptions.Design.DisplayName = L"Item template";
+		itemTemplateOptions.Design.Category = L"Data";
+		itemTemplateOptions.Design.CategoryOrder = 80;
+		itemTemplateOptions.Design.Order = 15;
+		itemTemplateOptions.Design.Editor = ControlPropertyEditorKind::Auto;
+		itemTemplateOptions.Design.Browsable = false;
+		itemTemplateOptions.Design.Persistence =
+			ControlPropertyPersistence::Transient;
+		BindingPropertyRegistry::Register<ComboBox, ItemTemplateReference>(
+			L"ItemTemplate",
+			[](ComboBox& target) { return target.GetItemTemplate(); },
+			[](ComboBox& target, const ItemTemplateReference& value)
+			{ target.SetItemTemplate(value); }, {},
+			std::move(itemTemplateOptions));
+
+		auto displayPathOptions = ComboBoxPropertyOptions(
+			std::wstring{}, L"Data", 80, 20,
+			ControlPropertyEditorKind::Text,
+			ControlPropertyFlags::AffectsMeasure
+				| ControlPropertyFlags::AffectsRender);
+		BindingPropertyRegistry::Register<ComboBox, std::wstring>(L"DisplayMemberPath",
+			[](ComboBox& target) { return target.GetDisplayMemberPath(); },
+			[](ComboBox& target, const std::wstring& value)
+			{ target.SetDisplayMemberPath(value); }, {}, std::move(displayPathOptions));
+
+		auto selectedValuePathOptions = ComboBoxPropertyOptions(
+			std::wstring{}, L"Data", 80, 30,
+			ControlPropertyEditorKind::Text,
+			ControlPropertyFlags::AffectsRender);
+		BindingPropertyRegistry::Register<ComboBox, std::wstring>(L"SelectedValuePath",
+			[](ComboBox& target) { return target.GetSelectedValuePath(); },
+			[](ComboBox& target, const std::wstring& value)
+			{ target.SetSelectedValuePath(value); }, {},
+			std::move(selectedValuePathOptions));
+
+		auto containerStyleOptions = ComboBoxPropertyOptions(
+			std::wstring{}, L"Data", 80, 35,
+			ControlPropertyEditorKind::Text,
+			ControlPropertyFlags::AffectsRender);
+		containerStyleOptions.Design.Browsable = false;
+		containerStyleOptions.Design.Persistence =
+			ControlPropertyPersistence::Transient;
+		BindingPropertyRegistry::Register<ComboBox, std::wstring>(
+			L"ItemContainerStyle",
+			[](ComboBox& target) { return target.GetItemContainerStyle(); },
+			[](ComboBox& target, const std::wstring& value)
+			{ target.SetItemContainerStyle(value); }, {},
+			std::move(containerStyleOptions));
+
+		ControlPropertyOptions<ComboBox, BindingValue> selectedValueOptions;
+		selectedValueOptions.Flags = ControlPropertyFlags::TracksLocalValue;
+		selectedValueOptions.Design.DisplayName = L"Selected value";
+		selectedValueOptions.Design.Category = L"Data";
+		selectedValueOptions.Design.CategoryOrder = 80;
+		selectedValueOptions.Design.Order = 40;
+		selectedValueOptions.Design.Browsable = false;
+		selectedValueOptions.Design.Persistence =
+			ControlPropertyPersistence::Transient;
+		BindingPropertyRegistry::Register<ComboBox, BindingValue>(L"SelectedValue",
+			[](ComboBox& target) { return target.GetSelectedValue(); },
+			[](ComboBox& target, const BindingValue& value)
+			{ target.SetSelectedValue(value); },
+			[](ComboBox& target,
+				BindingPropertyMetadata::ChangeHandler handler,
+				DataSourceUpdateMode)
+			{
+				return target._selectedValueChanged.Subscribe(
+					[handler = std::move(handler)](ComboBox*) { handler(); });
+			}, std::move(selectedValueOptions));
 		return true;
 	}();
 	(void)registered;
@@ -422,12 +545,336 @@ ComboBox::ItemCollection& ComboBox::GetItems()
 }
 void ComboBox::SetItems(const std::vector<std::wstring>& value)
 {
+	if (!_refreshingItemsSource && _itemsSource)
+		SetItemsSource({});
 	this->values = value;
+}
+
+void ComboBox::SetItemsSource(BindingListReference value)
+{
+	if (_itemsSource == value) return;
+	_itemsSourceChanged.Disconnect();
+	_itemSourceObservations.clear();
+	_itemsSource = std::move(value);
+	if (_itemsSource)
+	{
+		_itemsSourceChanged = _itemsSource.Get()->SubscribeChanged(
+			[this](const CollectionChangedEventArgs&)
+			{
+				RefreshItemsSource();
+			});
+	}
+	RefreshItemsSource();
+}
+
+void ComboBox::SetItemTemplate(ItemTemplateReference value)
+{
+	if (_itemTemplate == value) return;
+	const auto previous = _itemTemplate;
+	const bool previousUse = _useGeneratedItemContainers;
+	_itemTemplate = std::move(value);
+	if (_itemTemplate) _useGeneratedItemContainers = true;
+	if (RebuildGeneratedItems()) return;
+	const auto error = _lastTemplateError;
+	_itemTemplate = previous;
+	_useGeneratedItemContainers = previousUse;
+	(void)RebuildGeneratedItems();
+	_lastTemplateError = error;
+}
+
+void ComboBox::SetDisplayMemberPath(std::wstring value)
+{
+	if (_displayMemberPath == value) return;
+	_displayMemberPath = std::move(value);
+	if (_itemsSource) RefreshItemsSource();
+	else (void)RebuildGeneratedItems();
+}
+
+void ComboBox::SetSelectedValuePath(std::wstring value)
+{
+	if (_selectedValuePath == value) return;
+	_selectedValuePath = std::move(value);
+	if (_itemsSource) RefreshItemsSource();
+	else
+	{
+		const auto source = GetPropertyValueSource(L"SelectedValue");
+		BindingValue configured;
+		if (source != ControlPropertyValueSource::Default
+			&& TryGetPropertyValue(L"SelectedValue", source, configured))
+			SetSelectedValue(configured);
+		else
+			NotifySelectedValueChanged();
+	}
+}
+
+BindingValue ComboBox::GetSelectedValue() const
+{
+	if (_selectedIndex < 0) return {};
+	if (_itemsSource)
+	{
+		BindingValue value;
+		return TryGetBindingListItemValue(_itemsSource,
+			static_cast<size_t>(_selectedIndex), _selectedValuePath, value)
+			? value : BindingValue{};
+	}
+	if (_selectedValuePath.empty()
+		&& static_cast<size_t>(_selectedIndex) < values.size())
+		return BindingValue(values[static_cast<size_t>(_selectedIndex)]);
+	return {};
+}
+
+void ComboBox::SetSelectedValue(const BindingValue& value)
+{
+	int index = -1;
+	if (!value.Empty())
+	{
+		if (_itemsSource)
+			index = FindBindingListItemByValue(
+				_itemsSource, _selectedValuePath, value);
+		else if (_selectedValuePath.empty())
+		{
+			for (size_t candidate = 0; candidate < values.size(); ++candidate)
+				if (BindingItemValuesEqual(
+					BindingValue(values[candidate]), value))
+				{
+					index = static_cast<int>(candidate);
+					break;
+				}
+		}
+	}
+	SetCurrentSelectedIndex(index);
+}
+
+void ComboBox::SetItemContainerStyle(std::wstring value)
+{
+	if (_itemContainerStyle == value) return;
+	const auto previous = _itemContainerStyle;
+	const bool previousUse = _useGeneratedItemContainers;
+	_itemContainerStyle = std::move(value);
+	if (!_itemContainerStyle.empty()) _useGeneratedItemContainers = true;
+	if (RebuildGeneratedItems()) return;
+	const auto error = _lastTemplateError;
+	_itemContainerStyle = previous;
+	_useGeneratedItemContainers = previousUse;
+	(void)RebuildGeneratedItems();
+	_lastTemplateError = error;
+}
+
+void ComboBox::SetItemContainerTemplate(ControlTemplateReference value)
+{
+	if (_itemContainerTemplate == value) return;
+	const auto previous = _itemContainerTemplate;
+	const bool previousUse = _useGeneratedItemContainers;
+	_itemContainerTemplate = std::move(value);
+	if (_itemContainerTemplate) _useGeneratedItemContainers = true;
+	if (RebuildGeneratedItems()) return;
+	const auto error = _lastTemplateError;
+	_itemContainerTemplate = previous;
+	_useGeneratedItemContainers = previousUse;
+	(void)RebuildGeneratedItems();
+	_lastTemplateError = error;
+}
+
+void ComboBox::SetUseGeneratedItemContainers(bool value)
+{
+	if (_useGeneratedItemContainers == value) return;
+	const bool previous = _useGeneratedItemContainers;
+	_useGeneratedItemContainers = value;
+	if (RebuildGeneratedItems()) return;
+	const auto error = _lastTemplateError;
+	_useGeneratedItemContainers = previous;
+	(void)RebuildGeneratedItems();
+	_lastTemplateError = error;
+}
+
+bool ComboBox::RebuildGeneratedItems()
+{
+	if (!_useGeneratedItemContainers)
+	{
+		for (auto& item : _generatedItems)
+			if (item) item->Parent = nullptr;
+		_generatedItems.clear();
+		_lastTemplateError.clear();
+		return true;
+	}
+	std::vector<std::unique_ptr<ComboBoxItem>> replacement;
+	replacement.reserve(values.size());
+	for (size_t index = 0; index < values.size(); ++index)
+	{
+		BindingSourceReference item;
+		if (_itemsSource)
+		{
+			if (!_itemsSource.Get()->TryGetItem(index, item) || !item)
+			{
+				_lastTemplateError = L"ComboBox ItemsSource 无法读取索引 "
+					+ std::to_wstring(index) + L"。";
+				return false;
+			}
+		}
+		else
+		{
+			auto source = std::make_shared<ObservableObject>();
+			(void)source->DefineProperty(
+				L"Text", values[index], true, false, true);
+			(void)source->DefineProperty(
+				L"Content", values[index], true, false, true);
+			(void)source->DefineProperty(
+				L"Value", values[index], true, false, true);
+			item = BindingSourceReference(std::move(source));
+		}
+
+		std::unique_ptr<ComboBoxItem> container;
+		if (_itemContainerTemplate)
+		{
+			if (_itemContainerTemplate.Get()->TargetType()
+				!= UIClass::UI_ComboBoxItem)
+			{
+				_lastTemplateError =
+					L"ItemContainerTemplate TargetType 必须是 ComboBoxItem。";
+				return false;
+			}
+			std::wstring error;
+			auto built = _itemContainerTemplate.Get()->Build(&error);
+			auto* itemContainer = dynamic_cast<ComboBoxItem*>(built.get());
+			if (!itemContainer)
+			{
+				_lastTemplateError = error.empty()
+					? L"ItemContainerTemplate 未生成 ComboBoxItem。"
+					: std::move(error);
+				return false;
+			}
+			container.reset(static_cast<ComboBoxItem*>(built.release()));
+		}
+		else container = std::make_unique<ComboBoxItem>();
+
+		container->SetStyleId(_itemContainerStyle);
+		std::wstring error;
+		if (!container->Initialize(
+			*this, item, _itemTemplate, _displayMemberPath, index, &error))
+		{
+			_lastTemplateError = error.empty()
+				? L"ComboBoxItem 内容初始化失败。" : std::move(error);
+			return false;
+		}
+		container->Parent = this;
+		Control::SetChildrenParentForm(container.get(), ParentForm);
+		(void)container->RefreshStyleValues(true);
+		replacement.push_back(std::move(container));
+	}
+
+	for (auto& item : _generatedItems)
+		if (item) item->Parent = nullptr;
+	_generatedItems = std::move(replacement);
+	_lastTemplateError.clear();
+	UpdateGeneratedItemStates();
+	InvalidateVisual();
+	return true;
+}
+
+void ComboBox::LayoutGeneratedItems(float dropTop, float itemRight)
+{
+	const float rowHeight = static_cast<float>(Height);
+	const float left = 6.0f;
+	const float topInset = (std::max)(0.0f, ItemVerticalPadding);
+	const float width = (std::max)(1.0f, itemRight - left - 6.0f);
+	const float height = (std::max)(1.0f, rowHeight - topInset * 2.0f);
+	for (size_t index = 0; index < _generatedItems.size(); ++index)
+	{
+		auto* item = _generatedItems[index].get();
+		if (!item) continue;
+		item->Parent = this;
+		Control::SetChildrenParentForm(item, ParentForm);
+		const float viewIndex = static_cast<float>(
+			static_cast<long long>(index) - ExpandScroll);
+		item->ApplyLayout(cui::core::Rect{
+			left, dropTop + viewIndex * rowHeight + topInset,
+			width, height });
+	}
+}
+
+void ComboBox::UpdateGeneratedItemStates()
+{
+	const bool ownerFocused = HasControlStyleState(
+		GetEffectiveStyleState(), ControlStyleState::Focused);
+	for (size_t index = 0; index < _generatedItems.size(); ++index)
+	{
+		auto* item = _generatedItems[index].get();
+		if (!item) continue;
+		item->SetItemIndex(index);
+		item->SetSelected(static_cast<int>(index) == SelectedIndex);
+		item->SetMouseOver(static_cast<int>(index) == _underMouseIndex);
+		item->SetKeyboardFocusWithin(
+			ownerFocused && static_cast<int>(index) == SelectedIndex);
+	}
+}
+
+void ComboBox::RefreshItemsSource()
+{
+	_itemSourceObservations.clear();
+	std::vector<std::wstring> projected;
+	if (_itemsSource)
+	{
+		projected.reserve(_itemsSource.Get()->Count());
+		_itemSourceObservations.reserve(_itemsSource.Get()->Count());
+		for (size_t index = 0; index < _itemsSource.Get()->Count(); ++index)
+		{
+			BindingSourceReference item;
+			if (!_itemsSource.Get()->TryGetItem(index, item) || !item)
+			{
+				projected.emplace_back();
+				_itemSourceObservations.emplace_back();
+				continue;
+			}
+			projected.push_back(GetBindingRecordText(
+				item, _displayMemberPath, { L"Text", L"Content", L"Name" }));
+			_itemSourceObservations.push_back(ObserveBindingPaths(
+				item, { _displayMemberPath, _selectedValuePath },
+				[this, index] { RefreshItemSource(index); }));
+		}
+	}
+	_refreshingItemsSource = true;
+	values = std::move(projected);
+	_refreshingItemsSource = false;
+	const auto selectedValueSource = GetPropertyValueSource(L"SelectedValue");
+	BindingValue configuredSelectedValue;
+	if (selectedValueSource != ControlPropertyValueSource::Default
+		&& TryGetPropertyValue(L"SelectedValue", selectedValueSource,
+			configuredSelectedValue))
+		SetSelectedValue(configuredSelectedValue);
+	else
+		NotifySelectedValueChanged();
+}
+
+void ComboBox::RefreshItemSource(size_t index)
+{
+	if (!_itemsSource || index >= _itemsSource.Get()->Count()
+		|| index >= values.size() || index >= _itemSourceObservations.size())
+	{
+		RefreshItemsSource();
+		return;
+	}
+	BindingSourceReference item;
+	if (!_itemsSource.Get()->TryGetItem(index, item)) item = {};
+	_itemSourceObservations[index] = ObserveBindingPaths(
+		item, { _displayMemberPath, _selectedValuePath },
+		[this, index] { RefreshItemSource(index); });
+	_refreshingItemsSource = true;
+	values.Replace(index, GetBindingRecordText(
+		item, _displayMemberPath, { L"Text", L"Content", L"Name" }));
+	_refreshingItemsSource = false;
+	if (static_cast<int>(index) == SelectedIndex)
+		NotifySelectedValueChanged();
 }
 
 void ComboBox::OnItemsCollectionChanged(
 	const CollectionChangedEventArgs& change)
 {
+	if (!_refreshingItemsSource && _itemsSource)
+	{
+		_itemsSourceChanged.Disconnect();
+		_itemSourceObservations.clear();
+		_itemsSource = {};
+	}
 	auto remapIndex = [&](int current, bool keepNearest)
 	{
 		if (current < 0) return -1;
@@ -587,6 +1034,7 @@ void ComboBox::OnItemsCollectionChanged(
 		SetExpanded(false);
 	else if (this->Expand && this->ParentForm)
 		this->ParentForm->ForegroundControl = this;
+	(void)RebuildGeneratedItems();
 	NotifyAccessibilityStructureChanged();
 	NotifyAccessibilityScrollChanged();
 	InvalidateVisual();
@@ -674,7 +1122,8 @@ void ComboBox::EnsureSelectionInRange()
 		return;
 	}
 	const int lastIndex = static_cast<int>(this->values.size()) - 1;
-	const int clamped = (std::clamp)(this->SelectedIndex, 0, lastIndex);
+	const int clamped = this->SelectedIndex < 0
+		? -1 : (std::min)(this->SelectedIndex, lastIndex);
 	if (clamped != this->SelectedIndex)
 		SetCurrentSelectedIndex(clamped);
 	else
@@ -693,7 +1142,7 @@ void ComboBox::EnsureScrollInRange()
 
 void ComboBox::EnsureSelectedItemVisible()
 {
-	if (this->values.empty()) return;
+	if (this->values.empty() || this->SelectedIndex < 0) return;
 	const int visibleCount = VisibleItemCount();
 	if (visibleCount <= 0) return;
 	int offset = this->ExpandScroll;
@@ -737,7 +1186,7 @@ void ComboBox::SetCurrentExpanded(bool value)
 
 void ComboBox::ApplySelectedIndexChange(int oldValue, int newValue)
 {
-	if (oldValue == newValue || this->values.empty()) return;
+	if (oldValue == newValue) return;
 	SyncTextWithSelection();
 	EnsureSelectedItemVisible();
 	if (_accessibilityItemIds.size() != values.size()
@@ -746,7 +1195,23 @@ void ComboBox::ApplySelectedIndexChange(int oldValue, int newValue)
 	_selectedAccessibilityItemId = newValue >= 0
 		&& static_cast<size_t>(newValue) < _accessibilityItemIds.size()
 		? _accessibilityItemIds[static_cast<size_t>(newValue)] : 0;
+	UpdateGeneratedItemStates();
 	this->OnSelectionChanged(this);
+	NotifySelectedValueChanged();
+}
+
+void ComboBox::NotifySelectedValueChanged()
+{
+	const auto source = GetPropertyValueSource(L"SelectedValue");
+	if (source != ControlPropertyValueSource::Default)
+	{
+		BindingValue stored;
+		const auto current = GetSelectedValue();
+		if (!TryGetPropertyValue(L"SelectedValue", source, stored)
+			|| !BindingItemValuesEqual(stored, current))
+			(void)TrySetCurrentPropertyValue(L"SelectedValue", current);
+	}
+	_selectedValueChanged(this);
 }
 
 void ComboBox::ApplyExpandedStateChange(bool oldValue, bool newValue)
@@ -765,6 +1230,7 @@ void ComboBox::ApplyExpandedStateChange(bool oldValue, bool newValue)
 	{
 		_underMouseIndex = -1;
 		isDraggingScroll = false;
+		UpdateGeneratedItemStates();
 	}
 
 	_animStartProgress = _dropProgress;
@@ -1315,8 +1781,6 @@ void ComboBox::UpdateForeground()
 		const bool hasScroll = static_cast<int>(this->values.size()) > visibleCount;
 		const float itemRight = hasScroll ? controlWidth - (std::max)(4.0f, this->ScrollBarWidth) - 11.0f : controlWidth;
 		const D2D1_RECT_F dropRect = D2D1::RectF(0.0f, dropTop, controlWidth, dropTop + dropHeight);
-		const float drawLeft = (std::max)(4.0f, this->ItemHorizontalPadding);
-		auto font = this->Font;
 
 		d2d->PushDrawRect(0.0f, dropTop, controlWidth, dropHeight);
 		d2d->FillRoundRect(dropRect, this->DropBackColor, this->DropCornerRadius);
@@ -1324,37 +1788,65 @@ void ComboBox::UpdateForeground()
 			(dropRect.right - dropRect.left) - border, (dropRect.bottom - dropRect.top) - border,
 			this->DropBorderColor, border, this->DropCornerRadius);
 		const int itemCount = static_cast<int>(this->values.size());
-		for (int i = this->ExpandScroll; i < this->ExpandScroll + visibleCount && i < itemCount; i++)
+		const bool renderContainers = _generatedItems.size() == values.size()
+			&& _lastTemplateError.empty();
+		if (renderContainers)
 		{
-			const int viewIndex = i - this->ExpandScroll;
-			const float itemTop = dropTop + static_cast<float>(viewIndex) * controlHeight;
-			const float itemBottom = itemTop + controlHeight;
-			const D2D1_RECT_F itemRect = D2D1::RectF(6.0f, itemTop + this->ItemVerticalPadding,
-				(std::max)(7.0f, itemRight - 6.0f), itemBottom - this->ItemVerticalPadding);
-			const bool isSelected = i == this->SelectedIndex;
-			const bool isHovered = i == this->_underMouseIndex;
-			if (isSelected)
+			LayoutGeneratedItems(dropTop, itemRight);
+			UpdateGeneratedItemStates();
+			for (int i = ExpandScroll;
+				i < ExpandScroll + visibleCount && i < itemCount; ++i)
 			{
-				d2d->FillRoundRect(itemRect, this->SelectedItemBackColor, this->CornerRadius);
-				const float accentW = 3.0f;
-				const float accentTop = itemRect.top + 5.0f;
-				const float accentH = (std::max)(5.0f, (itemRect.bottom - itemRect.top) - 10.0f);
-				d2d->FillRoundRect(itemRect.left, accentTop, accentW, accentH, this->AccentColor, accentW * 0.5f);
+				auto* item = _generatedItems[static_cast<size_t>(i)].get();
+				if (item) item->Update();
 			}
-			if (isHovered)
+		}
+		else
+		{
+			const float drawLeft = (std::max)(
+				4.0f, this->ItemHorizontalPadding);
+			auto font = this->Font;
+			for (int i = this->ExpandScroll;
+				i < this->ExpandScroll + visibleCount && i < itemCount; i++)
 			{
-				d2d->FillRoundRect(itemRect, this->UnderMouseBackColor, this->CornerRadius);
+				const int viewIndex = i - this->ExpandScroll;
+				const float itemTop = dropTop
+					+ static_cast<float>(viewIndex) * controlHeight;
+				const float itemBottom = itemTop + controlHeight;
+				const D2D1_RECT_F itemRect = D2D1::RectF(
+					6.0f, itemTop + this->ItemVerticalPadding,
+					(std::max)(7.0f, itemRight - 6.0f),
+					itemBottom - this->ItemVerticalPadding);
+				const bool isSelected = i == this->SelectedIndex;
+				const bool isHovered = i == this->_underMouseIndex;
+				if (isSelected)
+				{
+					d2d->FillRoundRect(itemRect,
+						this->SelectedItemBackColor, this->CornerRadius);
+					const float accentW = 3.0f;
+					const float accentTop = itemRect.top + 5.0f;
+					const float accentH = (std::max)(5.0f,
+						(itemRect.bottom - itemRect.top) - 10.0f);
+					d2d->FillRoundRect(itemRect.left, accentTop,
+						accentW, accentH, this->AccentColor,
+						accentW * 0.5f);
+				}
+				if (isHovered)
+					d2d->FillRoundRect(itemRect,
+						this->UnderMouseBackColor, this->CornerRadius);
+				auto itemTextSize = font->GetTextSize(
+					this->values[static_cast<size_t>(i)]);
+				const float itemTextY = itemTop + (std::max)(0.0f,
+					(controlHeight - itemTextSize.height) * 0.5f);
+				const auto itemTextColor = isHovered
+					? this->UnderMouseForeColor
+					: (isSelected
+						? this->SelectedItemForeColor : this->ForeColor);
+				d2d->DrawString(this->values[static_cast<size_t>(i)],
+					drawLeft, itemTextY,
+					(std::max)(1.0f, itemRight - drawLeft - 8.0f),
+					itemTextSize.height + 2.0f, itemTextColor, font);
 			}
-			auto itemTextSize = font->GetTextSize(this->values[static_cast<size_t>(i)]);
-			const float itemTextY = itemTop + (std::max)(0.0f, (controlHeight - itemTextSize.height) * 0.5f);
-			const auto itemTextColor = isHovered ? this->UnderMouseForeColor : (isSelected ? this->SelectedItemForeColor : this->ForeColor);
-			d2d->DrawString(
-				this->values[static_cast<size_t>(i)],
-				drawLeft,
-				itemTextY,
-				(std::max)(1.0f, itemRight - drawLeft - 8.0f),
-				itemTextSize.height + 2.0f,
-				itemTextColor, font);
 		}
 		d2d->PopDrawRect();
 		this->DrawScroll();

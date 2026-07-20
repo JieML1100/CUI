@@ -895,16 +895,15 @@ void Designer::RebuildDocumentOutline()
 	{
 		if (!control || !control->ControlInstance) continue;
 		std::wstring typeName;
-		if (!control->CustomType.Empty())
-			typeName = control->CustomType.XamlName;
-		if (typeName.empty())
+		if (!control->ComponentType.Empty())
+			typeName = control->ComponentType.XamlName;
+		else
 		{
 			const auto descriptor = std::find_if(
 				_controlDescriptors.begin(), _controlDescriptors.end(),
 				[&](const DesignerControlDescriptor& candidate)
 				{
-					return !candidate.IsCustom()
-						&& candidate.Type == control->Type;
+					return candidate.Type == control->Type;
 				});
 			if (descriptor != _controlDescriptors.end())
 				typeName = descriptor->Name;

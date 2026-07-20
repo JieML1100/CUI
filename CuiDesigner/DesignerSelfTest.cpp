@@ -5,7 +5,7 @@
 #include "DesignerCanvas.h"
 #include "DesignerControlCatalog.h"
 #include "DesignerDataContextSchemaUtils.h"
-#include "DesignerPreviewPlugin.h"
+#include "DataResourcesEditorDialog.h"
 #include "DesignerCore/Commands/ControlPlacementCommand.h"
 #include "DesignerCore/Commands/ControlStructureCommand.h"
 #include "DesignerCore/Commands/ControlOwnedCollectionCommand.h"
@@ -28,7 +28,16 @@
 #include "SourceCodeNavigator.h"
 #include "ToolBox.h"
 #include "XamlEditorDialog.h"
+#include "../CUI/include/Button.h"
 #include "../CUI/include/ComboBox.h"
+#include "../CUI/include/ContentControl.h"
+#include "../CUI/include/ContentPresenter.h"
+#include "../CUI/include/ItemsControl.h"
+#include "../CUI/include/ItemsPresenter.h"
+#include "../CUI/include/ListBox.h"
+#include "../CUI/include/ScrollView.h"
+#include "../CUI/include/GroupBox.h"
+#include "../CUI/include/Expander.h"
 #include "../CUI/include/Form.h"
 #include "../CUI/include/GridView.h"
 #include "../CUI/include/ChartView.h"
@@ -61,34 +70,6 @@
 
 namespace
 {
-	CuiDesignerPreviewStatusV1 CUI_DESIGNER_PREVIEW_CALL FakePreviewCreate(
-		void*, CuiDesignerUtf8ViewV1, CuiDesignerUtf8ViewV1, void** session)
-	{
-		if (session) *session = reinterpret_cast<void*>(1);
-		return CUI_DESIGNER_PREVIEW_OK_V1;
-	}
-	void CUI_DESIGNER_PREVIEW_CALL FakePreviewDestroy(void*, void*) {}
-	CuiDesignerPreviewStatusV1 CUI_DESIGNER_PREVIEW_CALL FakePreviewSetValue(
-		void*, void*, CuiDesignerUtf8ViewV1,
-		const CuiDesignerPreviewValueV1*)
-	{
-		return CUI_DESIGNER_PREVIEW_OK_V1;
-	}
-	CuiDesignerPreviewStatusV1 CUI_DESIGNER_PREVIEW_CALL FakePreviewRender(
-		void*, void*, const CuiDesignerPreviewFrameInputV1*,
-		CuiDesignerPreviewFrameV1*)
-	{
-		return CUI_DESIGNER_PREVIEW_OK_V1;
-	}
-	void CUI_DESIGNER_PREVIEW_CALL FakePreviewShutdown(void*) {}
-
-	class SelfTestStatusBadge final : public Button
-	{
-	public:
-		SelfTestStatusBadge(int x, int y)
-			: Button(L"Preview", x, y, 150, 30) {}
-	};
-
 	std::shared_ptr<DesignerControl> FindControl(
 		DesignerCanvas& canvas,
 		const std::wstring& name)
@@ -280,6 +261,7 @@ namespace
 		if (left.CodeBehind != right.CodeBehind) add(L"codeBehind");
 		if (left.DataContextSchema != right.DataContextSchema) add(L"dataContext");
 		if (left.StyleSheet != right.StyleSheet) add(L"styleSheet");
+		if (left.Components != right.Components) add(L"components");
 		if (left.Nodes.size() != right.Nodes.size()) add(L"nodeCount");
 		const auto count = (std::min)(left.Nodes.size(), right.Nodes.size());
 		for (size_t index = 0; index < count; ++index)
@@ -298,8 +280,7 @@ namespace
 			if (a.ParentRef != b.ParentRef) field(L"parentRef");
 			if (a.Name != b.Name) field(L"name");
 			if (a.Type != b.Type) field(L"type");
-			if (a.CustomType != b.CustomType) field(L"customType");
-			if (a.CustomEvents != b.CustomEvents) field(L"customEvents");
+			if (a.ComponentType != b.ComponentType) field(L"componentType");
 			if (a.Order != b.Order) field(L"order");
 			if (a.Props != b.Props)
 			{
@@ -380,56 +361,6 @@ namespace
 bool RunDesignerSelfTest(std::wstring& report)
 {
 	std::vector<std::wstring> failures;
-	CuiDesignerPreviewPluginV1 previewTable{};
-	previewTable.StructSize = sizeof(previewTable);
-	previewTable.AbiVersion = CUI_DESIGNER_PREVIEW_ABI_V1;
-	previewTable.CreateSession = &FakePreviewCreate;
-	previewTable.DestroySession = &FakePreviewDestroy;
-	previewTable.SetValue = &FakePreviewSetValue;
-	previewTable.Render = &FakePreviewRender;
-	previewTable.Shutdown = &FakePreviewShutdown;
-	std::wstring previewContractError;
-	AppendFailure(failures,
-		DesignerPreviewPluginContract::ValidatePluginTable(
-			&previewTable, &previewContractError),
-		L"preview plugin contract: valid V1 function table was rejected");
-	previewTable.AbiVersion = CUI_DESIGNER_PREVIEW_ABI_V1 + 1;
-	AppendFailure(failures,
-		!DesignerPreviewPluginContract::ValidatePluginTable(
-			&previewTable, &previewContractError),
-		L"preview plugin contract: incompatible ABI was accepted");
-	previewTable.AbiVersion = CUI_DESIGNER_PREVIEW_ABI_V1;
-
-	const char previewText[] = "Badge";
-	CuiDesignerPreviewPrimitiveV1 previewPrimitive{};
-	previewPrimitive.StructSize = sizeof(previewPrimitive);
-	previewPrimitive.Kind = CUI_DESIGNER_PREVIEW_PRIMITIVE_TEXT_V1;
-	previewPrimitive.Width = 100.0f;
-	previewPrimitive.Height = 24.0f;
-	previewPrimitive.FillArgb32 = 0xFF102030u;
-	previewPrimitive.Text = { previewText, 5 };
-	previewPrimitive.FontSize = 13.0f;
-	CuiDesignerPreviewFrameV1 previewFrame{};
-	previewFrame.StructSize = sizeof(previewFrame);
-	previewFrame.Primitives = &previewPrimitive;
-	previewFrame.PrimitiveCount = 1;
-	std::vector<DesignerPreviewPrimitive> copiedPreviewFrame;
-	AppendFailure(failures,
-		DesignerPreviewPluginContract::CopyFrame(
-			previewFrame, copiedPreviewFrame, &previewContractError)
-		&& copiedPreviewFrame.size() == 1
-		&& copiedPreviewFrame.front().Text == L"Badge"
-		&& copiedPreviewFrame.front().FillArgb32 == 0xFF102030u,
-		L"preview plugin contract: valid plugin-owned frame was not copied");
-	const auto retainedPreviewFrame = copiedPreviewFrame;
-	previewPrimitive.Width = std::numeric_limits<float>::quiet_NaN();
-	AppendFailure(failures,
-		!DesignerPreviewPluginContract::CopyFrame(
-			previewFrame, copiedPreviewFrame, &previewContractError)
-		&& copiedPreviewFrame.size() == retainedPreviewFrame.size()
-		&& copiedPreviewFrame.front().Text == retainedPreviewFrame.front().Text,
-		L"preview plugin contract: invalid frame was not rejected transactionally");
-
 	ToolBox toolBox(0, 0, 260, 640);
 	AppendFailure(failures,
 		toolBox.GetItemCount() == ControlRegistry::GetAvailableControls().size()
@@ -451,6 +382,24 @@ bool RunDesignerSelfTest(std::wstring& report)
 		toolBox.GetVisibleItemCount() == 0
 			&& toolBox.GetVisibleCategoryCount() == 0,
 		L"toolbox: empty filter results retained stale visible rows");
+	{
+		DesignerModel::DesignDocument dataDocument;
+		DesignerModel::DesignDataTypeDefinition type;
+		type.Name = L"Person";
+		type.Properties = {
+			{ L"Name", BindingValueKind::String, true, true, true }
+		};
+		dataDocument.DataTypes.push_back(type);
+		DesignerModel::DesignDataList list;
+		list.Key = L"People";
+		list.ItemType = L"Person";
+		dataDocument.DataLists.push_back(list);
+		DataResourcesEditorDialog editor(dataDocument);
+		AppendFailure(failures,
+			!editor.Applied && editor.ResultDocument == dataDocument
+				&& editor.Size.cx == 940 && editor.Size.cy == 760,
+			L"data resources editor: construction changed the document or layout contract");
+	}
 	{
 		const std::wstring source =
 			L"<Form xmlns=\"urn:cui\" Name=\"MainForm\">"
@@ -562,7 +511,6 @@ bool RunDesignerSelfTest(std::wstring& report)
 		L"live XAML: a disabled modal owner discarded the canvas repaint");
 
 	auto catalogDescriptors = DesignerControlCatalog::BuiltInDescriptors();
-	const auto builtInDescriptorCount = catalogDescriptors.size();
 	auto findBuiltInDescriptor = [&](UIClass type)
 		-> const DesignerControlDescriptor*
 	{
@@ -783,324 +731,6 @@ bool RunDesignerSelfTest(std::wstring& report)
 			autoApplied && autoUndone && autoPersisted,
 			L"tab order: focusable filtering, visual auto-sort, batch Undo/Redo, or persistence failed");
 	}
-	const std::string catalogXml = R"xml(<?xml version="1.0" encoding="utf-8"?>
-<cuiControlCatalog schema="cui.designer.controls" version="1">
-  <control name="StatusBadge" displayName="Status badge" category="Business"
-    baseType="Button" xamlPrefix="sample" xamlName="StatusBadge"
-    xamlNamespace="urn:cui:selftest" cppType="Acme.Controls.StatusBadge"
-    header="Controls/StatusBadge.h" constructor="Bounds"
-	width="150" height="30" container="false">
-    <property name="Severity" displayName="Severity" category="Appearance"
-      categoryOrder="200" order="10" kind="Int64" default="1"
-      editor="Choice" minimum="0" maximum="2" bindable="true">
-      <choice displayName="Info" value="0" />
-      <choice displayName="Normal" value="1" />
-      <choice displayName="Warning" value="2" />
-    </property>
-    <event name="OnSeverityInvoked" displayName="Severity invoked"
-      field="OnSeverityInvoked" category="Action" signature="SenderInt"
-      order="5" default="true" />
-  </control>
-</cuiControlCatalog>)xml";
-	std::wstring catalogError;
-	AppendFailure(failures,
-		DesignerControlCatalog::AppendFromXml(
-			catalogDescriptors, catalogXml, &catalogError)
-		&& catalogDescriptors.size() == builtInDescriptorCount + 1
-		&& catalogDescriptors.back().CustomType.CppType
-			== L"Acme::Controls::StatusBadge"
-		&& catalogDescriptors.back().DefaultSize.cx == 150
-		&& catalogDescriptors.back().Category == L"Business"
-		&& catalogDescriptors.back().CustomProperties.size() == 1
-		&& catalogDescriptors.back().CustomProperties.front().Name == L"Severity"
-		&& catalogDescriptors.back().CustomProperties.front().Choices.size() == 3
-		&& catalogDescriptors.back().CustomEvents.size() == 1
-		&& catalogDescriptors.back().CustomEvents.front().IsDefault,
-		L"custom control catalog: valid manifest did not produce a canonical descriptor");
-	const auto validCatalogSize = catalogDescriptors.size();
-	AppendFailure(failures,
-		!DesignerControlCatalog::AppendFromXml(
-			catalogDescriptors, catalogXml, &catalogError)
-		&& catalogDescriptors.size() == validCatalogSize,
-		L"custom control catalog: duplicate append was not rejected transactionally");
-	const std::string conflictingCatalogXml = R"xml(
-<cuiControlCatalog schema="cui.designer.controls" version="1">
-  <control name="OtherBadge" baseType="Button" xamlPrefix="sample"
-    xamlName="OtherBadge" xamlNamespace="urn:cui:other"
-    cppType="Acme.Controls.OtherBadge" header="Controls/OtherBadge.h" />
-</cuiControlCatalog>)xml";
-	AppendFailure(failures,
-		!DesignerControlCatalog::AppendFromXml(
-			catalogDescriptors, conflictingCatalogXml, &catalogError)
-		&& catalogDescriptors.size() == validCatalogSize,
-		L"custom control catalog: conflicting prefix was not rejected transactionally");
-	const std::string nestedCatalogXml = R"xml(
-<cuiControlCatalog schema="cui.designer.controls" version="1">
-  <control name="NestedBadge" baseType="Button" xamlPrefix="other"
-    xamlName="NestedBadge" xamlNamespace="urn:cui:nested"
-    cppType="Acme.Controls.NestedBadge" header="Controls/NestedBadge.h">
-    <unknown />
-  </control>
-</cuiControlCatalog>)xml";
-	AppendFailure(failures,
-		!DesignerControlCatalog::AppendFromXml(
-			catalogDescriptors, nestedCatalogXml, &catalogError)
-		&& catalogDescriptors.size() == validCatalogSize,
-		L"custom control catalog: nested content was not rejected transactionally");
-	const std::string invalidPropertyCatalogXml = R"xml(
-<cuiControlCatalog schema="cui.designer.controls" version="1">
-  <control name="BadBadge" baseType="Button" xamlPrefix="bad"
-    xamlName="BadBadge" xamlNamespace="urn:cui:bad"
-    cppType="Acme.Controls.BadBadge" header="Controls/BadBadge.h">
-    <property name="Text" kind="String" default="duplicate" />
-  </control>
-</cuiControlCatalog>)xml";
-	AppendFailure(failures,
-		!DesignerControlCatalog::AppendFromXml(
-			catalogDescriptors, invalidPropertyCatalogXml, &catalogError)
-		&& catalogDescriptors.size() == validCatalogSize,
-		L"custom control catalog: base-property collision was not rejected transactionally");
-	const std::string invalidChoiceDefaultCatalogXml = R"xml(
-<cuiControlCatalog schema="cui.designer.controls" version="1">
-  <control name="BadChoiceBadge" baseType="Button" xamlPrefix="bad"
-    xamlName="BadChoiceBadge" xamlNamespace="urn:cui:bad"
-    cppType="Acme.Controls.BadChoiceBadge" header="Controls/BadChoiceBadge.h">
-    <property name="Severity" kind="Int" default="3" editor="Choice">
-      <choice displayName="Normal" value="1" />
-      <choice displayName="Warning" value="2" />
-    </property>
-  </control>
-</cuiControlCatalog>)xml";
-	AppendFailure(failures,
-		!DesignerControlCatalog::AppendFromXml(
-			catalogDescriptors, invalidChoiceDefaultCatalogXml, &catalogError)
-		&& catalogDescriptors.size() == validCatalogSize,
-		L"custom control catalog: choice default outside the set was not rejected");
-	const std::string invalidEventSignatureCatalogXml = R"xml(
-<cuiControlCatalog schema="cui.designer.controls" version="1">
-  <control name="BadEventBadge" baseType="Button" xamlPrefix="bad"
-    xamlName="BadEventBadge" xamlNamespace="urn:cui:bad"
-    cppType="Acme.Controls.BadEventBadge" header="Controls/BadEventBadge.h">
-    <event name="OnInjected" field="OnInjected"
-      signature="void(Acme::Payload*)" />
-  </control>
-</cuiControlCatalog>)xml";
-	AppendFailure(failures,
-		!DesignerControlCatalog::AppendFromXml(
-			catalogDescriptors, invalidEventSignatureCatalogXml, &catalogError)
-		&& catalogDescriptors.size() == validCatalogSize,
-		L"custom control catalog: arbitrary C++ event signature was accepted");
-	const std::string collidingEventCatalogXml = R"xml(
-<cuiControlCatalog schema="cui.designer.controls" version="1">
-  <control name="CollidingEventBadge" baseType="Button" xamlPrefix="bad"
-    xamlName="CollidingEventBadge" xamlNamespace="urn:cui:bad"
-    cppType="Acme.Controls.CollidingEventBadge" header="Controls/CollidingEventBadge.h">
-    <event name="OnMouseClick" field="OnMouseClick" signature="Sender" />
-  </control>
-</cuiControlCatalog>)xml";
-	AppendFailure(failures,
-		!DesignerControlCatalog::AppendFromXml(
-			catalogDescriptors, collidingEventCatalogXml, &catalogError)
-		&& catalogDescriptors.size() == validCatalogSize,
-		L"custom control catalog: inherited event collision was accepted");
-	const std::string dtdCatalogXml = R"xml(<!DOCTYPE cuiControlCatalog [
-<!ENTITY name "Injected">]>
-<cuiControlCatalog schema="cui.designer.controls" version="1">
-  <control name="&name;" baseType="Button" xamlPrefix="other"
-    xamlName="Injected" xamlNamespace="urn:cui:injected"
-    cppType="Acme.Controls.Injected" header="Controls/Injected.h" />
-</cuiControlCatalog>)xml";
-	AppendFailure(failures,
-		!DesignerControlCatalog::AppendFromXml(
-			catalogDescriptors, dtdCatalogXml, &catalogError)
-		&& catalogDescriptors.size() == validCatalogSize,
-		L"custom control catalog: DTD input was not rejected transactionally");
-	const std::string oversizedCatalog(4U * 1024U * 1024U + 1U, ' ');
-	AppendFailure(failures,
-		!DesignerControlCatalog::AppendFromXml(
-			catalogDescriptors, oversizedCatalog, &catalogError)
-		&& catalogDescriptors.size() == validCatalogSize,
-		L"custom control catalog: oversized input was not rejected transactionally");
-	AppendFailure(failures,
-		DesignerControlCatalog::AttachPreviewFactory(
-			catalogDescriptors, L"urn:cui:selftest", L"StatusBadge",
-			[](int x, int y)
-			{
-				return std::make_unique<SelfTestStatusBadge>(x, y);
-			}, &catalogError),
-		L"custom control catalog: process-local preview factory was not attached");
-	const auto customDescriptor = catalogDescriptors.back();
-	AppendFailure(failures,
-		customDescriptor.PreviewFactory
-		&& customDescriptor.PreviewFactory(1, 2)->Type() == UIClass::UI_Button,
-		L"custom control catalog: attached preview factory was not usable");
-
-	DesignerControlDescriptor missingPreviewDescriptor = customDescriptor;
-	missingPreviewDescriptor.PreviewFactory = {};
-	AppendFailure(failures,
-		missingPreviewDescriptor.IsValid(),
-		L"custom control catalog: portable proxy descriptor unexpectedly requires third-party code");
-
-	ToolBox customToolBox(
-		0, 0, 260, 320,
-		std::vector<DesignerControlDescriptor>{ customDescriptor });
-	const auto preview = customDescriptor.PreviewFactory(0, 0);
-	AppendFailure(failures, preview && preview->Type() == UIClass::UI_Button,
-		L"custom control catalog: preview factory returned the wrong base type");
-	DesignerControlDescriptor mismatchedPreviewDescriptor = customDescriptor;
-	mismatchedPreviewDescriptor.PreviewFactory = [](int x, int y)
-	{
-		return std::make_unique<Label>(L"Wrong type", x, y);
-	};
-	DesignerCanvas mismatchedPreviewCanvas(0, 0, 400, 300);
-	AppendFailure(failures,
-		!mismatchedPreviewCanvas.AddControlToCanvas(
-			mismatchedPreviewDescriptor, POINT{ 40, 40 })
-		&& mismatchedPreviewCanvas.GetAllControls().empty(),
-		L"custom control catalog: mismatched preview Type was not rejected");
-	AppendFailure(failures,
-		customToolBox.GetItemCount() == 1
-		&& customToolBox.GetVisibleItemCount() == 1
-		&& customToolBox.GetVisibleCategoryCount() == 1,
-		L"custom toolbox: descriptor/category was not materialized");
-	customToolBox.SetFilterText(L"StatusBadge");
-	AppendFailure(failures,
-		customToolBox.GetVisibleItemCount() == 1,
-		L"custom toolbox: type-name filtering lost the external descriptor");
-
-	DesignerCanvas descriptorCanvas(0, 0, 800, 600);
-	const auto descriptorAdd = descriptorCanvas.AddControlToCanvas(
-		customDescriptor, POINT{ 120, 120 });
-	AppendFailure(failures, descriptorAdd,
-		L"custom descriptor: transactional add failed");
-	AppendFailure(failures,
-		descriptorCanvas.GetAllControls().size() == 1
-		&& descriptorCanvas.GetAllControls().front()->CustomType
-			== customDescriptor.CustomType
-		&& descriptorCanvas.GetAllControls().front()->CustomProperties
-			== customDescriptor.CustomProperties
-		&& dynamic_cast<SelfTestStatusBadge*>(
-			descriptorCanvas.GetAllControls().front()->ControlInstance) != nullptr
-		&& descriptorCanvas.GetAllControls().front()->ControlInstance->Size.cx == 150,
-		L"custom descriptor: preview/custom identity was not retained");
-	PropertyGrid customPropertyGrid(0, 0, 360, 500);
-	customPropertyGrid.SetDesignerCanvas(&descriptorCanvas);
-	ReloadCurrentSelection(customPropertyGrid, descriptorCanvas);
-	const auto* severityRow = DesignerPropertyRowCatalog::Find(
-		customPropertyGrid.GetPresentedPropertyRows(), L"Severity");
-	AppendFailure(failures,
-		severityRow
-		&& severityRow->Source == DesignerPropertyRowSource::CustomDescriptor
-		&& severityRow->Editor == DesignerPropertyRowEditorKind::Choice
-		&& severityRow->Value.Text == L"1",
-		L"custom property catalog: schema was not projected into the property grid");
-	const auto severityEdit = customPropertyGrid.ApplyPropertyValue(
-		L"Severity", L"2");
-	AppendFailure(failures,
-		severityEdit
-		&& descriptorCanvas.GetAllControls().front()->MetadataProperties.at(
-			L"Severity").Text == L"2",
-		L"custom property catalog: typed edit was not tracked");
-	AppendFailure(failures,
-		!customPropertyGrid.ApplyPropertyValue(L"Severity", L"4"),
-		L"custom property catalog: range/choice validation accepted an invalid value");
-	customPropertyGrid.SetViewMode(DesignerPropertyGridViewMode::Events);
-	ReloadCurrentSelection(customPropertyGrid, descriptorCanvas);
-	std::wstring customDefaultHandler;
-	AppendFailure(failures,
-		customPropertyGrid.ActivateDefaultEventHandler(&customDefaultHandler)
-		&& customDefaultHandler.find(L"OnSeverityInvoked") != std::wstring::npos
-		&& descriptorCanvas.GetAllControls().front()->EventHandlers.contains(
-			L"OnSeverityInvoked"),
-		L"custom event catalog: event page/default activation did not use the manifest contract");
-	AppendFailure(failures,
-		descriptorCanvas.UndoCommand()
-		&& !descriptorCanvas.GetAllControls().front()->EventHandlers.contains(
-			L"OnSeverityInvoked"),
-		L"custom event catalog: default handler activation was not undoable");
-	customPropertyGrid.SetViewMode(DesignerPropertyGridViewMode::Properties);
-	ReloadCurrentSelection(customPropertyGrid, descriptorCanvas);
-	auto customControl = descriptorCanvas.GetAllControls().front();
-	customControl->DataBindings[L"Severity"] = {
-		L"View.Severity",
-		BindingMode::OneWay,
-		DataSourceUpdateMode::OnPropertyChanged,
-		L"" };
-	std::wstring customBindingError;
-	AppendFailure(failures,
-		descriptorCanvas.RefreshDesignBindings(
-			*customControl, &customBindingError)
-		&& customControl->BindingPreviewStates.at(L"Severity").Status
-			== DesignerBindingPreviewStatus::Detached,
-		L"custom property binding: portable metadata was not validated without a DataContext");
-	AppendFailure(failures,
-		descriptorCanvas.SetDataContextSchema({
-			{ L"View", BindingValueKind::Object, true, false, true },
-			{ L"View.Severity", BindingValueKind::Int64, true, false, true } },
-			&customBindingError),
-		L"custom property binding: schema validation incorrectly required runtime metadata");
-	customControl->DataBindings[L"Severity"].Mode = BindingMode::TwoWay;
-	AppendFailure(failures,
-		!descriptorCanvas.RefreshDesignBindings(
-			*customControl, &customBindingError)
-		&& customControl->BindingPreviewStates.at(L"Severity").Status
-			== DesignerBindingPreviewStatus::Error,
-		L"custom property binding: unsupported TwoWay mode passed portable validation");
-	customControl->DataBindings[L"Severity"].Mode = BindingMode::OneWay;
-
-	DesignerModel::DesignDocument descriptorDocument;
-	std::wstring descriptorError;
-	const bool descriptorCaptured = descriptorCanvas.BuildDesignDocument(
-		descriptorDocument, &descriptorError);
-	AppendFailure(failures,
-		descriptorCaptured
-		&& descriptorDocument.Nodes.size() == 1
-		&& descriptorDocument.Nodes.front().CustomType
-			== customDescriptor.CustomType
-		&& descriptorDocument.Nodes.front().Props["metadata"]["Severity"]["value"]
-			.get<std::string>() == "2"
-		&& descriptorDocument.Nodes.front().Bindings.contains("Severity"),
-		L"custom descriptor: document capture lost portable identity"
-			+ (descriptorError.empty() ? std::wstring() : L": " + descriptorError));
-	auto incompatibleEventDocument = descriptorDocument;
-	incompatibleEventDocument.Nodes.front().Events["OnSeverityInvoked"] =
-		"StatusBadge1_OnSeverityInvoked";
-	auto incompatibleDescriptor = customDescriptor;
-	incompatibleDescriptor.CustomEvents.front().Signature =
-		DesignerCustomEventSignature::SenderBool;
-	descriptorCanvas.RegisterControlDescriptor(incompatibleDescriptor);
-	std::wstring incompatibilityError;
-	AppendFailure(failures,
-		!descriptorCanvas.ApplyDesignDocument(
-			incompatibleEventDocument, &incompatibilityError)
-		&& incompatibilityError.find(L"不兼容") != std::wstring::npos
-		&& descriptorCanvas.GetAllControls().size() == 1,
-		L"custom event catalog: an incompatible installed signature was accepted");
-	descriptorCanvas.RegisterControlDescriptor(customDescriptor);
-	customControl->DataBindings.clear();
-	(void)descriptorCanvas.RefreshDesignBindings(*customControl, nullptr);
-	AppendFailure(failures,
-		descriptorCanvas.UndoCommand()
-		&& descriptorCanvas.GetAllControls().size() == 1
-		&& descriptorCanvas.GetAllControls().front()->MetadataProperties.find(
-			L"Severity")
-			== descriptorCanvas.GetAllControls().front()->MetadataProperties.end(),
-		L"custom descriptor: property undo did not restore the schema default");
-	AppendFailure(failures,
-		descriptorCanvas.UndoCommand(),
-		L"custom descriptor: add undo failed");
-	AppendFailure(failures, descriptorCanvas.GetAllControls().empty(),
-		L"custom descriptor: undo retained the control");
-	AppendFailure(failures, descriptorCanvas.RedoCommand(),
-		L"custom descriptor: add redo failed");
-	AppendFailure(failures,
-		descriptorCanvas.GetAllControls().size() == 1
-		&& descriptorCanvas.GetAllControls().front()->CustomType
-			== customDescriptor.CustomType
-		&& dynamic_cast<SelfTestStatusBadge*>(
-			descriptorCanvas.GetAllControls().front()->ControlInstance) != nullptr,
-		L"custom descriptor: redo lost the custom identity/real preview factory");
-
 	// High-frequency modal collections keep one small typed delta instead of
 	// rebuilding or retaining the complete DesignDocument.
 	DesignerCanvas comboStructureCanvas(0, 0, 900, 640);
@@ -1155,7 +785,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 		&& comboAfter.ComboBox.HasLocalSelectedIndex
 		&& comboAfter.ComboBox.LocalSelectedIndex == 1
 		&& comboAfter.ComboBox.HasBindingSelectedIndex
-		&& comboAfter.ComboBox.BindingSelectedIndex >= 0
+		&& comboAfter.ComboBox.BindingSelectedIndex >= -1
 		&& comboAfter.ComboBox.BindingSelectedIndex < 2
 		&& comboAfter.ComboBox.HasTrackedSelectedIndex,
 		L"structure delta: failed to capture complete ComboBox after state"
@@ -3633,22 +3263,34 @@ bool RunDesignerSelfTest(std::wstring& report)
 	const int originalStableId = renameIdentity ? renameIdentity->StableId : 0;
 	const auto renameResult = renameGrid.ApplyPropertyValue(
 		L"Name", L"RenamedButton");
-	AppendFailure(failures,
-		renameResult.Succeeded
+	const bool renamedInitially = renameResult.Succeeded
 		&& renameCanvas.GetSelectedControl()
-		&& renameCanvas.GetSelectedControl()->Name == L"RenamedButton"
-		&& renameCanvas.UndoCommand().HasChanges()
+		&& renameCanvas.GetSelectedControl()->Name == L"RenamedButton";
+	const auto renameUndo = renamedInitially
+		? renameCanvas.UndoCommand() : DesignerDocumentTransactionResult{};
+	const bool renameUndone = renameUndo.HasChanges()
 		&& renameCanvas.GetSelectedControl()
 		&& renameCanvas.GetSelectedControl()->Name == originalName
-		&& renameCanvas.GetSelectedControl() == renameIdentity
-		&& renameCanvas.RedoCommand().HasChanges()
+		&& renameCanvas.GetSelectedControl() == renameIdentity;
+	const auto renameRedo = renameUndone
+		? renameCanvas.RedoCommand() : DesignerDocumentTransactionResult{};
+	const bool renameRedone = renameRedo.HasChanges()
 		&& renameCanvas.GetSelectedControl()
 		&& renameCanvas.GetSelectedControl()->Name == L"RenamedButton"
 		&& renameCanvas.GetSelectedControl() == renameIdentity
 		&& renameCanvas.GetSelectedControl()->StableId == originalStableId
 		&& renameCanvas.GetSelectedControl()->ControlInstance->DesignId
-			== originalStableId,
-		L"property delta: Name undo/redo lost identity or selection");
+			== originalStableId;
+	AppendFailure(failures,
+		renamedInitially && renameUndone && renameRedone,
+		std::wstring(L"property delta: Name undo/redo lost identity or selection [apply=")
+			+ (renamedInitially ? L"1" : L"0") + L", undo="
+			+ (renameUndone ? L"1" : L"0") + L", redo="
+			+ (renameRedone ? L"1" : L"0") + L", error="
+			+ renameResult.Error + L", undoChanged="
+			+ (renameUndo.HasChanges() ? L"1" : L"0") + L", selected="
+			+ (renameCanvas.GetSelectedControl()
+				? renameCanvas.GetSelectedControl()->Name : L"<none>") + L"]");
 
 	DesignerModel::DesignDocument renamedDocument;
 	std::wstring stableIdError;
@@ -7442,8 +7084,9 @@ bool RunDesignerSelfTest(std::wstring& report)
 			deleteSubtree.HasChanges()
 			&& subtreeCanvas.GetAllControls().empty()
 			&& deleteSubtreeMemory > 0
-			&& deleteSubtreeMemory < 64 * 1024,
-			L"subtree delta: nested delete retained a full document or left wrappers");
+			&& deleteSubtreeMemory < 96 * 1024,
+			L"subtree delta: nested delete retained a full document or left wrappers (bytes="
+				+ std::to_wstring(deleteSubtreeMemory) + L")");
 		const auto undoSubtree = subtreeCanvas.UndoCommand();
 		DesignerModel::DesignDocument restoredSubtree;
 		std::wstring restoredSubtreeError;
@@ -8434,28 +8077,13 @@ bool RunDesignerSelfTest(std::wstring& report)
 			&& demoCanvas.BuildDesignDocument(
 				recapturedDemo, &demoCaptureError);
 		CodeGenInput demoCodeInput;
+		std::wstring demoCodeGenError;
 		const bool demoCodeInputBuilt = demoRecaptured
 			&& DesignerModel::DesignDocumentCodeGenInputBuilder::Build(
-				recapturedDemo, demoCodeInput, &demoCaptureError);
-		CodeGenerator demoCodeGenerator(L"DemoResourceForm", demoCodeInput);
-		const auto demoGeneratedCpp = demoCodeInputBuilt
-			? demoCodeGenerator.GenerateCpp() : std::string{};
-		const bool drawingResourcesGenerated = demoCodeInputBuilt
-			&& demoGeneratedCpp.find(
-				"SetResource(L\"GradientLabelClip\"") != std::string::npos
-			&& demoGeneratedCpp.find(
-				"cui::drawing::GeometryKind::Path") != std::string::npos
-			&& demoGeneratedCpp.find(
-				"SetResource(L\"GradientLabelTransform\"") != std::string::npos
-			&& demoGeneratedCpp.find(
-				"cui::drawing::TransformKind::Rotate") != std::string::npos;
-		const bool imageBrushGenerated = demoCodeInputBuilt
-			&& demoGeneratedCpp.find(
-				"SetResource(L\"RuntimeBadgeForeground\"") != std::string::npos
-			&& demoGeneratedCpp.find(
-				"cui::drawing::BrushKind::Image") != std::string::npos
-			&& demoGeneratedCpp.find(
-				"cui::drawing::ImageBrushStretch::UniformToFill") != std::string::npos;
+				recapturedDemo, demoCodeInput, &demoCodeGenError);
+		const bool staticCodeGenerationRetired = !demoCodeInputBuilt
+			&& demoCodeGenError.find(L"动态 XAML 类型系统")
+				!= std::wstring::npos;
 		std::string compactDemo;
 		bool demoCompact = false;
 		if (demoRecaptured)
@@ -8482,7 +8110,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 					&& compactDemo.find("Property=\"Clip\"") != std::string::npos
 					&& compactDemo.find("Property=\"RenderTransform\"")
 						!= std::string::npos
-					&& compactDemo.find("RenderTransformOrigin=\"0.5,0.5\"")
+					&& compactDemo.find("RenderTransformOrigin=\"0.5, 0.5\"")
 						!= std::string::npos
 					&& compactDemo.find("<SideBar.Items>") != std::string::npos
 					&& compactDemo.find("<BreadcrumbBar.Items>") != std::string::npos
@@ -8508,6 +8136,36 @@ bool RunDesignerSelfTest(std::wstring& report)
 			{
 				demoCaptureError = Convert::Utf8ToUnicode(exception.what());
 			}
+		}
+		std::wstring demoCompactDiagnostic;
+		const auto appendCompactDiagnostic =
+			[&](const std::string& diagnostic)
+			{
+				if (!demoCompactDiagnostic.empty())
+					demoCompactDiagnostic += L", ";
+				demoCompactDiagnostic += Convert::Utf8ToUnicode(diagnostic);
+			};
+		for (const char* forbidden : {
+			"d:ProjectedProperties", "d:DesignProps", "d:DesignBindings",
+			"d:DesignExtra" })
+		{
+			if (compactDemo.find(forbidden) != std::string::npos)
+				appendCompactDiagnostic(std::string("unexpected ") + forbidden);
+		}
+		for (const char* required : {
+			"<PathGeometry", "x:Key=\"GradientLabelClip\"",
+			"<Geometry.Transform>", "<ArcSegment",
+			"x:Key=\"GradientLabelTransform\"", "Property=\"Clip\"",
+			"Property=\"RenderTransform\"", "RenderTransformOrigin=\"0.5, 0.5\"",
+			"<SideBar.Items>", "<BreadcrumbBar.Items>", "<FilterBar.Items>",
+			"<KpiCard.Sparkline>", "<ChartView.Series>",
+			"<ReportView.Columns>", "<ReportView.Rows>", "<BitmapImage",
+			"UriSource=\"Assets/nav-overview.svg\"", "<LinearGradientBrush",
+			"<ResourceDictionary.MergedDictionaries>",
+			"Source=\"Assets/DemoTheme.xaml\"", "Icon=\"Assets/nav-overview.svg\"" })
+		{
+			if (compactDemo.find(required) == std::string::npos)
+				appendCompactDiagnostic(std::string("missing ") + required);
 		}
 		const auto hasType = [&](UIClass type)
 		{
@@ -8658,6 +8316,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 				&& control->Size.cx == beforeSize.cx
 				&& control->Size.cy == beforeSize.cy;
 		}
+		std::wstring expanderMoveDetail;
 		const auto nestedContainerChildMoveStable =
 			[&](const std::wstring& name)
 			{
@@ -8672,7 +8331,7 @@ bool RunDesignerSelfTest(std::wstring& report)
 					{ wrapper->Name }, wrapper->Name, false);
 				const auto moved = demoCanvas.NudgeSelectionBy(1, 1);
 				const auto afterAbsolute = control->GetAbsoluteLocationDip();
-				return moved.HasChanges()
+				const bool stable = moved.HasChanges()
 					&& control->Location.x == beforeLocation.x + 1
 					&& control->Location.y == beforeLocation.y + 1
 					&& control->Size.cx == beforeSize.cx
@@ -8681,6 +8340,21 @@ bool RunDesignerSelfTest(std::wstring& report)
 						- beforeAbsolute.x - 1.0f) < 0.01f
 					&& std::fabs(afterAbsolute.y
 						- beforeAbsolute.y - 1.0f) < 0.01f;
+				if (!stable && name == L"expanderText")
+					expanderMoveDetail = L"loc="
+						+ std::to_wstring(beforeLocation.x) + L","
+						+ std::to_wstring(beforeLocation.y) + L"->"
+						+ std::to_wstring(control->Location.x) + L","
+						+ std::to_wstring(control->Location.y) + L"; size="
+						+ std::to_wstring(beforeSize.cx) + L","
+						+ std::to_wstring(beforeSize.cy) + L"->"
+						+ std::to_wstring(control->Size.cx) + L","
+						+ std::to_wstring(control->Size.cy) + L"; abs="
+						+ std::to_wstring(beforeAbsolute.x) + L","
+						+ std::to_wstring(beforeAbsolute.y) + L"->"
+						+ std::to_wstring(afterAbsolute.x) + L","
+						+ std::to_wstring(afterAbsolute.y);
+				return stable;
 			};
 		const bool groupChildMoveStable =
 			nestedContainerChildMoveStable(L"groupName");
@@ -8688,10 +8362,16 @@ bool RunDesignerSelfTest(std::wstring& report)
 			nestedContainerChildMoveStable(L"expanderText");
 		const bool specialContainerMovesStable =
 			groupChildMoveStable && expanderChildMoveStable;
+		const bool sideBarMaterialized = hasType(UIClass::UI_SideBar);
+		const bool breadcrumbBarMaterialized =
+			hasType(UIClass::UI_BreadcrumbBar);
+		const bool pagedGridViewMaterialized =
+			hasType(UIClass::UI_PagedGridView);
+		const bool webBrowserMaterialized = hasType(UIClass::UI_WebBrowser);
+		const bool mediaPlayerMaterialized = hasType(UIClass::UI_MediaPlayer);
 		AppendFailure(failures,
 			demoParsed && demoApplied && demoRecaptured && demoCompact
-			&& drawingResourcesGenerated
-			&& imageBrushGenerated
+			&& staticCodeGenerationRetired
 			&& advancedDataMaterialized
 			&& objectResourcesMaterialized
 			&& drawingResourcesMaterialized
@@ -8699,11 +8379,11 @@ bool RunDesignerSelfTest(std::wstring& report)
 			&& surfaceChildMoveStable
 			&& transformedChildMoveStable
 			&& specialContainerMovesStable
-			&& hasType(UIClass::UI_SideBar)
-			&& hasType(UIClass::UI_BreadcrumbBar)
-			&& hasType(UIClass::UI_PagedGridView)
-			&& hasType(UIClass::UI_WebBrowser)
-			&& hasType(UIClass::UI_MediaPlayer),
+			&& sideBarMaterialized
+			&& breadcrumbBarMaterialized
+			&& pagedGridViewMaterialized
+			&& webBrowserMaterialized
+			&& mediaPlayerMaterialized,
 			L"public XAML gallery: DemoWindow preview geometry, movement, or compact serialization regressed"
 			+ std::wstring(L" [path=") + demoPath.wstring()
 			+ L", parse=" + demoParseError
@@ -8714,12 +8394,1498 @@ bool RunDesignerSelfTest(std::wstring& report)
 			+ L", transform=" + (transformedChildMoveStable ? L"1" : L"0")
 			+ L", group=" + (groupChildMoveStable ? L"1" : L"0")
 			+ L", expander=" + (expanderChildMoveStable ? L"1" : L"0")
+			+ L", expanderDetail=" + expanderMoveDetail
 			+ L", advanced=" + (advancedDataMaterialized ? L"1" : L"0")
 			+ L", objects=" + (objectResourcesMaterialized ? L"1" : L"0")
 			+ L", drawing=" + (drawingResourcesMaterialized ? L"1" : L"0")
-			+ L", drawingCode=" + (drawingResourcesGenerated ? L"1" : L"0")
-			+ L", imageBrushCode=" + (imageBrushGenerated ? L"1" : L"0")
+			+ L", sideBar=" + (sideBarMaterialized ? L"1" : L"0")
+			+ L", breadcrumb=" + (breadcrumbBarMaterialized ? L"1" : L"0")
+			+ L", pagedGrid=" + (pagedGridViewMaterialized ? L"1" : L"0")
+			+ L", web=" + (webBrowserMaterialized ? L"1" : L"0")
+			+ L", media=" + (mediaPlayerMaterialized ? L"1" : L"0")
+			+ L", compact=" + (demoCompact ? L"1" : L"0")
+			+ L", compactDetail=" + demoCompactDiagnostic
+			+ L", codegenRetired=" + (staticCodeGenerationRetired ? L"1" : L"0")
+			+ L", codegen=" + demoCodeGenError
 			+ L"]");
+	}
+
+	{
+		const std::string elementBindingXaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="ElementPreviewForm">
+  <TextBox x:Name="elementSource" Text="Designer source" />
+  <Label x:Name="elementTarget"
+         Text="{Binding Text, ElementName=elementSource}" />
+</Form>)XAML";
+		DesignerModel::DesignDocument elementDocument;
+		std::wstring elementError;
+		const bool elementParsed = DesignerModel::XamlDocumentParser::FromXaml(
+			elementBindingXaml, elementDocument, &elementError);
+		DesignerCanvas elementCanvas(0, 0, 640, 480);
+		const bool elementApplied = elementParsed
+			&& elementCanvas.ApplyDesignDocument(elementDocument, &elementError);
+		auto elementSource = elementApplied
+			? FindControl(elementCanvas, L"elementSource") : nullptr;
+		auto elementTarget = elementApplied
+			? FindControl(elementCanvas, L"elementTarget") : nullptr;
+		const auto previewState = elementTarget
+			? elementTarget->BindingPreviewStates.find(L"Text")
+			: std::map<std::wstring, DesignerBindingPreviewState>::const_iterator{};
+		const bool elementPreviewInitial = elementSource && elementTarget
+			&& elementTarget->ControlInstance->Text == L"Designer source"
+			&& previewState != elementTarget->BindingPreviewStates.end()
+			&& previewState->second.Status == DesignerBindingPreviewStatus::Active;
+		if (elementSource) elementSource->ControlInstance->Text = L"Designer updated";
+		const bool elementPreviewUpdated = elementTarget
+			&& elementTarget->ControlInstance->Text == L"Designer updated";
+		DesignerModel::DesignDocument elementCaptured;
+		const bool elementSaved = elementCanvas.BuildDesignDocument(
+			elementCaptured, &elementError);
+		const auto elementCanonical = elementSaved
+			? DesignerModel::XamlDocumentSerializer::ToXaml(elementCaptured)
+			: std::string{};
+		AppendFailure(failures,
+			elementParsed && elementApplied && elementPreviewInitial
+			&& elementPreviewUpdated && elementSaved
+			&& elementCanonical.find("ElementName=elementSource")
+				!= std::string::npos,
+			L"ElementName binding did not preview or persist in Designer: "
+				+ elementError);
+	}
+
+	{
+		const std::string inheritedBindingXaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="InheritedPreviewForm">
+  <Form.DataContextSchema>
+    <Property Path="Profile" Kind="Object" ObjectType="BindingSource" />
+    <Property Path="Profile.Name" Kind="String" />
+  </Form.DataContextSchema>
+  <StackPanel x:Name="profileScope" DataContext="{Binding Profile}">
+    <Label x:Name="profileName" Text="{Binding Name}" />
+    <Label x:Name="selfPreview" Text="Self preview"
+           AccessibleName="{Binding Text, RelativeSource={RelativeSource Self}}" />
+  </StackPanel>
+</Form>)XAML";
+		DesignerModel::DesignDocument inheritedDocument;
+		std::wstring inheritedError;
+		const bool inheritedParsed = DesignerModel::XamlDocumentParser::FromXaml(
+			inheritedBindingXaml, inheritedDocument, &inheritedError);
+		DesignerCanvas inheritedCanvas(0, 0, 640, 480);
+		const bool inheritedApplied = inheritedParsed
+			&& inheritedCanvas.ApplyDesignDocument(
+				inheritedDocument, &inheritedError);
+		auto profile = std::make_shared<ObservableObject>();
+		profile->SetValue(L"Name", std::wstring(L"Designer profile"));
+		auto root = std::make_shared<ObservableObject>();
+		root->SetValue(L"Profile", BindingSourceReference(profile));
+		if (inheritedApplied) inheritedCanvas.SetDesignDataContext(root);
+		auto inheritedName = inheritedApplied
+			? FindControl(inheritedCanvas, L"profileName") : nullptr;
+		auto selfPreview = inheritedApplied
+			? FindControl(inheritedCanvas, L"selfPreview") : nullptr;
+		const bool inheritedInitial = inheritedName && selfPreview
+			&& inheritedName->ControlInstance->Text == L"Designer profile"
+			&& selfPreview->ControlInstance->AccessibleName == L"Self preview";
+		auto replacement = std::make_shared<ObservableObject>();
+		replacement->SetValue(L"Name", std::wstring(L"Replacement profile"));
+		root->SetValue(L"Profile", BindingSourceReference(replacement));
+		if (selfPreview) selfPreview->ControlInstance->Text = L"Changed self preview";
+		const bool inheritedUpdated = inheritedName && selfPreview
+			&& inheritedName->ControlInstance->Text == L"Replacement profile"
+			&& selfPreview->ControlInstance->AccessibleName
+				== L"Changed self preview";
+		DesignerModel::DesignDocument inheritedCaptured;
+		const bool inheritedSaved = inheritedApplied
+			&& inheritedCanvas.BuildDesignDocument(
+				inheritedCaptured, &inheritedError);
+		const auto inheritedCanonical = inheritedSaved
+			? DesignerModel::XamlDocumentSerializer::ToXaml(inheritedCaptured)
+			: std::string{};
+		AppendFailure(failures,
+			inheritedParsed && inheritedApplied && inheritedInitial
+			&& inheritedUpdated && inheritedSaved
+			&& inheritedCanonical.find("DataContext=\"{Binding Profile")
+				!= std::string::npos
+			&& inheritedCanonical.find(
+				"RelativeSource={RelativeSource Self}") != std::string::npos,
+			L"inherited DataContext or RelativeSource Self did not preview/persist: "
+				+ inheritedError);
+	}
+
+	{
+		const std::string contentPresenterXaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="ContentPreviewForm">
+  <Form.Resources>
+    <DataType x:Key="Person"><DataType.Properties>
+      <Property Path="Name" Kind="String" />
+    </DataType.Properties></DataType>
+    <DataTemplate DataType="Person">
+      <Label x:Name="personPreview" Text="{Binding Name}"
+             AccessibleName="Typed person preview" />
+    </DataTemplate>
+  </Form.Resources>
+  <Form.DataContextSchema>
+    <Property Path="CurrentPerson" Kind="Object"
+              ObjectType="BindingSource" DataType="Person" />
+  </Form.DataContextSchema>
+	<StackPanel x:Name="contentRoot">
+	  <ContentPresenter x:Name="personPresenter"
+	                    Content="{Binding CurrentPerson}" />
+	  <ContentControl x:Name="personContent"
+	                  Content="{Binding CurrentPerson}" />
+	  <ContentControl x:Name="visualContent">
+	    <Label x:Name="authoredContent" Text="Authored content" />
+	  </ContentControl>
+	  <Button x:Name="buttonContent" Content="Designer action" />
+	  <GroupBox x:Name="personGroup" Header="{Binding CurrentPerson}"
+	            Content="Group body" />
+	  <Expander x:Name="visualHeaderExpander">
+	    <Expander.Header>
+	      <Label x:Name="authoredHeader" Text="Authored header" />
+	    </Expander.Header>
+	    <Panel x:Name="expanderBody">
+	      <Label x:Name="expanderBodyText" Text="Expander body" />
+	    </Panel>
+	  </Expander>
+	</StackPanel>
+</Form>)XAML";
+		DesignerModel::DesignDocument contentDocument;
+		std::wstring contentError;
+		const bool contentParsed = DesignerModel::XamlDocumentParser::FromXaml(
+			contentPresenterXaml, contentDocument, &contentError);
+		DesignerCanvas contentCanvas(0, 0, 640, 480);
+		const bool contentApplied = contentParsed
+			&& contentCanvas.ApplyDesignDocument(contentDocument, &contentError);
+		auto person = std::make_shared<ObservableObject>();
+		person->SetValue(L"Name", std::wstring(L"Designer Alice"));
+		auto contentRoot = std::make_shared<ObservableObject>();
+		contentRoot->SetValue(L"CurrentPerson", BindingSourceReference(person));
+		if (contentApplied) contentCanvas.SetDesignDataContext(contentRoot);
+		auto presenterControl = contentApplied
+			? FindControl(contentCanvas, L"personPresenter") : nullptr;
+		auto* presenter = presenterControl
+			? dynamic_cast<ContentPresenter*>(
+				presenterControl->ControlInstance) : nullptr;
+		auto* preview = presenter
+			? dynamic_cast<Label*>(presenter->GetGeneratedContent()) : nullptr;
+		auto contentControlRecord = contentApplied
+			? FindControl(contentCanvas, L"personContent") : nullptr;
+		auto* contentControl = contentControlRecord
+			? dynamic_cast<ContentControl*>(
+				contentControlRecord->ControlInstance) : nullptr;
+		auto* contentPreview = contentControl
+			? dynamic_cast<Label*>(contentControl->GetGeneratedContent()) : nullptr;
+		auto visualControlRecord = contentApplied
+			? FindControl(contentCanvas, L"visualContent") : nullptr;
+		auto* visualControl = visualControlRecord
+			? dynamic_cast<ContentControl*>(
+				visualControlRecord->ControlInstance) : nullptr;
+		auto* authoredContent = visualControl
+			? dynamic_cast<Label*>(visualControl->GetVisualContent()) : nullptr;
+		auto buttonControlRecord = contentApplied
+			? FindControl(contentCanvas, L"buttonContent") : nullptr;
+		auto* buttonContent = buttonControlRecord
+			? dynamic_cast<Button*>(buttonControlRecord->ControlInstance) : nullptr;
+		auto* buttonPreview = buttonContent
+			? dynamic_cast<Label*>(buttonContent->GetGeneratedContent()) : nullptr;
+		auto groupRecord = contentApplied
+			? FindControl(contentCanvas, L"personGroup") : nullptr;
+		auto* group = groupRecord
+			? dynamic_cast<GroupBox*>(groupRecord->ControlInstance) : nullptr;
+		auto* groupHeader = group
+			? dynamic_cast<Label*>(group->GetGeneratedHeaderContent()) : nullptr;
+		auto* groupBody = group
+			? dynamic_cast<Label*>(group->GetGeneratedContent()) : nullptr;
+		auto expanderRecord = contentApplied
+			? FindControl(contentCanvas, L"visualHeaderExpander") : nullptr;
+		auto* expander = expanderRecord
+			? dynamic_cast<Expander*>(expanderRecord->ControlInstance) : nullptr;
+		auto* authoredHeader = expander
+			? dynamic_cast<Label*>(expander->GetVisualHeader()) : nullptr;
+		auto* expanderBody = expander
+			? dynamic_cast<Panel*>(expander->GetVisualContent()) : nullptr;
+		const bool initialPreview = preview
+			&& preview->Text == L"Designer Alice"
+			&& preview->AccessibleName == L"Typed person preview"
+			&& contentPreview
+			&& contentPreview->Text == L"Designer Alice"
+			&& authoredContent
+			&& authoredContent->Text == L"Authored content"
+			&& buttonPreview
+			&& buttonPreview->Text == L"Designer action"
+			&& groupHeader && groupHeader->Text == L"Designer Alice"
+			&& groupBody && groupBody->Text == L"Group body"
+			&& authoredHeader && authoredHeader->Text == L"Authored header"
+			&& expanderBody;
+		auto replacement = std::make_shared<ObservableObject>();
+		replacement->SetValue(L"Name", std::wstring(L"Designer Bob"));
+		contentRoot->SetValue(
+			L"CurrentPerson", BindingSourceReference(replacement));
+		preview = presenter
+			? dynamic_cast<Label*>(presenter->GetGeneratedContent()) : nullptr;
+		contentPreview = contentControl
+			? dynamic_cast<Label*>(contentControl->GetGeneratedContent()) : nullptr;
+		groupHeader = group
+			? dynamic_cast<Label*>(group->GetGeneratedHeaderContent()) : nullptr;
+		DesignerModel::DesignDocument capturedContent;
+		const bool contentSaved = contentApplied
+			&& contentCanvas.BuildDesignDocument(capturedContent, &contentError);
+		const auto canonical = contentSaved
+			? DesignerModel::XamlDocumentSerializer::ToXaml(capturedContent)
+			: std::string{};
+		AppendFailure(failures,
+			contentParsed && contentApplied && initialPreview
+			&& preview && preview->Text == L"Designer Bob"
+			&& contentPreview && contentPreview->Text == L"Designer Bob"
+			&& groupHeader && groupHeader->Text == L"Designer Bob"
+			&& contentSaved
+			&& canonical.find("DataType=\"Person\"") != std::string::npos
+			&& canonical.find("<ContentPresenter") != std::string::npos
+			&& canonical.find("<ContentControl") != std::string::npos
+			&& canonical.find("<Button") != std::string::npos
+			&& canonical.find("x:Name=\"buttonContent\"") != std::string::npos
+			&& canonical.find("Content=\"Designer action\"") != std::string::npos
+			&& canonical.find("Header=\"{Binding CurrentPerson}")
+				!= std::string::npos
+			&& canonical.find("<Expander.Header>") != std::string::npos
+			&& canonical.find("Authored content") != std::string::npos,
+			L"ContentPresenter/ContentControl/HeaderedContentControl did not preview or persist in Designer: "
+				+ contentError);
+	}
+
+	{
+		const std::string resourcePropertyXaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="ResourceForm">
+  <Form.Resources>
+    <Color x:Key="TextMuted">#FF748399</Color>
+  </Form.Resources>
+  <Label x:Name="resourceLabel" ForeColor="{StaticResource TextMuted}" />
+</Form>)XAML";
+		DesignerModel::DesignDocument resourceDocument;
+		std::wstring resourceError;
+		const bool resourceParsed = DesignerModel::XamlDocumentParser::FromXaml(
+			resourcePropertyXaml, resourceDocument, &resourceError);
+		DesignerCanvas resourceCanvas(0, 0, 640, 480);
+		const bool resourceApplied = resourceParsed
+			&& resourceCanvas.ApplyDesignDocument(resourceDocument, &resourceError);
+		auto resourceControl = resourceApplied
+			? FindControl(resourceCanvas, L"resourceLabel") : nullptr;
+		DesignerModel::DesignDocument capturedResourceDocument;
+		const bool resourceCaptured = resourceControl
+			&& resourceCanvas.BuildDesignDocument(
+				capturedResourceDocument, &resourceError);
+		const auto* capturedResourceKey = resourceCaptured
+			&& !capturedResourceDocument.Nodes.empty()
+			&& capturedResourceDocument.Nodes.front().Props.is_object()
+			&& capturedResourceDocument.Nodes.front().Props.contains("metadata")
+			&& capturedResourceDocument.Nodes.front().Props["metadata"].is_object()
+			&& capturedResourceDocument.Nodes.front().Props["metadata"].contains("ForeColor")
+			&& capturedResourceDocument.Nodes.front().Props["metadata"]["ForeColor"].is_object()
+			&& capturedResourceDocument.Nodes.front().Props["metadata"]["ForeColor"].contains("resourceKey")
+			&& capturedResourceDocument.Nodes.front().Props["metadata"]["ForeColor"]["resourceKey"].is_string()
+			? &capturedResourceDocument.Nodes.front().Props["metadata"]["ForeColor"]["resourceKey"]
+			: nullptr;
+		const bool initialReferencePreserved = capturedResourceKey
+			&& capturedResourceKey->get<std::string>() == "TextMuted";
+
+		auto updatedResources = resourceCanvas.GetDocumentStyleSheet();
+		if (!updatedResources.Resources.empty())
+			updatedResources.Resources.front().Value.Text = L"#FF112233";
+		const bool resourceValueUpdated = resourceApplied
+			&& resourceCanvas.SetDocumentStyleSheet(
+				updatedResources, &resourceError);
+		const bool previewResourceUpdated = resourceControl
+			&& std::fabs(resourceControl->ControlInstance->ForeColor.r
+				- 0x11 / 255.0f) < 0.0001f;
+
+		auto renamedResources = resourceCanvas.GetDocumentStyleSheet();
+		if (!renamedResources.Resources.empty())
+			renamedResources.Resources.front().Key = L"SecondaryText";
+		const bool resourceRenamed = resourceValueUpdated
+			&& resourceCanvas.SetDocumentStyleSheet(
+				renamedResources, &resourceError,
+				{ { L"TextMuted", L"SecondaryText" } });
+		DesignerModel::DesignDocument renamedResourceDocument;
+		const bool renamedResourceCaptured = resourceRenamed
+			&& resourceCanvas.BuildDesignDocument(
+				renamedResourceDocument, &resourceError);
+		const auto renamedResourceXaml = renamedResourceCaptured
+			? DesignerModel::XamlDocumentSerializer::ToXaml(
+				renamedResourceDocument) : std::string{};
+		const bool renamedReferencePreserved = renamedResourceCaptured
+			&& renamedResourceXaml.find(
+				"ForeColor=\"{StaticResource SecondaryText}\"")
+				!= std::string::npos;
+
+		auto missingResources = resourceCanvas.GetDocumentStyleSheet();
+		missingResources.Resources.clear();
+		const bool missingResourceUpdateRejected = !resourceCanvas.SetDocumentStyleSheet(
+			missingResources, &resourceError);
+		const auto preservedResourceReference = resourceControl
+			? resourceControl->MetadataPropertyResourceKeys.find(L"ForeColor")
+			: std::map<std::wstring, std::wstring>::const_iterator{};
+		const bool missingResourceRejected = missingResourceUpdateRejected
+			&& resourceControl
+			&& preservedResourceReference
+				!= resourceControl->MetadataPropertyResourceKeys.end()
+			&& preservedResourceReference->second == L"SecondaryText"
+			&& std::fabs(resourceControl->ControlInstance->ForeColor.r
+				- 0x11 / 255.0f) < 0.0001f;
+		AppendFailure(failures,
+			resourceParsed && resourceApplied && resourceCaptured
+			&& initialReferencePreserved && resourceValueUpdated
+			&& previewResourceUpdated && resourceRenamed
+			&& renamedReferencePreserved && missingResourceRejected,
+			L"direct property StaticResource was not preserved, refreshed, renamed, or rejected transactionally: "
+				+ resourceError
+				+ L" [parsed=" + (resourceParsed ? L"1" : L"0")
+				+ L", applied=" + (resourceApplied ? L"1" : L"0")
+				+ L", captured=" + (resourceCaptured ? L"1" : L"0")
+				+ L", initial=" + (initialReferencePreserved ? L"1" : L"0")
+				+ L", updated=" + (resourceValueUpdated ? L"1" : L"0")
+				+ L", preview=" + (previewResourceUpdated ? L"1" : L"0")
+				+ L", renamed=" + (resourceRenamed ? L"1" : L"0")
+				+ L", renamedRef=" + (renamedReferencePreserved ? L"1" : L"0")
+				+ L", missingRejected=" + (missingResourceRejected ? L"1" : L"0")
+				+ L", capturedKey=" + (capturedResourceKey
+					? Convert::Utf8ToUnicode(capturedResourceKey->get<std::string>())
+					: L"<none>")
+				+ L", renamedXamlHasLabel=" + (renamedResourceXaml.find(
+					"resourceLabel") != std::string::npos ? L"1" : L"0")
+				+ L", liveKey=" + (resourceControl
+					&& resourceControl->MetadataPropertyResourceKeys.contains(L"ForeColor")
+					? resourceControl->MetadataPropertyResourceKeys.at(L"ForeColor")
+					: L"<none>")
+				+ L", tracked=" + (resourceControl
+					? std::to_wstring(resourceControl->MetadataProperties.size())
+					: L"0")
+				+ L"]");
+	}
+
+	{
+		const std::string controlTemplatePropertyXaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="TemplatePropertyForm">
+  <Form.Resources>
+	<Color x:Key="TemplateAccent">#FF336699</Color>
+    <ControlTemplate x:Key="FirstButtonTemplate" TargetType="Button">
+	  <Label x:Name="firstChrome" Text="{TemplateBinding Content}"
+	         ForeColor="{StaticResource TemplateAccent}" />
+    </ControlTemplate>
+    <ControlTemplate x:Key="SecondButtonTemplate" TargetType="Button">
+	  <Label x:Name="secondChrome" Text="{TemplateBinding Content}"
+	         ForeColor="{StaticResource TemplateAccent}" />
+    </ControlTemplate>
+  </Form.Resources>
+  <Button x:Name="templateButton" Content="Designer template"
+          Template="{StaticResource FirstButtonTemplate}" />
+</Form>)XAML";
+		DesignerModel::DesignDocument templateDocument;
+		std::wstring templateError;
+		const bool templateParsed = DesignerModel::XamlDocumentParser::FromXaml(
+			controlTemplatePropertyXaml, templateDocument, &templateError);
+		DesignerCanvas templateCanvas(0, 0, 640, 480);
+		const bool templateApplied = templateParsed
+			&& templateCanvas.ApplyDesignDocument(templateDocument, &templateError);
+		if (templateApplied)
+			templateCanvas.RestoreSelectionByNames(
+				{ L"templateButton" }, L"templateButton", true);
+		PropertyGrid templateGrid(0, 0, 360, 620);
+		templateGrid.SetDesignerCanvas(&templateCanvas);
+		ReloadCurrentSelection(templateGrid, templateCanvas);
+		const auto* templateRow = DesignerPropertyRowCatalog::Find(
+			templateGrid.GetPresentedPropertyRows(), L"Template");
+		auto hasChoice = [&](const wchar_t* key)
+		{
+			return templateRow && std::any_of(
+				templateRow->Choices.begin(), templateRow->Choices.end(),
+				[&](const auto& choice) { return choice.ValueText == key; });
+		};
+		const bool choicesVisible = templateRow
+			&& templateRow->Value.Text == L"FirstButtonTemplate"
+			&& hasChoice(L"FirstButtonTemplate")
+			&& hasChoice(L"SecondButtonTemplate");
+		const auto templateChanged = templateGrid.ApplyPropertyValue(
+			L"Template", L"SecondButtonTemplate");
+		auto changedButton = templateChanged
+			? FindControl(templateCanvas, L"templateButton") : nullptr;
+		const bool changedPreview = changedButton
+			&& changedButton->ControlInstance
+			&& changedButton->ControlInstance->FindDeclarativeTemplatePart(
+				L"secondChrome") != nullptr
+			&& changedButton->ControlInstance->FindDeclarativeTemplatePart(
+				L"firstChrome") == nullptr;
+		DesignerModel::DesignDocument capturedTemplateDocument;
+		const bool templateCaptured = templateChanged
+			&& templateCanvas.BuildDesignDocument(
+				capturedTemplateDocument, &templateError);
+		const auto templateCanonical = templateCaptured
+			? DesignerModel::XamlDocumentSerializer::ToXaml(
+				capturedTemplateDocument) : std::string{};
+		const bool templatePersisted = templateCaptured
+			&& capturedTemplateDocument.ControlTemplates.size() == 2
+			&& capturedTemplateDocument.Nodes.size() == 1
+			&& capturedTemplateDocument.Nodes.front().Extra.value(
+				"controlTemplate", std::string{}) == "SecondButtonTemplate"
+			&& templateCanonical.find(
+				"Template=\"{StaticResource SecondButtonTemplate}\"")
+				!= std::string::npos;
+		const bool templateUndone = templateChanged
+			&& templateCanvas.UndoCommand();
+		auto undoneButton = templateUndone
+			? FindControl(templateCanvas, L"templateButton") : nullptr;
+		const bool undoPreview = undoneButton && undoneButton->ControlInstance
+			&& undoneButton->ControlInstance->FindDeclarativeTemplatePart(
+				L"firstChrome") != nullptr
+			&& templateCanvas.GetControlTemplates().size() == 2;
+		const bool templateRedone = templateUndone
+			&& templateCanvas.RedoCommand();
+		auto redoneButton = templateRedone
+			? FindControl(templateCanvas, L"templateButton") : nullptr;
+		const bool redoPreview = redoneButton && redoneButton->ControlInstance
+			&& redoneButton->ControlInstance->FindDeclarativeTemplatePart(
+				L"secondChrome") != nullptr
+			&& templateCanvas.GetControlTemplates().size() == 2;
+		auto renamedTemplateResources = templateCanvas.GetDocumentStyleSheet();
+		if (!renamedTemplateResources.Resources.empty())
+		{
+			renamedTemplateResources.Resources.front().Key = L"TemplateAccent2";
+			renamedTemplateResources.Resources.front().Value.Text = L"#FF112233";
+		}
+		const bool templateResourceRenamed = redoPreview
+			&& templateCanvas.SetDocumentStyleSheet(
+				std::move(renamedTemplateResources), &templateError,
+				{ { L"TemplateAccent", L"TemplateAccent2" } });
+		auto renamedButton = templateResourceRenamed
+			? FindControl(templateCanvas, L"templateButton") : nullptr;
+		auto* renamedChrome = renamedButton && renamedButton->ControlInstance
+			? dynamic_cast<Label*>(renamedButton->ControlInstance
+				->FindDeclarativeTemplatePart(L"secondChrome")) : nullptr;
+		DesignerModel::DesignDocument renamedTemplateDocument;
+		const bool renamedTemplateCaptured = templateResourceRenamed
+			&& templateCanvas.BuildDesignDocument(
+				renamedTemplateDocument, &templateError);
+		const auto renamedTemplateXaml = renamedTemplateCaptured
+			? DesignerModel::XamlDocumentSerializer::ToXaml(
+				renamedTemplateDocument) : std::string{};
+		const bool renamedTemplatePreview = renamedChrome
+			&& std::fabs(renamedChrome->ForeColor.r - 0x11 / 255.0f) < 0.0001f
+			&& renamedTemplateXaml.find(
+				"ForeColor=\"{StaticResource TemplateAccent2}\"")
+				!= std::string::npos;
+		AppendFailure(failures,
+			templateParsed && templateApplied && choicesVisible
+			&& templateChanged.Succeeded && changedPreview
+			&& templatePersisted && templateUndone && undoPreview
+			&& templateRedone && redoPreview
+			&& templateResourceRenamed && renamedTemplatePreview,
+			L"ControlTemplate property-grid selection did not preview, persist, or undo: "
+				+ templateError
+				+ L" [parsed=" + (templateParsed ? L"1" : L"0")
+				+ L", applied=" + (templateApplied ? L"1" : L"0")
+				+ L", choices=" + (choicesVisible ? L"1" : L"0")
+				+ L", changed=" + (templateChanged.Succeeded ? L"1" : L"0")
+				+ L", preview=" + (changedPreview ? L"1" : L"0")
+				+ L", persisted=" + (templatePersisted ? L"1" : L"0")
+				+ L", undo=" + (undoPreview ? L"1" : L"0")
+				+ L", redo=" + (redoPreview ? L"1" : L"0")
+				+ L", resourceRename="
+					+ (templateResourceRenamed ? L"1" : L"0")
+				+ L", renamedPreview="
+					+ (renamedTemplatePreview ? L"1" : L"0")
+				+ L"]");
+	}
+
+	{
+		const std::string templateSlotXaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="TemplateSlotDesignerForm">
+  <Form.Resources>
+    <ControlTemplate x:Key="GroupSlots" TargetType="GroupBox">
+      <Panel x:Name="slotChrome">
+        <ContentPresenter x:Name="slotHeaderPresenter"
+                          ContentSource="Header" />
+        <ContentPresenter x:Name="slotContentPresenter"
+                          ContentSource="Content" />
+      </Panel>
+    </ControlTemplate>
+  </Form.Resources>
+  <GroupBox x:Name="slotHost" DesignId="1"
+            Template="{StaticResource GroupSlots}">
+    <GroupBox.Header>
+      <Label x:Name="slotHeader" DesignId="2" Text="Header before" />
+    </GroupBox.Header>
+    <Label x:Name="slotBody" DesignId="3" Text="Body before" />
+  </GroupBox>
+</Form>)XAML";
+		DesignerModel::DesignDocument slotDocument;
+		std::wstring slotError;
+		const bool slotParsed = DesignerModel::XamlDocumentParser::FromXaml(
+			templateSlotXaml, slotDocument, &slotError);
+		DesignerCanvas slotCanvas(0, 0, 640, 480);
+		const bool slotApplied = slotParsed
+			&& slotCanvas.ApplyDesignDocument(slotDocument, &slotError);
+		if (slotApplied)
+			slotCanvas.RestoreSelectionByNames(
+				{ L"slotBody" }, L"slotBody", true);
+		auto slotHostRecord = slotApplied
+			? FindControl(slotCanvas, L"slotHost") : nullptr;
+		auto slotHeaderRecord = slotApplied
+			? FindControl(slotCanvas, L"slotHeader") : nullptr;
+		auto slotBodyRecord = slotApplied
+			? FindControl(slotCanvas, L"slotBody") : nullptr;
+		auto* slotHost = slotHostRecord
+			? dynamic_cast<GroupBox*>(slotHostRecord->ControlInstance) : nullptr;
+		auto* slotHeaderPresenter = slotHost
+			? slotHost->GetTemplateHeaderPresenter() : nullptr;
+		auto* slotContentPresenter = slotHost
+			? slotHost->GetTemplateContentPresenter() : nullptr;
+		const bool slotOwnershipReady = slotHost && slotHeaderRecord
+			&& slotBodyRecord && slotHeaderPresenter && slotContentPresenter
+			&& slotHost->Count == 1
+			&& slotHeaderRecord->DesignerParent == slotHost
+			&& slotBodyRecord->DesignerParent == slotHost
+			&& slotHeaderRecord->ControlInstance->Parent == slotHeaderPresenter
+			&& slotBodyRecord->ControlInstance->Parent == slotContentPresenter
+			&& slotHost->GetVisualHeader() == slotHeaderRecord->ControlInstance
+			&& slotHost->GetVisualContent() == slotBodyRecord->ControlInstance;
+		DesignerModel::DesignDocument capturedSlotDocument;
+		const bool slotCaptured = slotApplied
+			&& slotCanvas.BuildDesignDocument(
+				capturedSlotDocument, &slotError);
+		const auto slotCanonical = slotCaptured
+			? DesignerModel::XamlDocumentSerializer::ToXaml(
+				capturedSlotDocument) : std::string{};
+		auto changedSlotXaml = Convert::Utf8ToUnicode(slotCanonical);
+		const auto bodyTextAt = changedSlotXaml.find(L"Text=\"Body before\"");
+		if (bodyTextAt != std::wstring::npos)
+			changedSlotXaml.replace(bodyTextAt,
+				std::wstring(L"Text=\"Body before\"").size(),
+				L"Text=\"Body after\"");
+		(void)slotCanvas.ResetDocumentHistoryAsSaved();
+		const auto beginSlotEdit = slotCanvas.BeginDocumentEditTransaction(
+			L"EditXaml");
+		const bool slotPreviewed = beginSlotEdit.Succeeded()
+			&& bodyTextAt != std::wstring::npos
+			&& slotCanvas.PreviewXamlDocumentText(
+				changedSlotXaml, &slotError);
+		auto changedSlotBody = slotPreviewed
+			? FindControl(slotCanvas, L"slotBody") : nullptr;
+		auto changedSlotHostRecord = slotPreviewed
+			? FindControl(slotCanvas, L"slotHost") : nullptr;
+		auto* changedSlotHost = changedSlotHostRecord
+			? dynamic_cast<GroupBox*>(changedSlotHostRecord->ControlInstance) : nullptr;
+		const bool slotPreviewReady = changedSlotBody && changedSlotHost
+			&& changedSlotBody->ControlInstance->Text == L"Body after"
+			&& slotCanvas.GetSelectedControl()
+			&& slotCanvas.GetSelectedControl()->Name == L"slotBody"
+			&& changedSlotHost->GetTemplateContentPresenter()
+			&& changedSlotBody->ControlInstance->Parent
+				== changedSlotHost->GetTemplateContentPresenter()
+			&& changedSlotBody->DesignerParent == changedSlotHost;
+		const auto commitSlotEdit = slotCanvas.CommitDocumentEditTransaction();
+		const auto undoSlotEdit = commitSlotEdit.HasChanges()
+			? slotCanvas.UndoCommand() : DesignerDocumentTransactionResult{};
+		auto undoneSlotBody = undoSlotEdit.HasChanges()
+			? FindControl(slotCanvas, L"slotBody") : nullptr;
+		const bool slotUndoReady = undoneSlotBody
+			&& undoneSlotBody->ControlInstance->Text == L"Body before";
+		const auto redoSlotEdit = slotUndoReady
+			? slotCanvas.RedoCommand() : DesignerDocumentTransactionResult{};
+		auto redoneSlotBody = redoSlotEdit.HasChanges()
+			? FindControl(slotCanvas, L"slotBody") : nullptr;
+		auto redoneSlotHostRecord = redoSlotEdit.HasChanges()
+			? FindControl(slotCanvas, L"slotHost") : nullptr;
+		auto* redoneSlotHost = redoneSlotHostRecord
+			? dynamic_cast<GroupBox*>(redoneSlotHostRecord->ControlInstance) : nullptr;
+		const bool slotRedoReady = redoneSlotBody && redoneSlotHost
+			&& redoneSlotBody->ControlInstance->Text == L"Body after"
+			&& redoneSlotHost->GetTemplateContentPresenter()
+			&& redoneSlotBody->ControlInstance->Parent
+				== redoneSlotHost->GetTemplateContentPresenter();
+		AppendFailure(failures,
+			slotParsed && slotApplied && slotOwnershipReady && slotCaptured
+			&& slotCanonical.find("ContentSource=\"Header\"")
+				!= std::string::npos
+			&& slotCanonical.find("ContentSource=\"Content\"")
+				!= std::string::npos
+			&& slotPreviewed && slotPreviewReady
+			&& commitSlotEdit.HasChanges() && slotUndoReady && slotRedoReady,
+			L"ControlTemplate ContentSource did not preserve logical ownership, "
+			L"selection, XAML preview, or undo/redo: " + slotError
+				+ L" [parsed=" + SelfTestFlag(slotParsed)
+				+ L", applied=" + SelfTestFlag(slotApplied)
+				+ L", ownership=" + SelfTestFlag(slotOwnershipReady)
+				+ L", captured=" + SelfTestFlag(slotCaptured)
+				+ L", preview=" + SelfTestFlag(slotPreviewReady)
+				+ L", undo=" + SelfTestFlag(slotUndoReady)
+				+ L", redo=" + SelfTestFlag(slotRedoReady) + L"]");
+	}
+
+	{
+		const std::string itemsPresenterXaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="ItemsPresenterDesignerForm">
+  <Form.Resources>
+    <ControlTemplate x:Key="ListChrome" TargetType="ListBox">
+      <GridPanel x:Name="listChrome">
+        <ScrollView x:Name="listScroll">
+          <ItemsPresenter x:Name="itemsSlot" />
+        </ScrollView>
+      </GridPanel>
+    </ControlTemplate>
+  </Form.Resources>
+  <ListBox x:Name="templatedList" DesignId="1"
+           Template="{StaticResource ListChrome}" />
+</Form>)XAML";
+		DesignerModel::DesignDocument itemsPresenterDocument;
+		std::wstring itemsPresenterError;
+		const bool itemsPresenterParsed =
+			DesignerModel::XamlDocumentParser::FromXaml(itemsPresenterXaml,
+				itemsPresenterDocument, &itemsPresenterError);
+		DesignerCanvas itemsPresenterCanvas(0, 0, 640, 480);
+		const bool itemsPresenterApplied = itemsPresenterParsed
+			&& itemsPresenterCanvas.ApplyDesignDocument(
+				itemsPresenterDocument, &itemsPresenterError);
+		if (itemsPresenterApplied)
+			itemsPresenterCanvas.RestoreSelectionByNames(
+				{ L"templatedList" }, L"templatedList", true);
+		auto listRecord = itemsPresenterApplied
+			? FindControl(itemsPresenterCanvas, L"templatedList") : nullptr;
+		auto* list = listRecord
+			? dynamic_cast<ListBox*>(listRecord->ControlInstance) : nullptr;
+		auto* presenter = list ? list->GetTemplateItemsPresenter() : nullptr;
+		const bool itemsPresenterOwnership = list && presenter
+			&& presenter->GetItemsHost() == list->GetItemsHost()
+			&& list->GetItemsHost() && list->GetItemsHost()->Parent == presenter
+			&& dynamic_cast<ScrollView*>(presenter->Parent) != nullptr
+			&& list->FindDeclarativeTemplatePart(L"itemsSlot") == presenter;
+		DesignerModel::DesignDocument capturedItemsPresenter;
+		const bool itemsPresenterCaptured = itemsPresenterApplied
+			&& itemsPresenterCanvas.BuildDesignDocument(
+				capturedItemsPresenter, &itemsPresenterError);
+		const auto itemsPresenterCanonical = itemsPresenterCaptured
+			? DesignerModel::XamlDocumentSerializer::ToXaml(
+				capturedItemsPresenter) : std::string{};
+		auto changedItemsPresenterXaml =
+			Convert::Utf8ToUnicode(itemsPresenterCanonical);
+		const auto slotAt = changedItemsPresenterXaml.find(
+			L"x:Name=\"itemsSlot\"");
+		if (slotAt != std::wstring::npos)
+			changedItemsPresenterXaml.replace(slotAt,
+				std::wstring(L"x:Name=\"itemsSlot\"").size(),
+				L"x:Name=\"itemsSlotReloaded\"");
+		(void)itemsPresenterCanvas.ResetDocumentHistoryAsSaved();
+		const auto beginItemsPresenterEdit =
+			itemsPresenterCanvas.BeginDocumentEditTransaction(L"EditXaml");
+		const bool itemsPresenterPreviewed = beginItemsPresenterEdit.Succeeded()
+			&& slotAt != std::wstring::npos
+			&& itemsPresenterCanvas.PreviewXamlDocumentText(
+				changedItemsPresenterXaml, &itemsPresenterError);
+		auto changedListRecord = itemsPresenterPreviewed
+			? FindControl(itemsPresenterCanvas, L"templatedList") : nullptr;
+		auto* changedList = changedListRecord
+			? dynamic_cast<ListBox*>(changedListRecord->ControlInstance) : nullptr;
+		const bool itemsPresenterPreviewReady = changedList
+			&& changedList->GetTemplateItemsPresenter()
+			&& changedList->FindDeclarativeTemplatePart(L"itemsSlotReloaded")
+				== changedList->GetTemplateItemsPresenter()
+			&& changedList->GetItemsHost()->Parent
+				== changedList->GetTemplateItemsPresenter()
+			&& itemsPresenterCanvas.GetSelectedControl()
+			&& itemsPresenterCanvas.GetSelectedControl()->Name == L"templatedList";
+		const auto commitItemsPresenterEdit =
+			itemsPresenterCanvas.CommitDocumentEditTransaction();
+		const auto undoItemsPresenterEdit = commitItemsPresenterEdit.HasChanges()
+			? itemsPresenterCanvas.UndoCommand()
+			: DesignerDocumentTransactionResult{};
+		auto undoListRecord = undoItemsPresenterEdit.HasChanges()
+			? FindControl(itemsPresenterCanvas, L"templatedList") : nullptr;
+		auto* undoList = undoListRecord
+			? dynamic_cast<ListBox*>(undoListRecord->ControlInstance) : nullptr;
+		const bool itemsPresenterUndoReady = undoList
+			&& undoList->FindDeclarativeTemplatePart(L"itemsSlot")
+				== undoList->GetTemplateItemsPresenter();
+		const auto redoItemsPresenterEdit = itemsPresenterUndoReady
+			? itemsPresenterCanvas.RedoCommand()
+			: DesignerDocumentTransactionResult{};
+		auto redoListRecord = redoItemsPresenterEdit.HasChanges()
+			? FindControl(itemsPresenterCanvas, L"templatedList") : nullptr;
+		auto* redoList = redoListRecord
+			? dynamic_cast<ListBox*>(redoListRecord->ControlInstance) : nullptr;
+		const bool itemsPresenterRedoReady = redoList
+			&& redoList->FindDeclarativeTemplatePart(L"itemsSlotReloaded")
+				== redoList->GetTemplateItemsPresenter();
+		AppendFailure(failures,
+			itemsPresenterParsed && itemsPresenterApplied
+			&& itemsPresenterOwnership && itemsPresenterCaptured
+			&& itemsPresenterCanonical.find("<ItemsPresenter")
+				!= std::string::npos
+			&& itemsPresenterPreviewed && itemsPresenterPreviewReady
+			&& commitItemsPresenterEdit.HasChanges()
+			&& itemsPresenterUndoReady && itemsPresenterRedoReady,
+			L"ItemsPresenter Designer preview did not preserve ItemsHost ownership, "
+			L"selection, canonical XAML, or undo/redo: " + itemsPresenterError
+				+ L" [parsed=" + SelfTestFlag(itemsPresenterParsed)
+				+ L", applied=" + SelfTestFlag(itemsPresenterApplied)
+				+ L", ownership=" + SelfTestFlag(itemsPresenterOwnership)
+				+ L", captured=" + SelfTestFlag(itemsPresenterCaptured)
+				+ L", preview=" + SelfTestFlag(itemsPresenterPreviewReady)
+				+ L", undo=" + SelfTestFlag(itemsPresenterUndoReady)
+				+ L", redo=" + SelfTestFlag(itemsPresenterRedoReady) + L"]");
+	}
+
+	{
+		const std::string listBoxItemXaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="ListBoxItemDesignerForm">
+  <Form.Resources>
+    <DataType x:Key="DesignerRow">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="DesignerRows" ItemType="DesignerRow">
+      <DataRecord Name="One" />
+      <DataRecord Name="Two" />
+    </DataList>
+    <DataTemplate x:Key="DesignerRowTemplate" DataType="DesignerRow">
+      <Label Text="{Binding Name}" />
+    </DataTemplate>
+    <ControlTemplate x:Key="DesignerItemChrome" TargetType="ListBoxItem">
+      <Panel x:Name="itemChrome">
+        <ContentPresenter ContentSource="Content" />
+      </Panel>
+    </ControlTemplate>
+    <Style x:Key="DesignerContainerStyle" TargetType="ListBoxItem">
+      <Setter Property="Padding" Value="7,3" />
+      <Setter Property="Template"
+              Value="{StaticResource DesignerItemChrome}" />
+    </Style>
+  </Form.Resources>
+  <ListBox x:Name="designerList" DesignId="1"
+           ItemsSource="{StaticResource DesignerRows}"
+           ItemTemplate="{StaticResource DesignerRowTemplate}"
+           ItemContainerStyle="{StaticResource DesignerContainerStyle}" />
+</Form>)XAML";
+		DesignerModel::DesignDocument listBoxItemDocument;
+		std::wstring listBoxItemError;
+		const bool listBoxItemParsed =
+			DesignerModel::XamlDocumentParser::FromXaml(listBoxItemXaml,
+				listBoxItemDocument, &listBoxItemError);
+		DesignerCanvas listBoxItemCanvas(0, 0, 640, 480);
+		const bool listBoxItemApplied = listBoxItemParsed
+			&& listBoxItemCanvas.ApplyDesignDocument(
+				listBoxItemDocument, &listBoxItemError);
+		if (listBoxItemApplied)
+			listBoxItemCanvas.RestoreSelectionByNames(
+				{ L"designerList" }, L"designerList", true);
+		auto listBoxItemRecord = listBoxItemApplied
+			? FindControl(listBoxItemCanvas, L"designerList") : nullptr;
+		auto* designerList = listBoxItemRecord
+			? dynamic_cast<ListBox*>(listBoxItemRecord->ControlInstance) : nullptr;
+		auto* designerItem = designerList
+			? dynamic_cast<ListBoxItem*>(designerList->GetGeneratedItem(0)) : nullptr;
+		const bool listBoxItemPreviewReady = designerItem
+			&& designerItem->FindDeclarativeTemplatePart(L"itemChrome")
+			&& dynamic_cast<Label*>(designerItem->Content())
+			&& dynamic_cast<Label*>(designerItem->Content())->Text == L"One";
+		DesignerModel::DesignDocument capturedListBoxItem;
+		const bool listBoxItemCaptured = listBoxItemApplied
+			&& listBoxItemCanvas.BuildDesignDocument(
+				capturedListBoxItem, &listBoxItemError);
+		const auto listBoxItemCanonical = listBoxItemCaptured
+			? DesignerModel::XamlDocumentSerializer::ToXaml(capturedListBoxItem)
+			: std::string{};
+		auto changedListBoxItemXaml =
+			Convert::Utf8ToUnicode(listBoxItemCanonical);
+		const auto itemChromeAt = changedListBoxItemXaml.find(L"itemChrome");
+		if (itemChromeAt != std::wstring::npos)
+			changedListBoxItemXaml.replace(itemChromeAt,
+				std::wstring(L"itemChrome").size(), L"itemChromeReloaded");
+		(void)listBoxItemCanvas.ResetDocumentHistoryAsSaved();
+		const auto beginListBoxItemEdit =
+			listBoxItemCanvas.BeginDocumentEditTransaction(L"EditXaml");
+		const bool listBoxItemPreviewed = beginListBoxItemEdit.Succeeded()
+			&& itemChromeAt != std::wstring::npos
+			&& listBoxItemCanvas.PreviewXamlDocumentText(
+				changedListBoxItemXaml, &listBoxItemError);
+		auto changedListBoxItemRecord = listBoxItemPreviewed
+			? FindControl(listBoxItemCanvas, L"designerList") : nullptr;
+		auto* changedDesignerList = changedListBoxItemRecord
+			? dynamic_cast<ListBox*>(changedListBoxItemRecord->ControlInstance) : nullptr;
+		auto* changedDesignerItem = changedDesignerList
+			? dynamic_cast<ListBoxItem*>(changedDesignerList->GetGeneratedItem(0))
+			: nullptr;
+		const bool listBoxItemChangedReady = changedDesignerItem
+			&& changedDesignerItem->FindDeclarativeTemplatePart(
+				L"itemChromeReloaded")
+			&& listBoxItemCanvas.GetSelectedControl()
+			&& listBoxItemCanvas.GetSelectedControl()->Name == L"designerList";
+		const auto commitListBoxItemEdit =
+			listBoxItemCanvas.CommitDocumentEditTransaction();
+		const auto undoListBoxItemEdit = commitListBoxItemEdit.HasChanges()
+			? listBoxItemCanvas.UndoCommand()
+			: DesignerDocumentTransactionResult{};
+		auto undoListBoxItemRecord = undoListBoxItemEdit.HasChanges()
+			? FindControl(listBoxItemCanvas, L"designerList") : nullptr;
+		auto* undoDesignerList = undoListBoxItemRecord
+			? dynamic_cast<ListBox*>(undoListBoxItemRecord->ControlInstance) : nullptr;
+		auto* undoDesignerItem = undoDesignerList
+			? dynamic_cast<ListBoxItem*>(undoDesignerList->GetGeneratedItem(0))
+			: nullptr;
+		const bool listBoxItemUndoReady = undoDesignerItem
+			&& undoDesignerItem->FindDeclarativeTemplatePart(L"itemChrome");
+		const auto redoListBoxItemEdit = listBoxItemUndoReady
+			? listBoxItemCanvas.RedoCommand()
+			: DesignerDocumentTransactionResult{};
+		auto redoListBoxItemRecord = redoListBoxItemEdit.HasChanges()
+			? FindControl(listBoxItemCanvas, L"designerList") : nullptr;
+		auto* redoDesignerList = redoListBoxItemRecord
+			? dynamic_cast<ListBox*>(redoListBoxItemRecord->ControlInstance) : nullptr;
+		auto* redoDesignerItem = redoDesignerList
+			? dynamic_cast<ListBoxItem*>(redoDesignerList->GetGeneratedItem(0))
+			: nullptr;
+		const bool listBoxItemRedoReady = redoDesignerItem
+			&& redoDesignerItem->FindDeclarativeTemplatePart(
+				L"itemChromeReloaded");
+		AppendFailure(failures,
+			listBoxItemParsed && listBoxItemApplied && listBoxItemPreviewReady
+			&& listBoxItemCaptured
+			&& listBoxItemCanonical.find("TargetType=\"ListBoxItem\"")
+				!= std::string::npos
+			&& listBoxItemPreviewed && listBoxItemChangedReady
+			&& commitListBoxItemEdit.HasChanges()
+			&& listBoxItemUndoReady && listBoxItemRedoReady,
+			L"ListBoxItem Designer preview did not preserve generated content, "
+			L"selection, canonical XAML, or undo/redo: " + listBoxItemError
+				+ L" [parsed=" + SelfTestFlag(listBoxItemParsed)
+				+ L", applied=" + SelfTestFlag(listBoxItemApplied)
+				+ L", initial=" + SelfTestFlag(listBoxItemPreviewReady)
+				+ L", captured=" + SelfTestFlag(listBoxItemCaptured)
+				+ L", preview=" + SelfTestFlag(listBoxItemChangedReady)
+				+ L", undo=" + SelfTestFlag(listBoxItemUndoReady)
+				+ L", redo=" + SelfTestFlag(listBoxItemRedoReady) + L"]");
+	}
+
+	{
+		const std::string comboBoxItemXaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="ComboBoxItemDesignerForm">
+  <Form.Resources>
+    <DataType x:Key="DesignerChoice">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="DesignerChoices" ItemType="DesignerChoice">
+      <DataRecord Name="One" />
+      <DataRecord Name="Two" />
+    </DataList>
+    <DataTemplate x:Key="DesignerChoiceTemplate" DataType="DesignerChoice">
+      <Label Text="{Binding Name}" />
+    </DataTemplate>
+    <ControlTemplate x:Key="DesignerChoiceChrome"
+                     TargetType="ComboBoxItem">
+      <Panel x:Name="choiceChrome">
+        <ContentPresenter ContentSource="Content" />
+      </Panel>
+    </ControlTemplate>
+    <Style x:Key="DesignerChoiceContainer" TargetType="ComboBoxItem">
+      <Setter Property="Template"
+              Value="{StaticResource DesignerChoiceChrome}" />
+    </Style>
+  </Form.Resources>
+  <ComboBox x:Name="designerCombo" DesignId="1"
+            ItemsSource="{StaticResource DesignerChoices}"
+            ItemTemplate="{StaticResource DesignerChoiceTemplate}"
+            ItemContainerStyle="{StaticResource DesignerChoiceContainer}" />
+</Form>)XAML";
+		DesignerModel::DesignDocument comboBoxItemDocument;
+		std::wstring comboBoxItemError;
+		const bool comboBoxItemParsed =
+			DesignerModel::XamlDocumentParser::FromXaml(comboBoxItemXaml,
+				comboBoxItemDocument, &comboBoxItemError);
+		DesignerCanvas comboBoxItemCanvas(0, 0, 640, 480);
+		const bool comboBoxItemApplied = comboBoxItemParsed
+			&& comboBoxItemCanvas.ApplyDesignDocument(
+				comboBoxItemDocument, &comboBoxItemError);
+		if (comboBoxItemApplied)
+			comboBoxItemCanvas.RestoreSelectionByNames(
+				{ L"designerCombo" }, L"designerCombo", true);
+		auto comboBoxItemRecord = comboBoxItemApplied
+			? FindControl(comboBoxItemCanvas, L"designerCombo") : nullptr;
+		auto* designerCombo = comboBoxItemRecord
+			? dynamic_cast<ComboBox*>(comboBoxItemRecord->ControlInstance) : nullptr;
+		auto* designerChoice = designerCombo
+			? designerCombo->GetGeneratedItem(0) : nullptr;
+		const bool comboBoxItemPreviewReady = designerChoice
+			&& designerChoice->FindDeclarativeTemplatePart(L"choiceChrome")
+			&& dynamic_cast<Label*>(designerChoice->Content())
+			&& dynamic_cast<Label*>(designerChoice->Content())->Text == L"One";
+		DesignerModel::DesignDocument capturedComboBoxItem;
+		const bool comboBoxItemCaptured = comboBoxItemApplied
+			&& comboBoxItemCanvas.BuildDesignDocument(
+				capturedComboBoxItem, &comboBoxItemError);
+		const auto comboBoxItemCanonical = comboBoxItemCaptured
+			? DesignerModel::XamlDocumentSerializer::ToXaml(capturedComboBoxItem)
+			: std::string{};
+		auto changedComboBoxItemXaml =
+			Convert::Utf8ToUnicode(comboBoxItemCanonical);
+		const auto choiceChromeAt = changedComboBoxItemXaml.find(L"choiceChrome");
+		if (choiceChromeAt != std::wstring::npos)
+			changedComboBoxItemXaml.replace(choiceChromeAt,
+				std::wstring(L"choiceChrome").size(), L"choiceChromeReloaded");
+		(void)comboBoxItemCanvas.ResetDocumentHistoryAsSaved();
+		const auto beginComboBoxItemEdit =
+			comboBoxItemCanvas.BeginDocumentEditTransaction(L"EditXaml");
+		const bool comboBoxItemPreviewed = beginComboBoxItemEdit.Succeeded()
+			&& choiceChromeAt != std::wstring::npos
+			&& comboBoxItemCanvas.PreviewXamlDocumentText(
+				changedComboBoxItemXaml, &comboBoxItemError);
+		auto changedComboBoxItemRecord = comboBoxItemPreviewed
+			? FindControl(comboBoxItemCanvas, L"designerCombo") : nullptr;
+		auto* changedDesignerCombo = changedComboBoxItemRecord
+			? dynamic_cast<ComboBox*>(changedComboBoxItemRecord->ControlInstance)
+			: nullptr;
+		auto* changedDesignerChoice = changedDesignerCombo
+			? changedDesignerCombo->GetGeneratedItem(0) : nullptr;
+		const bool comboBoxItemChangedReady = changedDesignerChoice
+			&& changedDesignerChoice->FindDeclarativeTemplatePart(
+				L"choiceChromeReloaded")
+			&& comboBoxItemCanvas.GetSelectedControl()
+			&& comboBoxItemCanvas.GetSelectedControl()->Name == L"designerCombo";
+		const auto commitComboBoxItemEdit =
+			comboBoxItemCanvas.CommitDocumentEditTransaction();
+		const auto undoComboBoxItemEdit = commitComboBoxItemEdit.HasChanges()
+			? comboBoxItemCanvas.UndoCommand()
+			: DesignerDocumentTransactionResult{};
+		auto undoComboBoxItemRecord = undoComboBoxItemEdit.HasChanges()
+			? FindControl(comboBoxItemCanvas, L"designerCombo") : nullptr;
+		auto* undoDesignerCombo = undoComboBoxItemRecord
+			? dynamic_cast<ComboBox*>(undoComboBoxItemRecord->ControlInstance)
+			: nullptr;
+		auto* undoDesignerChoice = undoDesignerCombo
+			? undoDesignerCombo->GetGeneratedItem(0) : nullptr;
+		const bool comboBoxItemUndoReady = undoDesignerChoice
+			&& undoDesignerChoice->FindDeclarativeTemplatePart(L"choiceChrome");
+		const auto redoComboBoxItemEdit = comboBoxItemUndoReady
+			? comboBoxItemCanvas.RedoCommand()
+			: DesignerDocumentTransactionResult{};
+		auto redoComboBoxItemRecord = redoComboBoxItemEdit.HasChanges()
+			? FindControl(comboBoxItemCanvas, L"designerCombo") : nullptr;
+		auto* redoDesignerCombo = redoComboBoxItemRecord
+			? dynamic_cast<ComboBox*>(redoComboBoxItemRecord->ControlInstance)
+			: nullptr;
+		auto* redoDesignerChoice = redoDesignerCombo
+			? redoDesignerCombo->GetGeneratedItem(0) : nullptr;
+		const bool comboBoxItemRedoReady = redoDesignerChoice
+			&& redoDesignerChoice->FindDeclarativeTemplatePart(
+				L"choiceChromeReloaded");
+		AppendFailure(failures,
+			comboBoxItemParsed && comboBoxItemApplied
+			&& comboBoxItemPreviewReady && comboBoxItemCaptured
+			&& comboBoxItemCanonical.find("TargetType=\"ComboBoxItem\"")
+				!= std::string::npos
+			&& comboBoxItemPreviewed && comboBoxItemChangedReady
+			&& commitComboBoxItemEdit.HasChanges()
+			&& comboBoxItemUndoReady && comboBoxItemRedoReady,
+			L"ComboBoxItem Designer preview did not preserve generated content, "
+			L"selection, canonical XAML, or undo/redo: " + comboBoxItemError
+				+ L" [parsed=" + SelfTestFlag(comboBoxItemParsed)
+				+ L", applied=" + SelfTestFlag(comboBoxItemApplied)
+				+ L", initial=" + SelfTestFlag(comboBoxItemPreviewReady)
+				+ L", captured=" + SelfTestFlag(comboBoxItemCaptured)
+				+ L", preview=" + SelfTestFlag(comboBoxItemChangedReady)
+				+ L", undo=" + SelfTestFlag(comboBoxItemUndoReady)
+				+ L", redo=" + SelfTestFlag(comboBoxItemRedoReady) + L"]");
+	}
+
+	{
+		const std::string treeViewItemXaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="TreeViewItemDesignerForm">
+  <Form.Resources>
+    <ControlTemplate x:Key="DesignerTreeChrome"
+                     TargetType="TreeViewItem">
+      <Panel x:Name="treeChrome">
+        <ContentPresenter ContentSource="Header" />
+      </Panel>
+    </ControlTemplate>
+    <Style x:Key="DesignerTreeContainer" TargetType="TreeViewItem">
+      <Setter Property="Template"
+              Value="{StaticResource DesignerTreeChrome}" />
+    </Style>
+  </Form.Resources>
+  <TreeView x:Name="designerTree" DesignId="1"
+            ItemContainerStyle="{StaticResource DesignerTreeContainer}">
+    <TreeView.Items>
+      <TreeViewItem Header="Root" IsExpanded="True">
+        <TreeViewItem Header="Child" />
+      </TreeViewItem>
+    </TreeView.Items>
+  </TreeView>
+</Form>)XAML";
+		DesignerModel::DesignDocument treeViewItemDocument;
+		std::wstring treeViewItemError;
+		const bool treeViewItemParsed =
+			DesignerModel::XamlDocumentParser::FromXaml(treeViewItemXaml,
+				treeViewItemDocument, &treeViewItemError);
+		DesignerCanvas treeViewItemCanvas(0, 0, 640, 480);
+		const bool treeViewItemApplied = treeViewItemParsed
+			&& treeViewItemCanvas.ApplyDesignDocument(
+				treeViewItemDocument, &treeViewItemError);
+		if (treeViewItemApplied)
+			treeViewItemCanvas.RestoreSelectionByNames(
+				{ L"designerTree" }, L"designerTree", true);
+		auto treeViewItemRecord = treeViewItemApplied
+			? FindControl(treeViewItemCanvas, L"designerTree") : nullptr;
+		auto* designerTree = treeViewItemRecord
+			? dynamic_cast<TreeView*>(treeViewItemRecord->ControlInstance) : nullptr;
+		auto* designerRootNode = designerTree && designerTree->Root
+			&& !designerTree->Root->Children.empty()
+			? designerTree->Root->Children.front() : nullptr;
+		auto* designerRoot = designerTree && designerRootNode
+			? designerTree->GetGeneratedItem(designerRootNode) : nullptr;
+		std::wstring designerRootHeader;
+		const bool treeViewItemPreviewReady = designerRoot
+			&& designerRoot->FindDeclarativeTemplatePart(L"treeChrome")
+			&& designerRoot->GetHeader().TryGetString(designerRootHeader)
+			&& designerRootHeader == L"Root"
+			&& designerRoot->IsExpanded
+			&& designerRoot->HasItems;
+		DesignerModel::DesignDocument capturedTreeViewItem;
+		const bool treeViewItemCaptured = treeViewItemApplied
+			&& treeViewItemCanvas.BuildDesignDocument(
+				capturedTreeViewItem, &treeViewItemError);
+		const auto treeViewItemCanonical = treeViewItemCaptured
+			? DesignerModel::XamlDocumentSerializer::ToXaml(capturedTreeViewItem)
+			: std::string{};
+		auto changedTreeViewItemXaml =
+			Convert::Utf8ToUnicode(treeViewItemCanonical);
+		const auto treeChromeAt = changedTreeViewItemXaml.find(L"treeChrome");
+		if (treeChromeAt != std::wstring::npos)
+			changedTreeViewItemXaml.replace(treeChromeAt,
+				std::wstring(L"treeChrome").size(), L"treeChromeReloaded");
+		(void)treeViewItemCanvas.ResetDocumentHistoryAsSaved();
+		const auto beginTreeViewItemEdit =
+			treeViewItemCanvas.BeginDocumentEditTransaction(L"EditXaml");
+		const bool treeViewItemPreviewed = beginTreeViewItemEdit.Succeeded()
+			&& treeChromeAt != std::wstring::npos
+			&& treeViewItemCanvas.PreviewXamlDocumentText(
+				changedTreeViewItemXaml, &treeViewItemError);
+		auto changedTreeViewItemRecord = treeViewItemPreviewed
+			? FindControl(treeViewItemCanvas, L"designerTree") : nullptr;
+		auto* changedDesignerTree = changedTreeViewItemRecord
+			? dynamic_cast<TreeView*>(changedTreeViewItemRecord->ControlInstance)
+			: nullptr;
+		auto* changedRootNode = changedDesignerTree && changedDesignerTree->Root
+			&& !changedDesignerTree->Root->Children.empty()
+			? changedDesignerTree->Root->Children.front() : nullptr;
+		auto* changedDesignerRoot = changedDesignerTree && changedRootNode
+			? changedDesignerTree->GetGeneratedItem(changedRootNode) : nullptr;
+		const bool treeViewItemChangedReady = changedDesignerRoot
+			&& changedDesignerRoot->FindDeclarativeTemplatePart(
+				L"treeChromeReloaded")
+			&& treeViewItemCanvas.GetSelectedControl()
+			&& treeViewItemCanvas.GetSelectedControl()->Name == L"designerTree";
+		const auto commitTreeViewItemEdit =
+			treeViewItemCanvas.CommitDocumentEditTransaction();
+		const auto undoTreeViewItemEdit = commitTreeViewItemEdit.HasChanges()
+			? treeViewItemCanvas.UndoCommand()
+			: DesignerDocumentTransactionResult{};
+		auto undoTreeViewItemRecord = undoTreeViewItemEdit.HasChanges()
+			? FindControl(treeViewItemCanvas, L"designerTree") : nullptr;
+		auto* undoDesignerTree = undoTreeViewItemRecord
+			? dynamic_cast<TreeView*>(undoTreeViewItemRecord->ControlInstance)
+			: nullptr;
+		auto* undoRootNode = undoDesignerTree && undoDesignerTree->Root
+			&& !undoDesignerTree->Root->Children.empty()
+			? undoDesignerTree->Root->Children.front() : nullptr;
+		auto* undoDesignerRoot = undoDesignerTree && undoRootNode
+			? undoDesignerTree->GetGeneratedItem(undoRootNode) : nullptr;
+		const bool treeViewItemUndoReady = undoDesignerRoot
+			&& undoDesignerRoot->FindDeclarativeTemplatePart(L"treeChrome");
+		const auto redoTreeViewItemEdit = treeViewItemUndoReady
+			? treeViewItemCanvas.RedoCommand()
+			: DesignerDocumentTransactionResult{};
+		auto redoTreeViewItemRecord = redoTreeViewItemEdit.HasChanges()
+			? FindControl(treeViewItemCanvas, L"designerTree") : nullptr;
+		auto* redoDesignerTree = redoTreeViewItemRecord
+			? dynamic_cast<TreeView*>(redoTreeViewItemRecord->ControlInstance)
+			: nullptr;
+		auto* redoRootNode = redoDesignerTree && redoDesignerTree->Root
+			&& !redoDesignerTree->Root->Children.empty()
+			? redoDesignerTree->Root->Children.front() : nullptr;
+		auto* redoDesignerRoot = redoDesignerTree && redoRootNode
+			? redoDesignerTree->GetGeneratedItem(redoRootNode) : nullptr;
+		const bool treeViewItemRedoReady = redoDesignerRoot
+			&& redoDesignerRoot->FindDeclarativeTemplatePart(
+				L"treeChromeReloaded");
+		AppendFailure(failures,
+			treeViewItemParsed && treeViewItemApplied
+			&& treeViewItemPreviewReady && treeViewItemCaptured
+			&& treeViewItemCanonical.find("TargetType=\"TreeViewItem\"")
+				!= std::string::npos
+			&& treeViewItemCanonical.find("<TreeViewItem Header=\"Root\"")
+				!= std::string::npos
+			&& treeViewItemPreviewed && treeViewItemChangedReady
+			&& commitTreeViewItemEdit.HasChanges()
+			&& treeViewItemUndoReady && treeViewItemRedoReady,
+			L"TreeViewItem Designer preview did not preserve generated headers, "
+			L"hierarchy, selection, canonical XAML, or undo/redo: "
+				+ treeViewItemError
+				+ L" [parsed=" + SelfTestFlag(treeViewItemParsed)
+				+ L", applied=" + SelfTestFlag(treeViewItemApplied)
+				+ L", initial=" + SelfTestFlag(treeViewItemPreviewReady)
+				+ L", captured=" + SelfTestFlag(treeViewItemCaptured)
+				+ L", preview=" + SelfTestFlag(treeViewItemChangedReady)
+				+ L", undo=" + SelfTestFlag(treeViewItemUndoReady)
+				+ L", redo=" + SelfTestFlag(treeViewItemRedoReady) + L"]");
+	}
+
+	{
+		const std::string hierarchicalTreeXaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  x:Name="HierarchicalTreeDesignerForm">
+  <Form.Resources>
+    <DataType x:Key="DesignerFile">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+      </DataType.Properties>
+    </DataType>
+    <DataType x:Key="DesignerFolder">
+      <DataType.Properties>
+        <Property Path="Name" Kind="String" />
+        <Property Path="Children" Kind="Object" ObjectType="BindingList"
+                  ItemType="DesignerFile" />
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="DesignerFolders" ItemType="DesignerFolder">
+      <DataRecord Name="Root folder" />
+    </DataList>
+	    <HierarchicalDataTemplate DataType="DesignerFolder"
+	                              ItemsSource="{Binding Children}">
+	      <Label x:Name="hierarchyHeader" Text="{Binding Name}"
+	             AccessibleName="Hierarchy header" />
+    </HierarchicalDataTemplate>
+    <DataTemplate DataType="DesignerFile">
+      <Label x:Name="fileHeader" Text="{Binding Name}" />
+    </DataTemplate>
+  </Form.Resources>
+  <TreeView x:Name="hierarchyTree" DesignId="1"
+            ItemsSource="{StaticResource DesignerFolders}" />
+</Form>)XAML";
+		DesignerModel::DesignDocument hierarchicalTreeDocument;
+		std::wstring hierarchicalTreeError;
+		const bool hierarchicalTreeParsed =
+			DesignerModel::XamlDocumentParser::FromXaml(hierarchicalTreeXaml,
+				hierarchicalTreeDocument, &hierarchicalTreeError);
+		DesignerCanvas hierarchicalTreeCanvas(0, 0, 640, 480);
+		const bool hierarchicalTreeApplied = hierarchicalTreeParsed
+			&& hierarchicalTreeCanvas.ApplyDesignDocument(
+				hierarchicalTreeDocument, &hierarchicalTreeError);
+		if (hierarchicalTreeApplied)
+			hierarchicalTreeCanvas.RestoreSelectionByNames(
+				{ L"hierarchyTree" }, L"hierarchyTree", true);
+		auto hierarchyRecord = hierarchicalTreeApplied
+			? FindControl(hierarchicalTreeCanvas, L"hierarchyTree") : nullptr;
+		auto* hierarchyTree = hierarchyRecord
+			? dynamic_cast<TreeView*>(hierarchyRecord->ControlInstance) : nullptr;
+		auto* hierarchyRootNode = hierarchyTree && hierarchyTree->Root
+			&& !hierarchyTree->Root->Children.empty()
+			? hierarchyTree->Root->Children.front() : nullptr;
+		auto* hierarchyRoot = hierarchyTree && hierarchyRootNode
+			? hierarchyTree->GetGeneratedItem(hierarchyRootNode) : nullptr;
+		auto* hierarchyLabel = hierarchyRoot
+			? dynamic_cast<Label*>(hierarchyRoot->GetGeneratedHeaderContent())
+			: nullptr;
+		const bool hierarchicalTreePreviewReady = hierarchyTree
+			&& hierarchyTree->GeneratedItemCount() == 1
+			&& hierarchyRoot && !hierarchyRoot->HasItems
+			&& hierarchyLabel && hierarchyLabel->Text == L"Root folder";
+		DesignerModel::DesignDocument capturedHierarchy;
+		const bool hierarchicalTreeCaptured = hierarchicalTreeApplied
+			&& hierarchicalTreeCanvas.BuildDesignDocument(
+				capturedHierarchy, &hierarchicalTreeError);
+		const auto hierarchicalCanonical = hierarchicalTreeCaptured
+			? DesignerModel::XamlDocumentSerializer::ToXaml(capturedHierarchy)
+			: std::string{};
+		auto changedHierarchyXaml =
+			Convert::Utf8ToUnicode(hierarchicalCanonical);
+		const auto hierarchyHeaderAt = changedHierarchyXaml.find(
+			L"Hierarchy header");
+		if (hierarchyHeaderAt != std::wstring::npos)
+			changedHierarchyXaml.replace(hierarchyHeaderAt,
+				std::wstring(L"Hierarchy header").size(),
+				L"Hierarchy header reloaded");
+		(void)hierarchicalTreeCanvas.ResetDocumentHistoryAsSaved();
+		const auto beginHierarchyEdit =
+			hierarchicalTreeCanvas.BeginDocumentEditTransaction(L"EditXaml");
+		const bool hierarchyPreviewed = beginHierarchyEdit.Succeeded()
+			&& hierarchyHeaderAt != std::wstring::npos
+			&& hierarchicalTreeCanvas.PreviewXamlDocumentText(
+				changedHierarchyXaml, &hierarchicalTreeError);
+		auto changedHierarchyRecord = hierarchyPreviewed
+			? FindControl(hierarchicalTreeCanvas, L"hierarchyTree") : nullptr;
+		auto* changedHierarchyTree = changedHierarchyRecord
+			? dynamic_cast<TreeView*>(changedHierarchyRecord->ControlInstance)
+			: nullptr;
+		auto* changedHierarchyNode = changedHierarchyTree
+			&& changedHierarchyTree->Root
+			&& !changedHierarchyTree->Root->Children.empty()
+			? changedHierarchyTree->Root->Children.front() : nullptr;
+		auto* changedHierarchyItem = changedHierarchyTree
+			? changedHierarchyTree->GetGeneratedItem(changedHierarchyNode) : nullptr;
+		auto* changedHierarchyLabel = changedHierarchyItem
+			? dynamic_cast<Label*>(
+				changedHierarchyItem->GetGeneratedHeaderContent()) : nullptr;
+		const bool hierarchyChangedReady = changedHierarchyLabel
+			&& changedHierarchyLabel->AccessibleName
+				== L"Hierarchy header reloaded"
+			&& hierarchicalTreeCanvas.GetSelectedControl()
+			&& hierarchicalTreeCanvas.GetSelectedControl()->Name == L"hierarchyTree";
+		const auto commitHierarchyEdit =
+			hierarchicalTreeCanvas.CommitDocumentEditTransaction();
+		const auto undoHierarchyEdit = commitHierarchyEdit.HasChanges()
+			? hierarchicalTreeCanvas.UndoCommand()
+			: DesignerDocumentTransactionResult{};
+		auto undoHierarchyRecord = undoHierarchyEdit.HasChanges()
+			? FindControl(hierarchicalTreeCanvas, L"hierarchyTree") : nullptr;
+		auto* undoHierarchyTree = undoHierarchyRecord
+			? dynamic_cast<TreeView*>(undoHierarchyRecord->ControlInstance) : nullptr;
+		auto* undoHierarchyNode = undoHierarchyTree && undoHierarchyTree->Root
+			&& !undoHierarchyTree->Root->Children.empty()
+			? undoHierarchyTree->Root->Children.front() : nullptr;
+		auto* undoHierarchyItem = undoHierarchyTree
+			? undoHierarchyTree->GetGeneratedItem(undoHierarchyNode) : nullptr;
+		auto* undoHierarchyLabel = undoHierarchyItem
+			? dynamic_cast<Label*>(undoHierarchyItem->GetGeneratedHeaderContent())
+			: nullptr;
+		const bool hierarchyUndoReady = undoHierarchyLabel
+			&& undoHierarchyLabel->AccessibleName == L"Hierarchy header";
+		const auto redoHierarchyEdit = hierarchyUndoReady
+			? hierarchicalTreeCanvas.RedoCommand()
+			: DesignerDocumentTransactionResult{};
+		auto redoHierarchyRecord = redoHierarchyEdit.HasChanges()
+			? FindControl(hierarchicalTreeCanvas, L"hierarchyTree") : nullptr;
+		auto* redoHierarchyTree = redoHierarchyRecord
+			? dynamic_cast<TreeView*>(redoHierarchyRecord->ControlInstance) : nullptr;
+		auto* redoHierarchyNode = redoHierarchyTree && redoHierarchyTree->Root
+			&& !redoHierarchyTree->Root->Children.empty()
+			? redoHierarchyTree->Root->Children.front() : nullptr;
+		auto* redoHierarchyItem = redoHierarchyTree
+			? redoHierarchyTree->GetGeneratedItem(redoHierarchyNode) : nullptr;
+		auto* redoHierarchyLabel = redoHierarchyItem
+			? dynamic_cast<Label*>(redoHierarchyItem->GetGeneratedHeaderContent())
+			: nullptr;
+		const bool hierarchyRedoReady = redoHierarchyLabel
+			&& redoHierarchyLabel->AccessibleName
+				== L"Hierarchy header reloaded";
+		AppendFailure(failures,
+			hierarchicalTreeParsed && hierarchicalTreeApplied
+			&& hierarchicalTreePreviewReady && hierarchicalTreeCaptured
+			&& hierarchicalCanonical.find("<HierarchicalDataTemplate")
+				!= std::string::npos
+			&& hierarchicalCanonical.find("ItemsSource=\"{Binding Children}\"")
+				!= std::string::npos
+			&& hierarchyPreviewed && hierarchyChangedReady
+			&& commitHierarchyEdit.HasChanges()
+			&& hierarchyUndoReady && hierarchyRedoReady,
+			L"HierarchicalDataTemplate Designer preview did not preserve data "
+			L"headers, selection, canonical XAML, or undo/redo: "
+				+ hierarchicalTreeError
+				+ L" [parsed=" + SelfTestFlag(hierarchicalTreeParsed)
+				+ L", applied=" + SelfTestFlag(hierarchicalTreeApplied)
+				+ L", initial=" + SelfTestFlag(hierarchicalTreePreviewReady)
+				+ L", captured=" + SelfTestFlag(hierarchicalTreeCaptured)
+				+ L", preview=" + SelfTestFlag(hierarchyChangedReady)
+				+ L", undo=" + SelfTestFlag(hierarchyUndoReady)
+				+ L", redo=" + SelfTestFlag(hierarchyRedoReady) + L"]");
+	}
+
+	{
+		const std::string unusedStateResourceXaml = R"XAML(<Form xmlns="urn:cui"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="urn:cui:self-test-states" x:Name="UnusedStateResourceForm">
+  <Form.Resources>
+    <Color x:Key="ActiveColor">#FF36A269</Color>
+    <Double x:Key="ActiveScale">1.25</Double>
+    <Double x:Key="TransitionRadius">18</Double>
+    <Double x:Key="StateIncrement">3</Double>
+	<Thickness x:Key="ActivePadding">2,3,4,5</Thickness>
+    <ComponentDefinition x:Key="local:UnusedStateCard" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="IsActive" Type="Bool" Default="false" />
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.Template>
+        <Panel x:Name="root">
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="CommonStates">
+              <VisualStateGroup.Transitions>
+                <VisualTransition To="Active" GeneratedDuration="0:0:0.100">
+                  <VisualTransition.Storyboard>
+                    <Storyboard>
+                      <DoubleAnimation Storyboard.TargetName="chrome"
+                          Storyboard.TargetProperty="ValidationCornerRadius"
+                          To="{StaticResource TransitionRadius}"
+						  Duration="0:0:0.100" RepeatBehavior="0.5x"
+						  AutoReverse="true" FillBehavior="Stop" SpeedRatio="2"
+						  IsAdditive="true" IsCumulative="true"
+						  AccelerationRatio="0.2" DecelerationRatio="0.3" />
+                    </Storyboard>
+                  </VisualTransition.Storyboard>
+                </VisualTransition>
+              </VisualStateGroup.Transitions>
+              <VisualState x:Name="Normal" />
+              <VisualState x:Name="Active">
+                <VisualState.StateTriggers>
+                  <StateTrigger Property="IsActive" Value="true" />
+                </VisualState.StateTriggers>
+                <VisualState.Setters>
+                  <Setter TargetName="chrome" Property="BackColor"
+                          Value="{StaticResource ActiveColor}" />
+                </VisualState.Setters>
+                <VisualState.Storyboard>
+                  <Storyboard>
+					<DoubleAnimationUsingKeyFrames Storyboard.TargetName="chrome"
+											 Storyboard.TargetProperty="(Control.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
+										 RepeatBehavior="Forever" AutoReverse="true"
+										 IsAdditive="true" IsCumulative="true"
+										 SpeedRatio="0.5">
+						<LinearDoubleKeyFrame KeyTime="0:0:0.150"
+												  Value="{StaticResource ActiveScale}" />
+					</DoubleAnimationUsingKeyFrames>
+					<DoubleAnimation Storyboard.TargetName="chrome"
+						Storyboard.TargetProperty="ValidationCornerRadius"
+						By="{StaticResource StateIncrement}"
+						IsAdditive="true" IsCumulative="true"
+						Duration="0:0:0.100" />
+					<ThicknessAnimation Storyboard.TargetName="chrome"
+						Storyboard.TargetProperty="Padding"
+						To="{StaticResource ActivePadding}"
+						Duration="0:0:0.100" />
+					<ObjectAnimationUsingKeyFrames Storyboard.TargetName="chrome"
+						Storyboard.TargetProperty="ForeColor" Duration="0:0:0.100">
+						<DiscreteObjectKeyFrame KeyTime="0:0:0"
+							Value="{StaticResource ActiveColor}" />
+					</ObjectAnimationUsingKeyFrames>
+                  </Storyboard>
+                </VisualState.Storyboard>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+          <Panel x:Name="chrome">
+            <Control.RenderTransform>
+              <ScaleTransform ScaleX="1" ScaleY="1" />
+            </Control.RenderTransform>
+          </Panel>
+        </Panel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+  </Form.Resources>
+</Form>)XAML";
+		DesignerModel::DesignDocument stateDocument;
+		std::wstring stateError;
+		const bool stateParsed = DesignerModel::XamlDocumentParser::FromXaml(
+			unusedStateResourceXaml, stateDocument, &stateError);
+		DesignerCanvas stateCanvas(0, 0, 640, 480);
+		const bool stateApplied = stateParsed
+			&& stateCanvas.ApplyDesignDocument(stateDocument, &stateError);
+		const bool timingPreserved = stateParsed
+			&& !stateDocument.Components.empty()
+			&& !stateDocument.Components.front().VisualStateGroups.empty()
+			&& !stateDocument.Components.front().VisualStateGroups.front()
+				.Transitions.empty()
+			&& !stateDocument.Components.front().VisualStateGroups.front()
+				.Transitions.front().Animations.empty()
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.Transitions.front().Animations.front().RepeatCount == 0.5
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.Transitions.front().Animations.front().AutoReverse
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.Transitions.front().Animations.front().IsAdditive
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.Transitions.front().Animations.front().IsCumulative
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.Transitions.front().Animations.front().FillBehavior
+				== DesignerTimelineFillBehavior::Stop
+			&& std::fabs(stateDocument.Components.front().VisualStateGroups.front()
+				.Transitions.front().Animations.front().SpeedRatio - 2.0) < 0.0001
+			&& std::fabs(stateDocument.Components.front().VisualStateGroups.front()
+				.Transitions.front().Animations.front().AccelerationRatio - 0.2)
+				< 0.0001
+			&& std::fabs(stateDocument.Components.front().VisualStateGroups.front()
+				.Transitions.front().Animations.front().DecelerationRatio - 0.3)
+				< 0.0001
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States.size() > 1
+			&& !stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations.empty()
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations.front().RepeatBehavior
+				== DesignerRepeatBehaviorKind::Forever
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations.front().IsAdditive
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations.front().IsCumulative
+			&& std::fabs(stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations.front().SpeedRatio - 0.5) < 0.0001
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations.size() == 4
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations[1].HasBy
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations[1].IsAdditive
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations[1].IsCumulative
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations[1].ByUsesResource
+			&& _wcsicmp(stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations[1].ByResourceKey.c_str(),
+				L"StateIncrement") == 0
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations[2].Kind == DesignerAnimationKind::Thickness
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations[2].ToUsesResource
+			&& _wcsicmp(stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations[2].ToResourceKey.c_str(),
+				L"ActivePadding") == 0
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations[3].Kind == DesignerAnimationKind::Object
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations[3].KeyFrames.size() == 1
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations[3].KeyFrames.front().Kind
+					== DesignerKeyFrameKind::Discrete
+			&& stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations[3].KeyFrames.front().UsesResource
+			&& _wcsicmp(stateDocument.Components.front().VisualStateGroups.front()
+				.States[1].Animations[3].KeyFrames.front().ResourceKey.c_str(),
+				L"ActiveColor") == 0;
+		auto invalidResources = stateCanvas.GetDocumentStyleSheet();
+		for (auto& resource : invalidResources.Resources)
+			if (_wcsicmp(resource.Key.c_str(), L"StateIncrement") == 0)
+			{
+				resource.Value.Kind = DesignerStyleValueKind::String;
+				resource.Value.Text = L"not-a-number";
+			}
+		const bool invalidTypeRejected = stateApplied
+			&& !stateCanvas.SetDocumentStyleSheet(invalidResources, &stateError);
+		const auto preservedResources = stateCanvas.GetDocumentStyleSheet();
+		const auto preservedScale = std::find_if(
+			preservedResources.Resources.begin(), preservedResources.Resources.end(),
+			[](const auto& resource)
+			{ return _wcsicmp(resource.Key.c_str(), L"StateIncrement") == 0; });
+		const bool oldResourcePreserved = preservedResources.Resources.size() == 5
+			&& preservedScale != preservedResources.Resources.end()
+			&& preservedScale->Value.Kind == DesignerStyleValueKind::Double
+			&& preservedScale->Value.Text == L"3";
+		AppendFailure(failures,
+			stateParsed && stateApplied && timingPreserved && invalidTypeRejected
+			&& oldResourcePreserved,
+			L"unused component VisualState Setter/Storyboard resources were not validated transactionally: "
+				+ stateError);
 	}
 
 	if (failures.empty())

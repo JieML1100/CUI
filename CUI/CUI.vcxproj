@@ -215,6 +215,21 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+	<ClInclude Include="include\BindingList.h" />
+	<ClInclude Include="include\CollectionViewSource.h" />
+	<ClInclude Include="include\GroupStyle.h" />
+    <ClInclude Include="include\ItemTemplate.h" />
+    <ClInclude Include="include\ItemContainerGenerator.h" />
+	<ClInclude Include="include\ItemsPanelTemplate.h" />
+	<ClInclude Include="include\ItemsControl.h" />
+	<ClInclude Include="include\ItemsPresenter.h" />
+    <ClInclude Include="include\ContentPresenter.h" />
+    <ClInclude Include="include\ContentControl.h" />
+	<ClInclude Include="include\ControlTemplate.h" />
+	<ClInclude Include="include\ItemContainer.h" />
+	<ClInclude Include="include\HeaderedContentControl.h" />
+	<ClInclude Include="include\Selector.h" />
+	<ClInclude Include="include\ListBox.h" />
     <ClInclude Include="include\Core\EventConnection.h" />
     <ClInclude Include="include\Core\Geometry.h" />
     <ClInclude Include="include\Core\Threading.h" />
@@ -233,6 +248,7 @@
     <ClInclude Include="include\ColorPicker.h" />
     <ClInclude Include="include\ColorPickerPopup.h" />
     <ClInclude Include="include\ComboBox.h" />
+	<ClInclude Include="include\ComponentBehavior.h" />
     <ClInclude Include="include\ContextMenu.h" />
     <ClInclude Include="include\DateTimePicker.h" />
     <ClInclude Include="include\FilterBar.h" />
@@ -252,6 +268,7 @@
     <ClInclude Include="include\Menu.h" />
     <ClInclude Include="include\MessageDialog.h" />
     <ClInclude Include="include\NavigationView.h" />
+	<ClInclude Include="include\NativeSurface.h" />
     <ClInclude Include="include\NumericUpDown.h" />
     <ClInclude Include="include\NotifyIcon.h" />
     <ClInclude Include="include\ObservableCollection.h" />
@@ -263,6 +280,7 @@
     <ClInclude Include="include\LoadingRing.h" />
     <ClInclude Include="include\ProgressBar.h" />
     <ClInclude Include="include\ProgressRing.h" />
+    <ClInclude Include="include\PropertyPath.h" />
     <ClInclude Include="include\RadioBox.h" />
     <ClInclude Include="include\ReportView.h" />
     <ClInclude Include="include\RichTextBox.h" />
@@ -313,10 +331,13 @@
     <ClCompile Include="src\ColorPicker.cpp" />
     <ClCompile Include="src\ColorPickerPopup.cpp" />
     <ClCompile Include="src\ComboBox.cpp" />
+	<ClCompile Include="src\CollectionViewSource.cpp" />
     <ClCompile Include="src\ContextMenu.cpp" />
     <ClCompile Include="src\DateTimePicker.cpp" />
     <ClCompile Include="src\FilterBar.cpp" />
-    <ClCompile Include="src\Control.cpp" />
+    <ClCompile Include="src\Control.cpp">
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="src\DCompLayeredHost.cpp" />
     <ClCompile Include="src\DropDownPopup.cpp" />
     <ClCompile Include="src\Expander.cpp" />
@@ -327,9 +348,19 @@
     <ClCompile Include="src\Label.cpp" />
     <ClCompile Include="src\LinkLabel.cpp" />
     <ClCompile Include="src\ListView.cpp" />
+    <ClCompile Include="src\ItemsControl.cpp" />
+	<ClCompile Include="src\ItemsPresenter.cpp" />
+    <ClCompile Include="src\ContentPresenter.cpp" />
+    <ClCompile Include="src\ContentControl.cpp" />
+	<ClCompile Include="src\HeaderedContentControl.cpp" />
+	<ClCompile Include="src\ItemContainerGenerator.cpp" />
+	<ClCompile Include="src\ItemContainer.cpp" />
+	<ClCompile Include="src\Selector.cpp" />
+	<ClCompile Include="src\ListBox.cpp" />
     <ClCompile Include="src\Menu.cpp" />
     <ClCompile Include="src\MessageDialog.cpp" />
     <ClCompile Include="src\NavigationView.cpp" />
+	<ClCompile Include="src\NativeSurface.cpp" />
     <ClCompile Include="src\NumericUpDown.cpp" />
     <ClCompile Include="src\NotifyIcon.cpp" />
     <ClCompile Include="src\Panel.cpp" />

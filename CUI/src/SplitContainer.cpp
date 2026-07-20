@@ -538,11 +538,11 @@ bool SplitContainer::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, 
 	{
 		if (HitChildPanel(_panel2, localX, localY, childX, childY))
 		{
-			_panel2->ProcessMessage(message, wParam, lParam, childX, childY);
+			_panel2->DispatchMessage(message, wParam, lParam, childX, childY);
 		}
 		else if (HitChildPanel(_panel1, localX, localY, childX, childY))
 		{
-			_panel1->ProcessMessage(message, wParam, lParam, childX, childY);
+			_panel1->DispatchMessage(message, wParam, lParam, childX, childY);
 		}
 	}
 

@@ -138,7 +138,6 @@
     <ClCompile Include="NamespacedWindow.g.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Controls\StatusBadge.h" />
     <ClInclude Include="NamespacedWindow.h" />
     <ClInclude Include="NamespacedWindow.g.h" />
     <ClInclude Include="NamespacedWindow.handlers.g.inc" />

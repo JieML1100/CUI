@@ -70,6 +70,11 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <!-- Keep direct project builds and solution builds on one canonical output. -->
+    <OutDir>$(ProjectDir)..\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)obj\$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ExternalIncludePath>$(SolutionDir)CUI</ExternalIncludePath>
   </PropertyGroup>
@@ -156,11 +161,9 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="CustomControls.cpp" />
     <ClCompile Include="DemoWindow.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="CustomControls.h" />
     <ClInclude Include="DemoWindow.h" />
     <ClInclude Include="imgs.h" />
   </ItemGroup>

@@ -1,6 +1,5 @@
 #include "DemoWindow.h"
 
-#include "CustomControls.h"
 #include "imgs.h"
 
 #include <Button.h>
@@ -13,6 +12,7 @@
 #include <GridView.h>
 #include <KpiCard.h>
 #include <ListView.h>
+#include <ListBox.h>
 #include <MediaPlayer.h>
 #include <Menu.h>
 #include <MessageDialog.h>
@@ -56,26 +56,6 @@ namespace
 		return std::filesystem::path(path).parent_path().wstring();
 	}
 
-	std::shared_ptr<DesignerModel::RuntimeCustomControlRegistry>
-	CreateCustomControlRegistry(std::wstring* outError)
-	{
-		auto registry =
-			std::make_shared<DesignerModel::RuntimeCustomControlRegistry>();
-		if (!registry->Register(
-			L"urn:cui:test", L"GradientInput",
-			[](const DesignerModel::DesignNode&)
-			{
-				return std::make_unique<CustomTextBox1>(L"", 0, 0, 360, 42);
-			}, outError)) return {};
-		if (!registry->Register(
-			L"urn:cui:test", L"GradientLabel",
-			[](const DesignerModel::DesignNode&)
-			{
-				return std::make_unique<CustomLabel1>(L"", 0, 0);
-			}, outError)) return {};
-		return registry;
-	}
-
 	std::wstring FileNameFromPath(const std::wstring& path)
 	{
 		return std::filesystem::path(path).filename().wstring();
@@ -113,16 +93,9 @@ std::wstring DemoWindow::XamlFilePath()
 
 bool DemoWindow::ValidateXaml(std::wstring* outError)
 {
-	auto registry = CreateCustomControlRegistry(outError);
-	if (!registry) return false;
-	DesignerModel::XamlDocumentParseOptions options;
-	options.CustomControlFactory = [registry](const DesignerModel::DesignNode& node)
-	{
-		return registry->Create(node);
-	};
 	DesignerModel::DesignDocument document;
 	return DesignerModel::XamlDocumentParser::LoadFromFile(
-		XamlFilePath(), document, options, outError);
+		XamlFilePath(), document, outError);
 }
 
 template<typename T>
@@ -134,15 +107,13 @@ T* DemoWindow::RequireControl(const wchar_t* name)
 	return control;
 }
 
-DemoWindow::DemoWindow()
+DemoWindow::DemoWindow(bool initializePlatformServices)
 	: Form(L"CUI XAML Component Gallery", { 0, 0 }, { 1400, 800 })
 {
-	std::wstring error;
-	_customControls = CreateCustomControlRegistry(&error);
-	if (!_customControls) ThrowRuntimeError(error);
 	RegisterXamlHandlers();
 	MountXaml();
 	ResolveControls();
+	if (!initializePlatformServices) return;
 	LoadImages();
 	InitializeChrome();
 	InitializeBasicPage();
@@ -165,7 +136,6 @@ DemoWindow::~DemoWindow()
 void DemoWindow::MountXaml()
 {
 	DesignerModel::RuntimeDocumentSessionMountOptions options;
-	options.CustomControls = _customControls;
 	// CUITest deliberately uses an external file, but keeps watching disabled:
 	// the sample compares construction modes without introducing editor timing.
 	options.WatchFile = false;
@@ -254,14 +224,13 @@ void DemoWindow::RegisterXamlHandlers()
 		[this](Control* sender, std::vector<std::wstring> files)
 		{ HandleDropImage(sender, std::move(files)); }, &error));
 
-	auto registerList = [&](UIClass type)
-	{
-		require(registry.RegisterControl(L"HandleListItem", type,
-			L"OnItemClick", &ListView::OnItemClick,
-			[this](ListView* sender, int index) { HandleListItem(sender, index); }, &error));
-	};
-	registerList(UIClass::UI_ListBox);
-	registerList(UIClass::UI_ListView);
+	require(registry.RegisterControl(L"HandleListItem", UIClass::UI_ListView,
+		L"OnItemClick", &ListView::OnItemClick,
+		[this](ListView* sender, int index) { HandleListItem(sender, index); }, &error));
+	require(registry.RegisterControl(L"HandleListBoxSelection", UIClass::UI_ListBox,
+		L"OnSelectionChanged", &Selector::OnSelectionChanged,
+		[this](Control* sender)
+		{ HandleListBoxSelection(static_cast<Selector*>(sender)); }, &error));
 	require(registry.RegisterControl(L"HandlePropertyValue", UIClass::UI_PropertyGrid,
 		L"OnValueChanged", &PropertyGridView::OnValueChanged,
 		[this](PropertyGridView* sender, int index,
@@ -685,6 +654,11 @@ void DemoWindow::HandleListItem(ListView* sender, int index)
 {
 	if (index >= 0 && index < static_cast<int>(sender->Items.size()))
 		UpdateStatus(L"List: " + sender->Items[index].Text);
+}
+
+void DemoWindow::HandleListBoxSelection(Selector* sender)
+{
+	UpdateStatus(L"ListBox: " + sender->GetSelectedValue().ToString());
 }
 
 void DemoWindow::HandleGridEnabled(Control* sender)

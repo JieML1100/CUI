@@ -1,8 +1,34 @@
 #pragma once
 #include "Control.h"
+#include "BindingList.h"
+#include "ControlTemplate.h"
+#include "ItemContainer.h"
 #include "ObservableCollection.h"
 #include <unordered_map>
 #pragma comment(lib, "Imm32.lib")
+
+class ComboBox;
+
+/** WPF-style content container generated for one ComboBox item. */
+class ComboBoxItem final : public ItemContainerControl
+{
+public:
+	ComboBoxItem();
+	bool Initialize(
+		ComboBox& owner,
+		const BindingSourceReference& item,
+		const ItemTemplateReference& contentTemplate,
+		const std::wstring& displayMemberPath,
+		size_t index,
+		std::wstring* outError = nullptr);
+	UIClass Type() override { return UIClass::UI_ComboBoxItem; }
+	void EnsureBindingPropertiesRegistered() override;
+
+private:
+	ComboBox* _owner = nullptr;
+	void ActivateItem() override;
+	void FocusOwner() override;
+};
 
 /**
  * @file ComboBox.h
@@ -31,7 +57,7 @@ private:
 	int _expandCount = 4;
 	int _expandScroll = 0;
 	bool _expand = false;
-	int _selectedIndex = 0;
+	int _selectedIndex = -1;
 	float _cornerRadius = 6.0f;
 	float _dropCornerRadius = 7.0f;
 	float _dropGap = 4.0f;
@@ -79,6 +105,25 @@ private:
 	void ReconcileAccessibilityItemIds();
 	void RebuildAccessibilityItemIndex();
 	int FindAccessibilityItem(uint32_t id);
+	BindingListReference _itemsSource;
+	EventConnection _itemsSourceChanged;
+	std::vector<BindingPathObservation> _itemSourceObservations;
+	std::wstring _displayMemberPath;
+	std::wstring _selectedValuePath;
+	Event<void(ComboBox*)> _selectedValueChanged;
+	bool _refreshingItemsSource = false;
+	ItemTemplateReference _itemTemplate;
+	std::wstring _itemContainerStyle;
+	ControlTemplateReference _itemContainerTemplate;
+	std::vector<std::unique_ptr<ComboBoxItem>> _generatedItems;
+	std::wstring _lastTemplateError;
+	bool _useGeneratedItemContainers = false;
+	void RefreshItemsSource();
+	void RefreshItemSource(size_t index);
+	void NotifySelectedValueChanged();
+	bool RebuildGeneratedItems();
+	void LayoutGeneratedItems(float dropTop, float itemRight);
+	void UpdateGeneratedItemStates();
 public:
 	virtual UIClass Type();
 	void EnsureBindingPropertiesRegistered() override;
@@ -129,6 +174,53 @@ public:
 	__declspec(property(put = SetItems, get = GetItems)) ItemCollection& Items;
 	ItemCollection& GetItems();
 	void SetItems(const std::vector<std::wstring>& value);
+	BindingListReference GetItemsSource() const noexcept { return _itemsSource; }
+	void SetItemsSource(BindingListReference value);
+	ItemTemplateReference GetItemTemplate() const noexcept
+	{
+		return _itemTemplate;
+	}
+	void SetItemTemplate(ItemTemplateReference value);
+	const std::wstring& GetDisplayMemberPath() const noexcept
+	{
+		return _displayMemberPath;
+	}
+	void SetDisplayMemberPath(std::wstring value);
+	const std::wstring& GetSelectedValuePath() const noexcept
+	{
+		return _selectedValuePath;
+	}
+	void SetSelectedValuePath(std::wstring value);
+	BindingValue GetSelectedValue() const;
+	void SetSelectedValue(const BindingValue& value);
+	const std::wstring& GetItemContainerStyle() const noexcept
+	{
+		return _itemContainerStyle;
+	}
+	void SetItemContainerStyle(std::wstring value);
+	ControlTemplateReference GetItemContainerTemplate() const noexcept
+	{
+		return _itemContainerTemplate;
+	}
+	void SetItemContainerTemplate(ControlTemplateReference value);
+	void SetUseGeneratedItemContainers(bool value);
+	bool UsesGeneratedItemContainers() const noexcept
+	{
+		return _useGeneratedItemContainers;
+	}
+	const std::wstring& LastTemplateError() const noexcept
+	{
+		return _lastTemplateError;
+	}
+	size_t GeneratedItemCount() const noexcept
+	{
+		return _generatedItems.size();
+	}
+	ComboBoxItem* GetGeneratedItem(size_t index) const noexcept
+	{
+		return index < _generatedItems.size()
+			? _generatedItems[index].get() : nullptr;
+	}
 	PROPERTY(float, BorderThickness); GET(float, BorderThickness); SET(float, BorderThickness);
 	/** @brief 创建 ComboBox。 */
 	ComboBox(std::wstring text, int x, int y, int width = 120, int height = 24);

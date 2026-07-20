@@ -18,9 +18,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Controls\StatusBadge.h">
-      <Filter>User</Filter>
-    </ClInclude>
     <ClInclude Include="NamespacedWindow.h">
       <Filter>User</Filter>
     </ClInclude>

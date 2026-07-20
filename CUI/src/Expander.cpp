@@ -143,7 +143,7 @@ UIClass Expander::Type()
 
 void Expander::EnsureBindingPropertiesRegistered()
 {
-	Panel::EnsureBindingPropertiesRegistered();
+	HeaderedContentControl::EnsureBindingPropertiesRegistered();
 	static const bool registered = []
 	{
 		auto expandedOptions = ExpanderPropertyOptions(
@@ -225,8 +225,11 @@ void Expander::EnsureBindingPropertiesRegistered()
 }
 
 Expander::Expander()
-	: Panel()
+	: HeaderedContentControl()
 {
+	ClearRows();
+	AddRow(GridLength::Pixels(_headerHeight));
+	AddRow(GridLength::Star(1.0f));
 	InitializePanelCornerRadiusDefault(7.0f);
 	InitializePanelDisabledOverlayColorDefault(
 		cui::theme::palette::DisabledOverlay);
@@ -337,13 +340,38 @@ float Expander::CurrentExpandProgress()
 
 void Expander::PerformExpanderLayoutIfNeeded()
 {
+	UpdateHeaderLayout();
 	if (this->IsLayoutSuspended()) return;
 	if (!_needsLayout && !(_layoutEngine && _layoutEngine->NeedsLayout()))
 		return;
-	Thickness originalPadding = this->Padding;
-	_padding.Top += HeaderHeight;
 	PerformLayout();
-	_padding = originalPadding;
+}
+
+void Expander::ConfigureHeaderVisual(Control& child)
+{
+	HeaderedContentControl::ConfigureHeaderVisual(child);
+	child.HAlign = HorizontalAlignment::Stretch;
+	child.VAlign = VerticalAlignment::Center;
+	child.Margin = Thickness{
+		HeaderPaddingX + ChevronSize + 9.0f,
+		0.0f,
+		HeaderPaddingX,
+		0.0f };
+}
+
+void Expander::UpdateHeaderLayout()
+{
+	const float height = (std::max)(0.0f, HeaderHeight);
+	const auto& rows = GetRows();
+	if (rows.size() != 2 || !rows[0].Height.IsPixel()
+		|| std::fabs(rows[0].Height.Value - height) > 0.01f
+		|| !rows[1].Height.IsStar())
+	{
+		ClearRows();
+		AddRow(GridLength::Pixels(height));
+		AddRow(GridLength::Star(1.0f));
+	}
+	if (auto* header = GetHeaderVisual()) ConfigureHeaderVisual(*header);
 }
 
 void Expander::PerformPendingLayout()
@@ -477,6 +505,16 @@ void Expander::Update()
 	const float radius = (std::clamp)(CornerRadius, 0.0f, (std::min)(width, (std::max)(headerHeight, height)) * 0.5f);
 
 	this->BeginRender(width, height);
+	if (GetControlTemplateRoot())
+	{
+		if (!this->ParentForm->IsDCompSceneRenderActive())
+		{
+			for (auto* child : this->GetChildrenInZOrder())
+				if (child && child->Visible) child->Update();
+		}
+		this->EndRender();
+		return;
+	}
 	{
 		D2D1_COLOR_F surface = SurfaceColor.a > 0.0f ? SurfaceColor : this->BackColor;
 		d2d->FillRoundRect(0.0f, 0.0f, width, height, surface, radius);
@@ -492,16 +530,29 @@ void Expander::Update()
 		const float chevronCenterY = headerHeight * 0.5f;
 		DrawExpanderChevron(d2d, chevronCenterX, chevronCenterY, ChevronSize, progress, headerForeColor);
 
-		D2D1_RECT_F textRect{
-			HeaderPaddingX + ChevronSize + 9.0f,
-			0.0f,
-			(std::max)(HeaderPaddingX + ChevronSize + 9.0f, width - HeaderPaddingX),
-			headerHeight
-		};
-		d2d->PushDrawRect(textRect.left, textRect.top, (std::max)(1.0f, RectWidth(textRect)), RectHeight(textRect));
-		d2d->DrawString(GetDisplayText(), textRect.left, TextTop(Font, textRect),
-			(std::max)(1.0f, RectWidth(textRect)), RectHeight(textRect), headerForeColor, Font);
-		d2d->PopDrawRect();
+		auto* header = GetHeaderVisual();
+		if (header)
+		{
+			if ((!this->ParentForm
+				|| !this->ParentForm->IsDCompSceneRenderActive())
+				&& header->Visible)
+				header->Update();
+		}
+		else
+		{
+			D2D1_RECT_F textRect{
+				HeaderPaddingX + ChevronSize + 9.0f,
+				0.0f,
+				(std::max)(HeaderPaddingX + ChevronSize + 9.0f, width - HeaderPaddingX),
+				headerHeight
+			};
+			d2d->PushDrawRect(textRect.left, textRect.top,
+				(std::max)(1.0f, RectWidth(textRect)), RectHeight(textRect));
+			d2d->DrawString(GetDisplayText(), textRect.left,
+				TextTop(Font, textRect), (std::max)(1.0f, RectWidth(textRect)),
+				RectHeight(textRect), headerForeColor, Font);
+			d2d->PopDrawRect();
+		}
 
 		if (progress > 0.001f && height > headerHeight)
 		{
@@ -509,11 +560,9 @@ void Expander::Update()
 			d2d->PushDrawRect(clip.left, clip.top, RectWidth(clip), RectHeight(clip));
 			if (!this->ParentForm || !this->ParentForm->IsDCompSceneRenderActive())
 			{
-				for (auto child : this->GetChildrenInZOrder())
-				{
-					if (!child || !child->Visible) continue;
-					child->Update();
-				}
+				auto* content = GetVisualContent();
+				if (!content) content = GetGeneratedPresenter();
+				if (content && content->Visible) content->Update();
 			}
 			d2d->PopDrawRect();
 		}
@@ -583,5 +632,6 @@ bool Expander::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int lo
 		break;
 	}
 
-	return Panel::ProcessMessage(message, wParam, lParam, localX, localY);
+	return HeaderedContentControl::ProcessMessage(
+		message, wParam, lParam, localX, localY);
 }

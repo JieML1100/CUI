@@ -179,7 +179,7 @@ void DropDownPopup::ShowAt(Form* form, Control* owner, const D2D1_RECT_F& anchor
 		return;
 	}
 
-	this->Parent = owner;
+	this->SetLogicalParent(owner);
 	this->ParentForm = form;
 	this->_owner = owner;
 	this->_anchorAbsRect = anchorAbsRect;

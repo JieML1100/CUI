@@ -1856,7 +1856,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 			{
 				if (!c) return;
 				const auto location = c->GetActualLocationDip();
-				c->ProcessMessage(
+				c->DispatchMessage(
 					message, wParam, lParam,
 					static_cast<int>(std::floor((float)contentX - location.x)),
 					static_cast<int>(std::floor((float)contentY - location.y)));
@@ -1926,7 +1926,7 @@ bool TabControl::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 					}
 					else if (page)
 					{
-						page->ProcessMessage(message, wParam, lParam, contentX, contentY);
+						page->DispatchMessage(message, wParam, lParam, contentX, contentY);
 					}
 				}
 			}

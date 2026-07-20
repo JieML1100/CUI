@@ -217,6 +217,14 @@ namespace
 			candidate.HasTrackedSelectedIndex = true;
 			candidate.TrackedSelectedIndex = tracked->second;
 		}
+		if (const auto resource = control.MetadataPropertyResourceKeys.find(
+			L"SelectedIndex");
+			resource != control.MetadataPropertyResourceKeys.end())
+			candidate.TrackedSelectedIndexResourceKey = resource->second;
+		if (const auto resource =
+			control.MetadataPropertyDynamicResourceKeys.find(L"SelectedIndex");
+			resource != control.MetadataPropertyDynamicResourceKeys.end())
+			candidate.TrackedSelectedIndexDynamicResourceKey = resource->second;
 		output = std::move(candidate);
 		return true;
 	}
@@ -258,7 +266,13 @@ namespace
 			return Fail(L"ComboBox.SelectedIndex 出现了意外的 Binding 值来源。", outError);
 		}
 
-		if (snapshot.HasLocalSelectedIndex)
+		if (!snapshot.TrackedSelectedIndexDynamicResourceKey.empty())
+		{
+			if (!combo->SetDynamicResource(L"SelectedIndex",
+				snapshot.TrackedSelectedIndexDynamicResourceKey))
+				return Fail(L"无法恢复 ComboBox.SelectedIndex DynamicResource。", outError);
+		}
+		else if (snapshot.HasLocalSelectedIndex)
 		{
 			if (!combo->TrySetPropertyValue(
 				L"SelectedIndex", snapshot.LocalSelectedIndex,
@@ -278,6 +292,16 @@ namespace
 				snapshot.TrackedSelectedIndex;
 		else
 			control.MetadataProperties.erase(L"SelectedIndex");
+		if (!snapshot.TrackedSelectedIndexResourceKey.empty())
+			control.MetadataPropertyResourceKeys[L"SelectedIndex"] =
+				snapshot.TrackedSelectedIndexResourceKey;
+		else
+			control.MetadataPropertyResourceKeys.erase(L"SelectedIndex");
+		if (!snapshot.TrackedSelectedIndexDynamicResourceKey.empty())
+			control.MetadataPropertyDynamicResourceKeys[L"SelectedIndex"] =
+				snapshot.TrackedSelectedIndexDynamicResourceKey;
+		else
+			control.MetadataPropertyDynamicResourceKeys.erase(L"SelectedIndex");
 
 		DesignerComboBoxSnapshot actual;
 		std::wstring verifyError;
@@ -295,7 +319,10 @@ size_t DesignerComboBoxSnapshot::GetEstimatedMemoryUsage() const noexcept
 		+ Items.capacity() * sizeof(std::wstring)
 		+ ConfiguredBinding.SourceProperty.capacity() * sizeof(wchar_t)
 		+ ConfiguredBinding.Converter.capacity() * sizeof(wchar_t)
-		+ TrackedSelectedIndex.Text.capacity() * sizeof(wchar_t);
+		+ ConfiguredBinding.ElementName.capacity() * sizeof(wchar_t)
+		+ TrackedSelectedIndex.Text.capacity() * sizeof(wchar_t)
+		+ TrackedSelectedIndexResourceKey.capacity() * sizeof(wchar_t)
+		+ TrackedSelectedIndexDynamicResourceKey.capacity() * sizeof(wchar_t);
 	for (const auto& item : Items) result += StringMemory(item);
 	return result;
 }

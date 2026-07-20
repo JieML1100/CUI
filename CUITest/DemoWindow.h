@@ -47,7 +47,7 @@ class WebBrowser;
 class DemoWindow final : public Form
 {
 public:
-	DemoWindow();
+	explicit DemoWindow(bool initializePlatformServices = true);
 	~DemoWindow();
 
 	static std::wstring XamlFilePath();
@@ -91,6 +91,7 @@ private:
 	void HandleDropImage(Control* sender, std::vector<std::wstring> files);
 	void HandlePictureVisibility(Control* sender);
 	void HandleListItem(class ListView* sender, int index);
+	void HandleListBoxSelection(class Selector* sender);
 	void HandleGridEnabled(Control* sender);
 	void HandleGridVisible(Control* sender);
 	void HandlePropertyValue(PropertyGridView* sender, int index,
@@ -117,7 +118,6 @@ private:
 	void HandleMediaPosition(MediaPlayer* sender, double position);
 	void HandleSystemContextMenu(Control* sender, int id);
 
-	std::shared_ptr<DesignerModel::RuntimeCustomControlRegistry> _customControls;
 	DesignerModel::RuntimeDocumentSession _xamlSession;
 
 	std::shared_ptr<BitmapSource> _images[10]{};

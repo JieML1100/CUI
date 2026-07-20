@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cwctype>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <typeindex>
 
@@ -136,12 +137,63 @@ namespace
 			return NumberText(typed.Left) + L", " + NumberText(typed.Top)
 				+ L", " + NumberText(typed.Right) + L", " + NumberText(typed.Bottom);
 		}
+		case DesignerStyleValueKind::Point:
+		{
+			cui::core::Point typed{};
+			return value.TryGet(typed)
+				? NumberText(typed.x,
+					std::numeric_limits<float>::max_digits10) + L", "
+					+ NumberText(typed.y,
+						std::numeric_limits<float>::max_digits10)
+				: L"0, 0";
+		}
+		case DesignerStyleValueKind::Vector:
+		{
+			cui::core::Vector typed{};
+			return value.TryGet(typed)
+				? NumberText(typed.x,
+					std::numeric_limits<float>::max_digits10) + L", "
+					+ NumberText(typed.y,
+						std::numeric_limits<float>::max_digits10)
+				: L"0, 0";
+		}
+		case DesignerStyleValueKind::Rect:
+		{
+			cui::core::Rect typed{};
+			return value.TryGet(typed)
+				? NumberText(typed.x,
+					std::numeric_limits<float>::max_digits10) + L", "
+					+ NumberText(typed.y,
+						std::numeric_limits<float>::max_digits10) + L", "
+					+ NumberText(typed.width,
+						std::numeric_limits<float>::max_digits10) + L", "
+					+ NumberText(typed.height,
+						std::numeric_limits<float>::max_digits10)
+				: L"0, 0, 0, 0";
+		}
 		case DesignerStyleValueKind::Size:
 		{
-			SIZE typed{};
-			return value.TryGet(typed)
-				? std::to_wstring(typed.cx) + L", " + std::to_wstring(typed.cy)
+			cui::core::Size typed{};
+			if (value.TryGet(typed))
+				return NumberText(typed.width,
+					std::numeric_limits<float>::max_digits10) + L", "
+					+ NumberText(typed.height,
+						std::numeric_limits<float>::max_digits10);
+			SIZE legacy{};
+			return value.TryGet(legacy)
+				? std::to_wstring(legacy.cx) + L", " + std::to_wstring(legacy.cy)
 				: L"0, 0";
+		}
+		case DesignerStyleValueKind::Matrix:
+		{
+			D2D1_MATRIX_3X2_F typed{};
+			if (!value.TryGet(typed)) return L"1, 0, 0, 1, 0, 0";
+			return NumberText(typed._11, std::numeric_limits<float>::max_digits10)
+				+ L", " + NumberText(typed._12, std::numeric_limits<float>::max_digits10)
+				+ L", " + NumberText(typed._21, std::numeric_limits<float>::max_digits10)
+				+ L", " + NumberText(typed._22, std::numeric_limits<float>::max_digits10)
+				+ L", " + NumberText(typed._31, std::numeric_limits<float>::max_digits10)
+				+ L", " + NumberText(typed._32, std::numeric_limits<float>::max_digits10);
 		}
 		case DesignerStyleValueKind::Length:
 		{
@@ -271,7 +323,11 @@ namespace
 			return ControlPropertyEditorKind::Number;
 		case DesignerStyleValueKind::Color: return ControlPropertyEditorKind::Color;
 		case DesignerStyleValueKind::Thickness: return ControlPropertyEditorKind::Thickness;
+		case DesignerStyleValueKind::Point: return ControlPropertyEditorKind::Text;
+		case DesignerStyleValueKind::Vector: return ControlPropertyEditorKind::Text;
+		case DesignerStyleValueKind::Rect: return ControlPropertyEditorKind::Text;
 		case DesignerStyleValueKind::Size: return ControlPropertyEditorKind::Size;
+		case DesignerStyleValueKind::Matrix: return ControlPropertyEditorKind::Text;
 		case DesignerStyleValueKind::Length: return ControlPropertyEditorKind::Length;
 		case DesignerStyleValueKind::String:
 		case DesignerStyleValueKind::ImageSource:
@@ -288,7 +344,7 @@ namespace
 		const BindingPropertyMetadata& metadata,
 		DesignerPropertyDescriptor& out)
 	{
-		if (!metadata.CanWrite()) return false;
+		if (!metadata.CanRead()) return false;
 		DesignerStyleValueKind kind;
 		if (!TryGetStyleValueKind(metadata, kind)) return false;
 
@@ -365,8 +421,17 @@ bool TryGetStyleValueKind(
 		out = DesignerStyleValueKind::Color;
 	else if (type == std::type_index(typeid(Thickness)))
 		out = DesignerStyleValueKind::Thickness;
-	else if (type == std::type_index(typeid(SIZE)))
+	else if (type == std::type_index(typeid(cui::core::Point)))
+		out = DesignerStyleValueKind::Point;
+	else if (type == std::type_index(typeid(cui::core::Vector)))
+		out = DesignerStyleValueKind::Vector;
+	else if (type == std::type_index(typeid(cui::core::Rect)))
+		out = DesignerStyleValueKind::Rect;
+	else if (type == std::type_index(typeid(cui::core::Size))
+		|| type == std::type_index(typeid(SIZE)))
 		out = DesignerStyleValueKind::Size;
+	else if (type == std::type_index(typeid(D2D1_MATRIX_3X2_F)))
+		out = DesignerStyleValueKind::Matrix;
 	else if (type == std::type_index(typeid(cui::layout::Length)))
 		out = DesignerStyleValueKind::Length;
 	else if (type == std::type_index(typeid(std::shared_ptr<BitmapSource>)))
@@ -395,7 +460,24 @@ std::vector<DesignerPropertyDescriptor> GetStyleProperties(Control& target)
 	std::vector<DesignerPropertyDescriptor> result;
 	for (const auto* metadata : BindingPropertyRegistry::GetProperties(target))
 	{
-		if (!metadata) continue;
+		if (!metadata || !metadata->CanWrite()) continue;
+		DesignerPropertyDescriptor property;
+		if (TryCreateDescriptor(target, *metadata, property))
+			result.push_back(std::move(property));
+	}
+	std::sort(result.begin(), result.end(), [](const auto& left, const auto& right)
+	{
+		return Lower(left.Name) < Lower(right.Name);
+	});
+	return result;
+}
+
+std::vector<DesignerPropertyDescriptor> GetConditionProperties(Control& target)
+{
+	std::vector<DesignerPropertyDescriptor> result;
+	for (const auto* metadata : BindingPropertyRegistry::GetProperties(target))
+	{
+		if (!metadata || !metadata->CanRead() || !metadata->CanObserve()) continue;
 		DesignerPropertyDescriptor property;
 		if (TryCreateDescriptor(target, *metadata, property))
 			result.push_back(std::move(property));
@@ -422,7 +504,14 @@ std::vector<DesignerPropertyDescriptor> GetBrowsableProperties(Control& target)
 
 std::vector<DesignerPropertyDescriptor> GetPropertyGridProperties(Control& target)
 {
-	auto result = GetStyleProperties(target);
+	std::vector<DesignerPropertyDescriptor> result;
+	for (const auto* metadata : BindingPropertyRegistry::GetProperties(target))
+	{
+		if (!metadata) continue;
+		DesignerPropertyDescriptor property;
+		if (TryCreateDescriptor(target, *metadata, property))
+			result.push_back(std::move(property));
+	}
 	result.erase(std::remove_if(result.begin(), result.end(), [&](const auto& property)
 	{
 		return !property.Metadata
@@ -477,6 +566,37 @@ bool ValidateStyleValue(
 	return true;
 }
 
+bool ValidateConditionValue(
+	Control& target,
+	const std::wstring& propertyName,
+	const DesignerStyleValue& value,
+	std::wstring* outError,
+	const std::wstring& resourceBasePath,
+	const std::shared_ptr<ResourceLoadContext>& resources)
+{
+	const auto* metadata = target.FindPropertyMetadata(propertyName);
+	if (!metadata)
+		return Fail(L"目标类型没有触发器属性：" + propertyName, outError);
+	if (!metadata->CanRead() || !metadata->CanObserve())
+		return Fail(L"触发器属性必须可读且可观察：" + propertyName, outError);
+	DesignerStyleValueKind expected;
+	if (!TryGetStyleValueKind(*metadata, expected))
+		return Fail(L"Designer 尚不支持触发器属性类型："
+			+ propertyName, outError);
+	if (value.Kind != expected)
+		return Fail(L"触发器属性 " + propertyName + L" 需要 "
+			+ DesignerStyleSheetUtils::ValueKindName(expected) + L" 值。", outError);
+
+	BindingValue parsed;
+	BindingValue converted;
+	if (!DesignerStyleSheetUtils::TryConvertValue(
+		value, parsed, outError, resourceBasePath, resources)
+		|| !metadata->TryConvert(parsed, converted))
+		return Fail(L"触发器值无法通过元数据转换：" + propertyName, outError);
+	if (outError) outError->clear();
+	return true;
+}
+
 bool CaptureValue(
 	Control& target,
 	const std::wstring& propertyName,
@@ -510,13 +630,14 @@ bool ApplyValue(
 	std::wstring* outCanonicalName,
 	DesignerStyleValue* outEffective,
 	std::wstring* outError,
-	const std::wstring& resourceBasePath)
+	const std::wstring& resourceBasePath,
+	const std::shared_ptr<ResourceLoadContext>& resources)
 {
 	if (!ValidateStyleValue(
-		target, propertyName, value, outError, resourceBasePath)) return false;
+		target, propertyName, value, outError, resourceBasePath, resources)) return false;
 	BindingValue parsed;
 	if (!DesignerStyleSheetUtils::TryConvertValue(
-		value, parsed, outError, resourceBasePath)) return false;
+		value, parsed, outError, resourceBasePath, resources)) return false;
 	const auto* metadata = target.FindPropertyMetadata(propertyName);
 	if (!metadata || !target.TrySetPropertyValue(metadata->Name(), parsed))
 		return Fail(L"无法设置元数据属性；它可能正被 Binding 占用："
@@ -570,13 +691,14 @@ bool ApplyAndTrackValue(
 	std::wstring* outCanonicalName,
 	DesignerStyleValue* outEffective,
 	std::wstring* outError,
-	const std::wstring& resourceBasePath)
+	const std::wstring& resourceBasePath,
+	const std::shared_ptr<ResourceLoadContext>& resources)
 {
 	std::wstring canonicalName;
 	DesignerStyleValue effective;
 	if (!ApplyValue(
 		target, propertyName, value,
-		&canonicalName, &effective, outError, resourceBasePath)) return false;
+		&canonicalName, &effective, outError, resourceBasePath, resources)) return false;
 	const auto* metadata = target.FindPropertyMetadata(canonicalName);
 	if (!metadata)
 		return Fail(L"属性应用后无法解析规范元数据：" + canonicalName, outError);
@@ -609,7 +731,7 @@ bool ResetAndUntrackValue(
 		metadata->Name(), ControlPropertyValueSource::Local);
 	if (!target.ResetPropertyValue(metadata->Name()) && hadLocalValue)
 		return Fail(L"无法重置元数据属性：" + metadata->Name(), outError);
-	// With no Local value, a Style/Binding/Theme source already represents the
+	// With no Local value, an Inherited/Style/Binding/Theme source already represents the
 	// reset state even though Control::ResetPropertyValue has nothing to clear.
 	if (!hadLocalValue
 		&& target.GetPropertyValueSource(metadata->Name())

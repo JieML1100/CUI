@@ -526,7 +526,7 @@ bool ToolBar::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int loc
 		if (itemRect.Contains(cui::core::Point{
 			(float)localX, (float)localY }))
 		{
-			control->ProcessMessage(
+			control->DispatchMessage(
 				message, wParam, lParam,
 				static_cast<int>(std::floor((float)localX - itemLocation.x)),
 				static_cast<int>(std::floor((float)localY - itemLocation.y)));

@@ -96,6 +96,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <StackReserveSize>8388608</StackReserveSize>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
@@ -117,6 +118,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <StackReserveSize>8388608</StackReserveSize>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
@@ -136,6 +138,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <StackReserveSize>8388608</StackReserveSize>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
@@ -157,6 +160,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <StackReserveSize>8388608</StackReserveSize>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(WebView2PackageDir)\build\native\$(WebView2ArchDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>WebView2LoaderStatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
@@ -167,6 +171,7 @@
     <ClCompile Include="CodeBehindExportDialog.cpp" />
     <ClCompile Include="ComboBoxItemsEditorDialog.cpp" />
     <ClCompile Include="DataContextSchemaEditorDialog.cpp" />
+    <ClCompile Include="DataResourcesEditorDialog.cpp" />
     <ClCompile Include="DesignerCore\CommandManager.cpp" />
     <ClCompile Include="DesignerCore\DesignerCommandCoordinator.cpp">
       <MultiProcessorCompilation>false</MultiProcessorCompilation>
@@ -215,7 +220,9 @@
     <ClCompile Include="Designer.cpp">
       <MultiProcessorCompilation>false</MultiProcessorCompilation>
     </ClCompile>
-    <ClCompile Include="DesignerCanvas.cpp" />
+    <ClCompile Include="DesignerCanvas.cpp">
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="DesignerControlCatalog.cpp" />
     <ClCompile Include="DesignerControlFactory.cpp" />
     <ClCompile Include="DesignerCustomEditorCatalog.cpp" />
@@ -223,8 +230,6 @@
     <ClCompile Include="DesignerPropertyRowCatalog.cpp" />
     <ClCompile Include="DesignerPropertyEdit.cpp" />
     <ClCompile Include="DesignerStructureEdit.cpp" />
-    <ClCompile Include="DesignerPreviewPlugin.cpp" />
-    <ClCompile Include="DesignerPreviewBridge.cpp" />
     <ClCompile Include="EventHandlerEditorDialog.cpp" />
     <ClCompile Include="DesignerSelfTest.cpp" />
     <ClCompile Include="SourceCodeNavigator.cpp" />
@@ -250,6 +255,8 @@
     <ClInclude Include="CodeGenInput.h" />
     <ClInclude Include="ComboBoxItemsEditorDialog.h" />
     <ClInclude Include="DataContextSchemaEditorDialog.h" />
+    <ClInclude Include="DataResourcesEditorDialog.h" />
+    <ClInclude Include="DesignerModel\DesignDataResourceEditorModel.h" />
     <ClInclude Include="DesignerCore\CommandManager.h" />
     <ClInclude Include="DesignerCore\DesignerDocumentTransaction.h" />
     <ClInclude Include="DesignerCore\DesignerCommandCoordinator.h" />
@@ -302,9 +309,6 @@
     <ClInclude Include="DesignerSelfTest.h" />
     <ClInclude Include="SourceCodeNavigator.h" />
     <ClInclude Include="DesignerPropertyValue.h" />
-    <ClInclude Include="DesignerPreviewPluginAbi.h" />
-    <ClInclude Include="DesignerPreviewPlugin.h" />
-    <ClInclude Include="DesignerPreviewBridge.h" />
     <ClInclude Include="DesignerStyleSheet.h" />
     <ClInclude Include="DesignerStyleSheetUtils.h" />
     <ClInclude Include="DesignerTypes.h" />

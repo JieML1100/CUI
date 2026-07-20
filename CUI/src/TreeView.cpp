@@ -1,8 +1,10 @@
 ﻿#include "TreeView.h"
 #include "Form.h"
+#include "Core/Threading.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <tuple>
 #include <unordered_set>
 
 static float EffectiveItemHeight(TreeView* tree)
@@ -38,6 +40,281 @@ static void DrawChevron(D2DGraphics* d2d, float cx, float cy, float size, float 
 	d2d->DrawLine(p2, p3, color, 1.8f);
 }
 
+namespace
+{
+	template<typename TValue>
+	ControlPropertyOptions<TreeViewItem, TValue> TreeItemStateOptions(
+		TValue defaultValue, int order, bool readOnly = true)
+	{
+		ControlPropertyOptions<TreeViewItem, TValue> options;
+		options.DefaultValue = std::move(defaultValue);
+		options.Flags = ControlPropertyFlags::AffectsRender;
+		options.Design.Category = L"State";
+		options.Design.CategoryOrder = 70;
+		options.Design.Order = order;
+		options.Design.Browsable = false;
+		options.Design.Persistence = ControlPropertyPersistence::Transient;
+		options.IsReadOnly = readOnly;
+		return options;
+	}
+}
+
+TreeViewItem::TreeViewItem()
+	: HeaderedContentControl(0, 0, 0, 0)
+{
+	EnsureBindingPropertiesRegistered();
+	HAlign = HorizontalAlignment::Stretch;
+	VAlign = VerticalAlignment::Top;
+	(void)TrySetPropertyValue(L"BorderThickness", BindingValue(0.0f),
+		ControlPropertyValueSource::Theme);
+}
+
+void TreeViewItem::EnsureBindingPropertiesRegistered()
+{
+	HeaderedContentControl::EnsureBindingPropertiesRegistered();
+	static const bool registered = []
+	{
+		BindingPropertyRegistry::Register<TreeViewItem, bool>(L"IsExpanded",
+			[](TreeViewItem& target) { return target.GetIsExpanded(); },
+			[](TreeViewItem& target, const bool& value)
+			{ target.SetIsExpanded(value); },
+			[](TreeViewItem& target,
+				BindingPropertyMetadata::ChangeHandler handler,
+				DataSourceUpdateMode)
+			{
+				return target._expandedChanged.Subscribe(
+					[handler = std::move(handler)](TreeViewItem*) { handler(); });
+			}, TreeItemStateOptions(false, 10, false));
+		BindingPropertyRegistry::Register<TreeViewItem, bool>(L"HasItems",
+			[](TreeViewItem& target) { return target.GetHasItems(); }, {},
+			[](TreeViewItem& target,
+				BindingPropertyMetadata::ChangeHandler handler,
+				DataSourceUpdateMode)
+			{
+				return target._hasItemsChanged.Subscribe(
+					[handler = std::move(handler)](TreeViewItem*) { handler(); });
+			}, TreeItemStateOptions(false, 20));
+		BindingPropertyRegistry::Register<TreeViewItem, int>(L"Level",
+			[](TreeViewItem& target) { return target.GetLevel(); }, {},
+			[](TreeViewItem& target,
+				BindingPropertyMetadata::ChangeHandler handler,
+				DataSourceUpdateMode)
+			{
+				return target._levelChanged.Subscribe(
+					[handler = std::move(handler)](TreeViewItem*) { handler(); });
+			}, TreeItemStateOptions(0, 30));
+		BindingPropertyRegistry::Register<TreeViewItem, bool>(L"IsSelected",
+			[](TreeViewItem& target) { return target.GetIsSelected(); }, {},
+			[](TreeViewItem& target,
+				BindingPropertyMetadata::ChangeHandler handler,
+				DataSourceUpdateMode)
+			{
+				return target._selectedChanged.Subscribe(
+					[handler = std::move(handler)](TreeViewItem*) { handler(); });
+			}, TreeItemStateOptions(false, 40));
+		BindingPropertyRegistry::Register<TreeViewItem, bool>(L"IsMouseOver",
+			[](TreeViewItem& target) { return target.GetIsMouseOver(); }, {},
+			[](TreeViewItem& target,
+				BindingPropertyMetadata::ChangeHandler handler,
+				DataSourceUpdateMode)
+			{
+				return target._mouseOverChanged.Subscribe(
+					[handler = std::move(handler)](TreeViewItem*) { handler(); });
+			}, TreeItemStateOptions(false, 50));
+		BindingPropertyRegistry::Register<TreeViewItem, bool>(
+			L"IsKeyboardFocusWithin",
+			[](TreeViewItem& target)
+			{ return target.GetIsKeyboardFocusWithin(); }, {},
+			[](TreeViewItem& target,
+				BindingPropertyMetadata::ChangeHandler handler,
+				DataSourceUpdateMode)
+			{
+				return target._keyboardFocusWithinChanged.Subscribe(
+					[handler = std::move(handler)](TreeViewItem*) { handler(); });
+			}, TreeItemStateOptions(false, 60));
+		return true;
+	}();
+	(void)registered;
+}
+
+bool TreeViewItem::Initialize(
+	TreeView& owner, TreeNode& node, int level, std::wstring* outError)
+{
+	// A virtualized container may arrive from the recycle pool. Clear the old
+	// data presentation before validating the next item, while retaining its
+	// ControlTemplate chrome and allocated control object.
+	SetHeader(BindingValue{});
+	SetHeaderTemplate({});
+	SetHeaderDisplayMemberPath({});
+	SetHeaderTypeName({});
+	(void)SetDataContext({});
+	_owner = &owner;
+	_node = &node;
+	if (node._dataItem)
+	{
+		if (!SetDataContext(node._dataItem))
+		{
+			if (outError) *outError =
+				L"TreeViewItem 无法继承对应数据项的 DataContext。";
+			_owner = nullptr;
+			_node = nullptr;
+			return false;
+		}
+		SetHeaderTypeName(node._headerTemplate
+			? node._headerTemplate.Get()->DataTypeName()
+			: owner.GetItemsSource()
+				? owner.GetItemsSource().Get()->ItemTypeName() : std::wstring{});
+		SetHeaderDisplayMemberPath(owner.GetDisplayMemberPath());
+		SetHeaderTemplate(node._headerTemplate);
+		SetHeader(BindingValue(node._dataItem));
+	}
+	else SetHeader(BindingValue(node.Text));
+	if (!LastHeaderError().empty())
+	{
+		if (outError) *outError = LastHeaderError();
+		_owner = nullptr;
+		_node = nullptr;
+		return false;
+	}
+	SyncNodeState(level, owner.SelectedNode == &node,
+		owner.HoveredNode == &node, false);
+	if (outError) outError->clear();
+	return true;
+}
+
+void TreeViewItem::ClearForRecycle()
+{
+	_owner = nullptr;
+	_node = nullptr;
+	SyncNodeState(0, false, false, false);
+	SyncExpanded(false);
+	SetHeader(BindingValue{});
+	SetHeaderTemplate({});
+	SetHeaderDisplayMemberPath({});
+	SetHeaderTypeName({});
+	(void)SetDataContext({});
+	Parent = nullptr;
+	Control::SetChildrenParentForm(this, nullptr);
+}
+
+void TreeViewItem::SetIsExpanded(bool value)
+{
+	if (_node)
+	{
+		_node->SetExpanded(value, AreSystemAnimationsEnabled());
+		value = _node->Expand;
+	}
+	SyncExpanded(value);
+}
+
+void TreeViewItem::SyncExpanded(bool value)
+{
+	if (_expanded == value) return;
+	(void)SetPropertyField(L"IsExpanded", _expanded, value);
+	_expandedChanged(this);
+	if (value) Expanded(this);
+	else Collapsed(this);
+}
+
+void TreeViewItem::SyncHasItems(bool value)
+{
+	if (_hasItems == value) return;
+	(void)SetPropertyField(L"HasItems", _hasItems, value);
+	_hasItemsChanged(this);
+}
+
+void TreeViewItem::SyncNodeState(
+	int level, bool selected, bool mouseOver, bool keyboardFocusWithin)
+{
+	if (_level != level)
+	{
+		(void)SetPropertyField(L"Level", _level, level);
+		_levelChanged(this);
+	}
+	SyncHasItems(_node && _node->HasItems());
+	SyncExpanded(_node && _node->Expand);
+	if (_selected != selected)
+	{
+		(void)SetPropertyField(L"IsSelected", _selected, selected);
+		SetStyleState(ControlStyleState::Selected, selected);
+		_selectedChanged(this);
+		if (selected) Selected(this);
+		else Unselected(this);
+	}
+	if (_mouseOver != mouseOver)
+	{
+		(void)SetPropertyField(L"IsMouseOver", _mouseOver, mouseOver);
+		SetStyleState(ControlStyleState::Hovered, mouseOver);
+		_mouseOverChanged(this);
+	}
+	if (_keyboardFocusWithin != keyboardFocusWithin)
+	{
+		(void)SetPropertyField(L"IsKeyboardFocusWithin",
+			_keyboardFocusWithin, keyboardFocusWithin);
+		SetStyleState(ControlStyleState::Focused, keyboardFocusWithin);
+		_keyboardFocusWithinChanged(this);
+	}
+
+	if (_owner)
+	{
+		const float chevronSize = (std::max)(6.0f, _owner->ChevronSize);
+		const float chevronSlot = (std::max)(16.0f, chevronSize + 6.0f);
+		const float imageSlot = _node && _node->Image
+			? (std::max)(12.0f, (std::min)(18.0f,
+				_owner->ItemHeight - 8.0f)) + _owner->TextLeftSpacing : 0.0f;
+		(void)TrySetPropertyValue(L"Padding", BindingValue(Thickness(
+			chevronSlot + _owner->TextLeftSpacing + imageSlot,
+			_owner->ItemVerticalPadding,
+			_owner->ItemHorizontalPadding,
+			_owner->ItemVerticalPadding)), ControlPropertyValueSource::Theme);
+		const auto back = selected ? _owner->SelectedBackColor
+			: mouseOver ? _owner->UnderMouseItemBackColor
+			: D2D1_COLOR_F{ 0.0f, 0.0f, 0.0f, 0.0f };
+		(void)TrySetPropertyValue(L"BackColor", BindingValue(back),
+			ControlPropertyValueSource::Theme);
+		(void)TrySetPropertyValue(L"ForeColor", BindingValue(
+			selected ? _owner->SelectedForeColor : _owner->ForeColor),
+			ControlPropertyValueSource::Theme);
+	}
+}
+
+void TreeViewItem::Update()
+{
+	if (_node && !_node->_dataItem)
+	{
+		std::wstring header;
+		if (!GetHeader().TryGetString(header) || header != _node->Text)
+			SetHeader(BindingValue(_node->Text));
+	}
+	HeaderedContentControl::Update();
+	if (!ParentForm || !_owner || !_node || GetControlTemplateRoot()) return;
+	auto* render = ParentForm->Render;
+	if (!render) return;
+	const auto size = GetActualSizeDip();
+	const float chevronSize = (std::max)(6.0f, _owner->ChevronSize);
+	const float chevronSlot = (std::max)(16.0f, chevronSize + 6.0f);
+	BeginRender();
+	if (_hasItems)
+		DrawChevron(render, chevronSlot * 0.5f, size.height * 0.5f,
+			chevronSize, _node->CurrentExpandProgress(),
+			_selected ? _owner->SelectedForeColor : _owner->ForeColor);
+	if (_selected)
+	{
+		const float accentW = (std::max)(2.0f, _owner->SelectedAccentWidth);
+		render->FillRoundRect(0.0f, 5.0f, accentW,
+			(std::max)(6.0f, size.height - 10.0f),
+			_owner->AccentColor, accentW * 0.5f);
+	}
+	if (auto* bitmap = _node->GetImageBitmap(render))
+	{
+		const float imageSize = (std::max)(12.0f,
+			(std::min)(18.0f, size.height - 8.0f));
+		render->DrawBitmap(bitmap, chevronSlot + _owner->TextLeftSpacing,
+			(size.height - imageSize) * 0.5f, imageSize, imageSize);
+	}
+	EndRender();
+}
+
 static float measureNodes(std::vector<TreeNode*>& children)
 {
 	float count = 0.0f;
@@ -48,81 +325,110 @@ static float measureNodes(std::vector<TreeNode*>& children)
 	return count;
 }
 
-static void renderNodes(TreeView* tree, D2DGraphics* d2d, float w, float h, float itemHeight, float scrollOffsetY, float& cursorY, int sunLevel, std::vector<TreeNode*>& children)
+static void renderNodeRow(TreeView* tree, D2DGraphics* d2d,
+	float width, float itemHeight, float renderTop,
+	int level, TreeNode* node)
 {
-	if (!tree || !d2d) return;
+	if (!tree || !d2d || !node) return;
+	const float renderBottom = renderTop + itemHeight;
 	const float fontHeight = tree->Font ? tree->Font->FontHeight : 16.0f;
 	const float rowInsetX = (std::max)(0.0f, tree->ItemHorizontalPadding);
 	const float rowInsetY = (std::max)(0.0f, tree->ItemVerticalPadding);
 	const float chevronSize = (std::max)(6.0f, tree->ChevronSize);
 	const float chevronSlot = (std::max)(16.0f, chevronSize + 6.0f);
 	const float textSpacing = (std::max)(2.0f, tree->TextLeftSpacing);
+	const float baseLeft = rowInsetX
+		+ (level * (std::max)(8.0f, tree->IndentWidth));
+	auto foreColor = node == tree->SelectedNode
+		? tree->SelectedForeColor : tree->ForeColor;
+	const float pillRight = (std::max)(
+		rowInsetX + 1.0f, width - rowInsetX - 10.0f);
+	const D2D1_RECT_F itemRect = D2D1::RectF(
+		rowInsetX, renderTop + rowInsetY,
+		pillRight, renderBottom - rowInsetY);
+	auto* generatedContainer = tree->GetGeneratedItem(node);
+	if (generatedContainer)
+	{
+		generatedContainer->Parent = tree;
+		Control::SetChildrenParentForm(
+			generatedContainer, tree->ParentForm);
+		generatedContainer->ApplyLayout(cui::core::Rect{
+			baseLeft, renderTop + rowInsetY,
+			(std::max)(1.0f, pillRight - baseLeft),
+			(std::max)(1.0f, itemHeight - rowInsetY * 2.0f) });
+		generatedContainer->Update();
+	}
+	else if (node == tree->SelectedNode)
+	{
+		d2d->FillRoundRect(
+			itemRect, tree->SelectedBackColor, tree->ItemCornerRadius);
+		const float accentW = (std::max)(2.0f, tree->SelectedAccentWidth);
+		const float accentTop = itemRect.top + 5.0f;
+		const float accentH = (std::max)(
+			6.0f, itemRect.bottom - itemRect.top - 10.0f);
+		d2d->FillRoundRect(itemRect.left, accentTop,
+			accentW, accentH, tree->AccentColor, accentW * 0.5f);
+	}
+	else if (node == tree->HoveredNode)
+	{
+		d2d->FillRoundRect(itemRect,
+			tree->UnderMouseItemBackColor, tree->ItemCornerRadius);
+	}
+	if (!generatedContainer && node->HasItems())
+	{
+		DrawChevron(d2d, baseLeft + chevronSlot * 0.5f,
+			renderTop + itemHeight * 0.5f, chevronSize,
+			node->CurrentExpandProgress(), foreColor);
+	}
+	if (!generatedContainer)
+	{
+		float contentLeft = baseLeft + chevronSlot + textSpacing;
+		if (auto* bitmap = node->GetImageBitmap(d2d))
+		{
+			const float imageSize = (std::max)(12.0f,
+				(std::min)(18.0f, itemHeight - 8.0f));
+			d2d->DrawBitmap(bitmap, contentLeft,
+				renderTop + (itemHeight - imageSize) * 0.5f,
+				imageSize, imageSize);
+			contentLeft += imageSize + textSpacing;
+		}
+		d2d->DrawString(node->Text, contentLeft,
+			renderTop + (std::max)(0.0f,
+				(itemHeight - fontHeight) * 0.5f), foreColor, tree->Font);
+	}
+	if (node == tree->DropTargetNode
+		&& tree->DropPosition == TreeViewDropPosition::Inside)
+	{
+		auto fill = tree->DropIndicatorColor;
+		fill.a = (std::min)(fill.a, 0.16f);
+		d2d->FillRoundRect(itemRect, fill, tree->ItemCornerRadius);
+		d2d->DrawRoundRect(itemRect,
+			tree->DropIndicatorColor, 1.5f, tree->ItemCornerRadius);
+	}
+	if (node == tree->DropTargetNode
+		&& (tree->DropPosition == TreeViewDropPosition::Before
+			|| tree->DropPosition == TreeViewDropPosition::After))
+	{
+		const float indicatorY = tree->DropPosition
+			== TreeViewDropPosition::Before
+			? renderTop + 1.0f : renderBottom - 1.0f;
+		d2d->DrawLine(rowInsetX + 1.0f, indicatorY,
+			pillRight, indicatorY, tree->DropIndicatorColor, 2.0f);
+		d2d->FillRoundRect(rowInsetX, indicatorY - 2.5f,
+			5.0f, 5.0f, tree->DropIndicatorColor, 2.5f);
+	}
+}
+
+static void renderNodes(TreeView* tree, D2DGraphics* d2d, float w, float h, float itemHeight, float scrollOffsetY, float& cursorY, int sunLevel, std::vector<TreeNode*>& children)
+{
+	if (!tree || !d2d) return;
 	for (auto* c : children)
 	{
 		if (!c) continue;
 		const float renderTop = cursorY - scrollOffsetY;
 		const float renderBottom = renderTop + itemHeight;
-		const float baseLeft = rowInsetX + (sunLevel * (std::max)(8.0f, tree->IndentWidth));
-
 		if (renderBottom >= 0.0f && renderTop < h)
-		{
-			auto foreColor = (c == tree->SelectedNode) ? tree->SelectedForeColor : tree->ForeColor;
-			const float pillRight = (std::max)(rowInsetX + 1.0f, w - rowInsetX - 10.0f);
-			const D2D1_RECT_F itemRect = D2D1::RectF(rowInsetX, renderTop + rowInsetY, pillRight, renderBottom - rowInsetY);
-			if (c == tree->SelectedNode)
-			{
-				d2d->FillRoundRect(itemRect, tree->SelectedBackColor, tree->ItemCornerRadius);
-				const float accentW = (std::max)(2.0f, tree->SelectedAccentWidth);
-				const float accentTop = itemRect.top + 5.0f;
-				const float accentH = (std::max)(6.0f, (itemRect.bottom - itemRect.top) - 10.0f);
-				d2d->FillRoundRect(itemRect.left, accentTop, accentW, accentH, tree->AccentColor, accentW * 0.5f);
-			}
-			else if (c == tree->HoveredNode)
-			{
-				d2d->FillRoundRect(itemRect, tree->UnderMouseItemBackColor, tree->ItemCornerRadius);
-			}
-			if (c == tree->DropTargetNode
-				&& tree->DropPosition == TreeViewDropPosition::Inside)
-			{
-				auto fill = tree->DropIndicatorColor;
-				fill.a = (std::min)(fill.a, 0.16f);
-				d2d->FillRoundRect(itemRect, fill, tree->ItemCornerRadius);
-				d2d->DrawRoundRect(
-					itemRect, tree->DropIndicatorColor, 1.5f,
-					tree->ItemCornerRadius);
-			}
-			if (c->Children.size() > 0)
-			{
-				const float chevronCx = baseLeft + chevronSlot * 0.5f;
-				const float chevronCy = renderTop + itemHeight * 0.5f;
-				DrawChevron(d2d, chevronCx, chevronCy, chevronSize, c->CurrentExpandProgress(), foreColor);
-			}
-
-			float contentLeft = baseLeft + chevronSlot + textSpacing;
-			if (auto* bmp = c->GetImageBitmap(d2d))
-			{
-				const float imageSize = (std::max)(12.0f, (std::min)(18.0f, itemHeight - 8.0f));
-				const float imageTop = renderTop + (itemHeight - imageSize) * 0.5f;
-				d2d->DrawBitmap(bmp, contentLeft, imageTop, imageSize, imageSize);
-				contentLeft += imageSize + textSpacing;
-			}
-			const float textTop = renderTop + (std::max)(0.0f, (itemHeight - fontHeight) * 0.5f);
-			d2d->DrawString(c->Text, contentLeft, textTop, foreColor, tree->Font);
-			if (c == tree->DropTargetNode
-				&& (tree->DropPosition == TreeViewDropPosition::Before
-					|| tree->DropPosition == TreeViewDropPosition::After))
-			{
-				const float indicatorY = tree->DropPosition
-					== TreeViewDropPosition::Before
-					? renderTop + 1.0f : renderBottom - 1.0f;
-				d2d->DrawLine(
-					rowInsetX + 1.0f, indicatorY, pillRight, indicatorY,
-					tree->DropIndicatorColor, 2.0f);
-				d2d->FillRoundRect(
-					rowInsetX, indicatorY - 2.5f, 5.0f, 5.0f,
-					tree->DropIndicatorColor, 2.5f);
-			}
-		}
+			renderNodeRow(tree, d2d, w, itemHeight, renderTop, sunLevel, c);
 
 		cursorY += itemHeight;
 
@@ -179,7 +485,7 @@ static TreeNode* findNode(TreeView* tree, float posX, float posY,
 						? (std::clamp)((posY - currTop) / itemHeight, 0.0f, 1.0f)
 						: 0.5f;
 				float exLeft = rowInsetX + (sunLevel * (std::max)(8.0f, tree->IndentWidth));
-				if (posX >= (exLeft - 3.0f) && posX <= (exLeft + chevronSlot + 3.0f) && c->Children.size() > 0)
+				if (posX >= (exLeft - 3.0f) && posX <= (exLeft + chevronSlot + 3.0f) && c->HasItems())
 					isHitEx = true;
 				else
 					isHitEx = false;
@@ -212,22 +518,79 @@ static TreeNode* findNode(TreeView* tree, float posX, float posY,
 	return nullptr;
 }
 
-TreeNode* TreeView::HitTestNode(
-	float localX, float localY, float* relativeRowY)
+TreeNode* TreeView::HitTestNodeCore(
+	float localX, float localY, float* relativeRowY, bool* hitExpander)
 {
 	if (relativeRowY) *relativeRowY = 0.5f;
+	if (hitExpander) *hitExpander = false;
 	if (!Root || localX < 0.0f || localY < 0.0f
 		|| localX > static_cast<float>(Width)
 		|| localY > static_cast<float>(Height))
 		return nullptr;
 	const auto size = GetActualSizeDip();
 	const float itemHeight = EffectiveItemHeight(this);
+	if (!_hasExpansionAnimation && itemHeight > 0.0f)
+	{
+		EnsureAccessibilityVisibleIndex();
+		const int row = static_cast<int>(std::floor(localY / itemHeight));
+		const int index = ScrollIndex + row;
+		if (index < 0
+			|| index >= static_cast<int>(_accessibilityVisibleNodes.size()))
+			return nullptr;
+		const auto& [node, level] =
+			_accessibilityVisibleNodes[static_cast<size_t>(index)];
+		if (relativeRowY)
+			*relativeRowY = (std::clamp)(
+				(localY - row * itemHeight) / itemHeight, 0.0f, 1.0f);
+		if (hitExpander && node && node->HasItems())
+		{
+			const float rowInsetX = (std::max)(
+				0.0f, ItemHorizontalPadding);
+			const float chevronSize = (std::max)(6.0f, ChevronSize);
+			const float chevronSlot = (std::max)(
+				16.0f, chevronSize + 6.0f);
+			const float expanderLeft = rowInsetX
+				+ ((std::max)(0, level - 1)
+					* (std::max)(8.0f, IndentWidth));
+			*hitExpander = localX >= expanderLeft - 3.0f
+				&& localX <= expanderLeft + chevronSlot + 3.0f;
+		}
+		return node;
+	}
 	float cursorY = 0.0f;
-	bool hitExpander = false;
-	return findNode(
+	bool animatedHitExpander = false;
+	auto* result = findNode(
 		this, localX, localY, size.height, itemHeight,
 		static_cast<float>(ScrollIndex) * itemHeight,
-		cursorY, 0, Root->Children, hitExpander, relativeRowY);
+		cursorY, 0, Root->Children, animatedHitExpander, relativeRowY);
+	if (hitExpander) *hitExpander = animatedHitExpander;
+	return result;
+}
+
+TreeNode* TreeView::HitTestNode(
+	float localX, float localY, float* relativeRowY)
+{
+	bool hitExpander = false;
+	return HitTestNodeCore(
+		localX, localY, relativeRowY, &hitExpander);
+}
+
+void TreeView::RenderStableVisibleNodes(
+	D2DGraphics* render, float width, float height, float itemHeight)
+{
+	if (!render || itemHeight <= 0.0f) return;
+	EnsureAccessibilityVisibleIndex();
+	const size_t first = ScrollIndex > 0
+		? static_cast<size_t>(ScrollIndex) : 0;
+	for (size_t index = first;
+		index < _accessibilityVisibleNodes.size(); ++index)
+	{
+		const float renderTop = static_cast<float>(index - first) * itemHeight;
+		if (renderTop >= height) break;
+		const auto& [node, level] = _accessibilityVisibleNodes[index];
+		renderNodeRow(this, render, width, itemHeight,
+			renderTop, (std::max)(0, level - 1), node);
+	}
 }
 
 void TreeView::SetDropTarget(
@@ -258,19 +621,8 @@ static void CollectVisibleTreeNodes(
 	}
 }
 
-static size_t CountVisibleTreeNodes(
-	const std::vector<TreeNode*>& nodes) noexcept
-{
-	size_t count = 0;
-	for (auto* node : nodes)
-	{
-		if (!node) continue;
-		++count;
-		if (node->Expand)
-			count += CountVisibleTreeNodes(node->Children);
-	}
-	return count;
-}
+static bool ContainsTreeNode(
+	const std::vector<TreeNode*>& nodes, const TreeNode* candidate);
 
 TreeNode::TreeNode(std::wstring text, std::shared_ptr<BitmapSource> image)
 {
@@ -315,6 +667,16 @@ void TreeNode::AttachOwner(TreeView* owner)
 		child->AttachOwner(owner);
 	}
 	_observedChildren.assign(Children.begin(), Children.end());
+}
+
+void TreeNode::DisconnectDataObservers()
+{
+	_childItemsChangedConnection.Disconnect();
+	_childItemsObservation.Connections.clear();
+	_childItemsObservation.Owners.clear();
+	_childItemsObservation.ListOwners.clear();
+	for (auto* child : Children)
+		if (child) child->DisconnectDataObservers();
 }
 
 void TreeNode::OnChildrenChanged(const CollectionChangedEventArgs& change)
@@ -414,12 +776,13 @@ float TreeNode::CurrentExpandProgress()
 
 void TreeNode::SetExpanded(bool expanded, bool animate)
 {
-	const bool wantExpand = expanded && this->Children.size() > 0;
+	if (expanded && HasItems() && !_childrenMaterialized && _ownerTree)
+		(void)_ownerTree->EnsureDataChildrenMaterialized(*this);
+	const bool wantExpand = expanded && HasItems() && !Children.empty();
 	const float current = CurrentExpandProgress();
 	const bool semanticChanged = this->Expand != wantExpand;
 	this->Expand = wantExpand;
-	if (semanticChanged && _ownerTree)
-		_ownerTree->InvalidateAccessibilityIndex(false);
+	if (_container) _container->SyncExpanded(wantExpand);
 	this->AnimStartProgress = current;
 	this->AnimTargetProgress = wantExpand ? 1.0f : 0.0f;
 	if (!animate || this->AnimDurationMs == 0
@@ -432,7 +795,10 @@ void TreeNode::SetExpanded(bool expanded, bool animate)
 	{
 		this->AnimStartTick = ::GetTickCount64();
 		this->Animating = true;
+		if (_ownerTree) _ownerTree->_hasExpansionAnimation = true;
 	}
+	if (_ownerTree && semanticChanged)
+		_ownerTree->OnNodeExpansionChanged(*this);
 }
 
 bool TreeNode::IsAnimationRunning()
@@ -481,6 +847,10 @@ ID2D1Bitmap* TreeNode::GetImageBitmap(D2DGraphics* render)
 }
 TreeNode::~TreeNode()
 {
+	_childItemsChangedConnection.Disconnect();
+	_childItemsObservation.Connections.clear();
+	_childItemsObservation.Owners.clear();
+	_childItemsObservation.ListOwners.clear();
 	Children.SetOwnerChangedHandler({});
 	_ownerTree = nullptr;
 	std::unordered_set<TreeNode*> deleted;
@@ -553,6 +923,114 @@ void TreeView::EnsureBindingPropertiesRegistered()
 				target.SelectedForeColor = value;
 				target.InvalidateVisual();
 			});
+		ControlPropertyOptions<TreeView, std::wstring> containerStyleOptions;
+		containerStyleOptions.DefaultValue = std::wstring{};
+		containerStyleOptions.Flags = ControlPropertyFlags::AffectsRender;
+		containerStyleOptions.Design.Category = L"Data";
+		containerStyleOptions.Design.CategoryOrder = 80;
+		containerStyleOptions.Design.Order = 70;
+		containerStyleOptions.Design.Browsable = false;
+		containerStyleOptions.Design.Persistence =
+			ControlPropertyPersistence::Transient;
+		BindingPropertyRegistry::Register<TreeView, std::wstring>(
+			L"ItemContainerStyle",
+			[](TreeView& target) { return target.GetItemContainerStyle(); },
+			[](TreeView& target, const std::wstring& value)
+			{ target.SetItemContainerStyle(value); }, {},
+			std::move(containerStyleOptions));
+
+		ControlPropertyOptions<TreeView, BindingListReference> sourceOptions;
+		sourceOptions.DefaultValue = BindingListReference{};
+		sourceOptions.Flags = ControlPropertyFlags::AffectsMeasure
+			| ControlPropertyFlags::AffectsRender;
+		sourceOptions.Design.Category = L"Data";
+		sourceOptions.Design.CategoryOrder = 80;
+		sourceOptions.Design.Order = 10;
+		sourceOptions.Design.Browsable = false;
+		sourceOptions.Design.Persistence = ControlPropertyPersistence::Transient;
+		BindingPropertyRegistry::Register<TreeView, BindingListReference>(
+			L"ItemsSource",
+			[](TreeView& target) { return target.GetItemsSource(); },
+			[](TreeView& target, const BindingListReference& value)
+			{ target.SetItemsSource(value); }, {}, std::move(sourceOptions));
+
+		ControlPropertyOptions<TreeView, ItemTemplateReference> templateOptions;
+		templateOptions.DefaultValue = ItemTemplateReference{};
+		templateOptions.Flags = ControlPropertyFlags::AffectsMeasure
+			| ControlPropertyFlags::AffectsRender;
+		templateOptions.Design.Category = L"Data";
+		templateOptions.Design.CategoryOrder = 80;
+		templateOptions.Design.Order = 20;
+		templateOptions.Design.Browsable = false;
+		templateOptions.Design.Persistence = ControlPropertyPersistence::Transient;
+		BindingPropertyRegistry::Register<TreeView, ItemTemplateReference>(
+			L"ItemTemplate",
+			[](TreeView& target) { return target.GetItemTemplate(); },
+			[](TreeView& target, const ItemTemplateReference& value)
+			{ target.SetItemTemplate(value); }, {}, std::move(templateOptions));
+
+		ControlPropertyOptions<TreeView, std::wstring> pathOptions;
+		pathOptions.DefaultValue = std::wstring{};
+		pathOptions.Flags = ControlPropertyFlags::AffectsMeasure
+			| ControlPropertyFlags::AffectsRender;
+		pathOptions.Design.Category = L"Data";
+		pathOptions.Design.CategoryOrder = 80;
+		pathOptions.Design.Order = 30;
+		pathOptions.Design.Editor = ControlPropertyEditorKind::Text;
+		pathOptions.Design.Persistence = ControlPropertyPersistence::Metadata;
+		BindingPropertyRegistry::Register<TreeView, std::wstring>(
+			L"DisplayMemberPath",
+			[](TreeView& target) { return target.GetDisplayMemberPath(); },
+			[](TreeView& target, const std::wstring& value)
+			{ target.SetDisplayMemberPath(value); }, {}, std::move(pathOptions));
+
+		ControlPropertyOptions<TreeView, std::wstring> valuePathOptions;
+		valuePathOptions.DefaultValue = std::wstring{};
+		valuePathOptions.Design.Category = L"Data";
+		valuePathOptions.Design.CategoryOrder = 80;
+		valuePathOptions.Design.Order = 40;
+		valuePathOptions.Design.Editor = ControlPropertyEditorKind::Text;
+		valuePathOptions.Design.Persistence =
+			ControlPropertyPersistence::Metadata;
+		BindingPropertyRegistry::Register<TreeView, std::wstring>(
+			L"SelectedValuePath",
+			[](TreeView& target) { return target.GetSelectedValuePath(); },
+			[](TreeView& target, const std::wstring& value)
+			{ target.SetSelectedValuePath(value); }, {},
+			std::move(valuePathOptions));
+
+		auto selectionProjectionOptions = [](int order)
+		{
+			ControlPropertyOptions<TreeView, BindingValue> options;
+			options.DefaultValue = BindingValue{};
+			options.Design.Category = L"Data";
+			options.Design.CategoryOrder = 80;
+			options.Design.Order = order;
+			options.Design.Browsable = false;
+			options.Design.Persistence = ControlPropertyPersistence::Transient;
+			options.IsReadOnly = true;
+			return options;
+		};
+		BindingPropertyRegistry::Register<TreeView, BindingValue>(
+			L"SelectedItem",
+			[](TreeView& target) { return target.GetSelectedItem(); }, {},
+			[](TreeView& target,
+				BindingPropertyMetadata::ChangeHandler handler,
+				DataSourceUpdateMode)
+			{
+				return target._selectedItemChanged.Subscribe(
+					[handler = std::move(handler)](TreeView*) { handler(); });
+			}, selectionProjectionOptions(50));
+		BindingPropertyRegistry::Register<TreeView, BindingValue>(
+			L"SelectedValue",
+			[](TreeView& target) { return target.GetSelectedValue(); }, {},
+			[](TreeView& target,
+				BindingPropertyMetadata::ChangeHandler handler,
+				DataSourceUpdateMode)
+			{
+				return target._selectedValueChanged.Subscribe(
+					[handler = std::move(handler)](TreeView*) { handler(); });
+			}, selectionProjectionOptions(60));
 		return true;
 	}();
 	(void)registered;
@@ -564,7 +1042,7 @@ bool TreeView::CanHandleMouseWheel(int delta, int localX, int localY)
 	(void)localY;
 	if (delta == 0) return false;
 	const float itemHeight = EffectiveItemHeight(this);
-	const int renderItemCount = itemHeight > 0.0f ? std::max(1, (int)((float)this->Height / itemHeight)) : 1;
+	const int renderItemCount = itemHeight > 0.0f ? (std::max)(1, (int)((float)this->Height / itemHeight)) : 1;
 	int maxScroll = (int)std::ceil(_contentRenderItems - (float)renderItemCount);
 	if (maxScroll < 0) maxScroll = 0;
 	if (maxScroll <= 0) return false;
@@ -581,7 +1059,7 @@ CursorKind TreeView::QueryCursor(int localX, int localY)
 	const float itemHeight = EffectiveItemHeight(this);
 	if (itemHeight > 0.0f)
 	{
-		const int renderCount = std::max(1, (int)((float)this->Height / itemHeight));
+		const int renderCount = (std::max)(1, (int)((float)this->Height / itemHeight));
 		const bool hasVScroll = (_contentRenderItems > (float)renderCount + 0.001f);
 		if (hasVScroll && localX >= (this->Width - 8))
 			return CursorKind::SizeNS;
@@ -596,11 +1074,1026 @@ TreeView::TreeView(int x, int y, int width, int height)
 	this->Root = new TreeNode(L"");
 	this->Root->AttachOwner(this);
 	this->SelectedNode = nullptr;
+	EnsureBindingPropertiesRegistered();
+	OnGotFocus += [this](Control*) { UpdateGeneratedItemStates(); };
+	OnLostFocus += [this](Control*) { UpdateGeneratedItemStates(); };
 }
 TreeView::~TreeView()
 {
+	_itemsSourceChangedConnection.Disconnect();
+	_retiredDataRoots->clear();
+	ClearGeneratedItemContainers();
 	if (this->Root) this->Root->AttachOwner(nullptr);
 	delete this->Root;
+}
+
+ItemTemplateReference TreeView::ResolveDataItemTemplate(
+	const BindingListReference& source, int level,
+	std::wstring* outError) const
+{
+	if (outError) outError->clear();
+	if (!source) return {};
+	const auto& itemType = source.Get()->ItemTypeName();
+	ItemTemplateReference result;
+	if (_itemTemplate && (level == 0 || itemType.empty()
+		|| _wcsicmp(_itemTemplate.Get()->DataTypeName().c_str(),
+			itemType.c_str()) == 0)) result = _itemTemplate;
+	if (!result && _implicitItemTemplateResolver)
+		result = _implicitItemTemplateResolver(itemType);
+	if (result && !itemType.empty()
+		&& !result.Get()->DataTypeName().empty()
+		&& _wcsicmp(result.Get()->DataTypeName().c_str(),
+			itemType.c_str()) != 0)
+	{
+		if (outError) *outError =
+			L"TreeView ItemTemplate DataType 与 ItemsSource ItemType 不一致："
+			+ itemType;
+		return {};
+	}
+	return result;
+}
+
+bool TreeView::BuildDataNode(
+	const BindingListReference& source, size_t index,
+	TreeNode& parent, int level,
+	const std::unordered_map<IBindingSource*, bool>* expandedByItem,
+	std::unique_ptr<TreeNode>& result, std::wstring* outError)
+{
+	result.reset();
+	if (outError) outError->clear();
+	BindingSourceReference item;
+	if (!source || !source.Get()->TryGetItem(index, item) || !item)
+	{
+		if (outError) *outError = L"TreeView ItemsSource 无法读取索引 "
+			+ std::to_wstring(index) + L"。";
+		return false;
+	}
+	for (auto* ancestor = &parent; ancestor; ancestor = ancestor->_parentNode)
+	{
+		if (ancestor->_dataItem.Get() == item.Get())
+		{
+			if (outError) *outError =
+				L"HierarchicalDataTemplate ItemsSource 形成数据项循环。";
+			return false;
+		}
+	}
+
+	std::wstring error;
+	auto itemTemplate = ResolveDataItemTemplate(source, level, &error);
+	if (!error.empty())
+	{
+		if (outError) *outError = std::move(error);
+		return false;
+	}
+	auto node = std::make_unique<TreeNode>(GetBindingRecordText(
+		item, _displayMemberPath, { L"Name", L"Header", L"Text" }));
+	// Build detached subtrees transactionally, but keep the logical ancestry
+	// available so a not-yet-committed grandchild can still detect a cycle.
+	node->_parentNode = &parent;
+	node->_dataItem = item;
+	node->_headerTemplate = itemTemplate;
+
+	if (itemTemplate && itemTemplate.Get()->IsHierarchical())
+	{
+		BindingListReference children;
+		if (!itemTemplate.Get()->TryGetChildItemsSource(item, children, &error))
+		{
+			if (outError) *outError = error.empty()
+				? L"HierarchicalDataTemplate 无法读取子 ItemsSource。"
+				: std::move(error);
+			return false;
+		}
+		node->_childItemsSource = children;
+		node->_childrenMaterialized = false;
+		auto* raw = node.get();
+		node->_childItemsObservation = itemTemplate.Get()->
+			ObserveChildItemsSource(item,
+				[this, raw] { OnDataChildSourceChanged(raw); });
+		if (children)
+			node->_childItemsChangedConnection = children.Get()->SubscribeChanged(
+				[this, raw, source = children](
+					const CollectionChangedEventArgs& change)
+				{ OnDataItemsChanged(raw, source, change); });
+
+		bool restoreExpanded = false;
+		if (expandedByItem)
+		{
+			const auto previous = expandedByItem->find(item.Get());
+			restoreExpanded = previous != expandedByItem->end()
+				&& previous->second;
+		}
+		if (restoreExpanded && children && children.Get()->Count() != 0)
+		{
+			if (!BuildDataChildren(*node, children, level + 1,
+				expandedByItem, outError)) return false;
+			node->Expand = !node->Children.empty();
+			node->ExpandProgress = node->Expand ? 1.0f : 0.0f;
+		}
+	}
+	result = std::move(node);
+	return true;
+}
+
+bool TreeView::BuildDataChildren(
+	TreeNode& parent, const BindingListReference& source, int level,
+	const std::unordered_map<IBindingSource*, bool>* expandedByItem,
+	std::wstring* outError)
+{
+	if (outError) outError->clear();
+	TreeNode::ChildCollection::Base children;
+	std::vector<std::unique_ptr<TreeNode>> owned;
+	if (source)
+	{
+		children.reserve(source.Get()->Count());
+		owned.reserve(source.Get()->Count());
+		for (size_t index = 0; index < source.Get()->Count(); ++index)
+		{
+			std::unique_ptr<TreeNode> node;
+			if (!BuildDataNode(source, index, parent, level,
+				expandedByItem, node, outError)) return false;
+			children.push_back(node.get());
+			owned.emplace_back(std::move(node));
+		}
+	}
+
+	const bool attached = parent._ownerTree == this;
+	const int previousScroll = ScrollIndex;
+	if (attached) _lastTemplateError.clear();
+	parent._childrenMaterialized = true;
+	parent.Children = std::move(children);
+	if (attached && _useGeneratedItemContainers && !_lastTemplateError.empty())
+	{
+		const auto error = _lastTemplateError;
+		parent._childrenMaterialized = false;
+		parent.Children = TreeNode::ChildCollection::Base{};
+		ScrollIndex = previousScroll;
+		_lastTemplateError = error;
+		if (outError) *outError = error;
+		return false;
+	}
+	for (auto& node : owned) (void)node.release();
+	return true;
+}
+
+bool TreeView::ApplyDataItemsChange(
+	TreeNode& parent, const BindingListReference& source,
+	const CollectionChangedEventArgs& change)
+{
+	const size_t oldCount = parent.Children.size();
+	const size_t newCount = source ? source.Get()->Count() : 0;
+	int level = 0;
+	for (auto* cursor = &parent; cursor && cursor != Root;
+		cursor = cursor->_parentNode) ++level;
+
+	auto precise = [&]() noexcept
+	{
+		if (change.Action == CollectionChangeAction::Reset
+			|| change.OldSize != oldCount || change.NewSize != newCount)
+			return false;
+		switch (change.Action)
+		{
+		case CollectionChangeAction::Add:
+			return change.NewIndex <= oldCount && change.OldCount == 0
+				&& change.NewCount > 0
+				&& oldCount + change.NewCount == newCount;
+		case CollectionChangeAction::Remove:
+			return change.OldIndex < oldCount && change.OldCount > 0
+				&& change.OldIndex + change.OldCount <= oldCount
+				&& change.NewCount == 0
+				&& oldCount - change.OldCount == newCount;
+		case CollectionChangeAction::Replace:
+			return change.OldIndex == change.NewIndex
+				&& change.OldCount == change.NewCount
+				&& change.OldCount > 0
+				&& change.OldIndex + change.OldCount <= oldCount
+				&& oldCount == newCount;
+		case CollectionChangeAction::Move:
+		case CollectionChangeAction::Swap:
+			return change.OldCount == 1 && change.NewCount == 1
+				&& oldCount == newCount && change.OldIndex < oldCount
+				&& change.NewIndex < newCount;
+		default: return false;
+		}
+	}();
+
+	TreeNode::ChildCollection::Base oldOrder(
+		parent.Children.begin(), parent.Children.end());
+	TreeNode::ChildCollection::Base nextOrder = oldOrder;
+	std::vector<std::unique_ptr<TreeNode>> added;
+	std::vector<std::tuple<TreeNode*, std::wstring, ItemTemplateReference>>
+		reusedUpdates;
+	std::wstring error;
+	auto buildRange = [&](size_t first, size_t count,
+		TreeNode::ChildCollection::Base& output) -> bool
+	{
+		for (size_t offset = 0; offset < count; ++offset)
+		{
+			std::unique_ptr<TreeNode> node;
+			if (!BuildDataNode(source, first + offset, parent, level,
+				nullptr, node, &error)) return false;
+			output.push_back(node.get());
+			added.emplace_back(std::move(node));
+		}
+		return true;
+	};
+
+	if (precise)
+	{
+		switch (change.Action)
+		{
+		case CollectionChangeAction::Add:
+		{
+			TreeNode::ChildCollection::Base inserted;
+			if (!buildRange(change.NewIndex, change.NewCount, inserted)) break;
+			nextOrder.insert(nextOrder.begin()
+				+ static_cast<ptrdiff_t>(change.NewIndex),
+				inserted.begin(), inserted.end());
+			break;
+		}
+		case CollectionChangeAction::Remove:
+			nextOrder.erase(nextOrder.begin()
+				+ static_cast<ptrdiff_t>(change.OldIndex),
+				nextOrder.begin() + static_cast<ptrdiff_t>(
+					change.OldIndex + change.OldCount));
+			break;
+		case CollectionChangeAction::Replace:
+		{
+			TreeNode::ChildCollection::Base inserted;
+			if (!buildRange(change.NewIndex, change.NewCount, inserted)) break;
+			std::copy(inserted.begin(), inserted.end(), nextOrder.begin()
+				+ static_cast<ptrdiff_t>(change.NewIndex));
+			break;
+		}
+		case CollectionChangeAction::Move:
+			if (change.OldIndex < change.NewIndex)
+				std::rotate(nextOrder.begin()
+					+ static_cast<ptrdiff_t>(change.OldIndex),
+					nextOrder.begin()
+					+ static_cast<ptrdiff_t>(change.OldIndex + 1),
+					nextOrder.begin()
+					+ static_cast<ptrdiff_t>(change.NewIndex + 1));
+			else if (change.NewIndex < change.OldIndex)
+				std::rotate(nextOrder.begin()
+					+ static_cast<ptrdiff_t>(change.NewIndex),
+					nextOrder.begin()
+					+ static_cast<ptrdiff_t>(change.OldIndex),
+					nextOrder.begin()
+					+ static_cast<ptrdiff_t>(change.OldIndex + 1));
+			break;
+		case CollectionChangeAction::Swap:
+			std::swap(nextOrder[change.OldIndex], nextOrder[change.NewIndex]);
+			break;
+		default: break;
+		}
+		if (!error.empty())
+		{
+			_lastTemplateError = std::move(error);
+			return false;
+		}
+	}
+	else
+	{
+		nextOrder.clear();
+		nextOrder.reserve(newCount);
+		std::unordered_set<TreeNode*> reused;
+		std::wstring templateError;
+		auto levelTemplate = ResolveDataItemTemplate(
+			source, level, &templateError);
+		if (!templateError.empty())
+		{
+			_lastTemplateError = std::move(templateError);
+			return false;
+		}
+		for (size_t index = 0; index < newCount; ++index)
+		{
+			BindingSourceReference item;
+			if (!source.Get()->TryGetItem(index, item) || !item)
+			{
+				_lastTemplateError = L"TreeView ItemsSource 无法读取索引 "
+					+ std::to_wstring(index) + L"。";
+				return false;
+			}
+			TreeNode* existing = nullptr;
+			for (auto* candidate : oldOrder)
+				if (candidate && !reused.contains(candidate)
+					&& candidate->_dataItem.Shared() == item.Shared())
+				{
+					existing = candidate;
+					break;
+				}
+			if (existing)
+			{
+				reused.insert(existing);
+				nextOrder.push_back(existing);
+				reusedUpdates.emplace_back(existing,
+					GetBindingRecordText(item, _displayMemberPath,
+						{ L"Name", L"Header", L"Text" }), levelTemplate);
+			}
+			else
+			{
+				std::unique_ptr<TreeNode> node;
+				if (!BuildDataNode(source, index, parent, level,
+					nullptr, node, &error))
+				{
+					_lastTemplateError = error.empty()
+						? L"TreeView 无法生成层次数据项。"
+						: std::move(error);
+					return false;
+				}
+				nextOrder.push_back(node.get());
+				added.emplace_back(std::move(node));
+			}
+		}
+	}
+
+	if (nextOrder.size() != newCount)
+	{
+		_lastTemplateError = L"TreeView 集合通知与 ItemsSource 数量不一致。";
+		return false;
+	}
+	EnsureAccessibilityVisibleIndex();
+	_pendingScrollAnchor = ScrollIndex >= 0
+		&& static_cast<size_t>(ScrollIndex) < _accessibilityVisibleNodes.size()
+		? _accessibilityVisibleNodes[static_cast<size_t>(ScrollIndex)].first
+		: nullptr;
+	const int previousScroll = ScrollIndex;
+	TreeNode* previousSelected = SelectedNode;
+	TreeNode* previousHovered = HoveredNode;
+	TreeNode* previousDropTarget = DropTargetNode;
+	std::unordered_set<TreeNode*> retained(nextOrder.begin(), nextOrder.end());
+	std::vector<std::unique_ptr<TreeNode>> removed;
+	for (auto* node : oldOrder)
+		if (node && !retained.contains(node)) removed.emplace_back(node);
+
+	_lastTemplateError.clear();
+	parent.Children = std::move(nextOrder);
+	if (_useGeneratedItemContainers && !_lastTemplateError.empty())
+	{
+		const auto containerError = _lastTemplateError;
+		parent.Children = std::move(oldOrder);
+		for (auto& node : removed) (void)node.release();
+		SelectedNode = previousSelected;
+		HoveredNode = previousHovered;
+		DropTargetNode = previousDropTarget;
+		ScrollIndex = previousScroll;
+		_pendingScrollAnchor = nullptr;
+		InvalidateAccessibilityIndex(true);
+		UpdateGeneratedItemStates();
+		_lastTemplateError = containerError;
+		return false;
+	}
+	for (auto& [node, text, itemTemplate] : reusedUpdates)
+	{
+		node->Text = std::move(text);
+		node->_headerTemplate = std::move(itemTemplate);
+	}
+	for (auto& node : added) (void)node.release();
+	for (auto& node : removed)
+	{
+		if (node) node->DisconnectDataObservers();
+		_retiredDataRoots->emplace_back(std::move(node));
+	}
+	if (!removed.empty() && cui::HasUIThreadDispatcher())
+	{
+		auto retired = _retiredDataRoots;
+		(void)cui::PostToUIThread([retired] { retired->clear(); });
+	}
+	_lastTemplateError.clear();
+	return true;
+}
+
+bool TreeView::EnsureDataChildrenMaterialized(TreeNode& node)
+{
+	if (node._childrenMaterialized) return true;
+	if (!node._childItemsSource)
+	{
+		node._childrenMaterialized = true;
+		if (node._container) node._container->SyncHasItems(false);
+		return true;
+	}
+	std::wstring error;
+	if (!BuildDataChildren(node, node._childItemsSource,
+		[&]
+		{
+			int result = 1;
+			for (auto* parent = node._parentNode;
+				parent && parent != Root; parent = parent->_parentNode) ++result;
+			return result;
+		}(), nullptr, &error))
+	{
+		_lastTemplateError = error.empty()
+			? L"TreeView 无法延迟创建子项。" : std::move(error);
+		return false;
+	}
+	_lastTemplateError.clear();
+	return true;
+}
+
+void TreeView::OnDataItemsChanged(
+	TreeNode* parent, BindingListReference source,
+	const CollectionChangedEventArgs& change)
+{
+	if (_rebuildingDataItems || !Root || !parent || !source) return;
+	if (parent == Root)
+	{
+		if (_itemsSource != source) return;
+	}
+	else
+	{
+		if (!ContainsTreeNode(Root->Children, parent)
+			|| parent->_childItemsSource != source) return;
+		if (!parent->_childrenMaterialized)
+		{
+			if (source.Get()->Count() == 0) parent->SetExpanded(false, false);
+			if (parent->_container)
+				parent->_container->SyncHasItems(parent->HasItems());
+			_lastTemplateError.clear();
+			NotifyAccessibilityVirtualChanged(parent->AccessibilityId,
+				AccessibilityChange::Structure);
+			InvalidateVisual();
+			return;
+		}
+	}
+	(void)ApplyDataItemsChange(*parent, source, change);
+}
+
+void TreeView::OnDataChildSourceChanged(TreeNode* node)
+{
+	if (_rebuildingDataItems || !Root || !node
+		|| !ContainsTreeNode(Root->Children, node)
+		|| !node->_dataItem || !node->_headerTemplate
+		|| !node->_headerTemplate.Get()->IsHierarchical()) return;
+	BindingListReference next;
+	std::wstring error;
+	if (!node->_headerTemplate.Get()->TryGetChildItemsSource(
+		node->_dataItem, next, &error))
+	{
+		_lastTemplateError = error.empty()
+			? L"HierarchicalDataTemplate 无法读取子 ItemsSource。"
+			: std::move(error);
+		return;
+	}
+	if (next == node->_childItemsSource)
+	{
+		_lastTemplateError.clear();
+		return;
+	}
+
+	auto previousSource = node->_childItemsSource;
+	auto previousObservation = std::move(node->_childItemsObservation);
+	auto previousConnection = std::move(node->_childItemsChangedConnection);
+	node->_childItemsSource = next;
+	node->_childItemsObservation = node->_headerTemplate.Get()->
+		ObserveChildItemsSource(node->_dataItem,
+			[this, node] { OnDataChildSourceChanged(node); });
+	if (next)
+		node->_childItemsChangedConnection = next.Get()->SubscribeChanged(
+			[this, node, source = next](const CollectionChangedEventArgs& change)
+			{ OnDataItemsChanged(node, source, change); });
+
+	if (node->_childrenMaterialized)
+	{
+		const CollectionChangedEventArgs reset{
+			CollectionChangeAction::Reset,
+			CollectionChangedEventArgs::Npos,
+			CollectionChangedEventArgs::Npos,
+			node->Children.size(), next ? next.Get()->Count() : 0,
+			node->Children.size(), next ? next.Get()->Count() : 0 };
+		if (!ApplyDataItemsChange(*node, next, reset))
+		{
+			const auto applyError = _lastTemplateError;
+			node->_childItemsChangedConnection.Disconnect();
+			node->_childItemsObservation.Connections.clear();
+			node->_childItemsObservation.Owners.clear();
+			node->_childItemsObservation.ListOwners.clear();
+			node->_childItemsSource = previousSource;
+			node->_childItemsObservation = std::move(previousObservation);
+			node->_childItemsChangedConnection = std::move(previousConnection);
+			_lastTemplateError = applyError;
+			return;
+		}
+	}
+	else
+	{
+		if (!next || next.Get()->Count() == 0) node->SetExpanded(false, false);
+		if (node->_container) node->_container->SyncHasItems(node->HasItems());
+		_lastTemplateError.clear();
+		NotifyAccessibilityVirtualChanged(node->AccessibilityId,
+			AccessibilityChange::Structure);
+		InvalidateVisual();
+	}
+}
+
+bool TreeView::RebuildDataItems()
+{
+	if (_rebuildingDataItems) return true;
+	struct RebuildGuard final
+	{
+		bool& Value;
+		explicit RebuildGuard(bool& value) : Value(value) { Value = true; }
+		~RebuildGuard() { Value = false; }
+	} guard(_rebuildingDataItems);
+
+	std::unordered_map<IBindingSource*, bool> expandedByItem;
+	std::shared_ptr<IBindingSource> selectedItem;
+	auto capture = [&](TreeNode* node, const auto& self) -> void
+	{
+		if (!node) return;
+		if (node->_dataItem)
+		{
+			expandedByItem[node->_dataItem.Get()] = node->Expand;
+			if (SelectedNode == node) selectedItem = node->_dataItem.Shared();
+		}
+		for (auto* child : node->Children) self(child, self);
+	};
+	if (Root)
+		for (auto* node : Root->Children) capture(node, capture);
+
+	auto replacement = std::make_unique<TreeNode>(L"");
+	std::wstring buildError;
+	replacement->_childrenMaterialized = true;
+	if (_itemsSource && !BuildDataChildren(*replacement, _itemsSource, 0,
+		&expandedByItem, &buildError))
+	{
+		_lastTemplateError = buildError.empty()
+			? L"TreeView 无法生成层次数据项。" : std::move(buildError);
+		return false;
+	}
+
+	auto* previousRoot = Root;
+	auto* previousSelected = SelectedNode;
+	const uint32_t previousSelectedId = previousSelected
+		? previousSelected->AccessibilityId : 0;
+	auto* previousHovered = HoveredNode;
+	auto* previousDropTarget = DropTargetNode;
+	const int previousScroll = ScrollIndex;
+	SelectedNode = nullptr;
+	HoveredNode = nullptr;
+	DropTargetNode = nullptr;
+	Root = replacement.release();
+	Root->AttachOwner(this);
+	if (selectedItem)
+	{
+		auto restoreSelection = [&](TreeNode* node, const auto& self) -> TreeNode*
+		{
+			if (!node) return nullptr;
+			if (node->_dataItem.Shared() == selectedItem) return node;
+			for (auto* child : node->Children)
+				if (auto* found = self(child, self)) return found;
+			return nullptr;
+		};
+		for (auto* node : Root->Children)
+			if ((SelectedNode = restoreSelection(node, restoreSelection))) break;
+	}
+	InvalidateAccessibilityIndex(true);
+	EnsureAccessibilityVisibleIndex();
+	const float itemHeight = EffectiveItemHeight(this);
+	const int page = itemHeight > 0.0f
+		? (std::max)(1, static_cast<int>(std::floor(
+			static_cast<float>(Height) / itemHeight))) : 1;
+	const int maximum = (std::max)(0,
+		static_cast<int>(_accessibilityVisibleNodes.size()) - page);
+	ScrollIndex = (std::clamp)(ScrollIndex, 0, maximum);
+	if (_useGeneratedItemContainers && !RebuildGeneratedItemContainers())
+	{
+		const auto error = _lastTemplateError;
+		Root->AttachOwner(nullptr);
+		delete Root;
+		Root = previousRoot;
+		SelectedNode = previousSelected;
+		HoveredNode = previousHovered;
+		DropTargetNode = previousDropTarget;
+		ScrollIndex = previousScroll;
+		if (Root) Root->AttachOwner(this);
+		InvalidateAccessibilityIndex(true);
+		_lastTemplateError = error;
+		return false;
+	}
+	if (previousRoot)
+	{
+		previousRoot->AttachOwner(nullptr);
+		previousRoot->DisconnectDataObservers();
+		_retiredDataRoots->emplace_back(previousRoot);
+		if (cui::HasUIThreadDispatcher())
+		{
+			auto retired = _retiredDataRoots;
+			(void)cui::PostToUIThread(
+				[retired] { retired->clear(); });
+		}
+	}
+	const bool selectionLost = previousSelected && !SelectedNode;
+	if (selectionLost)
+	{
+		UpdateGeneratedItemStates();
+		SelectionChanged(this);
+		SelectedItemChanged(this);
+		NotifySelectionProjectionChanged(true);
+		if (previousSelectedId != 0)
+			NotifyAccessibilityVirtualChanged(
+				previousSelectedId,
+				AccessibilityChange::Selection);
+	}
+	else
+	{
+		// Rebuilt nodes may have new addresses while preserving the same data
+		// record. Rewire SelectedValue observation without reporting a user
+		// selection change.
+		RefreshSelectedItemObservation();
+	}
+	_lastTemplateError.clear();
+	if (ScrollIndex != previousScroll)
+	{
+		ScrollChanged(this);
+		NotifyAccessibilityScrollChanged();
+	}
+	InvalidateVisual();
+	return true;
+}
+
+void TreeView::SetItemsSource(BindingListReference value)
+{
+	if (_itemsSource == value) return;
+	const auto previous = _itemsSource;
+	const bool previousUse = _useGeneratedItemContainers;
+	_itemsSourceChangedConnection.Disconnect();
+	_itemsSource = std::move(value);
+	if (_itemsSource) _useGeneratedItemContainers = true;
+	if (RebuildDataItems())
+	{
+		if (_itemsSource)
+			_itemsSourceChangedConnection = _itemsSource.Get()->SubscribeChanged(
+				[this, source = _itemsSource](
+					const CollectionChangedEventArgs& change)
+				{ OnDataItemsChanged(Root, source, change); });
+		return;
+	}
+	const auto error = _lastTemplateError;
+	_itemsSource = previous;
+	_useGeneratedItemContainers = previousUse;
+	if (_itemsSource)
+		_itemsSourceChangedConnection = _itemsSource.Get()->SubscribeChanged(
+			[this, source = _itemsSource](
+				const CollectionChangedEventArgs& change)
+			{ OnDataItemsChanged(Root, source, change); });
+	_lastTemplateError = error;
+}
+
+void TreeView::SetItemTemplate(ItemTemplateReference value)
+{
+	if (_itemTemplate == value) return;
+	const auto previous = _itemTemplate;
+	_itemTemplate = std::move(value);
+	if (!_itemsSource || RebuildDataItems()) return;
+	const auto error = _lastTemplateError;
+	_itemTemplate = previous;
+	_lastTemplateError = error;
+}
+
+void TreeView::SetDisplayMemberPath(std::wstring value)
+{
+	if (_displayMemberPath == value) return;
+	const auto previous = _displayMemberPath;
+	_displayMemberPath = std::move(value);
+	if (!_itemsSource || RebuildDataItems()) return;
+	const auto error = _lastTemplateError;
+	_displayMemberPath = previous;
+	_lastTemplateError = error;
+}
+
+BindingValue TreeView::GetSelectedItem() const
+{
+	if (!SelectedNode) return {};
+	if (SelectedNode->_dataItem)
+		return BindingValue(SelectedNode->_dataItem);
+	return BindingValue(SelectedNode);
+}
+
+BindingValue TreeView::GetSelectedValue() const
+{
+	if (!SelectedNode) return {};
+	if (_selectedValuePath.empty()) return GetSelectedItem();
+	BindingValue result;
+	return SelectedNode->_dataItem
+		&& TryGetBindingPathValue(
+			*SelectedNode->_dataItem.Get(), _selectedValuePath, result)
+		? result : BindingValue{};
+}
+
+void TreeView::SetSelectedValuePath(std::wstring value)
+{
+	if (_selectedValuePath == value) return;
+	_selectedValuePath = std::move(value);
+	RefreshSelectedItemObservation();
+	_selectedValueChanged(this);
+}
+
+void TreeView::RefreshSelectedItemObservation()
+{
+	_selectedItemObservation = {};
+	if (!SelectedNode || !SelectedNode->_dataItem
+		|| _selectedValuePath.empty()) return;
+	_selectedItemObservation = ObserveBindingPaths(
+		SelectedNode->_dataItem, { _selectedValuePath },
+		[this]
+		{
+			// A parent member in a nested path may now reference another object.
+			// Rebuild the path watch before publishing the new projection.
+			RefreshSelectedItemObservation();
+			_selectedValueChanged(this);
+		});
+}
+
+void TreeView::NotifySelectionProjectionChanged(bool itemChanged)
+{
+	RefreshSelectedItemObservation();
+	if (itemChanged) _selectedItemChanged(this);
+	_selectedValueChanged(this);
+}
+
+bool TreeView::ApplySelection(TreeNode* node, bool bringIntoView)
+{
+	if (node && (!Root || !ContainsTreeNode(Root->Children, node)))
+		return false;
+	if (SelectedNode == node)
+	{
+		if (node && bringIntoView)
+			(void)BringNodeIntoView(*node, true);
+		return false;
+	}
+
+	TreeNode* previous = SelectedNode;
+	SelectedNode = node;
+	if (node && bringIntoView)
+		(void)BringNodeIntoView(*node, true);
+	UpdateGeneratedItemStates();
+	SelectionChanged(this);
+	SelectedItemChanged(this);
+	NotifySelectionProjectionChanged(true);
+	if (previous && previous->AccessibilityId != 0)
+		NotifyAccessibilityVirtualChanged(
+			previous->AccessibilityId, AccessibilityChange::Selection);
+	if (node && node->AccessibilityId != 0)
+		NotifyAccessibilityVirtualChanged(
+			node->AccessibilityId, AccessibilityChange::Selection);
+	InvalidateVisual();
+	return true;
+}
+
+bool TreeView::SelectNode(TreeNode* node, bool bringIntoView)
+{
+	return ApplySelection(node, bringIntoView);
+}
+
+void TreeView::SetImplicitItemTemplateResolver(
+	ImplicitItemTemplateResolver value)
+{
+	auto previous = std::move(_implicitItemTemplateResolver);
+	_implicitItemTemplateResolver = std::move(value);
+	if (!_itemsSource || RebuildDataItems()) return;
+	const auto error = _lastTemplateError;
+	_implicitItemTemplateResolver = std::move(previous);
+	_lastTemplateError = error;
+}
+
+void TreeView::SetItemContainerStyle(std::wstring value)
+{
+	if (_itemContainerStyle == value) return;
+	const auto previous = _itemContainerStyle;
+	const bool previousUse = _useGeneratedItemContainers;
+	_itemContainerStyle = std::move(value);
+	if (!_itemContainerStyle.empty()) _useGeneratedItemContainers = true;
+	if (RebuildGeneratedItemContainers()) return;
+	const auto error = _lastTemplateError;
+	_itemContainerStyle = previous;
+	_useGeneratedItemContainers = previousUse;
+	(void)RebuildGeneratedItemContainers();
+	_lastTemplateError = error;
+}
+
+void TreeView::SetItemContainerTemplate(ControlTemplateReference value)
+{
+	if (_itemContainerTemplate == value) return;
+	const auto previous = _itemContainerTemplate;
+	const bool previousUse = _useGeneratedItemContainers;
+	_itemContainerTemplate = std::move(value);
+	if (_itemContainerTemplate) _useGeneratedItemContainers = true;
+	if (RebuildGeneratedItemContainers()) return;
+	const auto error = _lastTemplateError;
+	_itemContainerTemplate = previous;
+	_useGeneratedItemContainers = previousUse;
+	(void)RebuildGeneratedItemContainers();
+	_lastTemplateError = error;
+}
+
+void TreeView::SetUseGeneratedItemContainers(bool value)
+{
+	if (_useGeneratedItemContainers == value) return;
+	const bool previous = _useGeneratedItemContainers;
+	_useGeneratedItemContainers = value;
+	if (RebuildGeneratedItemContainers()) return;
+	const auto error = _lastTemplateError;
+	_useGeneratedItemContainers = previous;
+	(void)RebuildGeneratedItemContainers();
+	_lastTemplateError = error;
+}
+
+void TreeView::ClearGeneratedItemContainers()
+{
+	for (auto& [node, level] : _realizedGeneratedNodes)
+	{
+		(void)level;
+		if (!node || !node->_container) continue;
+		node->_container->Parent = nullptr;
+		node->_container.reset();
+	}
+	_realizedGeneratedNodes.clear();
+	_recycledItemContainers.clear();
+}
+
+bool TreeView::RebuildGeneratedItemContainers()
+{
+	return RefreshGeneratedItemContainers(true);
+}
+
+bool TreeView::RefreshGeneratedItemContainers(bool recreate)
+{
+	if (!_useGeneratedItemContainers)
+	{
+		ClearGeneratedItemContainers();
+		_lastTemplateError.clear();
+		InvalidateVisual();
+		return true;
+	}
+	if (!Root)
+	{
+		_lastTemplateError = L"TreeView 缺少根节点。";
+		return false;
+	}
+	if (_itemContainerTemplate
+		&& _itemContainerTemplate.Get()->TargetType()
+			!= UIClass::UI_TreeViewItem)
+	{
+		_lastTemplateError =
+			L"ItemContainerTemplate TargetType 必须是 TreeViewItem。";
+		return false;
+	}
+
+	if (recreate) _recycledItemContainers.clear();
+	std::vector<std::pair<TreeNode*, int>> realizable;
+	if (_hasExpansionAnimation)
+	{
+		bool anyAnimation = false;
+		auto collect = [&](TreeNode* node, int level, const auto& self) -> void
+		{
+			if (!node) return;
+			realizable.emplace_back(node, level);
+			const float progress = node->CurrentExpandProgress();
+			anyAnimation = anyAnimation || node->Animating;
+			if (node->Expand || node->Animating || progress > 0.001f)
+				for (auto* child : node->Children)
+					self(child, level + 1, self);
+		};
+		for (auto* node : Root->Children) collect(node, 0, collect);
+		_hasExpansionAnimation = anyAnimation;
+	}
+	else
+	{
+		EnsureAccessibilityVisibleIndex();
+	}
+	const size_t rowCount = _hasExpansionAnimation
+		? realizable.size() : _accessibilityVisibleNodes.size();
+	auto rowAt = [&](size_t index) -> std::pair<TreeNode*, int>
+	{
+		if (_hasExpansionAnimation) return realizable[index];
+		const auto& [node, level] = _accessibilityVisibleNodes[index];
+		return { node, (std::max)(0, level - 1) };
+	};
+
+	const float itemHeight = EffectiveItemHeight(this);
+	const float viewportHeight = GetActualSizeDip().height > 0.0f
+		? GetActualSizeDip().height : static_cast<float>(Height);
+	const size_t page = itemHeight > 0.0f
+		? static_cast<size_t>((std::max)(1.0f,
+			std::ceil(viewportHeight / itemHeight))) : 1;
+	const size_t scroll = ScrollIndex > 0
+		? static_cast<size_t>(ScrollIndex) : 0;
+	const size_t first = scroll > 0 ? scroll - 1 : 0;
+	const size_t last = (std::min)(rowCount, scroll + page + 1);
+	std::unordered_set<TreeNode*> desired;
+	for (size_t index = first; index < last; ++index)
+		desired.insert(rowAt(index).first);
+
+	std::vector<std::pair<TreeNode*, std::unique_ptr<TreeViewItem>>> replacement;
+	auto build = [&](TreeNode* node, int level) -> bool
+	{
+		if (!node || (!recreate && node->_container)) return true;
+		std::unique_ptr<TreeViewItem> container;
+		if (!recreate && !_recycledItemContainers.empty())
+		{
+			container = std::move(_recycledItemContainers.back());
+			_recycledItemContainers.pop_back();
+		}
+		else if (_itemContainerTemplate)
+		{
+			std::wstring error;
+			auto built = _itemContainerTemplate.Get()->Build(&error);
+			auto* typed = dynamic_cast<TreeViewItem*>(built.get());
+			if (!typed)
+			{
+				_lastTemplateError = error.empty()
+					? L"ItemContainerTemplate 未生成 TreeViewItem。"
+					: std::move(error);
+				return false;
+			}
+			container.reset(static_cast<TreeViewItem*>(built.release()));
+		}
+		else container = std::make_unique<TreeViewItem>();
+		container->SetStyleId(_itemContainerStyle);
+		std::wstring error;
+		if (!container->Initialize(*this, *node, level, &error))
+		{
+			_lastTemplateError = error.empty()
+				? L"TreeViewItem Header 初始化失败。" : std::move(error);
+			return false;
+		}
+		container->Parent = this;
+		Control::SetChildrenParentForm(container.get(), ParentForm);
+		(void)container->RefreshStyleValues(true);
+		replacement.emplace_back(node, std::move(container));
+		return true;
+	};
+	for (size_t index = first; index < last; ++index)
+	{
+		const auto [node, level] = rowAt(index);
+		if (!build(node, level)) return false;
+	}
+
+	for (auto& [node, level] : _realizedGeneratedNodes)
+	{
+		(void)level;
+		if (!node || !node->_container
+			|| (!recreate && desired.contains(node))) continue;
+		if (recreate)
+		{
+			node->_container->Parent = nullptr;
+			node->_container.reset();
+		}
+		else
+		{
+			auto recycled = std::move(node->_container);
+			recycled->ClearForRecycle();
+			_recycledItemContainers.emplace_back(std::move(recycled));
+		}
+	}
+	for (auto& [node, container] : replacement)
+		node->_container = std::move(container);
+	_realizedGeneratedNodes.clear();
+	for (size_t index = first; index < last; ++index)
+	{
+		const auto [node, level] = rowAt(index);
+		if (node && node->_container)
+			_realizedGeneratedNodes.emplace_back(node, level);
+	}
+	const size_t recycleLimit = (std::max)(
+		static_cast<size_t>(8), page * 2 + 2);
+	if (_recycledItemContainers.size() > recycleLimit)
+		_recycledItemContainers.erase(_recycledItemContainers.begin(),
+			_recycledItemContainers.begin() + static_cast<ptrdiff_t>(
+				_recycledItemContainers.size() - recycleLimit));
+	_lastTemplateError.clear();
+	UpdateGeneratedItemStates();
+	InvalidateVisual();
+	return true;
+}
+
+void TreeView::UpdateGeneratedItemStates()
+{
+	const bool ownerFocused = ParentForm && ParentForm->Selected == this;
+	for (auto& [node, level] : _realizedGeneratedNodes)
+	{
+		if (!node || !node->_container) continue;
+		node->_container->Parent = this;
+		Control::SetChildrenParentForm(node->_container.get(), ParentForm);
+		node->_container->SyncNodeState(level,
+			SelectedNode == node, HoveredNode == node,
+			ownerFocused && SelectedNode == node);
+	}
+}
+
+size_t TreeView::GeneratedItemCount() const noexcept
+{
+	size_t count = 0;
+	for (const auto& [node, level] : _realizedGeneratedNodes)
+	{
+		(void)level;
+		if (node && node->_container) ++count;
+	}
+	return count;
+}
+
+TreeViewItem* TreeView::GetGeneratedItem(const TreeNode* node) const noexcept
+{
+	return node ? node->_container.get() : nullptr;
 }
 
 static bool ContainsTreeNode(
@@ -620,8 +2113,7 @@ void TreeView::InvalidateAccessibilityIndex(bool structure) noexcept
 {
 	if (structure) _accessibilityIndexDirty = true;
 	_accessibilityVisibleDirty = true;
-	_accessibilityVisibleCount = Root
-		? CountVisibleTreeNodes(Root->Children) : 0;
+	if (!Root) _accessibilityVisibleCount = 0;
 }
 
 void TreeView::EnsureAccessibilityIndex()
@@ -632,7 +2124,6 @@ void TreeView::EnsureAccessibilityIndex()
 	if (!Root)
 	{
 		_accessibilityIndexDirty = false;
-		_accessibilityVisibleDirty = true;
 		return;
 	}
 	std::unordered_set<uint32_t> used;
@@ -658,12 +2149,10 @@ void TreeView::EnsureAccessibilityIndex()
 	};
 	build(Root->Children, nullptr, 1, build);
 	_accessibilityIndexDirty = false;
-	_accessibilityVisibleDirty = true;
 }
 
 void TreeView::EnsureAccessibilityVisibleIndex()
 {
-	EnsureAccessibilityIndex();
 	if (!_accessibilityVisibleDirty) return;
 	_accessibilityVisibleNodes.clear();
 	_accessibilityVisibleIndex.clear();
@@ -677,25 +2166,64 @@ void TreeView::EnsureAccessibilityVisibleIndex()
 	_accessibilityVisibleDirty = false;
 }
 
+bool TreeView::PatchAccessibilityVisibleChildren(TreeNode* parent)
+{
+	if (_accessibilityVisibleDirty || !Root || !parent) return false;
+	if (parent == Root)
+	{
+		_accessibilityVisibleNodes.clear();
+		CollectVisibleTreeNodes(
+			Root->Children, 1, _accessibilityVisibleNodes);
+	}
+	else
+	{
+		const auto parentAt = _accessibilityVisibleIndex.find(parent);
+		if (parentAt == _accessibilityVisibleIndex.end() || !parent->Expand)
+		{
+			_accessibilityVisibleCount = _accessibilityVisibleNodes.size();
+			return true;
+		}
+		const size_t parentIndex = parentAt->second;
+		const int parentLevel = _accessibilityVisibleNodes[parentIndex].second;
+		size_t end = parentIndex + 1;
+		while (end < _accessibilityVisibleNodes.size()
+			&& _accessibilityVisibleNodes[end].second > parentLevel) ++end;
+		std::vector<std::pair<TreeNode*, int>> replacement;
+		CollectVisibleTreeNodes(parent->Children,
+			parentLevel + 1, replacement);
+		_accessibilityVisibleNodes.erase(
+			_accessibilityVisibleNodes.begin()
+				+ static_cast<ptrdiff_t>(parentIndex + 1),
+			_accessibilityVisibleNodes.begin()
+				+ static_cast<ptrdiff_t>(end));
+		_accessibilityVisibleNodes.insert(
+			_accessibilityVisibleNodes.begin()
+				+ static_cast<ptrdiff_t>(parentIndex + 1),
+			replacement.begin(), replacement.end());
+	}
+	_accessibilityVisibleIndex.clear();
+	_accessibilityVisibleIndex.reserve(_accessibilityVisibleNodes.size());
+	for (size_t index = 0; index < _accessibilityVisibleNodes.size(); ++index)
+		_accessibilityVisibleIndex.emplace(
+			_accessibilityVisibleNodes[index].first, index);
+	_accessibilityVisibleCount = _accessibilityVisibleNodes.size();
+	_accessibilityVisibleDirty = false;
+	return true;
+}
+
 void TreeView::OnNodeChildrenChanged(
 	TreeNode* parent, const CollectionChangedEventArgs& change)
 {
 	(void)change;
 	if (!Root) return;
-	InvalidateAccessibilityIndex(true);
+	_accessibilityIndexDirty = true;
+	if (!PatchAccessibilityVisibleChildren(parent))
+		_accessibilityVisibleDirty = true;
 	if (parent && parent->Children.empty())
 		parent->SetExpanded(false, false);
 
-	EnsureAccessibilityIndex();
 	if (SelectedNode && !ContainsTreeNode(Root->Children, SelectedNode))
-	{
-		const uint32_t removedId = SelectedNode->AccessibilityId;
-		SelectedNode = nullptr;
-		SelectionChanged(this);
-		if (removedId != 0)
-			NotifyAccessibilityVirtualChanged(
-				removedId, AccessibilityChange::Selection);
-	}
+		(void)ApplySelection(nullptr, false);
 	if (HoveredNode && !ContainsTreeNode(Root->Children, HoveredNode))
 		HoveredNode = nullptr;
 
@@ -708,6 +2236,40 @@ void TreeView::OnNodeChildrenChanged(
 			static_cast<float>(Height) / itemHeight)))
 		: 1;
 	const int maximum = (std::max)(0, MaxRenderItems - page);
+	int nextScroll = ScrollIndex;
+	if (_pendingScrollAnchor)
+	{
+		const auto anchor = _accessibilityVisibleIndex.find(_pendingScrollAnchor);
+		if (anchor != _accessibilityVisibleIndex.end())
+			nextScroll = static_cast<int>(anchor->second);
+		_pendingScrollAnchor = nullptr;
+	}
+	nextScroll = (std::clamp)(nextScroll, 0, maximum);
+	if (nextScroll != ScrollIndex)
+	{
+		ScrollIndex = nextScroll;
+		ScrollChanged(this);
+	}
+	NotifyAccessibilityStructureChanged();
+	NotifyAccessibilityScrollChanged();
+	if (_useGeneratedItemContainers)
+		(void)RefreshGeneratedItemContainers(false);
+	else UpdateGeneratedItemStates();
+	InvalidateVisual();
+}
+
+void TreeView::OnNodeExpansionChanged(TreeNode& node)
+{
+	if (!Root || !ContainsTreeNode(Root->Children, &node)) return;
+	InvalidateAccessibilityIndex(false);
+	EnsureAccessibilityVisibleIndex();
+	_contentRenderItems = static_cast<float>(_accessibilityVisibleNodes.size());
+	MaxRenderItems = static_cast<int>(_accessibilityVisibleNodes.size());
+	const float itemHeight = EffectiveItemHeight(this);
+	const int page = itemHeight > 0.0f
+		? (std::max)(1, static_cast<int>(std::floor(
+			static_cast<float>(Height) / itemHeight))) : 1;
+	const int maximum = (std::max)(0, MaxRenderItems - page);
 	const int nextScroll = (std::clamp)(ScrollIndex, 0, maximum);
 	if (nextScroll != ScrollIndex)
 	{
@@ -716,6 +2278,9 @@ void TreeView::OnNodeChildrenChanged(
 	}
 	NotifyAccessibilityStructureChanged();
 	NotifyAccessibilityScrollChanged();
+	if (_useGeneratedItemContainers)
+		(void)RefreshGeneratedItemContainers(false);
+	else UpdateGeneratedItemStates();
 	InvalidateVisual();
 }
 
@@ -725,6 +2290,17 @@ void TreeView::GetAccessibilityVirtualChildren(
 	result.clear();
 	if (!Root) return;
 	EnsureAccessibilityIndex();
+	if (parentId != 0)
+	{
+		const auto parent = _accessibilityNodeIndex.find(parentId);
+		if (parent != _accessibilityNodeIndex.end()
+			&& !parent->second.Node->ChildrenMaterialized()
+			&& parent->second.Node->HasItems())
+		{
+			(void)EnsureDataChildrenMaterialized(*parent->second.Node);
+			EnsureAccessibilityIndex();
+		}
+	}
 	const auto children = _accessibilityChildrenByParentId.find(parentId);
 	if (children == _accessibilityChildrenByParentId.end()) return;
 	result.reserve(children->second.size());
@@ -735,6 +2311,17 @@ void TreeView::GetAccessibilityVirtualChildren(
 size_t TreeView::GetAccessibilityVirtualChildCount(uint32_t parentId)
 {
 	EnsureAccessibilityIndex();
+	if (parentId != 0)
+	{
+		const auto parent = _accessibilityNodeIndex.find(parentId);
+		if (parent != _accessibilityNodeIndex.end()
+			&& !parent->second.Node->ChildrenMaterialized()
+			&& parent->second.Node->HasItems())
+		{
+			(void)EnsureDataChildrenMaterialized(*parent->second.Node);
+			EnsureAccessibilityIndex();
+		}
+	}
 	const auto children = _accessibilityChildrenByParentId.find(parentId);
 	return children == _accessibilityChildrenByParentId.end()
 		? 0 : children->second.size();
@@ -745,6 +2332,17 @@ bool TreeView::TryGetAccessibilityVirtualChildAt(
 {
 	result = 0;
 	EnsureAccessibilityIndex();
+	if (parentId != 0)
+	{
+		const auto parent = _accessibilityNodeIndex.find(parentId);
+		if (parent != _accessibilityNodeIndex.end()
+			&& !parent->second.Node->ChildrenMaterialized()
+			&& parent->second.Node->HasItems())
+		{
+			(void)EnsureDataChildrenMaterialized(*parent->second.Node);
+			EnsureAccessibilityIndex();
+		}
+	}
 	const auto children = _accessibilityChildrenByParentId.find(parentId);
 	if (children == _accessibilityChildrenByParentId.end()
 		|| index >= children->second.size()) return false;
@@ -777,6 +2375,7 @@ bool TreeView::TryHitTestAccessibilityVirtualNode(
 		|| localX >= size.width || localY >= size.height) return false;
 	const float itemHeight = EffectiveItemHeight(this);
 	if (itemHeight <= 0.0f) return false;
+	EnsureAccessibilityIndex();
 	EnsureAccessibilityVisibleIndex();
 	const int index = ScrollIndex
 		+ static_cast<int>(std::floor(localY / itemHeight));
@@ -791,6 +2390,7 @@ bool TreeView::TryGetAccessibilityVirtualNode(
 	uint32_t id, AccessibilityVirtualNode& result)
 {
 	if (!Root || id == 0) return false;
+	EnsureAccessibilityIndex();
 	EnsureAccessibilityVisibleIndex();
 	const auto indexed = _accessibilityNodeIndex.find(id);
 	if (indexed == _accessibilityNodeIndex.end()) return false;
@@ -810,7 +2410,7 @@ bool TreeView::TryGetAccessibilityVirtualNode(
 	result.Patterns = AccessibilityVirtualPattern::SelectionItem
 		| AccessibilityVirtualPattern::ScrollItem
 		| AccessibilityVirtualPattern::VirtualizedItem;
-	if (!node->Children.empty())
+	if (node->HasItems())
 		result.Patterns |= AccessibilityVirtualPattern::ExpandCollapse;
 	result.Name = node->Text;
 	const auto ownerId = GetAccessibilitySnapshot().AutomationId;
@@ -859,15 +2459,12 @@ bool TreeView::SelectAccessibilityVirtualNode(
 	EnsureAccessibilityIndex();
 	const auto indexed = _accessibilityNodeIndex.find(id);
 	if (indexed == _accessibilityNodeIndex.end()) return false;
+	if (action == AccessibilitySelectionAction::Remove
+		&& SelectedNode != indexed->second.Node) return true;
 	TreeNode* next = action == AccessibilitySelectionAction::Remove
 		? nullptr : indexed->second.Node;
-	if (SelectedNode != next)
-	{
-		SelectedNode = next;
-		SelectionChanged(this);
-		NotifyAccessibilityVirtualChanged(id, AccessibilityChange::Selection);
-		InvalidateVisual();
-	}
+	(void)ApplySelection(next,
+		action != AccessibilitySelectionAction::Remove);
 	return true;
 }
 
@@ -878,7 +2475,7 @@ bool TreeView::SetAccessibilityVirtualNodeExpanded(
 	EnsureAccessibilityIndex();
 	const auto indexed = _accessibilityNodeIndex.find(id);
 	if (indexed == _accessibilityNodeIndex.end()
-		|| indexed->second.Node->Children.empty()) return false;
+		|| !indexed->second.Node->HasItems()) return false;
 	indexed->second.Node->SetExpanded(expanded, AreSystemAnimationsEnabled());
 	NotifyAccessibilityVirtualChanged(id, AccessibilityChange::ExpandCollapse);
 	NotifyAccessibilityStructureChanged();
@@ -887,21 +2484,21 @@ bool TreeView::SetAccessibilityVirtualNodeExpanded(
 	return true;
 }
 
-bool TreeView::ScrollAccessibilityVirtualNodeIntoView(uint32_t id)
+bool TreeView::BringNodeIntoView(TreeNode& node, bool expandAncestors)
 {
-	if (!Root || !Enable) return false;
-	EnsureAccessibilityIndex();
-	const auto indexed = _accessibilityNodeIndex.find(id);
-	if (indexed == _accessibilityNodeIndex.end()) return false;
-	for (auto* parent = indexed->second.Parent; parent; parent = parent->_parentNode)
-		parent->SetExpanded(true, false);
+	if (!Root || !ContainsTreeNode(Root->Children, &node)) return false;
+	if (expandAncestors)
+		for (auto* parent = node._parentNode;
+			parent && parent != Root; parent = parent->_parentNode)
+			parent->SetExpanded(true, false);
 	EnsureAccessibilityVisibleIndex();
-	const auto position = _accessibilityVisibleIndex.find(indexed->second.Node);
+	const auto position = _accessibilityVisibleIndex.find(&node);
 	if (position == _accessibilityVisibleIndex.end()) return false;
 	const int target = static_cast<int>(position->second);
 	const float itemHeight = EffectiveItemHeight(this);
 	const int page = (std::max)(1,
-		static_cast<int>(std::floor(static_cast<float>(Height) / itemHeight)));
+		static_cast<int>(std::floor(static_cast<float>(Height)
+			/ (std::max)(itemHeight, 1.0f))));
 	int nextScroll = ScrollIndex;
 	if (target < nextScroll) nextScroll = target;
 	else if (target >= nextScroll + page) nextScroll = target - page + 1;
@@ -912,11 +2509,21 @@ bool TreeView::ScrollAccessibilityVirtualNodeIntoView(uint32_t id)
 	{
 		ScrollIndex = nextScroll;
 		ScrollChanged(this);
+		NotifyAccessibilityScrollChanged();
 	}
-	NotifyAccessibilityStructureChanged();
-	NotifyAccessibilityScrollChanged();
+	if (_useGeneratedItemContainers)
+		(void)RefreshGeneratedItemContainers(false);
 	InvalidateVisual();
 	return true;
+}
+
+bool TreeView::ScrollAccessibilityVirtualNodeIntoView(uint32_t id)
+{
+	if (!Root || !Enable) return false;
+	EnsureAccessibilityIndex();
+	const auto indexed = _accessibilityNodeIndex.find(id);
+	return indexed != _accessibilityNodeIndex.end()
+		&& BringNodeIntoView(*indexed->second.Node, true);
 }
 
 bool TreeView::GetAccessibilityScrollInfo(
@@ -974,6 +2581,8 @@ bool TreeView::ScrollAccessibility(
 	{
 		ScrollIndex = next;
 		ScrollChanged(this);
+		if (_useGeneratedItemContainers)
+			(void)RefreshGeneratedItemContainers(false);
 		NotifyAccessibilityScrollChanged();
 		InvalidateVisual();
 	}
@@ -1001,6 +2610,8 @@ bool TreeView::SetAccessibilityScrollPercent(
 	{
 		ScrollIndex = next;
 		ScrollChanged(this);
+		if (_useGeneratedItemContainers)
+			(void)RefreshGeneratedItemContainers(false);
 		NotifyAccessibilityScrollChanged();
 		InvalidateVisual();
 	}
@@ -1027,6 +2638,8 @@ void TreeView::OnComputedLayoutSizeChanged()
 		ScrollIndex = next;
 		ScrollChanged(this);
 	}
+	if (_useGeneratedItemContainers)
+		(void)RefreshGeneratedItemContainers(false);
 	NotifyAccessibilityScrollChanged();
 }
 
@@ -1041,9 +2654,11 @@ bool TreeView::IsAnimationRunning()
 			for (auto* child : node->Children) self(child, self);
 		};
 		finish(this->Root, finish);
+		_hasExpansionAnimation = false;
 		return false;
 	}
-	return this->Root && this->Root->IsAnimationRunning();
+	_hasExpansionAnimation = this->Root && this->Root->IsAnimationRunning();
+	return _hasExpansionAnimation;
 }
 
 bool TreeView::GetAnimatedInvalidRect(D2D1_RECT_F& outRect)
@@ -1070,6 +2685,8 @@ void TreeView::UpdateScrollDrag(float posY) {
 		{
 			this->ScrollIndex = 0;
 			this->ScrollChanged(this);
+			if (_useGeneratedItemContainers)
+				(void)RefreshGeneratedItemContainers(false);
 			this->NotifyAccessibilityScrollChanged();
 			InvalidateVisual();
 		}
@@ -1099,6 +2716,8 @@ void TreeView::UpdateScrollDrag(float posY) {
 	{
 		this->ScrollIndex = newScroll;
 		this->ScrollChanged(this);
+		if (_useGeneratedItemContainers)
+			(void)RefreshGeneratedItemContainers(false);
 		this->NotifyAccessibilityScrollChanged();
 		InvalidateVisual();
 	}
@@ -1123,6 +2742,10 @@ void TreeView::DrawScroll() {
 }
 void TreeView::Update()
 {
+	// Rebuilds may happen inside a data-source notification. Retain the old
+	// controls until the next frame so callbacks already copied by that event
+	// cannot observe destroyed binding targets.
+	_retiredDataRoots->clear();
 	if (this->IsVisual == false)return;
 	bool isUnderMouse = this->ParentForm->UnderMouse == this;
 	auto d2d = this->ParentForm->Render;
@@ -1141,7 +2764,16 @@ void TreeView::Update()
 
 		{
 			const float itemHeight = EffectiveItemHeight(this);
-			_contentRenderItems = measureNodes(this->Root->Children);
+			if (_hasExpansionAnimation)
+				_hasExpansionAnimation = Root && Root->IsAnimationRunning();
+			if (_hasExpansionAnimation)
+				_contentRenderItems = measureNodes(this->Root->Children);
+			else
+			{
+				EnsureAccessibilityVisibleIndex();
+				_contentRenderItems = static_cast<float>(
+					_accessibilityVisibleNodes.size());
+			}
 			this->MaxRenderItems = (int)std::ceil(_contentRenderItems);
 			int maxScroll = (int)std::ceil(_contentRenderItems - ((float)this->Height / itemHeight));
 			if (maxScroll < 0)maxScroll = 0;
@@ -1151,8 +2783,20 @@ void TreeView::Update()
 				this->ScrollChanged(this);
 				this->NotifyAccessibilityScrollChanged();
 			}
-			float cursorY = 0.0f;
-			renderNodes(this, d2d, actualWidth, actualHeight, itemHeight, (float)this->ScrollIndex * itemHeight, cursorY, 0, this->Root->Children);
+			if (_useGeneratedItemContainers)
+			{
+				(void)RefreshGeneratedItemContainers(false);
+				UpdateGeneratedItemStates();
+			}
+			if (_hasExpansionAnimation)
+			{
+				float cursorY = 0.0f;
+				renderNodes(this, d2d, actualWidth, actualHeight,
+					itemHeight, static_cast<float>(ScrollIndex) * itemHeight,
+					cursorY, 0, Root->Children);
+			}
+			else RenderStableVisibleNodes(
+				d2d, actualWidth, actualHeight, itemHeight);
 			this->DrawScroll();
 			d2d->DrawRect(0, 0, actualWidth, actualHeight, this->BorderColor);
 
@@ -1168,9 +2812,111 @@ void TreeView::Update()
 	}
 	this->EndRender();
 }
+bool TreeView::HandlesNavigationKey(WPARAM key) const
+{
+	switch (key)
+	{
+	case VK_UP:
+	case VK_DOWN:
+	case VK_LEFT:
+	case VK_RIGHT:
+	case VK_HOME:
+	case VK_END:
+	case VK_PRIOR:
+	case VK_NEXT:
+		return true;
+	default:
+		return Control::HandlesNavigationKey(key);
+	}
+}
+
 bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	if (!this->Enable || !this->Visible) return true;
+	if (message == WM_KEYDOWN && HandlesNavigationKey(wParam))
+	{
+		EnsureAccessibilityVisibleIndex();
+		TreeNode* target = nullptr;
+		auto current = SelectedNode
+			? _accessibilityVisibleIndex.find(SelectedNode)
+			: _accessibilityVisibleIndex.end();
+		if (SelectedNode && current == _accessibilityVisibleIndex.end())
+		{
+			(void)BringNodeIntoView(*SelectedNode, true);
+			EnsureAccessibilityVisibleIndex();
+			current = _accessibilityVisibleIndex.find(SelectedNode);
+		}
+		const size_t count = _accessibilityVisibleNodes.size();
+		const bool hasCurrent = current != _accessibilityVisibleIndex.end();
+		const size_t currentIndex = hasCurrent ? current->second : 0;
+		const float itemHeight = EffectiveItemHeight(this);
+		const size_t page = static_cast<size_t>((std::max)(1,
+			static_cast<int>(std::floor(static_cast<float>(Height)
+				/ (std::max)(itemHeight, 1.0f)))));
+
+		switch (wParam)
+		{
+		case VK_UP:
+			if (count) target = _accessibilityVisibleNodes[
+				hasCurrent ? (currentIndex == 0 ? 0 : currentIndex - 1)
+					: count - 1].first;
+			break;
+		case VK_DOWN:
+			if (count) target = _accessibilityVisibleNodes[
+				hasCurrent ? (std::min)(currentIndex + 1, count - 1) : 0].first;
+			break;
+		case VK_HOME:
+			if (count) target = _accessibilityVisibleNodes.front().first;
+			break;
+		case VK_END:
+			if (count) target = _accessibilityVisibleNodes.back().first;
+			break;
+		case VK_PRIOR:
+			if (count) target = _accessibilityVisibleNodes[
+				hasCurrent && currentIndex > page ? currentIndex - page : 0].first;
+			break;
+		case VK_NEXT:
+			if (count) target = _accessibilityVisibleNodes[
+				hasCurrent
+					? (std::min)(currentIndex + page, count - 1) : 0].first;
+			break;
+		case VK_RIGHT:
+			if (!SelectedNode)
+			{
+				if (count) target = _accessibilityVisibleNodes.front().first;
+			}
+			else if (SelectedNode->HasItems())
+			{
+				if (!SelectedNode->Expand)
+					SelectedNode->SetExpanded(
+						true, AreSystemAnimationsEnabled());
+				else
+				{
+					(void)EnsureDataChildrenMaterialized(*SelectedNode);
+					if (!SelectedNode->Children.empty())
+						target = SelectedNode->Children.front();
+				}
+			}
+			break;
+		case VK_LEFT:
+			if (!SelectedNode)
+			{
+				if (count) target = _accessibilityVisibleNodes.front().first;
+			}
+			else if (SelectedNode->Expand)
+				SelectedNode->SetExpanded(
+					false, AreSystemAnimationsEnabled());
+			else if (SelectedNode->_parentNode
+				&& SelectedNode->_parentNode != Root)
+				target = SelectedNode->_parentNode;
+			break;
+		}
+		if (target) (void)ApplySelection(target, true);
+		KeyEventArgs eventArgs = KeyEventArgs(static_cast<Keys>(wParam));
+		OnKeyDown(this, eventArgs);
+		InvalidateVisual();
+		return true;
+	}
 	switch (message)
 	{
 	case WM_DROPFILES:
@@ -1194,7 +2940,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int lo
 	case WM_MOUSEWHEEL:
 	{
 		const float itemHeight = EffectiveItemHeight(this);
-		const int renderItemCount = itemHeight > 0.0f ? std::max(1, (int)((float)this->Height / itemHeight)) : 1;
+		const int renderItemCount = itemHeight > 0.0f ? (std::max)(1, (int)((float)this->Height / itemHeight)) : 1;
 		int maxScroll = (int)std::ceil(_contentRenderItems - (float)renderItemCount);
 		if (maxScroll < 0) maxScroll = 0;
 		if (GET_WHEEL_DELTA_WPARAM(wParam) < 0)
@@ -1203,6 +2949,8 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int lo
 			{
 				this->ScrollIndex += 1;
 				this->ScrollChanged(this);
+				if (_useGeneratedItemContainers)
+					(void)RefreshGeneratedItemContainers(false);
 				this->NotifyAccessibilityScrollChanged();
 				this->InvalidateVisual();
 			}
@@ -1213,6 +2961,8 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int lo
 			{
 				this->ScrollIndex -= 1;
 				this->ScrollChanged(this);
+				if (_useGeneratedItemContainers)
+					(void)RefreshGeneratedItemContainers(false);
 				this->NotifyAccessibilityScrollChanged();
 				this->InvalidateVisual();
 			}
@@ -1234,19 +2984,23 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int lo
 				if (this->HoveredNode != nullptr)
 				{
 					this->HoveredNode = nullptr;
+					UpdateGeneratedItemStates();
 					this->InvalidateVisual();
 				}
 			}
 			else
 			{
-				const auto size = this->GetActualSizeDip();
-				const float itemHeight = EffectiveItemHeight(this);
-				float cursorY = 0.0f;
 				bool isHit = false;
-				auto newHoveredNode = findNode(this, (float)localX, (float)localY, size.height, itemHeight, (float)this->ScrollIndex * itemHeight, cursorY, 0, this->Root->Children, isHit);
+				auto newHoveredNode = HitTestNodeCore(
+					static_cast<float>(localX), static_cast<float>(localY),
+					nullptr, &isHit);
 				bool needUpdate = this->HoveredNode != newHoveredNode;
 				this->HoveredNode = newHoveredNode;
-				if (needUpdate) this->InvalidateVisual();
+				if (needUpdate)
+				{
+					UpdateGeneratedItemStates();
+					this->InvalidateVisual();
+				}
 			}
 		}
 		MouseEventArgs eventArgs = MouseEventArgs(MouseButtons::None, 0, localX, localY, HIWORD(wParam));
@@ -1281,7 +3035,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int lo
 						float thumbH = (renderItemCount / (float)this->MaxRenderItems) * height;
 						if (thumbH < height * 0.1f) thumbH = height * 0.1f;
 						if (thumbH > height) thumbH = height;
-						const float moveSpace = std::max(0.0f, height - thumbH);
+						const float moveSpace = (std::max)(0.0f, height - thumbH);
 						float per = 0.0f;
 						if (maxScroll > 0) per = std::clamp((float)this->ScrollIndex / (float)maxScroll, 0.0f, 1.0f);
 						const float thumbTop = per * moveSpace;
@@ -1299,11 +3053,10 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int lo
 			}
 			else
 			{
-				const auto size = this->GetActualSizeDip();
-				const float itemHeight = EffectiveItemHeight(this);
-				float cursorY = 0.0f;
 				bool isHit = false;
-				auto node = findNode(this, (float)localX, (float)localY, size.height, itemHeight, (float)this->ScrollIndex * itemHeight, cursorY, 0, this->Root->Children, isHit);
+				auto node = HitTestNodeCore(
+					static_cast<float>(localX), static_cast<float>(localY),
+					nullptr, &isHit);
 				if (node)
 				{
 					if (isHit)
@@ -1313,11 +3066,7 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int lo
 						NotifyAccessibilityScrollChanged();
 					}
 					else
-					{
-						bool isChanged = this->SelectedNode != node;
-						this->SelectedNode = node;
-						if (isChanged)this->SelectionChanged(this);
-					}
+						(void)ApplySelection(node, false);
 				}
 			}
 		}
@@ -1349,25 +3098,20 @@ bool TreeView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int lo
 	case WM_LBUTTONDBLCLK:
 	{
 		this->ParentForm->Selected = this;
-		const auto size = this->GetActualSizeDip();
-		const float itemHeight = EffectiveItemHeight(this);
-		float cursorY = 0.0f;
 		bool isHit = false;
-		auto node = findNode(this, (float)localX, (float)localY, size.height, itemHeight, (float)this->ScrollIndex * itemHeight, cursorY, 0, this->Root->Children, isHit);
+		auto node = HitTestNodeCore(
+			static_cast<float>(localX), static_cast<float>(localY),
+			nullptr, &isHit);
 		if (node)
 		{
-			if (!node->Children.empty())
+			if (node->HasItems())
 			{
 				node->SetExpanded(!node->Expand, AreSystemAnimationsEnabled());
 				NotifyAccessibilityStructureChanged();
 				NotifyAccessibilityScrollChanged();
 			}
 			if (!isHit)
-			{
-				bool isChanged = this->SelectedNode != node;
-				this->SelectedNode = node;
-				if (isChanged)this->SelectionChanged(this);
-			}
+				(void)ApplySelection(node, false);
 		}
 		MouseEventArgs eventArgs = MouseEventArgs(FromParamToMouseButtons(message), 0, localX, localY, HIWORD(wParam));
 		this->OnMouseDoubleClick(this, eventArgs);

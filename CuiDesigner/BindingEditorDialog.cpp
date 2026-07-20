@@ -1,6 +1,8 @@
 #include "BindingEditorDialog.h"
+#include "../CUI/include/BindingList.h"
 #include "DesignerBindingUtils.h"
 #include "DesignerDataContextSchemaUtils.h"
+#include "DesignerPropertyCatalog.h"
 #include <algorithm>
 
 namespace
@@ -8,15 +10,18 @@ namespace
 	const std::wstring kNoConverter = L"<None>";
 	const std::wstring kCustomConverter = L"<Custom ID>";
 	const std::wstring kManualSourcePath = L"<手动输入>";
+	const std::wstring kDataContextSource = L"<DataContext>";
+	const std::wstring kSelfSource = L"<RelativeSource Self>";
+	const std::wstring kFindAncestorSource = L"<RelativeSource FindAncestor>";
 
 	std::vector<std::wstring> AllBindingModeNames()
 	{
-		return { L"OneWay", L"TwoWay", L"OneWayToSource", L"OneTime" };
+		return { L"Default", L"OneWay", L"TwoWay", L"OneWayToSource", L"OneTime" };
 	}
 
 	std::vector<std::wstring> AllUpdateModeNames()
 	{
-		return { L"OnPropertyChanged", L"OnValidation", L"Never" };
+		return { L"Default", L"PropertyChanged", L"LostFocus", L"Explicit" };
 	}
 
 	bool IsTargetToSourceMode(BindingMode mode)
@@ -61,12 +66,13 @@ BindingEditorDialog::BindingEditorDialog(
 	const std::map<std::wstring, DesignerDataBinding>& bindings,
 	const DesignerDataContextSchema& sourceSchema,
 	IBindingSource* runtimeSource,
-	const std::vector<DesignerCustomPropertyDescriptor>& customProperties)
-	: Form(L"编辑数据绑定", POINT{ 320, 190 }, SIZE{ 820, 704 }),
+	std::vector<DesignerBindingElementSource> elementSources)
+	: Form(L"编辑数据绑定", POINT{ 320, 100 }, SIZE{ 820, 850 }),
 	  ResultBindings(bindings),
 	  _target(target),
 	  _runtimeSource(runtimeSource),
-	  _sourceSchema(sourceSchema)
+	  _sourceSchema(sourceSchema),
+	  _elementSources(std::move(elementSources))
 {
 	DesignerDataContextSchemaUtils::Canonicalize(_sourceSchema);
 	this->VisibleHead = true;
@@ -84,24 +90,26 @@ BindingEditorDialog::BindingEditorDialog(
 	_targetProperty = this->AddControl(new ComboBox(L"", 150, 54, 630, 30));
 	_targetProperty->ExpandCount = 10;
 
-	auto sourceLabel = this->AddControl(new Label(L"源路径", 20, 106));
+	auto sourceLabel = this->AddControl(new Label(L"源对象 / 路径", 20, 106));
 	sourceLabel->Size = { 120, 24 };
-	_sourcePath = this->AddControl(new TextBox(L"", 150, 100, 400, 30));
+	_sourceObject = this->AddControl(new ComboBox(L"", 150, 100, 190, 30));
+	_sourceObject->ExpandCount = 10;
+	_sourceObject->Items.push_back(kDataContextSource);
+	_sourceObject->Items.push_back(kSelfSource);
+	_sourceObject->Items.push_back(kFindAncestorSource);
+	for (const auto& source : _elementSources)
+		if (!source.Name.empty()) _sourceObject->Items.push_back(source.Name);
+	_sourceObject->SelectedIndex = 0;
+	_sourceObject->Text = kDataContextSource;
+	_sourcePath = this->AddControl(new TextBox(L"", 350, 100, 200, 30));
 	_knownSourcePath = this->AddControl(new ComboBox(L"", 560, 100, 220, 30));
 	_knownSourcePath->ExpandCount = 10;
-	auto& knownSourceItems = _knownSourcePath->Items;
-	knownSourceItems.clear();
-	knownSourceItems.push_back(kManualSourcePath);
-	for (const auto& path : DesignerDataContextSchemaUtils::GetPaths(_sourceSchema))
-		knownSourceItems.push_back(path);
-	_knownSourcePath->SelectedIndex = 0;
-	_knownSourcePath->Text = kManualSourcePath;
-	_knownSourcePath->Enable = !_sourceSchema.empty();
+	RefreshKnownSourcePaths();
 
 	auto modeLabel = this->AddControl(new Label(L"绑定模式", 20, 152));
 	modeLabel->Size = { 120, 24 };
 	_mode = this->AddControl(new ComboBox(L"", 150, 146, 250, 30));
-	_mode->ExpandCount = 4;
+	_mode->ExpandCount = 5;
 
 	auto updateLabel = this->AddControl(new Label(L"更新策略", 430, 152));
 	updateLabel->Size = { 100, 24 };
@@ -116,52 +124,67 @@ BindingEditorDialog::BindingEditorDialog(
 	customConverterLabel->Size = { 100, 24 };
 	_customConverter = this->AddControl(new TextBox(L"", 530, 192, 250, 30));
 
-	_capabilities = this->AddControl(new Label(L"", 20, 242));
+	_useFallbackValue = this->AddControl(new CheckBox(
+		L"FallbackValue", 20, 238));
+	_useFallbackValue->Size = { 120, 30 };
+	_fallbackValue = this->AddControl(new TextBox(L"", 150, 238, 250, 30));
+	_useTargetNullValue = this->AddControl(new CheckBox(
+		L"TargetNullValue", 430, 238));
+	_useTargetNullValue->Size = { 120, 30 };
+	_targetNullValue = this->AddControl(new TextBox(L"", 560, 238, 220, 30));
+
+	_useConverterParameter = this->AddControl(new CheckBox(
+		L"ConverterParameter", 20, 284));
+	_useConverterParameter->Size = { 130, 30 };
+	_converterParameter = this->AddControl(new TextBox(L"", 160, 284, 240, 30));
+	_useStringFormat = this->AddControl(new CheckBox(
+		L"StringFormat", 430, 284));
+	_useStringFormat->Size = { 120, 30 };
+	_stringFormat = this->AddControl(new TextBox(L"", 560, 284, 220, 30));
+
+	auto ancestorTypeLabel = this->AddControl(new Label(L"AncestorType", 20, 336));
+	ancestorTypeLabel->Size = { 120, 24 };
+	_ancestorType = this->AddControl(new TextBox(L"", 150, 330, 360, 30));
+	auto ancestorLevelLabel = this->AddControl(new Label(L"AncestorLevel", 530, 336));
+	ancestorLevelLabel->Size = { 110, 24 };
+	_ancestorLevel = this->AddControl(new NumericUpDown(650, 330, 130, 30));
+	_ancestorLevel->Min = 1;
+	_ancestorLevel->Max = 100;
+	_ancestorLevel->Value = 1;
+
+	_capabilities = this->AddControl(new Label(L"", 20, 376));
 	_capabilities->Size = { 760, 24 };
-	_runtimeValidation = this->AddControl(new Label(L"", 20, 272));
+	_runtimeValidation = this->AddControl(new Label(L"", 20, 406));
 	_runtimeValidation->Size = { 760, 40 };
-	_validation = this->AddControl(new Label(L"", 20, 316));
+	_validation = this->AddControl(new Label(L"", 20, 450));
 	_validation->Size = { 760, 40 };
 
-	_saveBinding = this->AddControl(new Button(L"保存绑定", 20, 360, 130, 34));
-	_removeBinding = this->AddControl(new Button(L"删除绑定", 162, 360, 130, 34));
+	_saveBinding = this->AddControl(new Button(L"保存绑定", 20, 494, 130, 34));
+	_removeBinding = this->AddControl(new Button(L"删除绑定", 162, 494, 130, 34));
 
-	auto summaryLabel = this->AddControl(new Label(L"当前绑定", 20, 416));
+	auto summaryLabel = this->AddControl(new Label(L"当前绑定", 20, 550));
 	summaryLabel->Size = { 120, 24 };
-	_summary = this->AddControl(new RichTextBox(L"", 20, 444, 760, 160));
+	_summary = this->AddControl(new RichTextBox(L"", 20, 578, 760, 160));
 	_summary->ReadOnly = true;
 	_summary->AllowMultiLine = true;
 	_summary->BackColor = Colors::White;
 	_summary->FocusedColor = Colors::White;
 
-	_ok = this->AddControl(new Button(L"确定", 20, 622, 120, 36));
-	_cancel = this->AddControl(new Button(L"取消", 152, 622, 120, 36));
+	_ok = this->AddControl(new Button(L"确定", 20, 756, 120, 36));
+	_cancel = this->AddControl(new Button(L"取消", 152, 756, 120, 36));
 
 	if (_target)
 	{
 		for (const auto* metadata : BindingPropertyRegistry::GetProperties(*_target))
 		{
-			if (!metadata) continue;
+			if (!metadata || metadata->IsReadOnly()) continue;
 			_properties.push_back({
 				metadata->Name(), metadata->ValueKind(),
-				metadata->CanRead(), metadata->CanWrite(), metadata->CanObserve() });
+				metadata->CanRead(), metadata->CanWrite(), metadata->CanObserve(),
+				DesignerDataContextSchemaUtils::ObjectKindForValueType(
+					metadata->ValueType()), metadata->Flags(),
+				metadata->DefaultUpdateMode(), metadata->IsReadOnly() });
 		}
-	}
-	for (const auto& property : customProperties)
-	{
-		if (!property.Bindable) continue;
-		const auto duplicate = std::find_if(
-			_properties.begin(), _properties.end(), [&](const auto& existing)
-			{
-				return _wcsicmp(existing.Name.c_str(), property.Name.c_str()) == 0;
-			});
-		if (duplicate != _properties.end()) continue;
-		_properties.push_back({
-			property.Name,
-			ToBindingValueKind(property.DefaultValue.Kind),
-			property.SupportsTwoWayBinding,
-			true,
-			property.SupportsTwoWayBinding });
 	}
 	std::vector<std::wstring> propertyNames;
 	propertyNames.reserve(_properties.size());
@@ -171,6 +194,58 @@ BindingEditorDialog::BindingEditorDialog(
 
 	_targetProperty->OnSelectionChanged += [this](Control*) {
 		if (!_loadingEditor) LoadSelectedBinding();
+	};
+	_sourceObject->OnSelectionChanged += [this](Control*) {
+		if (_loadingEditor) return;
+		RefreshAncestorState();
+		RefreshKnownSourcePaths();
+		RefreshCapabilities();
+		RefreshConverterOptions(CurrentConverterName());
+		ShowValidation(L"修改后请点击“保存绑定”。", false);
+	};
+	_ancestorType->OnTextChanged += [this](Control*, std::wstring, std::wstring) {
+		if (_loadingEditor) return;
+		RefreshKnownSourcePaths();
+		RefreshCapabilities();
+		ShowValidation(L"修改后请点击“保存绑定”。", false);
+	};
+	_ancestorLevel->OnValueChanged += [this](NumericUpDown*, double, double) {
+		if (_loadingEditor) return;
+		RefreshKnownSourcePaths();
+		RefreshCapabilities();
+		ShowValidation(L"修改后请点击“保存绑定”。", false);
+	};
+	_useFallbackValue->OnChecked += [this](Control*) {
+		if (_loadingEditor) return;
+		RefreshOptionalValueState();
+		ShowValidation(L"修改后请点击“保存绑定”。", false);
+	};
+	_useTargetNullValue->OnChecked += [this](Control*) {
+		if (_loadingEditor) return;
+		RefreshOptionalValueState();
+		ShowValidation(L"修改后请点击“保存绑定”。", false);
+	};
+	_fallbackValue->OnTextChanged += [this](Control*, std::wstring, std::wstring) {
+		if (!_loadingEditor) ShowValidation(L"修改后请点击“保存绑定”。", false);
+	};
+	_targetNullValue->OnTextChanged += [this](Control*, std::wstring, std::wstring) {
+		if (!_loadingEditor) ShowValidation(L"修改后请点击“保存绑定”。", false);
+	};
+	_useConverterParameter->OnChecked += [this](Control*) {
+		if (_loadingEditor) return;
+		RefreshOptionalValueState();
+		ShowValidation(L"修改后请点击“保存绑定”。", false);
+	};
+	_useStringFormat->OnChecked += [this](Control*) {
+		if (_loadingEditor) return;
+		RefreshOptionalValueState();
+		ShowValidation(L"修改后请点击“保存绑定”。", false);
+	};
+	_converterParameter->OnTextChanged += [this](Control*, std::wstring, std::wstring) {
+		if (!_loadingEditor) ShowValidation(L"修改后请点击“保存绑定”。", false);
+	};
+	_stringFormat->OnTextChanged += [this](Control*, std::wstring, std::wstring) {
+		if (!_loadingEditor) ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
 	_knownSourcePath->OnSelectionChanged += [this](Control*) {
 		if (_loadingEditor || _knownSourcePath->Text == kManualSourcePath) return;
@@ -183,7 +258,7 @@ BindingEditorDialog::BindingEditorDialog(
 		if (_loadingEditor) return;
 		BindingMode mode = BindingMode::OneWay;
 		if (DesignerBindingUtils::TryParseBindingMode(_mode->Text, mode))
-			RefreshUpdateModeOptions(DataSourceUpdateMode::OnPropertyChanged);
+			RefreshUpdateModeOptions(DataSourceUpdateMode::Default);
 		ShowValidation(L"修改后请点击“保存绑定”。", false);
 	};
 	_updateMode->OnSelectionChanged += [this](Control*) {
@@ -213,7 +288,7 @@ BindingEditorDialog::BindingEditorDialog(
 	};
 	_ok->OnMouseClick += [this](Control*, MouseEventArgs) {
 		const auto* metadata = SelectedMetadata();
-		if (metadata)
+		if (metadata && !_loadedMultiBinding)
 		{
 			const auto sourcePath = DesignerBindingUtils::Trim(_sourcePath->Text);
 			if (!sourcePath.empty())
@@ -242,16 +317,29 @@ BindingEditorDialog::BindingEditorDialog(
 	else
 	{
 		_targetProperty->Enable = false;
+		_sourceObject->Enable = false;
 		_sourcePath->Enable = false;
 		_knownSourcePath->Enable = false;
 		_mode->Enable = false;
 		_updateMode->Enable = false;
 		_converter->Enable = false;
 		_customConverter->Enable = false;
+		_ancestorType->Enable = false;
+		_ancestorLevel->Enable = false;
+		_useFallbackValue->Enable = false;
+		_useTargetNullValue->Enable = false;
+		_useConverterParameter->Enable = false;
+		_useStringFormat->Enable = false;
+		_fallbackValue->Enable = false;
+		_targetNullValue->Enable = false;
+		_converterParameter->Enable = false;
+		_stringFormat->Enable = false;
 		_saveBinding->Enable = false;
 		_removeBinding->Enable = false;
 		ShowValidation(L"该控件没有公开可绑定属性。", true);
 	}
+	RefreshAncestorState();
+	RefreshOptionalValueState();
 	RefreshSummary();
 }
 
@@ -274,15 +362,185 @@ void BindingEditorDialog::SelectComboValue(ComboBox* combo, const std::wstring& 
 	combo->Text = items.empty() ? L"" : items[static_cast<size_t>(index)];
 }
 
+IBindingSource* BindingEditorDialog::CurrentRuntimeSource() const
+{
+	if (CurrentRelativeSource() == DesignerBindingRelativeSource::Self)
+		return _target;
+	if (CurrentRelativeSource() == DesignerBindingRelativeSource::FindAncestor)
+	{
+		if (!_target) return nullptr;
+		DesignerDataBinding binding;
+		binding.RelativeSource = DesignerBindingRelativeSource::FindAncestor;
+		binding.AncestorType = _ancestorType ? _ancestorType->Text : L"";
+		binding.AncestorLevel = _ancestorLevel
+			? static_cast<int>(_ancestorLevel->Value) : 1;
+		const auto separator = binding.AncestorType.find(L':');
+		const auto localName = separator == std::wstring::npos
+			? binding.AncestorType
+			: binding.AncestorType.substr(separator + 1);
+		for (auto* ancestor = _target->Parent; ancestor; ancestor = ancestor->Parent)
+		{
+			if (!ancestor->GetDeclarativeTypeNamespace().empty()
+				&& _wcsicmp(ancestor->GetDeclarativeTypeName().c_str(),
+					localName.c_str()) == 0)
+			{
+				binding.AncestorTypeNamespace =
+					ancestor->GetDeclarativeTypeNamespace();
+				break;
+			}
+		}
+		return DesignerBindingUtils::FindAncestorSource(*_target, binding);
+	}
+	const auto elementName = CurrentElementName();
+	if (elementName.empty()) return _runtimeSource;
+	const auto found = std::find_if(
+		_elementSources.begin(), _elementSources.end(), [&](const auto& source)
+		{
+			return _wcsicmp(source.Name.c_str(), elementName.c_str()) == 0;
+		});
+	return found == _elementSources.end() ? nullptr : found->Source;
+}
+
+DesignerDataContextSchema BindingEditorDialog::CurrentSourceSchema() const
+{
+	if (CurrentRelativeSource() == DesignerBindingRelativeSource::Self)
+		return _target ? DesignerBindingUtils::BuildSourceSchema(*_target)
+			: DesignerDataContextSchema{};
+	if (CurrentRelativeSource() == DesignerBindingRelativeSource::FindAncestor)
+	{
+		const auto* source = CurrentRuntimeSource();
+		return source ? DesignerBindingUtils::BuildSourceSchema(*source)
+			: DesignerDataContextSchema{};
+	}
+	if (CurrentElementName().empty()) return _sourceSchema;
+	const auto* source = CurrentRuntimeSource();
+	return source ? DesignerBindingUtils::BuildSourceSchema(*source)
+		: DesignerDataContextSchema{};
+}
+
+std::wstring BindingEditorDialog::CurrentElementName() const
+{
+	if (!_sourceObject || _sourceObject->Text == kDataContextSource
+		|| _sourceObject->Text == kSelfSource
+		|| _sourceObject->Text == kFindAncestorSource) return {};
+	return DesignerBindingUtils::Trim(_sourceObject->Text);
+}
+
+DesignerBindingRelativeSource BindingEditorDialog::CurrentRelativeSource() const
+{
+	if (!_sourceObject) return DesignerBindingRelativeSource::None;
+	if (_sourceObject->Text == kSelfSource)
+		return DesignerBindingRelativeSource::Self;
+	if (_sourceObject->Text == kFindAncestorSource)
+		return DesignerBindingRelativeSource::FindAncestor;
+	return DesignerBindingRelativeSource::None;
+}
+
+void BindingEditorDialog::RefreshAncestorState()
+{
+	const bool enabled = CurrentRelativeSource()
+		== DesignerBindingRelativeSource::FindAncestor;
+	if (_ancestorType) _ancestorType->Enable = enabled;
+	if (_ancestorLevel) _ancestorLevel->Enable = enabled;
+}
+
+void BindingEditorDialog::RefreshOptionalValueState()
+{
+	if (_fallbackValue)
+		_fallbackValue->Enable = _useFallbackValue
+			&& _useFallbackValue->Checked;
+	if (_targetNullValue)
+		_targetNullValue->Enable = _useTargetNullValue
+			&& _useTargetNullValue->Checked;
+	if (_converterParameter)
+		_converterParameter->Enable = _useConverterParameter
+			&& _useConverterParameter->Checked;
+	if (_stringFormat)
+		_stringFormat->Enable = _useStringFormat
+			&& _useStringFormat->Checked;
+}
+
+void BindingEditorDialog::RefreshKnownSourcePaths()
+{
+	if (!_knownSourcePath) return;
+	const auto currentPath = _sourcePath ? _sourcePath->Text : std::wstring{};
+	const auto schema = CurrentSourceSchema();
+	auto& items = _knownSourcePath->Items;
+	items.clear();
+	items.push_back(kManualSourcePath);
+	for (const auto& property : schema)
+	{
+		const auto path = DesignerDataContextSchemaUtils::NormalizePath(
+			property.Path);
+		items.push_back(path);
+		if (property.ObjectKind == DesignerDataObjectKind::BindingList)
+			items.push_back(path + L"[0]");
+	}
+	_knownSourcePath->Enable = !schema.empty();
+	SelectKnownSourcePath(currentPath);
+}
+
 void BindingEditorDialog::LoadSelectedBinding()
 {
 	const auto* metadata = SelectedMetadata();
 	if (!metadata) return;
 
 	_loadingEditor = true;
+	_loadedMultiBinding = false;
+	_sourceObject->Enable = true;
+	_sourcePath->Enable = true;
+	_knownSourcePath->Enable = true;
+	_ancestorType->Enable = true;
+	_ancestorLevel->Enable = true;
+	_useFallbackValue->Enable = true;
+	_useTargetNullValue->Enable = true;
+	_useConverterParameter->Enable = true;
+	_useStringFormat->Enable = true;
+	_mode->Enable = true;
+	_converter->Enable = true;
+	_saveBinding->Enable = true;
 	DesignerDataBinding binding;
 	auto it = ResultBindings.find(metadata->Name);
 	if (it != ResultBindings.end()) binding = it->second;
+	if (binding.IsMultiBinding())
+	{
+		_loadedMultiBinding = true;
+		_sourcePath->Text = L"<MultiBinding: "
+			+ std::to_wstring(binding.ChildBindings.size()) + L" 个源>";
+		for (auto* editor : std::initializer_list<Control*>{
+			_sourceObject, _sourcePath, _knownSourcePath, _ancestorType,
+			_ancestorLevel, _useFallbackValue, _fallbackValue,
+			_useTargetNullValue, _targetNullValue, _useConverterParameter,
+			_converterParameter, _useStringFormat, _stringFormat, _mode,
+			_updateMode, _converter, _customConverter, _saveBinding })
+			editor->Enable = false;
+		_removeBinding->Enable = true;
+		_loadingEditor = false;
+		ShowValidation(L"MultiBinding 已保留；当前请在 XAML 编辑器中修改，或先删除后改为普通 Binding。", false);
+		return;
+	}
+	SelectComboValue(_sourceObject,
+		binding.RelativeSource == DesignerBindingRelativeSource::Self
+			? kSelfSource
+			: binding.RelativeSource == DesignerBindingRelativeSource::FindAncestor
+				? kFindAncestorSource
+			: binding.ElementName.empty() ? kDataContextSource : binding.ElementName);
+	_ancestorType->Text = binding.AncestorType;
+	_ancestorLevel->Value = binding.AncestorLevel;
+	_useFallbackValue->Checked = binding.FallbackValue.has_value();
+	_fallbackValue->Text = binding.FallbackValue
+		? binding.FallbackValue->Text : L"";
+	_useTargetNullValue->Checked = binding.TargetNullValue.has_value();
+	_targetNullValue->Text = binding.TargetNullValue
+		? binding.TargetNullValue->Text : L"";
+	_useConverterParameter->Checked = binding.ConverterParameter.has_value();
+	_converterParameter->Text = binding.ConverterParameter
+		? binding.ConverterParameter->Text : L"";
+	_useStringFormat->Checked = binding.StringFormat.has_value();
+	_stringFormat->Text = binding.StringFormat.value_or(L"");
+	RefreshAncestorState();
+	RefreshOptionalValueState();
+	RefreshKnownSourcePaths();
 	_sourcePath->Text = it == ResultBindings.end() ? L"" : binding.SourceProperty;
 	SelectKnownSourcePath(_sourcePath->Text);
 	RefreshModeOptions(binding.Mode);
@@ -318,18 +576,26 @@ void BindingEditorDialog::RefreshUpdateModeOptions(DataSourceUpdateMode preferre
 	const auto* metadata = SelectedMetadata();
 	BindingMode mode = BindingMode::OneWay;
 	(void)DesignerBindingUtils::TryParseBindingMode(_mode->Text, mode);
+	if (metadata)
+		mode = DesignerBindingUtils::ResolveBindingMode(*metadata, mode);
 
 	std::vector<std::wstring> names;
 	if (!IsTargetToSourceMode(mode))
 	{
-		names.push_back(L"OnPropertyChanged");
+		names.push_back(L"Default");
+		preferredMode = DataSourceUpdateMode::Default;
 		_updateMode->Enable = false;
 	}
 	else if (metadata && !metadata->CanObserve)
 	{
-		names.push_back(L"Never");
-		preferredMode = DataSourceUpdateMode::Never;
-		_updateMode->Enable = false;
+		if (metadata->DefaultUpdateMode == DataSourceUpdateMode::Never)
+			names = { L"Default", L"Explicit" };
+		else
+		{
+			names.push_back(L"Explicit");
+			preferredMode = DataSourceUpdateMode::Never;
+		}
+		_updateMode->Enable = names.size() > 1;
 	}
 	else
 	{
@@ -337,15 +603,17 @@ void BindingEditorDialog::RefreshUpdateModeOptions(DataSourceUpdateMode preferre
 		_updateMode->Enable = true;
 	}
 	_updateMode->Items = names;
-	SelectComboValue(_updateMode, DesignerBindingUtils::UpdateModeName(preferredMode));
+	SelectComboValue(_updateMode,
+		DesignerBindingUtils::UpdateSourceTriggerName(preferredMode));
 }
 
 void BindingEditorDialog::RefreshConverterOptions(const std::wstring& preferredConverter)
 {
 	std::vector<std::wstring> names{ kNoConverter };
 	const auto* targetMetadata = SelectedMetadata();
+	const auto sourceSchema = CurrentSourceSchema();
 	const auto* sourceMetadata = DesignerDataContextSchemaUtils::Find(
-		_sourceSchema, _sourcePath ? _sourcePath->Text : L"");
+		sourceSchema, _sourcePath ? _sourcePath->Text : L"");
 	for (const auto& converter : BindingValueConverterRegistry::GetConverters())
 	{
 		const bool targetCompatible = !targetMetadata
@@ -430,9 +698,17 @@ void BindingEditorDialog::RefreshCapabilities()
 		+ std::wstring(DesignerBindingUtils::ValueKindName(metadata->ValueKind))
 		+ L"    可读: " + YesNo(metadata->CanRead)
 		+ L"    可写: " + YesNo(metadata->CanWrite)
-		+ L"    可通知: " + YesNo(metadata->CanObserve);
+		+ L"    可通知: " + YesNo(metadata->CanObserve)
+		+ L"    默认模式: " + std::wstring(
+			DesignerBindingUtils::BindingModeName(
+				DesignerBindingUtils::ResolveBindingMode(
+					*metadata, BindingMode::Default)))
+		+ L"    默认更新: " + std::wstring(
+			DesignerBindingUtils::UpdateSourceTriggerName(
+				metadata->DefaultUpdateMode));
+	const auto sourceSchema = CurrentSourceSchema();
 	if (const auto* source = DesignerDataContextSchemaUtils::Find(
-		_sourceSchema, _sourcePath ? _sourcePath->Text : L""))
+		sourceSchema, _sourcePath ? _sourcePath->Text : L""))
 	{
 		_capabilities->Text += L"    源类型: "
 			+ std::wstring(DesignerDataContextSchemaUtils::ValueKindName(source->ValueKind));
@@ -445,62 +721,95 @@ void BindingEditorDialog::AttachRuntimeValidation()
 	_runtimeValidationConnections.clear();
 	_runtimePathConnections.clear();
 	_runtimePathOwners.clear();
-	if (!_runtimeSource || !_sourcePath) return;
+	_runtimePathListOwners.clear();
+	auto* runtimeSource = CurrentRuntimeSource();
+	if (!runtimeSource || !_sourcePath) return;
 
 	const auto sourcePath = DesignerBindingUtils::Trim(_sourcePath->Text);
 	if (!DesignerBindingUtils::IsValidSourcePath(sourcePath)) return;
-	std::vector<std::wstring> segments;
-	size_t start = 0;
-	while (start <= sourcePath.size())
-	{
-		const size_t separator = sourcePath.find(L'.', start);
-		const size_t end = separator == std::wstring::npos
-			? sourcePath.size() : separator;
-		segments.push_back(DesignerBindingUtils::Trim(
-			sourcePath.substr(start, end - start)));
-		if (separator == std::wstring::npos) break;
-		start = separator + 1;
-	}
+	std::vector<BindingPathStep> steps;
+	if (!TryParseBindingPropertyPath(sourcePath, steps)) return;
 
-	IBindingSource* current = _runtimeSource;
-	for (size_t index = 0; index < segments.size(); ++index)
+	IBindingSource* currentSource = runtimeSource;
+	IBindingList* currentList = nullptr;
+	for (size_t index = 0; index < steps.size(); ++index)
 	{
-		const auto expectedProperty = segments[index];
-		if (auto* validationChanged = current->ValidationChanged())
+		const auto expectedProperty = steps[index].Value;
+		if (currentSource)
 		{
-			auto connection = validationChanged->Subscribe(
-				[this, expectedProperty](const BindingValidationChangedEventArgs& e)
+			if (auto* validationChanged = currentSource->ValidationChanged())
+			{
+				auto connection = validationChanged->Subscribe(
+					[this, expectedProperty](const BindingValidationChangedEventArgs& e)
+					{
+						if (!e.PropertyName.empty()
+							&& _wcsicmp(e.PropertyName.c_str(), expectedProperty.c_str()) != 0)
+							return;
+						RefreshRuntimeValidation();
+					});
+				if (connection.Connected())
+					_runtimeValidationConnections.push_back(std::move(connection));
+			}
+		}
+		if (index + 1 == steps.size()) break;
+
+		EventConnection pathConnection;
+		if (currentSource)
+			pathConnection = currentSource->PropertyChanged().Subscribe(
+				[this, expectedProperty](const PropertyChangedEventArgs& e)
 				{
 					if (!e.PropertyName.empty()
 						&& _wcsicmp(e.PropertyName.c_str(), expectedProperty.c_str()) != 0)
 						return;
+					AttachRuntimeValidation();
 					RefreshRuntimeValidation();
 				});
-			if (connection.Connected())
-				_runtimeValidationConnections.push_back(std::move(connection));
-		}
-		if (index + 1 == segments.size()) break;
-
-		auto pathConnection = current->PropertyChanged().Subscribe(
-			[this, expectedProperty](const PropertyChangedEventArgs& e)
-			{
-				if (!e.PropertyName.empty()
-					&& _wcsicmp(e.PropertyName.c_str(), expectedProperty.c_str()) != 0)
-					return;
-				AttachRuntimeValidation();
-				RefreshRuntimeValidation();
-			});
+		else if (currentList)
+			pathConnection = currentList->SubscribeChanged(
+				[this](const CollectionChangedEventArgs&)
+				{
+					AttachRuntimeValidation();
+					RefreshRuntimeValidation();
+				});
 		if (pathConnection.Connected())
 			_runtimePathConnections.push_back(std::move(pathConnection));
 
 		BindingValue value;
-		BindingSourceReference reference;
-		if (!current->TryGetValue(expectedProperty, value)
-			|| !value.TryGet(reference)
-			|| !reference)
-			break;
-		_runtimePathOwners.push_back(reference.Shared());
-		current = reference.Get();
+		if (currentSource)
+		{
+			if (!currentSource->TryGetValue(expectedProperty, value)) break;
+		}
+		else
+		{
+			if (!currentList || steps[index].Kind != BindingPathStepKind::Indexer
+				|| expectedProperty.empty()
+				|| !std::all_of(expectedProperty.begin(), expectedProperty.end(),
+					[](wchar_t ch) { return std::iswdigit(ch) != 0; })) break;
+			size_t itemIndex = 0;
+			try { itemIndex = static_cast<size_t>(std::stoull(expectedProperty)); }
+			catch (...) { break; }
+			BindingSourceReference item;
+			if (!currentList->TryGetItem(itemIndex, item) || !item) break;
+			value = BindingValue(item);
+		}
+
+		BindingSourceReference sourceReference;
+		if (value.TryGet(sourceReference) && sourceReference)
+		{
+			_runtimePathOwners.push_back(sourceReference.Shared());
+			currentSource = sourceReference.Get();
+			currentList = nullptr;
+			continue;
+		}
+		BindingListReference listReference;
+		if (value.TryGet(listReference) && listReference)
+		{
+			_runtimePathListOwners.push_back(listReference.Shared());
+			currentSource = nullptr;
+			currentList = listReference.Get();
+			continue;
+		}
+		break;
 	}
 }
 
@@ -509,9 +818,10 @@ void BindingEditorDialog::RefreshRuntimeValidation()
 	if (!_runtimeValidation) return;
 	const auto sourcePath = DesignerBindingUtils::Trim(
 		_sourcePath ? _sourcePath->Text : L"");
-	if (!_runtimeSource || sourcePath.empty())
+	auto* runtimeSource = CurrentRuntimeSource();
+	if (!runtimeSource || sourcePath.empty())
 	{
-		_runtimeValidation->Text = _runtimeSource
+		_runtimeValidation->Text = runtimeSource
 			? L"运行时校验：填写源路径后显示活动问题。"
 			: L"运行时校验：未连接设计时数据源。";
 		_runtimeValidation->ForeColor = Colors::DimGrey;
@@ -527,7 +837,7 @@ void BindingEditorDialog::RefreshRuntimeValidation()
 	}
 
 	const auto issues = GetBindingValidationIssuesForPath(
-		*_runtimeSource, sourcePath);
+		*runtimeSource, sourcePath);
 	if (issues.empty())
 	{
 		_runtimeValidation->Text = L"运行时校验：当前没有活动问题。";
@@ -596,6 +906,64 @@ bool BindingEditorDialog::TryReadEditor(
 
 	targetProperty = metadata->Name;
 	binding.SourceProperty = DesignerBindingUtils::Trim(_sourcePath->Text);
+	binding.ElementName = CurrentElementName();
+	binding.RelativeSource = CurrentRelativeSource();
+	if (binding.RelativeSource == DesignerBindingRelativeSource::FindAncestor)
+	{
+		binding.AncestorType = DesignerBindingUtils::Trim(_ancestorType->Text);
+		binding.AncestorLevel = static_cast<int>(_ancestorLevel->Value);
+		if (binding.AncestorType.empty())
+		{
+			error = L"FindAncestor 必须填写 AncestorType。";
+			return false;
+		}
+		const auto existing = ResultBindings.find(targetProperty);
+		if (existing != ResultBindings.end()
+			&& _wcsicmp(existing->second.AncestorType.c_str(),
+				binding.AncestorType.c_str()) == 0)
+			binding.AncestorTypeNamespace =
+				existing->second.AncestorTypeNamespace;
+		if (binding.AncestorTypeNamespace.empty())
+		{
+			const auto separator = binding.AncestorType.find(L':');
+			const auto localName = separator == std::wstring::npos
+				? binding.AncestorType
+				: binding.AncestorType.substr(separator + 1);
+			for (auto* ancestor = _target->Parent; ancestor; ancestor = ancestor->Parent)
+			{
+				if (!ancestor->GetDeclarativeTypeNamespace().empty()
+					&& _wcsicmp(ancestor->GetDeclarativeTypeName().c_str(),
+						localName.c_str()) == 0)
+				{
+					binding.AncestorTypeNamespace =
+						ancestor->GetDeclarativeTypeNamespace();
+					break;
+				}
+			}
+		}
+	}
+	DesignerStyleValueKind targetLiteralKind{};
+	const auto* targetRuntimeMetadata = _target->FindPropertyMetadata(
+		targetProperty);
+	if ((_useFallbackValue->Checked || _useTargetNullValue->Checked)
+		&& (!targetRuntimeMetadata
+			|| !DesignerPropertyCatalog::TryGetStyleValueKind(
+				*targetRuntimeMetadata, targetLiteralKind)))
+	{
+		error = L"该目标属性类型暂不支持 Binding 缺省值。";
+		return false;
+	}
+	if (_useFallbackValue->Checked)
+		binding.FallbackValue = DesignerStyleValue{
+			targetLiteralKind, _fallbackValue->Text };
+	if (_useTargetNullValue->Checked)
+		binding.TargetNullValue = DesignerStyleValue{
+			targetLiteralKind, _targetNullValue->Text };
+	if (_useConverterParameter->Checked)
+		binding.ConverterParameter = DesignerStyleValue{
+			DesignerStyleValueKind::String, _converterParameter->Text };
+	if (_useStringFormat->Checked)
+		binding.StringFormat = _stringFormat->Text;
 	if (!DesignerBindingUtils::TryParseBindingMode(_mode->Text, binding.Mode))
 	{
 		error = L"请选择有效的绑定模式。";
@@ -619,12 +987,19 @@ bool BindingEditorDialog::TryReadEditor(
 	{
 		binding.Converter = _converter->Text;
 	}
-	return DesignerBindingUtils::ValidateTarget(
-		*metadata, binding, &error, &_sourceSchema);
+	const auto sourceSchema = CurrentSourceSchema();
+	return DesignerBindingUtils::Validate(
+		*_target, targetProperty, binding, nullptr, &error,
+		sourceSchema.empty() ? nullptr : &sourceSchema);
 }
 
 bool BindingEditorDialog::SaveCurrentBinding()
 {
+	if (_loadedMultiBinding)
+	{
+		ShowValidation(L"MultiBinding 请在 XAML 编辑器中修改。", true);
+		return false;
+	}
 	std::wstring targetProperty;
 	DesignerDataBinding binding;
 	std::wstring error;
@@ -645,8 +1020,9 @@ void BindingEditorDialog::RemoveCurrentBinding()
 	const auto* metadata = SelectedMetadata();
 	if (!metadata) return;
 	const size_t removed = ResultBindings.erase(metadata->Name);
+	_loadedMultiBinding = false;
 	_sourcePath->Text = L"";
-	RefreshConverterOptions(L"");
+	LoadSelectedBinding();
 	RefreshSummary();
 	ShowValidation(removed ? L"绑定已删除；点击“确定”写入设计文档。"
 		: L"该属性当前没有绑定。", false);

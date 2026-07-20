@@ -4,6 +4,7 @@
 #include "../CodeGenInput.h"
 #include "../DesignerEventCatalog.h"
 #include "../../CUI/include/Core/EventConnection.h"
+#include "../../CUI/include/NativeSurface.h"
 
 #include <functional>
 #include <memory>
@@ -33,26 +34,47 @@ template<typename T>
 class RuntimeControlRef;
 class RuntimeDocumentRef;
 
-/** Thread-safe registry used to materialize custom XAML controls. */
-class RuntimeCustomControlRegistry final
+/** Thread-safe application behavior registry for declarative NativeSurface hosts. */
+class NativeSurfaceBehaviorRegistry final
 {
 public:
-	using Factory = std::function<std::unique_ptr<Control>(const DesignNode&)>;
+	using Factory = std::function<std::unique_ptr<INativeSurfaceBehavior>(
+		NativeSurface& host)>;
 
 	bool Register(
-		std::wstring xamlNamespace,
-		std::wstring xamlName,
+		std::wstring behaviorKey,
 		Factory factory,
 		std::wstring* outError = nullptr);
-	bool Unregister(
-		const std::wstring& xamlNamespace,
-		const std::wstring& xamlName) noexcept;
-	std::unique_ptr<Control> Create(const DesignNode& node) const;
+	bool Unregister(const std::wstring& behaviorKey) noexcept;
+	std::unique_ptr<INativeSurfaceBehavior> Create(
+		const std::wstring& behaviorKey,
+		NativeSurface& host) const;
 
 private:
-	static std::wstring MakeKey(
-		const std::wstring& xamlNamespace,
-		const std::wstring& xamlName);
+	mutable std::mutex _mutex;
+	std::unordered_map<std::wstring, Factory> _factories;
+};
+
+/**
+ * Thread-safe application behavior registry keyed by the exact QName of an
+ * XAML ComponentDefinition. Factories never create controls; they only create
+ * behavior objects for already materialized component hosts.
+ */
+class DeclarativeComponentBehaviorRegistry final
+{
+public:
+	using Factory = std::function<std::unique_ptr<IDeclarativeComponentBehavior>(
+		const DeclarativeComponentBehaviorContext& context)>;
+
+	bool Register(
+		DesignerComponentType componentType,
+		Factory factory,
+		std::wstring* outError = nullptr);
+	bool Unregister(const DesignerComponentType& componentType) noexcept;
+	std::unique_ptr<IDeclarativeComponentBehavior> Create(
+		const DeclarativeComponentBehaviorContext& context) const;
+
+private:
 	mutable std::mutex _mutex;
 	std::unordered_map<std::wstring, Factory> _factories;
 };
@@ -71,7 +93,7 @@ struct RuntimeControlEventRequest
 	int StableId = 0;
 	std::wstring ControlName;
 	UIClass ControlType = UIClass::UI_Base;
-	DesignerCustomControlType CustomType;
+	DesignerComponentType ComponentType;
 	DesignerEventDescriptor Event;
 	std::wstring HandlerName;
 };
@@ -136,10 +158,15 @@ struct RuntimeDocumentLoadOptions
 	RuntimeControlEventResolver ControlEventResolver;
 	/** Reject documents containing control handlers when no resolver is set. */
 	bool RequireControlEventResolver = false;
-	/** Registry for nodes carrying a custom XAML/C++ type descriptor. */
-	std::shared_ptr<const RuntimeCustomControlRegistry> CustomControls;
-	/** Primarily for tools: materialize the declared built-in base as a proxy. */
-	bool AllowCustomControlProxy = false;
+	/** Application behavior implementations keyed by NativeSurface.BehaviorKey. */
+	std::shared_ptr<const NativeSurfaceBehaviorRegistry> NativeSurfaceBehaviors;
+	/** Optional C++ behaviors keyed by XAML ComponentDefinition QName. */
+	std::shared_ptr<const DeclarativeComponentBehaviorRegistry>
+		DeclarativeComponentBehaviors;
+	/** Tooling-only: allow unresolved NativeSurface behavior placeholders. */
+	bool AllowNativeSurfacePlaceholder = false;
+	/** Recreate behavior attachments even when control topology is reusable. */
+	bool ForceBehaviorRefresh = false;
 	/** Rebuilds runtime resources when dependency bytes changed but XAML is identical. */
 	bool ForceResourceRefresh = false;
 };
@@ -284,9 +311,10 @@ public:
 		std::wstring* outError = nullptr);
 
 	/**
-	 * Transfers the complete root forest to the caller. Runtime metadata keeps
-	 * non-owning control pointers; keep those controls alive while using this
-	 * RuntimeDocument for rebinding, lookup, or event management.
+	 * Transfers the complete root forest to the caller and disconnects runtime
+	 * bindings/events while the controls are alive. Lookup metadata remains a
+	 * non-owning snapshot; use TransferRootControlsTo() when later reload,
+	 * rebinding, or event management is required.
 	 */
 	std::vector<std::unique_ptr<Control>> ReleaseRootControls();
 	/** Atomically transfers roots to an adapter retained for future reloads. */
@@ -320,6 +348,7 @@ private:
 	std::vector<std::unique_ptr<Control>> _ownedRoots;
 	std::vector<Control*> _rootControls;
 	std::vector<std::shared_ptr<DesignerControl>> _controls;
+	std::vector<std::shared_ptr<CollectionViewSource>> _collectionViews;
 	std::unordered_map<int, Control*> _controlsByDesignId;
 	std::unordered_map<std::wstring, Control*> _controlsByName;
 	std::vector<InstalledBinding> _installedBindings;
@@ -330,8 +359,10 @@ private:
 	::Form* _formEventTarget = nullptr;
 	mutable ::Form* _appliedForm = nullptr;
 	std::shared_ptr<RuntimeDocumentRootHost> _rootHost;
-	std::shared_ptr<const RuntimeCustomControlRegistry> _customControls;
-	bool _allowCustomControlProxy = false;
+	std::shared_ptr<const NativeSurfaceBehaviorRegistry> _nativeSurfaceBehaviors;
+	std::shared_ptr<const DeclarativeComponentBehaviorRegistry>
+		_declarativeComponentBehaviors;
+	bool _allowNativeSurfacePlaceholder = false;
 	std::optional<DesignDocument> _sourceDocument;
 	bool _rootsReleased = false;
 	std::shared_ptr<Detail::RuntimeDocumentReferenceState> _referenceState;

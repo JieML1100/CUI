@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -107,23 +108,28 @@ void ScrollView::EnsureBindingPropertiesRegistered()
 			std::move(autoContentOptions));
 
 		auto contentSizeOptions = ScrollViewPropertyOptions(
-			SIZE{ 0, 0 }, L"Layout", 100, 190,
+			cui::core::Size{ 0.0f, 0.0f }, L"Layout", 100, 190,
 			ControlPropertyEditorKind::Size, layoutFlags);
 		contentSizeOptions.Coerce = [](
-			ScrollView&, const SIZE& proposed) -> std::optional<SIZE>
+			ScrollView&, const cui::core::Size& proposed)
+			-> std::optional<cui::core::Size>
 		{
-			return SIZE{
-				(std::max)(0L, proposed.cx),
-				(std::max)(0L, proposed.cy) };
+			auto normalize = [](float value)
+			{
+				return std::isfinite(value) ? (std::max)(0.0f, value) : 0.0f;
+			};
+			return cui::core::Size{
+				normalize(proposed.width), normalize(proposed.height) };
 		};
 		contentSizeOptions.Equals = [](
-			const SIZE& left, const SIZE& right)
+			const cui::core::Size& left, const cui::core::Size& right)
 		{
-			return left.cx == right.cx && left.cy == right.cy;
+			return left == right;
 		};
-		BindingPropertyRegistry::Register<ScrollView, SIZE>(L"ContentSize",
-			[](ScrollView& target) { return target.ContentSize; },
-			[](ScrollView& target, const SIZE& value) { target.ContentSize = value; },
+		BindingPropertyRegistry::Register<ScrollView, cui::core::Size>(L"ContentSize",
+			[](ScrollView& target) { return target.GetContentSizeDip(); },
+			[](ScrollView& target, const cui::core::Size& value)
+			{ target.SetContentSizeDip(value); },
 			ScrollViewPropertySubscriber(L"ContentSize"),
 			std::move(contentSizeOptions));
 
@@ -301,10 +307,40 @@ CUI_SCROLL_VIEW_PROPERTY_IMPL(float, ScrollBarThickness, _scrollBarThickness, L"
 CUI_SCROLL_VIEW_PROPERTY_IMPL(bool, AlwaysShowVScroll, _alwaysShowVScroll, L"AlwaysShowVScroll")
 CUI_SCROLL_VIEW_PROPERTY_IMPL(bool, AlwaysShowHScroll, _alwaysShowHScroll, L"AlwaysShowHScroll")
 CUI_SCROLL_VIEW_PROPERTY_IMPL(bool, AutoContentSize, _autoContentSize, L"AutoContentSize")
-CUI_SCROLL_VIEW_PROPERTY_IMPL(SIZE, ContentSize, _contentSize, L"ContentSize")
 CUI_SCROLL_VIEW_PROPERTY_IMPL(int, MouseWheelStep, _mouseWheelStep, L"MouseWheelStep")
 
 #undef CUI_SCROLL_VIEW_PROPERTY_IMPL
+
+GET_CPP(ScrollView, SIZE, ContentSize)
+{
+	auto project = [](float value)
+	{
+		if (!(value > 0.0f)) return 0L;
+		const auto maximum = static_cast<float>(
+			(std::numeric_limits<LONG>::max)());
+		return value >= maximum
+			? (std::numeric_limits<LONG>::max)()
+			: static_cast<LONG>(std::ceil(value));
+	};
+	return SIZE{
+		project(_contentSizeDip.width), project(_contentSizeDip.height) };
+}
+
+SET_CPP(ScrollView, SIZE, ContentSize)
+{
+	SetContentSizeDip(cui::core::Size{
+		static_cast<float>(value.cx), static_cast<float>(value.cy) });
+}
+
+cui::core::Size ScrollView::GetContentSizeDip() const noexcept
+{
+	return _contentSizeDip;
+}
+
+void ScrollView::SetContentSizeDip(cui::core::Size value)
+{
+	(void)SetPropertyField(L"ContentSize", _contentSizeDip, value);
+}
 
 POINT ScrollView::GetChildrenRenderOffset() const
 {
@@ -370,7 +406,7 @@ void ScrollView::PerformScrollContentLayout()
 
 		cui::core::Size content = this->AutoContentSize
 			? MeasureContentSizeDip()
-			: cui::core::Size{ (float)this->ContentSize.cx, (float)this->ContentSize.cy };
+			: GetContentSizeDip();
 		content = content.NonNegative();
 
 		float viewportWidth = std::max(0.0f, viewportSize.width - (needsVerticalScroll ? scrollBarThickness : 0.0f));
@@ -414,7 +450,7 @@ ScrollView::ScrollLayout ScrollView::CalcScrollLayout()
 
 	cui::core::Size content = this->AutoContentSize
 		? MeasureContentSizeDip()
-		: cui::core::Size{ (float)this->ContentSize.cx, (float)this->ContentSize.cy };
+		: GetContentSizeDip();
 	content = content.NonNegative();
 	const auto viewportSize = this->GetActualSizeDip();
 
@@ -484,6 +520,48 @@ void ScrollView::SetScrollOffset(int offsetX, int offsetY)
 	this->ScrollYOffset = newY;
 	this->OnScrollChanged(this);
 	this->InvalidateVisual();
+}
+
+bool ScrollView::BringDescendantIntoView(Control* descendant)
+{
+	if (!descendant || descendant == this) return false;
+	bool owned = false;
+	for (auto* current = descendant->Parent; current; current = current->Parent)
+		if (current == this)
+		{
+			owned = true;
+			break;
+		}
+	if (!owned) return false;
+	if (!IsLayoutSuspended()
+		&& (_needsLayout || (_layoutEngine && _layoutEngine->NeedsLayout())))
+		PerformScrollContentLayout();
+	std::vector<Control*> layoutPath;
+	for (auto* current = descendant->Parent;
+		current && current != this; current = current->Parent)
+		layoutPath.push_back(current);
+	for (auto current = layoutPath.rbegin(); current != layoutPath.rend(); ++current)
+		(*current)->UpdateLayout();
+
+	const auto layout = CalcScrollLayout();
+	const auto owner = GetAbsoluteLocationDip();
+	const auto target = descendant->GetAbsoluteRectDip();
+	const float left = target.x - owner.x;
+	const float top = target.y - owner.y;
+	const float right = left + target.width;
+	const float bottom = top + target.height;
+	int x = ScrollXOffset;
+	int y = ScrollYOffset;
+	if (left < 0.0f) x += static_cast<int>(std::floor(left));
+	else if (right > layout.ViewportWidth)
+		x += static_cast<int>(std::ceil(right - layout.ViewportWidth));
+	if (top < 0.0f) y += static_cast<int>(std::floor(top));
+	else if (bottom > layout.ViewportHeight)
+		y += static_cast<int>(std::ceil(bottom - layout.ViewportHeight));
+	const int oldX = ScrollXOffset;
+	const int oldY = ScrollYOffset;
+	SetScrollOffset(x, y);
+	return oldX != ScrollXOffset || oldY != ScrollYOffset;
 }
 
 bool ScrollView::HitVerticalScrollBar(int localX, int localY, const ScrollLayout& layout) const
@@ -718,7 +796,7 @@ bool ScrollView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 					const int targetY = static_cast<int>(std::floor(mouseInForm.y - targetLocation.y));
 					if (target->CanHandleMouseWheel(delta, targetX, targetY))
 					{
-						target->ProcessMessage(message, wParam, lParam, targetX, targetY);
+						target->DispatchMessage(message, wParam, lParam, targetX, targetY);
 						return true;
 					}
 				}
@@ -883,7 +961,7 @@ bool ScrollView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int 
 			int childX = 0;
 			int childY = 0;
 			if (!HitChild(child, localX, localY, childX, childY)) continue;
-			child->ProcessMessage(message, wParam, lParam, childX, childY);
+			child->DispatchMessage(message, wParam, lParam, childX, childY);
 			break;
 		}
 	}

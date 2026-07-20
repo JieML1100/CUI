@@ -7,7 +7,6 @@
 #include "DesignerEventCatalog.h"
 #include "DesignerPropertyCatalog.h"
 #include "DesignerFormPropertyCatalog.h"
-#include "DesignerPreviewBridge.h"
 #include "DesignerStyleSheetUtils.h"
 #include "DesignerCore/DesignerCommandCoordinator.h"
 #include "DesignerCore/Commands/ControlPlacementCommand.h"
@@ -25,7 +24,9 @@
 #include "DesignerModel/DesignDocumentFileFormat.h"
 #include "DesignerModel/DesignDocumentGraph.h"
 #include "DesignerModel/DesignDocumentMaterializer.h"
+#include "DesignerModel/DesignDataResourceUtils.h"
 #include "DesignerModel/DesignDocumentSerializer.h"
+#include "DesignerModel/StoryboardPropertyPath.h"
 #include "DesignerModel/XamlDocumentParser.h"
 #include "DesignerModel/XamlDocumentSerializer.h"
 #include <Convert.h>
@@ -52,6 +53,11 @@
 #include "../CUI/include/PasswordBox.h"
 #include "../CUI/include/RoundTextBox.h"
 #include "../CUI/include/ListView.h"
+#include "../CUI/include/ListBox.h"
+#include "../CUI/include/ItemsControl.h"
+#include "../CUI/include/ItemsPresenter.h"
+#include "../CUI/include/ContentPresenter.h"
+#include "../CUI/include/ContentControl.h"
 #include "../CUI/include/GridView.h"
 #include "../CUI/include/PropertyGrid.h"
 #include "../CUI/include/ChartView.h"
@@ -65,6 +71,7 @@
 #include "../CUI/include/StatusBar.h"
 #include "../CUI/include/Toast.h"
 #include "../CUI/include/MediaPlayer.h"
+#include "../CUI/include/NativeSurface.h"
 #include "../CUI/include/NavigationView.h"
 #include "../CUI/include/SplitContainer.h"
 #include "../CUI/include/Layout/StackPanel.h"
@@ -269,48 +276,6 @@ struct DesignerCanvasPropertyInteraction
 
 namespace
 {
-	DesignerBindingUtils::TargetMetadata CustomBindingTargetMetadata(
-		const DesignerCustomPropertyDescriptor& property)
-	{
-		DesignerBindingUtils::TargetMetadata metadata{
-			property.Name,
-			BindingValueKind::Object,
-			property.SupportsTwoWayBinding,
-			property.Bindable,
-			property.SupportsTwoWayBinding };
-		switch (property.DefaultValue.Kind)
-		{
-		case DesignerStyleValueKind::Bool:
-			metadata.ValueKind = BindingValueKind::Bool; break;
-		case DesignerStyleValueKind::Int:
-			metadata.ValueKind = BindingValueKind::Int; break;
-		case DesignerStyleValueKind::Int64:
-			metadata.ValueKind = BindingValueKind::Int64; break;
-		case DesignerStyleValueKind::Float:
-			metadata.ValueKind = BindingValueKind::Float; break;
-		case DesignerStyleValueKind::Double:
-			metadata.ValueKind = BindingValueKind::Double; break;
-		case DesignerStyleValueKind::String:
-			metadata.ValueKind = BindingValueKind::String; break;
-		default:
-			break;
-		}
-		return metadata;
-	}
-
-	const DesignerCustomPropertyDescriptor* FindCustomProperty(
-		const DesignerControl& control,
-		const std::wstring& name)
-	{
-		const auto found = std::find_if(
-			control.CustomProperties.begin(), control.CustomProperties.end(),
-			[&](const auto& property)
-			{
-				return _wcsicmp(property.Name.c_str(), name.c_str()) == 0;
-			});
-		return found == control.CustomProperties.end() ? nullptr : &*found;
-	}
-
 	std::optional<DesignerControlDescriptor> BuiltInDescriptor(UIClass type)
 	{
 		for (const auto& metadata : ControlRegistry::GetAvailableControls())
@@ -552,22 +517,9 @@ static bool ApplyTrackedMetadataProperty(
 	if (!DesignerPropertyCatalog::ApplyAndTrackValue(
 		target, designerControl.MetadataProperties, propertyName, value,
 		&canonicalName, &effective, outError)) return false;
+	designerControl.MetadataPropertyResourceKeys.erase(canonicalName);
+	designerControl.MetadataPropertyDynamicResourceKeys.erase(canonicalName);
 	return true;
-}
-
-static void AttachPreviewPropertySink(DesignerControl& control)
-{
-	if (!control.ControlInstance || control.CustomType.Empty())
-	{
-		control.PreviewPropertyChanged = {};
-		return;
-	}
-	auto* target = control.ControlInstance;
-	control.PreviewPropertyChanged =
-		[target](const std::wstring& name, const DesignerStyleValue& value)
-		{
-			(void)DesignerPreviewBridge::SetValue(*target, name, value);
-		};
 }
 
 DesignerCanvas::DesignerCanvas(int x, int y, int width, int height)
@@ -3609,6 +3561,8 @@ DesignerDocumentTransactionResult DesignerCanvas::MoveControlInHierarchy(
 		desired.ParentKind = targetState.ParentKind;
 		desired.ParentName = targetState.ParentName;
 		desired.ParentType = targetState.ParentType;
+		desired.ComponentContentProperty =
+			targetState.ComponentContentProperty;
 		desired.ParentPageIndex = targetState.ParentPageIndex;
 	};
 	auto setRootParent = [&]()
@@ -3616,6 +3570,7 @@ DesignerDocumentTransactionResult DesignerCanvas::MoveControlInHierarchy(
 		desired.ParentKind = DesignerPlacementParentKind::Root;
 		desired.ParentName.clear();
 		desired.ParentType = UIClass::UI_Base;
+		desired.ComponentContentProperty.clear();
 		desired.ParentPageIndex = -1;
 		desiredRuntimeParent = _clientSurface;
 	};
@@ -3634,6 +3589,7 @@ DesignerDocumentTransactionResult DesignerCanvas::MoveControlInHierarchy(
 		desired.ParentKind = DesignerPlacementParentKind::TabPage;
 		desired.ParentName = (*owner)->Name;
 		desired.ParentType = (*owner)->Type;
+		desired.ComponentContentProperty.clear();
 		desired.ParentPageIndex = pageIndex;
 		desiredRuntimeParent = tabs->operator[](pageIndex);
 		return desiredRuntimeParent != nullptr;
@@ -3685,7 +3641,42 @@ DesignerDocumentTransactionResult DesignerCanvas::MoveControlInHierarchy(
 			desired.ParentName = target->Name;
 			desired.ParentType = target->Type;
 			desired.ParentPageIndex = -1;
-			desiredRuntimeParent = targetControl;
+			if (!target->ComponentType.Empty())
+			{
+				const auto content = std::find_if(
+					target->ComponentContentProperties.begin(),
+					target->ComponentContentProperties.end(),
+					[](const auto& property) { return property.IsDefault; });
+				if (content == target->ComponentContentProperties.end())
+					return reject(L"目标组件没有默认视觉内容属性。");
+				const auto presenter = target->ComponentContentPresenters.find(
+					content->Name);
+				if (presenter == target->ComponentContentPresenters.end()
+					|| !presenter->second)
+					return reject(L"目标组件的默认内容 Presenter 不可用。");
+				if (content->Cardinality ==
+					DesignerComponentContentCardinality::Single)
+				{
+					const auto occupied = std::any_of(
+						_designerControls.begin(), _designerControls.end(),
+						[&](const auto& candidate)
+						{
+							return candidate && candidate != source
+								&& candidate->DesignerParent == targetControl
+								&& candidate->ComponentContentProperty
+									== content->Name;
+						});
+					if (occupied)
+						return reject(L"目标组件的默认单值内容已经被占用。");
+				}
+				desired.ComponentContentProperty = content->Name;
+				desiredRuntimeParent = presenter->second;
+			}
+			else
+			{
+				desired.ComponentContentProperty.clear();
+				desiredRuntimeParent = targetControl;
+			}
 		}
 	}
 	else
@@ -4910,15 +4901,12 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 			_clientSurface->AddControl(moving);
 		}
 		_selectedControl->DesignerParent = nullptr;
+		_selectedControl->ComponentContentProperty.clear();
 		RECT clamped = ClampRectToBounds(r, GetClientSurfaceRectInCanvas(), true);
 		ApplyRectToControl(moving, clamped);
 		this->InvalidateVisual();
 		return;
 	}
-
-	// TabControl 的 content 已归一化为 TabPage；ToolBar 等容器再由 LayoutBridge 校验。
-	if (!LayoutBridge::CanAcceptChild(container, movingType))
-		return;
 
 	bool containerChanged = (_selectedControl->DesignerParent != container);
 
@@ -4930,10 +4918,64 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 	POINT canvasTopLeft{ r.left, r.top };
 	POINT dropLocalToContainer = CanvasToContainerPoint(center, container);
 	Control* runtimeHost = container;
-	if (auto* split = AsSplitContainer(container))
+	std::wstring destinationContentProperty;
+	const auto containerRecord = std::find_if(
+		_designerControls.begin(), _designerControls.end(),
+		[container](const auto& candidate)
+		{
+			return candidate && candidate->ControlInstance == container;
+		});
+	if (containerRecord != _designerControls.end()
+		&& !(*containerRecord)->ComponentType.Empty())
+	{
+		auto content = (*containerRecord)->ComponentContentProperties.end();
+		if (!containerChanged
+			&& !_selectedControl->ComponentContentProperty.empty())
+		{
+			content = std::find_if(
+				(*containerRecord)->ComponentContentProperties.begin(),
+				(*containerRecord)->ComponentContentProperties.end(),
+				[this](const auto& property)
+				{
+					return property.Name
+						== _selectedControl->ComponentContentProperty;
+				});
+		}
+		if (content == (*containerRecord)->ComponentContentProperties.end())
+			content = std::find_if(
+				(*containerRecord)->ComponentContentProperties.begin(),
+				(*containerRecord)->ComponentContentProperties.end(),
+				[](const auto& property) { return property.IsDefault; });
+		if (content == (*containerRecord)->ComponentContentProperties.end())
+			return;
+		const auto presenter = (*containerRecord)->ComponentContentPresenters.find(
+			content->Name);
+		if (presenter == (*containerRecord)->ComponentContentPresenters.end()
+			|| !presenter->second) return;
+		if (content->Cardinality ==
+			DesignerComponentContentCardinality::Single)
+		{
+			const auto occupied = std::any_of(
+				_designerControls.begin(), _designerControls.end(),
+				[&](const auto& candidate)
+				{
+					return candidate && candidate != _selectedControl
+						&& candidate->DesignerParent == container
+						&& candidate->ComponentContentProperty == content->Name;
+				});
+			if (occupied) return;
+		}
+		destinationContentProperty = content->Name;
+		runtimeHost = presenter->second;
+	}
+	else if (auto* split = AsSplitContainer(container))
 	{
 		runtimeHost = ResolveSplitRuntimeHost(split, dropLocalToContainer);
 	}
+	// TabControl content has already been normalized to TabPage. Component
+	// content is validated against the selected template presenter above.
+	if (!LayoutBridge::CanAcceptChild(runtimeHost, movingType))
+		return;
 	POINT newLocal = CanvasToChildLayoutPoint(canvasTopLeft, runtimeHost);
 	POINT dropLocalCenter = CanvasToContainerPoint(center, runtimeHost);
 	bool runtimeHostChanged = moving->Parent != runtimeHost;
@@ -4955,6 +4997,8 @@ void DesignerCanvas::TryReparentSelectedAfterDrag()
 
 		_selectedControl->DesignerParent = container;
 	}
+	_selectedControl->ComponentContentProperty =
+		std::move(destinationContentProperty);
 
 	LayoutBridge::ApplyExistingChildLayout(runtimeHost, moving, newLocal, dropLocalCenter, containerChanged || runtimeHostChanged, r, [this, &moving](const RECT& rectInCanvas) {
 		ApplyRectToControl(moving, rectInCanvas);
@@ -5852,16 +5896,13 @@ void DesignerCanvas::SetControlToAdd(UIClass type)
 void DesignerCanvas::SetControlDescriptors(
 	const std::vector<DesignerControlDescriptor>& descriptors)
 {
-	_customControlDescriptors.clear();
-	for (const auto& descriptor : descriptors)
-		RegisterControlDescriptor(descriptor);
+	(void)descriptors;
 }
 
 void DesignerCanvas::RegisterControlDescriptor(
 	const DesignerControlDescriptor& descriptor)
 {
-	if (!descriptor.IsValid() || !descriptor.IsCustom()) return;
-	_customControlDescriptors[descriptor.CustomType.RegistryKey()] = descriptor;
+	(void)descriptor;
 }
 
 void DesignerCanvas::SetControlToAdd(
@@ -5870,7 +5911,6 @@ void DesignerCanvas::SetControlToAdd(
 	if (_tabOrderMode) (void)SetTabOrderMode(false);
 	if (descriptor.IsValid())
 	{
-		RegisterControlDescriptor(descriptor);
 		_controlToAdd = descriptor;
 	}
 	else _controlToAdd.reset();
@@ -6392,6 +6432,7 @@ DesignerDocumentTransactionResult DesignerCanvas::DuplicateSelectedControls()
 				destination.FragmentRootId = root.Id;
 				destination.ParentId = source->ParentId;
 				destination.ParentRef = source->ParentRef;
+				destination.ComponentContentProperty = std::nullopt;
 				destination.SplitRegion = std::nullopt;
 				if (source->ParentId > 0)
 				{
@@ -7151,20 +7192,7 @@ void DesignerCanvas::AddControlToCanvasCore(
 	int centerY = (int)canvasPos.y - 12;
 
 	if (!descriptor.IsValid()) return;
-	RegisterControlDescriptor(descriptor);
-	if (descriptor.IsCustom())
-	{
-		auto preview = descriptor.PreviewFactory
-			? descriptor.PreviewFactory(centerX, centerY)
-			: DesignerControlFactory::Create(type, centerX, centerY);
-		if (!preview || preview->Type() != type) return;
-		preview->Location = { centerX, centerY };
-		preview->Size = descriptor.DefaultSize;
-		newControl = preview.get();
-		newControlOwner = std::move(preview);
-		typeName = descriptor.Name;
-	}
-	else switch (type)
+	switch (type)
 	{
 	case UIClass::UI_Label:
 		ownControl(new Label(L"标签", centerX, centerY));
@@ -7267,12 +7295,30 @@ void DesignerCanvas::AddControlToCanvasCore(
 	{
 		auto* lb = new ListBox(centerX, centerY, 220, 180);
 		ownControl(lb);
-		lb->AddItem(ListViewItem(L"ListBox Item 1"));
-		lb->AddItem(ListViewItem(L"ListBox Item 2"));
-		lb->AddItem(ListViewItem(L"ListBox Item 3"));
+		auto preview = std::make_shared<ObservableBindingList>(L"ListBoxPreviewItem");
+		for (const auto* text : { L"ListBox Item 1", L"ListBox Item 2", L"ListBox Item 3" })
+		{
+			auto item = std::make_shared<ObservableObject>();
+			item->DefineProperty(L"Text", std::wstring(text));
+			preview->Items.push_back(BindingSourceReference(item));
+		}
+		lb->SetDisplayMemberPath(L"Text");
+		lb->SetItemsSource(BindingListReference(preview));
 		typeName = L"ListBox";
 		break;
 	}
+	case UIClass::UI_ItemsControl:
+		ownControl(new ItemsControl(centerX, centerY, 260, 220));
+		typeName = L"ItemsControl";
+		break;
+	case UIClass::UI_ContentPresenter:
+		ownControl(new ContentPresenter(centerX, centerY, 260, 120));
+		typeName = L"ContentPresenter";
+		break;
+	case UIClass::UI_ContentControl:
+		ownControl(new ContentControl(centerX, centerY, 260, 140));
+		typeName = L"ContentControl";
+		break;
 	case UIClass::UI_GridView:
 		ownControl(new GridView(centerX, centerY, 360, 200));
 		typeName = L"GridView";
@@ -7379,6 +7425,10 @@ void DesignerCanvas::AddControlToCanvasCore(
 		ownControl(new MediaPlayer(centerX, centerY, 640, 360));
 		typeName = L"MediaPlayer";
 		break;
+	case UIClass::UI_NativeSurface:
+		ownControl(new NativeSurface(centerX, centerY, 320, 180));
+		typeName = L"NativeSurface";
+		break;
 	default:
 		return;
 	}
@@ -7396,10 +7446,6 @@ void DesignerCanvas::AddControlToCanvasCore(
 			std::wstring name = GenerateDefaultControlName(type, typeName);
 			auto dc = std::make_shared<DesignerControl>(
 				newControl, name, type, nullptr, stableId);
-			dc->CustomType = descriptor.CustomType;
-			dc->CustomProperties = descriptor.CustomProperties;
-			dc->CustomEvents = descriptor.CustomEvents;
-			AttachPreviewPropertySink(*dc);
 			_designerControls.push_back(dc);
 			UpdateDefaultNameCounterFromName(type, name);
 			ClearSelection();
@@ -7455,10 +7501,6 @@ void DesignerCanvas::AddControlToCanvasCore(
 		// 创建设计器控件包装
 		auto dc = std::make_shared<DesignerControl>(
 			newControl, name, type, designerParent, stableId);
-		dc->CustomType = descriptor.CustomType;
-		dc->CustomProperties = descriptor.CustomProperties;
-		dc->CustomEvents = descriptor.CustomEvents;
-		AttachPreviewPropertySink(*dc);
 		if (type == UIClass::UI_SplitContainer)
 		{
 			(void)ApplyTrackedMetadataProperty(
@@ -7611,6 +7653,14 @@ void DesignerCanvas::ClearCanvasCore()
 	_designedFormEventHandlers.clear();
 	_dataContextSchema.clear();
 	_documentStyleSheet = {};
+	_componentDefinitions.clear();
+	_controlTemplates.clear();
+	_dataTypes.clear();
+	_dataTemplates.clear();
+	_itemsPanelTemplates.clear();
+	_groupStyles.clear();
+	_dataLists.clear();
+	_collectionViews.clear();
 	_documentResourceBasePath.clear();
 	_documentResources.reset();
 	_previewStyleSheet.reset();
@@ -7619,34 +7669,177 @@ void DesignerCanvas::ClearCanvasCore()
 	OnControlSelected(nullptr);
 }
 
+Control* DesignerCanvas::FindControlInstanceByName(
+	const std::wstring& name) const noexcept
+{
+	const auto found = std::find_if(
+		_designerControls.begin(), _designerControls.end(),
+		[&](const auto& control)
+		{
+			return control && control->Name == name;
+		});
+	return found == _designerControls.end() || !*found
+		? nullptr : (*found)->ControlInstance;
+}
+
+std::optional<DesignerDataContextSchema>
+DesignerCanvas::ResolveBindingSourceSchema(
+	const DesignerControl& control,
+	bool inherited,
+	const DesignerDataContextSchema& rootSchema) const
+{
+	auto findRecord = [&](Control* instance) -> const DesignerControl*
+	{
+		if (!instance) return nullptr;
+		const auto found = std::find_if(_designerControls.begin(),
+			_designerControls.end(), [&](const auto& candidate)
+			{
+				return candidate && candidate->ControlInstance == instance;
+			});
+		return found == _designerControls.end() ? nullptr : found->get();
+	};
+	std::unordered_set<const DesignerControl*> resolving;
+	std::function<std::optional<std::wstring>(const DesignerControl&, bool)>
+		resolvePrefix;
+	resolvePrefix = [&](const DesignerControl& current,
+		bool inheritedOnly) -> std::optional<std::wstring>
+	{
+		if (!resolving.insert(&current).second) return std::nullopt;
+		std::optional<std::wstring> prefix = std::wstring{};
+		if (const auto* parent = findRecord(current.DesignerParent))
+			prefix = resolvePrefix(*parent, false);
+		if (!inheritedOnly)
+		{
+			const auto dataContext = std::find_if(
+				current.DataBindings.begin(), current.DataBindings.end(),
+				[](const auto& item)
+				{
+					return _wcsicmp(item.first.c_str(), L"DataContext") == 0;
+				});
+			if (dataContext != current.DataBindings.end())
+			{
+				const auto& binding = dataContext->second;
+				if (binding.IsMultiBinding()) prefix.reset();
+				else if (prefix && binding.ElementName.empty()
+					&& binding.RelativeSource
+						== DesignerBindingRelativeSource::None)
+					prefix = prefix->empty() ? binding.SourceProperty
+						: *prefix + L"." + binding.SourceProperty;
+				else prefix.reset();
+			}
+		}
+		resolving.erase(&current);
+		return prefix;
+	};
+	const auto prefix = resolvePrefix(control, inherited);
+	if (!prefix) return std::nullopt;
+	if (prefix->empty()) return rootSchema;
+	DesignerDataContextSchema result;
+	const auto normalized = DesignerDataContextSchemaUtils::NormalizePath(*prefix);
+	auto lower = [](std::wstring value)
+	{
+		std::transform(value.begin(), value.end(), value.begin(),
+			[](wchar_t ch) { return (wchar_t)std::towlower(ch); });
+		return value;
+	};
+	const auto childPrefix = lower(normalized + L".");
+	for (const auto& property : rootSchema)
+	{
+		const auto path = DesignerDataContextSchemaUtils::NormalizePath(property.Path);
+		if (!lower(path).starts_with(childPrefix)) continue;
+		auto projected = property;
+		projected.Path = path.substr(normalized.size() + 1);
+		result.push_back(std::move(projected));
+	}
+	DesignerDataContextSchemaUtils::Canonicalize(result);
+	return result;
+}
+
+DesignerDataContextSchema DesignerCanvas::GetEffectiveDataContextSchema(
+	const DesignerControl& control) const
+{
+	auto schema = ResolveBindingSourceSchema(control, false, _dataContextSchema);
+	return schema ? std::move(*schema) : DesignerDataContextSchema{};
+}
+
+IBindingSource* DesignerCanvas::GetEffectiveDesignDataContextSource(
+	DesignerControl& control) const
+{
+	return _designDataContext && control.ControlInstance
+		? &control.ControlInstance->DataContextSource() : nullptr;
+}
+
 bool DesignerCanvas::SetDataContextSchema(
 	DesignerDataContextSchema schema,
 	std::wstring* outError)
 {
 	DesignerDataContextSchemaUtils::Canonicalize(schema);
 	if (!DesignerDataContextSchemaUtils::Validate(schema, outError)) return false;
+	for (const auto& property : schema)
+		if (property.ObjectKind == DesignerDataObjectKind::BindingList
+			&& std::none_of(_dataTypes.begin(), _dataTypes.end(),
+				[&](const DesignerModel::DesignDataTypeDefinition& type)
+				{
+					return _wcsicmp(type.Name.c_str(),
+						property.ItemType.c_str()) == 0;
+				}))
+		{
+			if (outError) *outError = L"集合属性 " + property.Path
+				+ L" 引用了未声明的 DataType：" + property.ItemType;
+			return false;
+		}
 	for (const auto& control : _designerControls)
 	{
 		if (!control || !control->ControlInstance) continue;
 		for (const auto& [targetProperty, binding] : control->DataBindings)
 		{
+			DesignerDataContextSchema elementSourceSchema;
+			auto scopedSourceSchema = ResolveBindingSourceSchema(
+				*control, _wcsicmp(targetProperty.c_str(), L"DataContext") == 0,
+				schema);
+			const DesignerDataContextSchema* sourceSchema = scopedSourceSchema
+				? &*scopedSourceSchema : nullptr;
+			if (!binding.ElementName.empty())
+			{
+				auto* source = FindControlInstanceByName(binding.ElementName);
+				if (!source)
+				{
+					if (outError) *outError = L"控件 " + control->Name
+						+ L" 的 ElementName 引用了不存在的控件："
+						+ binding.ElementName;
+					return false;
+				}
+				elementSourceSchema = DesignerBindingUtils::BuildSourceSchema(*source);
+				sourceSchema = &elementSourceSchema;
+			}
+			else if (binding.RelativeSource
+				== DesignerBindingRelativeSource::Self)
+			{
+				elementSourceSchema = DesignerBindingUtils::BuildSourceSchema(
+					*control->ControlInstance);
+				sourceSchema = &elementSourceSchema;
+			}
+			else if (binding.RelativeSource
+				== DesignerBindingRelativeSource::FindAncestor)
+			{
+				if (auto* source = DesignerBindingUtils::FindAncestorSource(
+					*control->ControlInstance, binding))
+				{
+					elementSourceSchema = DesignerBindingUtils::BuildSourceSchema(
+						*source);
+					sourceSchema = &elementSourceSchema;
+				}
+				else sourceSchema = nullptr;
+			}
+			if (binding.IsMultiBinding()) sourceSchema = nullptr;
 			std::wstring validationError;
-			const auto* customProperty = FindCustomProperty(*control, targetProperty);
-			const bool deferredCustomProperty = customProperty
-				&& !control->ControlInstance->FindPropertyMetadata(targetProperty);
-			const bool valid = deferredCustomProperty
-				? DesignerBindingUtils::ValidateTarget(
-					CustomBindingTargetMetadata(*customProperty),
-					binding,
-					&validationError,
-					&schema)
-				: DesignerBindingUtils::Validate(
+			const bool valid = DesignerBindingUtils::Validate(
 					*control->ControlInstance,
 					targetProperty,
 					binding,
 					nullptr,
 					&validationError,
-					&schema);
+					sourceSchema);
 			if (!valid)
 			{
 				if (outError) *outError = L"控件 " + control->Name + L"：" + validationError;
@@ -7717,18 +7910,25 @@ bool DesignerCanvas::RefreshDesignBindings(
 	for (const auto& [targetProperty, configuration] : control.DataBindings)
 	{
 		auto& state = control.BindingPreviewStates[targetProperty];
-		const auto* customProperty = FindCustomProperty(control, targetProperty);
-		const bool deferredCustomProperty =
-			customProperty
-			&& !target->FindPropertyMetadata(targetProperty);
-		if (deferredCustomProperty)
+		if (configuration.IsMultiBinding())
 		{
+			const bool needsDataContext = std::any_of(
+				configuration.ChildBindings.begin(),
+				configuration.ChildBindings.end(), [](const auto& child)
+				{
+					return child.ElementName.empty()
+						&& child.RelativeSource == DesignerBindingRelativeSource::None;
+				});
+			if (needsDataContext && !_designDataContext
+				&& targetProperty != L"DataContext")
+			{
+				state.Status = DesignerBindingPreviewStatus::Detached;
+				state.Message = L"未设置设计期 DataContext；MultiBinding 配置已保存但尚未连接。";
+				continue;
+			}
 			std::wstring validationError;
-			if (!DesignerBindingUtils::ValidateTarget(
-				CustomBindingTargetMetadata(*customProperty),
-				configuration,
-				&validationError,
-				_dataContextSchema.empty() ? nullptr : &_dataContextSchema))
+			if (!DesignerBindingUtils::Validate(*target, targetProperty,
+				configuration, nullptr, &validationError, nullptr))
 			{
 				state.Status = DesignerBindingPreviewStatus::Error;
 				state.Message = validationError;
@@ -7736,19 +7936,160 @@ bool DesignerCanvas::RefreshDesignBindings(
 				if (firstError.empty()) firstError = validationError;
 				continue;
 			}
-
-			state.Status = DesignerBindingPreviewStatus::Detached;
-			state.Message = !_designDataContext
-				? L"未设置设计期 DataContext；配置已校验并保存但尚未连接。"
-				: L"自定义属性 Binding 已校验并保存；"
-					L"当前基类代理没有同名运行时元数据，不建立活动预览连接。";
+			if (configuration.Mode != BindingMode::OneWayToSource)
+			{
+				BindingValue localValue;
+				const bool hadLocal = target->TryGetPropertyValue(targetProperty,
+					ControlPropertyValueSource::Local, localValue);
+				if (hadLocal && !target->ClearPropertyValue(targetProperty,
+					ControlPropertyValueSource::Local))
+				{
+					state.Status = DesignerBindingPreviewStatus::Error;
+					state.Message = L"无法暂存目标属性的 Local 值。";
+					success = false;
+					if (firstError.empty()) firstError = state.Message;
+					continue;
+				}
+				control.BindingPreviewLocalValues[targetProperty] = hadLocal
+					? std::optional<BindingValue>(std::move(localValue)) : std::nullopt;
+			}
+			auto resolveSource = [&](const DesignerDataBinding& child,
+				DesignerBindingUtils::ResolvedBindingSource& resolved,
+				std::wstring* error)
+			{
+				if (!child.ElementName.empty())
+				{
+					resolved.Source = FindControlInstanceByName(child.ElementName);
+					if (!resolved.Source)
+					{
+						if (error) *error = L"ElementName 引用了不存在的控件："
+							+ child.ElementName;
+						return false;
+					}
+				}
+				else if (child.RelativeSource == DesignerBindingRelativeSource::Self)
+					resolved.Source = target;
+				else if (child.RelativeSource
+					== DesignerBindingRelativeSource::TemplatedParent)
+				{
+					if (error) *error = L"公开设计树不能解析 TemplatedParent。";
+					return false;
+				}
+				else if (child.RelativeSource
+					== DesignerBindingRelativeSource::FindAncestor)
+				{
+					resolved.OwnedSource = DesignerBindingUtils::CreateAncestorSource(
+						*target, child);
+					resolved.Source = resolved.OwnedSource.Get();
+				}
+				else if (targetProperty == L"DataContext")
+					resolved.Source = control.DesignerParent && target->Parent
+						? &target->Parent->DataContextSource() : _designDataContext.get();
+				else if (_designDataContext)
+					resolved.Source = &target->DataContextSource();
+				else
+				{
+					if (error) *error = L"未设置设计期 DataContext。";
+					return false;
+				}
+				return true;
+			};
+			std::wstring installError;
+			if (!DesignerBindingUtils::InstallBinding(*target, targetProperty,
+				configuration, resolveSource, &installError))
+			{
+				const auto saved = control.BindingPreviewLocalValues.find(targetProperty);
+				if (saved != control.BindingPreviewLocalValues.end())
+				{
+					if (saved->second) (void)target->TrySetPropertyValue(targetProperty,
+						*saved->second, ControlPropertyValueSource::Local);
+					control.BindingPreviewLocalValues.erase(saved);
+				}
+				state.Status = DesignerBindingPreviewStatus::Error;
+				state.Message = L"预览 MultiBinding 连接失败：" + installError;
+				success = false;
+				if (firstError.empty()) firstError = state.Message;
+				continue;
+			}
+			state.Status = DesignerBindingPreviewStatus::Active;
+			state.Message = L"设计期 MultiBinding 预览已连接。";
 			continue;
 		}
-		if (!_designDataContext)
+		IBindingSource* bindingSource = nullptr;
+		BindingSourceReference ownedBindingSource;
+		DesignerDataContextSchema elementSourceSchema;
+		auto scopedSourceSchema = ResolveBindingSourceSchema(
+			control, _wcsicmp(targetProperty.c_str(), L"DataContext") == 0,
+			_dataContextSchema);
+		const DesignerDataContextSchema* sourceSchema = scopedSourceSchema
+			&& !scopedSourceSchema->empty() ? &*scopedSourceSchema : nullptr;
+		if (!configuration.ElementName.empty())
+		{
+			bindingSource = FindControlInstanceByName(configuration.ElementName);
+			if (!bindingSource)
+			{
+				state.Status = DesignerBindingPreviewStatus::Error;
+				state.Message = L"ElementName 引用了不存在的控件："
+					+ configuration.ElementName;
+				success = false;
+				if (firstError.empty()) firstError = state.Message;
+				continue;
+			}
+			elementSourceSchema = DesignerBindingUtils::BuildSourceSchema(
+				*bindingSource);
+			sourceSchema = &elementSourceSchema;
+		}
+		else if (configuration.RelativeSource
+			== DesignerBindingRelativeSource::Self)
+		{
+			bindingSource = target;
+			elementSourceSchema = DesignerBindingUtils::BuildSourceSchema(*target);
+			sourceSchema = &elementSourceSchema;
+		}
+		else if (configuration.RelativeSource
+			== DesignerBindingRelativeSource::TemplatedParent)
+		{
+			state.Status = DesignerBindingPreviewStatus::Error;
+			state.Message = L"公开设计树不能解析 TemplatedParent。";
+			success = false;
+			if (firstError.empty()) firstError = state.Message;
+			continue;
+		}
+		else if (configuration.RelativeSource
+			== DesignerBindingRelativeSource::FindAncestor)
+		{
+			ownedBindingSource = DesignerBindingUtils::CreateAncestorSource(
+				*target, configuration);
+			bindingSource = ownedBindingSource.Get();
+			if (auto* current = DesignerBindingUtils::FindAncestorSource(
+				*target, configuration))
+			{
+				elementSourceSchema = DesignerBindingUtils::BuildSourceSchema(*current);
+				sourceSchema = &elementSourceSchema;
+			}
+			else sourceSchema = nullptr;
+		}
+		else if (targetProperty == L"DataContext")
+			bindingSource = control.DesignerParent && target->Parent
+				? &target->Parent->DataContextSource()
+				: _designDataContext.get();
+		else if (_designDataContext)
+			bindingSource = &target->DataContextSource();
+		else if (!bindingSource)
 		{
 			state.Status = DesignerBindingPreviewStatus::Detached;
 			state.Message = L"未设置设计期 DataContext；配置已保存但尚未连接。";
 			continue;
+		}
+		if (bindingSource && configuration.ElementName.empty()
+			&& configuration.RelativeSource
+				== DesignerBindingRelativeSource::None)
+		{
+			elementSourceSchema = DesignerBindingUtils::BuildSourceSchema(
+				*bindingSource);
+			if (!elementSourceSchema.empty()) sourceSchema = &elementSourceSchema;
+			else if (target->Parent && targetProperty != L"DataContext")
+				sourceSchema = nullptr;
 		}
 
 		std::wstring validationError;
@@ -7758,7 +8099,7 @@ bool DesignerCanvas::RefreshDesignBindings(
 			configuration,
 			nullptr,
 			&validationError,
-			_dataContextSchema.empty() ? nullptr : &_dataContextSchema);
+			sourceSchema);
 		if (!valid)
 		{
 			state.Status = DesignerBindingPreviewStatus::Error;
@@ -7781,6 +8122,23 @@ bool DesignerCanvas::RefreshDesignBindings(
 				if (firstError.empty()) firstError = state.Message;
 				continue;
 			}
+		}
+		std::optional<BindingValue> fallbackValue;
+		std::optional<BindingValue> targetNullValue;
+		std::optional<BindingValue> converterParameter;
+		std::wstring literalError;
+		if (!DesignerBindingUtils::TryConvertOptionalLiteral(
+			configuration.FallbackValue, fallbackValue, &literalError)
+			|| !DesignerBindingUtils::TryConvertOptionalLiteral(
+				configuration.TargetNullValue, targetNullValue, &literalError)
+			|| !DesignerBindingUtils::TryConvertOptionalLiteral(
+				configuration.ConverterParameter, converterParameter, &literalError))
+		{
+			state.Status = DesignerBindingPreviewStatus::Error;
+			state.Message = literalError;
+			success = false;
+			if (firstError.empty()) firstError = state.Message;
+			continue;
 		}
 
 		const bool writesTarget = configuration.Mode != BindingMode::OneWayToSource;
@@ -7805,13 +8163,19 @@ bool DesignerCanvas::RefreshDesignBindings(
 					: std::nullopt;
 		}
 
-		auto* binding = target->DataBindings.Add(
-			targetProperty,
-			*_designDataContext,
-			configuration.SourceProperty,
-			configuration.Mode,
-			configuration.UpdateMode,
-			std::move(converter));
+		auto* binding = ownedBindingSource
+			? target->DataBindings.Add(
+				targetProperty, std::move(ownedBindingSource),
+				configuration.SourceProperty, configuration.Mode,
+				configuration.UpdateMode, std::move(converter),
+				std::move(fallbackValue), std::move(targetNullValue),
+				std::move(converterParameter), configuration.StringFormat)
+			: target->DataBindings.Add(
+				targetProperty, *bindingSource, configuration.SourceProperty,
+				configuration.Mode, configuration.UpdateMode,
+				std::move(converter), std::move(fallbackValue),
+				std::move(targetNullValue), std::move(converterParameter),
+				configuration.StringFormat);
 		if (!binding)
 		{
 			const std::wstring bindingError = target->DataBindings.LastErrorMessage();
@@ -7833,7 +8197,14 @@ bool DesignerCanvas::RefreshDesignBindings(
 		}
 
 		state.Status = DesignerBindingPreviewStatus::Active;
-		state.Message = L"设计期预览绑定已连接。";
+		state.Message = !configuration.ElementName.empty()
+			? L"设计期 ElementName 预览绑定已连接。"
+			: configuration.RelativeSource == DesignerBindingRelativeSource::Self
+				? L"设计期 RelativeSource Self 预览绑定已连接。"
+				: configuration.RelativeSource
+					== DesignerBindingRelativeSource::FindAncestor
+					? L"设计期 RelativeSource FindAncestor 预览绑定已连接。"
+				: L"设计期 DataContext 预览绑定已连接。";
 	}
 
 	if (outError && !success)
@@ -7844,6 +8215,10 @@ bool DesignerCanvas::RefreshDesignBindings(
 bool DesignerCanvas::RefreshAllDesignBindings(std::wstring* outError)
 {
 	if (outError) outError->clear();
+	const BindingSourceReference rootContext(_designDataContext);
+	for (const auto& control : _designerControls)
+		if (control && control->ControlInstance && !control->DesignerParent)
+			control->ControlInstance->SetInheritedDataContext(rootContext);
 	bool success = true;
 	for (const auto& control : _designerControls)
 	{
@@ -7860,12 +8235,152 @@ bool DesignerCanvas::RefreshAllDesignBindings(std::wstring* outError)
 
 bool DesignerCanvas::SetDocumentStyleSheet(
 	DesignerStyleSheet styleSheet,
-	std::wstring* outError)
+	std::wstring* outError,
+	const std::vector<std::pair<std::wstring, std::wstring>>& resourceRenames,
+	bool allowVisualStateRebuild)
 {
 	DesignerStyleSheetUtils::Canonicalize(styleSheet);
-	if (!DesignerStyleSheetUtils::ValidateAgainstPropertyMetadata(
+	auto remapResourceKey = [&](std::wstring key)
+	{
+		for (const auto& [source, destination] : resourceRenames)
+			if (_wcsicmp(key.c_str(), source.c_str()) == 0)
+				key = destination;
+		return key;
+	};
+	auto remapAnimationResources = [&](DesignerVisualStateAnimation& animation)
+	{
+		if (animation.HasTo && animation.ToUsesResource)
+			animation.ToResourceKey = remapResourceKey(animation.ToResourceKey);
+		if (animation.HasFrom && animation.FromUsesResource)
+			animation.FromResourceKey = remapResourceKey(
+				animation.FromResourceKey);
+		if (animation.HasBy && animation.ByUsesResource)
+			animation.ByResourceKey = remapResourceKey(animation.ByResourceKey);
+		for (auto& keyFrame : animation.KeyFrames)
+			if (keyFrame.UsesResource)
+				keyFrame.ResourceKey = remapResourceKey(keyFrame.ResourceKey);
+	};
+	auto rewrittenComponents = _componentDefinitions;
+	auto rewrittenControlTemplates = _controlTemplates;
+	auto rewrittenTemplates = _dataTemplates;
+	auto rewriteNodeReferences = [&](std::vector<DesignerModel::DesignNode>& nodes)
+	{
+		std::unordered_map<int, const DesignerModel::DesignNode*> byId;
+		for (const auto& node : nodes) byId.emplace(node.Id, &node);
+		auto hasLocalResource = [&](const DesignerModel::DesignNode& origin,
+			const std::wstring& key)
+		{
+			const DesignerModel::DesignNode* scope = &origin;
+			while (scope)
+			{
+				if (std::any_of(scope->LocalResources.Resources.begin(),
+					scope->LocalResources.Resources.end(), [&](const auto& resource)
+					{ return _wcsicmp(resource.Key.c_str(), key.c_str()) == 0; })
+					|| std::any_of(scope->LocalResources.Rules.begin(),
+						scope->LocalResources.Rules.end(), [&](const auto& rule)
+						{ return _wcsicmp(rule.Id.c_str(), key.c_str()) == 0; }))
+					return true;
+				const auto parent = byId.find(scope->ParentId);
+				scope = parent == byId.end() ? nullptr : parent->second;
+			}
+			return false;
+		};
+		for (auto& node : nodes)
+		{
+			for (auto& rule : node.LocalResources.Rules)
+				DesignerStyleSheetUtils::RemapRuleResourceKeys(
+					rule, resourceRenames, [&](const std::wstring& key)
+					{ return !hasLocalResource(node, key); });
+			if (!node.Props.is_object() || !node.Props.contains("metadata")
+				|| !node.Props["metadata"].is_object()) continue;
+			for (auto& [property, stored] : node.Props["metadata"].ObjectItems())
+			{
+				(void)property;
+				if (!stored.is_object()) continue;
+				for (const auto* field : { "resourceKey", "dynamicResourceKey" })
+				{
+					if (!stored.contains(field) || !stored[field].is_string()) continue;
+					const auto key = Convert::Utf8ToUnicode(
+						stored[field].get<std::string>());
+					if (!hasLocalResource(node, key))
+						stored[field] = Convert::UnicodeToUtf8(
+							remapResourceKey(key));
+				}
+			}
+		}
+	};
+	for (auto& definition : rewrittenComponents)
+	{
+		for (auto& property : definition.Properties)
+			if (!property.DefaultResourceKey.empty())
+				property.DefaultResourceKey = remapResourceKey(
+				property.DefaultResourceKey);
+		for (auto& group : definition.VisualStateGroups)
+		{
+			for (auto& transition : group.Transitions)
+				for (auto& animation : transition.Animations)
+					remapAnimationResources(animation);
+			for (auto& state : group.States)
+			{
+				for (auto& setter : state.Setters)
+					if (setter.UsesResource)
+						setter.ResourceKey = remapResourceKey(
+							setter.ResourceKey);
+				for (auto& animation : state.Animations)
+					remapAnimationResources(animation);
+			}
+		}
+		for (auto& trigger : definition.EventTriggers)
+			for (auto& action : trigger.Actions)
+				for (auto& animation : action.Animations)
+					remapAnimationResources(animation);
+		rewriteNodeReferences(definition.Template);
+	}
+	for (auto& definition : rewrittenTemplates)
+		rewriteNodeReferences(definition.Template);
+	for (auto& definition : rewrittenControlTemplates)
+	{
+		for (auto& group : definition.VisualStateGroups)
+		{
+			for (auto& transition : group.Transitions)
+				for (auto& animation : transition.Animations)
+					remapAnimationResources(animation);
+			for (auto& state : group.States)
+			{
+				for (auto& setter : state.Setters)
+					if (setter.UsesResource)
+						setter.ResourceKey = remapResourceKey(
+							setter.ResourceKey);
+				for (auto& animation : state.Animations)
+					remapAnimationResources(animation);
+			}
+		}
+		for (auto& trigger : definition.EventTriggers)
+			for (auto& action : trigger.Actions)
+				for (auto& animation : action.Animations)
+					remapAnimationResources(animation);
+		rewriteNodeReferences(definition.Template);
+	}
+
+	DesignerModel::DesignDocument componentContext;
+	componentContext.Components = rewrittenComponents;
+	componentContext.StyleSheet = styleSheet;
+	componentContext.ResourceBasePath = _documentResourceBasePath;
+	componentContext.Resources = _documentResources;
+	if (!DesignerStyleSheetUtils::ValidateAgainstRulePropertyMetadata(
 		styleSheet,
-		[](UIClass type) { return DesignerControlFactory::Create(type); },
+		[&](const DesignerStyleRule& rule) -> std::unique_ptr<Control>
+		{
+			auto probe = DesignerControlFactory::Create(
+				rule.HasType ? rule.Type : UIClass::UI_Base);
+			if (!probe || rule.ComponentType.Empty()) return probe;
+			const auto* component = componentContext.FindComponent(rule.ComponentType);
+			std::wstring ignored;
+			if (!component
+				|| !DesignerModel::DesignDocumentMaterializer::InstallComponentContract(
+					*probe, *component, componentContext, &ignored)) return nullptr;
+			return probe;
+		},
 		outError,
 		_documentResourceBasePath, _documentResources))
 		return false;
@@ -7876,6 +8391,540 @@ bool DesignerCanvas::SetDocumentStyleSheet(
 		return false;
 	if (_designDataContext)
 		runtime->SetDataContext(_designDataContext.get());
+
+	struct ScopedStyleUpdate
+	{
+		DesignerControl* Owner = nullptr;
+		Control* Target = nullptr;
+		DesignerStyleSheet Authored;
+		std::shared_ptr<const ControlStyleSheet> Previous;
+		std::shared_ptr<const ControlStyleSheet> Next;
+	};
+	std::vector<ScopedStyleUpdate> scopedStyleUpdates;
+	std::unordered_map<Control*, DesignerControl*> scopedDesignerByRuntime;
+	for (const auto& control : _designerControls)
+		if (control && control->ControlInstance)
+			scopedDesignerByRuntime.emplace(
+				control->ControlInstance, control.get());
+	auto parentDesigner = [&](const DesignerControl& origin)
+		-> DesignerControl*
+	{
+		Control* parent = origin.DesignerParent;
+		while (parent)
+		{
+			const auto found = scopedDesignerByRuntime.find(parent);
+			if (found != scopedDesignerByRuntime.end()) return found->second;
+			parent = parent->Parent;
+		}
+		return nullptr;
+	};
+	auto hasLocalStyleResource = [&](const DesignerControl& origin,
+		const std::wstring& key)
+	{
+		const DesignerControl* scope = &origin;
+		while (scope)
+		{
+			if (scope->LocalResources
+				&& (std::any_of(scope->LocalResources->Resources.begin(),
+					scope->LocalResources->Resources.end(), [&](const auto& resource)
+					{ return _wcsicmp(resource.Key.c_str(), key.c_str()) == 0; })
+					|| std::any_of(scope->LocalResources->Rules.begin(),
+						scope->LocalResources->Rules.end(), [&](const auto& rule)
+						{ return _wcsicmp(rule.Id.c_str(), key.c_str()) == 0; })))
+				return true;
+			scope = parentDesigner(*scope);
+		}
+		return false;
+	};
+	std::unordered_map<DesignerControl*, DesignerStyleSheet> rewrittenLocalStyles;
+	for (const auto& control : _designerControls)
+	{
+		if (!control || !control->LocalResources
+			|| control->LocalResources->Rules.empty()) continue;
+		auto authored = *control->LocalResources;
+		for (auto& rule : authored.Rules)
+			DesignerStyleSheetUtils::RemapRuleResourceKeys(
+				rule, resourceRenames, [&](const std::wstring& key)
+				{ return !hasLocalStyleResource(*control, key); });
+		rewrittenLocalStyles.emplace(control.get(), std::move(authored));
+	}
+	for (const auto& [owner, authored] : rewrittenLocalStyles)
+	{
+		DesignerStyleSheet visible = styleSheet;
+		std::vector<const DesignerControl*> route;
+		for (const DesignerControl* scope = owner; scope;
+			scope = parentDesigner(*scope)) route.push_back(scope);
+		for (auto scope = route.rbegin(); scope != route.rend(); ++scope)
+		{
+			if (!(*scope)->LocalResources) continue;
+			const auto rewritten = rewrittenLocalStyles.find(
+				const_cast<DesignerControl*>(*scope));
+			DesignerStyleSheetUtils::AppendLexicalScope(
+				visible, rewritten == rewrittenLocalStyles.end()
+				? *(*scope)->LocalResources : rewritten->second);
+		}
+		DesignerStyleSheet runtimeSource;
+		if (!DesignerStyleSheetUtils::PrepareLocalRuntimeStyleSheet(
+			authored, visible, runtimeSource, outError)) return false;
+		std::shared_ptr<ControlStyleSheet> next;
+		if (!DesignerStyleSheetUtils::BuildRuntimeStyleSheet(
+			runtimeSource, next, outError, _documentResourceBasePath,
+			_documentResources)) return false;
+		if (_designDataContext) next->SetDataContext(_designDataContext.get());
+		scopedStyleUpdates.push_back({ owner, owner->ControlInstance,
+			authored, owner->ControlInstance->GetResourceDictionary(), next });
+	}
+
+	struct DirectResourceUpdate
+	{
+		DesignerControl* Owner = nullptr;
+		Control* Target = nullptr;
+		std::wstring PropertyName;
+		std::wstring ResourceKey;
+		DesignerStyleValue Value;
+		bool HadLocalValue = false;
+		BindingValue LocalValue;
+		bool HadTrackedValue = false;
+		DesignerStyleValue TrackedValue;
+		std::wstring PreviousResourceKey;
+	};
+	auto findResource = [&](const std::wstring& key)
+		-> const DesignerStyleResource*
+	{
+		const auto found = std::find_if(
+			styleSheet.Resources.begin(), styleSheet.Resources.end(),
+			[&](const auto& resource)
+			{
+				return _wcsicmp(resource.Key.c_str(), key.c_str()) == 0;
+			});
+		return found == styleSheet.Resources.end() ? nullptr : &*found;
+	};
+	std::unordered_map<Control*, DesignerControl*> designerByRuntime;
+	for (const auto& control : _designerControls)
+		if (control && control->ControlInstance)
+			designerByRuntime.emplace(control->ControlInstance, control.get());
+	auto findLocalResource = [&](const DesignerControl& origin,
+		const std::wstring& key) -> const DesignerStyleResource*
+	{
+		const DesignerControl* scope = &origin;
+		while (scope)
+		{
+			if (scope->LocalResources)
+			{
+				const auto found = std::find_if(
+					scope->LocalResources->Resources.rbegin(),
+					scope->LocalResources->Resources.rend(),
+					[&](const auto& resource)
+					{ return _wcsicmp(resource.Key.c_str(), key.c_str()) == 0; });
+				if (found != scope->LocalResources->Resources.rend()) return &*found;
+			}
+			Control* parent = scope->DesignerParent;
+			scope = nullptr;
+			while (parent && !scope)
+			{
+				const auto found = designerByRuntime.find(parent);
+				if (found != designerByRuntime.end()) scope = found->second;
+				else parent = parent->Parent;
+			}
+		}
+		return nullptr;
+	};
+	auto findScopedResource = [&](const DesignerControl& owner,
+		const std::wstring& key) -> const DesignerStyleResource*
+	{
+		if (const auto* local = findLocalResource(owner, key)) return local;
+		return findResource(key);
+	};
+	std::vector<DirectResourceUpdate> directUpdates;
+	struct DynamicResourceUpdate
+	{
+		DesignerControl* Owner = nullptr;
+		Control* Target = nullptr;
+		std::wstring PropertyName;
+		std::wstring PreviousResourceKey;
+		std::wstring ResourceKey;
+	};
+	std::vector<DynamicResourceUpdate> dynamicUpdates;
+	for (const auto& control : _designerControls)
+	{
+		if (!control || !control->ControlInstance) continue;
+		for (const auto& [propertyName, sourceKey]
+			: control->MetadataPropertyResourceKeys)
+		{
+			const auto requestedKey = findLocalResource(*control, sourceKey)
+				? sourceKey : remapResourceKey(sourceKey);
+			const auto* resource = findScopedResource(*control, requestedKey);
+			if (!resource)
+			{
+				if (outError) *outError = L"控件 " + control->Name
+					+ L" 的属性 " + propertyName
+					+ L" 引用了不存在的资源：" + requestedKey;
+				return false;
+			}
+			std::wstring validationError;
+			if (!DesignerPropertyCatalog::ValidateStyleValue(
+				*control->ControlInstance, propertyName, resource->Value,
+				&validationError, _documentResourceBasePath, _documentResources))
+			{
+				if (outError) *outError = L"控件 " + control->Name
+					+ L" 的资源属性无效：" + validationError;
+				return false;
+			}
+			DirectResourceUpdate update;
+			update.Owner = control.get();
+			update.Target = control->ControlInstance;
+			update.PropertyName = propertyName;
+			update.ResourceKey = resource->Key;
+			update.Value = resource->Value;
+			update.HadLocalValue = update.Target->TryGetPropertyValue(
+				propertyName, ControlPropertyValueSource::Local, update.LocalValue);
+			if (const auto tracked = control->MetadataProperties.find(propertyName);
+				tracked != control->MetadataProperties.end())
+			{
+				update.HadTrackedValue = true;
+				update.TrackedValue = tracked->second;
+			}
+			update.PreviousResourceKey = sourceKey;
+			directUpdates.push_back(std::move(update));
+		}
+		for (const auto& [propertyName, sourceKey]
+			: control->MetadataPropertyDynamicResourceKeys)
+		{
+			const auto requestedKey = findLocalResource(*control, sourceKey)
+				? sourceKey : remapResourceKey(sourceKey);
+			if (const auto* resource = findScopedResource(*control, requestedKey))
+			{
+				std::wstring validationError;
+				if (!DesignerPropertyCatalog::ValidateStyleValue(
+					*control->ControlInstance, propertyName, resource->Value,
+					&validationError, _documentResourceBasePath, _documentResources))
+				{
+					if (outError) *outError = L"控件 " + control->Name
+						+ L" 的动态资源属性无效：" + validationError;
+					return false;
+				}
+			}
+			dynamicUpdates.push_back({ control.get(), control->ControlInstance,
+				propertyName, sourceKey, requestedKey });
+		}
+	}
+	// Template/component definitions may not currently have an instance. At
+	// minimum enforce that every preserved expression resolves in the candidate.
+	auto validateDefinitionReferences = [&](const std::vector<DesignerModel::DesignNode>& nodes,
+		const std::wstring& owner) -> bool
+	{
+		std::unordered_map<int, const DesignerModel::DesignNode*> byId;
+		for (const auto& node : nodes) byId.emplace(node.Id, &node);
+		auto resolvesResource = [&](const DesignerModel::DesignNode& origin,
+			const std::wstring& key)
+		{
+			const DesignerModel::DesignNode* scope = &origin;
+			while (scope)
+			{
+				if (std::any_of(scope->LocalResources.Resources.begin(),
+					scope->LocalResources.Resources.end(), [&](const auto& resource)
+					{ return _wcsicmp(resource.Key.c_str(), key.c_str()) == 0; }))
+					return true;
+				const auto parent = byId.find(scope->ParentId);
+				scope = parent == byId.end() ? nullptr : parent->second;
+			}
+			return findResource(key) != nullptr;
+		};
+		for (const auto& node : nodes)
+		{
+			if (!node.Props.is_object() || !node.Props.contains("metadata")
+				|| !node.Props["metadata"].is_object()) continue;
+			for (const auto& [property, stored]
+				: node.Props["metadata"].ObjectItems())
+			{
+				if (!stored.is_object() || !stored.contains("resourceKey")
+					|| !stored["resourceKey"].is_string()) continue;
+				const auto key = Convert::Utf8ToUnicode(
+					stored["resourceKey"].get<std::string>());
+				if (resolvesResource(node, key)) continue;
+				if (outError) *outError = owner + L" 的控件 " + node.Name
+					+ L" 属性 " + Convert::Utf8ToUnicode(property)
+					+ L" 引用了不存在的资源：" + key;
+				return false;
+			}
+		}
+		return true;
+	};
+	for (const auto& definition : rewrittenComponents)
+	{
+		for (const auto& property : definition.Properties)
+			if (!property.DefaultResourceKey.empty())
+			{
+				const auto* resource = findResource(property.DefaultResourceKey);
+				if (resource && resource->Value.Kind == property.DefaultValue.Kind)
+					continue;
+				if (outError) *outError = L"组件 " + definition.Type.XamlName
+					+ L" 的属性 " + property.Name
+					+ (resource ? L" 默认资源类型不匹配："
+						: L" 引用了不存在的默认资源：")
+					+ property.DefaultResourceKey;
+				return false;
+			}
+		if (!validateDefinitionReferences(
+			definition.Template, L"组件 " + definition.Type.XamlName)) return false;
+			auto createVisualStateTargetProbe = [&](const std::wstring& targetName)
+			-> std::unique_ptr<Control>
+		{
+			const DesignerModel::DesignComponentDefinition* targetComponent = nullptr;
+			UIClass targetType = definition.BaseType;
+			if (targetName.empty())
+				targetComponent = &definition;
+			else
+			{
+				const auto node = std::find_if(
+					definition.Template.begin(), definition.Template.end(),
+					[&](const auto& candidate)
+					{ return _wcsicmp(candidate.Name.c_str(), targetName.c_str()) == 0; });
+				if (node == definition.Template.end()) return nullptr;
+				targetType = node->Type;
+				if (!node->ComponentType.Empty())
+					targetComponent = componentContext.FindComponent(node->ComponentType);
+			}
+			auto probe = DesignerModel::DesignDocumentMaterializer::CreateRuntimeControl(
+				targetType);
+			if (!probe) return nullptr;
+			std::wstring ignored;
+			if (targetComponent
+				&& !DesignerModel::DesignDocumentMaterializer::InstallComponentContract(
+					*probe, *targetComponent, componentContext, &ignored)) return nullptr;
+			return probe;
+		};
+		auto validateTransitionAnimation = [&](const auto& animation,
+			const std::wstring& animationContext)
+		{
+			auto probe = createVisualStateTargetProbe(animation.TargetName);
+			const auto objectPathKind =
+				DesignerModel::ClassifyStoryboardObjectPath(animation.PropertyName);
+			const bool objectPath = objectPathKind
+				!= DesignerModel::StoryboardObjectPathKind::None;
+			DesignerModel::ResolvedStoryboardObjectPath resolvedObjectPath;
+			std::wstring pathError;
+			if (objectPath
+				&& !DesignerModel::TryResolveStoryboardObjectPath(
+					definition, animation.TargetName, animation.PropertyName,
+					animation.Kind, resolvedObjectPath, &pathError))
+			{
+				if (outError) *outError = L"组件 " + definition.Type.XamlName
+					+ L" 的 " + animationContext
+					+ L" 动画路径无效：" + pathError;
+				return false;
+			}
+			auto validateResource = [&](bool usesResource,
+				const std::wstring& resourceKey, const std::wstring& label,
+				bool isDelta = false)
+			{
+				if (!usesResource) return true;
+				const auto* resource = findResource(resourceKey);
+				std::wstring validationError;
+				const auto* metadata = !objectPath && probe
+					? probe->FindPropertyMetadata(animation.PropertyName) : nullptr;
+				BindingValue parsed;
+				BindingValue converted;
+				BindingValue coerced;
+				if (resource && probe
+					&& DesignerStyleSheetUtils::TryConvertValue(
+						resource->Value, parsed, &validationError,
+						_documentResourceBasePath, _documentResources))
+				{
+					if (objectPath && DesignerModel::ValidateStoryboardObjectPathValue(
+						objectPathKind, parsed, isDelta)) return true;
+					if (!objectPath && metadata && metadata->CanWrite()
+						&& metadata->TryConvert(parsed, converted)
+						&& (isDelta || metadata->TryCoerce(
+							*probe, converted, coerced))) return true;
+				}
+				if (outError) *outError = L"组件 " + definition.Type.XamlName
+					+ L" 的 " + animationContext + L" 动画 "
+					+ animation.PropertyName + L" " + label
+					+ (resource ? L" 资源类型不兼容：" : L" 引用了不存在的资源：")
+					+ resourceKey
+					+ (validationError.empty() ? L"" : L"（" + validationError + L"）");
+				return false;
+			};
+			if ((animation.HasTo && !validateResource(animation.ToUsesResource,
+				animation.ToResourceKey, L"To"))
+				|| (animation.HasFrom && !validateResource(
+					animation.FromUsesResource,
+					animation.FromResourceKey, L"From"))
+				|| (animation.HasBy && !validateResource(
+					animation.ByUsesResource,
+					animation.ByResourceKey, L"By", true))) return false;
+			for (const auto& keyFrame : animation.KeyFrames)
+				if (!validateResource(keyFrame.UsesResource,
+					keyFrame.ResourceKey, L"KeyFrame")) return false;
+			return true;
+		};
+		for (const auto& group : definition.VisualStateGroups)
+		{
+			for (const auto& transition : group.Transitions)
+				for (const auto& animation : transition.Animations)
+					if (!validateTransitionAnimation(animation,
+						L"VisualTransition " + transition.FromState
+							+ L" -> " + transition.ToState)) return false;
+			for (const auto& state : group.States)
+			{
+				for (const auto& setter : state.Setters)
+				{
+					if (!setter.UsesResource) continue;
+					const auto* resource = findResource(setter.ResourceKey);
+					auto probe = createVisualStateTargetProbe(setter.TargetName);
+					std::wstring validationError;
+					if (!resource || !probe
+						|| !DesignerPropertyCatalog::ValidateStyleValue(
+							*probe, setter.PropertyName, resource->Value,
+							&validationError, _documentResourceBasePath,
+							_documentResources))
+					{
+						if (outError) *outError = L"组件 " + definition.Type.XamlName
+							+ L" 的视觉状态 " + state.Name + L" Setter "
+							+ setter.PropertyName
+							+ (resource ? L" 资源类型不兼容：" : L" 引用了不存在的资源：")
+							+ setter.ResourceKey
+							+ (validationError.empty() ? L"" : L"（" + validationError + L"）");
+						return false;
+					}
+				}
+				for (const auto& animation : state.Animations)
+				{
+					auto probe = createVisualStateTargetProbe(animation.TargetName);
+					const auto objectPathKind =
+						DesignerModel::ClassifyStoryboardObjectPath(animation.PropertyName);
+					const bool objectPath = objectPathKind
+						!= DesignerModel::StoryboardObjectPathKind::None;
+					DesignerModel::ResolvedStoryboardObjectPath resolvedObjectPath;
+					std::wstring pathError;
+					if (objectPath
+						&& !DesignerModel::TryResolveStoryboardObjectPath(
+							definition, animation.TargetName, animation.PropertyName,
+							animation.Kind, resolvedObjectPath, &pathError))
+					{
+						if (outError) *outError = L"组件 " + definition.Type.XamlName
+							+ L" 的视觉状态 " + state.Name + L" 动画路径无效："
+							+ pathError;
+						return false;
+					}
+					auto validateResource = [&](bool usesResource,
+						const std::wstring& resourceKey, const std::wstring& label,
+						bool isDelta = false)
+					{
+						if (!usesResource) return true;
+						const auto* resource = findResource(resourceKey);
+						std::wstring validationError;
+						const auto* metadata = !objectPath && probe
+							? probe->FindPropertyMetadata(animation.PropertyName)
+							: nullptr;
+						BindingValue parsed;
+						BindingValue converted;
+						BindingValue coerced;
+						if (resource && probe
+							&& DesignerStyleSheetUtils::TryConvertValue(
+								resource->Value, parsed, &validationError,
+								_documentResourceBasePath, _documentResources))
+						{
+							if (objectPath
+								&& DesignerModel::ValidateStoryboardObjectPathValue(
+									objectPathKind, parsed, isDelta)) return true;
+							if (!objectPath && metadata && metadata->CanWrite()
+								&& metadata->TryConvert(parsed, converted)
+								&& (isDelta || metadata->TryCoerce(
+									*probe, converted, coerced)))
+								return true;
+						}
+						if (outError) *outError = L"组件 " + definition.Type.XamlName
+							+ L" 的视觉状态 " + state.Name + L" 动画 "
+							+ animation.PropertyName + L" " + label
+							+ (resource ? L" 资源类型不兼容：" : L" 引用了不存在的资源：")
+							+ resourceKey
+							+ (validationError.empty() ? L"" : L"（" + validationError + L"）");
+						return false;
+					};
+					if ((animation.HasTo && !validateResource(animation.ToUsesResource,
+						animation.ToResourceKey, L"To"))
+						|| (animation.HasFrom && !validateResource(
+							animation.FromUsesResource,
+							animation.FromResourceKey, L"From"))
+						|| (animation.HasBy && !validateResource(
+							animation.ByUsesResource,
+							animation.ByResourceKey, L"By", true))) return false;
+					for (const auto& keyFrame : animation.KeyFrames)
+						if (!validateResource(keyFrame.UsesResource,
+							keyFrame.ResourceKey, L"KeyFrame")) return false;
+				}
+			}
+		}
+		for (const auto& trigger : definition.EventTriggers)
+			for (const auto& action : trigger.Actions)
+				for (const auto& animation : action.Animations)
+					if (!validateTransitionAnimation(animation,
+						L"EventTrigger " + trigger.EventName)) return false;
+	}
+	for (const auto& definition : rewrittenTemplates)
+		if (!validateDefinitionReferences(
+			definition.Template, L"DataTemplate " + definition.DisplayName()))
+			return false;
+
+	const bool visualStatesUseResources = std::any_of(
+		rewrittenComponents.begin(), rewrittenComponents.end(),
+		[](const auto& definition)
+		{
+			auto animationUsesResource = [](const auto& animation)
+			{
+				return (animation.HasTo && animation.ToUsesResource)
+					|| (animation.HasFrom && animation.FromUsesResource)
+					|| (animation.HasBy && animation.ByUsesResource)
+					|| std::any_of(animation.KeyFrames.begin(),
+						animation.KeyFrames.end(), [](const auto& keyFrame)
+						{ return keyFrame.UsesResource; });
+			};
+			return std::any_of(definition.VisualStateGroups.begin(),
+				definition.VisualStateGroups.end(), [&](const auto& group)
+				{
+					return std::any_of(group.Transitions.begin(),
+						group.Transitions.end(), [&](const auto& transition)
+						{
+							return std::any_of(transition.Animations.begin(),
+								transition.Animations.end(), animationUsesResource);
+						}) || std::any_of(group.States.begin(), group.States.end(),
+						[&](const auto& state)
+						{
+							return std::any_of(state.Setters.begin(), state.Setters.end(),
+								[](const auto& setter) { return setter.UsesResource; })
+								|| std::any_of(state.Animations.begin(), state.Animations.end(),
+									animationUsesResource);
+						});
+				}) || std::any_of(definition.EventTriggers.begin(),
+				definition.EventTriggers.end(), [&](const auto& trigger)
+				{
+					return std::any_of(trigger.Actions.begin(),
+						trigger.Actions.end(), [&](const auto& action)
+						{
+							return std::any_of(action.Animations.begin(),
+								action.Animations.end(), animationUsesResource);
+						});
+				});
+		});
+	const bool structuralResourcesNeedRebuild =
+		(!resourceRenames.empty() || styleSheet != _documentStyleSheet)
+		&& (!rewrittenComponents.empty()
+			|| !rewrittenControlTemplates.empty()
+			|| !rewrittenTemplates.empty());
+	if ((visualStatesUseResources || structuralResourcesNeedRebuild)
+		&& allowVisualStateRebuild)
+	{
+		DesignerModel::DesignDocument candidate;
+		if (!BuildDesignDocument(candidate, outError)) return false;
+		rewriteNodeReferences(candidate.Nodes);
+		candidate.Components = std::move(rewrittenComponents);
+		candidate.ControlTemplates = std::move(rewrittenControlTemplates);
+		candidate.DataTemplates = std::move(rewrittenTemplates);
+		candidate.StyleSheet = std::move(styleSheet);
+		return ApplyDesignDocument(candidate, outError);
+	}
 
 	auto describeIssue = [](const ControlStyleResolutionIssue& issue)
 	{
@@ -7914,6 +8963,54 @@ bool DesignerCanvas::SetDocumentStyleSheet(
 		}
 	}
 
+	auto rollbackDirectUpdates = [&](size_t count)
+	{
+		bool restored = true;
+		while (count > 0)
+		{
+			auto& update = directUpdates[--count];
+			const bool localRestored = update.HadLocalValue
+				? update.Target->TrySetPropertyValue(
+					update.PropertyName, update.LocalValue,
+					ControlPropertyValueSource::Local)
+				: (!update.Target->HasPropertyValue(
+					update.PropertyName, ControlPropertyValueSource::Local)
+					|| update.Target->ClearPropertyValue(
+						update.PropertyName, ControlPropertyValueSource::Local));
+			restored = restored && localRestored;
+			if (update.HadTrackedValue)
+				update.Owner->MetadataProperties[update.PropertyName]
+					= update.TrackedValue;
+			else
+				update.Owner->MetadataProperties.erase(update.PropertyName);
+			update.Owner->MetadataPropertyResourceKeys[update.PropertyName]
+				= update.PreviousResourceKey;
+		}
+		return restored;
+	};
+	size_t appliedDirectUpdates = 0;
+	for (auto& update : directUpdates)
+	{
+		std::wstring propertyError;
+		std::wstring canonicalName;
+		DesignerStyleValue effective;
+		if (!DesignerPropertyCatalog::ApplyAndTrackValue(
+			*update.Target, update.Owner->MetadataProperties,
+			update.PropertyName, update.Value,
+			&canonicalName, &effective, &propertyError,
+			_documentResourceBasePath, _documentResources))
+		{
+			const bool restored = rollbackDirectUpdates(appliedDirectUpdates + 1);
+			if (outError) *outError = L"无法更新控件资源属性：" + propertyError
+				+ (restored ? L"" : L"；回滚未完整恢复。");
+			return false;
+		}
+		update.Owner->MetadataPropertyResourceKeys.erase(update.PropertyName);
+		update.Owner->MetadataPropertyResourceKeys[canonicalName]
+			= update.ResourceKey;
+		++appliedDirectUpdates;
+	}
+
 	if (_clientSurface)
 	{
 		const auto previous = _previewStyleSheet;
@@ -7923,10 +9020,72 @@ bool DesignerCanvas::SetDocumentStyleSheet(
 		if (!applied)
 		{
 			(void)_clientSurface->SetStyleSheet(previous, true);
-			if (outError) *outError = L"样式表无法应用到完整控件树；请检查通配规则的目标属性类型。";
+			const bool restored = rollbackDirectUpdates(appliedDirectUpdates);
+			if (outError) *outError = std::wstring(
+				L"样式表无法应用到完整控件树；请检查通配规则的目标属性类型。")
+				+ (restored ? L"" : L" 资源属性回滚未完整恢复。");
 			return false;
 		}
 	}
+	size_t appliedScopedStyles = 0;
+	auto rollbackScopedStyles = [&]() noexcept
+	{
+		while (appliedScopedStyles > 0)
+		{
+			auto& update = scopedStyleUpdates[--appliedScopedStyles];
+			if (update.Target)
+				(void)update.Target->SetResourceDictionary(update.Previous);
+		}
+	};
+	for (auto& update : scopedStyleUpdates)
+	{
+		if (update.Target && update.Target->SetResourceDictionary(update.Next))
+		{
+			++appliedScopedStyles;
+			continue;
+		}
+		rollbackScopedStyles();
+		if (_clientSurface)
+			(void)_clientSurface->SetStyleSheet(_previewStyleSheet, true);
+		const bool restored = rollbackDirectUpdates(appliedDirectUpdates);
+		if (outError) *outError = L"无法更新控件局部 Style 作用域。"
+			+ std::wstring(restored ? L"" : L" 静态资源属性回滚未完整恢复。");
+		return false;
+	}
+	for (size_t index = 0; index < dynamicUpdates.size(); ++index)
+	{
+		auto& update = dynamicUpdates[index];
+		if (update.Target->SetDynamicResource(
+			update.PropertyName, update.ResourceKey))
+		{
+			update.Owner->MetadataPropertyDynamicResourceKeys[
+				update.PropertyName] = update.ResourceKey;
+			continue;
+		}
+
+		if (_clientSurface)
+			(void)_clientSurface->SetStyleSheet(_previewStyleSheet, true);
+		rollbackScopedStyles();
+		for (size_t rollback = 0; rollback < index; ++rollback)
+		{
+			auto& restored = dynamicUpdates[rollback];
+			(void)restored.Target->SetDynamicResource(
+				restored.PropertyName, restored.PreviousResourceKey);
+			restored.Owner->MetadataPropertyDynamicResourceKeys[
+				restored.PropertyName] = restored.PreviousResourceKey;
+		}
+		const bool restored = rollbackDirectUpdates(appliedDirectUpdates);
+		if (outError) *outError = L"无法更新控件动态资源属性："
+			+ update.PropertyName
+			+ (restored ? L"" : L"；静态资源属性回滚未完整恢复。");
+		return false;
+	}
+	for (auto& update : scopedStyleUpdates)
+		if (update.Owner && update.Owner->LocalResources)
+			*update.Owner->LocalResources = std::move(update.Authored);
+	_componentDefinitions = std::move(rewrittenComponents);
+	_controlTemplates = std::move(rewrittenControlTemplates);
+	_dataTemplates = std::move(rewrittenTemplates);
 	_documentStyleSheet = std::move(styleSheet);
 	_previewStyleSheet = _documentStyleSheet.Empty() ? nullptr : std::move(runtime);
 	if (outError) outError->clear();
@@ -8171,6 +9330,11 @@ namespace
 		case UIClass::UI_ToastHost: return "ToastHost";
 		case UIClass::UI_WebBrowser: return "WebBrowser";
 		case UIClass::UI_MediaPlayer: return "MediaPlayer";
+		case UIClass::UI_NativeSurface: return "NativeSurface";
+		case UIClass::UI_ItemsControl: return "ItemsControl";
+		case UIClass::UI_ContentPresenter: return "ContentPresenter";
+		case UIClass::UI_ItemsPresenter: return "ItemsPresenter";
+		case UIClass::UI_ContentControl: return "ContentControl";
 		case UIClass::UI_TabPage: return "TabPage";
 		default: return "Control";
 		}
@@ -8220,6 +9384,11 @@ namespace
 		if (s == "ToastHost") { out = UIClass::UI_ToastHost; return true; }
 		if (s == "WebBrowser") { out = UIClass::UI_WebBrowser; return true; }
 		if (s == "MediaPlayer") { out = UIClass::UI_MediaPlayer; return true; }
+		if (s == "NativeSurface") { out = UIClass::UI_NativeSurface; return true; }
+		if (s == "ItemsControl") { out = UIClass::UI_ItemsControl; return true; }
+		if (s == "ContentPresenter") { out = UIClass::UI_ContentPresenter; return true; }
+		if (s == "ItemsPresenter") { out = UIClass::UI_ItemsPresenter; return true; }
+		if (s == "ContentControl") { out = UIClass::UI_ContentControl; return true; }
 		if (s == "TabPage") { out = UIClass::UI_TabPage; return true; }
 		return false;
 	}
@@ -9027,6 +10196,22 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 		if (!DesignerDataContextSchemaUtils::Validate(document.DataContextSchema, outError))
 			return false;
 		document.StyleSheet = _documentStyleSheet;
+		document.Components = _componentDefinitions;
+		document.ControlTemplates = _controlTemplates;
+		document.DataTypes = _dataTypes;
+		document.DataTemplates = _dataTemplates;
+		document.ItemsPanelTemplates = _itemsPanelTemplates;
+		document.GroupStyles = _groupStyles;
+		document.DataLists = _dataLists;
+		document.CollectionViews = _collectionViews;
+		for (const auto& property : document.DataContextSchema)
+			if (property.ObjectKind == DesignerDataObjectKind::BindingList
+				&& !document.FindDataType(property.ItemType))
+			{
+				if (outError) *outError = L"集合属性 " + property.Path
+					+ L" 引用了未声明的 DataType：" + property.ItemType;
+				return false;
+			}
 		DesignerStyleSheetUtils::Canonicalize(document.StyleSheet);
 		if (!DesignerStyleSheetUtils::Validate(
 			document.StyleSheet, outError, document.ResourceBasePath,
@@ -9107,9 +10292,13 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			node.Id = dc->StableId;
 			node.Name = dc->Name;
 			node.Type = dc->Type;
-			node.CustomType = dc->CustomType;
-			node.CustomEvents = dc->CustomEvents;
+			node.ComponentType = dc->ComponentType;
+			node.ComponentContentProperty = dc->ComponentContentProperty;
 			node.Locked = dc->IsLocked;
+			if (dc->LocalResources)
+				node.LocalResources = *dc->LocalResources;
+			if (dc->LocalObjectResources)
+				node.LocalObjectResources = *dc->LocalObjectResources;
 
 			// parent reference
 			if (!dc->DesignerParent)
@@ -9132,6 +10321,45 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 					else node.ParentRef.clear();
 				}
 			}
+			if (node.ParentId > 0)
+			{
+				const auto parentRecord = std::find_if(
+					_designerControls.begin(), _designerControls.end(),
+					[&](const auto& candidate)
+					{
+						return candidate && candidate->StableId == node.ParentId;
+					});
+				if (parentRecord != _designerControls.end()
+					&& !(*parentRecord)->ComponentType.Empty())
+				{
+					const auto contract = std::find_if(
+						(*parentRecord)->ComponentContentProperties.begin(),
+						(*parentRecord)->ComponentContentProperties.end(),
+						[&](const auto& property)
+						{
+							return property.Name
+								== node.ComponentContentProperty;
+						});
+					if (contract ==
+						(*parentRecord)->ComponentContentProperties.end())
+					{
+						const auto defaultContent = std::find_if(
+							(*parentRecord)->ComponentContentProperties.begin(),
+							(*parentRecord)->ComponentContentProperties.end(),
+							[](const auto& property) { return property.IsDefault; });
+						if (defaultContent ==
+							(*parentRecord)->ComponentContentProperties.end())
+						{
+							if (outError) *outError = L"组件子控件缺少有效视觉内容属性："
+								+ node.Name;
+							return false;
+						}
+						node.ComponentContentProperty = defaultContent->Name;
+					}
+				}
+				else node.ComponentContentProperty.clear();
+			}
+			else node.ComponentContentProperty.clear();
 
 			Control* runtimeParent = c->Parent ? c->Parent : (dc->DesignerParent ? dc->DesignerParent : (_clientSurface ? (Control*)_clientSurface : (Control*)_designSurface));
 			node.Order = GetChildIndex(runtimeParent, c);
@@ -9186,30 +10414,37 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			props["gridRowSpan"] = c->GridRowSpan;
 			props["gridColumnSpan"] = c->GridColumnSpan;
 			props["sizeMode"] = (int)c->SizeMode;
-			if (!dc->MetadataProperties.empty())
+			if (!dc->MetadataProperties.empty()
+				|| !dc->MetadataPropertyResourceKeys.empty()
+				|| !dc->MetadataPropertyDynamicResourceKeys.empty())
 			{
 				DesignValue metadataProperties = DesignValue::object();
-				for (const auto& [propertyName, storedValue] : dc->MetadataProperties)
+				auto authoredProperties = dc->MetadataProperties;
+				for (const auto& [propertyName, resourceKey]
+					: dc->MetadataPropertyResourceKeys)
 				{
+					(void)resourceKey;
+					authoredProperties.try_emplace(propertyName);
+				}
+				for (const auto& [propertyName, resourceKey]
+					: dc->MetadataPropertyDynamicResourceKeys)
+				{
+					(void)resourceKey;
+					authoredProperties.try_emplace(propertyName);
+				}
+				for (const auto& [propertyName, storedValue] : authoredProperties)
+				{
+					(void)storedValue;
 					std::wstring canonicalName;
 					DesignerStyleValue currentValue;
-					if (!dc->CustomType.Empty()
-						&& !c->FindPropertyMetadata(propertyName))
+					std::wstring metadataError;
+					if (!DesignerPropertyCatalog::CaptureValue(
+						*c, propertyName, &canonicalName, currentValue,
+						&metadataError))
 					{
-						canonicalName = propertyName;
-						currentValue = storedValue;
-					}
-					else
-					{
-						std::wstring metadataError;
-						if (!DesignerPropertyCatalog::CaptureValue(
-							*c, propertyName, &canonicalName, currentValue,
-							&metadataError))
-						{
-							if (outError) *outError = L"控件 " + dc->Name
-								+ L"：" + metadataError;
-							return false;
-						}
+						if (outError) *outError = L"控件 " + dc->Name
+							+ L"：" + metadataError;
+						return false;
 					}
 					auto persisted = DesignValue{
 						{ "kind", ToUtf8(DesignerStyleSheetUtils::ValueKindName(currentValue.Kind)) },
@@ -9217,6 +10452,16 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 					};
 					if (!currentValue.ObjectValue.is_null())
 						persisted["object"] = currentValue.ObjectValue;
+					const auto resource = dc->MetadataPropertyResourceKeys.find(
+						canonicalName);
+					if (resource != dc->MetadataPropertyResourceKeys.end())
+						persisted["resourceKey"] = ToUtf8(resource->second);
+					const auto dynamicResource =
+						dc->MetadataPropertyDynamicResourceKeys.find(canonicalName);
+					if (dynamicResource
+						!= dc->MetadataPropertyDynamicResourceKeys.end())
+						persisted["dynamicResourceKey"] =
+							ToUtf8(dynamicResource->second);
 					metadataProperties[ToUtf8(canonicalName)] = std::move(persisted);
 				}
 				props["metadata"] = std::move(metadataProperties);
@@ -9344,7 +10589,7 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 					items.push_back(ToUtf8(comboBox->Items[i]));
 				if (!items.empty()) extra["items"] = std::move(items);
 			}
-			else if (dc->Type == UIClass::UI_ListView || dc->Type == UIClass::UI_ListBox)
+			else if (dc->Type == UIClass::UI_ListView)
 			{
 				auto* listView = (ListView*)c;
 				DesignValue cols = DesignValue::array();
@@ -9385,7 +10630,10 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			else if (dc->Type == UIClass::UI_TreeView)
 			{
 				auto* treeView = (TreeView*)c;
-				if (treeView->Root)
+				// ItemsSource nodes are generated data containers, not authored
+				// TreeView.Items. Capturing both would create an invalid document
+				// with two competing item sources.
+				if (treeView->Root && !treeView->GetItemsSource())
 				{
 					auto nodes = TreeNodesToValue(treeView->Root->Children);
 					if (!nodes.empty()) extra["nodes"] = std::move(nodes);
@@ -9483,6 +10731,53 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 			if (transformOrigin.x != 0.0f || transformOrigin.y != 0.0f)
 				extra["renderTransformOrigin"] = DesignValue{
 					{ "x", transformOrigin.x }, { "y", transformOrigin.y } };
+			if (const auto itemTemplate = dc->DesignStrings.find(L"itemTemplate");
+				itemTemplate != dc->DesignStrings.end()
+				&& !itemTemplate->second.empty())
+				extra["itemTemplate"] = ToUtf8(itemTemplate->second);
+			if (const auto controlTemplate = dc->DesignStrings.find(
+				L"controlTemplate");
+				controlTemplate != dc->DesignStrings.end()
+				&& !controlTemplate->second.empty())
+				extra["controlTemplate"] = ToUtf8(controlTemplate->second);
+			if (const auto contentTemplate = dc->DesignStrings.find(
+				L"contentTemplate");
+				contentTemplate != dc->DesignStrings.end()
+				&& !contentTemplate->second.empty())
+				extra["contentTemplate"] = ToUtf8(contentTemplate->second);
+			if (const auto contentText = dc->DesignStrings.find(L"contentText");
+				contentText != dc->DesignStrings.end())
+				extra["contentText"] = ToUtf8(contentText->second);
+			if (const auto headerTemplate = dc->DesignStrings.find(
+				L"headerTemplate");
+				headerTemplate != dc->DesignStrings.end()
+				&& !headerTemplate->second.empty())
+				extra["headerTemplate"] = ToUtf8(headerTemplate->second);
+			if (const auto headerText = dc->DesignStrings.find(L"headerText");
+				headerText != dc->DesignStrings.end())
+				extra["headerText"] = ToUtf8(headerText->second);
+			if (const auto headerRegion = dc->DesignStrings.find(
+				L"headeredRegion");
+				headerRegion != dc->DesignStrings.end()
+				&& headerRegion->second == L"header")
+				extra["headeredRegion"] = "header";
+			else if (auto* headered = dynamic_cast<HeaderedContentControl*>(runtimeParent);
+				headered && headered->GetVisualHeader() == c)
+				extra["headeredRegion"] = "header";
+			if (const auto itemsSource = dc->DesignStrings.find(
+				L"itemsSourceResource");
+				itemsSource != dc->DesignStrings.end()
+				&& !itemsSource->second.empty())
+				extra["itemsSourceResource"] = ToUtf8(itemsSource->second);
+			if (const auto containerStyle = dc->DesignStrings.find(
+				L"itemContainerStyle");
+				containerStyle != dc->DesignStrings.end()
+				&& !containerStyle->second.empty())
+				extra["itemContainerStyle"] = ToUtf8(containerStyle->second);
+			if (const auto itemsPanel = dc->DesignStrings.find(L"itemsPanel");
+				itemsPanel != dc->DesignStrings.end()
+				&& !itemsPanel->second.empty())
+				extra["itemsPanel"] = ToUtf8(itemsPanel->second);
 
 			if (auto* splitParent = AsSplitContainer(dc->DesignerParent))
 			{
@@ -9503,9 +10798,15 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 				for (const auto& kv : dc->EventHandlers)
 				{
 					if (kv.first.empty()) continue;
+					auto publicEventName = kv.first;
+					DesignerComponentType attachedOwner;
+					std::wstring attachedEvent;
+					if (DesignerEventCatalog::TryParseAttachedComponentEventKey(
+						publicEventName, attachedOwner, attachedEvent))
+						publicEventName = std::move(attachedEvent);
 					const auto handlerName =
 						DesignerEventCatalog::ResolveHandlerName(
-							kv.second, dc->Name, kv.first);
+							kv.second, dc->Name, publicEventName);
 					if (handlerName.empty()) continue;
 					ev[ToUtf8(kv.first)] = ToUtf8(handlerName);
 				}
@@ -9517,46 +10818,66 @@ bool DesignerCanvas::BuildDesignDocument(DesignerModel::DesignDocument& document
 				DesignValue bindings = DesignValue::object();
 				for (const auto& [targetProperty, binding] : dc->DataBindings)
 				{
+					DesignerDataContextSchema elementSourceSchema;
+					auto scopedSourceSchema = ResolveBindingSourceSchema(
+						*dc, _wcsicmp(targetProperty.c_str(), L"DataContext") == 0,
+						_dataContextSchema);
+					const DesignerDataContextSchema* sourceSchema = scopedSourceSchema
+						? &*scopedSourceSchema : nullptr;
+					if (!binding.ElementName.empty())
+					{
+						auto* source = FindControlInstanceByName(binding.ElementName);
+						if (!source)
+						{
+							if (outError) *outError = L"控件 " + dc->Name
+								+ L" 的 ElementName 引用了不存在的控件："
+								+ binding.ElementName;
+							return false;
+						}
+						elementSourceSchema = DesignerBindingUtils::BuildSourceSchema(*source);
+						sourceSchema = &elementSourceSchema;
+					}
+					else if (binding.RelativeSource
+						== DesignerBindingRelativeSource::Self)
+					{
+						elementSourceSchema = DesignerBindingUtils::BuildSourceSchema(*c);
+						sourceSchema = &elementSourceSchema;
+					}
+					else if (binding.RelativeSource
+						== DesignerBindingRelativeSource::FindAncestor)
+					{
+						if (auto* source = DesignerBindingUtils::FindAncestorSource(
+							*c, binding))
+						{
+							elementSourceSchema = DesignerBindingUtils::BuildSourceSchema(
+								*source);
+							sourceSchema = &elementSourceSchema;
+						}
+						else sourceSchema = nullptr;
+					}
+					if (binding.IsMultiBinding()) sourceSchema = nullptr;
 					const BindingPropertyMetadata* metadata = nullptr;
 					std::wstring validationError;
-					const auto* customProperty = FindCustomProperty(
-						*dc, targetProperty);
-					const bool deferredCustomProperty = customProperty
-						&& !c->FindPropertyMetadata(targetProperty);
-					const bool valid = deferredCustomProperty
-						? DesignerBindingUtils::ValidateTarget(
-							CustomBindingTargetMetadata(*customProperty),
-							binding, &validationError, &_dataContextSchema)
-						: DesignerBindingUtils::Validate(
+					const bool valid = DesignerBindingUtils::Validate(
 							*c, targetProperty, binding, &metadata,
-							&validationError, &_dataContextSchema);
+							&validationError, sourceSchema);
 					if (!valid)
 					{
 						if (outError) *outError = L"控件 " + dc->Name + L"：" + validationError;
 						return false;
 					}
 
-					DesignValue bindingDefinition{
-						{ "source", ToUtf8(binding.SourceProperty) },
-						{ "mode", static_cast<int>(binding.Mode) },
-						{ "updateMode", static_cast<int>(binding.UpdateMode) }
-					};
-					const auto converterName = DesignerBindingUtils::Trim(binding.Converter);
-					if (!converterName.empty())
-					{
-						const auto registered = BindingValueConverterRegistry::Find(converterName);
-						bindingDefinition["converter"] = ToUtf8(
-							registered ? registered->Name : converterName);
-					}
-					const auto& persistedTarget = deferredCustomProperty
-						? customProperty->Name : metadata->Name();
-					bindings[ToUtf8(persistedTarget)] = std::move(bindingDefinition);
+					auto bindingDefinition =
+						DesignerBindingUtils::WriteBindingDefinition(binding);
+					bindings[ToUtf8(metadata->Name())] = std::move(bindingDefinition);
 				}
 				node.Bindings = std::move(bindings);
 			}
 			document.Nodes.push_back(std::move(node));
 		}
 
+		if (!DesignerModel::DesignDataResourceUtils::ValidateAndCanonicalize(
+			document, outError)) return false;
 		return true;
 	}
 	catch (const std::exception& expander)
@@ -9704,6 +11025,7 @@ bool DesignerCanvas::BuildEventHandlerIndex(
 	DesignerModel::DesignDocument document;
 	document.Form.Name = _designedFormName;
 	document.Form.EventHandlers = _designedFormEventHandlers;
+	document.Components = _componentDefinitions;
 	document.Nodes.reserve(_designerControls.size());
 	for (const auto& control : _designerControls)
 	{
@@ -9712,8 +11034,7 @@ bool DesignerCanvas::BuildEventHandlerIndex(
 		node.Id = control->StableId;
 		node.Name = control->Name;
 		node.Type = control->Type;
-		node.CustomType = control->CustomType;
-		node.CustomEvents = control->CustomEvents;
+		node.ComponentType = control->ComponentType;
 		for (const auto& [eventName, handler] : control->EventHandlers)
 			if (!eventName.empty() && !handler.empty())
 				node.Events[ToUtf8(eventName)] = ToUtf8(handler);
@@ -9752,7 +11073,7 @@ DesignerDocumentTransactionResult DesignerCanvas::UpdateEventHandler(
 		if (found == _designerControls.end() || control->StableId <= 0)
 			return fail(L"事件目标控件不属于当前设计文档。");
 		descriptor = DesignerEventCatalog::FindControlEvent(
-			control->Type, eventName, control->CustomEvents);
+			control->Type, eventName, control->ComponentEvents);
 	}
 	else
 	{
@@ -9854,7 +11175,7 @@ DesignerDocumentTransactionResult DesignerCanvas::UpdateEventHandlers(
 		if (!stableIds.insert(control->StableId).second)
 			return fail(L"多选事件目标包含重复控件。");
 		auto descriptor = DesignerEventCatalog::FindControlEvent(
-			control->Type, eventName, control->CustomEvents);
+			control->Type, eventName, control->ComponentEvents);
 		if (!descriptor)
 			return fail(L"控件 “" + control->Name + L"” 不支持事件 "
 				+ eventName + L"。");
@@ -10168,66 +11489,11 @@ bool DesignerCanvas::ApplyDesignDocument(
 	const DesignerModel::DesignDocument& document,
 	std::wstring* outError)
 {
-	for (const auto& node : document.Nodes)
-	{
-		if (node.CustomType.Empty()) continue;
-		const auto installed = _customControlDescriptors.find(
-			node.CustomType.RegistryKey());
-		if (installed == _customControlDescriptors.end()
-			|| installed->second.CustomType != node.CustomType
-			|| installed->second.Type != node.Type)
-			continue;
-		for (const auto& [eventKey, handlerValue] : node.Events.ObjectItems())
-		{
-			if ((handlerValue.is_boolean() && !handlerValue.get<bool>())
-				|| (handlerValue.is_string()
-					&& TrimWs(FromUtf8(handlerValue.get<std::string>())).empty()))
-				continue;
-			const auto eventName = FromUtf8(eventKey);
-			const auto persistedEvent = std::find_if(
-				node.CustomEvents.begin(), node.CustomEvents.end(),
-				[&](const auto& event)
-				{ return _wcsicmp(event.Name.c_str(), eventName.c_str()) == 0; });
-			if (persistedEvent == node.CustomEvents.end()) continue;
-			const auto installedEvent = std::find_if(
-				installed->second.CustomEvents.begin(),
-				installed->second.CustomEvents.end(),
-				[&](const auto& event)
-				{
-					return _wcsicmp(event.Name.c_str(), eventName.c_str()) == 0;
-				});
-			if (installedEvent == installed->second.CustomEvents.end()
-				|| installedEvent->EventField != persistedEvent->EventField
-				|| installedEvent->Signature != persistedEvent->Signature)
-			{
-				if (outError)
-					*outError = L"控件“" + node.Name + L"”使用的自定义事件“"
-						+ eventName
-						+ L"”与当前控件清单不兼容；请恢复原事件名称、field 和 signature，"
-							L"或先移除该事件绑定。";
-				return false;
-			}
-		}
-	}
-
 	DesignerModel::MaterializedControlTree materialized;
 	DesignerModel::DesignDocumentMaterializationOptions materializationOptions;
 	materializationOptions.ControlFactory =
 		[](UIClass type) { return DesignerControlFactory::Create(type); };
-	materializationOptions.CustomControlFactory =
-		[this](const DesignerModel::DesignNode& node) -> std::unique_ptr<Control>
-		{
-			const auto found = _customControlDescriptors.find(
-				node.CustomType.RegistryKey());
-			if (found == _customControlDescriptors.end()
-				|| found->second.CustomType != node.CustomType
-				|| found->second.Type != node.Type
-				|| !found->second.PreviewFactory)
-				return nullptr;
-			return found->second.PreviewFactory(0, 0);
-		};
-	materializationOptions.AllowCustomControlProxy = true;
-	materializationOptions.AllowDeferredCustomMetadata = true;
+	materializationOptions.AllowNativeSurfacePlaceholder = true;
 	if (!DesignerModel::DesignDocumentMaterializer::Materialize(
 		document, materialized, materializationOptions, outError))
 		return false;
@@ -10242,6 +11508,14 @@ bool DesignerCanvas::ApplyDesignDocument(
 		if (!SetCodeBehind(document.CodeBehind, outError)) return false;
 		_dataContextSchema = document.DataContextSchema;
 		DesignerDataContextSchemaUtils::Canonicalize(_dataContextSchema);
+		_componentDefinitions = document.Components;
+		_controlTemplates = document.ControlTemplates;
+		_dataTypes = document.DataTypes;
+		_dataTemplates = document.DataTemplates;
+		_itemsPanelTemplates = document.ItemsPanelTemplates;
+		_groupStyles = document.GroupStyles;
+		_dataLists = document.DataLists;
+		_collectionViews = document.CollectionViews;
 		_nextStableControlId = document.NextStableId;
 
 		// A detached runtime tree uses the framework default for controls without
@@ -10270,36 +11544,12 @@ bool DesignerCanvas::ApplyDesignDocument(
 
 		_designerControls = std::move(materialized.Controls);
 		for (const auto& control : _designerControls)
-		{
-			if (!control || control->CustomType.Empty()) continue;
-			const auto found = _customControlDescriptors.find(
-				control->CustomType.RegistryKey());
-			if (found != _customControlDescriptors.end()
-				&& found->second.CustomType == control->CustomType)
-			{
-				control->CustomProperties = found->second.CustomProperties;
-				control->CustomEvents = found->second.CustomEvents;
-				if (control->ControlInstance)
-				{
-					AttachPreviewPropertySink(*control);
-					for (const auto& property : control->CustomProperties)
-					{
-						const auto stored = control->MetadataProperties.find(
-							property.Name);
-						(void)DesignerPreviewBridge::SetValue(
-							*control->ControlInstance, property.Name,
-							stored == control->MetadataProperties.end()
-								? property.DefaultValue : stored->second);
-					}
-				}
-			}
-		}
-		for (const auto& control : _designerControls)
 			if (control)
 				UpdateDefaultNameCounterFromName(
 					control->Type, control->Name);
 
-		if (!SetDocumentStyleSheet(document.StyleSheet, outError))
+		if (!SetDocumentStyleSheet(
+			document.StyleSheet, outError, {}, false))
 			return false;
 		// Preview failures are diagnostics, not document-corruption failures: the
 		// persisted configuration remains editable without a compatible source.

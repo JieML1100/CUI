@@ -15,6 +15,9 @@ class StyleSheetEditorDialog : public Form
 public:
 	bool Applied = false;
 	DesignerStyleSheet ResultStyleSheet;
+	// Sequential resource-key edits performed in this dialog. The document
+	// owner uses them to rewrite direct property StaticResource expressions.
+	std::vector<std::pair<std::wstring, std::wstring>> ResourceRenames;
 
 	explicit StyleSheetEditorDialog(
 		const DesignerStyleSheet& styleSheet,

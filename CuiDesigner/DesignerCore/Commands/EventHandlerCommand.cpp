@@ -225,7 +225,7 @@ DesignerDocumentTransactionResult EventHandlerCommand::Apply(bool undo) const
 				|| (*found)->Name != delta.SubjectName
 				|| (*found)->Type != delta.ControlType
 				|| !DesignerEventCatalog::FindControlEvent(
-					(*found)->Type, delta.EventName, (*found)->CustomEvents))
+					(*found)->Type, delta.EventName, (*found)->ComponentEvents))
 			{
 				return DesignerDocumentTransactionResult::Failure(
 					DesignerDocumentTransactionState::Failed,

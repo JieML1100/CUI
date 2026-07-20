@@ -37,6 +37,77 @@
       <RotateTransform Angle="-2"/>
       <ScaleTransform ScaleX="1.01999998" ScaleY="1.01999998"/>
     </TransformGroup>
+    <DataType x:Key="DemoChoice">
+      <DataType.Properties>
+		<Property Path="Id" Kind="Int"/>
+        <Property Path="Text" Kind="String"/>
+      </DataType.Properties>
+    </DataType>
+    <DataList x:Key="BasicChoices" ItemType="DemoChoice">
+      <DataRecord Id="1" Text="动态 XAML"/>
+      <DataRecord Id="2" Text="声明式数据资源"/>
+      <DataRecord Id="3" Text="NativeSurface 扩展"/>
+    </DataList>
+	<DataType x:Key="DemoTask">
+	  <DataType.Properties>
+		<Property Path="Id" Kind="Int"/>
+		<Property Path="Text" Kind="String"/>
+		<Property Path="Category" Kind="String"/>
+		<Property Path="State" Kind="Int"/>
+		<Property Path="Active" Kind="Bool"/>
+	  </DataType.Properties>
+	</DataType>
+	<DataList x:Key="DemoTasks" ItemType="DemoTask">
+	  <DataRecord Id="1" Text="全部任务" Category="概览" State="12" Active="false"/>
+	  <DataRecord Id="2" Text="今天" Category="待处理" State="4" Active="true"/>
+	  <DataRecord Id="3" Text="进行中" Category="待处理" State="6" Active="true"/>
+	  <DataRecord Id="4" Text="已完成" Category="归档" State="2" Active="true"/>
+	</DataList>
+	<CollectionViewSource x:Key="ActiveDemoTasks" Source="{StaticResource DemoTasks}">
+	  <CollectionViewSource.GroupDescriptions>
+		<GroupDescription PropertyName="Category"/>
+	  </CollectionViewSource.GroupDescriptions>
+	  <CollectionViewSource.AggregateDescriptions>
+		<AggregateDescription Name="TotalState" PropertyName="State" Function="Sum"/>
+	  </CollectionViewSource.AggregateDescriptions>
+	  <CollectionViewSource.FilterDescriptions>
+		<FilterDescription PropertyName="Active" Value="true"/>
+	  </CollectionViewSource.FilterDescriptions>
+	  <CollectionViewSource.SortDescriptions>
+		<SortDescription PropertyName="State" Direction="Descending"/>
+	  </CollectionViewSource.SortDescriptions>
+	</CollectionViewSource>
+	<DataTemplate x:Key="DemoTaskRow" DataType="DemoTask">
+	  <StackPanel Orientation="Horizontal" Height="32" Spacing="8">
+		<Label Text="{Binding Text}" Width="138" Height="24"/>
+		<Label Text="{Binding State}" ForeColor="{StaticResource TextMuted}" Width="36" Height="24"/>
+	  </StackPanel>
+	</DataTemplate>
+	<DataTemplate x:Key="DemoTaskGroupHeader" DataType="CollectionViewGroup">
+	  <StackPanel Orientation="Horizontal" Spacing="6" Height="24">
+		<Label Text="{Binding Key}" ForeColor="{StaticResource Accent}" FontSize="13" Height="24"/>
+		<Label Text="{Binding ItemCount}" ForeColor="{StaticResource TextMuted}" FontSize="12" Height="24"/>
+		<Label Text="{Binding Aggregates.TotalState}" ForeColor="{StaticResource TextMuted}" FontSize="12" Height="24"/>
+	  </StackPanel>
+	</DataTemplate>
+	<GroupStyle x:Key="DemoTaskGroups"
+	  HeaderTemplate="{StaticResource DemoTaskGroupHeader}"
+	  HeaderIndent="10" HeaderSpacing="3" HeaderHeight="24"/>
+	<ItemsPanelTemplate x:Key="DemoTaskItemsPanel">
+	  <VirtualizingStackPanel ItemHeight="36" Spacing="2" CacheLength="1"/>
+	</ItemsPanelTemplate>
+	<Style TargetType="SelectorItem" x:Key="DemoTaskContainer">
+	  <Setter Property="Padding" Value="6,2"/>
+	  <Setter Property="CornerRadius" Value="6"/>
+	  <Style.Triggers>
+		<Trigger Property="IsMouseOver" Value="true">
+		  <Setter Property="BackColor" Value="{StaticResource SurfaceSoft}"/>
+		</Trigger>
+		<Trigger Property="IsSelected" Value="true">
+		  <Setter Property="BackColor" Value="{StaticResource Accent}"/>
+		</Trigger>
+	  </Style.Triggers>
+	</Style>
     <Style TargetType="Panel" x:Key="SurfacePanel">
       <Setter Property="BackColor" Value="{StaticResource Surface}"/>
       <Setter Property="BorderColor" Value="{StaticResource Border}"/>
@@ -82,15 +153,11 @@
         <RadioBox x:Name="radioB" DesignId="105" Canvas.Left="130" Canvas.Top="108" Height="26" OnChecked="HandleRadio" Text="方案 B" Width="110"/>
         <TextBox x:Name="nameInput" DesignId="106" Canvas.Left="14" Canvas.Top="154" Height="30" Text="可编辑文本" Width="260"/>
         <PasswordBox x:Name="passwordInput" DesignId="107" Canvas.Left="14" Canvas.Top="196" Height="30" Text="cui-xaml" Width="260"/>
-        <ComboBox x:Name="basicCombo" DesignId="108" Canvas.Left="14" Canvas.Top="238" Height="30" OnSelectionChanged="HandleComboSelection" SelectedIndex="0" Text="动态 XAML" Width="260">
-          <ComboBoxItem Content="动态 XAML"/>
-          <ComboBoxItem Content="静态生成 C++"/>
-          <ComboBoxItem Content="手写 C++ 控件树"/>
-        </ComboBox>
+        <ComboBox x:Name="basicCombo" DesignId="108" Canvas.Left="14" Canvas.Top="238" DisplayMemberPath="Text" Height="30" ItemsSource="{StaticResource BasicChoices}" OnSelectionChanged="HandleComboSelection" SelectedIndex="0" SelectedValuePath="Id" Width="260"/>
         <DateTimePicker x:Name="datePicker" DesignId="109" Canvas.Left="14" Canvas.Top="280" Height="30" Width="260"/>
         <NumericUpDown x:Name="numberInput" DesignId="110" Canvas.Left="14" Canvas.Top="322" Height="30" Max="100" Min="0" OnValueChanged="HandleNumericValue" Text="42" Value="42" Width="160"/>
         <LinkLabel x:Name="docsLink" DesignId="111" Canvas.Left="14" Canvas.Top="368" Height="26" OnMouseClick="HandleDocsLink" Text="CUI XAML 运行时文档" Width="300"/>
-        <test:GradientInput x:Name="gradientInput" DesignId="112" d:CppType="CustomTextBox1" d:Header="CustomControls.h" d:BaseType="TextBox" d:Constructor="TextBounds" Canvas.Left="370" Canvas.Top="54" Height="42" Text="注册式自定义控件：GradientInput" Width="360">
+		<TextBox x:Name="gradientInput" DesignId="112" Canvas.Left="370" Canvas.Top="54" Height="42" Text="XAML 画刷输入框：GradientInput" Width="360">
           <Control.Foreground>
             <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
               <GradientStop Color="#FFE30940" Offset="0"/>
@@ -99,7 +166,7 @@
               <GradientStop Color="#FF1373E8" Offset="1"/>
             </LinearGradientBrush>
           </Control.Foreground>
-        </test:GradientInput>
+		</TextBox>
         <Label x:Name="gradientLabel" DesignId="113" Canvas.Left="370" Canvas.Top="112" Height="34" Style="{StaticResource ResourceGeometryVisual}" Text="自定义控件的画刷、裁剪与变换均由 XAML 表达" Width="440" RenderTransformOrigin="0.5,0.5">
           <Control.Foreground>
             <RadialGradientBrush Center="0.5,0.5" GradientOrigin="0.200000003,0.200000003" RadiusX="0.699999988" RadiusY="0.899999976">
@@ -110,13 +177,17 @@
             </RadialGradientBrush>
           </Control.Foreground>
         </Label>
-        <GroupBox x:Name="basicGroup" DesignId="114" Canvas.Left="850" Canvas.Top="48" Height="180" Text="GroupBox · 用户设置" Width="430">
-          <Label x:Name="groupHint" DesignId="115" Canvas.Left="18" Canvas.Top="28" Height="24" Text="这些子控件的所有权同样来自 XAML 层级" Width="350"/>
-          <TextBox x:Name="groupName" DesignId="116" Canvas.Left="18" Canvas.Top="66" Height="28" Text="XAML User" Width="260"/>
-          <CheckBox x:Name="groupEnabled" DesignId="117" Canvas.Left="18" Canvas.Top="108" Checked="true" Height="26" Text="启用高级选项" Width="220"/>
+        <GroupBox x:Name="basicGroup" DesignId="114" Canvas.Left="850" Canvas.Top="48" Header="GroupBox · 用户设置" Height="180" Width="430">
+          <Panel x:Name="basicGroupContent" DesignId="120">
+            <Label x:Name="groupHint" DesignId="115" Canvas.Left="18" Canvas.Top="12" Height="24" Text="这些子控件的所有权同样来自 XAML 层级" Width="350"/>
+            <TextBox x:Name="groupName" DesignId="116" Canvas.Left="18" Canvas.Top="50" Height="28" Text="XAML User" Width="260"/>
+            <CheckBox x:Name="groupEnabled" DesignId="117" Canvas.Left="18" Canvas.Top="92" Checked="true" Height="26" Text="启用高级选项" Width="220"/>
+          </Panel>
         </GroupBox>
-        <Expander x:Name="basicExpander" DesignId="118" Canvas.Left="850" Canvas.Top="250" Height="180" OnExpandedChanged="HandleExpander" Text="展开：运行时能力说明" Width="430">
-          <Label x:Name="expanderText" DesignId="119" Canvas.Left="16" Canvas.Top="24" Height="80" Text="XAML 负责结构、属性、样式和事件名；C++ 负责真实业务对象与函数实现。" Width="380"/>
+        <Expander x:Name="basicExpander" DesignId="118" Canvas.Left="850" Canvas.Top="250" Header="展开：运行时能力说明" Height="180" OnExpandedChanged="HandleExpander" Width="430">
+		  <Panel x:Name="basicExpanderContent" DesignId="121">
+			<Label x:Name="expanderText" DesignId="119" Canvas.Left="16" Canvas.Top="24" Height="80" Text="XAML 负责结构、属性、样式和事件名；C++ 负责真实业务对象与函数实现。" Width="380"/>
+		  </Panel>
         </Expander>
       </Panel>
     </TabPage>
@@ -152,7 +223,7 @@
             <RichTextBox x:Name="splitNotes" DesignId="211" Canvas.Left="14" Canvas.Top="62" Height="160" Text="SplitContainer、SideBar 与 BreadcrumbBar 全部来自 XAML 控件树。" Width="320"/>
           </SplitContainer.SecondPanel>
         </SplitContainer>
-        <GroupBox x:Name="containerGroup" DesignId="212" Canvas.Left="720" Canvas.Top="310" Height="150" Text="组合容器" Width="570">
+        <GroupBox x:Name="containerGroup" DesignId="212" Canvas.Left="720" Canvas.Top="310" Header="组合容器" Height="150" Width="570">
           <Label x:Name="containerGroupText" DesignId="213" Canvas.Left="18" Canvas.Top="32" Height="50" Text="编辑 DemoWindow.cui.xaml 后重新启动，即可比较声明式布局与旧 C++ BuildTab_*。" Width="500"/>
         </GroupBox>
       </Panel>
@@ -160,12 +231,7 @@
     <TabPage Header="数据控件">
       <Panel x:Name="dataSurface" DesignId="300" Anchor="Left, Top, Right, Bottom" Canvas.Left="10" Canvas.Top="36" Height="520" Margin="0, 0, 45, 70" Padding="10" Style="{StaticResource SurfacePanel}" Width="1325">
         <TreeView x:Name="demoTree" DesignId="301" Canvas.Left="12" Canvas.Top="14" Height="210" Width="210"/>
-        <ListBox x:Name="demoListBox" DesignId="302" Canvas.Left="238" Canvas.Top="14" Height="210" OnItemClick="HandleListItem" Width="210">
-          <ListBoxItem Content="全部任务" IsSelected="true"/>
-          <ListBoxItem Content="今天"/>
-          <ListBoxItem Content="进行中"/>
-          <ListBoxItem Content="已完成"/>
-        </ListBox>
+		<ListBox x:Name="demoListBox" DesignId="302" Canvas.Left="238" Canvas.Top="14" DisplayMemberPath="Text" GroupStyle="{StaticResource DemoTaskGroups}" Height="210" ItemContainerStyle="{StaticResource DemoTaskContainer}" ItemsPanel="{StaticResource DemoTaskItemsPanel}" ItemsSource="{StaticResource ActiveDemoTasks}" ItemTemplate="{StaticResource DemoTaskRow}" OnSelectionChanged="HandleListBoxSelection" SelectedIndex="0" SelectedValuePath="Text" Width="210"/>
         <ListView x:Name="demoList" DesignId="303" Canvas.Left="12" Canvas.Top="242" Height="230" OnItemClick="HandleListItem" SelectionMode="Multiple" ShowCheckBoxes="true" ViewMode="Details" Width="436">
           <ListView.Columns>
             <ListViewColumn Header="Name" Width="170"/>

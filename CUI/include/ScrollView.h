@@ -10,7 +10,7 @@ private:
 	bool _alwaysShowVScroll = false;
 	bool _alwaysShowHScroll = false;
 	bool _autoContentSize = true;
-	SIZE _contentSize = SIZE{ 0, 0 };
+	cui::core::Size _contentSizeDip{ 0.0f, 0.0f };
 	int _mouseWheelStep = 48;
 
 protected:
@@ -52,6 +52,8 @@ public:
 	CUI_SCROLL_VIEW_PROPERTY(bool, AutoContentSize);
 	CUI_SCROLL_VIEW_PROPERTY(SIZE, ContentSize);
 	CUI_SCROLL_VIEW_PROPERTY(int, MouseWheelStep);
+	cui::core::Size GetContentSizeDip() const noexcept;
+	void SetContentSizeDip(cui::core::Size value);
 
 #undef CUI_SCROLL_VIEW_PROPERTY
 
@@ -68,6 +70,8 @@ public:
 
 	void ScrollBy(int deltaX, int deltaY);
 	void SetScrollOffset(int offsetX, int offsetY);
+	/** Scrolls the nearest descendant rectangle into the current viewport. */
+	bool BringDescendantIntoView(Control* descendant);
 
 private:
 	bool _draggingVerticalScrollBar = false;

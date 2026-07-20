@@ -109,10 +109,9 @@ namespace cui::test
             const bool reportTimings = timingValue && *timingValue
                 && !(timingValue[0] == '0' && timingValue[1] == '\0');
             std::free(timingValue);
-
             for (const auto& test : _tests)
             {
-                std::cout << "[ RUN      ] " << test.Name << '\n';
+				std::cout << "[ RUN      ] " << test.Name << '\n';
                 const auto started = std::chrono::steady_clock::now();
                 try
                 {

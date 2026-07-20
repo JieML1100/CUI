@@ -168,8 +168,13 @@ namespace
 				{
 					std::wstring typed;
 					if (!value.TryGet(typed)) return false;
+					const auto previousName = target.Name;
 					target.Name = context.MakeUniqueName
 						? context.MakeUniqueName(target, typed) : std::move(typed);
+					if (context.RewriteElementNameReferences
+						&& previousName != target.Name)
+						context.RewriteElementNameReferences(
+							previousName, target.Name);
 					if (context.SyncDefaultNameCounter)
 						context.SyncDefaultNameCounter(target.Type, target.Name);
 					return true;
@@ -357,6 +362,132 @@ namespace
 				{
 					return BindingValue(std::wstring{});
 				});
+
+			auto itemsControlOnly = [](const DesignerControl& target)
+			{
+				return target.Type == UIClass::UI_ItemsControl
+					|| target.Type == UIClass::UI_ListBox;
+			};
+			auto itemTemplateControl = [](const DesignerControl& target)
+			{
+				return target.Type == UIClass::UI_ItemsControl
+					|| target.Type == UIClass::UI_ListBox
+					|| target.Type == UIClass::UI_ComboBox
+					|| target.Type == UIClass::UI_TreeView;
+			};
+			auto dataListControl = [](const DesignerControl& target)
+			{
+				return target.Type == UIClass::UI_ItemsControl
+					|| target.Type == UIClass::UI_ComboBox
+					|| target.Type == UIClass::UI_ListView
+					|| target.Type == UIClass::UI_ListBox
+					|| target.Type == UIClass::UI_TreeView;
+			};
+			auto listBoxOnly = [](const DesignerControl& target)
+			{
+				return target.Type == UIClass::UI_ListBox;
+			};
+			auto contentHostOnly = [](const DesignerControl& target)
+			{
+				return target.Type == UIClass::UI_ContentPresenter
+					|| target.Type == UIClass::UI_ContentControl
+					|| target.Type == UIClass::UI_Button
+					|| target.Type == UIClass::UI_GroupBox
+					|| target.Type == UIClass::UI_Expander;
+			};
+			auto controlTemplateHost = [](const DesignerControl& target)
+			{
+				return !target.ComponentType.Empty()
+					|| target.Type == UIClass::UI_ItemsControl
+					|| target.Type == UIClass::UI_ListBox
+					|| target.Type == UIClass::UI_ContentControl
+					|| target.Type == UIClass::UI_Button
+					|| target.Type == UIClass::UI_GroupBox
+					|| target.Type == UIClass::UI_Expander;
+			};
+			auto headeredContentOnly = [](const DesignerControl& target)
+			{
+				return target.Type == UIClass::UI_GroupBox
+					|| target.Type == UIClass::UI_Expander;
+			};
+			auto designString = [](const wchar_t* key)
+			{
+				return [key](const DesignerControl& target,
+					const DesignerControlPropertyContext&)
+				{
+					const auto found = target.DesignStrings.find(key);
+					return BindingValue(found == target.DesignStrings.end()
+						? std::wstring{} : found->second);
+				};
+			};
+			auto setDesignString = [](const wchar_t* key)
+			{
+				return [key](DesignerControl& target,
+					DesignerControlPropertyContext&, const BindingValue& value)
+				{
+					std::wstring typed;
+					if (!value.TryGet(typed)) return false;
+					typed = Trim(std::move(typed));
+					if (typed.empty()) target.DesignStrings.erase(key);
+					else target.DesignStrings[key] = std::move(typed);
+					return true;
+				};
+			};
+			auto emptyString = [](const DesignerControl&,
+				const DesignerControlPropertyContext&)
+			{
+				return BindingValue(std::wstring{});
+			};
+			add(Property(L"Template", L"Appearance", 200, 5,
+				DesignerStyleValueKind::String,
+				DesignerControlPropertyEditorKind::Choice, true),
+				controlTemplateHost, designString(L"controlTemplate"),
+				setDesignString(L"controlTemplate"), emptyString);
+			add(Property(L"ItemsSourceResource", L"Data", 600, 20,
+				DesignerStyleValueKind::String,
+				DesignerControlPropertyEditorKind::Choice, true), dataListControl,
+				designString(L"itemsSourceResource"),
+				setDesignString(L"itemsSourceResource"), emptyString);
+			add(Property(L"ItemTemplate", L"Data", 600, 30,
+				DesignerStyleValueKind::String,
+				DesignerControlPropertyEditorKind::Choice, true), itemTemplateControl,
+				designString(L"itemTemplate"),
+				setDesignString(L"itemTemplate"), emptyString);
+			add(Property(L"Content", L"Data", 80, 10,
+				DesignerStyleValueKind::String,
+				DesignerControlPropertyEditorKind::Text, true), contentHostOnly,
+				designString(L"contentText"),
+				setDesignString(L"contentText"), emptyString);
+			add(Property(L"ContentTemplate", L"Data", 80, 30,
+				DesignerStyleValueKind::String,
+				DesignerControlPropertyEditorKind::Choice, true), contentHostOnly,
+				designString(L"contentTemplate"),
+				setDesignString(L"contentTemplate"), emptyString);
+			add(Property(L"Header", L"Data", 80, 40,
+				DesignerStyleValueKind::String,
+				DesignerControlPropertyEditorKind::Text, true), headeredContentOnly,
+				designString(L"headerText"),
+				setDesignString(L"headerText"), emptyString);
+			add(Property(L"HeaderTemplate", L"Data", 80, 50,
+				DesignerStyleValueKind::String,
+				DesignerControlPropertyEditorKind::Choice, true), headeredContentOnly,
+				designString(L"headerTemplate"),
+				setDesignString(L"headerTemplate"), emptyString);
+			add(Property(L"GroupStyle", L"Data", 600, 40,
+				DesignerStyleValueKind::String,
+				DesignerControlPropertyEditorKind::Choice, true), itemsControlOnly,
+				designString(L"groupStyle"),
+				setDesignString(L"groupStyle"), emptyString);
+			add(Property(L"ItemsPanel", L"Layout", 550, 20,
+				DesignerStyleValueKind::String,
+				DesignerControlPropertyEditorKind::Choice, true), itemsControlOnly,
+				designString(L"itemsPanel"),
+				setDesignString(L"itemsPanel"), emptyString);
+			add(Property(L"ItemContainerStyle", L"Appearance", 500, 35,
+				DesignerStyleValueKind::String,
+				DesignerControlPropertyEditorKind::Choice, true), listBoxOnly,
+				designString(L"itemContainerStyle"),
+				setDesignString(L"itemContainerStyle"), emptyString);
 
 			return result;
 		}();

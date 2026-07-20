@@ -337,7 +337,7 @@ bool Panel::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int local
 		if (childRect.Contains(cui::core::Point{
 			(float)localX, (float)localY }))
 		{
-			child->ProcessMessage(
+			child->DispatchMessage(
 				message, wParam, lParam,
 				static_cast<int>(std::floor((float)localX - childLocation.x)),
 				static_cast<int>(std::floor((float)localY - childLocation.y)));

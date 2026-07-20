@@ -36,6 +36,9 @@
     <ClCompile Include="DataContextSchemaEditorDialog.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="DataResourcesEditorDialog.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="DesignerControlFactory.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -55,12 +58,6 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="DesignerStructureEdit.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="DesignerPreviewPlugin.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="DesignerPreviewBridge.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="DesignerSelfTest.cpp">
@@ -176,6 +173,9 @@
     <ClInclude Include="DataContextSchemaEditorDialog.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="DataResourcesEditorDialog.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="DesignerDataContextSchemaUtils.h">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -213,15 +213,6 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="DesignerPropertyValue.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="DesignerPreviewPluginAbi.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="DesignerPreviewPlugin.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="DesignerPreviewBridge.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="DesignerStyleSheet.h">
@@ -288,6 +279,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="DesignerModel\DesignDocument.h">
+      <Filter>DesignerModel</Filter>
+    </ClInclude>
+    <ClInclude Include="DesignerModel\DesignDataResourceEditorModel.h">
       <Filter>DesignerModel</Filter>
     </ClInclude>
     <ClInclude Include="DesignerModel\DesignDocumentEventIndex.h">

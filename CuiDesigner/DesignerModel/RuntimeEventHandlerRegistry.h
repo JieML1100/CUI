@@ -12,6 +12,12 @@
 
 namespace DesignerModel
 {
+struct RuntimeComponentEventRegistrationOptions
+{
+	/** Receive routed events even after an earlier handler marked them handled. */
+	bool HandledEventsToo = false;
+};
+
 /**
  * Declarative, signature-checked name router for dynamic document events.
  *
@@ -168,27 +174,40 @@ public:
 	}
 
 	/**
-	 * Registers an event declared by a portable custom-control contract.
-	 * The manifest cannot provide C++ types: this template proves that the
-	 * selected Event member has the exact function type of the fixed preset.
+	 * Registers a handler for an event owned by a XAML ComponentDefinition.
+	 * The callback has the stable signature
+	 * `void(Control*, DeclarativeEventArgs&)`; payload kind remains part
+	 * of the document contract and is available through args.Value.
 	 */
-	template<typename Owner, typename RuntimeEvent, typename Handler>
-	bool RegisterCustomControl(
+	template<typename Handler>
+	bool RegisterComponent(
 		std::wstring handlerName,
-		DesignerCustomControlType customType,
-		DesignerCustomEventDescriptor customEvent,
-		RuntimeEvent Owner::* eventMember,
+		DesignerComponentType componentType,
+		DesignerComponentEventDescriptor componentEvent,
 		Handler&& handler,
 		std::wstring* outError = nullptr)
 	{
-		static_assert(std::is_base_of_v<Control, Owner>,
-			"Runtime custom event owners must derive from Control");
+		return RegisterComponent(
+			std::move(handlerName), std::move(componentType),
+			std::move(componentEvent), {},
+			std::forward<Handler>(handler), outError);
+	}
+
+	template<typename Handler>
+	bool RegisterComponent(
+		std::wstring handlerName,
+		DesignerComponentType componentType,
+		DesignerComponentEventDescriptor componentEvent,
+		RuntimeComponentEventRegistrationOptions options,
+		Handler&& handler,
+		std::wstring* outError = nullptr)
+	{
 		try
 		{
 			std::wstring validationError;
-			if (customType.Empty())
+			if (componentType.Empty())
 			{
-				SetError(outError, L"自定义事件注册缺少控件类型身份。");
+				SetError(outError, L"组件事件注册缺少组件类型身份。");
 				return false;
 			}
 			if (!DesignerEventCatalog::ValidateHandlerName(
@@ -197,93 +216,57 @@ public:
 				SetError(outError, std::move(validationError));
 				return false;
 			}
-			auto descriptor = DesignerEventCatalog::FromCustomEvent(customEvent);
+			auto descriptor = DesignerEventCatalog::FromComponentEvent(
+				componentEvent);
 			if (!descriptor)
 			{
-				SetError(outError, L"自定义事件契约无效：" + customEvent.Name);
-				return false;
-			}
-			using Function = typename RuntimeEvent::function_type;
-			if (descriptor->Signature != std::type_index(typeid(Function)))
-			{
 				SetError(outError,
-					L"实际 C++ Event 成员与自定义事件签名预设不一致："
-					+ customEvent.Name);
+					L"组件事件契约无效：" + componentEvent.Name);
 				return false;
 			}
-			typename RuntimeEvent::std_function_type callback(
+			DeclarativeEvent::std_function_type callback(
 				std::forward<Handler>(handler));
 			if (!callback)
 			{
-				SetError(outError, L"运行时自定义事件处理函数为空。");
+				SetError(outError, L"运行时组件事件处理函数为空。");
 				return false;
 			}
+			const auto eventName = componentEvent.Name;
+			const auto ownerNamespace = componentType.XamlNamespace;
+			const auto ownerTypeName = componentType.XamlName;
 			return AddControlRoute(
-				std::move(handlerName),
-				UIClass::UI_Base,
-				customType.RegistryKey(),
-				std::move(*descriptor),
-				[eventMember, callback = std::move(callback)](
+				std::move(handlerName), UIClass::UI_Base,
+				componentType.RegistryKey(), std::move(*descriptor),
+				[eventName, ownerNamespace, ownerTypeName,
+				 handledEventsToo = options.HandledEventsToo,
+				 callback = std::move(callback)](
 					const RuntimeControlEventRequest& request,
 					EventConnection& connection,
 					std::wstring& error) mutable
 				{
-					auto* target = dynamic_cast<Owner*>(&request.Target);
-					if (!target)
-					{
-						error = L"自定义事件成员与目标控件 C++ 类型不匹配。";
-						return false;
-					}
-					connection = (target->*eventMember).Subscribe(callback);
+					connection = request.Target.OnDeclarativeEvent.Subscribe(
+						[eventName, ownerNamespace, ownerTypeName,
+						 handledEventsToo, callback](
+							Control* sender,
+							DeclarativeEventArgs& args) mutable
+						{
+							if (args.Name != eventName
+								|| args.OwnerNamespace != ownerNamespace
+								|| args.OwnerTypeName != ownerTypeName
+								|| (args.Handled && !handledEventsToo)) return;
+							callback(sender, args);
+						});
 					if (connection.Connected()) return true;
-					error = L"CUI Event 拒绝了空的自定义事件订阅。";
+					error = L"CUI Event 拒绝了空的组件事件订阅。";
 					return false;
 				},
 				outError);
 		}
 		catch (...)
 		{
-			SetError(outError, L"注册运行时自定义事件时资源分配失败。");
+			SetError(outError, L"注册运行时组件事件时资源分配失败。");
 			return false;
 		}
-	}
-
-	/**
-	 * Restricted bridge used by generated event sinks. Portable strings are
-	 * converted back into the same fixed custom-event contract before the real
-	 * C++ Event member and callable are type-checked by RegisterCustomControl.
-	 */
-	template<typename Owner, typename RuntimeEvent, typename Handler>
-	bool RegisterGeneratedCustomControl(
-		std::wstring handlerName,
-		std::wstring xamlNamespace,
-		std::wstring xamlName,
-		std::wstring eventName,
-		std::string eventField,
-		std::wstring signatureName,
-		RuntimeEvent Owner::* eventMember,
-		Handler&& handler,
-		std::wstring* outError = nullptr)
-	{
-		DesignerCustomEventSignature signature{};
-		if (!DesignerEventCatalog::TryParseCustomSignature(
-			signatureName, signature))
-		{
-			SetError(outError,
-				L"生成的自定义事件签名预设无效：" + signatureName);
-			return false;
-		}
-		DesignerCustomControlType customType;
-		customType.XamlNamespace = std::move(xamlNamespace);
-		customType.XamlName = std::move(xamlName);
-		DesignerCustomEventDescriptor customEvent;
-		customEvent.Name = std::move(eventName);
-		customEvent.EventField = std::move(eventField);
-		customEvent.Signature = signature;
-		return RegisterCustomControl(
-			std::move(handlerName), std::move(customType),
-			std::move(customEvent), eventMember,
-			std::forward<Handler>(handler), outError);
 	}
 
 	template<typename Owner, typename RuntimeEvent, typename Handler>
@@ -372,7 +355,7 @@ private:
 	bool AddControlRoute(
 		std::wstring handlerName,
 		UIClass controlType,
-		std::wstring customControlKey,
+		std::wstring componentTypeKey,
 		DesignerEventDescriptor descriptor,
 		ControlBinder binder,
 		std::wstring* outError);

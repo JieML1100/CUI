@@ -1,10 +1,13 @@
 #include "Binding.h"
+#include "BindingList.h"
 #include "Control.h"
 
 #include <algorithm>
 #include <cerrno>
 #include <cwchar>
 #include <cwctype>
+#include <iomanip>
+#include <locale>
 #include <mutex>
 #include <sstream>
 
@@ -30,27 +33,124 @@ namespace
 		return Lower(a) == Lower(b);
 	}
 
-	bool TryParsePropertyPath(
+	bool TryParseBindingPropertyPathCore(
 		const std::wstring& value,
-		std::vector<std::wstring>& segments)
+		std::vector<BindingPathStep>& steps)
 	{
-		segments.clear();
-		size_t start = 0;
-		while (start <= value.size())
+		steps.clear();
+		const auto text = Trim(value);
+		if (text.empty()) return false;
+		size_t position = 0;
+		while (position < text.size())
 		{
-			const size_t separator = value.find(L'.', start);
-			const size_t end = separator == std::wstring::npos ? value.size() : separator;
-			auto segment = Trim(value.substr(start, end - start));
-			if (segment.empty())
+			while (position < text.size()
+				&& std::iswspace(text[position])) ++position;
+			if (position >= text.size()) break;
+
+			if (text[position] != L'[')
 			{
-				segments.clear();
+				const size_t begin = position;
+				while (position < text.size()
+					&& text[position] != L'.'
+					&& text[position] != L'['
+					&& text[position] != L']') ++position;
+				auto property = Trim(text.substr(begin, position - begin));
+				if (property.empty())
+				{
+					steps.clear();
+					return false;
+				}
+				steps.push_back({ BindingPathStepKind::Property,
+					std::move(property) });
+			}
+			while (position < text.size())
+			{
+				while (position < text.size()
+					&& std::iswspace(text[position])) ++position;
+				if (position >= text.size() || text[position] != L'[') break;
+				++position;
+				while (position < text.size()
+					&& std::iswspace(text[position])) ++position;
+				if (position >= text.size())
+				{
+					steps.clear();
+					return false;
+				}
+
+				std::wstring key;
+				if (text[position] == L'\'' || text[position] == L'"')
+				{
+					const wchar_t quote = text[position++];
+					bool closed = false;
+					while (position < text.size())
+					{
+						const wchar_t ch = text[position++];
+						if (ch != quote)
+						{
+							key.push_back(ch);
+							continue;
+						}
+						if (position < text.size() && text[position] == quote)
+						{
+							key.push_back(quote);
+							++position;
+							continue;
+						}
+						closed = true;
+						break;
+					}
+					if (!closed)
+					{
+						steps.clear();
+						return false;
+					}
+					while (position < text.size()
+						&& std::iswspace(text[position])) ++position;
+				}
+				else
+				{
+					const size_t begin = position;
+					while (position < text.size()
+						&& text[position] != L']')
+					{
+						if (text[position] == L'[')
+						{
+							steps.clear();
+							return false;
+						}
+						++position;
+					}
+					key = Trim(text.substr(begin, position - begin));
+				}
+				if (key.empty() || position >= text.size()
+					|| text[position] != L']')
+				{
+					steps.clear();
+					return false;
+				}
+				++position;
+				steps.push_back({ BindingPathStepKind::Indexer, std::move(key) });
+			}
+
+			while (position < text.size()
+				&& std::iswspace(text[position])) ++position;
+			if (position >= text.size()) break;
+			if (text[position] != L'.')
+			{
+				steps.clear();
 				return false;
 			}
-			segments.push_back(std::move(segment));
-			if (separator == std::wstring::npos) break;
-			start = separator + 1;
+			++position;
+			while (position < text.size()
+				&& std::iswspace(text[position])) ++position;
+			if (position >= text.size() || text[position] == L'.'
+				|| text[position] == L'[' || text[position] == L']')
+			{
+				steps.clear();
+				return false;
+			}
 		}
-		return !segments.empty();
+		return !steps.empty();
 	}
 
 	bool TryParseBool(const std::wstring& value, bool& out)
@@ -97,8 +197,312 @@ namespace
 	std::wstring NumberToString(auto value)
 	{
 		std::wostringstream oss;
+		oss.imbue(std::locale::classic());
 		oss << value;
 		return oss.str();
+	}
+
+	bool IsNumericBindingKind(BindingValueKind kind) noexcept
+	{
+		return kind == BindingValueKind::Int
+			|| kind == BindingValueKind::Int64
+			|| kind == BindingValueKind::Float
+			|| kind == BindingValueKind::Double;
+	}
+
+	bool TryParseFormatPrecision(
+		const std::wstring& text,
+		size_t start,
+		int defaultValue,
+		int& out) noexcept
+	{
+		if (start == text.size())
+		{
+			out = defaultValue;
+			return true;
+		}
+		int value = 0;
+		for (size_t index = start; index < text.size(); ++index)
+		{
+			if (!std::iswdigit(text[index])) return false;
+			value = value * 10 + static_cast<int>(text[index] - L'0');
+			if (value > 99) return false;
+		}
+		out = value;
+		return true;
+	}
+
+	void AddInvariantGrouping(std::wstring& text)
+	{
+		const auto decimal = text.find(L'.');
+		const size_t end = decimal == std::wstring::npos ? text.size() : decimal;
+		const size_t begin = !text.empty() && (text.front() == L'-'
+			|| text.front() == L'+') ? 1 : 0;
+		if (end <= begin + 3) return;
+		for (size_t position = end; position > begin + 3;)
+		{
+			position -= 3;
+			text.insert(position, 1, L',');
+		}
+	}
+
+	bool IsBindingFormatSpecSyntaxValid(const std::wstring& spec) noexcept
+	{
+		if (spec.empty()) return true;
+		const wchar_t code = spec.front();
+		if (std::iswalpha(code))
+		{
+			const auto normalized = static_cast<wchar_t>(std::towupper(code));
+			if (normalized != L'C' && normalized != L'D'
+				&& normalized != L'E' && normalized != L'F'
+				&& normalized != L'G' && normalized != L'N'
+				&& normalized != L'P' && normalized != L'X') return false;
+			int ignored = 0;
+			return TryParseFormatPrecision(spec, 1,
+				normalized == L'G' ? -1 : 2, ignored);
+		}
+		return std::all_of(spec.begin(), spec.end(), [](wchar_t ch)
+		{
+			return ch == L'0' || ch == L'#' || ch == L'.'
+				|| ch == L',' || ch == L'%' || ch == L' ';
+		});
+	}
+
+	bool TryFormatSingleBindingValue(
+		const BindingValue& value,
+		const std::wstring& spec,
+		std::wstring& out)
+	{
+		if (spec.empty())
+		{
+			out = value.ToString();
+			return true;
+		}
+		if (!IsBindingFormatSpecSyntaxValid(spec)
+			|| !IsNumericBindingKind(value.Kind())) return false;
+
+		const wchar_t rawCode = spec.front();
+		const wchar_t code = std::iswalpha(rawCode)
+			? static_cast<wchar_t>(std::towupper(rawCode)) : L'\0';
+		if (code == L'D' || code == L'X')
+		{
+			if (value.Kind() != BindingValueKind::Int
+				&& value.Kind() != BindingValueKind::Int64) return false;
+			long long numeric = 0;
+			if (!value.TryGetInt64(numeric)) return false;
+			int precision = 0;
+			if (!TryParseFormatPrecision(spec, 1, 0, precision)) return false;
+			std::wostringstream stream;
+			stream.imbue(std::locale::classic());
+			if (code == L'D')
+			{
+				const bool negative = numeric < 0;
+				const auto magnitude = negative
+					? static_cast<unsigned long long>(-(numeric + 1)) + 1
+					: static_cast<unsigned long long>(numeric);
+				if (negative) stream << L'-';
+				stream << std::setfill(L'0') << std::setw(precision) << magnitude;
+			}
+			else
+			{
+				if (rawCode == L'X') stream << std::uppercase;
+				stream << std::hex << std::setfill(L'0') << std::setw(precision)
+					<< static_cast<unsigned long long>(numeric);
+			}
+			out = stream.str();
+			return true;
+		}
+
+		double numeric = 0.0;
+		if (!value.TryGetDouble(numeric) || !std::isfinite(numeric)) return false;
+		if (code != L'\0')
+		{
+			int precision = 2;
+			if (!TryParseFormatPrecision(spec, 1,
+				code == L'G' ? -1 : 2, precision)) return false;
+			if (code == L'P') numeric *= 100.0;
+			std::wostringstream stream;
+			stream.imbue(std::locale::classic());
+			if (code == L'E')
+			{
+				if (rawCode == L'E') stream << std::uppercase;
+				stream << std::scientific << std::setprecision(precision) << numeric;
+			}
+			else if (code == L'G')
+			{
+				stream << std::defaultfloat;
+				if (precision >= 0) stream << std::setprecision(precision);
+				stream << numeric;
+			}
+			else stream << std::fixed << std::setprecision(precision) << numeric;
+			out = stream.str();
+			if (code == L'N' || code == L'C') AddInvariantGrouping(out);
+			if (code == L'C') out.insert(out.front() == L'-' ? 1 : 0, 1, L'$');
+			if (code == L'P') out += L'%';
+			return true;
+		}
+
+		const auto decimal = spec.find(L'.');
+		const auto percent = spec.find(L'%') != std::wstring::npos;
+		const size_t fractionStart = decimal == std::wstring::npos
+			? spec.size() : decimal + 1;
+		int maximumDecimals = 0;
+		int minimumDecimals = 0;
+		for (size_t index = fractionStart; index < spec.size(); ++index)
+		{
+			if (spec[index] == L'0' || spec[index] == L'#')
+			{
+				++maximumDecimals;
+				if (spec[index] == L'0') ++minimumDecimals;
+			}
+		}
+		if (percent) numeric *= 100.0;
+		std::wostringstream stream;
+		stream.imbue(std::locale::classic());
+		stream << std::fixed << std::setprecision(maximumDecimals) << numeric;
+		out = stream.str();
+		if (maximumDecimals > minimumDecimals)
+		{
+			while (!out.empty() && out.back() == L'0'
+				&& maximumDecimals > minimumDecimals)
+			{
+				out.pop_back();
+				--maximumDecimals;
+			}
+			if (!out.empty() && out.back() == L'.') out.pop_back();
+		}
+		const auto integralPatternEnd = decimal == std::wstring::npos
+			? spec.size() : decimal;
+		const int minimumIntegerDigits = static_cast<int>(std::count(
+			spec.begin(), spec.begin() + integralPatternEnd, L'0'));
+		const size_t signOffset = !out.empty() && out.front() == L'-' ? 1 : 0;
+		const size_t outputDecimal = out.find(L'.');
+		const size_t integerDigits = (outputDecimal == std::wstring::npos
+			? out.size() : outputDecimal) - signOffset;
+		if (integerDigits < static_cast<size_t>(minimumIntegerDigits))
+			out.insert(signOffset,
+				static_cast<size_t>(minimumIntegerDigits) - integerDigits, L'0');
+		if (spec.find(L',') != std::wstring::npos) AddInvariantGrouping(out);
+		if (percent) out += L'%';
+		return true;
+	}
+
+	bool ProcessBindingStringFormat(
+		const std::vector<BindingValue>* values,
+		size_t valueCount,
+		const std::wstring& rawFormat,
+		std::wstring* output) noexcept
+	{
+		try
+		{
+			std::wstring format = rawFormat;
+			if (format.starts_with(L"{}")) format.erase(0, 2);
+			std::wstring result;
+			for (size_t position = 0; position < format.size();)
+			{
+				const wchar_t ch = format[position++];
+				if (ch == L'}')
+				{
+					if (position < format.size() && format[position] == L'}')
+					{
+						result.push_back(L'}');
+						++position;
+						continue;
+					}
+					return false;
+				}
+				if (ch != L'{')
+				{
+					result.push_back(ch);
+					continue;
+				}
+				if (position < format.size() && format[position] == L'{')
+				{
+					result.push_back(L'{');
+					++position;
+					continue;
+				}
+
+				while (position < format.size()
+					&& std::iswspace(format[position])) ++position;
+				if (position >= format.size()
+					|| !std::iswdigit(format[position]))
+					return false;
+				size_t valueIndex = 0;
+				while (position < format.size()
+					&& std::iswdigit(format[position]))
+				{
+					const auto digit = static_cast<size_t>(format[position++] - L'0');
+					if (valueIndex > ((std::numeric_limits<size_t>::max)() - digit) / 10)
+						return false;
+					valueIndex = valueIndex * 10 + digit;
+				}
+				if (valueIndex >= valueCount) return false;
+				while (position < format.size()
+					&& std::iswspace(format[position])) ++position;
+
+				int alignment = 0;
+				if (position < format.size() && format[position] == L',')
+				{
+					++position;
+					while (position < format.size()
+						&& std::iswspace(format[position])) ++position;
+					int sign = 1;
+					if (position < format.size()
+						&& (format[position] == L'-' || format[position] == L'+'))
+						sign = format[position++] == L'-' ? -1 : 1;
+					if (position >= format.size()
+						|| !std::iswdigit(format[position])) return false;
+					while (position < format.size()
+						&& std::iswdigit(format[position]))
+					{
+						alignment = alignment * 10
+							+ static_cast<int>(format[position++] - L'0');
+						if (alignment > 100000) return false;
+					}
+					alignment *= sign;
+					while (position < format.size()
+						&& std::iswspace(format[position])) ++position;
+				}
+
+				std::wstring spec;
+				if (position < format.size() && format[position] == L':')
+				{
+					const size_t begin = ++position;
+					while (position < format.size() && format[position] != L'}')
+					{
+						if (format[position] == L'{') return false;
+						++position;
+					}
+					spec = format.substr(begin, position - begin);
+				}
+				if (position >= format.size() || format[position++] != L'}'
+					|| !IsBindingFormatSpecSyntaxValid(spec)) return false;
+
+				std::wstring formatted;
+				if (values && !TryFormatSingleBindingValue(
+					(*values)[valueIndex], spec, formatted))
+					return false;
+				if (values)
+				{
+					const size_t width = static_cast<size_t>(alignment < 0
+						? -static_cast<long long>(alignment) : alignment);
+					if (formatted.size() < width)
+					{
+						const auto padding = width - formatted.size();
+						if (alignment < 0) formatted.append(padding, L' ');
+						else formatted.insert(0, padding, L' ');
+					}
+					result += formatted;
+				}
+			}
+			if (output) *output = std::move(result);
+			return true;
+		}
+		catch (...)
+		{
+			return false;
+		}
 	}
 
 	bool BindingValuesEqualCore(const BindingValue& a, const BindingValue& b)
@@ -266,6 +670,24 @@ namespace
 		return mutex;
 	}
 
+	struct MultiConverterRegistryEntry
+	{
+		MultiBindingValueConverterMetadata Metadata;
+		MultiBindingValueConverterRegistry::Factory Factory;
+	};
+
+	std::vector<MultiConverterRegistryEntry>& RegisteredMultiBindingConverters()
+	{
+		static std::vector<MultiConverterRegistryEntry> entries;
+		return entries;
+	}
+
+	std::mutex& MultiBindingConverterMutex()
+	{
+		static std::mutex mutex;
+		return mutex;
+	}
+
 	std::vector<std::unique_ptr<BindingPropertyMetadata>>& RegisteredBindingProperties()
 	{
 		static std::vector<std::unique_ptr<BindingPropertyMetadata>> properties;
@@ -277,6 +699,145 @@ namespace
 		static std::mutex mutex;
 		return mutex;
 	}
+}
+
+bool IsValidBindingStringFormat(const std::wstring& format) noexcept
+{
+	return ProcessBindingStringFormat(nullptr, 1, format, nullptr);
+}
+
+bool TryFormatBindingValue(
+	const BindingValue& value,
+	const std::wstring& format,
+	std::wstring& out)
+{
+	const std::vector<BindingValue> values{ value };
+	return ProcessBindingStringFormat(&values, values.size(), format, &out);
+}
+
+bool IsValidMultiBindingStringFormat(
+	const std::wstring& format,
+	size_t valueCount) noexcept
+{
+	return valueCount != 0
+		&& ProcessBindingStringFormat(nullptr, valueCount, format, nullptr);
+}
+
+bool TryFormatBindingValues(
+	const std::vector<BindingValue>& values,
+	const std::wstring& format,
+	std::wstring& out)
+{
+	return !values.empty()
+		&& ProcessBindingStringFormat(&values, values.size(), format, &out);
+}
+
+bool TryParseBindingPropertyPath(
+	const std::wstring& value,
+	std::vector<BindingPathStep>& steps)
+{
+	return TryParseBindingPropertyPathCore(value, steps);
+}
+
+namespace
+{
+	bool TryParseBindingListIndex(const std::wstring& value, size_t& out)
+	{
+		if (value.empty()) return false;
+		unsigned long long parsed = 0;
+		for (const wchar_t ch : value)
+		{
+			if (!std::iswdigit(ch)) return false;
+			const auto digit = static_cast<unsigned long long>(ch - L'0');
+			if (parsed > ((std::numeric_limits<unsigned long long>::max)() - digit) / 10)
+				return false;
+			parsed = parsed * 10 + digit;
+		}
+		if (parsed > static_cast<unsigned long long>((std::numeric_limits<size_t>::max)()))
+			return false;
+		out = static_cast<size_t>(parsed);
+		return true;
+	}
+
+	struct BindingPathCursor final
+	{
+		IBindingSource* Source = nullptr;
+		IBindingList* List = nullptr;
+		std::vector<std::shared_ptr<IBindingSource>> SourceOwners;
+		std::vector<std::shared_ptr<IBindingList>> ListOwners;
+	};
+
+	bool SetBindingPathCursor(
+		const BindingValue& value,
+		BindingPathCursor& cursor)
+	{
+		BindingSourceReference source;
+		if (value.TryGet(source) && source)
+		{
+			cursor.SourceOwners.push_back(source.Shared());
+			cursor.Source = source.Get();
+			cursor.List = nullptr;
+			return true;
+		}
+		BindingListReference list;
+		if (value.TryGet(list) && list)
+		{
+			cursor.ListOwners.push_back(list.Shared());
+			cursor.List = list.Get();
+			cursor.Source = nullptr;
+			return true;
+		}
+		return false;
+	}
+
+	bool TryReadBindingPathStep(
+		const BindingPathCursor& cursor,
+		const BindingPathStep& step,
+		BindingValue& out)
+	{
+		if (cursor.Source)
+			return cursor.Source->TryGetValue(step.Value, out);
+		if (!cursor.List || step.Kind != BindingPathStepKind::Indexer)
+			return false;
+		size_t index = 0;
+		BindingSourceReference item;
+		if (!TryParseBindingListIndex(step.Value, index)
+			|| !cursor.List->TryGetItem(index, item) || !item)
+			return false;
+		out = BindingValue(std::move(item));
+		return true;
+	}
+
+	bool ResolveBindingPathOwner(
+		IBindingSource& source,
+		const std::vector<BindingPathStep>& path,
+		BindingPathCursor& cursor)
+	{
+		cursor = {};
+		cursor.Source = &source;
+		if (path.empty()) return false;
+		for (size_t index = 0; index + 1 < path.size(); ++index)
+		{
+			BindingValue value;
+			if (!TryReadBindingPathStep(cursor, path[index], value)
+				|| !SetBindingPathCursor(value, cursor))
+				return false;
+		}
+		return true;
+	}
+}
+
+bool TryGetBindingPathValue(
+	const IBindingSource& source,
+	const std::wstring& path,
+	BindingValue& out)
+{
+	std::vector<BindingPathStep> steps;
+	if (!TryParseBindingPropertyPath(path, steps)) return false;
+	BindingPathCursor cursor;
+	if (!ResolveBindingPathOwner(
+		const_cast<IBindingSource&>(source), steps, cursor)) return false;
+	return TryReadBindingPathStep(cursor, steps.back(), out);
 }
 
 bool BindingValuesEqual(const BindingValue& left, const BindingValue& right)
@@ -293,7 +854,7 @@ const wchar_t* BindingErrorMessage(BindingError error) noexcept
 	case BindingError::InvalidSource: return L"The binding source is null.";
 	case BindingError::EmptyTargetProperty: return L"The target property name is empty.";
 	case BindingError::EmptySourceProperty: return L"The source property name is empty.";
-	case BindingError::InvalidSourcePropertyPath: return L"The source property path contains an empty segment.";
+	case BindingError::InvalidSourcePropertyPath: return L"The source property path has invalid member or indexer syntax.";
 	case BindingError::DuplicateTargetProperty: return L"The target property already has a binding.";
 	case BindingError::TargetPropertyNotFound: return L"No binding metadata is registered for the target property.";
 	case BindingError::TargetNotReadable: return L"The target property is not readable for this binding mode.";
@@ -310,6 +871,10 @@ const wchar_t* BindingErrorMessage(BindingError error) noexcept
 	case BindingError::TargetWriteFailed: return L"The target property could not be written.";
 	case BindingError::SourceConversionFailed: return L"The target value could not be converted to the source property type.";
 	case BindingError::SourceWriteFailed: return L"The source property could not be written.";
+	case BindingError::InvalidStringFormat: return L"Binding.StringFormat is invalid or the target property is not String.";
+	case BindingError::StringFormatFailed: return L"The converted source value could not be formatted.";
+	case BindingError::InvalidMultiBinding: return L"The MultiBinding configuration is invalid.";
+	case BindingError::MultiBindingConverterFailed: return L"The multi-value converter could not convert the current values.";
 	}
 	return L"Unknown binding error.";
 }
@@ -320,10 +885,13 @@ const wchar_t* ControlPropertyValueSourceName(
 	switch (source)
 	{
 	case ControlPropertyValueSource::Default: return L"Default";
+	case ControlPropertyValueSource::Inherited: return L"Inherited";
 	case ControlPropertyValueSource::Theme: return L"Theme";
 	case ControlPropertyValueSource::Style: return L"Style";
 	case ControlPropertyValueSource::Binding: return L"Binding";
 	case ControlPropertyValueSource::Local: return L"Local";
+	case ControlPropertyValueSource::VisualState: return L"VisualState";
+	case ControlPropertyValueSource::Animation: return L"Animation";
 	}
 	return L"Unknown";
 }
@@ -627,6 +1195,14 @@ DelegateBindingValueConverter::DelegateBindingValueConverter(
 {
 }
 
+DelegateBindingValueConverter::DelegateBindingValueConverter(
+	ContextFunction convert,
+	ContextFunction convertBack)
+	: _contextConvert(std::move(convert)),
+	  _contextConvertBack(std::move(convertBack))
+{
+}
+
 bool DelegateBindingValueConverter::Convert(
 	const BindingValue& value,
 	BindingValue& out) const
@@ -639,6 +1215,26 @@ bool DelegateBindingValueConverter::ConvertBack(
 	BindingValue& out) const
 {
 	return _convertBack && _convertBack(value, out);
+}
+
+bool DelegateBindingValueConverter::Convert(
+	const BindingValue& value,
+	const BindingValueConverterContext& context,
+	BindingValue& out) const
+{
+	return _contextConvert
+		? _contextConvert(value, context, out)
+		: Convert(value, out);
+}
+
+bool DelegateBindingValueConverter::ConvertBack(
+	const BindingValue& value,
+	const BindingValueConverterContext& context,
+	BindingValue& out) const
+{
+	return _contextConvertBack
+		? _contextConvertBack(value, context, out)
+		: ConvertBack(value, out);
 }
 
 bool BindingValueConverterRegistry::Register(
@@ -783,6 +1379,121 @@ std::shared_ptr<const IBindingValueConverter> BindingValueConverterRegistry::Cre
 	}
 }
 
+DelegateMultiBindingValueConverter::DelegateMultiBindingValueConverter(
+	ConvertFunction convert,
+	ConvertBackFunction convertBack)
+	: _convert(std::move(convert)), _convertBack(std::move(convertBack))
+{
+}
+
+bool DelegateMultiBindingValueConverter::Convert(
+	const std::vector<BindingValue>& values,
+	const MultiBindingValueConverterContext& context,
+	BindingValue& out) const
+{
+	return _convert && _convert(values, context, out);
+}
+
+bool DelegateMultiBindingValueConverter::ConvertBack(
+	const BindingValue& value,
+	size_t targetCount,
+	const MultiBindingValueConverterContext& context,
+	std::vector<BindingValue>& out) const
+{
+	return _convertBack
+		&& _convertBack(value, targetCount, context, out);
+}
+
+bool MultiBindingValueConverterRegistry::Register(
+	MultiBindingValueConverterMetadata metadata,
+	Factory factory,
+	bool replaceExisting)
+{
+	metadata.Name = Trim(std::move(metadata.Name));
+	if (metadata.Name.empty() || metadata.MinimumInputCount == 0 || !factory)
+		return false;
+	std::lock_guard<std::mutex> lock(MultiBindingConverterMutex());
+	auto& entries = RegisteredMultiBindingConverters();
+	const auto found = std::find_if(entries.begin(), entries.end(),
+		[&](const MultiConverterRegistryEntry& entry)
+		{
+			return IsSameProperty(entry.Metadata.Name, metadata.Name);
+		});
+	if (found != entries.end())
+	{
+		if (!replaceExisting) return false;
+		found->Metadata = std::move(metadata);
+		found->Factory = std::move(factory);
+		return true;
+	}
+	entries.push_back({ std::move(metadata), std::move(factory) });
+	return true;
+}
+
+bool MultiBindingValueConverterRegistry::Unregister(const std::wstring& name)
+{
+	const auto normalized = Trim(name);
+	if (normalized.empty()) return false;
+	std::lock_guard<std::mutex> lock(MultiBindingConverterMutex());
+	auto& entries = RegisteredMultiBindingConverters();
+	const auto found = std::find_if(entries.begin(), entries.end(),
+		[&](const MultiConverterRegistryEntry& entry)
+		{
+			return IsSameProperty(entry.Metadata.Name, normalized);
+		});
+	if (found == entries.end()) return false;
+	entries.erase(found);
+	return true;
+}
+
+std::optional<MultiBindingValueConverterMetadata>
+MultiBindingValueConverterRegistry::Find(const std::wstring& name)
+{
+	const auto normalized = Trim(name);
+	if (normalized.empty()) return std::nullopt;
+	std::lock_guard<std::mutex> lock(MultiBindingConverterMutex());
+	for (const auto& entry : RegisteredMultiBindingConverters())
+		if (IsSameProperty(entry.Metadata.Name, normalized))
+			return entry.Metadata;
+	return std::nullopt;
+}
+
+std::vector<MultiBindingValueConverterMetadata>
+MultiBindingValueConverterRegistry::GetConverters()
+{
+	std::vector<MultiBindingValueConverterMetadata> result;
+	{
+		std::lock_guard<std::mutex> lock(MultiBindingConverterMutex());
+		for (const auto& entry : RegisteredMultiBindingConverters())
+			result.push_back(entry.Metadata);
+	}
+	std::sort(result.begin(), result.end(), [](const auto& left, const auto& right)
+	{
+		return Lower(left.Name) < Lower(right.Name);
+	});
+	return result;
+}
+
+std::shared_ptr<const IMultiBindingValueConverter>
+MultiBindingValueConverterRegistry::Create(const std::wstring& name)
+{
+	const auto normalized = Trim(name);
+	if (normalized.empty()) return {};
+	Factory factory;
+	{
+		std::lock_guard<std::mutex> lock(MultiBindingConverterMutex());
+		for (const auto& entry : RegisteredMultiBindingConverters())
+			if (IsSameProperty(entry.Metadata.Name, normalized))
+			{
+				factory = entry.Factory;
+				break;
+			}
+	}
+	if (!factory) return {};
+	try { return factory(); }
+	catch (...) { return {}; }
+}
+
 BindingPropertyMetadata::BindingPropertyMetadata(
 	std::wstring name,
 	BindingValueKind valueKind,
@@ -799,6 +1510,9 @@ BindingPropertyMetadata::BindingPropertyMetadata(
 	BindingValue defaultValue,
 	bool hasDefaultValue,
 	ControlPropertyFlags flags,
+	bool isReadOnly,
+	DataSourceUpdateMode defaultUpdateMode,
+	std::wstring inheritanceKey,
 	ControlPropertyDesignMetadata design)
 	: _name(std::move(name)),
 	  _valueKind(valueKind),
@@ -815,8 +1529,43 @@ BindingPropertyMetadata::BindingPropertyMetadata(
 	  _defaultValue(std::move(defaultValue)),
 	  _hasDefaultValue(hasDefaultValue),
 	  _flags(flags),
+	  _isReadOnly(isReadOnly),
+	  _defaultUpdateMode(defaultUpdateMode == DataSourceUpdateMode::Default
+		  ? DataSourceUpdateMode::OnPropertyChanged
+		  : defaultUpdateMode),
+	  _inheritanceKey(std::move(inheritanceKey)),
 	  _design(std::move(design))
 {
+}
+
+bool BindingPropertyMetadata::HasSameInheritanceIdentity(
+	const BindingPropertyMetadata& other) const noexcept
+{
+	if (this == &other) return true;
+	return !_inheritanceKey.empty()
+		&& _inheritanceKey == other._inheritanceKey
+		&& _valueKind == other._valueKind
+		&& _valueType == other._valueType;
+}
+
+BindingMode ResolveBindingMode(
+	const BindingPropertyMetadata& target,
+	BindingMode requested) noexcept
+{
+	if (requested != BindingMode::Default) return requested;
+	return HasControlPropertyFlag(
+		target.Flags(), ControlPropertyFlags::BindsTwoWayByDefault)
+		? BindingMode::TwoWay
+		: BindingMode::OneWay;
+}
+
+DataSourceUpdateMode ResolveDataSourceUpdateMode(
+	const BindingPropertyMetadata& target,
+	DataSourceUpdateMode requested) noexcept
+{
+	return requested == DataSourceUpdateMode::Default
+		? target.DefaultUpdateMode()
+		: requested;
 }
 
 bool BindingPropertyMetadata::IsDesignerBrowsable(Control& target) const
@@ -868,6 +1617,14 @@ bool BindingPropertyMetadata::TryGet(Control& target, BindingValue& out) const
 }
 
 bool BindingPropertyMetadata::TrySet(Control& target, const BindingValue& value) const
+{
+	if (_isReadOnly) return false;
+	return TrySetInternal(target, value);
+}
+
+bool BindingPropertyMetadata::TrySetInternal(
+	Control& target,
+	const BindingValue& value) const
 {
 	if (!_setter || !Matches(target)) return false;
 	BindingValue converted;
@@ -930,6 +1687,8 @@ const BindingPropertyMetadata* BindingPropertyRegistry::Find(
 	const std::wstring& propertyName)
 {
 	target.EnsureBindingPropertiesRegistered();
+	if (const auto* dynamic = target.FindDynamicPropertyMetadata(propertyName))
+		return dynamic;
 	std::scoped_lock lock(BindingPropertyMutex());
 	auto& properties = RegisteredBindingProperties();
 	for (auto it = properties.rbegin(); it != properties.rend(); ++it)
@@ -944,7 +1703,8 @@ std::vector<const BindingPropertyMetadata*> BindingPropertyRegistry::GetProperti
 {
 	target.EnsureBindingPropertiesRegistered();
 	std::scoped_lock lock(BindingPropertyMutex());
-	std::vector<const BindingPropertyMetadata*> result;
+	std::vector<const BindingPropertyMetadata*> result =
+		target.GetDynamicPropertyMetadata();
 	auto& properties = RegisteredBindingProperties();
 	for (auto it = properties.rbegin(); it != properties.rend(); ++it)
 	{
@@ -1153,12 +1913,80 @@ std::vector<BindingSourcePropertyMetadata> ObservableObject::GetProperties() con
 	return result;
 }
 
+BindingSourceProxy::BindingSourceProxy(BindingSourceReference source)
+	: _source(std::move(source))
+{
+	Attach();
+}
+
+void BindingSourceProxy::SetSource(BindingSourceReference source)
+{
+	if (_source == source) return;
+	_propertyConnection.Disconnect();
+	_validationConnection.Disconnect();
+	_source = std::move(source);
+	Attach();
+	_propertyChanged.Notify(L"");
+	_validationChanged.Notify(L"");
+}
+
+bool BindingSourceProxy::TryGetValue(
+	const std::wstring& propertyName,
+	BindingValue& out) const
+{
+	return _source && _source.Get()->TryGetValue(propertyName, out);
+}
+
+bool BindingSourceProxy::TrySetValue(
+	const std::wstring& propertyName,
+	const BindingValue& value)
+{
+	return _source && _source.Get()->TrySetValue(propertyName, value);
+}
+
+bool BindingSourceProxy::TryGetPropertyMetadata(
+	const std::wstring& propertyName,
+	BindingSourcePropertyMetadata& out) const
+{
+	return _source
+		&& _source.Get()->TryGetPropertyMetadata(propertyName, out);
+}
+
+std::vector<BindingSourcePropertyMetadata> BindingSourceProxy::GetProperties() const
+{
+	return _source ? _source.Get()->GetProperties()
+		: std::vector<BindingSourcePropertyMetadata>{};
+}
+
+std::vector<BindingValidationIssue> BindingSourceProxy::GetValidationIssues(
+	const std::wstring& propertyName) const
+{
+	return _source ? _source.Get()->GetValidationIssues(propertyName)
+		: std::vector<BindingValidationIssue>{};
+}
+
+void BindingSourceProxy::Attach()
+{
+	if (!_source) return;
+	_propertyConnection = _source.Get()->PropertyChanged().Subscribe(
+		[this](const PropertyChangedEventArgs& args)
+		{
+			_propertyChanged.Notify(args.PropertyName);
+		});
+	if (auto* validation = _source.Get()->ValidationChanged())
+		_validationConnection = validation->Subscribe(
+			[this](const BindingValidationChangedEventArgs& args)
+			{
+				_validationChanged.Notify(args.PropertyName);
+			});
+}
+
 std::vector<BindingValidationIssue> GetBindingValidationIssuesForPath(
 	const IBindingSource& source,
 	const std::wstring& sourcePropertyPath)
 {
-	std::vector<std::wstring> path;
-	if (!TryParsePropertyPath(sourcePropertyPath, path)) return {};
+	std::vector<BindingPathStep> path;
+	if (!TryParseBindingPropertyPath(sourcePropertyPath, path)) return {};
 
 	std::vector<BindingValidationIssue> result;
 	auto append = [&result](std::vector<BindingValidationIssue> issues)
@@ -1170,20 +1998,21 @@ std::vector<BindingValidationIssue> GetBindingValidationIssuesForPath(
 		}
 	};
 
-	const IBindingSource* current = &source;
+	BindingPathCursor cursor;
+	cursor.Source = const_cast<IBindingSource*>(&source);
 	for (size_t index = 0; index < path.size(); ++index)
 	{
-		append(current->GetValidationIssues(L""));
-		append(current->GetValidationIssues(path[index]));
+		if (cursor.Source)
+		{
+			append(cursor.Source->GetValidationIssues(L""));
+			append(cursor.Source->GetValidationIssues(path[index].Value));
+		}
 		if (index + 1 == path.size()) break;
 
 		BindingValue value;
-		BindingSourceReference reference;
-		if (!current->TryGetValue(path[index], value)
-			|| !value.TryGet(reference)
-			|| !reference)
+		if (!TryReadBindingPathStep(cursor, path[index], value)
+			|| !SetBindingPathCursor(value, cursor))
 			break;
-		current = reference.Get();
 	}
 	return result;
 }
@@ -1392,7 +2221,11 @@ Binding::Binding(Control* target,
 	std::wstring sourceProperty,
 	BindingMode mode,
 	DataSourceUpdateMode updateMode,
-	std::shared_ptr<const IBindingValueConverter> converter)
+	std::shared_ptr<const IBindingValueConverter> converter,
+	std::optional<BindingValue> fallbackValue,
+	std::optional<BindingValue> targetNullValue,
+	std::optional<BindingValue> converterParameter,
+	std::optional<std::wstring> stringFormat)
 	: _target(target),
 	_source(source),
 	_targetProperty(std::move(targetProperty)),
@@ -1400,6 +2233,41 @@ Binding::Binding(Control* target,
 	  _mode(mode),
 	  _updateMode(updateMode),
 	  _converter(std::move(converter)),
+	  _fallbackValue(std::move(fallbackValue)),
+	  _targetNullValue(std::move(targetNullValue)),
+	  _converterParameter(std::move(converterParameter)),
+	  _stringFormat(std::move(stringFormat)),
+	  _state(std::make_shared<State>())
+{
+	_state->Owner = this;
+	if (_source)
+		_sourceLifetime = _source->BindingLifetime();
+	Attach();
+}
+
+Binding::Binding(Control* target,
+	std::wstring targetProperty,
+	BindingSourceReference source,
+	std::wstring sourceProperty,
+	BindingMode mode,
+	DataSourceUpdateMode updateMode,
+	std::shared_ptr<const IBindingValueConverter> converter,
+	std::optional<BindingValue> fallbackValue,
+	std::optional<BindingValue> targetNullValue,
+	std::optional<BindingValue> converterParameter,
+	std::optional<std::wstring> stringFormat)
+	: _target(target),
+	  _ownedSource(std::move(source)),
+	  _source(_ownedSource.Get()),
+	  _targetProperty(std::move(targetProperty)),
+	  _sourceProperty(std::move(sourceProperty)),
+	  _mode(mode),
+	  _updateMode(updateMode),
+	  _converter(std::move(converter)),
+	  _fallbackValue(std::move(fallbackValue)),
+	  _targetNullValue(std::move(targetNullValue)),
+	  _converterParameter(std::move(converterParameter)),
+	  _stringFormat(std::move(stringFormat)),
 	  _state(std::make_shared<State>())
 {
 	_state->Owner = this;
@@ -1418,9 +2286,11 @@ Binding::~Binding()
 	_ownsTargetValue = false;
 	_sourceConnections.clear();
 	_sourcePathOwners.clear();
+	_sourcePathListOwners.clear();
 	_sourceValidationConnections.clear();
 	_validationPathConnections.clear();
 	_validationPathOwners.clear();
+	_validationPathListOwners.clear();
 }
 
 bool Binding::HasValidationErrors() const noexcept
@@ -1453,12 +2323,20 @@ bool Binding::Validate()
 	if (!_source) return Fail(BindingError::InvalidSource);
 	if (_targetProperty.empty()) return Fail(BindingError::EmptyTargetProperty);
 	if (_sourceProperty.empty()) return Fail(BindingError::EmptySourceProperty);
-	if (!TryParsePropertyPath(_sourceProperty, _sourcePath))
+	if (!TryParseBindingPropertyPath(_sourceProperty, _sourcePath))
 		return Fail(BindingError::InvalidSourcePropertyPath);
 	if (!IsSourceAlive()) return Fail(BindingError::SourceUnavailable);
 
 	_targetMetadata = BindingPropertyRegistry::Find(*_target, _targetProperty);
 	if (!_targetMetadata) return Fail(BindingError::TargetPropertyNotFound);
+	if (_targetMetadata->IsReadOnly())
+		return Fail(BindingError::TargetNotWritable);
+	_mode = ResolveBindingMode(*_targetMetadata, _mode);
+	_updateMode = ResolveDataSourceUpdateMode(*_targetMetadata, _updateMode);
+	if (_stringFormat
+		&& (_targetMetadata->ValueKind() != BindingValueKind::String
+			|| !IsValidBindingStringFormat(*_stringFormat)))
+		return Fail(BindingError::InvalidStringFormat);
 	if (IsSourceToTargetMode(_mode) && !_targetMetadata->CanWrite())
 		return Fail(BindingError::TargetNotWritable);
 	if (IsSourceToTargetMode(_mode)
@@ -1480,34 +2358,48 @@ bool Binding::Validate()
 bool Binding::ValidateSourceMetadata()
 {
 	if (!_source || _sourcePath.empty()) return true;
-	IBindingSource* current = _source;
+	BindingPathCursor cursor;
+	cursor.Source = _source;
 	for (size_t index = 0; index < _sourcePath.size(); ++index)
 	{
 		const bool leaf = index + 1 == _sourcePath.size();
-		BindingSourcePropertyMetadata metadata;
-		if (current->TryGetPropertyMetadata(_sourcePath[index], metadata))
+		if (cursor.List)
 		{
-			if ((!leaf || IsSourceToTargetMode(_mode)) && !metadata.CanRead)
+			if (_sourcePath[index].Kind != BindingPathStepKind::Indexer)
 				return Fail(BindingError::SourceNotReadable);
-			if (IsSourceToTargetMode(_mode)
-				&& _mode != BindingMode::OneTime
-				&& !metadata.CanObserve)
-				return Fail(BindingError::SourceNotObservable);
-			if (leaf
-				&& IsTargetToSourceMode(_mode)
-				&& _updateMode != DataSourceUpdateMode::Never
-				&& !metadata.CanWrite)
+			size_t parsedIndex = 0;
+			if (!TryParseBindingListIndex(
+				_sourcePath[index].Value, parsedIndex))
+				return Fail(BindingError::InvalidSourcePropertyPath);
+			if (leaf && IsTargetToSourceMode(_mode)
+				&& _updateMode != DataSourceUpdateMode::Never)
 				return Fail(BindingError::SourceNotWritable);
+		}
+		else if (cursor.Source)
+		{
+			BindingSourcePropertyMetadata metadata;
+			if (cursor.Source->TryGetPropertyMetadata(
+				_sourcePath[index].Value, metadata))
+			{
+				if ((!leaf || IsSourceToTargetMode(_mode)) && !metadata.CanRead)
+					return Fail(BindingError::SourceNotReadable);
+				if (IsSourceToTargetMode(_mode)
+					&& _mode != BindingMode::OneTime
+					&& !metadata.CanObserve)
+					return Fail(BindingError::SourceNotObservable);
+				if (leaf
+					&& IsTargetToSourceMode(_mode)
+					&& _updateMode != DataSourceUpdateMode::Never
+					&& !metadata.CanWrite)
+					return Fail(BindingError::SourceNotWritable);
+			}
 		}
 		if (leaf) break;
 
 		BindingValue value;
-		BindingSourceReference reference;
-		if (!current->TryGetValue(_sourcePath[index], value)
-			|| !value.TryGet(reference)
-			|| !reference)
+		if (!TryReadBindingPathStep(cursor, _sourcePath[index], value)
+			|| !SetBindingPathCursor(value, cursor))
 			break;
-		current = reference.Get();
 	}
 	return true;
 }
@@ -1516,23 +2408,39 @@ void Binding::AttachSourceChangedHandlers()
 {
 	_sourceConnections.clear();
 	_sourcePathOwners.clear();
+	_sourcePathListOwners.clear();
 	if (!IsSourceAlive() || _mode == BindingMode::OneWayToSource || _mode == BindingMode::OneTime)
 		return;
 
-	IBindingSource* current = _source;
+	BindingPathCursor cursor;
+	cursor.Source = _source;
 	for (size_t index = 0; index < _sourcePath.size(); ++index)
 	{
-		const std::wstring expectedProperty = _sourcePath[index];
 		std::weak_ptr<State> weakState = _state;
-		auto connection = current->PropertyChanged().Subscribe(
-			[weakState, expectedProperty](const PropertyChangedEventArgs& e)
+		EventConnection connection;
+		if (cursor.Source)
 		{
-			if (!e.PropertyName.empty() && !IsSameProperty(e.PropertyName, expectedProperty))
-				return;
-			auto state = weakState.lock();
-			if (!state || !state->Owner) return;
-			state->Owner->OnSourcePathChanged();
-		});
+			const std::wstring expectedProperty = _sourcePath[index].Value;
+			connection = cursor.Source->PropertyChanged().Subscribe(
+				[weakState, expectedProperty](const PropertyChangedEventArgs& e)
+				{
+					if (!e.PropertyName.empty()
+						&& !IsSameProperty(e.PropertyName, expectedProperty)) return;
+					auto state = weakState.lock();
+					if (!state || !state->Owner) return;
+					state->Owner->OnSourcePathChanged();
+				});
+		}
+		else if (cursor.List)
+		{
+			connection = cursor.List->SubscribeChanged(
+				[weakState](const CollectionChangedEventArgs&)
+				{
+					auto state = weakState.lock();
+					if (!state || !state->Owner) return;
+					state->Owner->OnSourcePathChanged();
+				});
+		}
 		if (connection.Connected())
 			_sourceConnections.push_back(std::move(connection));
 
@@ -1540,15 +2448,12 @@ void Binding::AttachSourceChangedHandlers()
 			break;
 
 		BindingValue value;
-		BindingSourceReference reference;
-		if (!current->TryGetValue(expectedProperty, value)
-			|| !value.TryGet(reference)
-			|| !reference)
+		if (!TryReadBindingPathStep(cursor, _sourcePath[index], value)
+			|| !SetBindingPathCursor(value, cursor))
 			break;
-
-		_sourcePathOwners.push_back(reference.Shared());
-		current = reference.Get();
 	}
+	_sourcePathOwners = std::move(cursor.SourceOwners);
+	_sourcePathListOwners = std::move(cursor.ListOwners);
 }
 
 void Binding::AttachValidationChangedHandlers()
@@ -1556,28 +2461,32 @@ void Binding::AttachValidationChangedHandlers()
 	_sourceValidationConnections.clear();
 	_validationPathConnections.clear();
 	_validationPathOwners.clear();
+	_validationPathListOwners.clear();
 	if (!IsSourceAlive() || _sourcePath.empty()) return;
 
-	IBindingSource* current = _source;
+	BindingPathCursor cursor;
+	cursor.Source = _source;
 	for (size_t index = 0; index < _sourcePath.size(); ++index)
 	{
-		const std::wstring expectedProperty = _sourcePath[index];
-		if (auto* validationChanged = current->ValidationChanged())
+		const std::wstring expectedProperty = _sourcePath[index].Value;
+		if (cursor.Source)
 		{
-			std::weak_ptr<State> weakState = _state;
-			auto connection = validationChanged->Subscribe(
-				[weakState, expectedProperty](
-					const BindingValidationChangedEventArgs& e)
-				{
-					if (!e.PropertyName.empty()
-						&& !IsSameProperty(e.PropertyName, expectedProperty))
-						return;
-					auto state = weakState.lock();
-					if (!state || !state->Owner) return;
-					state->Owner->RefreshValidation();
-				});
-			if (connection.Connected())
-				_sourceValidationConnections.push_back(std::move(connection));
+			if (auto* validationChanged = cursor.Source->ValidationChanged())
+			{
+				std::weak_ptr<State> weakState = _state;
+				auto connection = validationChanged->Subscribe(
+					[weakState, expectedProperty](
+						const BindingValidationChangedEventArgs& e)
+					{
+						if (!e.PropertyName.empty()
+							&& !IsSameProperty(e.PropertyName, expectedProperty)) return;
+						auto state = weakState.lock();
+						if (!state || !state->Owner) return;
+						state->Owner->RefreshValidation();
+					});
+				if (connection.Connected())
+					_sourceValidationConnections.push_back(std::move(connection));
+			}
 		}
 
 		if (index + 1 == _sourcePath.size()) break;
@@ -1585,29 +2494,36 @@ void Binding::AttachValidationChangedHandlers()
 		if (_mode == BindingMode::OneWayToSource || _mode == BindingMode::OneTime)
 		{
 			std::weak_ptr<State> weakState = _state;
-			auto connection = current->PropertyChanged().Subscribe(
-				[weakState, expectedProperty](const PropertyChangedEventArgs& e)
-				{
-					if (!e.PropertyName.empty()
-						&& !IsSameProperty(e.PropertyName, expectedProperty))
-						return;
-					auto state = weakState.lock();
-					if (!state || !state->Owner) return;
-					state->Owner->OnValidationPathChanged();
-				});
+			EventConnection connection;
+			if (cursor.Source)
+				connection = cursor.Source->PropertyChanged().Subscribe(
+					[weakState, expectedProperty](const PropertyChangedEventArgs& e)
+					{
+						if (!e.PropertyName.empty()
+							&& !IsSameProperty(e.PropertyName, expectedProperty)) return;
+						auto state = weakState.lock();
+						if (!state || !state->Owner) return;
+						state->Owner->OnValidationPathChanged();
+					});
+			else if (cursor.List)
+				connection = cursor.List->SubscribeChanged(
+					[weakState](const CollectionChangedEventArgs&)
+					{
+						auto state = weakState.lock();
+						if (!state || !state->Owner) return;
+						state->Owner->OnValidationPathChanged();
+					});
 			if (connection.Connected())
 				_validationPathConnections.push_back(std::move(connection));
 		}
 
 		BindingValue value;
-		BindingSourceReference reference;
-		if (!current->TryGetValue(expectedProperty, value)
-			|| !value.TryGet(reference)
-			|| !reference)
+		if (!TryReadBindingPathStep(cursor, _sourcePath[index], value)
+			|| !SetBindingPathCursor(value, cursor))
 			break;
-		_validationPathOwners.push_back(reference.Shared());
-		current = reference.Get();
 	}
+	_validationPathOwners = std::move(cursor.SourceOwners);
+	_validationPathListOwners = std::move(cursor.ListOwners);
 }
 
 void Binding::AttachTargetChangedHandlers()
@@ -1667,33 +2583,61 @@ bool Binding::UpdateTarget()
 		|| !IsSourceToTargetMode(_mode) || _updatingSource)
 		return false;
 	if (!IsSourceAlive())
-		return Fail(BindingError::SourceUnavailable);
-
-	IBindingSource* sourceOwner = nullptr;
-	std::vector<std::shared_ptr<IBindingSource>> keepAlive;
-	if (!ResolveSourceOwner(sourceOwner, keepAlive))
-		return Fail(BindingError::SourcePathUnresolved);
+		return ApplyFallbackValue(BindingError::SourceUnavailable);
 
 	BindingValue sourceValue;
-	if (!sourceOwner->TryGetValue(_sourcePath.back(), sourceValue))
-		return Fail(BindingError::SourceReadFailed);
+	BindingError sourceError = BindingError::None;
+	if (!TryReadSourcePathValue(sourceValue, sourceError))
+		return ApplyFallbackValue(sourceError);
+	if (sourceValue.Empty() && _targetNullValue)
+	{
+		if (ApplyTargetValue(*_targetNullValue)) return true;
+		if (_lastError == BindingError::TargetWriteFailed) return false;
+		return ApplyFallbackValue(BindingError::TargetConversionFailed);
+	}
 
 	BindingValue value = sourceValue;
-	if (_converter && !_converter->Convert(sourceValue, value))
-		return Fail(BindingError::TargetConversionFailed);
+	if (_converter)
+	{
+		const BindingValueConverterContext context{
+			_converterParameter ? &*_converterParameter : nullptr,
+			_targetMetadata->ValueKind() };
+		if (!_converter->Convert(sourceValue, context, value))
+			return ApplyFallbackValue(BindingError::TargetConversionFailed);
+	}
+	if (_stringFormat)
+	{
+		std::wstring formatted;
+		if (!TryFormatBindingValue(value, *_stringFormat, formatted))
+			return ApplyFallbackValue(BindingError::StringFormatFailed);
+		value = BindingValue(std::move(formatted));
+	}
+	if (ApplyTargetValue(value)) return true;
+	if (_lastError == BindingError::TargetWriteFailed) return false;
+	return ApplyFallbackValue(BindingError::TargetConversionFailed);
+}
 
+bool Binding::ApplyTargetValue(const BindingValue& value)
+{
+	if (!_target || !_targetMetadata) return false;
 	BindingValue converted;
 	if (!_targetMetadata->TryConvert(value, converted))
 		return Fail(BindingError::TargetConversionFailed);
-
 	_updatingTarget = true;
-	bool ok = _target->TrySetBindingPropertyValue(
+	const bool ok = _target->TrySetBindingPropertyValue(
 		_targetProperty, converted, this);
 	_updatingTarget = false;
 	if (!ok) return Fail(BindingError::TargetWriteFailed);
 	_ownsTargetValue = true;
 	_lastError = BindingError::None;
 	return true;
+}
+
+bool Binding::ApplyFallbackValue(BindingError sourceError)
+{
+	if (!_fallbackValue) return Fail(sourceError);
+	if (ApplyTargetValue(*_fallbackValue)) return true;
+	return false;
 }
 
 bool Binding::UpdateSource()
@@ -1707,22 +2651,24 @@ bool Binding::UpdateSource()
 	BindingValue value;
 	if (!_targetMetadata->TryGet(*_target, value))
 		return Fail(BindingError::TargetReadFailed);
+	BindingValue sourceValue;
+	BindingError sourceError = BindingError::None;
+	const bool hasSourceValue = TryReadSourcePathValue(sourceValue, sourceError);
+	if (!hasSourceValue && sourceError == BindingError::SourcePathUnresolved)
+		return Fail(sourceError);
 
 	if (_converter)
 	{
 		BindingValue converted;
-		if (!_converter->ConvertBack(value, converted))
+		const BindingValueConverterContext context{
+			_converterParameter ? &*_converterParameter : nullptr,
+			hasSourceValue ? sourceValue.Kind() : BindingValueKind::Empty };
+		if (!_converter->ConvertBack(value, context, converted))
 			return Fail(BindingError::SourceConversionFailed);
 		value = std::move(converted);
 	}
 
-	IBindingSource* sourceOwner = nullptr;
-	std::vector<std::shared_ptr<IBindingSource>> keepAlive;
-	if (!ResolveSourceOwner(sourceOwner, keepAlive))
-		return Fail(BindingError::SourcePathUnresolved);
-
-	BindingValue sourceValue;
-	if (sourceOwner->TryGetValue(_sourcePath.back(), sourceValue))
+	if (hasSourceValue)
 	{
 		BindingValue converted;
 		if (!TryConvertBindingValue(value, sourceValue, converted))
@@ -1731,38 +2677,670 @@ bool Binding::UpdateSource()
 	}
 
 	_updatingSource = true;
-	bool ok = sourceOwner->TrySetValue(_sourcePath.back(), value);
+	bool ok = TryWriteSourcePathValue(value, sourceError);
 	_updatingSource = false;
-	if (!ok) return Fail(BindingError::SourceWriteFailed);
+	if (!ok) return Fail(sourceError);
 	_lastError = BindingError::None;
 	return true;
 }
 
-bool Binding::ResolveSourceOwner(
-	IBindingSource*& owner,
-	std::vector<std::shared_ptr<IBindingSource>>& keepAlive) const
+bool Binding::TryReadSourcePathValue(
+	BindingValue& out,
+	BindingError& error) const
 {
-	owner = nullptr;
-	keepAlive.clear();
+	error = BindingError::None;
 	if (!IsSourceAlive() || _sourcePath.empty())
-		return false;
-
-	IBindingSource* current = _source;
-	for (size_t index = 0; index + 1 < _sourcePath.size(); ++index)
 	{
-		BindingValue value;
-		BindingSourceReference reference;
-		if (!current->TryGetValue(_sourcePath[index], value)
-			|| !value.TryGet(reference)
-			|| !reference)
-			return false;
+		error = BindingError::SourceUnavailable;
+		return false;
+	}
+	BindingPathCursor cursor;
+	if (!ResolveBindingPathOwner(*_source, _sourcePath, cursor))
+	{
+		error = BindingError::SourcePathUnresolved;
+		return false;
+	}
+	if (!TryReadBindingPathStep(cursor, _sourcePath.back(), out))
+	{
+		error = BindingError::SourceReadFailed;
+		return false;
+	}
+	return true;
+}
 
-		keepAlive.push_back(reference.Shared());
-		current = reference.Get();
+bool Binding::TryWriteSourcePathValue(
+	const BindingValue& value,
+	BindingError& error) const
+{
+	error = BindingError::None;
+	if (!IsSourceAlive() || _sourcePath.empty())
+	{
+		error = BindingError::SourceUnavailable;
+		return false;
+	}
+	BindingPathCursor cursor;
+	if (!ResolveBindingPathOwner(*_source, _sourcePath, cursor))
+	{
+		error = BindingError::SourcePathUnresolved;
+		return false;
+	}
+	if (!cursor.Source
+		|| !cursor.Source->TrySetValue(_sourcePath.back().Value, value))
+	{
+		error = BindingError::SourceWriteFailed;
+		return false;
+	}
+	return true;
+}
+
+MultiBindingSource::MultiBindingSource(
+	IBindingSource* source,
+	std::wstring sourceProperty,
+	std::shared_ptr<const IBindingValueConverter> converter,
+	std::optional<BindingValue> fallbackValue,
+	std::optional<BindingValue> targetNullValue,
+	std::optional<BindingValue> converterParameter,
+	std::optional<std::wstring> stringFormat)
+	: Source(source),
+	  SourceProperty(std::move(sourceProperty)),
+	  Converter(std::move(converter)),
+	  FallbackValue(std::move(fallbackValue)),
+	  TargetNullValue(std::move(targetNullValue)),
+	  ConverterParameter(std::move(converterParameter)),
+	  StringFormat(std::move(stringFormat))
+{
+}
+
+MultiBindingSource::MultiBindingSource(
+	BindingSourceReference source,
+	std::wstring sourceProperty,
+	std::shared_ptr<const IBindingValueConverter> converter,
+	std::optional<BindingValue> fallbackValue,
+	std::optional<BindingValue> targetNullValue,
+	std::optional<BindingValue> converterParameter,
+	std::optional<std::wstring> stringFormat)
+	: Source(source.Get()),
+	  OwnedSource(std::move(source)),
+	  SourceProperty(std::move(sourceProperty)),
+	  Converter(std::move(converter)),
+	  FallbackValue(std::move(fallbackValue)),
+	  TargetNullValue(std::move(targetNullValue)),
+	  ConverterParameter(std::move(converterParameter)),
+	  StringFormat(std::move(stringFormat))
+{
+}
+
+namespace
+{
+	struct MultiBindingSlotState final
+	{
+		bool HasValue = false;
+		BindingValue Value;
+	};
+
+	struct MultiBindingResultState final
+	{
+		bool HasValue = false;
+		BindingValue Value;
+	};
+
+	class MultiBindingSlotConverter final : public IBindingValueConverter
+	{
+	public:
+		MultiBindingSlotConverter(
+			std::shared_ptr<const IBindingValueConverter> inner,
+			std::optional<std::wstring> stringFormat)
+			: _inner(std::move(inner)), _stringFormat(std::move(stringFormat))
+		{
+		}
+
+		bool Convert(
+			const BindingValue& value,
+			const BindingValueConverterContext& context,
+			BindingValue& out) const override
+		{
+			BindingValue converted = value;
+			const BindingValueConverterContext innerContext{
+				context.Parameter, BindingValueKind::Empty };
+			if (_inner && !_inner->Convert(value, innerContext, converted))
+				return false;
+			if (_stringFormat)
+			{
+				std::wstring formatted;
+				if (!TryFormatBindingValue(converted, *_stringFormat, formatted))
+					return false;
+				converted = BindingValue(std::move(formatted));
+			}
+			out = BindingValue(MultiBindingSlotState{
+				true, std::move(converted) });
+			return true;
+		}
+
+		bool ConvertBack(
+			const BindingValue& value,
+			const BindingValueConverterContext& context,
+			BindingValue& out) const override
+		{
+			MultiBindingSlotState state;
+			if (!value.TryGet(state) || !state.HasValue) return false;
+			if (!_inner)
+			{
+				out = std::move(state.Value);
+				return true;
+			}
+			const BindingValueConverterContext innerContext{
+				context.Parameter, context.TargetKind };
+			return _inner->ConvertBack(state.Value, innerContext, out);
+		}
+
+	private:
+		std::shared_ptr<const IBindingValueConverter> _inner;
+		std::optional<std::wstring> _stringFormat;
+	};
+
+	class MultiBindingResultConverter final : public IBindingValueConverter
+	{
+	public:
+		bool Convert(
+			const BindingValue& value,
+			BindingValue& out) const override
+		{
+			MultiBindingResultState state;
+			if (!value.TryGet(state) || !state.HasValue) return false;
+			out = std::move(state.Value);
+			return true;
+		}
+
+		bool ConvertBack(
+			const BindingValue& value,
+			BindingValue& out) const override
+		{
+			out = BindingValue(MultiBindingResultState{ true, value });
+			return true;
+		}
+	};
+
+	BindingValue WrapMultiBindingSlotValue(const BindingValue& value)
+	{
+		return BindingValue(MultiBindingSlotState{ true, value });
+	}
+}
+
+struct MultiBinding::State final
+{
+	static constexpr const wchar_t* ResultProperty = L"CombinedValue";
+
+	std::wstring TargetProperty;
+	BindingMode Mode = BindingMode::Default;
+	DataSourceUpdateMode UpdateMode = DataSourceUpdateMode::Default;
+	std::vector<std::wstring> SourceProperties;
+	std::shared_ptr<const IMultiBindingValueConverter> Converter;
+	std::optional<BindingValue> TargetNullValue;
+	std::optional<BindingValue> ConverterParameter;
+	std::optional<std::wstring> StringFormat;
+	BindingValueKind TargetKind = BindingValueKind::Empty;
+	Control Collector;
+	std::vector<std::wstring> SlotProperties;
+	std::unique_ptr<Binding> TargetExpression;
+	EventConnection CollectorConnection;
+	EventConnection ChildValidationConnection;
+	BindingValidationChangedEvent Validation;
+	BindingError Error = BindingError::None;
+	bool Initializing = true;
+	bool Recomputing = false;
+	bool WritingBack = false;
+	bool ManualUpdateSource = false;
+
+	bool DefineCollectorProperty(
+		const std::wstring& name,
+		const BindingValue& defaultValue)
+	{
+		DynamicControlPropertyDefinition definition;
+		definition.Name = name;
+		definition.ValueKind = BindingValueKind::Object;
+		definition.DefaultValue = defaultValue;
+		return Collector.DefineDynamicProperty(std::move(definition));
 	}
 
-	owner = current;
-	return true;
+	void SetResult(MultiBindingResultState state)
+	{
+		Recomputing = true;
+		(void)Collector.TrySetPropertyValue(
+			ResultProperty, BindingValue(std::move(state)),
+			ControlPropertyValueSource::Local);
+		Recomputing = false;
+	}
+
+	void Recompute()
+	{
+		if (Initializing || WritingBack) return;
+		std::vector<BindingValue> values;
+		values.reserve(SlotProperties.size());
+		for (const auto& slot : SlotProperties)
+		{
+			BindingValue wrapped;
+			MultiBindingSlotState state;
+			if (!Collector.TryGetPropertyValue(slot, wrapped)
+				|| !wrapped.TryGet(state) || !state.HasValue)
+			{
+				Error = BindingError::SourceUnavailable;
+				SetResult({});
+				return;
+			}
+			values.push_back(std::move(state.Value));
+		}
+
+		BindingValue result;
+		if (Converter)
+		{
+			const MultiBindingValueConverterContext context{
+				ConverterParameter ? &*ConverterParameter : nullptr,
+				TargetKind };
+			if (!Converter->Convert(values, context, result))
+			{
+				Error = BindingError::MultiBindingConverterFailed;
+				SetResult({});
+				return;
+			}
+			if (StringFormat)
+			{
+				std::wstring formatted;
+				if (!TryFormatBindingValue(result, *StringFormat, formatted))
+				{
+					Error = BindingError::StringFormatFailed;
+					SetResult({});
+					return;
+				}
+				result = BindingValue(std::move(formatted));
+			}
+		}
+		else
+		{
+			std::wstring formatted;
+			if (!StringFormat
+				|| !TryFormatBindingValues(values, *StringFormat, formatted))
+			{
+				Error = BindingError::StringFormatFailed;
+				SetResult({});
+				return;
+			}
+			result = BindingValue(std::move(formatted));
+		}
+		if (result.Empty() && TargetNullValue)
+			result = *TargetNullValue;
+		Error = BindingError::None;
+		SetResult({ true, std::move(result) });
+	}
+
+	void WriteBack(const MultiBindingResultState& state)
+	{
+		if (!IsTargetToSourceMode(Mode) || Recomputing || WritingBack
+			|| !state.HasValue || !Converter) return;
+		const MultiBindingValueConverterContext context{
+			ConverterParameter ? &*ConverterParameter : nullptr,
+			TargetKind };
+		std::vector<BindingValue> values;
+		if (!Converter->ConvertBack(
+			state.Value, SlotProperties.size(), context, values)
+			|| values.size() != SlotProperties.size())
+		{
+			Error = BindingError::MultiBindingConverterFailed;
+			return;
+		}
+		WritingBack = true;
+		bool success = true;
+		BindingError writeError = BindingError::SourceWriteFailed;
+		for (size_t index = 0; index < values.size(); ++index)
+		{
+			if (!Collector.TrySetCurrentPropertyValue(
+				SlotProperties[index], WrapMultiBindingSlotValue(values[index])))
+			{
+				success = false;
+				break;
+			}
+		}
+		for (size_t index = 0; success && index < SlotProperties.size(); ++index)
+		{
+			auto* child = Collector.DataBindings.Find(SlotProperties[index]);
+			if (!child || !IsTargetToSourceMode(child->Mode())) continue;
+			const bool mustCommit = child->UpdateMode()
+				== DataSourceUpdateMode::OnValidation
+				|| (child->UpdateMode() == DataSourceUpdateMode::Never
+					&& (ManualUpdateSource
+						|| UpdateMode == DataSourceUpdateMode::Never));
+			if (mustCommit && !child->UpdateSource())
+			{
+				success = false;
+				writeError = child->LastError() == BindingError::None
+					? BindingError::SourceWriteFailed : child->LastError();
+			}
+			else if (!mustCommit && child->UpdateMode()
+				== DataSourceUpdateMode::OnPropertyChanged
+				&& child->LastError() != BindingError::None)
+			{
+				success = false;
+				writeError = child->LastError();
+			}
+		}
+		WritingBack = false;
+		Error = BindingError::None;
+		Recompute();
+		if (!success) Error = writeError;
+	}
+
+	bool UpdateTarget()
+	{
+		if (!TargetExpression || !IsSourceToTargetMode(Mode)) return false;
+		const bool previousInitializing = Initializing;
+		Initializing = true;
+		BindingError childError = BindingError::None;
+		for (const auto& slot : SlotProperties)
+		{
+			auto* child = Collector.DataBindings.Find(slot);
+			if (!child || !IsSourceToTargetMode(child->Mode())) continue;
+			if (!child->UpdateTarget() && childError == BindingError::None)
+				childError = child->LastError() == BindingError::None
+					? BindingError::SourceReadFailed : child->LastError();
+		}
+		Initializing = previousInitializing;
+		if (childError != BindingError::None)
+		{
+			Error = childError;
+			return false;
+		}
+		Error = BindingError::None;
+		Recompute();
+		if (Error != BindingError::None) return false;
+		if (!TargetExpression->UpdateTarget())
+		{
+			Error = TargetExpression->LastError() == BindingError::None
+				? BindingError::TargetWriteFailed : TargetExpression->LastError();
+			return false;
+		}
+		return true;
+	}
+
+	bool UpdateSource()
+	{
+		if (!TargetExpression || !IsTargetToSourceMode(Mode)) return false;
+		Error = BindingError::None;
+		ManualUpdateSource = true;
+		const bool updated = TargetExpression->UpdateSource();
+		ManualUpdateSource = false;
+		if (!updated && Error == BindingError::None)
+			Error = TargetExpression->LastError() == BindingError::None
+				? BindingError::SourceWriteFailed : TargetExpression->LastError();
+		return updated && Error == BindingError::None;
+	}
+};
+
+MultiBinding::MultiBinding(
+	Control* target,
+	std::wstring targetProperty,
+	std::vector<MultiBindingSource> sources,
+	BindingMode mode,
+	DataSourceUpdateMode updateMode,
+	std::shared_ptr<const IMultiBindingValueConverter> converter,
+	std::optional<BindingValue> fallbackValue,
+	std::optional<BindingValue> targetNullValue,
+	std::optional<BindingValue> converterParameter,
+	std::optional<std::wstring> stringFormat)
+	: _state(std::make_unique<State>())
+{
+	auto& state = *_state;
+	state.TargetProperty = std::move(targetProperty);
+	state.Mode = mode;
+	state.UpdateMode = updateMode;
+	state.Converter = std::move(converter);
+	state.TargetNullValue = std::move(targetNullValue);
+	state.ConverterParameter = std::move(converterParameter);
+	state.StringFormat = std::move(stringFormat);
+	if (!target || state.TargetProperty.empty() || sources.size() < 2)
+	{
+		state.Error = BindingError::InvalidMultiBinding;
+		return;
+	}
+	const auto* targetMetadata = BindingPropertyRegistry::Find(
+		*target, state.TargetProperty);
+	if (!targetMetadata)
+	{
+		state.Error = BindingError::TargetPropertyNotFound;
+		return;
+	}
+	if (targetMetadata->IsReadOnly())
+	{
+		state.Error = BindingError::TargetNotWritable;
+		return;
+	}
+	state.Mode = ResolveBindingMode(*targetMetadata, state.Mode);
+	state.UpdateMode = ResolveDataSourceUpdateMode(
+		*targetMetadata, state.UpdateMode);
+	state.TargetKind = targetMetadata->ValueKind();
+	if (!state.Converter && !state.StringFormat)
+	{
+		state.Error = BindingError::InvalidMultiBinding;
+		return;
+	}
+	if (IsTargetToSourceMode(state.Mode) && !state.Converter)
+	{
+		state.Error = BindingError::InvalidMultiBinding;
+		return;
+	}
+	if (state.StringFormat
+		&& (state.TargetKind != BindingValueKind::String
+			|| (state.Converter
+				? !IsValidBindingStringFormat(*state.StringFormat)
+				: !IsValidMultiBindingStringFormat(
+					*state.StringFormat, sources.size()))))
+	{
+		state.Error = BindingError::InvalidStringFormat;
+		return;
+	}
+
+	if (!state.DefineCollectorProperty(
+		State::ResultProperty, BindingValue(MultiBindingResultState{})))
+	{
+		state.Error = BindingError::InvalidMultiBinding;
+		return;
+	}
+	state.SlotProperties.reserve(sources.size());
+	state.SourceProperties.reserve(sources.size());
+	for (size_t index = 0; index < sources.size(); ++index)
+	{
+		auto& source = sources[index];
+		const auto requestedChildMode = source.Mode.value_or(state.Mode);
+		const auto childMode = requestedChildMode == BindingMode::Default
+			? state.Mode : requestedChildMode;
+		const auto requestedChildUpdateMode = source.UpdateMode.value_or(
+			state.UpdateMode);
+		const auto childUpdateMode = requestedChildUpdateMode
+			== DataSourceUpdateMode::Default
+			? state.UpdateMode : requestedChildUpdateMode;
+		if ((!source.Source && !source.OwnedSource)
+			|| source.SourceProperty.empty()
+			|| (source.StringFormat
+				&& !IsValidBindingStringFormat(*source.StringFormat)))
+		{
+			state.Error = BindingError::InvalidMultiBinding;
+			return;
+		}
+		const auto slot = L"Value" + std::to_wstring(index);
+		if (!state.DefineCollectorProperty(
+			slot, BindingValue(MultiBindingSlotState{})))
+		{
+			state.Error = BindingError::InvalidMultiBinding;
+			return;
+		}
+		state.SlotProperties.push_back(slot);
+		state.SourceProperties.push_back(source.SourceProperty);
+	}
+
+	state.CollectorConnection = state.Collector.OnPropertyValueChanged.Subscribe(
+		[weak = std::weak_ptr<const void>(state.Collector.BindingLifetime()),
+		 statePtr = &state](Control*, const ControlPropertyChangedEventArgs& args)
+		{
+			if (weak.expired()) return;
+			if (IsSameProperty(args.PropertyName, State::ResultProperty))
+			{
+				MultiBindingResultState result;
+				if (args.NewValue.TryGet(result)) statePtr->WriteBack(result);
+			}
+			else statePtr->Recompute();
+		});
+	state.ChildValidationConnection =
+		state.Collector.DataBindings.ValidationChanged().Subscribe(
+			[&state](const BindingValidationChangedEventArgs&)
+			{
+				state.Validation.Notify(state.TargetProperty);
+			});
+
+	for (size_t index = 0; index < sources.size(); ++index)
+	{
+		auto& source = sources[index];
+		const auto requestedChildMode = source.Mode.value_or(state.Mode);
+		const auto childMode = requestedChildMode == BindingMode::Default
+			? state.Mode : requestedChildMode;
+		const auto requestedChildUpdateMode = source.UpdateMode.value_or(
+			state.UpdateMode);
+		const auto childUpdateMode = requestedChildUpdateMode
+			== DataSourceUpdateMode::Default
+			? state.UpdateMode : requestedChildUpdateMode;
+		auto slotConverter = std::make_shared<MultiBindingSlotConverter>(
+			std::move(source.Converter), std::move(source.StringFormat));
+		std::optional<BindingValue> slotFallback = BindingValue(
+			MultiBindingSlotState{});
+		if (source.FallbackValue)
+			slotFallback = WrapMultiBindingSlotValue(*source.FallbackValue);
+		std::optional<BindingValue> slotNull;
+		if (source.TargetNullValue)
+			slotNull = WrapMultiBindingSlotValue(*source.TargetNullValue);
+		Binding* child = source.OwnedSource
+			? state.Collector.DataBindings.Add(
+				state.SlotProperties[index], std::move(source.OwnedSource),
+				source.SourceProperty, childMode, childUpdateMode, std::move(slotConverter),
+				std::move(slotFallback), std::move(slotNull),
+				std::move(source.ConverterParameter))
+			: state.Collector.DataBindings.Add(
+				state.SlotProperties[index], source.Source,
+				source.SourceProperty, childMode, childUpdateMode, std::move(slotConverter),
+				std::move(slotFallback), std::move(slotNull),
+				std::move(source.ConverterParameter));
+		if (!child)
+		{
+			state.Error = state.Collector.DataBindings.LastError();
+			return;
+		}
+	}
+	state.Initializing = false;
+	state.Recompute();
+	state.TargetExpression = std::make_unique<Binding>(
+		target, state.TargetProperty, &state.Collector, State::ResultProperty,
+		state.Mode, state.UpdateMode, std::make_shared<MultiBindingResultConverter>(),
+		std::move(fallbackValue));
+	if (!state.TargetExpression->IsValid())
+	{
+		state.Error = state.TargetExpression->LastError();
+		state.TargetExpression.reset();
+	}
+}
+
+MultiBinding::~MultiBinding() = default;
+
+const std::wstring& MultiBinding::TargetProperty() const noexcept
+{
+	static const std::wstring empty;
+	return _state ? _state->TargetProperty : empty;
+}
+
+BindingMode MultiBinding::Mode() const noexcept
+{
+	return _state ? _state->Mode : BindingMode::Default;
+}
+
+DataSourceUpdateMode MultiBinding::UpdateMode() const noexcept
+{
+	return _state ? _state->UpdateMode : DataSourceUpdateMode::Default;
+}
+
+size_t MultiBinding::SourceCount() const noexcept
+{
+	return _state ? _state->SourceProperties.size() : 0;
+}
+
+bool MultiBinding::IsValid() const noexcept
+{
+	return _state && _state->TargetExpression
+		&& _state->TargetExpression->IsValid();
+}
+
+BindingError MultiBinding::LastError() const noexcept
+{
+	if (!_state) return BindingError::InvalidMultiBinding;
+	if (_state->Error != BindingError::None) return _state->Error;
+	return _state->TargetExpression
+		? _state->TargetExpression->LastError()
+		: BindingError::InvalidMultiBinding;
+}
+
+const wchar_t* MultiBinding::LastErrorMessage() const noexcept
+{
+	return BindingErrorMessage(LastError());
+}
+
+Binding* MultiBinding::TargetBinding() noexcept
+{
+	return _state ? _state->TargetExpression.get() : nullptr;
+}
+
+const Binding* MultiBinding::TargetBinding() const noexcept
+{
+	return _state ? _state->TargetExpression.get() : nullptr;
+}
+
+bool MultiBinding::UpdateTarget()
+{
+	return _state && _state->UpdateTarget();
+}
+
+bool MultiBinding::UpdateSource()
+{
+	return _state && _state->UpdateSource();
+}
+
+std::vector<BindingValidationResult> MultiBinding::GetValidationResults() const
+{
+	std::vector<BindingValidationResult> result;
+	if (!_state) return result;
+	const auto childResults = _state->Collector.DataBindings.GetValidationResults();
+	for (size_t index = 0; index < childResults.size(); ++index)
+	{
+		const auto slot = std::find(
+			_state->SlotProperties.begin(), _state->SlotProperties.end(),
+			childResults[index].TargetProperty);
+		const auto sourceIndex = slot == _state->SlotProperties.end()
+			? size_t{ 0 }
+			: static_cast<size_t>(slot - _state->SlotProperties.begin());
+		result.push_back({ _state->TargetProperty,
+			sourceIndex < _state->SourceProperties.size()
+				? _state->SourceProperties[sourceIndex] : std::wstring{},
+			childResults[index].Issue });
+	}
+	return result;
+}
+
+bool MultiBinding::HasValidationIssues() const
+{
+	return _state && _state->Collector.DataBindings.HasValidationIssues();
+}
+
+bool MultiBinding::HasValidationErrors() const
+{
+	return _state && _state->Collector.DataBindings.HasValidationErrors();
+}
+
+BindingValidationChangedEvent& MultiBinding::ValidationChanged() noexcept
+{
+	return _state->Validation;
 }
 
 BindingCollection::BindingCollection(Control* owner)
@@ -1782,7 +3360,11 @@ Binding* BindingCollection::Add(const std::wstring& targetProperty,
 	const std::wstring& sourceProperty,
 	BindingMode mode,
 	DataSourceUpdateMode updateMode,
-	std::shared_ptr<const IBindingValueConverter> converter)
+	std::shared_ptr<const IBindingValueConverter> converter,
+	std::optional<BindingValue> fallbackValue,
+	std::optional<BindingValue> targetNullValue,
+	std::optional<BindingValue> converterParameter,
+	std::optional<std::wstring> stringFormat)
 {
 	if (!_owner)
 	{
@@ -1800,7 +3382,7 @@ Binding* BindingCollection::Add(const std::wstring& targetProperty,
 		{
 			return binding
 				&& IsSameProperty(binding->TargetProperty(), targetProperty);
-		});
+		}) || FindMulti(targetProperty) != nullptr;
 	if (duplicateTarget)
 	{
 		_lastError = BindingError::DuplicateTargetProperty;
@@ -1814,7 +3396,11 @@ Binding* BindingCollection::Add(const std::wstring& targetProperty,
 		sourceProperty,
 		mode,
 		updateMode,
-		std::move(converter));
+		std::move(converter),
+		std::move(fallbackValue),
+		std::move(targetNullValue),
+		std::move(converterParameter),
+		std::move(stringFormat));
 	if (!binding->IsValid())
 	{
 		_lastError = binding->LastError();
@@ -1834,11 +3420,115 @@ Binding* BindingCollection::Add(const std::wstring& targetProperty,
 	return result;
 }
 
+Binding* BindingCollection::Add(const std::wstring& targetProperty,
+	BindingSourceReference source,
+	const std::wstring& sourceProperty,
+	BindingMode mode,
+	DataSourceUpdateMode updateMode,
+	std::shared_ptr<const IBindingValueConverter> converter,
+	std::optional<BindingValue> fallbackValue,
+	std::optional<BindingValue> targetNullValue,
+	std::optional<BindingValue> converterParameter,
+	std::optional<std::wstring> stringFormat)
+{
+	if (!_owner)
+	{
+		_lastError = BindingError::InvalidTarget;
+		return nullptr;
+	}
+	if (!source)
+	{
+		_lastError = BindingError::InvalidSource;
+		return nullptr;
+	}
+	const bool duplicateTarget = std::any_of(
+		_items.begin(), _items.end(),
+		[&targetProperty](const auto& binding)
+		{
+			return binding
+				&& IsSameProperty(binding->TargetProperty(), targetProperty);
+		}) || FindMulti(targetProperty) != nullptr;
+	if (duplicateTarget)
+	{
+		_lastError = BindingError::DuplicateTargetProperty;
+		return nullptr;
+	}
+
+	auto binding = std::make_unique<Binding>(
+		_owner, targetProperty, std::move(source), sourceProperty,
+		mode, updateMode, std::move(converter),
+		std::move(fallbackValue), std::move(targetNullValue),
+		std::move(converterParameter), std::move(stringFormat));
+	if (!binding->IsValid())
+	{
+		_lastError = binding->LastError();
+		return nullptr;
+	}
+	auto* result = binding.get();
+	auto validationConnection = result->ValidationChanged().Subscribe(
+		[this, targetProperty](const BindingValidationChangedEventArgs&)
+		{
+			NotifyValidationChanged(targetProperty);
+		});
+	_items.push_back(std::move(binding));
+	_validationConnections.push_back(std::move(validationConnection));
+	if (result->HasValidationIssues())
+		NotifyValidationChanged(targetProperty);
+	_lastError = BindingError::None;
+	return result;
+}
+
+MultiBinding* BindingCollection::AddMulti(
+	const std::wstring& targetProperty,
+	std::vector<MultiBindingSource> sources,
+	BindingMode mode,
+	DataSourceUpdateMode updateMode,
+	std::shared_ptr<const IMultiBindingValueConverter> converter,
+	std::optional<BindingValue> fallbackValue,
+	std::optional<BindingValue> targetNullValue,
+	std::optional<BindingValue> converterParameter,
+	std::optional<std::wstring> stringFormat)
+{
+	if (!_owner)
+	{
+		_lastError = BindingError::InvalidTarget;
+		return nullptr;
+	}
+	if (Find(targetProperty) || FindMulti(targetProperty))
+	{
+		_lastError = BindingError::DuplicateTargetProperty;
+		return nullptr;
+	}
+	auto binding = std::make_unique<MultiBinding>(
+		_owner, targetProperty, std::move(sources), mode, updateMode,
+		std::move(converter), std::move(fallbackValue),
+		std::move(targetNullValue), std::move(converterParameter),
+		std::move(stringFormat));
+	if (!binding->IsValid())
+	{
+		_lastError = binding->LastError();
+		return nullptr;
+	}
+	auto* result = binding.get();
+	auto validationConnection = result->ValidationChanged().Subscribe(
+		[this, targetProperty](const BindingValidationChangedEventArgs&)
+		{
+			NotifyValidationChanged(targetProperty);
+		});
+	_multiItems.push_back(std::move(binding));
+	_multiValidationConnections.push_back(std::move(validationConnection));
+	if (result->HasValidationIssues()) NotifyValidationChanged(targetProperty);
+	_lastError = BindingError::None;
+	return result;
+}
+
 void BindingCollection::Clear()
 {
 	const bool hadValidation = HasValidationIssues();
 	_validationConnections.clear();
+	_multiValidationConnections.clear();
 	_items.clear();
+	_multiItems.clear();
 	if (hadValidation) NotifyValidationChanged(L"");
 	_lastError = BindingError::None;
 }
@@ -1851,7 +3541,9 @@ Binding* BindingCollection::Find(const std::wstring& targetProperty)
 			return binding
 				&& IsSameProperty(binding->TargetProperty(), targetProperty);
 		});
-	return found == _items.end() ? nullptr : found->get();
+	if (found != _items.end()) return found->get();
+	auto* multi = FindMulti(targetProperty);
+	return multi ? multi->TargetBinding() : nullptr;
 }
 
 const Binding* BindingCollection::Find(
@@ -1863,7 +3555,33 @@ const Binding* BindingCollection::Find(
 			return binding
 				&& IsSameProperty(binding->TargetProperty(), targetProperty);
 		});
-	return found == _items.end() ? nullptr : found->get();
+	if (found != _items.end()) return found->get();
+	const auto* multi = FindMulti(targetProperty);
+	return multi ? multi->TargetBinding() : nullptr;
+}
+
+MultiBinding* BindingCollection::FindMulti(
+	const std::wstring& targetProperty)
+{
+	const auto found = std::find_if(
+		_multiItems.begin(), _multiItems.end(), [&](const auto& binding)
+		{
+			return binding
+				&& IsSameProperty(binding->TargetProperty(), targetProperty);
+		});
+	return found == _multiItems.end() ? nullptr : found->get();
+}
+
+const MultiBinding* BindingCollection::FindMulti(
+	const std::wstring& targetProperty) const
+{
+	const auto found = std::find_if(
+		_multiItems.begin(), _multiItems.end(), [&](const auto& binding)
+		{
+			return binding
+				&& IsSameProperty(binding->TargetProperty(), targetProperty);
+		});
+	return found == _multiItems.end() ? nullptr : found->get();
 }
 
 bool BindingCollection::Remove(const std::wstring& targetProperty)
@@ -1874,7 +3592,25 @@ bool BindingCollection::Remove(const std::wstring& targetProperty)
 			return binding
 				&& IsSameProperty(binding->TargetProperty(), targetProperty);
 		});
-	if (found == _items.end()) return false;
+	if (found == _items.end())
+	{
+		const auto multi = std::find_if(
+			_multiItems.begin(), _multiItems.end(), [&](const auto& binding)
+			{
+				return binding && IsSameProperty(
+					binding->TargetProperty(), targetProperty);
+			});
+		if (multi == _multiItems.end()) return false;
+		const size_t index = static_cast<size_t>(multi - _multiItems.begin());
+		const bool hadValidation = (*multi)->HasValidationIssues();
+		if (index < _multiValidationConnections.size())
+			_multiValidationConnections.erase(
+				_multiValidationConnections.begin() + index);
+		_multiItems.erase(multi);
+		if (hadValidation) NotifyValidationChanged(targetProperty);
+		_lastError = BindingError::None;
+		return true;
+	}
 	const size_t index = static_cast<size_t>(found - _items.begin());
 	const bool hadValidation = (*found)->HasValidationIssues();
 	if (index < _validationConnections.size())
@@ -1885,9 +3621,45 @@ bool BindingCollection::Remove(const std::wstring& targetProperty)
 	return true;
 }
 
+bool BindingCollection::UpdateTarget(const std::wstring& targetProperty)
+{
+	if (auto* multi = FindMulti(targetProperty))
+	{
+		const bool updated = multi->UpdateTarget();
+		_lastError = updated ? BindingError::None : multi->LastError();
+		return updated;
+	}
+	if (auto* binding = Find(targetProperty))
+	{
+		const bool updated = binding->UpdateTarget();
+		_lastError = updated ? BindingError::None : binding->LastError();
+		return updated;
+	}
+	_lastError = BindingError::TargetPropertyNotFound;
+	return false;
+}
+
+bool BindingCollection::UpdateSource(const std::wstring& targetProperty)
+{
+	if (auto* multi = FindMulti(targetProperty))
+	{
+		const bool updated = multi->UpdateSource();
+		_lastError = updated ? BindingError::None : multi->LastError();
+		return updated;
+	}
+	if (auto* binding = Find(targetProperty))
+	{
+		const bool updated = binding->UpdateSource();
+		_lastError = updated ? BindingError::None : binding->LastError();
+		return updated;
+	}
+	_lastError = BindingError::TargetPropertyNotFound;
+	return false;
+}
+
 size_t BindingCollection::Count() const
 {
-	return _items.size();
+	return _items.size() + _multiItems.size();
 }
 
 std::vector<BindingValidationResult> BindingCollection::GetValidationResults() const
@@ -1902,12 +3674,23 @@ std::vector<BindingValidationResult> BindingCollection::GetValidationResults() c
 				binding->SourceProperty(), issue });
 		}
 	}
+	for (const auto& binding : _multiItems)
+	{
+		if (!binding) continue;
+		auto values = binding->GetValidationResults();
+		result.insert(result.end(),
+			std::make_move_iterator(values.begin()),
+			std::make_move_iterator(values.end()));
+	}
 	return result;
 }
 
 bool BindingCollection::HasValidationIssues() const
 {
 	return std::any_of(_items.begin(), _items.end(), [](const auto& binding)
+	{
+		return binding && binding->HasValidationIssues();
+	}) || std::any_of(_multiItems.begin(), _multiItems.end(), [](const auto& binding)
 	{
 		return binding && binding->HasValidationIssues();
 	});
@@ -1918,15 +3701,24 @@ bool BindingCollection::HasValidationErrors() const
 	return std::any_of(_items.begin(), _items.end(), [](const auto& binding)
 	{
 		return binding && binding->HasValidationErrors();
+	}) || std::any_of(_multiItems.begin(), _multiItems.end(), [](const auto& binding)
+	{
+		return binding && binding->HasValidationErrors();
 	});
 }
 
 Binding* BindingCollection::operator[](size_t index)
 {
-	return index < _items.size() ? _items[index].get() : nullptr;
+	if (index < _items.size()) return _items[index].get();
+	index -= _items.size();
+	return index < _multiItems.size()
+		? _multiItems[index]->TargetBinding() : nullptr;
 }
 
 const Binding* BindingCollection::operator[](size_t index) const
 {
-	return index < _items.size() ? _items[index].get() : nullptr;
+	if (index < _items.size()) return _items[index].get();
+	index -= _items.size();
+	return index < _multiItems.size()
+		? _multiItems[index]->TargetBinding() : nullptr;
 }

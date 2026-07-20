@@ -33,35 +33,6 @@ bool DesignDocumentGraph::Build(
 			return Fail(L"控件稳定 ID 重复: " + std::to_wstring(node.Id), outError);
 		if (node.Name.empty())
 			return Fail(L"控件名称不能为空。", outError);
-		if (!node.CustomType.Empty())
-		{
-			const auto& custom = node.CustomType;
-			if (custom.XamlPrefix.empty() || custom.XamlName.empty()
-				|| custom.XamlNamespace.empty() || custom.CppType.empty()
-				|| custom.Header.empty()
-				|| _wcsicmp(custom.XamlPrefix.c_str(), L"x") == 0
-				|| _wcsicmp(custom.XamlPrefix.c_str(), L"d") == 0
-				|| custom.XamlPrefix.find(L':') != std::wstring::npos
-				|| custom.XamlName.find(L':') != std::wstring::npos
-				|| node.Type == UIClass::UI_TabPage)
-				return Fail(L"自定义控件类型描述不完整或包含保留名称: "
-					+ node.Name, outError);
-			std::wstring normalizedCppType;
-			std::wstring validationError;
-			if (!DesignCodeBehindModel::TryNormalizeClassName(
-				custom.CppType, normalizedCppType, &validationError)
-				|| normalizedCppType != custom.CppType)
-				return Fail(L"自定义控件 C++ 类型必须是规范限定名称: "
-					+ node.Name, outError);
-			if (custom.Header.find(L"..") != std::wstring::npos
-				|| custom.Header.front() == L'/'
-				|| custom.Header.front() == L'\\'
-				|| custom.Header.find(L':') != std::wstring::npos
-				|| custom.Header.find(L'\"') != std::wstring::npos
-				|| custom.Header.find_first_of(L"\r\n") != std::wstring::npos)
-				return Fail(L"自定义控件头文件必须是安全的相对包含路径: "
-					+ node.Name, outError);
-		}
 		if (!graph._indexByName.emplace(node.Name, index).second)
 			return Fail(L"控件名称重复: " + node.Name, outError);
 		graph._maxStableId = (std::max)(graph._maxStableId, node.Id);

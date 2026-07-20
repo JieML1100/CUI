@@ -96,6 +96,9 @@ dkms.conf
 /Release/
 /Debug/
 /x64/
+**/x64/
+**/Win32/
+**/obj/
 *.tlog
 *.log
 *.recipe

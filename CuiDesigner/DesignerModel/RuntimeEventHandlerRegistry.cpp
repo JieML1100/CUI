@@ -24,7 +24,7 @@ struct RuntimeEventHandlerRegistry::State
 	{
 		std::uint64_t Token = 0;
 		UIClass ControlType = UIClass::UI_Base;
-		std::wstring CustomControlKey;
+		std::wstring ComponentTypeKey;
 		DesignerEventDescriptor Event;
 		ControlBinder Bind;
 	};
@@ -292,7 +292,7 @@ bool RuntimeEventHandlerRegistry::ContainsRoutes(
 bool RuntimeEventHandlerRegistry::AddControlRoute(
 	std::wstring handlerName,
 	UIClass controlType,
-	std::wstring customControlKey,
+	std::wstring componentTypeKey,
 	DesignerEventDescriptor descriptor,
 	ControlBinder binder,
 	std::wstring* outError)
@@ -314,7 +314,7 @@ bool RuntimeEventHandlerRegistry::AddControlRoute(
 			[&](const State::ControlRoute& route)
 			{
 				return route.ControlType == controlType
-					&& route.CustomControlKey == customControlKey
+					&& route.ComponentTypeKey == componentTypeKey
 					&& SameEvent(route.Event, descriptor);
 			});
 		if (duplicate)
@@ -332,7 +332,7 @@ bool RuntimeEventHandlerRegistry::AddControlRoute(
 		}
 		const auto token = _state->NextRouteToken++;
 		entry.ControlRoutes.push_back(State::ControlRoute{
-			token, controlType, std::move(customControlKey),
+			token, controlType, std::move(componentTypeKey),
 			std::move(descriptor), std::move(binder) });
 		if (outError) outError->clear();
 		return true;
@@ -426,14 +426,14 @@ bool RuntimeEventHandlerRegistry::ResolveControl(
 
 	const State::ControlRoute* wildcard = nullptr;
 	const State::ControlRoute* selected = nullptr;
-	const auto customKey = request.CustomType.Empty()
-		? std::wstring{} : request.CustomType.RegistryKey();
+	const auto componentKey = request.ComponentType.Empty()
+		? std::wstring{} : request.ComponentType.RegistryKey();
 	for (const auto& route : entry.ControlRoutes)
 	{
 		if (!SameEvent(route.Event, request.Event)) continue;
-		if (!route.CustomControlKey.empty())
+		if (!route.ComponentTypeKey.empty())
 		{
-			if (route.CustomControlKey == customKey)
+			if (route.ComponentTypeKey == componentKey)
 			{
 				selected = &route;
 				break;

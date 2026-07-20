@@ -24,50 +24,83 @@
 
 namespace DesignerModel
 {
-std::wstring RuntimeCustomControlRegistry::MakeKey(
-	const std::wstring& xamlNamespace,
-	const std::wstring& xamlName)
-{
-	return xamlNamespace + L"|" + xamlName;
-}
-
-bool RuntimeCustomControlRegistry::Register(
-	std::wstring xamlNamespace,
-	std::wstring xamlName,
+bool NativeSurfaceBehaviorRegistry::Register(
+	std::wstring behaviorKey,
 	Factory factory,
 	std::wstring* outError)
 {
-	if (xamlNamespace.empty() || xamlName.empty() || !factory)
+	if (behaviorKey.empty() || !factory)
 	{
-		if (outError)
-			*outError = L"自定义控件注册需要非空命名空间、类型名和工厂。";
+		if (outError) *outError =
+			L"NativeSurface 行为注册需要非空键和工厂。";
 		return false;
 	}
 	std::scoped_lock lock(_mutex);
-	_factories[MakeKey(xamlNamespace, xamlName)] = std::move(factory);
+	_factories[std::move(behaviorKey)] = std::move(factory);
 	if (outError) outError->clear();
 	return true;
 }
 
-bool RuntimeCustomControlRegistry::Unregister(
-	const std::wstring& xamlNamespace,
-	const std::wstring& xamlName) noexcept
+bool NativeSurfaceBehaviorRegistry::Unregister(
+	const std::wstring& behaviorKey) noexcept
 {
 	std::scoped_lock lock(_mutex);
-	return _factories.erase(MakeKey(xamlNamespace, xamlName)) != 0;
+	return _factories.erase(behaviorKey) != 0;
 }
 
-std::unique_ptr<Control> RuntimeCustomControlRegistry::Create(
-	const DesignNode& node) const
+std::unique_ptr<INativeSurfaceBehavior> NativeSurfaceBehaviorRegistry::Create(
+	const std::wstring& behaviorKey,
+	NativeSurface& host) const
 {
 	Factory factory;
 	{
 		std::scoped_lock lock(_mutex);
-		const auto found = _factories.find(node.CustomType.RegistryKey());
+		const auto found = _factories.find(behaviorKey);
 		if (found == _factories.end()) return {};
 		factory = found->second;
 	}
-	return factory ? factory(node) : nullptr;
+	return factory ? factory(host) : nullptr;
+}
+
+bool DeclarativeComponentBehaviorRegistry::Register(
+	DesignerComponentType componentType,
+	Factory factory,
+	std::wstring* outError)
+{
+	if (componentType.XamlNamespace.empty()
+		|| componentType.XamlName.empty() || !factory)
+	{
+		if (outError) *outError =
+			L"声明组件 Behavior 注册需要完整 QName 和工厂。";
+		return false;
+	}
+	const auto key = componentType.RegistryKey();
+	std::scoped_lock lock(_mutex);
+	_factories[key] = std::move(factory);
+	if (outError) outError->clear();
+	return true;
+}
+
+bool DeclarativeComponentBehaviorRegistry::Unregister(
+	const DesignerComponentType& componentType) noexcept
+{
+	std::scoped_lock lock(_mutex);
+	return _factories.erase(componentType.RegistryKey()) != 0;
+}
+
+std::unique_ptr<IDeclarativeComponentBehavior>
+DeclarativeComponentBehaviorRegistry::Create(
+	const DeclarativeComponentBehaviorContext& context) const
+{
+	Factory factory;
+	{
+		std::scoped_lock lock(_mutex);
+		const auto found = _factories.find(
+			context.XamlNamespace + L"|" + context.XamlTypeName);
+		if (found == _factories.end()) return {};
+		factory = found->second;
+	}
+	return factory ? factory(context) : nullptr;
 }
 
 namespace
@@ -81,30 +114,24 @@ namespace
 		const RuntimeDocumentLoadOptions& options)
 	{
 		DesignDocumentMaterializationOptions result;
-		result.AllowCustomControlProxy = options.AllowCustomControlProxy;
-		result.AllowDeferredCustomMetadata = options.AllowCustomControlProxy;
-		if (options.CustomControls)
+		result.AllowNativeSurfacePlaceholder =
+			options.AllowNativeSurfacePlaceholder;
+		if (options.NativeSurfaceBehaviors)
 		{
-			auto registry = options.CustomControls;
-			result.CustomControlFactory =
-				[registry](const DesignNode& node)
+			auto registry = options.NativeSurfaceBehaviors;
+			result.NativeSurfaceBehaviorFactory =
+				[registry](const DesignNode&, NativeSurface& host)
 				{
-					return registry->Create(node);
+					return registry->Create(host.GetBehaviorKey(), host);
 				};
 		}
-		return result;
-	}
-
-	XamlDocumentParseOptions XamlOptionsFor(
-		std::shared_ptr<const RuntimeCustomControlRegistry> registry)
-	{
-		XamlDocumentParseOptions result;
-		if (registry)
+		if (options.DeclarativeComponentBehaviors)
 		{
-			result.CustomControlFactory =
-				[registry = std::move(registry)](const DesignNode& node)
+			auto registry = options.DeclarativeComponentBehaviors;
+			result.DeclarativeComponentBehaviorFactory =
+				[registry](const DeclarativeComponentBehaviorContext& context)
 				{
-					return registry->Create(node);
+					return registry->Create(context);
 				};
 		}
 		return result;
@@ -515,24 +542,78 @@ namespace
 		const DesignNode& left,
 		const DesignNode& right)
 	{
+		if (left.Type == UIClass::UI_NativeSurface
+			&& left.Props["metadata"]["BehaviorKey"]
+				!= right.Props["metadata"]["BehaviorKey"])
+			return false;
 		return left.Id == right.Id
 			&& left.ParentId == right.ParentId
 			&& left.ParentRef == right.ParentRef
 			&& left.Name == right.Name
 			&& left.Type == right.Type
-			&& left.CustomType == right.CustomType
+			&& left.ComponentType == right.ComponentType
+			&& left.ComponentContentProperty
+				== right.ComponentContentProperty
+			&& left.PresentedComponentContent
+				== right.PresentedComponentContent
 			&& left.Order == right.Order
 			&& left.Extra == right.Extra
+			&& left.LocalResources == right.LocalResources
+			&& left.LocalObjectResources == right.LocalObjectResources
 			&& HasOnlySupportedInPlacePropertyChanges(left.Props, right.Props);
+	}
+
+	bool HasLocalStyleRules(const DesignDocument& document)
+	{
+		return std::any_of(document.Nodes.begin(), document.Nodes.end(),
+			[](const DesignNode& node)
+			{ return !node.LocalResources.Rules.empty(); });
+	}
+
+	bool HasStructuralTemplateStyles(const DesignDocument& document)
+	{
+		auto hasTemplateSetter = [](const DesignerStyleSheet& sheet)
+		{
+			return std::any_of(sheet.Rules.begin(), sheet.Rules.end(),
+				[](const auto& rule)
+				{
+					return std::any_of(
+						rule.Setters.begin(), rule.Setters.end(), [](const auto& setter)
+						{ return _wcsicmp(
+							setter.PropertyName.c_str(), L"Template") == 0; });
+				});
+		};
+		return hasTemplateSetter(document.StyleSheet)
+			|| std::any_of(document.Nodes.begin(), document.Nodes.end(),
+				[&](const auto& node) { return hasTemplateSetter(node.LocalResources); });
 	}
 
 	bool CanReloadInPlace(
 		const DesignDocument& current,
 		const DesignDocument& next)
 	{
+		// Template is a structural value. Until runtime tree replacement is a
+		// first-class property operation, any document carrying Style.Template
+		// must be rebuilt so StyleId/Class and BasedOn changes cannot leave stale
+		// visual children behind.
+		if (HasStructuralTemplateStyles(current)
+			|| HasStructuralTemplateStyles(next)) return false;
 		if (current.Schema != next.Schema
 			|| current.Form.Name != next.Form.Name
 			|| current.Form.EventHandlers != next.Form.EventHandlers
+			|| ((current.HasResourceBackedVisualStates()
+					|| next.HasResourceBackedVisualStates()
+					|| HasLocalStyleRules(current)
+					|| HasLocalStyleRules(next))
+				&& current.StyleSheet != next.StyleSheet)
+			|| current.Components != next.Components
+			|| current.ControlTemplates != next.ControlTemplates
+			|| current.DataTypes != next.DataTypes
+			|| current.DataTemplates != next.DataTemplates
+			|| current.ItemsPanelTemplates != next.ItemsPanelTemplates
+			|| current.GroupStyles != next.GroupStyles
+			|| current.DataLists != next.DataLists
+			|| current.CollectionViews != next.CollectionViews
 			|| current.Nodes.size() != next.Nodes.size())
 			return false;
 		std::unordered_map<int, const DesignNode*> currentById;
@@ -604,6 +685,8 @@ namespace
 		ImageSizeMode SizeMode = ImageSizeMode::Zoom;
 		std::map<std::wstring, DesignerStyleValue> MetadataProperties;
 		std::map<std::wstring, BindingValue> LocalValues;
+		std::map<std::wstring, std::wstring> StaticResources;
+		std::map<std::wstring, std::wstring> DynamicResources;
 
 		static InPlaceControlSnapshot Capture(DesignerControl& record)
 		{
@@ -641,6 +724,9 @@ namespace
 			result.GridColumnSpan = target.GridColumnSpan;
 			result.SizeMode = target.SizeMode;
 			result.MetadataProperties = record.MetadataProperties;
+			result.StaticResources = record.MetadataPropertyResourceKeys;
+			result.DynamicResources =
+				record.MetadataPropertyDynamicResourceKeys;
 			for (const auto* metadata : BindingPropertyRegistry::GetProperties(target))
 			{
 				if (!metadata) continue;
@@ -694,7 +780,11 @@ namespace
 				for (const auto& [name, value] : LocalValues)
 					(void)target.TrySetPropertyValue(
 						name, value, ControlPropertyValueSource::Local);
+				for (const auto& [name, resourceKey] : DynamicResources)
+					(void)target.SetDynamicResource(name, resourceKey);
 				Record->MetadataProperties = MetadataProperties;
+				Record->MetadataPropertyResourceKeys = StaticResources;
+				Record->MetadataPropertyDynamicResourceKeys = DynamicResources;
 			}
 			catch (...)
 			{
@@ -774,6 +864,7 @@ namespace
 			}
 			if (!changedNames[name])
 			{
+				(void)target->ClearDynamicResource(canonical);
 				BindingValue candidateValue;
 				if (candidate->TryGetPropertyValue(
 					canonical, ControlPropertyValueSource::Local, candidateValue))
@@ -797,6 +888,21 @@ namespace
 				}
 				continue;
 			}
+			if (const auto dynamicResource =
+				candidateRecord.MetadataPropertyDynamicResourceKeys.find(canonical);
+				dynamicResource
+					!= candidateRecord.MetadataPropertyDynamicResourceKeys.end())
+			{
+				if (!target->SetDynamicResource(
+					canonical, dynamicResource->second))
+				{
+					SetError(outError, L"控件 “" + targetRecord.Name
+						+ L"” 无法原位应用属性 “" + canonical
+						+ L"” 的动态资源表达式。");
+					return false;
+				}
+				continue;
+			}
 			BindingValue value;
 			if (!candidate->TryGetPropertyValue(
 				canonical, ControlPropertyValueSource::Local, value)
@@ -809,6 +915,10 @@ namespace
 			}
 		}
 		targetRecord.MetadataProperties = candidateRecord.MetadataProperties;
+		targetRecord.MetadataPropertyResourceKeys =
+			candidateRecord.MetadataPropertyResourceKeys;
+		targetRecord.MetadataPropertyDynamicResourceKeys =
+			candidateRecord.MetadataPropertyDynamicResourceKeys;
 		return true;
 	}
 
@@ -973,6 +1083,7 @@ RuntimeDocument& RuntimeDocument::operator=(RuntimeDocument&& other) noexcept
 	_ownedRoots = std::move(other._ownedRoots);
 	_rootControls = std::move(other._rootControls);
 	_controls = std::move(other._controls);
+	_collectionViews = std::move(other._collectionViews);
 	_controlsByDesignId = std::move(other._controlsByDesignId);
 	_controlsByName = std::move(other._controlsByName);
 	_installedBindings = std::move(other._installedBindings);
@@ -983,8 +1094,10 @@ RuntimeDocument& RuntimeDocument::operator=(RuntimeDocument&& other) noexcept
 	_formEventTarget = other._formEventTarget;
 	_appliedForm = other._appliedForm;
 	_rootHost = std::move(other._rootHost);
-	_customControls = std::move(other._customControls);
-	_allowCustomControlProxy = other._allowCustomControlProxy;
+	_nativeSurfaceBehaviors = std::move(other._nativeSurfaceBehaviors);
+	_declarativeComponentBehaviors =
+		std::move(other._declarativeComponentBehaviors);
+	_allowNativeSurfacePlaceholder = other._allowNativeSurfacePlaceholder;
 	_sourceDocument = std::move(other._sourceDocument);
 	_rootsReleased = other._rootsReleased;
 	_referenceState = std::move(referenceState);
@@ -1062,18 +1175,172 @@ bool RuntimeDocument::InstallDataBindings(
 	std::vector<InstalledBinding>& installed,
 	std::wstring* outError)
 {
-	if (!source)
-	{
-		SetError(outError, L"未提供运行时 DataContext。");
-		return false;
-	}
-
+	const BindingSourceReference rootContext(source);
+	for (auto* root : _rootControls)
+		if (root) root->SetInheritedDataContext(rootContext);
 	for (const auto& control : _controls)
 	{
 		if (!control || !control->ControlInstance) continue;
 		auto& target = *control->ControlInstance;
 		for (const auto& [targetProperty, configuration] : control->DataBindings)
 		{
+			if (configuration.IsMultiBinding())
+			{
+				std::wstring validationError;
+				if (!DesignerBindingUtils::Validate(target, targetProperty,
+					configuration, nullptr, &validationError, nullptr))
+				{
+					SetError(outError, L"控件 " + control->Name + L"：" + validationError);
+					RemoveDataBindings(installed);
+					return false;
+				}
+				InstalledBinding state;
+				state.Target = &target;
+				state.Property = targetProperty;
+				if (configuration.Mode != BindingMode::OneWayToSource)
+				{
+					state.LocalValueWasSuspended = true;
+					BindingValue localValue;
+					const bool hadLocal = target.TryGetPropertyValue(targetProperty,
+						ControlPropertyValueSource::Local, localValue);
+					if (hadLocal) state.PreviousLocalValue = std::move(localValue);
+					if (hadLocal && !target.ClearPropertyValue(targetProperty,
+						ControlPropertyValueSource::Local))
+					{
+						SetError(outError, L"控件 " + control->Name
+							+ L"：无法暂存目标属性 " + targetProperty + L" 的 Local 值。");
+						RemoveDataBindings(installed);
+						return false;
+					}
+				}
+				auto resolveSource = [&](const DesignerDataBinding& child,
+					DesignerBindingUtils::ResolvedBindingSource& resolved,
+					std::wstring* error)
+				{
+					if (!child.ElementName.empty())
+					{
+						resolved.Source = FindControlByName(child.ElementName);
+						if (!resolved.Source)
+						{
+							if (error) *error = L"ElementName 引用了不存在的控件："
+								+ child.ElementName;
+							return false;
+						}
+					}
+					else if (child.RelativeSource == DesignerBindingRelativeSource::Self)
+						resolved.Source = &target;
+					else if (child.RelativeSource
+						== DesignerBindingRelativeSource::TemplatedParent)
+					{
+						if (error) *error = L"公开文档树不能解析 TemplatedParent。";
+						return false;
+					}
+					else if (child.RelativeSource
+						== DesignerBindingRelativeSource::FindAncestor)
+					{
+						resolved.OwnedSource = DesignerBindingUtils::CreateAncestorSource(
+							target, child);
+						resolved.Source = resolved.OwnedSource.Get();
+					}
+					else if (targetProperty == L"DataContext")
+						resolved.Source = target.Parent
+							? &target.Parent->DataContextSource() : source.get();
+					else if (source)
+						resolved.Source = &target.DataContextSource();
+					else
+					{
+						if (error) *error = L"尚未提供 DataContext。";
+						return false;
+					}
+					return true;
+				};
+				std::wstring installError;
+				if (!DesignerBindingUtils::InstallBinding(target, targetProperty,
+					configuration, resolveSource, &installError))
+				{
+					if (state.PreviousLocalValue)
+						(void)target.TrySetPropertyValue(targetProperty,
+							*state.PreviousLocalValue, ControlPropertyValueSource::Local);
+					SetError(outError, L"控件 " + control->Name + L"：" + installError);
+					RemoveDataBindings(installed);
+					return false;
+				}
+				installed.push_back(std::move(state));
+				continue;
+			}
+			IBindingSource* bindingSource = nullptr;
+			BindingSourceReference ownedBindingSource;
+			DesignerDataContextSchema elementSourceSchema;
+			const DesignerDataContextSchema* sourceSchema =
+				_dataContextSchema.empty() ? nullptr : &_dataContextSchema;
+			if (!configuration.ElementName.empty())
+			{
+				bindingSource = FindControlByName(configuration.ElementName);
+				if (!bindingSource)
+				{
+					SetError(outError, L"控件 " + control->Name
+						+ L" 的 ElementName 引用了不存在的控件："
+						+ configuration.ElementName);
+					RemoveDataBindings(installed);
+					return false;
+				}
+					elementSourceSchema = DesignerBindingUtils::BuildSourceSchema(
+					*bindingSource);
+				sourceSchema = &elementSourceSchema;
+			}
+			else if (configuration.RelativeSource
+				== DesignerBindingRelativeSource::Self)
+			{
+				bindingSource = &target;
+				elementSourceSchema = DesignerBindingUtils::BuildSourceSchema(target);
+				sourceSchema = &elementSourceSchema;
+			}
+			else if (configuration.RelativeSource
+				== DesignerBindingRelativeSource::TemplatedParent)
+			{
+				SetError(outError, L"控件 " + control->Name
+					+ L" 位于公开文档树，不能解析 TemplatedParent。");
+				RemoveDataBindings(installed);
+				return false;
+			}
+			else if (configuration.RelativeSource
+				== DesignerBindingRelativeSource::FindAncestor)
+			{
+				ownedBindingSource = DesignerBindingUtils::CreateAncestorSource(
+					target, configuration);
+				bindingSource = ownedBindingSource.Get();
+				if (auto* current = DesignerBindingUtils::FindAncestorSource(
+					target, configuration))
+				{
+					elementSourceSchema = DesignerBindingUtils::BuildSourceSchema(*current);
+					sourceSchema = &elementSourceSchema;
+				}
+				else sourceSchema = nullptr;
+			}
+			else if (targetProperty == L"DataContext")
+			{
+				bindingSource = target.Parent
+					? &target.Parent->DataContextSource()
+					: source.get();
+			}
+			else if (source)
+				bindingSource = &target.DataContextSource();
+			else if (!bindingSource)
+			{
+				// DataContext bindings remain authored but detached until the host
+				// supplies a source. ElementName bindings do not depend on that step.
+				continue;
+			}
+			if (bindingSource && configuration.ElementName.empty()
+				&& configuration.RelativeSource
+					== DesignerBindingRelativeSource::None)
+			{
+				elementSourceSchema = DesignerBindingUtils::BuildSourceSchema(
+					*bindingSource);
+				if (!elementSourceSchema.empty()) sourceSchema = &elementSourceSchema;
+				else if (target.Parent && targetProperty != L"DataContext")
+					sourceSchema = nullptr;
+			}
 			std::wstring validationError;
 			if (!DesignerBindingUtils::Validate(
 				target,
@@ -1081,7 +1348,7 @@ bool RuntimeDocument::InstallDataBindings(
 				configuration,
 				nullptr,
 				&validationError,
-				_dataContextSchema.empty() ? nullptr : &_dataContextSchema))
+				sourceSchema))
 			{
 				SetError(outError, L"控件 " + control->Name + L"：" + validationError);
 				RemoveDataBindings(installed);
@@ -1101,6 +1368,21 @@ bool RuntimeDocument::InstallDataBindings(
 					RemoveDataBindings(installed);
 					return false;
 				}
+			}
+			std::optional<BindingValue> fallbackValue;
+			std::optional<BindingValue> targetNullValue;
+			std::optional<BindingValue> converterParameter;
+			std::wstring literalError;
+			if (!DesignerBindingUtils::TryConvertOptionalLiteral(
+				configuration.FallbackValue, fallbackValue, &literalError)
+				|| !DesignerBindingUtils::TryConvertOptionalLiteral(
+					configuration.TargetNullValue, targetNullValue, &literalError)
+				|| !DesignerBindingUtils::TryConvertOptionalLiteral(
+					configuration.ConverterParameter, converterParameter, &literalError))
+			{
+				SetError(outError, L"控件 " + control->Name + L"：" + literalError);
+				RemoveDataBindings(installed);
+				return false;
 			}
 
 			InstalledBinding state;
@@ -1129,13 +1411,19 @@ bool RuntimeDocument::InstallDataBindings(
 				}
 			}
 
-			auto* binding = target.DataBindings.Add(
-				targetProperty,
-				*source,
-				configuration.SourceProperty,
-				configuration.Mode,
-				configuration.UpdateMode,
-				std::move(converter));
+			auto* binding = ownedBindingSource
+				? target.DataBindings.Add(
+					targetProperty, std::move(ownedBindingSource),
+					configuration.SourceProperty, configuration.Mode,
+					configuration.UpdateMode, std::move(converter),
+					std::move(fallbackValue), std::move(targetNullValue),
+					std::move(converterParameter), configuration.StringFormat)
+				: target.DataBindings.Add(
+					targetProperty, *bindingSource, configuration.SourceProperty,
+					configuration.Mode, configuration.UpdateMode,
+					std::move(converter), std::move(fallbackValue),
+					std::move(targetNullValue), std::move(converterParameter),
+					configuration.StringFormat);
 			if (!binding)
 			{
 				if (state.PreviousLocalValue)
@@ -1170,15 +1458,19 @@ bool RuntimeDocument::BindDataContext(
 
 	auto previousSource = _dataContext;
 	RemoveDataBindings(_installedBindings);
+	for (auto* root : _rootControls)
+		if (root) root->SetInheritedDataContext({});
+	for (const auto& view : _collectionViews)
+		if (view) view->BindDataContext(BindingSourceReference(source));
 	std::vector<InstalledBinding> next;
 	if (!InstallDataBindings(source, next, outError))
 	{
-		if (previousSource)
-		{
-			std::vector<InstalledBinding> restored;
-			(void)InstallDataBindings(previousSource, restored, nullptr);
-			_installedBindings = std::move(restored);
-		}
+		for (const auto& view : _collectionViews)
+			if (view) view->BindDataContext(
+				BindingSourceReference(previousSource));
+		std::vector<InstalledBinding> restored;
+		(void)InstallDataBindings(previousSource, restored, nullptr);
+		_installedBindings = std::move(restored);
 		return false;
 	}
 	SetStyleDataContext(source.get());
@@ -1190,7 +1482,12 @@ bool RuntimeDocument::BindDataContext(
 
 void RuntimeDocument::ClearDataBindings()
 {
+	if (_installedBindings.empty() && !_dataContext) return;
 	RemoveDataBindings(_installedBindings);
+	for (auto* root : _rootControls)
+		if (root) root->SetInheritedDataContext({});
+	for (const auto& view : _collectionViews)
+		if (view) view->BindDataContext({});
 	SetStyleDataContext(nullptr);
 	_dataContext.reset();
 }
@@ -1225,8 +1522,31 @@ bool RuntimeDocument::BindControlEvents(
 		if (!control || !control->ControlInstance) continue;
 		for (const auto& [eventName, storedHandler] : control->EventHandlers)
 		{
-			const auto descriptor = DesignerEventCatalog::FindControlEvent(
-				control->Type, eventName, control->CustomEvents);
+			auto publicEventName = eventName;
+			auto eventOwnerType = control->ComponentType;
+			DesignerComponentType attachedOwnerType;
+			std::wstring attachedEventName;
+			std::optional<DesignerEventDescriptor> descriptor;
+			if (DesignerEventCatalog::TryParseAttachedComponentEventKey(
+				eventName, attachedOwnerType, attachedEventName))
+			{
+				const auto* owner = _sourceDocument
+					? _sourceDocument->FindComponent(attachedOwnerType) : nullptr;
+				if (owner)
+				{
+					const auto contract = std::find_if(
+						owner->Events.begin(), owner->Events.end(),
+						[&](const auto& event)
+						{ return event.Name == attachedEventName; });
+					if (contract != owner->Events.end())
+						descriptor = DesignerEventCatalog::FromComponentEvent(*contract);
+				}
+				publicEventName = attachedEventName;
+				eventOwnerType = attachedOwnerType;
+			}
+			else
+				descriptor = DesignerEventCatalog::FindControlEvent(
+					control->Type, eventName, control->ComponentEvents);
 			if (!descriptor)
 			{
 				SetError(outError, L"控件 " + control->Name
@@ -1234,14 +1554,14 @@ bool RuntimeDocument::BindControlEvents(
 				return false;
 			}
 			const auto handlerName = DesignerEventCatalog::ResolveHandlerName(
-				storedHandler, control->Name, eventName);
+				storedHandler, control->Name, publicEventName);
 			std::wstring validationError;
 			if (handlerName.empty()
 				|| !DesignerEventCatalog::ValidateHandlerName(
 					handlerName, &validationError))
 			{
 				SetError(outError, L"控件 " + control->Name + L" 的事件 "
-					+ eventName + L"：" + (validationError.empty()
+					+ publicEventName + L"：" + (validationError.empty()
 						? std::wstring(L"处理函数名为空。") : validationError));
 				return false;
 			}
@@ -1251,7 +1571,7 @@ bool RuntimeDocument::BindControlEvents(
 				control->StableId,
 				control->Name,
 				control->Type,
-				control->CustomType,
+				eventOwnerType,
 				*descriptor,
 				handlerName };
 			EventConnection connection;
@@ -1260,7 +1580,7 @@ bool RuntimeDocument::BindControlEvents(
 				|| !connection.Connected())
 			{
 				SetError(outError, L"控件 " + control->Name + L" 的事件 "
-					+ eventName + L" 无法绑定到 " + handlerName
+					+ publicEventName + L" 无法绑定到 " + handlerName
 					+ (resolverError.empty() ? std::wstring{} : L"：" + resolverError));
 				return false;
 			}
@@ -1508,6 +1828,12 @@ bool RuntimeDocument::CommitInheritedFormAttachments(
 std::vector<std::unique_ptr<Control>> RuntimeDocument::ReleaseRootControls()
 {
 	if (_rootsReleased) return {};
+	// A raw ownership transfer has no lifetime adapter. Detach every runtime
+	// attachment while the controls are still guaranteed to be alive so the
+	// document can later be destroyed without dereferencing external roots.
+	ClearFormEvents();
+	ClearControlEvents();
+	ClearDataBindings();
 	_rootsReleased = true;
 	_rootHost.reset();
 	return std::move(_ownedRoots);
@@ -1620,9 +1946,13 @@ bool RuntimeDocumentLoader::Load(
 		DesignerDataContextSchemaUtils::Canonicalize(
 			candidate._dataContextSchema);
 		candidate._styleSheet = document.StyleSheet;
-		candidate._customControls = options.CustomControls;
-		candidate._allowCustomControlProxy = options.AllowCustomControlProxy;
+		candidate._nativeSurfaceBehaviors = options.NativeSurfaceBehaviors;
+		candidate._declarativeComponentBehaviors =
+			options.DeclarativeComponentBehaviors;
+		candidate._allowNativeSurfacePlaceholder =
+			options.AllowNativeSurfacePlaceholder;
 		candidate._controls = std::move(materialized.Controls);
+		candidate._collectionViews = std::move(materialized.CollectionViews);
 		candidate._ownedRoots = std::move(materialized.Roots);
 		candidate.RebuildControlIndex();
 		candidate._rootControls.reserve(candidate._ownedRoots.size());
@@ -1632,6 +1962,13 @@ bool RuntimeDocumentLoader::Load(
 		if (options.DataContext
 			&& !candidate.BindDataContext(options.DataContext, outError))
 			return false;
+		if (!options.DataContext)
+		{
+			std::vector<RuntimeDocument::InstalledBinding> installed;
+			if (!candidate.InstallDataBindings({}, installed, outError))
+				return false;
+			candidate._installedBindings = std::move(installed);
+		}
 		if (options.ControlEventResolver)
 		{
 			if (!candidate.BindControlEvents(
@@ -1720,7 +2057,7 @@ bool RuntimeDocumentLoader::LoadXaml(
 	{
 		DesignDocument document;
 		if (!XamlDocumentParser::FromXaml(
-			xaml, document, XamlOptionsFor(options.CustomControls), outError)) return false;
+			xaml, document, outError)) return false;
 		return Load(document, output, options, outError);
 	}
 	catch (const std::exception&)
@@ -1745,7 +2082,7 @@ bool RuntimeDocumentLoader::LoadXamlFile(
 	{
 		DesignDocument document;
 		if (!XamlDocumentParser::LoadFromFile(
-			filePath, document, XamlOptionsFor(options.CustomControls), outError)) return false;
+			filePath, document, outError)) return false;
 		return Load(document, output, options, outError);
 	}
 	catch (const std::exception&)
@@ -1843,7 +2180,7 @@ bool RuntimeDocumentLoader::LoadXamlIntoForm(
 	{
 		DesignDocument document;
 		if (!XamlDocumentParser::FromXaml(
-			xaml, document, XamlOptionsFor(options.CustomControls), outError)) return false;
+			xaml, document, outError)) return false;
 		return LoadIntoForm(
 			document, form, output, options, formResolver, outError);
 	}
@@ -1866,7 +2203,7 @@ bool RuntimeDocumentLoader::LoadXamlFileIntoForm(
 	{
 		DesignDocument document;
 		if (!XamlDocumentParser::LoadFromFile(
-			filePath, document, XamlOptionsFor(options.CustomControls), outError)) return false;
+			filePath, document, outError)) return false;
 		return LoadIntoForm(
 			document, form, output, options, formResolver, outError);
 	}
@@ -2039,10 +2376,16 @@ bool RuntimeDocumentLoader::Reload(
 	try
 	{
 		RuntimeDocumentLoadOptions inheritedOptions = options;
-		if (!inheritedOptions.CustomControls)
-			inheritedOptions.CustomControls = output._customControls;
-		if (!options.CustomControls && output._allowCustomControlProxy)
-			inheritedOptions.AllowCustomControlProxy = true;
+		if (!inheritedOptions.NativeSurfaceBehaviors)
+			inheritedOptions.NativeSurfaceBehaviors = output._nativeSurfaceBehaviors;
+		if (!inheritedOptions.DeclarativeComponentBehaviors)
+			inheritedOptions.DeclarativeComponentBehaviors =
+				output._declarativeComponentBehaviors;
+		if (options.NativeSurfaceBehaviors
+			|| options.DeclarativeComponentBehaviors)
+			inheritedOptions.ForceBehaviorRefresh = true;
+		if (!options.NativeSurfaceBehaviors && output._allowNativeSurfacePlaceholder)
+			inheritedOptions.AllowNativeSurfacePlaceholder = true;
 		DesignDocumentEventIndex eventIndex;
 		if (!DesignDocumentEventIndex::Build(
 			document, eventIndex, outError)) return false;
@@ -2052,8 +2395,11 @@ bool RuntimeDocumentLoader::Reload(
 		const bool hasExplicitRuntimeChange = options.DataContext
 			|| options.ControlEventResolver
 			|| options.RequireControlEventResolver
-			|| options.CustomControls
-			|| options.AllowCustomControlProxy;
+			|| options.NativeSurfaceBehaviors
+			|| options.DeclarativeComponentBehaviors
+			|| options.AllowNativeSurfacePlaceholder
+			|| options.ForceBehaviorRefresh
+			;
 		if (sameSourceDocument
 			&& !options.ForceResourceRefresh
 			&& !hasExplicitRuntimeChange)
@@ -2065,6 +2411,10 @@ bool RuntimeDocumentLoader::Reload(
 
 		if (output._sourceDocument
 			&& !(sameSourceDocument && options.ForceResourceRefresh)
+			&& !options.NativeSurfaceBehaviors
+			&& !options.DeclarativeComponentBehaviors
+			&& !options.AllowNativeSurfacePlaceholder
+			&& !options.ForceBehaviorRefresh
 			&& CanReloadInPlace(*output._sourceDocument, document))
 		{
 			std::unordered_map<int, const DesignNode*> currentById;
@@ -2102,9 +2452,17 @@ bool RuntimeDocumentLoader::Reload(
 			std::unordered_map<int, const DesignerControl*> candidateById;
 			if (needsCandidate)
 			{
+				auto candidateOptions =
+					MaterializationOptionsFor(inheritedOptions);
+				// This tree is only a typed property/binding snapshot. Attaching
+				// application behaviors here would publish side effects for a tree
+				// that is intentionally discarded after an in-place reload.
+				candidateOptions.NativeSurfaceBehaviorFactory = {};
+				candidateOptions.DeclarativeComponentBehaviorFactory = {};
+				candidateOptions.AllowNativeSurfacePlaceholder = true;
 				if (!DesignDocumentMaterializer::Materialize(
 					document, reloadCandidate,
-					MaterializationOptionsFor(inheritedOptions), outError)) return false;
+					candidateOptions, outError)) return false;
 				candidateById.reserve(reloadCandidate.Controls.size());
 				for (const auto& control : reloadCandidate.Controls)
 					if (control) candidateById.emplace(control->StableId, control.get());
@@ -2247,8 +2605,18 @@ bool RuntimeDocumentLoader::Reload(
 				for (size_t index = 0; index < output._controls.size(); ++index)
 					output._controls[index]->DataBindings = nextBindings[index];
 			}
-			const bool reboundDataContext = nextDataContext
-				&& (hasBindingChanges || hasSchemaChanges || changeDataContext);
+			const bool reboundDataContext =
+				hasBindingChanges || hasSchemaChanges || changeDataContext;
+			auto bindConfigured = [&](const std::shared_ptr<IBindingSource>& source,
+				std::wstring* error) -> bool
+			{
+				if (source) return output.BindDataContext(source, error);
+				output.RemoveDataBindings(output._installedBindings);
+				std::vector<RuntimeDocument::InstalledBinding> installed;
+				if (!output.InstallDataBindings({}, installed, error)) return false;
+				output._installedBindings = std::move(installed);
+				return true;
+			};
 			auto rollbackBindings = [&]() noexcept
 			{
 				try
@@ -2261,12 +2629,7 @@ bool RuntimeDocumentLoader::Reload(
 							output._controls[index]->DataBindings = previousBindings[index];
 					}
 					if (reboundDataContext)
-					{
-						if (previousDataContext)
-							(void)output.BindDataContext(previousDataContext, nullptr);
-						else
-							output.ClearDataBindings();
-					}
+						(void)bindConfigured(previousDataContext, nullptr);
 				}
 				catch (...)
 				{
@@ -2274,7 +2637,7 @@ bool RuntimeDocumentLoader::Reload(
 				}
 			};
 			if (reboundDataContext
-				&& !output.BindDataContext(nextDataContext, outError))
+				&& !bindConfigured(nextDataContext, outError))
 			{
 				const auto reloadError = outError ? *outError : std::wstring{};
 				rollbackBindings();
@@ -2401,9 +2764,11 @@ bool RuntimeDocumentLoader::Reload(
 
 			output._form = std::move(nextForm);
 			output._styleSheet = document.StyleSheet;
-			output._customControls = inheritedOptions.CustomControls;
-			output._allowCustomControlProxy =
-				inheritedOptions.AllowCustomControlProxy;
+			output._nativeSurfaceBehaviors = inheritedOptions.NativeSurfaceBehaviors;
+			output._declarativeComponentBehaviors =
+				inheritedOptions.DeclarativeComponentBehaviors;
+			output._allowNativeSurfacePlaceholder =
+				inheritedOptions.AllowNativeSurfacePlaceholder;
 			output._sourceDocument = std::move(nextSourceDocument);
 			if (outMode) *outMode = RuntimeDocumentReloadMode::InPlace;
 			if (outError) outError->clear();
@@ -2494,9 +2859,7 @@ bool RuntimeDocumentLoader::ReloadFile(
 	const bool loaded = DetectDesignDocumentFileFormat(filePath)
 		== DesignDocumentFileFormat::Xaml
 		? XamlDocumentParser::LoadFromFile(
-			filePath, document,
-			XamlOptionsFor(options.CustomControls
-				? options.CustomControls : output._customControls), outError)
+			filePath, document, outError)
 		: DesignDocumentSerializer::LoadFromFile(filePath, document, outError);
 	if (!loaded) return false;
 	return Reload(document, output, options, outMode, outError);
@@ -2511,9 +2874,7 @@ bool RuntimeDocumentLoader::ReloadXaml(
 {
 	DesignDocument document;
 	if (!XamlDocumentParser::FromXaml(
-		xaml, document,
-		XamlOptionsFor(options.CustomControls
-			? options.CustomControls : output._customControls), outError)) return false;
+		xaml, document, outError)) return false;
 	return Reload(document, output, options, outMode, outError);
 }
 
@@ -2526,9 +2887,7 @@ bool RuntimeDocumentLoader::ReloadXamlFile(
 {
 	DesignDocument document;
 	if (!XamlDocumentParser::LoadFromFile(
-		filePath, document,
-		XamlOptionsFor(options.CustomControls
-			? options.CustomControls : output._customControls), outError)) return false;
+		filePath, document, outError)) return false;
 	return Reload(document, output, options, outMode, outError);
 }
 }

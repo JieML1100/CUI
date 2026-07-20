@@ -25,6 +25,8 @@ private:
 	ComboBox* _existingPath = nullptr;
 	TextBox* _path = nullptr;
 	ComboBox* _kind = nullptr;
+	ComboBox* _objectKind = nullptr;
+	TextBox* _itemType = nullptr;
 	CheckBox* _canRead = nullptr;
 	CheckBox* _canWrite = nullptr;
 	CheckBox* _canObserve = nullptr;
@@ -36,6 +38,7 @@ private:
 	void SelectComboValue(ComboBox* combo, const std::wstring& value);
 	void RefreshPathOptions(const std::wstring& preferredPath = L"");
 	void LoadSelectedProperty();
+	void RefreshObjectEditors();
 	void RefreshSummary();
 	void ShowValidation(const std::wstring& message, bool isError);
 	bool SaveProperty();

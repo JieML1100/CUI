@@ -369,7 +369,7 @@ Binding 和 `TrySetPropertyValue` 才会共享 Coerce、失效和 `OnPropertyVal
 Coerce 中修改其他状态。旧的字段型属性可渐进迁移，但新增属性不得再自行复制一套钳制和
 脏状态逻辑。
 
-有效值优先级固定为 `Local > Binding > Style > Theme > Default`。使用带
+有效值优先级固定为 `Local > Binding > Style > Theme > Inherited > Default`。使用带
 `ControlPropertyValueSource` 的 `TrySetPropertyValue(...)` 写入指定层；
 `ClearPropertyValue(...)` 会回退到下一层，`ClearPropertyValues(source)` 用于整体卸载主题或
 样式。进入来源体系前的现有字段值会保存为兼容基线，所有来源清除后恢复。隐藏层更新不得
@@ -451,6 +451,13 @@ AddChild/DetachChildAt/RemoveChild/ClearChildren，TabControl 使用 InsertPage/
 Menu/MenuItem 使用对应的 Insert/Detach/Remove/Clear API。直接 erase 只表示分离，释放责任转交给调用方。
 所有订阅都由 `EventConnection` 自动释放。`DataSourceUpdateMode::OnValidation`
 仍只表示目标控件在失焦时回写，不等同于源验证事件。
+Binding API 的省略值必须保持为 `DataSourceUpdateMode::Default`，并在安装时通过目标
+`BindingPropertyMetadata::DefaultUpdateMode()` 解析为具体策略；控件订阅器不得收到 `Default`。
+XAML 规范输出使用 `UpdateSourceTrigger=PropertyChanged/LostFocus/Explicit`，旧 `UpdateMode` 仅作兼容输入。
+声明组件用 `DefaultUpdateSourceTrigger` 发布具体默认值，禁止把 `Default` 写成属性元数据默认策略。
+`Explicit` 必须具备可调用语义：普通与 MultiBinding 均公开 `UpdateSource()`/`UpdateTarget()`，通用调用方优先使用
+`BindingCollection` 的按目标属性入口。MultiBinding 手动提交必须继续刷新内部 Explicit 子 Binding，并把
+ConvertBack/源写入失败保留在表达式和集合的 `LastError` 中；失败不得修改未到达的源值，且修正后必须可重试。
 
 基础数值转换会检查范围；TwoWay 回写也会保持源属性既有的具体类型。转换失败时
 目标或源值保持不变，并分别报告 `TargetConversionFailed` 或
@@ -569,9 +576,10 @@ Binding 仍按既定优先级覆盖它们。把样式表附着到根控件会递
 - `Classes`：列出的 Class 必须全部存在，可用 `AddStyleClass` / `RemoveStyleClass` 修改；
 - `RequiredStates` / `ExcludedStates`：组合 Hovered、Focused、Pressed、Disabled、Checked、
   Selected；
+- `PropertyConditions`：按目标控件的可读、可观察属性元数据读取并类型化比较，所有条件必须同时匹配；
 - `DataConditions`：按 DataContext 点分路径读取值，所有条件必须同时匹配。
 
-级联特异性顺序是 `Id > Class/状态/数据条件 > 精确类型 > 通配规则`，特异性相同时后加入的规则胜出。
+级联特异性顺序是 `Id > Class/状态/属性条件/数据条件 > 精确类型 > 通配规则`，特异性相同时后加入的规则胜出。
 Hover、Focus、Pressed 和 Checked 会从控件事件自动刷新；Disabled 也会从有效 Enable 状态
 解析。显式状态使用 `SetStyleState(...)`。样式表资源通过 `SetResource(...)` 和
 `ControlStyleSetter::Resource(...)` 引用，键名不区分大小写。规则或资源修改会通知所有附着
@@ -579,10 +587,20 @@ Hover、Focus、Pressed 和 Checked 会从控件事件自动刷新；Disabled �
 不存在、不可写或无法按元数据转换/Coerce 的属性也会形成解析问题；无效声明不参与级联，
 因此较低特异性的有效声明仍可作为回退。
 
-`ControlStyleSheet::SetDataContext(...)` 为 DataTrigger 提供调用方持有的源。样式表必须使用
-`BindingLifetime()` 防止源销毁后解引用，并订阅点分路径每一级的 `PropertyChanged`；叶值变化、
-中间对象替换和清除 DataContext 都必须通知附着控件重新解析。比较前把期望值转换到实际值类型，
-转换或读取失败只表示条件不匹配，不能让整份样式失效。
+DataTrigger 必须针对每个目标控件的有效（本地或继承）DataContext 求值。目标控件以稳定的
+`DataContextSource()` 为根分别订阅点分路径每一级的 `PropertyChanged`；叶值变化、中间对象替换、
+继承来源切换和清除 DataContext 都只触发相关目标重新解析。共享样式表不得把某个 DataTemplate 项的
+DataContext 保存成全局可变状态；`ControlStyleSheet::SetDataContext(...)` 仅保留为目标没有有效
+DataContext 时的兼容回退。比较前把期望值转换到实际值类型，转换或读取失败只表示条件不匹配，不能让整份样式失效。
+
+Style `Trigger` / `MultiTrigger` / `DataTrigger` / `MultiDataTrigger` 的 `EnterActions`、`ExitActions` 使用既有完整
+Storyboard 模型，但定义共享、运行状态绝不能共享。只有类型/Id/Class 静态选择器先匹配目标时，才为该目标编译
+动作作用域；状态、目标属性和数据条件共同决定作用域的 Active 边沿。初始 true 和 false→true 执行 Enter，true→false 执行 Exit，
+无边沿刷新不得重启时钟。每个目标、样式表来源和值源、RuleId 共同隔离命名时钟；规则消失、样式表替换或控件
+销毁必须停止并释放作用域。Style 动画只能以匹配控件自身为目标，禁止 `TargetName`；Begin 名称在同一规则的
+Enter/Exit 合集内唯一，控制动作也只在该合集解析。Style 时钟与组件 EventTrigger/VisualState 可共享动画泵和
+`Animation` 值源，但索引、定义生命周期和失败回滚必须隔离。规范 XAML、v14、撤销内存估算、剪贴板资源闭包、
+热重载和设计器预览必须保存同一语义。辅助静态生成不支持时必须明确失败，禁止生成缺少动作的近似代码。
 
 `Button`、`TextBox`、`ComboBox`、`Panel`、`GroupBox`、`Expander`、`ScrollView` 的常用状态色、边框、圆角和间距已迁移到
 属性元数据，并使用 `TracksLocalValue` 保持公开 setter 的 Local 语义。仍未迁移的旧外观字段继续直接设置；新增
@@ -594,24 +612,26 @@ Designer 选中控件后可直接编辑 `StyleId` 与 `StyleClasses`；后者使
 `SetStyleId(...)` / `AddStyleClass(...)`。
 
 未选中控件时，窗体属性面板的“编辑文档样式表”用于维护 `DesignerStyleSheet`。资源值必须
-显式声明 Bool、Int、Int64、Float、Double、String、Color、Thickness、Size 或 Length 类型；
+显式声明 Bool、Int、Int64、Float、Double、String、Enum、Color、Thickness、Size、Length、Brush、Geometry 或 Transform 类型；
 规则可组合类型、ID、多个 Class、必需/排除状态、`BasedOn` 及 Literal/Resource Setter。只有
 `TargetType` 而没有 Id/Class/状态的规则是隐式样式。`BasedOn` 可引用命名 Id，或用 `{x:Type T}`
 引用隐式样式；继承展开必须统一处理 TargetType 继承、基 Setter 在前/派生同名 Setter 覆盖、循环检测，
 并让动态运行时、静态生成、Designer 预览得到相同结果。合并字典与本地声明重名时按源顺序由后者覆盖。
-`Style.Triggers` 当前只接受 `IsMouseOver`、`IsKeyboardFocused`、`IsPressed`、`IsEnabled`、`IsChecked`、
-`IsSelected` 布尔条件，并统一降低为 Required/Excluded 状态规则；禁止接受任意 Property 后静默忽略。
-`MultiTrigger` 必须在 `MultiTrigger.Conditions` 中声明至少两个 Condition，全部条件以 AND 语义合并；重复属性、
+`Style.Triggers` 将 `IsMouseOver`、`IsKeyboardFocused`、`IsPressed`、`IsEnabled`、`IsChecked`、
+`IsSelected` 规范为状态条件；其他 `Property` 必须解析到目标类型中可读、可观察且具有受支持值类型的属性元数据，
+并用该元数据完成值转换与比较，禁止硬编码新的控件属性分支。`MultiTrigger` 必须在
+`MultiTrigger.Conditions` 中声明至少两个 Condition，允许混合状态与普通属性，全部条件以 AND 语义合并；重复属性、
 条件内部矛盾及与规则 Required/Excluded 的冲突必须在提交前拒绝。Trigger Setter 与普通 Setter 使用相同资源
 解析和属性元数据验证，BasedOn 继承 Trigger，派生声明按源顺序在后。`DataTrigger` 首批只接受
 `Binding="{Binding Path}"` 和字面 `Value`，路径必须走通用 Binding 路径规范化/校验；不得接受 Converter、
 Mode/UpdateMode 或 StaticResource Value。`MultiDataTrigger` 必须在 `MultiDataTrigger.Conditions` 中声明
 至少两个同类 Condition，所有数据条件按 AND 匹配；空列表、单条件和重复路径必须在提交前拒绝，不能降低为
 多个彼此独立的 DataTrigger。动态运行时的
-`BindDataContext`、设计时 DataContext 与静态生成的 `BindData` 必须把同一个源交给样式表。
+`BindDataContext`、设计时 DataContext、DataTemplate 项上下文与静态生成的 `BindData` 必须进入控件的统一
+DataContext 继承链；禁止通过反复调用共享样式表的 `SetDataContext` 传递项上下文。
 编辑器必须在提交前
 调用统一的规范化与校验逻辑，成功后把运行时 `ControlStyleSheet` 递归附着到预览根控件；应用
-失败时保留旧样式表。XML v5 和代码生成器必须保存并重建同一份语义，不能各自维护另一套解析规则。
+失败时保留旧样式表。XML v14 和动态运行时必须保存并重建同一份语义，不能各自维护另一套解析规则。
 
 Setter 属性选择使用 `DesignerPropertyCatalog` 对 `BindingPropertyRegistry::GetProperties(...)`
 的投影，不维护第二份属性名清单。目录只列出可写且能由 Designer 持久化的类型，并从当前值或
@@ -914,53 +934,199 @@ XAML 另写一套控件构建 switch、属性 setter 或容器挂载逻辑。生
 运行时属性元数据。`Width` / `Height` 映射到支持浮点与 `Auto` 的 `LayoutWidth` / `LayoutHeight`；
 `x:Name` 用于名称索引和静态引用，可选 `DesignId` 保持跨持久化稳定身份。`{Binding ...}`、命名事件、强类型
 资源和 Style Setter 必须投影到现有模型，不能在 XAML 层直接安装运行时连接。新增语法应同时覆盖
-XAML → `DesignDocument` → 规范 XAML/v5 XML 往返、静态代码生成输入、动态加载和失败回滚。
-`XamlDocumentSerializer` 只允许输出公开属性、Binding 标记扩展和公开属性元素。ComboBox/ListView/ListBox
-的项使用 WPF 式直接内容；多集合控件使用 `.Columns` / `.Rows` 等显式属性元素。GridView/PagedGridView 共用
+XAML → `DesignDocument` → 规范 XAML/v14 XML 往返、动态加载和失败回滚。静态代码生成已降为可选辅助能力，
+不得反向限制动态 XAML 的类型系统。
+`XamlDocumentSerializer` 只允许输出公开属性、Binding 标记扩展和公开属性元素。ComboBox/ListView
+的旧式静态项使用直接内容；`ListBox` 只接受强类型 `ItemsSource + DataTemplate`，不得恢复 `ListBoxItem`、
+`.Items` 或 `.Columns` 兼容分支。多集合控件使用 `.Columns` / `.Rows` 等显式属性元素。GridView/PagedGridView 共用
 强类型 Column/Row/Cell 节点，媒体源使用 `Source`。新增结构类型必须同时补齐 Parser、规范 Serializer、
-Materializer、Designer `BuildDesignDocument` 回存和 CodeGenerator，不能只让动态加载识别。
+Materializer 和 Designer `BuildDesignDocument` 回存，不能只让动态加载识别。可选 CodeGenerator 只处理它明确
+支持的静态子集；遇到 `ComponentDefinition`、`DataType`、`DataTemplate` 等动态类型系统内容必须明确拒绝，
+不得迫使 XAML 降级。
 不存在公开语法的残余 `Props` / `Bindings` / `Extra` 必须明确失败，禁止恢复 `d:` 通用值袋或静默丢字段。
 普通颜色使用可读 `#AARRGGBB`，浮点几何和布局值不得整数化。
 `Control.Foreground` 的 Solid/Linear/Radial/Image Brush 是公开结构对象；ImageBrush 的资源 URI、
-Stretch、Alignment 与 Opacity 必须在动态加载、Designer 回存和静态生成中一致。自定义控件若只改变画刷，应复用基类 Brush-aware 绘制，
+Stretch、Alignment 与 Opacity 必须在动态加载和 Designer 回存中一致。静态辅助生成若声明支持该文档，也必须
+保持相同结果。自定义控件若只改变画刷，应复用基类 Brush-aware 绘制，
 不得复制整段 `Update()`。`Control.RenderTransform` 同样是公开结构对象，Matrix/Translate/Scale/Rotate/Skew
 按声明顺序组合，`RenderTransformOrigin` 使用相对控件边界的坐标；控件自身变换与容器提供的后代视图变换
-必须分层组合，输入坐标必须通过最终矩阵求逆，脏区、DComp、可访问性边界、Designer 回存和静态生成必须
+必须分层组合，输入坐标必须通过最终矩阵求逆，脏区、DComp、可访问性边界和 Designer 回存必须
 使用同一结果。`Control.Clip` 的 Rectangle/Ellipse/Path/GeometryGroup 是控件局部 DIP 中的公开结构对象；
 PathFigure 支持 Line/Bezier/QuadraticBezier/Arc，所有 Geometry 均可拥有独立 `Geometry.Transform`；
-父控件 Clip 必须约束独立绘制的后代，渲染、普通/虚拟命中、可访问性、Designer 回存和静态生成必须使用
+父控件 Clip 必须约束独立绘制的后代，渲染、普通/虚拟命中、可访问性和 Designer 回存必须使用
 同一几何语义。动画仍只有在这些路径全部对齐后才能声明为支持，禁止只接受标签却静默忽略。
 `ResourceDictionary.MergedDictionaries` 的 `Source` 必须统一经过 Application 配置的 `ResourceResolver`；
 禁止在 Parser、Materializer 或画刷层重新拼磁盘路径。当前内置 `FileResourceSource` 以声明字典的目录解析相对
 URI，也支持应用搜索目录；后合并项覆盖前项，本地项覆盖合并项。自定义 `IResourceSource` 必须返回字节、稳定
 Identity、逻辑 BaseUri 和可选 WatchPath，为后续产品包资源保留扩展点。模型必须保留外部来源和本次解析上下文，
 使规范 XAML 回存不展开外部字典；循环引用和缺失资源必须事务性拒绝，原生 XML、剪贴板依赖裁剪、材质化和
-代码生成也不得丢失或误用资源基目录。文件监视必须覆盖主 XAML、递归字典和图片依赖，并支持删除后恢复。
-外部控件必须作为 `DesignNode::CustomType` 的一等模型贯穿 XAML、v5 XML、Canvas 快照、材质化和代码生成，
-不能只把未知标签塞入 `Extra`。描述符至少包含带前缀 XAML 名/命名空间、规范 C++ 限定类型、安全相对头文件和
-`Default`/`Bounds`/`TextBounds` 构造约定；`DesignNode::Type` 保存内置元数据基类。生产动态加载只接受
-`RuntimeCustomControlRegistry` 中显式注册且 `Type()` 与基类一致的实例，缺失/错误工厂必须事务性失败。
-Designer 与无窗口生成器可显式启用基类代理，但普通运行时不得默认降级；静态生成仍须使用描述符中的真实 C++
-类型和头文件。前缀命名空间冲突、保留 `x`/`d` 前缀、不完整描述符及不安全 include 路径应在提交前拒绝。
-Designer ToolBox 的扩展入口统一为 `DesignerControlDescriptor`；内置项和外部项不得再走两套仅传 `UIClass` 的
-添加链路。外部清单使用 `cui.designer.controls/1`，整份文件必须事务性合并并拒绝名称、XAML identity 和前缀
-映射冲突；解析应限制大小、禁止 DTD、拒绝未知属性/子内容。`property` 子元素是受限的可移植 schema：
-必须校验 kind/default/editor/choice/范围、基类重名和 Binding 能力，不得把未校验文本直接写入生成代码。
-`event` 子元素同样是受限契约：名称和真实 Event 字段必须是安全标识符，签名只能来自框架定义的固定预设，
-不得接受清单提供的任意 C++ 类型文本。自定义事件契约必须随 `DesignNode` 持久化到 XAML/XML，使无窗口生成
-不依赖当前机器的清单；Designer 重新加载已安装清单时，已使用事件的名称、字段或签名不兼容必须事务性拒绝，
-不能静默覆盖文档契约。动态宿主必须用 `RegisterCustomControl` 将持久化函数名、XAML 类型身份、契约与真实
-Event 成员配对，并按 `Event::function_type` 精确核对后才能订阅。
-清单不得包含 DLL 路径。同进程预览可按 XAML key 附加 `PreviewFactory`；独立插件只能由受信任宿主显式传入
-`--preview-plugin`。不得跨静态 CRT 边界传递并由宿主 `delete Control*`。
-跨模块预览遵循 `CuiDesigner/DesignerPreviewPluginAbi.h` 与
-`CuiDesigner/CUSTOM_CONTROL_PLUGIN_ABI.md`：宿主拥有基类代理，插件拥有 opaque session 并只返回有上限的
-值类型绘制原语。`DesignerPreviewPluginModule`/session 负责 UI 线程亲和、上限校验、同步拷贝和 RAII 卸载；
-`DesignerPreviewBridge` 把原语绘制在宿主代理的局部裁剪中，并将强类型自定义属性同步为 ABI `SetValue`。
-插件路径必须来自显式受信任配置，不能来自设计文档或控件清单。
-动态 XAML 解析收到注册表时必须用真实控件探测专有属性元数据并执行类型转换/Coerce。专有属性同样使用普通
-XAML attribute；没有清单或真实元数据可验证的属性必须明确拒绝，工具代理不得用不透明值袋延迟保存。
-生产加载仍须对真实实例重新校验，Reload 解析 XAML 时应继承已有注册表。
+静态辅助生成在支持的文档子集内也不得丢失或误用资源基目录。文件监视必须覆盖主 XAML、递归字典和图片依赖，
+并支持删除后恢复。
+`{DynamicResource Key}` 是属性值表达式，不得在 Parser 中降级为解析时字面量。首批合法位置为可写控件属性和
+Style/Trigger Setter；`Style`、`BasedOn`、`ItemsSource`、模板选择等结构引用继续只接受 `StaticResource`。
+运行时表达式占用 Local 值槽，按“当前控件局部字典 → 逻辑父链局部字典 → 文档样式表 → Application/主题样式表”查找，资源表替换、同表资源修改、换父级或
+继承到新子控件时必须重新求值；键暂时缺失时保留表达式并显露较低值源，普通 Local 写入或 ClearValue 会移除表达式。
+规范 XAML、v16、设计器捕获/恢复、资源重命名、剪贴板闭包、事务热重载和辅助代码生成必须保留动态/静态身份。
+
+控件级 `<Owner.Resources>` 是词法作用域，必须保存在拥有它的 `DesignNode`，不得在 Parser 或 Designer 捕获时
+扁平化到 `Form.Resources`。运行时沿逻辑 `Parent` 查找，移动子树后必须重新求值。v15 引入强类型值资源和文件型
+MergedDictionaries；v16 进一步允许局部 `Style`。局部规则必须与文档及祖先规则共同解析 `BasedOn`，运行时按
+特异性合并并让近端规则在同分时胜出，Data/Property Trigger 的订阅和动作时钟也必须按作用域重建。文档样式变化若
+影响已展开的局部 `BasedOn`，必须重建局部运行时字典，不能只替换根样式表。DataTemplate/ComponentDefinition 等尚未
+实现词法对象索引的结构资源仍须明确拒绝，不能悄悄注册成全局资源。
+
+窗体属性页的结构化数据资源编辑器是 `DataType`、`DataList`、`DataRecord` 与 `DataTemplate` 标识的统一入口。
+它必须先在候选 `DesignDocument` 上完成类型验证和规范化，再作为一条文档命令提交。类型、字段、列表键或模板键
+重命名必须原子重写 Schema、记录路径、模板 Binding 和控件资源引用；有依赖的删除必须拒绝，合并字典资源只读。
+`DataTemplate` 视觉树继续由统一画布/XAML 编辑，不建立第二套控件编辑器。
+
+选择控件的数据语义必须以记录为真源：`DisplayMemberPath` 只负责显示，`SelectedValuePath` 决定强类型
+`SelectedValue`；不得从显示文本反推业务值，也不得把数值/布尔主键字符串化。`ComboBox`、`ListView`、
+`ListBox` 必须支持同一 TwoWay Binding、记录字段观察和集合重载规则。`ListBox` 必须沿
+`ItemsControl → Selector → ListBox` 复用 ItemTemplate、SelectedItem/SelectedValue 与 SelectionChanged；不得
+重新继承 ListView。生成项必须由非文档节点 `SelectorItem` 承载，以只读 `IsSelected` 和标准样式状态支持
+`ItemContainerStyle` Setter/Trigger；不得把容器恢复成 XAML 子节点。ItemsHost 必须位于 ScrollView 视口内，
+滚轮、键盘导航和 BringIntoView 使用同一浮点布局几何。项容器样式引用必须覆盖 Parser、Serializer、属性栏、
+Materializer、剪贴板依赖和热重载。空选择为 `SelectedIndex=-1`，禁止为兼容旧行为自动选中第 0 项。静态 DataList 或带 ItemType 的 DataContext 集合都必须在文档提交前验证这些路径。
+`ItemContainerGenerator` 是 ItemsSource 索引到已实现/回收容器的唯一映射层。精确 Add/Remove/Move/Swap/Replace
+必须保留未受影响的实例并同步 `SelectorItem.ItemIndex`、host 排列和选择身份；不得重新引入“任何集合变化都
+RebuildGeneratedItems”的路径。Reset 或字段不完整的第三方通知才允许候选式全量重建。固定项高虚拟面板必须
+以记录为滚动锚点修正视口上方的结构变化，不能只夹取旧像素 offset。无模板 DisplayMemberPath 的字段变化只
+替换对应容器，不能摧毁整个列表。
+`CollectionViewSource` 是列表筛选、排序和 CurrentItem 的唯一声明式视图层。Source 允许 DataList、视图链或
+DataContext BindingList；FilterDescriptions 必须按 DataType 强类型转换并以 AND 组合，SortDescriptions 必须
+稳定地按声明顺序比较。投影刷新必须发布精确 Add/Remove/Move，禁止用 Reset 掩盖可计算差异。该资源必须进入
+规范 XAML、v14 XML、合并字典来源、属性候选、剪贴板、RuntimeDocument DataContext 重绑定和热重载。
+分组只能通过有序 `GroupDescriptions` 与键控 `GroupStyle` 表达；HeaderTemplate 必须使用保留的
+`CollectionViewGroup`，头部包装不得改变 SelectorItem 身份。命名 `AggregateDescriptions` 必须按源 DataType
+校验并实时刷新 `Aggregates.*`。固定项高 VirtualizingStackPanel 必须使用项/组头段偏移索引，滚动锚点、extent、
+可见区与 BringIntoView 都必须计入 `HeaderHeight`，不得退回 `index * pitch`。
+产品级扩展的主路径是 `ComponentDefinition`，不是外部 C++ 类型反射。`DesignNode::ComponentType` 保存命名空间
+身份，`DesignComponentDefinition::BaseType` 保存内置布局/渲染宿主；声明属性必须安装为实例级
+`BindingPropertyMetadata`，与原生属性共享值来源、Binding、样式和 Designer 发现。组件实例不需要
+`d:CppType`、头文件、构造约定或运行时控件工厂。完整分层、模板/事件/Native Behavior 约束见
+`CUI_XAML_COMPONENT_ARCHITECTURE.md`。
+组件属性的 `BindsTwoWayByDefault` 与 `DefaultUpdateSourceTrigger` 必须分别进入 Mode 和更新触发器元数据；
+两者是独立维度，不能因目标默认 OneWay 就丢失更新策略，也不能在 Binding 显式覆盖后继续强制组件默认值。
+组件属性的 `ReadOnly` 是公开写入边界，不是“没有 setter”或属性栏隐藏标记。只读属性必须继续可读、可观察、可继承，
+并可作为 Binding/TemplateBinding 源；实例字面值、Style Setter、Binding/MultiBinding 目标、普通 set/clear API 必须
+统一拒绝。属性栏显示禁用行，样式和绑定目标候选过滤。动态组件行为仅通过
+`TrySetReadOnlyPropertyValue`/`ClearReadOnlyPropertyValue` 的 key-equivalent 能力写入 Local 层，清除必须恢复
+Inherited/Default；禁止重新引入可从 XAML 或通用元数据 setter 调用的旁路。`ReadOnly` 不能和
+`BindsTwoWayByDefault` 或非 PropertyChanged 的默认更新触发器组合。
+声明组件的可选 C++ 扩展只能通过 `DeclarativeComponentBehaviorRegistry` 按精确 QName 附加
+`IDeclarativeComponentBehavior`；工厂不得创建/替换 Control，也不得发布第二套属性或事件 schema。Attach 必须发生在
+完整模板、内容 Presenter、样式和模板 Binding 安装之后；局部 `x:Name` 只能通过宿主的 template-part 查询访问，内容槽
+通过声明属性名查询。宿主独占行为寿命并在模板子树销毁前 Detach；原位/重组复用不得对废弃候选树执行应用 Attach，
+显式注册表替换必须走完整候选与失败回滚。Behavior 只可补充事件订阅、只读状态、声明事件、宿主消息预处理、最终
+overlay 和 DPI/设备通知，不能接管 Measure/Arrange。需要应用主导测量/渲染/复杂输入时使用 `NativeSurface`。
+组件属性当前允许标量、封闭字符串 Enum、Color、Thickness、Size、Length 以及结构化 Brush、Geometry、Transform；对象值必须把具体运行时类型写入动态属性元数据，
+并按该类型严格转换，禁止退化为可接受任意内容的 Object。组件 QName 可作为 Style TargetType；运行时选择器必须
+同时核对命名空间/类型名和 BaseType，组件 Setter/Trigger 的属性校验必须使用安装了组件契约的 probe。
+组件视觉子树必须声明为 `ContentProperties`，模板用 `ComponentSlot.Presents` 显式承载。公开子节点的
+`DesignerParent` 是组件实例，运行时 `Parent` 是生成的 Presenter；布局快照、层级拖放、剪贴板、序列化与热重载
+不得把两者混同。Single 槽在事务提交前检查占用，普通容器上的槽名必须清除。视觉内容槽不能冒充 Items 数据 schema。
+组件事件来自 `DesignComponentDefinition::Events`，不是 C++ Event 字段。实例事件值始终是处理函数名；
+模板只通过显式 `{RaiseEvent Name}` 转发，运行时组件实例必须安装并校验声明事件及 payload 类型。
+应用使用 `RuntimeEventHandlerRegistry::RegisterComponent(...)` 注册稳定的
+`void(Control*, DeclarativeEventArgs&)` 处理器；不得从 XAML 接受任意 C++ 参数列表。
+组件事件 `RoutingStrategy` 只能是 Direct/Bubble/Tunnel，身份必须包含所有者组件 QName，禁止只按事件局部名路由。
+附加处理器使用 `prefix:Type.Event="Handler"`，模型持久化必须去前缀并保存稳定 QName；规范输出再按当前资源前缀生成。
+sender 必须是 CurrentTarget，OriginalSource/Source 是 Raise 的组件宿主；Handled 不截断路由快照，但普通注册必须跳过，
+只有显式 `HandledEventsToo` 可继续接收。附加事件必须进入事件索引/改名、剪贴板组件依赖、规范 XAML/v14、Designer
+捕获、原位热重载和失败回滚；不得只在运行时添加一条旁路。
+组件视觉状态只能在模板根的 `VisualStateManager.VisualStateGroups` 中声明。每组必须恰好一个无触发器回退状态；
+同状态多个 StateTrigger 是 AND，同组条件状态按声明顺序优先，首批禁止混合 StateTrigger/EventTrigger。
+EventTrigger 必须引用组件自身声明事件；Setter.TargetName 必须为空（组件宿主）或解析到模板局部 namescope，值必须
+按目标属性元数据强类型校验。不同组不得拥有相同“目标 + 属性”。活动 Setter 与状态 Storyboard 必须使用独立且高于
+Local 的同一个 `VisualState` 值源，离开状态只清除此层并恢复下层来源。
+	Storyboard 基础批次允许有限 Double/Color/Thickness/Point/Vector/Rect/Size/Matrix 动画、必填 Duration、可选 From/To/By/BeginTime 和
+	Quadratic/Cubic/Sine 缓动。端点必须按 WPF Automatic/From/To/By/FromTo/FromBy 解析：状态缺省来源是进入时当前值、
+	缺省目标是下层基础值，Transition 两者均取过渡开始当前值；To 与 By 共存时 To 优先但不得丢弃 By 作者表达。By 只做
+	类型转换再与来源相加，禁止提前套用绝对值 Coerce，最终动画帧仍走目标元数据 Coerce。完成后 HoldEnd，系统禁用动画时
+	直达终值。TargetProperty
+除直接属性外，已注册对象适配器首先处理具名模板部件上的
+`(Control.RenderTransform).(TransformGroup.Children)[n].(TransformType.Property)`，且只能定位模板已声明的
+Translate/Scale/Rotate/Skew 数值成员，或由 MatrixAnimation 定位 `MatrixTransform.Matrix` 强类型末端。通用 PropertyPath 层只解析语法，对象类型校验必须留在适配器；同状态多末端
+必须合成一个完整 Transform 值；以及 RectAnimation 使用的
+`(Control.Clip).(RectangleGeometry.Rect)`，目标必须显式持有 RectangleGeometry，每帧只替换 Rect 并保留同根圆角/变换。
+第三个适配器处理 GradientStop：ColorAnimation 使用
+`(Control.Foreground).(GradientBrush.GradientStops)[n].(GradientStop.Color)`，DoubleAnimation 使用对应的 `Offset`；
+目标必须显式持有线性/径向 Brush 和有效 Stop 索引，同根多个 Stop/成员必须基于一份完整 Brush 合成后写回，禁止丢失其他 Stop、
+坐标或 Opacity。Offset 的绝对端点限制为 0..1，By 可为有符号有限增量，最终写回按属性语义 Coerce。
+第四个适配器处理 Brush Transform：DoubleAnimation 或 MatrixAnimation 使用
+`(Control.Foreground).(Brush.Transform|RelativeTransform).(TransformGroup.Children)[n].(TransformType.Property)`；
+目标必须显式持有对应类型 Brush、Transform 和操作，具体 Brush 所有者规范化为 `Brush`。Transform 与 GradientStop
+末端必须共享 Foreground 根值合成，属性元数据的 Brush 相等比较也必须包含两套 Transform，否则纯变换帧会被误判为未改变。
+第五个适配器处理 Geometry Transform：DoubleAnimation 或 MatrixAnimation 使用
+`(Control.Clip).(Geometry.Transform).(TransformGroup.Children)[n].(TransformType.Property)`；目标必须显式持有
+Rectangle/Ellipse/Path/GeometryGroup、LocalTransform 和匹配操作，具体 Geometry 所有者规范化为 `Geometry`。它与
+RectangleGeometry.Rect 动画必须在一份 Clip 根值上合成并保留形状、圆角、填充规则和未命中操作。
+第六类适配器处理 Brush 公开成员：ColorAnimation 定位 `SolidColorBrush.Color`，DoubleAnimation 定位通用
+`Brush.Opacity` 和 `RadialGradientBrush.RadiusX/RadiusY`，PointAnimation 定位 LinearGradientBrush 的
+`StartPoint/EndPoint` 与 RadialGradientBrush 的 `Center/GradientOrigin`。Opacity 绝对端点限制为 0..1、半径绝对端点
+必须非负，By 可为有符号有限增量；这些末端必须与 Stop、Transform 在同一 Foreground 根值上合成。
+第七类适配器处理 Geometry 公开成员：RectAnimation 定位 `RectangleGeometry.Rect`，DoubleAnimation 定位
+RectangleGeometry/EllipseGeometry 的 `RadiusX/RadiusY`，PointAnimation 定位 `EllipseGeometry.Center`。具体 Geometry
+所有者必须与实际 Clip 类型一致，半径绝对端点必须非负而 By 可为有符号有限增量；这些末端必须与 Geometry.Transform
+在同一 Clip 根值上合成并保留未命中的形状数据。
+第八类适配器处理 PathGeometry 的索引对象图：先经
+`(Control.Clip).(PathGeometry.Figures)[n]` 定位 PathFigure 的 StartPoint/IsClosed/IsFilled，再可经
+`(PathFigure.Segments)[m]` 定位 Line/Bezier/QuadraticBezier/Arc 的点成员及 Arc 的 Size/RotationAngle/
+IsLargeArc/SweepDirection。必须同时校验 Figure/Segment 索引、实际 Segment 类型、末端所有者和动画值类型；Point/Size/
+Double 使用连续动画，bool 与 SweepDirection 只使用离散 Object 关键帧，Arc Size 绝对值非负且 SweepDirection 仅接受
+Clockwise/Counterclockwise。这些末端必须与 FillRule、Geometry.Transform 和其他 Geometry 成员共享 Clip 根值合成。
+第九类扩展不是新的平行适配器，而是 Geometry 适配器的递归导航层：`(GeometryGroup.Children)[n]` 可重复任意次，
+随后复用 Rectangle/Ellipse 公开成员、PathFigure/PathSegment 或 Geometry.Transform 叶子。每一跳必须验证当前对象确为
+GeometryGroup 且索引有效，最终具体所有者仍须匹配；PathGeometry/GeometryGroup.FillRule 只接受离散 Object 关键帧和
+EvenOdd/Nonzero。访问器保存完整子索引链，读写必须从完整 Clip 导航后原位合成，禁止把嵌套子 Geometry 提升为独立根值。
+所有适配器都禁止相同末端、整根/子路径混写和跨组拆分同一根，`UIElement` 所有者必须规范化为 `Control`。运行时对象路径只能通过
+单一 `ObjectPathAccessor` 适配器变体进入生命周期，Designer 只能通过统一分类/规范化/根属性/解析入口访问；新增 Brush、Geometry
+或其他对象图末端时必须扩展该边界，禁止恢复每种路径一组平行字段与分支。
+UsingKeyFrames 支持 Double/Color/Thickness/Point/Vector/Rect/Size/Matrix 的 Discrete/Linear/Easing/Spline 帧，包括 WPF 的 EasingThicknessKeyFrame、
+EasingPointKeyFrame、EasingVectorKeyFrame、EasingRectKeyFrame、EasingSizeKeyFrame 与 EasingMatrixKeyFrame。
+每帧必须有有限 KeyTime 和强类型 Value，允许 StaticResource，Spline 控制点必须
+位于 0..1。省略 Duration 取最后 KeyTime，同时间帧保持声明顺序，首段从状态进入时捕获的有效值开始，且必须复用同一
+RenderTransform 适配器与合成路径。RepeatBehavior 必须区分正 Count（允许分数）、正 Duration 与 Forever；AutoReverse
+时一个 Count repetition 包含向前和向后，BeginTime 不能在每次 repetition 重放。FillBehavior.Stop 必须释放动画值源，
+Transform 子路径只能恢复自己的成员；Forever 状态和 Transition 必须可由离开状态或 useTransitions=false 确定性中断。
+SpeedRatio 必须是有限正数且不能缩放 BeginTime；Count 活动期按速度反比变化，Duration 型 RepeatBehavior 保持父时钟
+固定总时长。AccelerationRatio/DecelerationRatio 必须各在 0..1 且总和不超过 1，按 WPF 归一化峰值速率在方向映射后、
+	动画 Easing/关键帧采样前改变 simple progress。未知对象路径、未知时间线属性、Uniform/Paced KeyTime、
+	仍必须明确拒绝。普通 Double/Color/Thickness/Point/Vector/Rect/Size/Matrix 与其关键帧动画允许 IsAdditive/IsCumulative；输出合成顺序必须是局部值、累计量、foundation。
+	实时状态切换必须在初始帧事务提交成功后统一写入新时间线 StartTick，准备阶段不得消耗 Duration；显式 Transition
+	完成后安装目标状态必须沿用当前采样 tick，不能破坏确定性手动时钟。
+	Automatic/From/To 不得因 IsAdditive 重复加当前值；By-only 必须用 zero->By 并始终以缺省来源为 foundation；只有
+	FromTo/FromBy 在 IsAdditive 时额外使用缺省来源。普通动画按 `(To-From)*(iteration-1)` 累计，关键帧按最后帧值
+	累计；AutoReverse 的完整往返才推进 iteration。生成 Transition 必须清除两标志，显式 Transition 必须保留。
+	ObjectAnimationUsingKeyFrames 只允许 DiscreteObjectKeyFrame，每帧可使用元数据可转换的标量、
+	StaticResource 或 Brush/Geometry/Transform 属性元素；不得接受 From/To/By、Easing、IsAdditive 或
+	IsCumulative。对象帧与数值帧共用 Timeline 活动期，但必须在离散边界切换整个 BindingValue。
+VisualStateGroup.Transitions 的选择顺序必须固定为 From+To、To、From、默认；重复选择器和未知状态必须在定义阶段拒绝。
+GeneratedDuration/GeneratedEasing 只能为已支持的 Double/Color/Thickness/Point/Vector/Rect/Size/Matrix 状态目标生成过渡，显式 Transition Storyboard 按同一
+目标抑制生成动画但不得绕过既有 PropertyPath、类型、根所有权和资源校验。过渡完成前不得提前安装目标状态
+Setter/Storyboard；当前状态查询应立即返回目标，中断必须从当前有效帧重新捕获。初始求值、useTransitions=false 与
+系统禁用动画必须直达目标。Transition 资源也必须进入规范 XAML、v14、剪贴板、设计器校验与完整候选热重载。
+	GeneratedDuration/GeneratedEasing 不得为 Object 伪造插值；过渡期间应释放旧 Object 动画并显示基础值，
+	结束后再安装目标状态 Object 时间线。显式 Transition Storyboard 中的 Object 时间线必须正常执行。
+视觉状态必须与组件定义一同进入规范 XAML、v14、设计器预览/恢复、剪贴板资源依赖和事务热重载；资源型 Setter
+	及动画 From/To/By 变化必须完整候选重建，不能让复用宿主持有旧解析值。Behavior 只能调用公开查询/GoTo/Changed 接口，不能注册只在
+运行时存在的状态定义。
+组件模板根的 `<RootType.Triggers>` 只允许已声明组件事件的 `EventTrigger.RoutedEvent`。
+TriggerAction 按声明顺序执行；`BeginStoryboard` 必须包含唯一 Storyboard，可选唯一 `x:Name` 是
+Pause/Resume/Stop 的稳定引用。重名 Begin、未解析 `BeginStoryboardName`、未知动作/事件、
+重复动画末端都必须在定义阶段事务拒绝。事件 Storyboard 必须复用完整 Timeline/对象路径管线，
+不得只支持一组窄化动画。其输出使用高于 `VisualState` 的独立 `Animation` 值源；Stop 只清除该层，
+必须显露当前而非 Begin 时的状态/本地值。模型必须同时进入规范 XAML、v14、剪贴板资源闭包、设计器预览和热重载。
+
+规范 XAML 不得接受旧 `DesignNode::CustomType` 对应的 `d:CppType` 或控件清单类型信息。
+`RuntimeCustomControlRegistry`、`RegisterCustomControl`、设计器 `--controls`/`--preview-plugin` 入口已经删除，
+不得重新引入等价旁路。
+模板已经是组件定义的一部分；声明事件和 NativeSurface 必须继续建立在组件契约上。
+Designer ToolBox 只展示框架内置类型与 XAML `ComponentDefinition`。高性能业务区域必须声明为
+`NativeSurface BehaviorKey="..."`；设计器只显示占位，不得探测或加载应用 DLL。应用在启动阶段构造
+`NativeSurfaceBehaviorRegistry`，行为工厂只返回 `INativeSurfaceBehavior`，不能替换宿主控件类型。运行时对
+未解析的非空 BehaviorKey 严格失败；只有工具材质化可显式设置 `AllowNativeSurfacePlaceholder`。
 Designer 依据 `.xaml` / `.xml` 扩展名选择源格式，Save 保持当前格式且只在原子替换成功后移动保存点。
 显式重新加载必须先解决 Dirty，并通过候选文档替换保证失败时当前画布不变；自动文件监视不能绕过此事务。
 
@@ -982,9 +1148,8 @@ resolver 应持有共享注册状态，使后续新增函数名无需替换已�
 `RegisterScopedBatch` 并由生成 Sink 持有其移动租约。两者都要在调用前复制完整 Handler/route/令牌状态，任一
 注册返回 false 或抛异常后以 noexcept swap 恢复；已有 resolver 继续观察同一共享 State，不得用替换 shared_ptr
 伪造回滚。租约只能删除本批令牌范围内的路由，保留同名处理函数的既有其他路由；批次禁止嵌套，回调只能追加
-路由，不得清空注册表或释放另一租约。批次执行期间不得跨线程解析事件。自定义生成路由只能把
-namespace/type/event/field/固定签名预设
-重新构造成 `DesignerCustomEventDescriptor`，随后仍由真实 Event 成员类型校验，禁止把任意签名文本带入生成头。
+路由，不得清空注册表或释放另一租约。批次执行期间不得跨线程解析事件。生成路由只允许来自真实内置 Event 成员
+或组件 `OnDeclarativeEvent` 固定签名；禁止重新引入可由 XAML/清单指定任意字段或参数签名的自定义事件描述符。
 EventCatalog 必须为每个可设计控件类型声明且仅声明一个默认事件，并提供稳定的类型化分类；Form 默认事件为
 只触发一次的 `OnShown`。事件属性双击、显式操作行、`F12` 与画布控件/Form 客户区双击必须汇合到同一激活入口，并通过与文本提交
 相同的校验/撤销事务：已有函数直接激活，空事件写入可预测默认名，不得直接改 `EventHandlers` 绕过命令栈。
@@ -1169,13 +1334,15 @@ Form resolver 的宿主遇到后续新增 Form 事件时也必须回滚 Reload�
 - “只是改点击行为”不要重写整套消息分发
 - “真的要接管交互状态机”才重写 `ProcessMessage()`
 
-设计器工作流大致是：
+设计器主工作流大致是：
 
 1. 拖放控件
 2. 编辑属性
 3. 保存设计文件
-4. 生成 C++ 代码
-5. 运行时仍由 `CUI` 负责真正显示与交互
+4. 动态加载 XAML
+5. 在 C++ 中按稳定 ID/名称挂接业务和原生 Behavior
+
+静态 C++ UI 构造代码生成只是一项可选迁移/辅助功能，不得反向限制 XAML 类型、模板、资源或事件模型。
 
 设计大尺寸窗体时，画布视图可用 `Ctrl+滚轮` 或 `Ctrl++` / `Ctrl+-` 缩放，`Ctrl+0` 适配窗口，
 `Ctrl+1` 恢复 100%，中键拖动或 `Space+左键` 平移。该状态只属于 Designer 视图，不会写入设计文件、

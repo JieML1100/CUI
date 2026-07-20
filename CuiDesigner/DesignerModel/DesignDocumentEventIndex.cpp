@@ -128,9 +128,6 @@ bool DesignDocumentEventIndex::Build(
 
 	for (const auto& node : document.Nodes)
 	{
-		if (!node.CustomEvents.empty() && node.CustomType.Empty())
-			return fail(L"控件 “" + node.Name
-				+ L"” 不是自定义控件，不能声明自定义事件契约。");
 		if (!node.Events.is_object())
 		{
 			if (!node.Events.is_null())
@@ -145,12 +142,36 @@ bool DesignDocumentEventIndex::Build(
 				return fail(L"控件 “" + node.Name + L"” 的事件值无效："
 					+ FromUtf8(eventKey));
 			if (!enabled) continue;
-			const auto eventName = FromUtf8(eventKey);
-			const auto descriptor = DesignerEventCatalog::FindControlEvent(
-				node.Type, eventName, node.CustomEvents);
+			const auto storedEventName = FromUtf8(eventKey);
+			auto eventName = storedEventName;
+			DesignerComponentType attachedOwnerType;
+			std::wstring attachedEventName;
+			std::optional<DesignerEventDescriptor> descriptor;
+			if (DesignerEventCatalog::TryParseAttachedComponentEventKey(
+				storedEventName, attachedOwnerType, attachedEventName))
+			{
+				const auto* owner = document.FindComponent(attachedOwnerType);
+				if (!owner)
+					return fail(L"控件 “" + node.Name
+						+ L"” 的附加组件事件所有者不存在：" + storedEventName);
+				const auto contract = std::find_if(
+					owner->Events.begin(), owner->Events.end(),
+					[&](const auto& event) { return event.Name == attachedEventName; });
+				if (contract != owner->Events.end())
+					descriptor = DesignerEventCatalog::FromComponentEvent(*contract);
+				eventName = attachedEventName;
+			}
+			else
+			{
+				const auto* component = document.FindComponent(node.ComponentType);
+				descriptor = DesignerEventCatalog::FindControlEvent(
+					node.Type, eventName,
+					component ? component->Events
+						: std::vector<DesignerComponentEventDescriptor>{});
+			}
 			if (!descriptor)
 				return fail(L"控件 “" + node.Name + L"” 包含未知事件："
-					+ eventName);
+					+ storedEventName);
 			const auto resolved = DesignerEventCatalog::ResolveHandlerName(
 				stored, node.Name, eventName);
 			if (!add({
@@ -245,7 +266,12 @@ bool DesignDocumentEventIndex::RenameHandler(
 			std::wstring stored;
 			bool enabled = false;
 			if (!ReadStoredHandler(value, stored, enabled) || !enabled) continue;
-			const auto eventName = FromUtf8(eventKey);
+			auto eventName = FromUtf8(eventKey);
+			DesignerComponentType attachedOwner;
+			std::wstring attachedEvent;
+			if (DesignerEventCatalog::TryParseAttachedComponentEventKey(
+				eventName, attachedOwner, attachedEvent))
+				eventName = std::move(attachedEvent);
 			if (DesignerEventCatalog::ResolveHandlerName(
 				stored, node.Name, eventName) != from) continue;
 			value = ToUtf8(to);

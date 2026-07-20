@@ -1,5 +1,5 @@
 ﻿#pragma once
-#include "Control.h"
+#include "ContentControl.h"
 
 /**
  * @file Button.h
@@ -9,7 +9,7 @@
  * - 根据鼠标悬停/按下/Checked 状态绘制不同背景
  * - 通过 Control 事件（OnMouseDown/OnMouseUp/OnMouseClick/OnChecked 等）对外通知
  */
-class Button : public Control
+class Button : public ContentControl
 {
 protected:
 	bool DefaultTrackUnderMouse() const override { return true; }
@@ -63,4 +63,6 @@ public:
 	Button(std::wstring text, int x, int y, int width = 120, int height = 24);
 	bool Invoke() override;
 	void Update() override;
+	bool ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam,
+		int localX, int localY) override;
 };

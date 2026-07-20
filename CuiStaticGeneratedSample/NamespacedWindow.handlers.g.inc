@@ -4,4 +4,3 @@
 	void HandleNamespacedDrop(Control* sender, std::vector<std::wstring> files) override;
 	void HandleNamespacedPropertyChanged(Control* sender, const ControlPropertyChangedEventArgs& e) override;
 	void HandleNamespacedValidationChanged(const BindingValidationChangedEventArgs& e) override;
-	void HandleSeverityInvoked(Control* sender, int value) override;

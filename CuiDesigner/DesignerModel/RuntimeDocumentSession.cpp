@@ -32,13 +32,17 @@ RuntimeDocumentSession::RuntimeDocumentSession(
 
 RuntimeDocumentLoadOptions RuntimeDocumentSession::MakeLoadOptions(
 	std::shared_ptr<IBindingSource> dataContext,
-	std::shared_ptr<const RuntimeCustomControlRegistry> customControls) const
+	std::shared_ptr<const NativeSurfaceBehaviorRegistry> nativeSurfaceBehaviors,
+	std::shared_ptr<const DeclarativeComponentBehaviorRegistry>
+		declarativeComponentBehaviors) const
 {
 	RuntimeDocumentLoadOptions result;
 	result.DataContext = std::move(dataContext);
 	result.ControlEventResolver = _handlers.ControlResolver();
 	result.RequireControlEventResolver = true;
-	result.CustomControls = std::move(customControls);
+	result.NativeSurfaceBehaviors = std::move(nativeSurfaceBehaviors);
+	result.DeclarativeComponentBehaviors =
+		std::move(declarativeComponentBehaviors);
 	return result;
 }
 
@@ -83,7 +87,8 @@ bool RuntimeDocumentSession::MountFile(
 		if (options.WatchFile
 			&& !candidateWatcher.Start(filePath, outError)) return false;
 		loadOptions = MakeLoadOptions(
-			options.DataContext, options.CustomControls);
+			options.DataContext, options.NativeSurfaceBehaviors,
+			options.DeclarativeComponentBehaviors);
 		formResolver = _handlers.FormResolver();
 	}
 	catch (...)

@@ -48,6 +48,9 @@ namespace
 		if (actual.ParentKind != expected.ParentKind) return L"ParentKind";
 		if (actual.ParentName != expected.ParentName) return L"ParentName";
 		if (actual.ParentType != expected.ParentType) return L"ParentType";
+		if (actual.ComponentContentProperty
+			!= expected.ComponentContentProperty)
+			return L"ComponentContentProperty";
 		if (actual.ParentPageIndex != expected.ParentPageIndex)
 			return L"ParentPageIndex";
 		if (actual.ChildIndex != expected.ChildIndex) return L"ChildIndex";
@@ -117,6 +120,7 @@ bool ControlPlacementCommand::CaptureTarget(
 	DesignerControlPlacementState state;
 	state.TargetName = target->Name;
 	state.TargetType = target->Type;
+	state.ComponentContentProperty = target->ComponentContentProperty;
 	state.ChildIndex = runtimeParent->IndexOfControl(control);
 	if (state.ChildIndex < 0)
 	{
@@ -204,7 +208,21 @@ bool ControlPlacementCommand::CaptureTarget(
 			}
 			else
 			{
-				if (runtimeParent != (*parent)->ControlInstance)
+				Control* expectedRuntimeParent = (*parent)->ControlInstance;
+				if (!target->ComponentContentProperty.empty()
+					&& !(*parent)->ComponentType.Empty())
+				{
+					const auto presenter = (*parent)->ComponentContentPresenters.find(
+						target->ComponentContentProperty);
+					if (presenter == (*parent)->ComponentContentPresenters.end())
+					{
+						if (outError) *outError =
+							L"组件内容槽的运行时 Presenter 已不存在。";
+						return false;
+					}
+					expectedRuntimeParent = presenter->second;
+				}
+				if (runtimeParent != expectedRuntimeParent)
 				{
 					if (outError) *outError =
 						L"设计父级与运行时父级不一致。";
@@ -281,7 +299,31 @@ bool ControlPlacementCommand::ResolveParent(
 	switch (state.ParentKind)
 	{
 	case DesignerPlacementParentKind::Control:
-		runtimeParent = parentControl;
+		if (!(*parent)->ComponentType.Empty())
+		{
+			if (state.ComponentContentProperty.empty())
+			{
+				if (outError) *outError = L"组件子控件缺少视觉内容属性。";
+				return false;
+			}
+			const auto presenter = (*parent)->ComponentContentPresenters.find(
+				state.ComponentContentProperty);
+			if (presenter == (*parent)->ComponentContentPresenters.end())
+			{
+				if (outError) *outError = L"组件视觉内容 Presenter 已不存在。";
+				return false;
+			}
+			runtimeParent = presenter->second;
+		}
+		else
+		{
+			if (!state.ComponentContentProperty.empty())
+			{
+				if (outError) *outError = L"普通容器不能承载组件内容槽状态。";
+				return false;
+			}
+			runtimeParent = parentControl;
+		}
 		designerParent = parentControl;
 		break;
 	case DesignerPlacementParentKind::TabPage:
@@ -431,6 +473,7 @@ bool ControlPlacementCommand::ApplyStateUnchecked(
 		}
 
 		target->DesignerParent = desiredDesignerParent;
+		target->ComponentContentProperty = state.ComponentContentProperty;
 		control->DockPosition = state.DockPosition;
 		control->GridRow = state.GridRow;
 		control->GridColumn = state.GridColumn;
@@ -534,6 +577,7 @@ bool DesignerControlPlacementState::EquivalentTo(
 		&& ParentKind == other.ParentKind
 		&& ParentName == other.ParentName
 		&& ParentType == other.ParentType
+		&& ComponentContentProperty == other.ComponentContentProperty
 		&& ParentPageIndex == other.ParentPageIndex
 		&& ChildIndex == other.ChildIndex
 		&& Location.x == other.Location.x
@@ -558,7 +602,8 @@ size_t DesignerControlPlacementState::GetEstimatedMemoryUsage() const noexcept
 {
 	return sizeof(*this)
 		+ TargetName.capacity() * sizeof(wchar_t)
-		+ ParentName.capacity() * sizeof(wchar_t);
+		+ ParentName.capacity() * sizeof(wchar_t)
+		+ ComponentContentProperty.capacity() * sizeof(wchar_t);
 }
 
 bool DesignerControlPlacementSnapshot::EquivalentTo(

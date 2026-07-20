@@ -13,6 +13,7 @@
 #include "../../CUI/include/Layout/StackPanel.h"
 #include "../../CUI/include/Layout/WrapPanel.h"
 #include "../../CUI/include/Panel.h"
+#include "../../CUI/include/ItemsPresenter.h"
 
 #include <algorithm>
 #include <cmath>
@@ -42,6 +43,16 @@ Control* LayoutBridge::NormalizeContainerForDrop(Control* container)
 bool LayoutBridge::CanAcceptChild(Control* container, UIClass childType)
 {
 	if (!container) return false;
+	if (dynamic_cast<ContentPresenter*>(container)) return false;
+	if (dynamic_cast<ItemsPresenter*>(container)) return false;
+	if (auto* content = dynamic_cast<ContentControl*>(container))
+	{
+		(void)childType;
+		return !content->GetVisualContent()
+			&& !content->GetGeneratedPresenter()
+			&& content->GetContent().Empty()
+			&& !content->GetContentTemplate();
+	}
 	if (container->Type() == UIClass::UI_ToolBar)
 	{
 		(void)childType;
@@ -75,7 +86,8 @@ void LayoutBridge::ApplyNewChildLayout(Control* container, Control* child, POINT
 {
 	if (!container || !child) return;
 
-	if (container->Type() == UIClass::UI_GridPanel)
+	if (container->Type() == UIClass::UI_GridPanel
+		|| dynamic_cast<ContentControl*>(container))
 	{
 		auto* gridPanel = (GridPanel*)container;
 		int row = 0;

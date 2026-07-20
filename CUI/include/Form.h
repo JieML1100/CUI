@@ -461,7 +461,7 @@ public:
 			throw std::logic_error("该控件已属于其他窗口");
 		}
 		this->Controls.insert(this->Controls.begin() + index, control);
-		control->Parent = nullptr;
+		control->SetLogicalParent(nullptr);
 		control->ParentForm = this;
 		control->_isFormRoot = true;
 

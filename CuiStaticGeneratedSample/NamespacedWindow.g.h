@@ -2,7 +2,6 @@
 #include "Binding.h"
 #include "Button.h"
 #include "Control.h"
-#include "Controls/StatusBadge.h"
 #include "Form.h"
 #include <functional>
 #include <memory>
@@ -69,14 +68,6 @@ public:
 							static_cast<void (MainWindowEventSink::*)(const BindingValidationChangedEventArgs&)>(
 								&MainWindowEventSink::HandleNamespacedValidationChanged), this)), &error))
 					return false;
-				if (!routes.RegisterGeneratedCustomControl(
-					L"HandleSeverityInvoked", L"urn:cui:samples", L"StatusBadge", L"OnSeverityInvoked", "OnSeverityInvoked", L"SenderInt",
-					&Acme::Controls::StatusBadge::OnSeverityInvoked,
-					GuardDynamicEventHandler(
-						lifetime, std::bind_front(
-							static_cast<void (MainWindowEventSink::*)(Control*,int)>(
-								&MainWindowEventSink::HandleSeverityInvoked), this)), &error))
-					return false;
 				return true;
 			}, outError);
 			if (!registration) return false;
@@ -132,14 +123,12 @@ protected:
 	virtual void HandleNamespacedClick(Control* sender, MouseEventArgs e) = 0;
 	virtual void HandleNamespacedPropertyChanged(Control* sender, const ControlPropertyChangedEventArgs& e) = 0;
 	virtual void HandleNamespacedValidationChanged(const BindingValidationChangedEventArgs& e) = 0;
-	virtual void HandleSeverityInvoked(Control* sender, int value) = 0;
 };
 
 class MainWindowGenerated : public Form, public MainWindowEventSink
 {
 protected:
 	Button* namespaceButton = nullptr;
-	Acme::Controls::StatusBadge* statusBadge = nullptr;
 	std::vector<EventConnection> _generatedEventConnections;
 
 	void HandleWindowShown(Form* sender) override;
@@ -147,21 +136,17 @@ protected:
 	void HandleNamespacedClick(Control* sender, MouseEventArgs e) override;
 	void HandleNamespacedPropertyChanged(Control* sender, const ControlPropertyChangedEventArgs& e) override;
 	void HandleNamespacedValidationChanged(const BindingValidationChangedEventArgs& e) override;
-	void HandleSeverityInvoked(Control* sender, int value) override;
 
 public:
 	// Stable identities shared by static and dynamic document paths.
 	struct ControlIds final
 	{
 		static constexpr int namespaceButton = 77;
-		static constexpr int statusBadge = 78;
 	};
 
 	// Type-safe x:Name accessors; ownership remains with the generated Form.
 	[[nodiscard]] Button* GetNamespaceButton() noexcept { return namespaceButton; }
 	[[nodiscard]] const Button* GetNamespaceButton() const noexcept { return namespaceButton; }
-	[[nodiscard]] Acme::Controls::StatusBadge* GetStatusBadge() noexcept { return statusBadge; }
-	[[nodiscard]] const Acme::Controls::StatusBadge* GetStatusBadge() const noexcept { return statusBadge; }
 
 	MainWindowGenerated();
 	virtual ~MainWindowGenerated();
@@ -198,16 +183,6 @@ public:
 	{
 		return _document.template ReferenceByDesignId<Button>(
 			MainWindowGenerated::ControlIds::namespaceButton);
-	}
-	[[nodiscard]] Acme::Controls::StatusBadge* GetStatusBadge() const noexcept
-	{
-		return _document.template FindControlByDesignId<Acme::Controls::StatusBadge>(
-			MainWindowGenerated::ControlIds::statusBadge);
-	}
-	[[nodiscard]] auto ReferenceStatusBadge() const noexcept
-	{
-		return _document.template ReferenceByDesignId<Acme::Controls::StatusBadge>(
-			MainWindowGenerated::ControlIds::statusBadge);
 	}
 
 private:

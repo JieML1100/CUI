@@ -11,7 +11,6 @@ enum class DesignerPropertyRowSource : unsigned char
 {
 	Form,
 	ControlDesign,
-	CustomDescriptor,
 	RuntimeMetadata
 };
 

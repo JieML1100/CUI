@@ -17,20 +17,25 @@
 #include <vector>
 
 class Control;
+class IBindingList;
 
 enum class BindingMode
 {
 	OneWay,
 	TwoWay,
 	OneWayToSource,
-	OneTime
+	OneTime,
+	/** Resolve from the target property's metadata. */
+	Default
 };
 
 enum class DataSourceUpdateMode
 {
 	OnPropertyChanged,
 	OnValidation,
-	Never
+	Never,
+	/** Resolve from the target property's metadata. */
+	Default
 };
 
 /** Stable diagnostic codes for binding configuration and update failures. */
@@ -57,7 +62,11 @@ enum class BindingError
 	TargetConversionFailed,
 	TargetWriteFailed,
 	SourceConversionFailed,
-	SourceWriteFailed
+	SourceWriteFailed,
+	InvalidStringFormat,
+	StringFormatFailed,
+	InvalidMultiBinding,
+	MultiBindingConverterFailed
 };
 
 const wchar_t* BindingErrorMessage(BindingError error) noexcept;
@@ -240,11 +249,56 @@ private:
 	Storage _value;
 };
 
+/** One parsed member or indexer in a WPF-style Binding PropertyPath. */
+enum class BindingPathStepKind : uint8_t
+{
+	Property,
+	Indexer
+};
+
+struct BindingPathStep final
+{
+	BindingPathStepKind Kind = BindingPathStepKind::Property;
+	std::wstring Value;
+
+	bool operator==(const BindingPathStep&) const = default;
+};
+
+/**
+ * Parses paths such as Profile.Name, People[0].Name and
+ * Settings['accent.color']. Quoted keys escape their quote by doubling it.
+ */
+bool TryParseBindingPropertyPath(
+	const std::wstring& value,
+	std::vector<BindingPathStep>& steps);
+
 bool TryConvertBindingValue(const BindingValue& value, BindingValueKind targetKind, BindingValue& out);
 /** Converts while preserving the concrete type represented by targetValue. */
 bool TryConvertBindingValue(const BindingValue& value, const BindingValue& targetValue, BindingValue& out);
 /** Compares two already-normalized scalar binding values without stringifying them. */
 bool BindingValuesEqual(const BindingValue& left, const BindingValue& right);
+
+/** Validates/formats the single-value composite syntax used by Binding.StringFormat. */
+bool IsValidBindingStringFormat(const std::wstring& format) noexcept;
+bool TryFormatBindingValue(
+	const BindingValue& value,
+	const std::wstring& format,
+	std::wstring& out);
+/** MultiBinding counterpart supporting indexed placeholders such as {0} and {1}. */
+bool IsValidMultiBindingStringFormat(
+	const std::wstring& format,
+	size_t valueCount) noexcept;
+bool TryFormatBindingValues(
+	const std::vector<BindingValue>& values,
+	const std::wstring& format,
+	std::wstring& out);
+
+/** Extensible converter call context; existing converters may ignore it. */
+struct BindingValueConverterContext final
+{
+	const BindingValue* Parameter = nullptr;
+	BindingValueKind TargetKind = BindingValueKind::Empty;
+};
 
 /**
  * Optional transform used before metadata conversion in either binding direction.
@@ -255,8 +309,34 @@ class IBindingValueConverter
 {
 public:
 	virtual ~IBindingValueConverter() = default;
-	virtual bool Convert(const BindingValue& value, BindingValue& out) const = 0;
-	virtual bool ConvertBack(const BindingValue& value, BindingValue& out) const = 0;
+	virtual bool Convert(const BindingValue& value, BindingValue& out) const
+	{
+		(void)value;
+		(void)out;
+		return false;
+	}
+	virtual bool ConvertBack(const BindingValue& value, BindingValue& out) const
+	{
+		(void)value;
+		(void)out;
+		return false;
+	}
+	virtual bool Convert(
+		const BindingValue& value,
+		const BindingValueConverterContext& context,
+		BindingValue& out) const
+	{
+		(void)context;
+		return Convert(value, out);
+	}
+	virtual bool ConvertBack(
+		const BindingValue& value,
+		const BindingValueConverterContext& context,
+		BindingValue& out) const
+	{
+		(void)context;
+		return ConvertBack(value, out);
+	}
 };
 
 /** Function-backed converter for lightweight formatting and unit transforms. */
@@ -264,14 +344,31 @@ class DelegateBindingValueConverter final : public IBindingValueConverter
 {
 public:
 	using Function = std::function<bool(const BindingValue&, BindingValue&)>;
+	using ContextFunction = std::function<bool(
+		const BindingValue&,
+		const BindingValueConverterContext&,
+		BindingValue&)>;
 
 	DelegateBindingValueConverter(Function convert, Function convertBack = {});
+	DelegateBindingValueConverter(
+		ContextFunction convert,
+		ContextFunction convertBack = {});
 	bool Convert(const BindingValue& value, BindingValue& out) const override;
 	bool ConvertBack(const BindingValue& value, BindingValue& out) const override;
+	bool Convert(
+		const BindingValue& value,
+		const BindingValueConverterContext& context,
+		BindingValue& out) const override;
+	bool ConvertBack(
+		const BindingValue& value,
+		const BindingValueConverterContext& context,
+		BindingValue& out) const override;
 
 private:
 	Function _convert;
 	Function _convertBack;
+	ContextFunction _contextConvert;
+	ContextFunction _contextConvertBack;
 };
 
 /** Discoverable converter metadata used by runtime registration and design tools. */
@@ -305,6 +402,95 @@ public:
 	static std::optional<BindingValueConverterMetadata> Find(const std::wstring& name);
 	static std::vector<BindingValueConverterMetadata> GetConverters();
 	static std::shared_ptr<const IBindingValueConverter> Create(const std::wstring& name);
+};
+
+/** Context supplied to WPF-style IMultiValueConverter implementations. */
+struct MultiBindingValueConverterContext final
+{
+	const BindingValue* Parameter = nullptr;
+	BindingValueKind TargetKind = BindingValueKind::Empty;
+};
+
+class IMultiBindingValueConverter
+{
+public:
+	virtual ~IMultiBindingValueConverter() = default;
+	virtual bool Convert(
+		const std::vector<BindingValue>& values,
+		const MultiBindingValueConverterContext& context,
+		BindingValue& out) const = 0;
+	virtual bool ConvertBack(
+		const BindingValue& value,
+		size_t targetCount,
+		const MultiBindingValueConverterContext& context,
+		std::vector<BindingValue>& out) const
+	{
+		(void)value;
+		(void)targetCount;
+		(void)context;
+		(void)out;
+		return false;
+	}
+};
+
+class DelegateMultiBindingValueConverter final
+	: public IMultiBindingValueConverter
+{
+public:
+	using ConvertFunction = std::function<bool(
+		const std::vector<BindingValue>&,
+		const MultiBindingValueConverterContext&,
+		BindingValue&)>;
+	using ConvertBackFunction = std::function<bool(
+		const BindingValue&,
+		size_t,
+		const MultiBindingValueConverterContext&,
+		std::vector<BindingValue>&)>;
+
+	DelegateMultiBindingValueConverter(
+		ConvertFunction convert,
+		ConvertBackFunction convertBack = {});
+	bool Convert(
+		const std::vector<BindingValue>& values,
+		const MultiBindingValueConverterContext& context,
+		BindingValue& out) const override;
+	bool ConvertBack(
+		const BindingValue& value,
+		size_t targetCount,
+		const MultiBindingValueConverterContext& context,
+		std::vector<BindingValue>& out) const override;
+
+private:
+	ConvertFunction _convert;
+	ConvertBackFunction _convertBack;
+};
+
+struct MultiBindingValueConverterMetadata
+{
+	std::wstring Name;
+	size_t MinimumInputCount = 2;
+	BindingValueKind TargetKind = BindingValueKind::Empty;
+	bool CanConvertBack = false;
+
+	bool operator==(const MultiBindingValueConverterMetadata&) const = default;
+};
+
+class MultiBindingValueConverterRegistry final
+{
+public:
+	using Factory = std::function<
+		std::shared_ptr<const IMultiBindingValueConverter>()>;
+
+	static bool Register(
+		MultiBindingValueConverterMetadata metadata,
+		Factory factory,
+		bool replaceExisting = false);
+	static bool Unregister(const std::wstring& name);
+	static std::optional<MultiBindingValueConverterMetadata> Find(
+		const std::wstring& name);
+	static std::vector<MultiBindingValueConverterMetadata> GetConverters();
+	static std::shared_ptr<const IMultiBindingValueConverter> Create(
+		const std::wstring& name);
 };
 
 class PropertyChangedEventArgs
@@ -443,6 +629,12 @@ private:
 	std::shared_ptr<const void> _bindingLifetime;
 };
 
+/** Reads a member/indexer path from any binding source. */
+bool TryGetBindingPathValue(
+	const IBindingSource& source,
+	const std::wstring& path,
+	BindingValue& out);
+
 /**
  * Owns an intermediate IBindingSource used by a dotted source property path.
  * Keeping the reference explicit avoids unsafe raw pointers inside BindingValue.
@@ -462,9 +654,51 @@ public:
 	IBindingSource* Get() const noexcept { return _source.get(); }
 	const std::shared_ptr<IBindingSource>& Shared() const noexcept { return _source; }
 	explicit operator bool() const noexcept { return static_cast<bool>(_source); }
+	bool operator==(const BindingSourceReference& other) const noexcept
+	{
+		return _source == other._source;
+	}
 
 private:
 	std::shared_ptr<IBindingSource> _source;
+};
+
+/**
+ * Stable binding source identity whose current backing object may be replaced.
+ * Bindings subscribe once to the proxy and are refreshed when an inherited
+ * DataContext changes, including replacement of an intermediate object.
+ */
+class BindingSourceProxy final : public IBindingSource
+{
+public:
+	BindingSourceProxy() = default;
+	explicit BindingSourceProxy(BindingSourceReference source);
+
+	void SetSource(BindingSourceReference source);
+	const BindingSourceReference& Source() const noexcept { return _source; }
+
+	bool TryGetValue(const std::wstring& propertyName,
+		BindingValue& out) const override;
+	bool TrySetValue(const std::wstring& propertyName,
+		const BindingValue& value) override;
+	bool TryGetPropertyMetadata(const std::wstring& propertyName,
+		BindingSourcePropertyMetadata& out) const override;
+	std::vector<BindingSourcePropertyMetadata> GetProperties() const override;
+	std::vector<BindingValidationIssue> GetValidationIssues(
+		const std::wstring& propertyName) const override;
+	BindingValidationChangedEvent* ValidationChanged() noexcept override
+	{
+		return &_validationChanged;
+	}
+	PropertyChangedEvent& PropertyChanged() override { return _propertyChanged; }
+
+private:
+	BindingSourceReference _source;
+	EventConnection _propertyConnection;
+	EventConnection _validationConnection;
+	PropertyChangedEvent _propertyChanged;
+	BindingValidationChangedEvent _validationChanged;
+	void Attach();
 };
 
 /** Collects object and field issues along a dotted source path. */
@@ -576,10 +810,15 @@ private:
 enum class ControlPropertyValueSource : unsigned char
 {
 	Default = 0,
-	Theme = 1,
-	Style = 2,
-	Binding = 3,
-	Local = 4
+	Inherited = 1,
+	Theme = 2,
+	Style = 3,
+	Binding = 4,
+	Local = 5,
+	/** Values supplied by the active VisualState. */
+	VisualState = 6,
+	/** Values supplied by active animation clocks. */
+	Animation = 7
 };
 
 const wchar_t* ControlPropertyValueSourceName(
@@ -593,7 +832,15 @@ enum class ControlPropertyFlags : unsigned char
 	AffectsArrange = 1u << 1,
 	AffectsRender = 1u << 2,
 	/** Direct property-wrapper assignment creates a Local value immediately. */
-	TracksLocalValue = 1u << 3
+	TracksLocalValue = 1u << 3,
+	/** The effective value flows through the logical tree to matching properties. */
+	Inherits = 1u << 4,
+	/** BindingMode::Default resolves to TwoWay instead of OneWay. */
+	BindsTwoWayByDefault = 1u << 5,
+	/** Changing the property invalidates the logical parent's measure pass. */
+	AffectsParentMeasure = 1u << 6,
+	/** Changing the property invalidates the logical parent's arrange pass. */
+	AffectsParentArrange = 1u << 7
 };
 
 constexpr ControlPropertyFlags operator|(
@@ -676,6 +923,36 @@ struct ControlPropertyDesignMetadata
 };
 
 /**
+ * Instance-owned property contract used by declarative component types.
+ *
+ * Unlike BindingPropertyRegistry entries this definition does not require a
+ * C++ owner type or getter/setter pair. Control supplies the storage and turns
+ * the definition into normal BindingPropertyMetadata, so styles, bindings and
+ * design tools observe exactly the same property system.
+ *
+ * Object-valued definitions must provide a non-empty, concrete DefaultValue.
+ * The default's runtime type becomes part of the property contract, so values
+ * of unrelated object types cannot be assigned through Binding or styles.
+ */
+struct DynamicControlPropertyDefinition
+{
+	std::wstring Name;
+	BindingValueKind ValueKind = BindingValueKind::String;
+	BindingValue DefaultValue = BindingValue(std::wstring{});
+	/** Optional closed set accepted after conversion; used by declarative enums. */
+	std::vector<BindingValue> AllowedValues;
+	ControlPropertyFlags Flags = ControlPropertyFlags::None;
+	/** Concrete trigger used when Binding requests DataSourceUpdateMode::Default. */
+	DataSourceUpdateMode DefaultUpdateMode =
+		DataSourceUpdateMode::OnPropertyChanged;
+	/** Stable identity shared by instances when Flags contains Inherits. */
+	std::wstring InheritanceKey;
+	ControlPropertyDesignMetadata Design;
+	/** Public XAML/style/Binding writes are rejected; component behavior may update it. */
+	bool IsReadOnly = false;
+};
+
+/**
  * Behavioral metadata layered on top of a bindable property registration.
  * Coerce returns nullopt to reject a value, or the effective value to apply.
  */
@@ -688,6 +965,11 @@ struct ControlPropertyOptions
 	std::function<void(TOwner&, const TValue&, const TValue&)> Changed;
 	std::function<bool(const TValue&, const TValue&)> Equals;
 	ControlPropertyDesignMetadata Design;
+	/** Concrete trigger used when Binding requests DataSourceUpdateMode::Default. */
+	DataSourceUpdateMode DefaultUpdateMode =
+		DataSourceUpdateMode::OnPropertyChanged;
+	/** Exposes a readable/observable property without a public property-system setter. */
+	bool IsReadOnly = false;
 };
 
 /**
@@ -705,12 +987,23 @@ public:
 	const std::type_index& ValueType() const noexcept { return _valueType; }
 	const std::type_index& OwnerType() const noexcept { return _ownerType; }
 	bool CanRead() const noexcept { return static_cast<bool>(_getter); }
-	bool CanWrite() const noexcept { return static_cast<bool>(_setter); }
+	bool CanWrite() const noexcept
+	{
+		return static_cast<bool>(_setter) && !_isReadOnly;
+	}
+	bool IsReadOnly() const noexcept { return _isReadOnly; }
 	bool CanObserve() const noexcept { return static_cast<bool>(_subscriber); }
 	bool HasDefaultValue() const noexcept { return _hasDefaultValue; }
 	ControlPropertyFlags Flags() const noexcept { return _flags; }
+	DataSourceUpdateMode DefaultUpdateMode() const noexcept
+	{
+		return _defaultUpdateMode;
+	}
+	const std::wstring& InheritanceKey() const noexcept { return _inheritanceKey; }
 	const ControlPropertyDesignMetadata& Design() const noexcept { return _design; }
 	bool IsDesignerBrowsable(Control& target) const;
+	bool HasSameInheritanceIdentity(
+		const BindingPropertyMetadata& other) const noexcept;
 
 	bool Matches(const Control& target) const;
 	bool TryConvert(const BindingValue& value, BindingValue& out) const;
@@ -746,6 +1039,10 @@ private:
 	BindingValue _defaultValue;
 	bool _hasDefaultValue = false;
 	ControlPropertyFlags _flags = ControlPropertyFlags::None;
+	bool _isReadOnly = false;
+	DataSourceUpdateMode _defaultUpdateMode =
+		DataSourceUpdateMode::OnPropertyChanged;
+	std::wstring _inheritanceKey;
 	ControlPropertyDesignMetadata _design;
 
 	BindingPropertyMetadata(std::wstring name,
@@ -763,12 +1060,20 @@ private:
 		BindingValue defaultValue,
 		bool hasDefaultValue,
 		ControlPropertyFlags flags,
+		bool isReadOnly,
+		DataSourceUpdateMode defaultUpdateMode,
+		std::wstring inheritanceKey,
 		ControlPropertyDesignMetadata design);
 
 	void NotifyChanged(
 		Control& target,
 		const BindingValue& oldValue,
 		const BindingValue& newValue) const;
+	bool CanWriteInternally() const noexcept
+	{
+		return static_cast<bool>(_setter);
+	}
+	bool TrySetInternal(Control& target, const BindingValue& value) const;
 
 	friend class BindingPropertyRegistry;
 	friend class Control;
@@ -797,6 +1102,16 @@ private:
 using ControlPropertyMetadata = BindingPropertyMetadata;
 using ControlPropertyRegistry = BindingPropertyRegistry;
 
+/** Resolves BindingMode::Default using the target property's behavior flags. */
+BindingMode ResolveBindingMode(
+	const BindingPropertyMetadata& target,
+	BindingMode requested) noexcept;
+
+/** Resolves DataSourceUpdateMode::Default using the target property's metadata. */
+DataSourceUpdateMode ResolveDataSourceUpdateMode(
+	const BindingPropertyMetadata& target,
+	DataSourceUpdateMode requested) noexcept;
+
 class Binding
 {
 public:
@@ -804,9 +1119,24 @@ public:
 		std::wstring targetProperty,
 		IBindingSource* source,
 		std::wstring sourceProperty,
-		BindingMode mode = BindingMode::OneWay,
-		DataSourceUpdateMode updateMode = DataSourceUpdateMode::OnPropertyChanged,
-		std::shared_ptr<const IBindingValueConverter> converter = {});
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+	Binding(Control* target,
+		std::wstring targetProperty,
+		BindingSourceReference source,
+		std::wstring sourceProperty,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
 	~Binding();
 
 	Binding(const Binding&) = delete;
@@ -817,6 +1147,22 @@ public:
 	BindingMode Mode() const { return _mode; }
 	DataSourceUpdateMode UpdateMode() const { return _updateMode; }
 	const std::shared_ptr<const IBindingValueConverter>& Converter() const noexcept { return _converter; }
+	const std::optional<BindingValue>& FallbackValue() const noexcept
+	{
+		return _fallbackValue;
+	}
+	const std::optional<BindingValue>& TargetNullValue() const noexcept
+	{
+		return _targetNullValue;
+	}
+	const std::optional<BindingValue>& ConverterParameter() const noexcept
+	{
+		return _converterParameter;
+	}
+	const std::optional<std::wstring>& StringFormat() const noexcept
+	{
+		return _stringFormat;
+	}
 	bool IsValid() const noexcept { return _isValid; }
 	BindingError LastError() const noexcept { return _lastError; }
 	const wchar_t* LastErrorMessage() const noexcept { return BindingErrorMessage(_lastError); }
@@ -843,20 +1189,27 @@ private:
 	};
 
 	Control* _target = nullptr;
+	BindingSourceReference _ownedSource;
 	IBindingSource* _source = nullptr;
 	std::wstring _targetProperty;
 	std::wstring _sourceProperty;
-	std::vector<std::wstring> _sourcePath;
-	BindingMode _mode = BindingMode::OneWay;
-	DataSourceUpdateMode _updateMode = DataSourceUpdateMode::OnPropertyChanged;
+	std::vector<BindingPathStep> _sourcePath;
+	BindingMode _mode = BindingMode::Default;
+	DataSourceUpdateMode _updateMode = DataSourceUpdateMode::Default;
 	std::shared_ptr<const IBindingValueConverter> _converter;
+	std::optional<BindingValue> _fallbackValue;
+	std::optional<BindingValue> _targetNullValue;
+	std::optional<BindingValue> _converterParameter;
+	std::optional<std::wstring> _stringFormat;
 	std::shared_ptr<State> _state;
 	std::weak_ptr<const void> _sourceLifetime;
 	std::vector<EventConnection> _sourceConnections;
 	std::vector<std::shared_ptr<IBindingSource>> _sourcePathOwners;
+	std::vector<std::shared_ptr<IBindingList>> _sourcePathListOwners;
 	std::vector<EventConnection> _sourceValidationConnections;
 	std::vector<EventConnection> _validationPathConnections;
 	std::vector<std::shared_ptr<IBindingSource>> _validationPathOwners;
+	std::vector<std::shared_ptr<IBindingList>> _validationPathListOwners;
 	EventConnection _targetConnection;
 	BindingValidationChangedEvent _validationChanged;
 	std::vector<BindingValidationIssue> _validationIssues;
@@ -877,15 +1230,98 @@ private:
 	void OnValidationPathChanged();
 	void RefreshValidation();
 	void OnTargetPropertyChanged();
-	bool ResolveSourceOwner(
-		IBindingSource*& owner,
-		std::vector<std::shared_ptr<IBindingSource>>& keepAlive) const;
+	bool ApplyTargetValue(const BindingValue& value);
+	bool ApplyFallbackValue(BindingError sourceError);
+	bool TryReadSourcePathValue(
+		BindingValue& out, BindingError& error) const;
+	bool TryWriteSourcePathValue(
+		const BindingValue& value, BindingError& error) const;
 	bool Fail(BindingError error) noexcept
 	{
 		_lastError = error;
 		return false;
 	}
 	bool IsSourceAlive() const noexcept { return _source && !_sourceLifetime.expired(); }
+};
+
+/** One child expression consumed by MultiBinding. */
+struct MultiBindingSource final
+{
+	IBindingSource* Source = nullptr;
+	BindingSourceReference OwnedSource;
+	std::wstring SourceProperty;
+	std::shared_ptr<const IBindingValueConverter> Converter;
+	std::optional<BindingValue> FallbackValue;
+	std::optional<BindingValue> TargetNullValue;
+	std::optional<BindingValue> ConverterParameter;
+	std::optional<std::wstring> StringFormat;
+	std::optional<BindingMode> Mode;
+	std::optional<DataSourceUpdateMode> UpdateMode;
+
+	MultiBindingSource() = default;
+	MultiBindingSource(
+		IBindingSource* source,
+		std::wstring sourceProperty,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+	MultiBindingSource(
+		BindingSourceReference source,
+		std::wstring sourceProperty,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+};
+
+/**
+ * WPF-style multi-source binding. Child expressions reuse Binding itself, so
+ * PropertyPath observation, validation, fallbacks, and source lifetime rules
+ * stay identical to ordinary bindings.
+ */
+class MultiBinding final
+{
+public:
+	MultiBinding(
+		Control* target,
+		std::wstring targetProperty,
+		std::vector<MultiBindingSource> sources,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IMultiBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+	~MultiBinding();
+
+	MultiBinding(const MultiBinding&) = delete;
+	MultiBinding& operator=(const MultiBinding&) = delete;
+
+	const std::wstring& TargetProperty() const noexcept;
+	BindingMode Mode() const noexcept;
+	DataSourceUpdateMode UpdateMode() const noexcept;
+	size_t SourceCount() const noexcept;
+	bool IsValid() const noexcept;
+	BindingError LastError() const noexcept;
+	const wchar_t* LastErrorMessage() const noexcept;
+	Binding* TargetBinding() noexcept;
+	const Binding* TargetBinding() const noexcept;
+	/** Pulls every readable child source and refreshes the combined target value. */
+	bool UpdateTarget();
+	/** Reads the target, runs ConvertBack, and commits Explicit child bindings. */
+	bool UpdateSource();
+	std::vector<BindingValidationResult> GetValidationResults() const;
+	bool HasValidationIssues() const;
+	bool HasValidationErrors() const;
+	BindingValidationChangedEvent& ValidationChanged() noexcept;
+
+private:
+	struct State;
+	std::unique_ptr<State> _state;
 };
 
 class BindingCollection
@@ -896,26 +1332,63 @@ public:
 	Binding* Add(const std::wstring& targetProperty,
 		IBindingSource* source,
 		const std::wstring& sourceProperty,
-		BindingMode mode = BindingMode::OneWay,
-		DataSourceUpdateMode updateMode = DataSourceUpdateMode::OnPropertyChanged,
-		std::shared_ptr<const IBindingValueConverter> converter = {});
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
+	Binding* Add(const std::wstring& targetProperty,
+		BindingSourceReference source,
+		const std::wstring& sourceProperty,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
 
 	Binding* Add(const std::wstring& targetProperty,
 		IBindingSource& source,
 		const std::wstring& sourceProperty,
-		BindingMode mode = BindingMode::OneWay,
-		DataSourceUpdateMode updateMode = DataSourceUpdateMode::OnPropertyChanged,
-		std::shared_ptr<const IBindingValueConverter> converter = {})
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {})
 	{
-		return Add(targetProperty, &source, sourceProperty, mode, updateMode, std::move(converter));
+		return Add(targetProperty, &source, sourceProperty, mode, updateMode,
+			std::move(converter), std::move(fallbackValue),
+			std::move(targetNullValue), std::move(converterParameter),
+			std::move(stringFormat));
 	}
+	MultiBinding* AddMulti(
+		const std::wstring& targetProperty,
+		std::vector<MultiBindingSource> sources,
+		BindingMode mode = BindingMode::Default,
+		DataSourceUpdateMode updateMode = DataSourceUpdateMode::Default,
+		std::shared_ptr<const IMultiBindingValueConverter> converter = {},
+		std::optional<BindingValue> fallbackValue = {},
+		std::optional<BindingValue> targetNullValue = {},
+		std::optional<BindingValue> converterParameter = {},
+		std::optional<std::wstring> stringFormat = {});
 
 	void Clear();
 	/** Finds a binding by target property using the same case-insensitive identity as Add. */
 	Binding* Find(const std::wstring& targetProperty);
 	const Binding* Find(const std::wstring& targetProperty) const;
+	MultiBinding* FindMulti(const std::wstring& targetProperty);
+	const MultiBinding* FindMulti(const std::wstring& targetProperty) const;
 	/** Removes one binding without disturbing bindings owned by other target properties. */
 	bool Remove(const std::wstring& targetProperty);
+	/** Refreshes either a Binding or MultiBinding selected by target property. */
+	bool UpdateTarget(const std::wstring& targetProperty);
+	/** Commits either a Binding or MultiBinding selected by target property. */
+	bool UpdateSource(const std::wstring& targetProperty);
 	size_t Count() const;
 	std::vector<BindingValidationResult> GetValidationResults() const;
 	bool HasValidationIssues() const;
@@ -932,7 +1405,9 @@ public:
 private:
 	Control* _owner = nullptr;
 	std::vector<std::unique_ptr<Binding>> _items;
+	std::vector<std::unique_ptr<MultiBinding>> _multiItems;
 	std::vector<EventConnection> _validationConnections;
+	std::vector<EventConnection> _multiValidationConnections;
 	BindingValidationChangedEvent _validationChanged;
 	BindingError _lastError = BindingError::None;
 	void NotifyValidationChanged(const std::wstring& targetProperty);

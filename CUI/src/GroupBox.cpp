@@ -88,7 +88,7 @@ UIClass GroupBox::Type() { return UIClass::UI_GroupBox; }
 
 void GroupBox::EnsureBindingPropertiesRegistered()
 {
-	Panel::EnsureBindingPropertiesRegistered();
+	HeaderedContentControl::EnsureBindingPropertiesRegistered();
 	static const bool registered = []
 	{
 		BindingPropertyRegistry::Register<GroupBox, float>(L"CaptionMarginLeft",
@@ -129,8 +129,11 @@ void GroupBox::EnsureBindingPropertiesRegistered()
 }
 
 GroupBox::GroupBox()
-	: Panel()
+	: HeaderedContentControl()
 {
+	ClearRows();
+	AddRow(GridLength::Pixels(20.0f));
+	AddRow(GridLength::Star(1.0f));
 	this->Text = L"GroupBox";
 	this->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
 	this->OnTextChanged += [&](Control* sender, std::wstring oldText, std::wstring newText)
@@ -165,30 +168,59 @@ CUI_GROUP_BOX_PROPERTY_IMPL(D2D1_COLOR_F, CaptionBorderColor, _captionBorderColo
 
 float GroupBox::GetCaptionBandHeight()
 {
+	if (auto* header = GetHeaderVisual())
+	{
+		const auto desired = header->Measure(cui::core::Constraints::Unbounded());
+		return (std::max)(20.0f, desired.height + CaptionPaddingY * 2.0f);
+	}
 	auto font = this->Font;
 	if (!font) return 20.0f;
 	auto textSize = font->GetTextSize(this->Text);
 	return (std::max)(20.0f, textSize.height + CaptionPaddingY * 2.0f);
 }
 
+void GroupBox::ConfigureHeaderVisual(Control& child)
+{
+	HeaderedContentControl::ConfigureHeaderVisual(child);
+	child.HAlign = HorizontalAlignment::Left;
+	child.VAlign = VerticalAlignment::Center;
+	child.Margin = Thickness{
+		CaptionMarginLeft + CaptionPaddingX,
+		0.0f,
+		CaptionPaddingX,
+		0.0f };
+}
+
+void GroupBox::UpdateHeaderLayout()
+{
+	const float height = GetCaptionBandHeight();
+	const auto& rows = GetRows();
+	if (rows.size() != 2 || !rows[0].Height.IsPixel()
+		|| std::fabs(rows[0].Height.Value - height) > 0.01f
+		|| !rows[1].Height.IsStar())
+	{
+		ClearRows();
+		AddRow(GridLength::Pixels(height));
+		AddRow(GridLength::Star(1.0f));
+	}
+	if (auto* header = GetHeaderVisual()) ConfigureHeaderVisual(*header);
+}
+
 cui::core::Point GroupBox::GetChildrenLayoutOriginDip()
 {
 	return {
 		Padding.Left,
-		Padding.Top + GetCaptionBandHeight() * 0.5f + CaptionPaddingY + 6.0f
+		Padding.Top + GetCaptionBandHeight()
 	};
 }
 
 void GroupBox::PerformGroupLayoutIfNeeded()
 {
+	UpdateHeaderLayout();
 	if (this->IsLayoutSuspended()) return;
 	if (!_needsLayout && !(_layoutEngine && _layoutEngine->NeedsLayout()))
 		return;
-
-	Thickness originalPadding = this->Padding;
-	_padding.Top += GetCaptionBandHeight() * 0.5f + CaptionPaddingY + 6.0f;
 	PerformLayout();
-	_padding = originalPadding;
 }
 
 void GroupBox::PerformPendingLayout()
@@ -218,6 +250,16 @@ void GroupBox::Update()
 	const float radius = (std::clamp)(this->CornerRadius, 0.0f, (std::min)(actualWidth, actualHeight) * 0.5f);
 
 	this->BeginRender();
+	if (GetControlTemplateRoot())
+	{
+		if (!this->ParentForm->IsDCompSceneRenderActive())
+		{
+			for (auto* child : this->GetChildrenInZOrder())
+				if (child && child->Visible) child->Update();
+		}
+		this->EndRender();
+		return;
+	}
 	{
 		if (radius > 0.0f)
 			d2d->FillRoundRect(0, 0, actualWidth, actualHeight, this->BackColor, radius);
@@ -229,11 +271,9 @@ void GroupBox::Update()
 		}
 		if (!this->ParentForm || !this->ParentForm->IsDCompSceneRenderActive())
 		{
-			for (auto child : this->GetChildrenInZOrder())
-			{
-				if (!child || !child->Visible) continue;
-				child->Update();
-			}
+			auto* content = GetVisualContent();
+			if (!content) content = GetGeneratedPresenter();
+			if (content && content->Visible) content->Update();
 		}
 
 		if (border > 0.0f && this->BorderColor.a > 0.0f)
@@ -246,20 +286,39 @@ void GroupBox::Update()
 				d2d->DrawRect(border * 0.5f, border * 0.5f, drawW, drawH, this->BorderColor, border);
 		}
 
-		if (!this->Text.empty())
+		auto* header = GetHeaderVisual();
+		if (header || !this->Text.empty())
 		{
 			const float captionH = (std::min)(captionBandHeight, actualHeight);
 			const float maxCaptionW = (std::max)(0.0f, actualWidth - CaptionMarginLeft * 2.0f);
-			const float captionW = (std::min)(maxCaptionW, textWidth + CaptionPaddingX * 2.0f);
-			const float captionX = (std::min)(CaptionMarginLeft, (std::max)(0.0f, actualWidth - captionW));
-			const float captionY = (std::min)(4.0f, (std::max)(0.0f, actualHeight - captionH));
+			const auto headerSize = header
+				? header->GetActualSizeDip() : cui::core::Size{ textWidth, captionH };
+			const auto headerLocation = header
+				? header->GetActualLocationDip() : cui::core::Point{ CaptionMarginLeft, CaptionPaddingY };
+			const float captionW = (std::min)(maxCaptionW,
+				headerSize.width + CaptionPaddingX * 2.0f);
+			const float captionX = (std::clamp)(
+				headerLocation.x - CaptionPaddingX,
+				0.0f, (std::max)(0.0f, actualWidth - captionW));
+			const float captionY = (std::clamp)(
+				headerLocation.y - CaptionPaddingY,
+				0.0f, (std::max)(0.0f, actualHeight - captionH));
 			const float captionRadius = (std::clamp)(CaptionCornerRadius, 0.0f, captionH * 0.5f);
 			const auto captionBack = CaptionBackColor.a > 0.0f ? CaptionBackColor : this->BackColor;
 			if (captionBack.a > 0.0f)
 				d2d->FillRoundRect(captionX, captionY, captionW, captionH, captionBack, captionRadius);
 			if (CaptionBorderColor.a > 0.0f)
 				d2d->DrawRoundRect(captionX + 0.5f, captionY + 0.5f, (std::max)(0.0f, captionW - 1.0f), (std::max)(0.0f, captionH - 1.0f), CaptionBorderColor, 1.0f, captionRadius);
-			d2d->DrawString(this->Text, captionX + CaptionPaddingX, captionY + CaptionPaddingY, this->ForeColor, font);
+			if (header)
+			{
+				if ((!this->ParentForm
+					|| !this->ParentForm->IsDCompSceneRenderActive())
+					&& header->Visible)
+					header->Update();
+			}
+			else
+				d2d->DrawString(this->Text, captionX + CaptionPaddingX,
+					captionY + CaptionPaddingY, this->ForeColor, font);
 		}
 	}
 	if (!this->Enable)
@@ -275,5 +334,6 @@ void GroupBox::Update()
 bool GroupBox::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
 {
 	PerformGroupLayoutIfNeeded();
-	return Panel::ProcessMessage(message, wParam, lParam, localX, localY);
+	return HeaderedContentControl::ProcessMessage(
+		message, wParam, lParam, localX, localY);
 }

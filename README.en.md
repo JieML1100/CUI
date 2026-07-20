@@ -47,7 +47,7 @@ invalidation, and `OnPropertyValueChanged` notifications. `ResetPropertyValue(..
 and `IsPropertyValueDefault(...)` let Designer and code generation avoid hard-coded
 defaults.
 
-Effective values use `Local > Binding > Style > Theme > Default` precedence.
+Effective values use `Animation > VisualState > Local > Binding > Style > Theme > Inherited > Default` precedence.
 `TrySetPropertyValue(name, value, source)` writes a layer, while
 `ClearPropertyValue(...)` or `ClearPropertyValues(source)` removes it. Hidden layers
 retain their latest value and become effective automatically when higher layers are
@@ -786,17 +786,30 @@ class/state selectors, implicit styles that only declare `TargetType`, and WPF-l
 `x:Key`, `Style="{StaticResource ...}"`, and `Style.BasedOn`. `BasedOn` can reference
 either a named style or an implicit `{x:Type Button}` key; base setters are applied first,
 derived setters replace them by property name, and missing or cyclic references are rejected.
-`Style.Triggers` initially supports boolean conditions for `IsMouseOver`,
-`IsKeyboardFocused`, `IsPressed`, `IsEnabled`, `IsChecked`, and `IsSelected`.
-`MultiTrigger` combines two or more entries in `MultiTrigger.Conditions` with AND
-semantics. Trigger setters use the same resource, property-metadata, coercion, and cascade
-validation and are inherited through `BasedOn`; duplicate or contradictory MultiTrigger
-conditions are rejected while loading. A `DataTrigger` compares one DataContext value from
-`Binding="{Binding Path}"` with a literal `Value`. `MultiDataTrigger.Conditions` accepts two
-or more equivalent `Condition` entries and matches them with AND semantics. Dotted paths
-observe every reachable source and reconnect when an intermediate object is replaced. Data
+`Style.Triggers` keeps `IsMouseOver`, `IsKeyboardFocused`, `IsPressed`, `IsEnabled`,
+`IsChecked`, and `IsSelected` as state aliases, while `Trigger.Property` may also name any
+readable, observable target metadata property that the Designer can represent. Its `Value`
+is converted and compared using that property's actual type. `MultiTrigger` can mix state
+aliases and ordinary metadata properties with AND semantics. Trigger setters use the same
+resource, property-metadata, coercion, and cascade validation and are inherited through
+`BasedOn`; duplicate, unobservable, or type-incompatible conditions are rejected while
+loading. A `DataTrigger` compares a value from each target
+control's effective local or inherited DataContext through `Binding="{Binding Path}"` with a
+literal `Value`. `MultiDataTrigger.Conditions` accepts two or more equivalent `Condition`
+entries and matches them with AND semantics. Each target observes its own dotted paths and
+reconnects when an intermediate object is replaced, so DataTemplate items sharing one Style
+cannot overwrite one another's condition context. Data
 conditions currently support only Path plus a literal value; Converter, Mode/UpdateMode, and
 StaticResource values are not accepted.
+`Trigger`, `MultiTrigger`, `DataTrigger`, and `MultiDataTrigger` can all declare WPF-style
+`EnterActions` and `ExitActions`. `BeginStoryboard`, `PauseStoryboard`, `ResumeStoryboard`, and
+`StopStoryboard` execute on initial activation and false-to-true or true-to-false edges.
+Every matching control owns independent named clocks; an ordinary style refresh does not
+restart them, while removing the rule or sheet stops the owned clocks and reveals the current
+lower value source. A Style has no template namescope, so the matched control is the animation
+target and `Storyboard.TargetName` must be omitted. This is a dynamic-XAML capability; the
+auxiliary static C++ generator rejects Styles containing TriggerActions instead of silently
+dropping them.
 Runtime property metadata remains authoritative, so a newly exposed generic property does
 not need a dedicated XAML setter.
 
@@ -816,12 +829,23 @@ const std::string_view xaml = R"(
         <MultiTrigger>
           <MultiTrigger.Conditions>
             <Condition Property="IsMouseOver" Value="true" />
-            <Condition Property="IsChecked" Value="true" />
+            <Condition Property="Text" Value="Ready" />
           </MultiTrigger.Conditions>
           <Setter Property="Round" Value="12" />
         </MultiTrigger>
         <DataTrigger Binding="{Binding User.Status}" Value="Ready">
           <Setter Property="Visible" Value="true" />
+          <DataTrigger.EnterActions>
+            <BeginStoryboard x:Name="ReadyPulse">
+              <Storyboard>
+                <DoubleAnimation Storyboard.TargetProperty="Round"
+                                 To="12" Duration="0:0:0.15" />
+              </Storyboard>
+            </BeginStoryboard>
+          </DataTrigger.EnterActions>
+          <DataTrigger.ExitActions>
+            <StopStoryboard BeginStoryboardName="ReadyPulse" />
+          </DataTrigger.ExitActions>
         </DataTrigger>
         <MultiDataTrigger>
           <MultiDataTrigger.Conditions>
@@ -853,8 +877,9 @@ if (!DesignerModel::RuntimeDocumentLoader::LoadXaml(
 }
 ```
 
-Collection data can be written directly as control content: `ComboBoxItem`, `ListBoxItem`, and
-`ListViewItem` do not require an extra `*.Items` wrapper. Controls with multiple collections keep
+Legacy static collection data can be written directly as `ComboBoxItem` and `ListViewItem` content
+without an extra `*.Items` wrapper. `ListBox` now requires `ItemsSource + DataTemplate` and no longer
+accepts directly authored `<ListBoxItem>` children. Controls with multiple collections keep
 explicit property elements. `GridView` and `PagedGridView` share `GridViewColumn`, `GridViewRow`,
 and `GridViewCell`; cells support `Value`, `IsChecked`, `Tag`, and `SelectedIndex`. The same data
 round-trips through dynamic loading, Designer saves, and static C++ generation:
@@ -890,12 +915,25 @@ draw gradient text. See `CUITest/CustomControls` and `DemoWindow.cui.xaml` for t
 <Label Text="Declarative paint">
   <Control.Foreground>
     <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+      <LinearGradientBrush.RelativeTransform>
+        <RotateTransform Angle="15" CenterX="0.5" CenterY="0.5" />
+      </LinearGradientBrush.RelativeTransform>
+      <LinearGradientBrush.Transform>
+        <TranslateTransform X="4" Y="0" />
+      </LinearGradientBrush.Transform>
       <GradientStop Color="#E30940" Offset="0" />
       <GradientStop Color="#1373E8" Offset="1" />
     </LinearGradientBrush>
   </Control.Foreground>
 </Label>
 ```
+
+All four brush kinds support WPF-style `Brush.RelativeTransform` and `Brush.Transform`
+property elements. Canonical round-trips retain the concrete `SolidColorBrush`,
+`LinearGradientBrush`, `RadialGradientBrush`, or `ImageBrush` owner. Rendering applies brush
+content, RelativeTransform in normalized brush space, projection into the painted bounds, and
+then Transform in DIP space. Thus `CenterX="0.5" CenterY="0.5"` naturally denotes the brush
+center for RelativeTransform, while Transform is suitable for a final DIP offset.
 
 Resources can remain in the main document or be split into WPF-like merged dictionaries.
 Later merged dictionaries override earlier ones, and local entries in the current dictionary
@@ -912,6 +950,68 @@ entries into the main XAML:
     <Color x:Key="Accent">#FF2F6FE4</Color>
   </ResourceDictionary>
 </Form.Resources>
+```
+
+Value resources may also live directly in any control's `Resources`. Lookup walks the
+current control, logical ancestors, Form/document resources, and finally Application/theme
+resources. The nearest matching key wins, and reparenting a subtree reevaluates against its
+new logical route instead of copying the previous parent's dictionary. Local dictionaries also
+support file-backed `MergedDictionaries` and survive canonical XAML, v18 snapshots,
+component/DataTemplate visual nodes, and runtime recomposition.
+In addition to value resources such as colors, numbers, strings, Thickness, Brush,
+ImageSource, Geometry, and Transform, control-local `Style` now has lexical semantics.
+Implicit/named styles, `BasedOn`, setters/triggers, and dynamic resources can inherit outer
+declarations, while the nearer dictionary wins equal-specificity conflicts. `DataTemplate`,
+`ComponentDefinition`, `ItemsPanelTemplate`, and `GroupStyle` may now live in any control resource scope and shadow definitions along
+the current-control, logical-ancestor, then Form route. Templates may contain further local
+templates or components. The optional C++ generator rejects these dynamic XAML objects explicitly
+instead of flattening or silently dropping them.
+
+```xml
+<StackPanel>
+  <StackPanel.Resources>
+    <Color x:Key="AccentText">#FFE84B3C</Color>
+    <Style TargetType="Label" BasedOn="{StaticResource BaseLabel}">
+      <Setter Property="ForeColor" Value="{DynamicResource AccentText}" />
+    </Style>
+    <DataTemplate x:Key="RowView" DataType="Row">
+      <Label Text="{Binding Name}" ForeColor="{StaticResource AccentText}" />
+    </DataTemplate>
+  </StackPanel.Resources>
+  <Label ForeColor="{DynamicResource AccentText}" />
+  <StackPanel>
+    <StackPanel.Resources>
+      <Color x:Key="AccentText">#FF36A269</Color>
+    </StackPanel.Resources>
+    <Label ForeColor="{StaticResource AccentText}" />
+  </StackPanel>
+</StackPanel>
+```
+
+When a Designer copy operation extracts a subtree that depends on ancestor-local object resources,
+the clipboard promotes the selected template, component, panel template, group style, group-header
+template, and visible value resources onto the fragment root. The pasted subtree therefore keeps
+shadowing behavior and also works when no global fallback definition exists. A
+`GroupStyle.HeaderTemplate` resolves at the GroupStyle declaration scope, so a nearer use-site
+template with the same key does not retroactively change the declared group style.
+
+Writable control properties and Style/Trigger setters also accept
+`{DynamicResource Key}`. The parser preserves it as a Local-value expression rather
+than replacing it with a literal. Lookup first walks control-local dictionaries along
+the logical parent route, then checks document and Application/theme resources; edits,
+sheet replacement, and reparenting reevaluate the expression. A temporarily
+missing key is valid and exposes the lower-precedence value until the resource appears.
+A regular Local assignment or ClearValue removes the expression. Structural references
+such as `Style`, `BasedOn`, `ItemsSource`, and `ItemTemplate` remain StaticResource-only.
+Canonical XAML, v18, Designer resource renames, clipboard, transactional hot reload, and the
+optional C++ generator preserve the Static/Dynamic identity.
+
+```xml
+<Color x:Key="AccentText">#FF2F6FE4</Color>
+<Style TargetType="Label">
+  <Setter Property="ForeColor" Value="{DynamicResource AccentText}" />
+</Style>
+<Label ForeColor="{DynamicResource AccentText}" Text="Live resource" />
 ```
 
 Resource lookup is no longer hard-coded as path concatenation in the XAML parser. Configure
@@ -982,104 +1082,532 @@ pointer hit testing, dirty bounds, accessibility bounds, Designer selection boun
 </Button>
 ```
 
-External controls use a prefixed element plus portable design/code-generation
-metadata. `d:BaseType` selects the built-in CUI base used for Designer preview,
-property/event metadata, layout, and headless generation. `d:CppType`, `d:Header`,
-and `d:Constructor` select the static C++ output. Constructor conventions are
-`Default`, `Bounds(x, y, width, height)`, and
-`TextBounds(text, x, y, width, height)`. Canonical XAML and v5 XML preserve the
-complete descriptor:
+Custom visual structure is declared with XAML `ComponentDefinition` resources.
+The definition owns the public property/event contract and template, so the
+Designer can edit and preview it without loading application binaries. C++ is
+used only for application behavior and event handlers.
 
 ```xml
 <Form xmlns="urn:cui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-      xmlns:d="urn:cui:designer" xmlns:controls="urn:acme:controls">
-  <controls:StatusBadge x:Name="statusBadge"
-      d:CppType="Acme.Controls.StatusBadge"
-      d:Header="Controls/StatusBadge.h"
-      d:BaseType="Button" d:Constructor="Bounds"
-      Text="Ready" Width="120" Height="30" />
+       xmlns:local="urn:sample:components">
+  <Form.Resources>
+    <ComponentDefinition x:Key="local:StatusBadge" BaseType="Panel">
+      <ComponentDefinition.Properties>
+        <ComponentProperty Name="Caption" Type="String" Default="Ready"
+          BindsTwoWayByDefault="true"
+          DefaultUpdateSourceTrigger="LostFocus" />
+		<ComponentProperty Name="Status" Type="String" Default="Idle"
+		  ReadOnly="true" />
+        <ComponentProperty Name="IsActive" Type="Bool" Default="false" />
+        <ComponentProperty Name="AccentColor" Type="Color" Default="#FF0078D4" />
+        <ComponentProperty Name="ContentPadding" Type="Thickness" Default="8" />
+        <ComponentProperty Name="AccentLevel" Type="Int" Default="1"
+          Inherits="true" BindsTwoWayByDefault="true"
+          AffectsParentMeasure="true" />
+        <ComponentProperty Name="DisplayMode" Type="Enum" Default="Detailed">
+          <ComponentProperty.Choices>
+            <ComponentChoice Value="Compact" DisplayName="Compact view" />
+            <ComponentChoice Value="Detailed" DisplayName="Detailed view" />
+          </ComponentProperty.Choices>
+        </ComponentProperty>
+      </ComponentDefinition.Properties>
+      <ComponentDefinition.ContentProperties>
+        <ComponentContentProperty Name="Content" Cardinality="Single" Default="true" />
+      </ComponentDefinition.ContentProperties>
+      <ComponentDefinition.Template>
+        <StackPanel x:Name="PART_Root"
+                    Padding="{TemplateBinding ContentPadding}"
+                    ForeColor="{TemplateBinding AccentColor}">
+          <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="CommonStates">
+              <VisualState x:Name="Normal" />
+              <VisualState x:Name="Active">
+                <VisualState.StateTriggers>
+                  <StateTrigger Property="IsActive" Value="true" />
+                </VisualState.StateTriggers>
+                <VisualState.Setters>
+                  <Setter TargetName="PART_Root" Property="BackColor"
+                          Value="#2036A269" />
+                </VisualState.Setters>
+              </VisualState>
+            </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+          <Label Text="{TemplateBinding Caption}" />
+		  <Label x:Name="PART_Status" Text="{TemplateBinding Status}" />
+          <StackPanel x:Name="PART_Content"
+                      ComponentSlot.Presents="Content" />
+        </StackPanel>
+      </ComponentDefinition.Template>
+    </ComponentDefinition>
+    <Style TargetType="local:StatusBadge">
+      <Setter Property="AccentColor" Value="#FFE95420" />
+    </Style>
+  </Form.Resources>
+  <local:StatusBadge x:Name="statusBadge" Caption="Warning">
+    <Label Text="Projected content" />
+  </local:StatusBadge>
 </Form>
 ```
 
-A dynamic host must register the real factory explicitly. The returned control
-must inherit and retain the declared `d:BaseType` from `Type()`. A missing
-registration fails transactionally instead of silently replacing the control.
-The Designer and `CuiCodeGen` opt into a built-in-base proxy, so they can preview
-generic metadata and emit the typed member, include, and constructor without
-loading an application DLL. Custom-only XAML properties still require metadata
-from the real control or manifest and use ordinary XAML attributes. Dynamic parsing
-validates and coerces them through that metadata. Properties without verifiable
-metadata fail explicitly; canonical output no longer creates opaque `d:` value bags.
-Reload inherits the current document's registry when it is omitted.
+Component properties currently cover Bool, numeric, String, and closed declarative Enum values plus Color,
+Thickness, Point, Vector, Rect, Size, and Length value types. Structured Brush, Geometry, and Transform defaults use
+`ComponentProperty.Default` and the same object-element syntax as control properties;
+component defaults may also use `Default="{StaticResource Key}"`; local value resources are discovered before
+component schemas and styles, regardless of source order. Component QNames are valid style targets;
+the runtime selector checks both the component identity and built-in base type, so a
+component style cannot leak to an ordinary control with the same base class.
 
-The Designer ToolBox can register the same portable descriptors from a UTF-8
-control manifest without loading application DLLs. Loading is transactional and
-strictly validates the schema, instantiable built-in base, XAML identity/prefix
-conflicts, canonical C++ type, and safe relative include. See
-`CuiStaticGeneratedSample/CuiDesigner.controls.xml` for a complete example:
+`ComponentProperty` also supports `Inherits`, `BindsTwoWayByDefault`,
+`DefaultUpdateSourceTrigger`, `AffectsParentMeasure`, and `AffectsParentArrange`.
+Inherited values occupy their own `Inherited` precedence layer. An omitted Binding
+`Mode` is stored as `Default` and is resolved from the target metadata: normally
+OneWay, or TwoWay for a property carrying `BindsTwoWayByDefault`. An omitted
+`UpdateSourceTrigger` is resolved in the same way; a component property can choose
+`PropertyChanged`, `LostFocus`, or `Explicit`. Canonical XAML and v14 snapshots
+preserve all behavior metadata.
+
+`ReadOnly="true"` declares state maintained by component behavior and consumed by
+templates or external bindings. Such a property remains readable, observable,
+inheritable, and valid as a `Binding`/`TemplateBinding` source, but instance literals,
+Style setters, Binding/MultiBinding targets, and ordinary property writes are rejected.
+The PropertyGrid shows a disabled row and the Binding editor omits the property from
+target choices. C++ behavior updates dynamic read-only state through
+`TrySetReadOnlyPropertyValue(...)` / `ClearReadOnlyPropertyValue(...)`; these APIs are
+the runtime equivalent of a property key and do not reopen public XAML writes.
+Read-only properties cannot opt into `BindsTwoWayByDefault` or a non-PropertyChanged
+default update trigger.
+
+Component events default to `RoutingStrategy="Direct"` and may opt into
+`Bubble` or `Tunnel`. An ancestor handles a descendant component event with a
+WPF-style attached event attribute such as
+`local:StatusBadge.Invoked="HandleDescendantInvoked"`. The event identity is the
+owner QName plus event name, not just the local name.
+
+Handlers use `void(Control*, DeclarativeEventArgs&)`. `sender` is the current
+route target, while the arguments expose `OriginalSource`, `Source`,
+`CurrentTarget`, owner QName, routing strategy, payload, and writable `Handled`.
+Normal registrations skip an event after it is handled;
+`RuntimeComponentEventRegistrationOptions::HandledEventsToo` opts back in.
+The `RaiseDeclarativeEvent(args)` overload returns the final handled state to a
+component behavior. Canonical XAML, v14 snapshots, clipboard dependency closure,
+event-handler rename, and transactional hot reload preserve attached routes.
+
+The component template root may declare `VisualStateManager.VisualStateGroups`.
+Each group has exactly one triggerless fallback state. Multiple `StateTrigger`
+conditions in one state use AND semantics, and the first matching conditional state
+wins in declaration order. An `EventTrigger` can reference only an event declared by
+that component; its state remains active until `GoToVisualState(...)` is called or a
+relevant condition property is reevaluated. An empty `Setter.TargetName` targets the
+component host, while a non-empty name must resolve inside the template namescope.
+Different groups cannot own the same target property.
+
+Active setters occupy a dedicated `VisualState` value source above Local. Leaving
+a state clears only that source and reveals the previous Local, Binding, Style,
+Inherited, or Default value. `VisualState.Storyboard` supports finite
+`DoubleAnimation` over Int/Int64/Float/Double metadata, `ColorAnimation` over color
+metadata, `ThicknessAnimation` over Margin, Padding, or a declared Thickness property,
+`PointAnimation` over `RenderTransformOrigin` or a declared Point property,
+`VectorAnimation` over a declared Vector property,
+`RectAnimation` over a declared Rect property or a named template part's rectangle
+clip through `(Control.Clip).(RectangleGeometry.Rect)`, `SizeAnimation` over floating-DIP Size metadata, and
+`MatrixAnimation` over Matrix metadata or `MatrixTransform.Matrix` object paths through WPF-style
+`Storyboard.TargetName` / `Storyboard.TargetProperty`.
+A finite `Duration` is required; `From`, `To`, `By`, and `BeginTime` are optional.
+Endpoint combinations follow WPF: From to base, current to To, current to current+By,
+From to From+By, and From to To. To wins when To and By are both authored, while By is
+still preserved; omitting all three animates the current effective value back to base.
+Color By values add per channel, Thickness By values add per edge, Point and Vector By values add
+per x/y component, Rect By values add per x/y/width/height component, Size By values add per dimension,
+Matrix By values add per six components, and Double By values also work on RenderTransform
+subpaths. The delta is type-converted without absolute-value coercion; each final frame
+still passes through target metadata coercion. Quadratic, cubic, and sine easing support
+EaseIn, EaseOut, and EaseInOut. Completed animations hold their final value in the same
+state layer, while disabling system animations applies the final value immediately.
+
+Regular Double/Color/Thickness/Point/Vector/Rect/Size/Matrix timelines and their key-frame variants support `IsAdditive` and
+`IsCumulative`. WPF endpoint
+classification determines the additive foundation: By-only always uses the current
+value; FromTo and FromBy add the current value only when IsAdditive is true; Automatic,
+From-only, and To-only never add it twice. Each completed repetition accumulates
+`To-From` for a regular animation and the final key-frame value for a key-frame
+animation. With AutoReverse, the complete forward/backward cycle is one repetition.
+Generated transitions use their resolved absolute destination and clear both flags,
+while explicit transition storyboards retain the authored behavior.
+
+`VisualStateGroup.Transitions` now provides WPF-style state transitions. A
+`VisualTransition` can select `From` and/or `To`; resolution is deterministic:
+exact From+To, To-only, From-only, then the default transition. Duplicate selectors
+are rejected. `GeneratedDuration` and
+`VisualTransition.GeneratedEasingFunction` synthesize interpolation for Double/Color/Thickness/Point/Vector/Rect/Size/Matrix
+state animations and can smoothly return an old state to its base value.
+`VisualTransition.Storyboard` overrides selected targets: an explicit target suppresses
+the corresponding generated animation while all other targets remain generated.
+During a transition `GetCurrentVisualState(...)` immediately reports the destination;
+the destination setters/storyboard are committed when the transition completes. An
+interruption continues from the current effective frame. Passing `false` to the new
+`GoToVisualState(..., useTransitions, ...)` overload, or disabling system animations,
+bypasses the transition and applies the destination directly.
+
+`DoubleAnimation` also supports the first object-subproperty adapter. A named template
+part can target a declared transform operation with a path such as
+`(Control.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)`.
+Translate, scale, rotate, and skew numeric members are validated against the actual
+operation type and index. Distinct leaves in one state are composed into one complete
+`RenderTransform` value per frame, so they do not overwrite one another and the whole
+base transform is restored when the state is left.
+
+The first Geometry subproperty adapter lets `RectAnimation` target
+`(Control.Clip).(RectangleGeometry.Rect)` on a named template part; an authored
+`UIElement` owner is canonicalized to `Control`. Each frame replaces only Rect and
+preserves RadiusX, RadiusY, Geometry.Transform, and the rest of the root Geometry.
+Targets without an explicitly declared RectangleGeometry are rejected.
+Other public Geometry leaves on the same Clip root are addressable too: `DoubleAnimation`
+targets `RectangleGeometry.RadiusX/RadiusY` and `EllipseGeometry.RadiusX/RadiusY`, while
+`PointAnimation` targets `EllipseGeometry.Center`. The concrete Geometry owner must match
+the template object; absolute radii are nonnegative while By may remain signed.
+`DoubleAnimation` can also target a declared translate, scale, rotate, or skew member on a
+Rectangle, Ellipse, Path, or GeometryGroup through
+`(Control.Clip).(Geometry.Transform).(TransformGroup.Children)[n].(TransformType.Property)`.
+Concrete Geometry owners and `UIElement.Clip` authored aliases canonicalize to `Geometry` and
+`Control.Clip`. Geometry-transform, Rect, Center, and radius animations compose against one Clip
+root, preserving figures, radii, fill rules, and simultaneous member updates.
+The `PathGeometry` object graph is addressable through indexed WPF-style paths as well:
+`(Control.Clip).(PathGeometry.Figures)[n].(PathFigure.StartPoint|IsClosed|IsFilled)`, optionally
+continuing through `(PathFigure.Segments)[m]` to point members on Line, Bezier,
+QuadraticBezier, or Arc segments. Arc also exposes `Size`, `RotationAngle`, `IsLargeArc`, and
+`SweepDirection`. Point, Size, and Double timelines animate continuous leaves; discrete Object
+key frames switch booleans and sweep direction. Figure/segment indices and concrete segment
+owners must match the actual Clip, absolute Arc sizes are nonnegative, and sweep direction accepts
+only `Clockwise` or `Counterclockwise`. These leaves compose with FillRule, Geometry.Transform,
+and other Geometry members against the same Clip root.
+`GeometryGroup` additionally permits any number of `(GeometryGroup.Children)[n]` hops before
+targeting the supported public members, PathFigure/PathSegment graph, or `Geometry.Transform`
+of a nested Rectangle, Ellipse, Path, or GeometryGroup. Every hop validates the actual Group and
+child index, and the final concrete owner must match the selected child. PathGeometry and
+GeometryGroup `FillRule` can also switch discretely between `EvenOdd` and `Nonzero`. All nested
+leaves still compose against one complete Clip value, preserving parent transforms, sibling
+geometries, and untouched child data.
+The Brush subproperty adapter lets `ColorAnimation` and `DoubleAnimation` target
+`(Control.Foreground).(GradientBrush.GradientStops)[n].(GradientStop.Color)` and
+`(Control.Foreground).(GradientBrush.GradientStops)[n].(GradientStop.Offset)`.
+Linear/radial owner aliases canonicalize to `GradientBrush`. The target must explicitly
+declare a linear or radial brush and a valid stop index; same-root Color and Offset updates
+are composed while brush coordinates, opacity, and untouched stops are preserved. Authored
+Offset From/To/key-frame values stay in 0..1, By may be signed, and frame writes use the
+property's 0..1 coercion.
+Public brush members use the same Foreground object-path root. `ColorAnimation` targets
+`(Control.Foreground).(SolidColorBrush.Color)`; `DoubleAnimation` targets
+`(Control.Foreground).(Brush.Opacity)` on every brush kind and `RadiusX/RadiusY` on radial
+gradients; `PointAnimation` targets linear `StartPoint/EndPoint` and radial
+`Center/GradientOrigin`. Concrete brush and `UIElement.Foreground` authored aliases are
+canonicalized. Absolute opacity stays in 0..1, radii stay nonnegative, and By may remain
+signed. These leaves compose with GradientStop and Transform updates against one complete
+Brush root, so simultaneous color, coordinate, radius, and opacity animations do not overwrite
+one another.
+`DoubleAnimation` can also target a declared translate, scale, rotate, or skew member on any
+brush kind through
+`(Control.Foreground).(Brush.Transform|RelativeTransform).(TransformGroup.Children)[n].(TransformType.Property)`.
+Concrete brush owners and `UIElement.Foreground` authored aliases canonicalize to `Brush` and
+`Control.Foreground`. Brush-transform and GradientStop animations compose against the same
+Foreground root each frame, preserving coordinates, opacity, untouched stops, and the other
+transform.
+`MatrixAnimation` uses the same three Transform object-path families, but its leaf must be
+`(MatrixTransform.Matrix)`. The six finite components are interpolated and combined as one
+strongly typed Matrix. Regular/key-frame timelines, From/To/By, easing,
+Additive/Cumulative, StaticResource, generated transitions, and explicit transitions all
+share this contract across RenderTransform, recursive Geometry.Transform, and Brush
+Transform/RelativeTransform; sibling DoubleAnimation leaves still compose per frame.
+The runtime stores all indirect paths in one `ObjectPathAccessor` variant, while the
+Designer uses one classification, canonicalization, root-property, and resolution API.
+Future Geometry and Brush adapters therefore extend one boundary instead of adding
+parallel fields and lifecycle branches.
+
+Key-frame timelines support `DoubleAnimationUsingKeyFrames`,
+`ColorAnimationUsingKeyFrames`, `ThicknessAnimationUsingKeyFrames`,
+`PointAnimationUsingKeyFrames`, `VectorAnimationUsingKeyFrames`, `RectAnimationUsingKeyFrames`,
+`SizeAnimationUsingKeyFrames`, and `MatrixAnimationUsingKeyFrames`. All eight value types provide discrete, linear, easing, and spline frames, including WPF's
+`EasingThicknessKeyFrame`, `EasingPointKeyFrame`, `EasingVectorKeyFrame`, `EasingRectKeyFrame`, `EasingSizeKeyFrame`, and `EasingMatrixKeyFrame`.
+Every frame has an explicit finite `KeyTime` and a strongly typed `Value`,
+which may use `StaticResource`. Easing frames use the same quadratic, cubic, and sine
+functions and easing modes; spline frames use a WPF-style four-coordinate `KeySpline`
+whose control points are in 0..1. An omitted `Duration` resolves to the final `KeyTime`,
+equal times retain declaration order, and the first segment starts from the effective
+value captured on state entry, or from zero before adding that value when IsAdditive is
+true. Key-frame animations may also target the supported
+RenderTransform, recursive GeometryGroup.Children, public Geometry-member, PathFigure/PathSegment, Geometry.Transform, public Brush-member, and Brush Transform subpaths and participate in per-frame
+composition.
+
+`ObjectAnimationUsingKeyFrames`, like WPF, accepts only `DiscreteObjectKeyFrame` and can
+switch any writable property represented by the metadata catalog. Scalar `Value`
+supports Visibility, bool, enum, string, Thickness, and the other catalog value types,
+including `StaticResource`; Brush, Geometry, and Transform values may be authored inside
+`DiscreteObjectKeyFrame.Value`. Object timelines share BeginTime, Duration,
+RepeatBehavior, AutoReverse, FillBehavior, SpeedRatio, and acceleration/deceleration
+behavior, but do not expose From/To/By, easing, `IsAdditive`, or `IsCumulative`. Explicit
+transition storyboards execute object switches. Generated transitions do not invent
+object interpolation: they expose the property base value during the transition and
+start the destination state's object timeline when the transition completes.
+
+All supported regular and key-frame animations now share a WPF-style Timeline active
+period. `RepeatBehavior` accepts a positive Count (including fractional values such as
+`0.5x`), a finite positive TimeSpan, or `Forever`. With `AutoReverse="true"`, one
+repetition is a forward iteration followed by a backward iteration, so Count applies to
+the complete round trip. `BeginTime` is applied once before the first iteration, not on
+every repeat. A live state change transactionally commits its initial animation frame before
+starting the timeline clock, so parsing, resource preparation, and first-frame work cannot
+consume animation time. Installing the destination state after an explicit transition keeps
+that transition's deterministic sample tick, making manual-clock and live execution agree.
+`FillBehavior` defaults to `HoldEnd`, retaining the final sample produced
+by the active-period boundary; `Stop` releases the animation and exposes the lower value
+source. When transform subpaths run together, Stop restores only its own member and
+does not overwrite active or HoldEnd siblings. A Forever timeline remains active until
+the state is left or a `GoToVisualState(..., false, ...)` request interrupts it.
+`SpeedRatio` accepts a finite positive value and scales the timeline-local clock, not
+`BeginTime`; Count-based active periods vary inversely with speed, while a TimeSpan
+RepeatBehavior remains a fixed duration in parent-clock time. `AccelerationRatio` and
+`DecelerationRatio` are each in 0..1 and their sum may not exceed 1. They use WPF's
+normalized peak-rate mapping within each simple iteration before animation easing and
+key-frame sampling, so SpeedRatio remains the average rate over the natural duration.
+
+Unregistered arbitrary object-graph paths and Uniform/Paced `KeyTime`
+are still rejected explicitly.
+A state cannot mix a whole-property setter/animation with transform subpaths, and
+different groups cannot split ownership of the same transform root. Canonical XAML, v14 snapshots,
+Designer preview, clipboard dependencies, and transactional reload preserve both
+state definitions and resource-backed From/To/By animation endpoints. Such resource changes
+force a full candidate rebuild. Behaviors can call
+`GetCurrentVisualState(...)` / `GoToVisualState(...)` and subscribe to
+`OnVisualStateChanged`, but must not create a runtime-only parallel state contract.
+
+A component template root may also declare `<RootType.Triggers>`.
+`EventTrigger RoutedEvent="..."` references a declared component event and executes
+`BeginStoryboard`, `PauseStoryboard`, `ResumeStoryboard`, or `StopStoryboard` actions
+in declaration order. `BeginStoryboard x:Name` gives the clock a stable name; the
+control actions reference it through `BeginStoryboardName`. Event storyboards reuse
+all supported regular/key-frame timelines and object subpaths. Their output occupies
+a dedicated `Animation` value source above `VisualState`, so Stop exposes the current
+state or local value instead of restoring a stale value captured at Begin time.
+Canonical XAML, v14 snapshots, resource/clipboard dependencies, Designer preview,
+and transactional reload all preserve these triggers and named clocks.
+
+Applications may optionally attach business state, message handling, or a final
+render overlay to a declarative component by registering an
+`IDeclarativeComponentBehavior` for its exact QName. The factory receives an already
+materialized XAML host and never creates or replaces a control. `Attach` runs after the
+template, content presenters, styles, and layout properties are installed. A behavior
+can resolve local template names through `FindDeclarativeTemplatePart`, resolve a
+declared content slot through `FindDeclarativeContentPresenter`, update read-only state,
+preprocess host messages, and receive DPI/device-resource notifications. The host owns
+the behavior and calls `Detach` before template children are destroyed.
+
+`DeclarativeComponentBehaviorRegistry` is passed through
+`RuntimeDocumentLoadOptions::DeclarativeComponentBehaviors`. Normal in-place and
+recomposition reloads retain behavior with a reused host. Supplying a registry
+explicitly requests replacement; a factory or `Attach` failure leaves the previous
+runtime tree intact. A component remains fully functional pure XAML when no behavior
+is registered. Use `NativeSurface` instead when application code owns measurement,
+continuous high-performance rendering, or complex input interaction.
+
+Declarative components expose visual children through
+`ComponentDefinition.ContentProperties`. Direct children use the default content
+property; named properties use `<local:Type.Property>`. A template container marked
+with `ComponentSlot.Presents` receives those public children at runtime. Single versus
+multiple cardinality, presenter uniqueness, Designer undo/redo, clipboard persistence,
+snapshot round-trip, and structural hot reload all share the same contract.
+
+Typed item data uses `DataType` for the record contract, `DataTemplate` for the item
+visual tree, and `IBindingList` for application-owned observable collections. XAML can
+also declare first-class `DataList` / `DataRecord` resources and reference them through
+`ItemsSource="{StaticResource People}"`; this is runtime data, not a designer-only `d:`
+sample bag. `ItemsControl`, `ComboBox`, `ListView`, and `ListBox` share the contract. `ListBox` now
+uses the `ItemsControl -> Selector -> ListBox` hierarchy and directly hosts DataTemplate visuals; the
+Designer filters `ItemsSourceResource` / `ItemTemplate` choices by `ItemType`.
+When `x:Key` is omitted, a `DataTemplate` uses `DataType` as an implicit type key.
+An ItemsControl/ListBox with no explicit `ItemTemplate` infers the strongly typed item
+contract and selects the nearest matching template through control, ancestor, then document
+resources; an explicit template always wins. The property panel presents the empty value as
+Automatic and lists only keyed templates that can be referenced by StaticResource.
+Canonical XAML, v21 XML, merged dictionaries, clipboard dependency isolation, preview,
+and transactional reload preserve the same resources.
+
+`ComboBox`, `ListView`, and `ListBox` also share `DisplayMemberPath` and
+`SelectedValuePath`. `SelectedValue` preserves the scalar or record-identity type and
+supports true TwoWay binding to an application key. Paths are validated against the
+collection `DataType`; `ListBox.SelectedItem` preserves record identity across collection reordering.
+`ItemContainerGenerator` consumes precise Add/Remove/Move/Swap/Replace notifications and preserves
+unaffected container, binding, and selection identity; only Reset falls back to a candidate-tree rebuild.
+Default display-member changes replace only the affected container. `ComboBox` now uses
+`SelectedIndex=-1` for the unselected state instead of
+implicitly selecting the first item.
+
+Strongly typed single objects use `ObjectType="BindingSource" DataType="Person"`.
+`ContentPresenter.Content` and `ContentControl.Content` accept either scalar values or that
+object reference; `ContentTemplate` may explicitly
+reference a keyed `DataTemplate`, or the nearest implicit template is selected by DataType
+through control, ancestor, and document resources. Template Bindings use the content object
+as their DataContext, and replacing Content atomically rebuilds the visual root. A
+ContentPresenter rejects authored visual children. ContentControl is the default content host:
+it owns either one authored visual child or data Content rendered through its internal presenter,
+never both. Button now uses the same single-content contract: `Text` remains a compatibility entry
+point, while canonical XAML can use literal or bound `Content`, `ContentTemplate`, or one complex
+authored visual root. The button remains the sole interaction surface and its content subtree is
+presentational. GroupBox and Expander now derive from `HeaderedContentControl`: Header and Content
+are independent slots, and each accepts a literal, Binding, DataTemplate, or one authored visual
+root. Complex headers use `<GroupBox.Header>...</GroupBox.Header>` or the corresponding Expander
+property element. `Text` remains a legacy header fallback; new XAML should use `Header`. Without a
+template, scalar content becomes text and object content falls back to `DisplayMemberPath` or
+`HeaderDisplayMemberPath`. The Designer filters explicit template choices by the Content schema type
+and offers no incompatible templates for a known scalar binding. Lexical shadowing, clipboard
+promotion, canonical XAML, v21 XML, and
+transactional reload share the same resolution path.
+
+Controls can now separate appearance from C++ behavior with `ControlTemplate`.
+Built-in `ContentControl`, `Button`, `GroupBox`, `Expander`, `ItemsControl`, `ListBox`, `ListBoxItem`, `ComboBoxItem`, and `TreeViewItem` types as well as declarative
+component QNames can be used as `TargetType`. Keyed templates are selected by
+`Template="{StaticResource Key}"`, while keyless templates use the actual XAML type and lexical
+resource lookup. Components sharing one native `BaseType` do not match each other's templates.
+The generated template root does not consume authored Content. A `ContentPresenter` inside the
+template can claim a WPF-style `ContentSource="Content"` or `ContentSource="Header"` slot, deriving
+the corresponding Content/ContentTemplate/DisplayMemberPath aliases. Authored visuals are physically
+owned by that presenter while retaining the templated control as their logical Designer parent; data
+content continues through the presenter's DataTemplate or text fallback. A templated control skips its native chrome but retains input, Checked/Expanded state,
+and content behavior. `TemplateBinding` live-observes host metadata, and template trees can use
+VisualState, StateTrigger, Setter, Storyboard, EventTrigger, and named parts. Direct `Template`,
+`Style.Template`, lexical implicit templates, and `ComponentDefinition.Template` form the explicit,
+style, implicit, and type-default precedence levels. Trigger-driven structural template replacement
+remains deliberately unsupported. The resource participates in merged/local dictionaries, canonical
+XAML, v29 XML, Designer selection and preview, clipboard-local promotion, and structural hot reload;
+incompatible targets, duplicate/invalid ContentSource slots, missing resources, and recursive template
+chains fail before commit.
+
+List templates use `ItemsPresenter` to mark the visual slot for generated items. It is valid only inside
+an `ItemsControl` or `ListBox` `ControlTemplate`, at most once per template, and cannot have authored
+children. The actual ItemsHost is still created by `ItemsPanelTemplate` and is transferred to the presenter
+when the template is instantiated. When the presenter is inside an inner `ScrollView`, that view becomes
+the scrolling and virtualization owner. Omitting the presenter keeps item generation alive but leaves the
+ItemsHost detached from the visual tree. XAML can therefore replace the complete list appearance while C++
+retains selection, keyboard navigation, container generation, and virtualization behavior.
+
+Generated ListBox visuals are hosted by non-authored `ListBoxItem` containers (the C++ compatibility
+name remains `SelectorItem`). Each container derives from `ContentControl` and presents the record's
+DataTemplate through `ContentPresenter ContentSource="Content"`. Read-only `IsSelected`, `IsMouseOver`,
+and `IsKeyboardFocusWithin` states can drive normal Triggers or template VisualStates.
+`ItemContainerStyle="{StaticResource ...}"` can set container properties and `Template`; a lexical implicit
+`ControlTemplate TargetType="ListBoxItem"` is also supported. A repeatable template factory creates an
+independent visual tree for every realized or recycled item. `ListBoxItem` is valid as a Style or
+ControlTemplate target, not as a directly authored document node. `ItemsPanelTemplate` selects a StackPanel, WrapPanel, or
+VirtualizingStackPanel ItemsHost. The virtualizing host realizes only the visible/cache range and requires
+a fixed `ItemHeight` so extent, hit testing, and BringIntoView remain exact; spacing belongs to the panel.
+Insert/remove/move operations above a virtual viewport remap its record anchor instead of jumping content.
+Wheel and keyboard navigation automatically bring the selected item into view. Container-style
+references participate in Designer choices, canonical XAML, clipboard isolation, and transactional reload.
+
+`ComboBox` now uses the same item-container contract. `ItemTemplate` owns data content, while
+`ItemContainerStyle` and an explicit or lexical implicit `ControlTemplate TargetType="ComboBoxItem"`
+own popup-row appearance. Generated `ComboBoxItem` instances expose the same read-only `IsSelected`,
+`IsMouseOver`, and `IsKeyboardFocusWithin` states. A direct `<ComboBoxItem Content="Debug"/>` remains a
+compact static-item declaration rather than an authored Designer node. XAML-created ComboBoxes enable real
+containers by default; the legacy C++ plain-text path enables them only after an item template, container
+style, or container template is configured, preserving the lightweight large-data path. The popup retains
+its existing animation, scrolling, hit testing, and selection logic. The selection box still uses projected
+text; a later batch can add `SelectionBoxItemTemplate` and popup-item virtualization.
+
+`TreeView` supports both static `TreeView.Items` and typed data hierarchies. Static
+`<TreeViewItem Header="...">` entries and data items create real `HeaderedContentControl` containers with
+writable `IsExpanded` plus read-only `HasItems`, `Level`, `IsSelected`, `IsMouseOver`, and
+`IsKeyboardFocusWithin` states. `ItemContainerStyle` and explicit or lexical implicit
+`ControlTemplate TargetType="TreeViewItem"` own appearance, while
+`ContentPresenter ContentSource="Header"` presents the header slot. In data mode,
+`HierarchicalDataTemplate.ItemsSource` reads the next typed `BindingList` from the current item and template
+selection continues by each level's ItemType:
 
 ```xml
-<cuiControlCatalog schema="cui.designer.controls" version="1">
-  <control name="StatusBadge" displayName="Status badge" category="Samples"
-    baseType="Button" xamlPrefix="sample" xamlName="StatusBadge"
-    xamlNamespace="urn:cui:samples" cppType="Acme.Controls.StatusBadge"
-	header="Controls/StatusBadge.h" constructor="Bounds"
-	width="150" height="30" container="false">
-    <property name="Severity" displayName="Severity" category="Appearance"
-      kind="Int64" default="1" editor="Choice"
-      minimum="0" maximum="2" bindable="true" twoWay="false">
-      <choice displayName="Normal" value="1" />
-      <choice displayName="Warning" value="2" />
-    </property>
-    <event name="OnSeverityInvoked" displayName="Severity invoked"
-      field="OnSeverityInvoked" category="Action"
-      signature="SenderInt" order="5" default="true" />
-  </control>
-</cuiControlCatalog>
+<HierarchicalDataTemplate DataType="Folder" ItemsSource="{Binding Children}">
+  <Label Text="{Binding Name}" />
+</HierarchicalDataTemplate>
+<DataTemplate DataType="File">
+  <Label Text="{Binding Name}" />
+</DataTemplate>
+<TreeView ItemsSource="{Binding Roots}" SelectedValuePath="Name"
+          SelectedItemChanged="OnSelectedItemChanged" />
 ```
 
-Launch with `Designer.exe --controls <manifest>` to add the entries to the
-ToolBox, or use `Designer.exe --validate-controls <manifest>` in CI for a
-validation-only `0/2` exit code. A `property` schema drives typed PropertyGrid
-rows, choices/ranges, Reset, Undo/Redo, persistence, and deferred Binding. The
-real custom control should still register runtime metadata under the same name.
-`twoWay=true` explicitly promises a getter and change notification; the default
-portable contract exposes only OneWay/OneTime.
+Root-list changes, changes in materialized child lists, and `Children` replacement consume precise
+Add/Remove/Replace/Move/Swap notifications while preserving unaffected nodes, selection, and realized
+containers by data-object identity; Reset reconciles by the same identity. A collapsed branch observes only
+its child source and `HasItems`, materializing its next node level on first expansion or accessibility child
+enumeration. Real `TreeViewItem` containers cover only the viewport plus one prefetched row on each side,
+and list mutations anchor scrolling to the first visible node rather than its old numeric index. Cycles or
+template failures retain the last committed subtree, while complete template/source replacement remains
+transactional. `TreeView.Items` and `ItemsSource` are mutually exclusive. `TreeNode` remains the C++
+compatibility model, and an unconfigured legacy C++ TreeView keeps its lightweight drawing path. In stable
+state, container selection, rendering, and hit testing share one cached flattened visible-node projection:
+hits are direct row lookups, while rendering and state refresh touch viewport rows only. Expansion animation
+temporarily uses the recursive clipped path and returns to the fast path when complete. A child-list change
+replaces only that parent's visible projection segment, and the complete UIA hierarchy index is rebuilt lazily
+on an actual accessibility query. A `TreeViewItem` leaving the viewport clears its Header/DataContext into a
+bounded recycle pool, so later rows reuse its template chrome rather than constructing another container.
+TreeView itself now exposes read-only `SelectedItem` and `SelectedValue`. In data mode, SelectedItem preserves
+the `BindingSource` record identity, while `SelectedValuePath` projects a typed path and live-observes its value;
+an empty path returns the selected item itself. Static compatibility trees project their corresponding `TreeNode`.
+The new default event is the WPF-style `SelectedItemChanged`; legacy `SelectionChanged` is still raised in lockstep
+for existing C++ handlers. Pointer input, programmatic `SelectNode`, UIA, and keyboard input share one selection
+path. Up/Down/Home/End/PageUp/PageDown navigate the visible projection and scroll it into view, while Right expands
+or enters the first child and Left collapses or selects the parent. These read-only projections add no snapshot
+field, so XML remains at v29.
 
-An `event` schema adds the custom event to the PropertyGrid event page and drives
-default-event activation, named handlers, Undo/Redo, XAML/XML round-trip, and
-static `std::bind_front` generation. `signature` is a fixed safe preset rather
-than arbitrary C++ text: `None`, `Sender`, `SenderBool`, `SenderInt`,
-`SenderFloat`, `SenderDouble`, `SenderString`, `SenderIntInt`, `SenderIntBool`,
-`SenderDoubleDouble`, or `SenderStringString`; sender is always `Control*`.
-The contract is persisted in `d:CustomEvents`, so headless generation does not
-depend on a locally installed manifest. A dynamic host additionally registers
-the real Event member through `RuntimeEventHandlerRegistry::RegisterCustomControl(...)`,
-which verifies `Event::function_type`. If an installed manifest changes the
-name, field, or signature of an event already in use, the Designer rejects the
-load and preserves the current canvas. See `CuiRuntimeSample/main.cpp` for the
-complete dynamic example.
+`CollectionViewSource` is a reusable declarative projection over a `DataList`, another view, or a
+DataContext `IBindingList` supplied through `Source="{Binding Path}"`. AND-combined typed filters and
+stable multi-key sorting retain record identity and publish precise Add/Remove/Move changes, preserving
+selection, CurrentItem, and unaffected containers. Source chains, paths, operators, and literals are
+validated against the projected `DataType` before materialization.
+Ordered `GroupDescriptions` build hierarchical contiguous groups. Group headers use the
+built-in, reserved `DataType="CollectionViewGroup"`. `GroupStyle.HeaderTemplate` may explicitly
+reference a keyed template; when omitted, the declaration scope selects an implicit template
+of that type. Its context exposes `Key` / `Name`, `PropertyName`,
+`Level`, `StartIndex`, `ItemCount`, `IsBottomLevel`, `FirstItem`, a typed `Items` snapshot, and `Aggregates`;
+`FirstItem.*` paths are validated against the source list `DataType`. Headers wrap group-boundary items
+without replacing the underlying `ListBoxItem`, preserving selection and container identity. Dynamic
+sources and recycled containers also normalize their group wrapper instead of nesting it. Named
+`AggregateDescriptions` provide `Count`, `Sum`, `Average`, `Min`, and `Max` as `Aggregates.Name`; their
+paths are typed and live-observed. Grouped `VirtualizingStackPanel` uses a segment-offset index covering
+items and multi-level headers, so extent, visible ranges, anchor remapping, and BringIntoView remain exact.
+`GroupStyle.HeaderHeight` is the enforced header extent in virtual mode.
 
-Without enhanced preview the canvas uses a `baseType` proxy while persisted
-XAML and generated C++ retain the real type. An in-process host can use
-`DesignerControlCatalog::AttachPreviewFactory(...)`. A separate trusted DLL is
-loaded only through explicit `--preview-plugin <dll>` configuration; CI can run
-`--validate-preview-plugin <dll> <xaml-namespace> <xaml-name>`. The host owns the
-proxy and the plugin returns bounded value-only drawing primitives, never a
-`Control*`. Design files and manifests cannot supply a DLL path. See the
-[value-only C ABI](CuiDesigner/CUSTOM_CONTROL_PLUGIN_ABI.md).
-
-```cpp
-auto controls = std::make_shared<DesignerModel::RuntimeCustomControlRegistry>();
-controls->Register(L"urn:acme:controls", L"StatusBadge",
-    [](const DesignerModel::DesignNode&) {
-        return std::make_unique<Acme::Controls::StatusBadge>();
-    }, &error);
-
-DesignerModel::RuntimeDocumentLoadOptions options;
-options.CustomControls = controls;
-DesignerModel::RuntimeDocumentLoader::LoadXaml(xaml, document, options, &error);
+```xml
+<DataTemplate DataType="CollectionViewGroup">
+  <StackPanel Orientation="Horizontal" Spacing="6">
+    <Label Text="{Binding Key}" />
+    <Label Text="{Binding ItemCount}" />
+    <Label Text="{Binding FirstItem.Name}" />
+    <Label Text="{Binding Aggregates.TotalScore}" />
+  </StackPanel>
+</DataTemplate>
 ```
+
+With the Form selected, the property panel exposes a structured Data Resources editor
+for local `DataType` fields, `DataList` / `DataRecord`, and `DataTemplate` identities.
+Renames transactionally rewrite schema item types, record paths, template bindings, and
+StaticResource references; referenced resources cannot be deleted. Merged-dictionary
+resources are read-only and must be edited in their source file. New templates receive a
+minimal bound Label root; richer visual trees continue through the canonical XAML/canvas path.
+Implicit DataTemplates have no string key and are currently edited directly in XAML.
+
+High-performance native areas (3D views, vector editors, media/compute surfaces)
+use the built-in `NativeSurface`. XAML contains only a stable `BehaviorKey`; the
+application supplies an `INativeSurfaceBehavior` through
+`NativeSurfaceBehaviorRegistry`. Runtime loading is strict, while tooling may
+render a placeholder without loading user code:
+
+```xml
+<NativeSurface x:Name="scene" BehaviorKey="Scene3D"
+               PlaceholderText="3D scene" Width="640" Height="360" />
+```
+
+The former external-control manifest, preview-plugin ABI, `d:CppType` metadata,
+and runtime custom-control factory APIs were removed. Canonical XAML is the
+product contract; generated C++ UI construction is no longer a framework
+dependency.
 
 Dynamic hosts can safely call `Reload(...)`, `ReloadXaml(...)`, or `ReloadFile(...)`.
 Common scalar/metadata properties, Binding and DataContext schema, document styles,
@@ -1162,9 +1690,31 @@ and `GridView.Rows`; brushes, clips, and transforms use the `Control.Foreground`
 `Control.Clip`, and `Control.RenderTransform` object elements. Residual model
 data without public syntax fails explicitly instead of creating opaque `d:` bags.
 The Designer opens and saves `.cui.xaml` / `.xaml` directly and keeps
-the current source format on Save; `.cui.xml` / `.xml` use v5 XML. Version 5 adds optional
-code-behind class identity and a relative base path; versions 1–4 remain readable and are
-upgraded on the next save. Both use atomic replacement and the same materialization/code-generation path. The explicit
+the current source format on Save; `.cui.xml` / `.xml` use v29 XML. Version 29 adds
+`HierarchicalDataTemplate.ItemsSource`, data-backed TreeView hierarchy, child-list observation, and recursive
+template closure. Version 28 adds WPF-style static `TreeViewItem` hierarchy containers, the Header slot, expansion/level/selection states, and complete
+Designer/clipboard/reload closure. Version 27 adds the shared item-container contract and WPF-style
+`ComboBoxItem` item templates, container styles/templates, and complete
+Designer/clipboard/reload closure. Version 26 adds WPF-style `ListBoxItem` container templates, read-only
+interaction states, and lexical/clipboard/reload closure.
+Version 25 adds `ItemsControl` / `ListBox` templates and the WPF-style `ItemsPresenter` ItemsHost slot. Version 24 adds WPF-style
+`ContentPresenter.ContentSource` Content/Header slots inside ControlTemplate. Version 23 adds declarative
+component-QName `ControlTemplate.TargetType`, `Style.Template`, and the unified template precedence.
+Version 22 adds ControlTemplate resources, implicit type keys, TemplateBinding/VisualState appearance instances,
+and local-resource snapshots. Version 21 adds the
+ContentControl default-content host and scalar/object Content semantics. Version 20 adds named DataType
+contracts for BindingSource properties and the ContentPresenter/ContentTemplate single-object
+template path. Version 19 adds DataType-keyed
+implicit DataTemplates, automatic item/group-header selection, and clipboard closure. Version 18 adds lexical
+control-local `ItemsPanelTemplate` / `GroupStyle` resources, declaration-scoped group headers,
+and their local-object snapshots. Version 17 adds lexical control-local `DataTemplate` /
+`ComponentDefinition` resources and nested template-object snapshots.
+Version 16 adds lexical control-local styles and preserves local style rules inside template nodes; version 15 adds
+control-local value-resource dictionaries. Version 14 adds group aggregates and
+virtual header metrics; version 13 adds grouping and
+`GroupStyle`; v12 adds `CollectionViewSource`; v11 adds `ItemsPanelTemplate`; v10 adds `DataList` / `DataRecord`; v9 adds typed `DataType` and `DataTemplate` resources. Earlier
+versions remain readable and are upgraded on the next save. Both use atomic replacement
+and the same materialization/code-generation path. The explicit
 Reload command runs the existing save/discard/cancel flow for dirty documents and keeps
 the current canvas if loading fails. `LoadXamlFile(...)` remains the runtime file entry.
 
@@ -1178,7 +1728,7 @@ Visual Studio/COM host can layer those services over the same parser, diagnostic
 
 `CuiRuntime/CuiRuntime.vcxproj` packages this dynamic path as a standalone static
 library; applications do not link the Designer executable. `CuiRuntimeSample` is a
-buildable minimal host covering XAML/XML round-trip, registered custom controls, nested Grid/Tab/Split content,
+buildable minimal host covering XAML/XML round-trip, NativeSurface behavior registration, nested Grid/Tab/Split content,
 stable lookup, property/Binding/style/event in-place transactions, replacement
 boundaries, topology subtree recomposition and rollback, root ownership transfer, and
 debounced file watching plus the `RuntimeDocumentSession` UI-thread lifecycle.
@@ -1195,22 +1745,24 @@ msbuild CuiRuntimeSample\CuiRuntimeSample.vcxproj /m /p:Configuration=Debug /p:P
 `DemoWindow.cpp` to the external `DemoWindow.cui.xaml`. XAML owns the control tree,
 layout, resources, styles, and named events. The reduced C++ host retains collection
 data, chart series, HTML/media content, system services, and business handlers.
-Custom controls are registered through `RuntimeCustomControlRegistry`, while named
-events are routed to member functions through `RuntimeEventHandlerRegistry`. This makes
+XAML components own reusable visual types, while named events are routed to member
+functions through `RuntimeEventHandlerRegistry`. Native-only regions attach application
+behaviors to the built-in `NativeSurface` instead of registering a new XAML control type. This makes
 the application a direct comparison between hand-built C++ and dynamic XAML rather
 than a parser-only sample. The build copies the XAML beside the executable and exposes
 two non-interactive gates:
 
 ```powershell
-.\CUITest\x64\Debug\CUITest.exe --validate-xaml
-.\CUITest\x64\Debug\CUITest.exe --smoke-xaml
+.\x64\Debug\CUITest.exe --validate-xaml
+.\x64\Debug\CUITest.exe --smoke-xaml
 ```
 
-The first validates parsing, event contracts, and custom-control factories. The second
-also materializes the complete form and initializes its runtime data. Both return zero
+The first validates parsing, component/event contracts, and NativeSurface behavior keys. The second
+also materializes the complete form and generated data-template visuals without starting platform
+services. Both return zero
 on success.
 
-`CuiStaticGeneratedSample` adds the Designer's namespaced `x:Class` and external custom-control output to the solution as
+`CuiStaticGeneratedSample` adds the Designer's namespaced `x:Class` and built-in control output to the solution as
 real `.g.h/.g.cpp` and user `.h/.cpp` translation units, then runs it. The generated base exposes
 const and non-const typed accessors for every `x:Name` (for example `GetNamespaceButton()`) and
 publishes the matching stable IDs through `ControlIds`, so application code does not scan
@@ -1314,8 +1866,8 @@ Legacy `expandCount` / `selectedIndex` fields are promoted only when typed metad
 generated C++ assigns Items through a valid `std::vector<std::wstring>` and emits no ComboBox-only
 raw scalar assignments.
 
-`ListView` / `ListBox` view and selection modes, header/check-box options, geometry, wheel step,
-and all specialized colors now share the same metadata contract. `SelectedIndex`, focus/hover
+`ListView` view and selection modes, header/check-box options, geometry, wheel step,
+and all specialized colors use its metadata contract. `SelectedIndex`, focus/hover
 indices, and `ScrollYOffset` are observable, TwoWay-bindable transient interaction state. Single,
 Ctrl-multiple, range selection, and scrolling update the current value without replacing an active
 Binding. Columns and Items remain structurally persisted and are observable, so direct structural
@@ -1323,8 +1875,8 @@ mutation synchronizes selection, focus, scrolling, stable UIA IDs, structure eve
 `SetItems()` restores multiple selected
 flags in one operation, and generated code applies configuration metadata before the collection.
 Legacy List scalars are promoted only when matching metadata is absent. `FullRowSelect` and
-`HideSelectionWhenLostFocus` now affect rendering, while derived ListBox metadata keeps its hidden
-column-header default false.
+`HideSelectionWhenLostFocus` now affect rendering. `ListBox` is no longer a derived virtual-row shell;
+it wraps template visuals in `ListBoxItem` and uses `OnSelectionChanged` as its default event.
 Large edits can use nested `BeginUpdate()` / `EndUpdate()` or `DeferUpdates()`. Stable identities,
 selection, and positions advance incrementally, while public Items/Columns observers each receive one
 Reset and scroll correction, UIA notification, and redraw are finalized once. Tail appends touch only
@@ -1370,11 +1922,11 @@ answers `WM_GETOBJECT` with a lifetime-safe native UI Automation fragment tree a
 Toggle, Value, RangeValue, ExpandCollapse, SelectionItem, and Selection patterns for core controls.
 The compatible `IAccessible` client object and WinEvents remain available. Password content is never
 exposed as a name or value, and retained providers fail safely after their window is destroyed.
-ListView/ListBox items, ComboBox items, TreeNode objects, and GridView headers, rows, and cells are
+ListView items, ComboBox items, TreeNode objects, and GridView headers, rows, and cells are
 also exposed as stable virtual fragments with the corresponding Selection, Toggle, ExpandCollapse,
 Grid/Table, Value, Invoke, VirtualizedItem, and ScrollItem patterns. Retained virtual providers fail
 safely after their logical item is removed.
-ListView/ListBox, ComboBox, TreeView, and GridView containers also expose native Scroll Pattern
+ListView, ComboBox, TreeView, and GridView containers also expose native Scroll Pattern
 metrics and actions derived from their current viewport and scroll range; unsupported axes report
 NoScroll. ListView Details mode additionally exposes stable column-header, row, and cell fragments,
 row/column Grid addressing, and TableItem header relationships.
@@ -1447,11 +1999,39 @@ destroyed source does not leave stale validation results visible.
 `DataSourceUpdateMode::OnValidation` still means “write on focus loss” for text
 controls and is independent from source-side validation state.
 
-The Designer property panel provides an Edit Data Bindings command. Its structured editor lists target properties from the selected control's metadata and filters binding modes and update modes using each property's read, write, and change-notification capabilities. Source paths support dotted values such as `Profile.Name`. The editor can select the built-in `BooleanNegation`, `StringIsNotEmpty`, and `StringTrim` converters or persist an application-defined converter ID. When a host supplies a design-time data source, the Designer materializes persisted configurations as real runtime bindings. It snapshots and clears masking Local values before attach, then restores them when the context is removed, the configuration changes, or attach fails. Rows expose attach errors and active source validation; this transient state is not persisted. Validation-presentation options and `AccessibleDescription` are editable as regular properties and persist into the design document and generated code. Bindings are stored in the XML design document, and generated forms with bindings expose `BindData(IBindingSource& dataContext)`. Generated attach code applies the same Local snapshot/clear/failure-restore rule so initialization cannot permanently mask a binding.
+An omitted update policy is now stored as `DataSourceUpdateMode::Default` and resolved
+from `BindingPropertyMetadata::DefaultUpdateMode()` when the Binding is installed.
+Built-in `TextBox.Text` defaults to `TwoWay + LostFocus`; use
+`UpdateSourceTrigger=PropertyChanged` for per-change writes or `Explicit` for manual
+source updates. Legacy `UpdateMode=OnPropertyChanged/OnValidation/Never` input remains
+accepted, while canonical XAML emits the WPF spellings and omits `Default`.
+Both `Binding` and `MultiBinding` expose `UpdateSource()` / `UpdateTarget()`; callers
+can also use `control->DataBindings.UpdateSource(L"Text")` without branching on the
+expression kind. A manual MultiBinding commit runs the top-level `ConvertBack` and
+then commits its internal `Explicit` child bindings. Conversion or source-write
+failures return `false`, and the same expression can be retried after correcting the value.
+
+The Designer property panel provides an Edit Data Bindings command. Its structured editor lists target properties from the selected control's metadata and filters binding modes and update modes using each property's read, write, and change-notification capabilities. Source paths support `Profile.Name`, `People[0].Name`, and `Settings[key]`. The editor can select the built-in `BooleanNegation`, `StringIsNotEmpty`, and `StringTrim` converters or persist an application-defined converter ID, and it edits `ConverterParameter`, String-target `StringFormat`, `FallbackValue`, and `TargetNullValue` independently. When a host supplies a design-time data source, the Designer materializes persisted configurations as real runtime bindings. It snapshots and clears masking Local values before attach, then restores them when the context is removed, the configuration changes, or attach fails. Rows expose attach errors and active source validation; this transient state is not persisted. Validation-presentation options and `AccessibleDescription` are editable as regular properties and persist into the design document and generated code. Bindings are stored in the XML design document, and generated forms with bindings expose `BindData(IBindingSource& dataContext)`. Generated attach code applies the same Local snapshot/clear/failure-restore rule so initialization cannot permanently mask a binding.
+
+`StringFormat` runs after conversion and supports `{0}`, alignment, escaped braces,
+and common invariant numeric formats. For example:
+`Text="{Binding Amount, Converter=Application.Scale, ConverterParameter='100', StringFormat='{}{0:N2}', FallbackValue='--'}"`.
+Formatting is target-display-only; TwoWay source updates remain the converter's
+`ConvertBack` responsibility.
+
+Multiple sources use WPF-style `MultiBinding` property elements. Every child
+Binding retains the complete PropertyPath, ElementName/RelativeSource,
+converter, fallback, and dynamic re-subscription behavior. The top level can
+use an indexed `StringFormat="{}{0} / {1}"` directly or a registered
+`IMultiBindingValueConverter`; writable modes split the target value through
+the multi-value converter's `ConvertBack`. Dynamic XAML, DataTemplate,
+component templates, and Designer preview share this model. It is currently
+authored in the simplified XAML editor and is intentionally outside static C++
+auxiliary generation.
 
 When no control is selected, the form property panel provides an Edit DataContext Schema command. The schema declares dotted source paths together with their value kinds and read, write, and change-notification capabilities. Once defined, the binding editor offers discoverable source-path choices and validates source capabilities plus both sides of converter metadata. An embedded Designer host can call `Designer::SetDesignDataContext(...)` and recursively import metadata from the real view model; cyclic object graphs are truncated safely. Documents without a schema retain free-form source paths.
 
-The current design document format is version 5. Every control persists an `id` that survives renames and reordering, an optional `parentId` for ordinary control parents, and the document persists a `nextId` high-water mark so deleted IDs are not reused. Optional code-behind metadata stores a validated C++ class identity and an extensionless path relative to the design file, never an absolute workstation path. Name references remain for readability and compatibility cases such as TabPage parents. Version 1–4 documents remain readable, receive missing state in memory, and are upgraded on the next save. Runtime controls expose `DesignId` and `FindControlByDesignId(...)`; generated code assigns the same IDs, giving dynamic XML loading and static generated UI a shared lookup contract.
+The current design document format is version 8. Every control persists an `id` that survives renames and reordering, an optional `parentId` for ordinary control parents, and the document persists a `nextId` high-water mark so deleted IDs are not reused. Version 8 adds declarative enum choices, structured component defaults, and component default-resource references; versions 7 and 6 introduced component templates and component contracts. Optional code-behind metadata stores a validated C++ class identity and an extensionless path relative to the design file, never an absolute workstation path. Older documents remain readable, receive missing state in memory, and are upgraded on the next save. Runtime controls expose `DesignId` and `FindControlByDesignId(...)`, giving dynamic XAML loading a stable lookup contract.
 
 Register custom converters before calling a generated form's `BindData`. The metadata lets both the runtime and design tools reason about the target value kind and reverse-conversion support:
 

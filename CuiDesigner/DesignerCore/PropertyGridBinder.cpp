@@ -1,7 +1,28 @@
 ﻿#include "PropertyGridBinder.h"
 #include "../DesignerCanvas.h"
 #include "../../CUI/include/SplitContainer.h"
+#include <Convert.h>
 #include <algorithm>
+#include <unordered_map>
+
+namespace
+{
+	bool NamesEqual(const std::wstring& left, const std::wstring& right)
+	{
+		return _wcsicmp(left.c_str(), right.c_str()) == 0;
+	}
+
+	bool IsMaterializedResourceProperty(const std::wstring& propertyName)
+	{
+		return NamesEqual(propertyName, L"ItemTemplate")
+			|| NamesEqual(propertyName, L"Template")
+			|| NamesEqual(propertyName, L"ContentTemplate")
+			|| NamesEqual(propertyName, L"HeaderTemplate")
+			|| NamesEqual(propertyName, L"ItemsSourceResource")
+			|| NamesEqual(propertyName, L"ItemsPanel")
+			|| NamesEqual(propertyName, L"ItemContainerStyle");
+	}
+}
 
 void PropertyGridBinder::SetCanvas(DesignerCanvas* canvas)
 {
@@ -115,10 +136,100 @@ DesignerControlPropertyContext PropertyGridBinder::CreateControlPropertyContext(
 	{
 		SyncDefaultNameCounter(type, name);
 	};
+	context.RewriteElementNameReferences = [this](
+		const std::wstring& previousName, const std::wstring& nextName)
+	{
+		if (!_canvas) return;
+		std::function<void(DesignerDataBinding&)> rewrite;
+		rewrite = [&](DesignerDataBinding& binding)
+		{
+			if (binding.IsMultiBinding())
+			{
+				for (auto& child : binding.ChildBindings) rewrite(child);
+				return;
+			}
+			if (binding.ElementName == previousName)
+				binding.ElementName = nextName;
+		};
+		for (const auto& control : _canvas->GetAllControls())
+		{
+			if (!control) continue;
+			for (auto& [targetProperty, binding] : control->DataBindings)
+			{
+				(void)targetProperty;
+				rewrite(binding);
+			}
+		}
+	};
 	context.ApplyAnchorStylesKeepingBounds = [this](Control* control, uint8_t anchorStyles)
 	{
 		ApplyAnchorStylesKeepingBounds(control, anchorStyles);
 	};
+	if (_canvas)
+	{
+		context.ControlTemplates = &_canvas->GetControlTemplates();
+		context.ScopedControlTemplates = _canvas->GetControlTemplates();
+		context.DataTemplates = &_canvas->GetDataTemplates();
+		context.ScopedDataTemplates = _canvas->GetDataTemplates();
+		context.ItemsPanelTemplates = &_canvas->GetItemsPanelTemplates();
+		context.ScopedItemsPanelTemplates = _canvas->GetItemsPanelTemplates();
+		context.GroupStyles = &_canvas->GetGroupStyles();
+		context.ScopedGroupStyles = _canvas->GetGroupStyles();
+		std::unordered_map<Control*, std::shared_ptr<DesignerControl>> byControl;
+		for (const auto& control : _canvas->GetAllControls())
+			if (control && control->ControlInstance)
+				byControl.emplace(control->ControlInstance, control);
+		std::vector<std::shared_ptr<DesignerControl>> route;
+		for (auto scope = target; scope;)
+		{
+			route.push_back(scope);
+			const auto parent = byControl.find(scope->DesignerParent);
+			scope = parent == byControl.end() ? nullptr : parent->second;
+		}
+		auto overlayByKey = [](auto& targetItems, const auto& sourceItems)
+		{
+			for (const auto& item : sourceItems)
+			{
+				targetItems.erase(std::remove_if(
+					targetItems.begin(), targetItems.end(), [&](const auto& current)
+					{ return _wcsicmp(current.Key.c_str(), item.Key.c_str()) == 0; }),
+					targetItems.end());
+				targetItems.push_back(item);
+			}
+		};
+		for (auto scope = route.rbegin(); scope != route.rend(); ++scope)
+			if ((*scope)->LocalObjectResources)
+			{
+				for (const auto& item
+					: (*scope)->LocalObjectResources->ControlTemplates)
+				{
+					context.ScopedControlTemplates.erase(std::remove_if(
+						context.ScopedControlTemplates.begin(),
+						context.ScopedControlTemplates.end(), [&](const auto& current)
+						{ return current.HasSameResourceIdentity(item); }),
+						context.ScopedControlTemplates.end());
+					context.ScopedControlTemplates.push_back(item);
+				}
+				for (const auto& item
+					: (*scope)->LocalObjectResources->DataTemplates)
+				{
+					context.ScopedDataTemplates.erase(std::remove_if(
+						context.ScopedDataTemplates.begin(),
+						context.ScopedDataTemplates.end(), [&](const auto& current)
+						{ return current.HasSameResourceIdentity(item); }),
+						context.ScopedDataTemplates.end());
+					context.ScopedDataTemplates.push_back(item);
+				}
+				overlayByKey(context.ScopedItemsPanelTemplates,
+					(*scope)->LocalObjectResources->ItemsPanelTemplates);
+				overlayByKey(context.ScopedGroupStyles,
+					(*scope)->LocalObjectResources->GroupStyles);
+			}
+		context.DataLists = &_canvas->GetDataLists();
+		context.CollectionViews = &_canvas->GetCollectionViews();
+		context.DataContextSchema = &_canvas->GetDataContextSchema();
+		context.StyleSheet = &_canvas->GetDocumentStyleSheet();
+	}
 	return context;
 }
 
@@ -169,6 +280,54 @@ DesignerPropertyEditResult PropertyGridBinder::ApplyControlPropertyValue(
 	if (!row)
 		return DesignerPropertyEditResult::Failure(
 			L"当前选择没有公共属性 " + propertyName + L"。");
+	if (IsMaterializedResourceProperty(propertyName) && _canvas)
+	{
+		const auto choice = std::find_if(row->Choices.begin(), row->Choices.end(),
+			[&](const auto& item) { return NamesEqual(item.ValueText, valueText); });
+		if (choice == row->Choices.end())
+			return DesignerPropertyEditResult::Failure(
+				L"资源选择无效：" + valueText);
+		DesignerModel::DesignDocument document;
+		std::wstring error;
+		if (!_canvas->BuildDesignDocument(document, &error))
+			return DesignerPropertyEditResult::Failure(
+				L"无法建立数据资源编辑快照：" + error);
+		const auto extraKey = NamesEqual(propertyName, L"Template")
+			? "controlTemplate"
+			: NamesEqual(propertyName, L"ItemTemplate")
+			? "itemTemplate"
+			: NamesEqual(propertyName, L"ContentTemplate")
+				? "contentTemplate"
+			: NamesEqual(propertyName, L"HeaderTemplate")
+				? "headerTemplate"
+			: NamesEqual(propertyName, L"ItemsPanel")
+				? "itemsPanel"
+			: NamesEqual(propertyName, L"ItemContainerStyle")
+				? "itemContainerStyle" : "itemsSourceResource";
+		size_t applied = 0;
+		std::vector<std::wstring> selectionNames;
+		selectionNames.reserve(_controls.size());
+		for (const auto& control : _controls)
+		{
+			if (!control) continue;
+			selectionNames.push_back(control->Name);
+			const auto found = std::find_if(document.Nodes.begin(), document.Nodes.end(),
+				[&](const auto& node) { return NamesEqual(node.Name, control->Name); });
+			if (found == document.Nodes.end())
+				return DesignerPropertyEditResult::Failure(
+					L"文档中找不到控件：" + control->Name, applied);
+			if (!found->Extra.is_object())
+				found->Extra = DesignerModel::DesignValue::object();
+			if (valueText.empty()) found->Extra.ObjectItems().erase(extraKey);
+			else found->Extra[extraKey] = Convert::UnicodeToUtf8(valueText);
+			++applied;
+		}
+		const auto primaryName = _control ? _control->Name : std::wstring{};
+		if (!_canvas->ApplyDesignDocument(document, &error))
+			return DesignerPropertyEditResult::Failure(error, applied);
+		_canvas->RestoreSelectionByNames(selectionNames, primaryName, true);
+		return DesignerPropertyEditResult::Success(applied);
+	}
 	auto result = DesignerPropertyEdit::Apply(
 		CreatePropertyEditTargets(), *row, valueText);
 	if (result)
@@ -186,6 +345,8 @@ DesignerPropertyEditResult PropertyGridBinder::ResetControlPropertyValue(
 	if (!row)
 		return DesignerPropertyEditResult::Failure(
 			L"当前选择没有公共属性 " + propertyName + L"。");
+	if (IsMaterializedResourceProperty(propertyName) && _canvas)
+		return ApplyControlPropertyValue(propertyName, L"");
 	auto result = DesignerPropertyEdit::Reset(
 		CreatePropertyEditTargets(), *row);
 	if (result)
@@ -201,6 +362,13 @@ bool PropertyGridBinder::CaptureControlPropertySnapshot(
 	std::wstring* outError) const
 {
 	out = DesignerPropertyBatchSnapshot{};
+	// These selections replace the materialized subtree, so their undo unit is
+	// a document snapshot rather than a pointer-based property delta.
+	if (IsMaterializedResourceProperty(propertyName))
+	{
+		if (outError) *outError = L"数据资源属性需要文档快照。";
+		return false;
+	}
 	const auto rows = GetPropertyRows();
 	const auto* row = DesignerPropertyRowCatalog::Find(rows, propertyName);
 	if (!row || row->Source == DesignerPropertyRowSource::Form)
@@ -222,6 +390,7 @@ bool PropertyGridBinder::CaptureControlPropertySnapshot(
 	for (const auto& target : targets)
 	{
 		DesignerPropertyTargetSnapshot item;
+		item.StableId = target.Control->StableId;
 		item.TargetName = target.Control->Name;
 		item.TargetType = target.Control->Type;
 		std::wstring error;

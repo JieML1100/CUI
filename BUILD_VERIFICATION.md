@@ -84,22 +84,41 @@ cells；Solid/Linear/Radial/Image `Control.Foreground`（含 SVG、Stretch、Ali
 `ResourceDictionary.MergedDictionaries` 的外部 Source、覆盖顺序、相对 URI 重基准、来源保真和循环拒绝；Matrix/Translate/Scale/Rotate/Skew/TransformGroup
 `Control.RenderTransform` 与相对原点；Rectangle/Ellipse/Path/嵌套 GeometryGroup `Control.Clip`，
 PathFigure 的 Line/Bezier/QuadraticBezier/Arc、`Geometry.Transform` 及 EvenOdd/Nonzero 填充规则；
+声明组件 `VisualState.Storyboard` 的有限 Double/Color/Thickness/Point/Vector/Rect/Size/Matrix 动画、From/To/By/Automatic 端点矩阵、To 优先、
+数值/颜色/Thickness/Point/Vector/Rect/Size/Matrix/Transform 增量、IsAdditive/IsCumulative、当前值与基础值捕获、BeginTime、缓动、资源端点、
+	Double/Color/Thickness/Point/Vector/Rect/Size/Matrix UsingKeyFrames 的 Discrete/Linear/Easing/Spline、KeyTime/KeySpline/Duration 推导、
+	ObjectAnimationUsingKeyFrames/DiscreteObjectKeyFrame 的 Visibility/bool/枚举/string/Thickness/Point/Vector/Rect/Size、资源与内联 Brush/Geometry/Transform、
+RepeatBehavior Count/Duration/Forever（含分数）、AutoReverse、FillBehavior HoldEnd/Stop、
+SpeedRatio、AccelerationRatio/DecelerationRatio 的非线性时钟与 Count/Duration 不同父时钟边界、
+VisualTransition 的 From/To/default 优先级、GeneratedDuration/GeneratedEasing、显式 Storyboard 目标覆盖、
+当前帧中断、useTransitions=false 与系统动画旁路，
+RenderTransform 操作子路径、`(Control.Clip).(RectangleGeometry.Rect)` Geometry 子路径、
+RectangleGeometry/EllipseGeometry 的 Center 与 Radius 公开成员子路径、
+`(Control.Clip).(Geometry.Transform).(TransformGroup.Children)[n].(TransformType.Property)` Geometry 变换子路径、
+`(Control.Clip).(PathGeometry.Figures)[n]...` 的 PathFigure/Line/Bezier/QuadraticBezier/Arc 深层索引子路径、
+任意层 `(GeometryGroup.Children)[n]` 后继续定位子 Geometry 公开成员、Path 数据、Transform 与 FillRule、
+`(Control.Foreground).(GradientBrush.GradientStops)[n].(GradientStop.Color|Offset)` Brush 子路径、
+`SolidColorBrush.Color`、通用 `Brush.Opacity`、线性/径向渐变 Point 与 Radius Brush 子路径、
+`(Control.Foreground).(Brush.Transform|RelativeTransform).(TransformGroup.Children)[n].(TransformType.Property)` Brush 变换子路径、
+三类 Transform 对象路径上的 `MatrixTransform.Matrix` 强类型末端、
+多末端逐帧合成、状态退出恢复与系统禁用动画直达终值；
 解析后的规范序列化幂等；Materializer 中 Items/Rows/Brush/Clip/Transform
 实际生效；Designer 回存不丢结构对象；静态代码生成包含相同 Brush、Clip、Transform、Rows 与
 PagedGridView 类型。
 
 ```powershell
-$validate = Start-Process .\CUITest\x64\Debug\CUITest.exe `
+$validate = Start-Process .\x64\Debug\CUITest.exe `
     -ArgumentList '--validate-xaml' -Wait -PassThru -WindowStyle Hidden
 if ($validate.ExitCode -ne 0) { throw "CUITest XAML validation failed: $($validate.ExitCode)" }
 
-$smoke = Start-Process .\CUITest\x64\Debug\CUITest.exe `
+$smoke = Start-Process .\x64\Debug\CUITest.exe `
     -ArgumentList '--smoke-xaml' -Wait -PassThru -WindowStyle Hidden
 if ($smoke.ExitCode -ne 0) { throw "CUITest XAML smoke failed: $($smoke.ExitCode)" }
 ```
 
-`--validate-xaml` 覆盖解析、事件契约和自定义控件工厂；`--smoke-xaml` 还会创建真实 `Form`、
-材质化全部内置/自定义控件、解析命名事件并初始化菜单、表格、图表、Web 和媒体数据，然后安全销毁。
+`--validate-xaml` 覆盖解析、声明组件/事件契约和 `NativeSurface` 行为键；`--smoke-xaml` 还会创建真实 `Form`、
+材质化全部内置控件、XAML 组件及数据模板视觉树并解析命名事件，但不会启动通知区、WebView、媒体等平台服务，
+然后安全销毁。
 失败会在 XAML 旁生成 `DemoWindow.cui.xaml.error.txt`，成功必须删除旧诊断并返回 0。
 
 ## WebView2 可选构建与公共 ABI
@@ -116,7 +135,7 @@ msbuild CUI\CUI.vcxproj /m /t:Rebuild /p:Configuration=Debug /p:Platform=x64 /p:
 
 ## 浮点测量与 Auto 尺寸
 
-新布局代码应使用浮点约束入口；`SIZE` 重载只作为旧自定义控件/布局引擎的
+新布局代码应使用浮点约束入口；`SIZE` 重载只作为旧内置控件/布局引擎的
 兼容桥保留：
 
 ```cpp
@@ -134,7 +153,7 @@ label->LayoutHeight = cui::layout::Length::Auto();
 panel->LayoutWidth = cui::layout::Length::Fixed(320.5f);
 ```
 
-新自定义控件优先覆写
+新增框架内置控件时优先覆写
 `cui::core::Size MeasureCore(const cui::core::Constraints&)`；旧的
 `SIZE MeasureCore(SIZE)` 仍会由默认桥调用。
 
@@ -164,8 +183,8 @@ Auto 行会使用已经求出的跨列宽度测量子控件，因此换行内容
 然后所有 `OneWay` / `TwoWay` 路径都通过同一套元数据执行。`BindingValue`
 除数值、布尔和字符串转换外，也可携带任意可复制 C++ 值类型。
 
-自定义控件可用 `BindingPropertyRegistry::Register<Owner, Value>()` 注册属性；
-注册后仍使用原有调用方式：
+框架内置控件可用 `BindingPropertyRegistry::Register<Owner, Value>()` 注册属性；XAML 组件属性则由
+`ComponentDefinition.Properties` 自动发布到同一元数据层。注册后仍使用原有调用方式：
 
 ```cpp
 target->DataBindings.Add(
@@ -175,6 +194,12 @@ target->DataBindings.Add(
 元数据中的变更订阅必须返回 `EventConnection`，通常使用事件的
 `Subscribe(...)`；连接由 `Binding` 持有并在清除/析构时自动解绑。普通 `+=`
 仍适合与发布者同寿命的永久处理器。
+
+XAML Binding 默认以当前 DataContext 为源，也可用
+`{Binding Text, ElementName=sourceControl}` 指向当前局部 namescope 内的控件。控件作为 `IBindingSource` 时，
+元数据声明的旧式变更事件必须桥接到统一 `PropertyChanged`，并避免属性系统写入造成重复通知。回归必须覆盖页面、
+DataTemplate、组件模板、无 DataContext 加载、原位热重载、设计器预览/规范回写、无效名称事务失败、控件重命名和
+剪贴板内部重映射；跨复制范围引用必须拒绝，不能静默变成悬空名称。
 
 `BindingPropertyMetadata` 也承载通用控件属性行为。相关回归必须证明：
 
@@ -187,10 +212,14 @@ target->DataBindings.Add(
   已缓存的 Style/Theme 值；
 - 自定义比较器可支持 `SIZE`、颜色等没有通用 `operator==` 的值类型；
 - 未知属性、错误类型和没有默认值的 Reset 明确返回失败且不修改控件。
+- `BindingMode::Default` 与 `DataSourceUpdateMode::Default` 分别由目标元数据解析，解析后不会把
+  `Default` 传给控件订阅器；
+- `TextBox.Text` 在省略配置时采用 `TwoWay + LostFocus`，显式 `PropertyChanged` 与 `Explicit` 仍能覆盖；
+- `MultiBinding` 顶层默认更新策略先由目标元数据解析，未显式声明的子 Binding 继承解析后的具体策略。
 
 属性来源相关回归还必须覆盖：
 
-- `Local > Binding > Style > Theme > Default` 的确定性优先级；
+- `Animation > VisualState > Local > Binding > Style > Theme > Inherited > Default` 的确定性优先级；
 - 隐藏来源更新只更新缓存，不触发有效值变化，清除高层后显示隐藏层最新值；
 - `ResetPropertyValue` 清除 Local 并回退，而 `ClearPropertyValues` 可整体卸载 Theme/Style；
 - Binding 创建时占用 Binding 层，清空/析构时恢复 Style、Theme 或进入体系前的基线值；
@@ -232,17 +261,10 @@ target->DataBindings.Add(
   不得污染已有模型或运行时树。`XamlDocumentSerializer` 必须把同一文档规范写回；普通属性、Binding 和集合
   分别使用公开 attribute、`{Binding ...}` 与 `.Items` / `.Columns` 属性元素。残余模型字段必须明确失败，
   禁止通用 `d:` 值袋。
-  外部自定义标签必须把命名空间、C++ 类型/头文件、内置 `d:BaseType` 和构造约定在规范 XAML 与 v5 XML 中
-  完整往返。生产 `RuntimeDocumentLoader` 未注册工厂时应保持旧输出并失败；注册表应创建真实派生实例，
-  Designer/CLI 的显式代理模式应继续生成真实类型 include、强类型成员/访问器和构造代码。注册真实控件后，
-  专有属性应以普通 XAML attribute 接受并经过属性元数据 Coerce；缺少真实元数据或清单时必须明确拒绝，
-  不得回退为不透明值袋。Reload 省略注册表时应继续原位更新真实实例。
+  XAML 声明组件必须把 QName、内置 BaseType、属性/事件契约和模板在规范 XAML 与 v8 XML 中完整往返；组件属性
+  使用实例级属性元数据，组件 TargetType 样式必须精确匹配 QName，不能泄漏给同 BaseType 的普通控件。
+  动态加载无需业务 DLL 即可建立组件；NativeSurface 的非空 BehaviorKey 在生产运行时缺少行为时必须事务性失败。
   `Designer.exe --self-test` 覆盖上述动态 XML/XAML 冒烟路径。
-- Designer 外部控件清单必须通过 `Designer.exe --validate-controls <manifest>` 无窗口校验；有效清单加入
-  ToolBox 后应保留分类、默认尺寸、容器语义、XAML identity、规范 C++ 类型和构造约定。重复名称、重复 XAML
-  identity、冲突前缀、不安全 include、未知 schema/属性/子内容、DTD 和超过 4 MiB 的输入都必须整份拒绝且不
-  修改已有描述符。无 `PreviewFactory` 时 Canvas 使用声明基类代理；同进程附加工厂后必须走同一描述符
-  Add/Undo/Redo/文档捕获链路并核对工厂实例的 `Type()`。
 - `DesignDocumentEventIndex` 必须解析窗体/控件事件的约定名与显式名，按精确 `Event::function_type` 聚合同名引用，并事务性拒绝
   未知事件、非法标识符和跨签名复用。文档级重命名应覆盖全部共享引用与旧 Auto 名，支持同签名合并、
   Undo/Redo、XML/XAML 往返和新名称的 `std::bind_front` 代码生成；冲突失败不得修改文档。动态注册表门禁应覆盖
@@ -285,9 +307,9 @@ target->DataBindings.Add(
   覆盖已有用户源被修改、原本缺失目标被外部新建、后置目标冲突时前置目标零写入，以及关联回调期间外部修改
   导致条件回滚拒绝；最后一种情况必须保留外部内容并明确报告恢复不完整。显式事件函数体迁移也必须按读取
   内容条件写入，Undo/Redo 回滚仅可覆盖仍等于本次迁移/生成结果的文件。
-- `CuiStaticGeneratedSample` 必须作为四配置解决方案项目编译并运行，覆盖限定 `x:Class`、外部自定义控件、生成/用户类分离、
+- `CuiStaticGeneratedSample` 必须作为四配置解决方案项目编译并运行，覆盖限定 `x:Class`、内置控件、生成/用户类分离、
   强类型 `GetXxx()` 命名控件访问器、`ControlIds` 稳定身份、动态 `ClassReferences<RuntimeDocument>` 的
-  `GetXxx()`/`ReferenceXxx()`、`ClassEventSink` 自动注册控件/Form/自定义事件、失败批次回滚、跨 Reload
+  `GetXxx()`/`ReferenceXxx()`、`ClassEventSink` 自动注册控件/Form 事件、失败批次回滚、跨 Reload
   重新解析/重新连接和 `std::bind_front` 事件连接。编译门禁必须至少覆盖
   鼠标、`std::vector<std::wstring>` 文件拖放、属性变化和无 sender 的校验变化签名。核心测试必须将其五个代码文件
   与同输入的新生成结果规范化比较，并覆盖名称规范化后的全局去重以及同叶类不同 namespace 的身份冲突整批拒绝。
@@ -352,7 +374,7 @@ target->DataBindings.Add(
   Converter、预览/运行时错误、验证严重级别，以及样式规则 ID/特异性/遮蔽来源。设计器只能把这一行流映射到
   CUI 原生 `PropertyGridView` 的 Item；Boolean/Enum/Color/Slider、混合值、Reset 与 Action 行必须复用原生能力，
   不得为不同来源维护平行渲染循环或重新逐行拼装编辑控件。
-- 运行时属性行必须记录 `GetPropertyValueSource(...)` 返回的 Default/Theme/Style/Binding/Local 有效来源；
+- 运行时属性行必须记录 `GetPropertyValueSource(...)` 返回的 Default/Inherited/Theme/Style/Binding/Local 有效来源；
   PropertyGrid 应显示并在成功编辑后刷新来源。顶部筛选框必须保持固定且跨选择保留查询，空格分隔关键词
   使用大小写不敏感 AND 匹配，覆盖行名称/分类/当前值/编辑器/Choice/中英文来源/诊断摘要与详情，以及事件、Binding 入口
   和结构编辑器。空查询不得改变顺序或数量，无匹配查询必须返回空行而不破坏完整目录。
@@ -450,15 +472,15 @@ target->DataBindings.Add(
   selectedIndex Extra 只能在 metadata 缺失时升级。新代码不得输出 SelectedIndex/ExpandCount 裸赋值或
   无效的 Items.Clear()，应通过 std::vector<std::wstring> 调用 Items setter。Items 的直接 insert/remove/move/swap
   必须发布精确集合通知，且选择与虚拟 UIA ID 要跟随逻辑项；DeferNotifications 只发布一次 Reset。
-- ListView/ListBox 的视图/选择配置、布局尺寸、滚轮步长和专用颜色必须来自元数据目录；SelectedIndex、
+- ListView 的视图/选择配置、布局尺寸、滚轮步长和专用颜色必须来自元数据目录；SelectedIndex、
   HoveredIndex、FocusedIndex、ScrollYOffset 必须是可观察 Transient。单选、Ctrl/范围多选与滚动交互必须
   保留 TwoWay Binding，Items 中的多选标志需由 SetItems 一次恢复。Columns/Items 仍走结构化路径，生成代码
   必须先应用 metadata 再 SetItems，不得输出 ListView 专用标量或 SelectedIndex 裸赋值。旧 Extra 标量只能
-  在同名 metadata 缺失时升级；ListBox 的 ShowColumnHeaders 派生默认值必须为 false。
+  在同名 metadata 缺失时升级。ListBox 不得重新暴露这些 ListView 属性；它必须只走 Selector 数据/选择契约。
   大量 Items/Columns 修改使用 `DeferUpdates()` 时，内部稳定 ID 与选择必须逐次同步，最外层结束时公开集合
   各只发一次 Reset，并只执行一次滚动/UIA/重绘收口；尾部追加的两项工作量诊断必须保持常数级。直接修改
   `ListViewItem::Selected` 后必须用 `Items.NotifyReset()` 重新校正缓存。
-- ListView/ListBox 的 Items/Columns、GridView 的 Rows/Columns 与 TreeNode::Children 必须保持 vector 读取兼容，
+- ListView 的 Items/Columns、GridView 的 Rows/Columns 与 TreeNode::Children 必须保持 vector 读取兼容，
   同时对直接结构修改发布通知。Grid 列移动必须同步移动所有行的 Cell，批量结束时列对齐先于公开行通知；
   Tree 子节点分离必须清理无效选择/悬停，安全所有权操作优先使用 AddChild/DetachChildAt/RemoveChild/ClearChildren。
 - PagedGridView 的 Rows/Columns 直接变更必须同步当前页与全部离屏页，批量列 Reset 后公开观察者只能看到已
@@ -513,6 +535,11 @@ Grid 行列及 Span 已迁移到 `SetPropertyField`，负索引钳制为 0，Spa
 连接设计时数据源后，Binding 编辑器应预览当前源路径的活动验证问题；该状态不能写入
 DataContext Schema、XML 或生成代码。`DataSourceUpdateMode::OnValidation` 仍表示文本类
 目标失焦时回写，需要与源端验证通知分别验证。
+
+XAML 公共名称使用 WPF 的 `UpdateSourceTrigger=PropertyChanged/LostFocus/Explicit`；旧
+`UpdateMode=OnPropertyChanged/OnValidation/Never` 只作为兼容输入。省略时保持 `Default` 并由目标元数据解析，
+规范 XAML 不输出该默认值。组件 `DefaultUpdateSourceTrigger` 必须是具体策略，且应覆盖 XAML/v14 往返、旧快照
+缺字段回退、设计器编辑器提示以及非法 `Default` 的事务回滚。
 
 控件的校验呈现配置与运行时校验结果分开持久化：前者应在 Designer 属性面板可编辑、在
 设计文档中往返并生成非默认 C++ 赋值；后者必须保持瞬时。主题切换需同时覆盖
@@ -588,8 +615,9 @@ panel->DeleteControl(obsoleteLabel);
    一份属性，保存/重载与生成代码均走 `props.metadata` / `TrySetPropertyValue(...)`，且各派生默认圆角保持不变。
    对 ToolBar/StatusBar 分别设置四边 `Padding` 与整数 `HorizontalPadding`，确认两项同时存在且互不覆盖；
    再修改 Gap、ItemHeight、TopMost、分段外观和显示开关，确认代码中没有恢复直接标量赋值。
-   对 ListView/ListBox 修改 ViewMode、SelectionMode、行/磁贴/图标尺寸、FullRowSelect、失焦隐藏选择和颜色，
-   验证 Ctrl/范围多选保存重载后仍完整，运行时交互不覆盖 TwoWay Binding，生成代码先写 metadata 再 SetItems。
+   对 ListView 修改 ViewMode、SelectionMode、行/磁贴/图标尺寸、FullRowSelect、失焦隐藏选择和颜色，
+   验证 Ctrl/范围多选保存重载后仍完整，运行时交互不覆盖 TwoWay Binding，生成代码先写 metadata 再 SetItems；
+   对 ListBox 配置 DataList、DataTemplate、SelectedIndex/SelectedValuePath，确认属性栏不出现 ViewMode/Columns。
 4. 取消控件选择，在窗体属性中编辑文档样式表：添加强类型资源、Button Class/状态规则及
    Literal/Resource Setter，确认画布立即更新；无效资源引用或冲突状态不能提交。
 5. 验证 `Ctrl+Z`、`Ctrl+Y`、`Ctrl+Shift+Z` 能撤销/重做属性、样式表、增删、拖拽、缩放。
@@ -647,7 +675,7 @@ panel->DeleteControl(obsoleteLabel);
 4. RichTextBox 的 `AllowTabInput=false` 时 Tab 切换焦点；设置为 true 时 Tab 插入文本且不离开控件。
 5. 使用 Inspect/Narrator 查询窗口客户区，确认原生 UIA 树保留 Panel 等真实层级，并公开 Name、AutomationId、ControlType、State、KeyboardShortcut 和位置；焦点、勾选、文本、校验和显隐变化应被重新播报。
 6. 用 Inspect 验证 Button/Link 的 Invoke、CheckBox/Switch 的 Toggle、TextBox/RichTextBox 的 Value、Slider/NumericUpDown/Progress 的 RangeValue、ComboBox/Expander 的 ExpandCollapse，以及 RadioBox/Tab 的 SelectionItem/Selection Pattern。
-7. 用 Inspect 展开 ListView/ListBox、ComboBox、TreeView 和 GridView：确认逻辑项是独立 Fragment，四类容器按实际范围公开 Scroll Pattern；不可滚动轴的百分比为 NoScroll、视口为 100，大小/偏移变化会刷新属性，Scroll/SetScrollPercent 不得改变选择。折叠或离屏项可 Realize/ScrollIntoView，交换/排序后 runtime ID 保持，删除项后旧元素变为不可用。
+7. 用 Inspect 展开 ListView、ComboBox、TreeView 和 GridView：确认虚拟逻辑项是独立 Fragment，四类容器按实际范围公开 Scroll Pattern；不可滚动轴的百分比为 NoScroll、视口为 100，大小/偏移变化会刷新属性，Scroll/SetScrollPercent 不得改变选择。另检查 ListBox 的真实 DataTemplate 子树与 SelectorItem 层级，集合重排后 SelectedItem 身份保持。
 8. 将 ListView 切换到 Details：确认容器同时公开 Grid/Table，列头、行和单元格形成稳定层级，GetItem(row, column) 可寻址，GridItem/TableItem 的行列与列头关系正确；列移动后单元格身份跟随逻辑行列，删除行/列后旧 Provider 变为不可用。GridView 继续公开 Grid/Table，多选列表的 AddToSelection 不得清空已有项，Grid ScrollIntoView 不得改变选择。
 9. 对大型虚拟集合执行首尾子项、相邻兄弟和命中查询，确认 Provider 使用索引入口且不调用旧的整组 `GetAccessibilityVirtualChildren` 回退；ListView Details 只在 GetItem/导航实际访问单元格时物化其 ID。批量重排后逻辑项与单元格 ID 保持，删除后旧节点立即失效。
    ListView Details 与 GridView 都应在仅查询容器/行列数时保持 `MaterializedAccessibilityCellCount()==0`，首次 GetItem 后只增长到 1。滚动 12k 项 ListView 后，`GetVisibleItemRange()` 返回的 `[start,end)` 候选数仍应只覆盖视口；Icon 间隙命中返回 -1，滚动后坐标直接映射到新行。用 ListView `DeferUpdates()` 追加 4k 项时，每次身份/选择工作量保持 1 以内，作用域内无公开集合事件，结束后 Items/Columns 各一次 Reset；移动、交换、前插和删除后选择及已物化单元格身份跟随逻辑项，删除后立即失效。可在 PowerShell 中设置 `$env:CUI_TEST_TIMINGS='1'` 后运行 Release x64 `CUICoreTests.exe` 获取逐测试耗时。本机本轮大型虚拟集合参考值约 29–44 ms，仅用于后续同机趋势比较，不作为跨机器门禁。
@@ -655,6 +683,17 @@ panel->DeleteControl(obsoleteLabel);
 11. 打开 Windows 高对比度，确认窗体、公共控件表面、文本和焦点框切换到系统色；再切换关闭动画、始终显示键盘提示和 150%/225% 文字大小，确认过渡立即完成、键盘焦点可见且字体重新布局。退出设置后应自动恢复，无需重启窗口。
 
 ## 已知后续清理项
+
+- 2026-07-19 重要转向：外部 C++ 控件清单、Designer 预览插件、`--controls`/`--preview-plugin`、
+  `RuntimeCustomControlRegistry` 与 `RegisterCustomControl` 已从产品入口删除。自定义结构统一转为 XAML
+  `ComponentDefinition`；高性能原生区域统一使用内建 `NativeSurface` + 应用侧行为注册表，Designer 只显示
+  安全占位。旧 manifest/plugin 的实现、工程、测试和验证条目均已删除，不再作为产品能力保留。
+- 转向后的声明组件闭环已覆盖：组件 QName 样式目标及基类隔离，Enum 封闭候选，Color/Thickness/Point/Vector/Rect/Size/Length
+  具体值类型，Brush/Geometry/Transform 结构化默认值与对象 Setter，`{StaticResource}` 默认引用及本地资源
+  顺序无关发现；视觉 ContentProperties 支持 Single/Multiple、默认/命名内容和模板 Presenter，且进入设计器
+  双重父级、布局撤销、剪贴板和结构热重载。规范 XAML 与 v8 XML 保留同一契约；对象快照浮点按 `max_digits10` 往返。Debug x64
+  `CUICoreTests` 为 176/176，`CUITest --validate-xaml` / `--smoke-xaml`、`CuiRuntimeSample`、
+  `CuiStaticGeneratedSample` 均返回 0；Designer 使用独立输出目录完成全量链接且 `--self-test` 返回 0，未终止正在运行的产品实例。
 
 - `CUITest` 已从约 2400 行手工控件构造迁移为外部 `DemoWindow.cui.xaml` + 轻量 C++ 宿主，保留八个页面、
   自定义控件、命名事件和运行时数据；`NavigationView`、`SideBar`、`BreadcrumbBar`、`CalendarView`、
@@ -667,30 +706,6 @@ panel->DeleteControl(obsoleteLabel);
 - 本轮属性/事件工作流增量再次在 `Debug|x64`、`Release|x64`、`Debug|x86`、`Release|x86` 完成完整 `Rebuild`；四套 `CUICoreTests` 均为 147/147，四套 `Designer.exe --self-test`、`CuiRuntimeSample.exe` 与 `CuiStaticGeneratedSample.exe` 均通过。Designer 门禁新增验证属性/事件视图互斥、动态表头、两套筛选/分类折叠/滚动状态独立保持，以及编辑后回到属性页仍可继续原生 Bool 写入。源码导航门禁覆盖 VS Code、Visual Studio 和自定义编辑器的安全参数计划、带空格及尾反斜杠路径引用，并验证定义定位跳过注释、普通/原始字符串、声明和其他类的同名函数；测试不实际启动外部编辑器。
 - 本轮无窗口代码生成增量在同一四配置矩阵完成完整 `Rebuild`：`CuiCodeGen.exe` 四套均成功构建并返回版本信息，设计文件时间戳更新后 `CuiGenerateCode` 均在编译前实际执行。核心门禁新增覆盖 XAML/XML 加载、`x:Class` 与 `d:CodeBehind` 解析、五文件静态样例一致性和非法输出拒绝；CLI 定向门禁确认成功/生成失败/用法错误退出码为 `0/1/2`。连续第二次 Build 证明增量目标跳过、生成文件时间戳及用户文件哈希不变。
 - 本轮代码生成链接收口新增 `CuiCodeGenCore.lib`，在 `Debug/Release × x64/x86` 均构建成功；Designer、CLI、核心测试及两套样例四配置运行门禁全部返回 0。项目清单搜索确认 `CodeGenerator.cpp` 与 `DesignCodeGenerationService.cpp` 只由核心库编译一次，三个消费者不再维护重复目标文件。
-- 本轮自定义控件扩展在 `Debug/Release × x64/x86` 四套解决方案完成完整构建（Release x64 遇到陈旧增量 LTCG `LNK1103` 后以完整 `Rebuild` 通过）；四套 `CUICoreTests` 均为 151/151，四套 `Designer.exe --self-test`、`CuiRuntimeSample.exe`、`CuiStaticGeneratedSample.exe` 与 `CuiCodeGen.exe --version` 全部返回 0。新增门禁覆盖自定义标签的规范 XAML/v5 XML 往返、保留内置元数据基类、缺失注册的事务性拒绝、线程安全注册表创建真实派生实例、工具代理、专有属性真实元数据探测/规范强类型袋/延迟代码生成，以及真实 include/限定 C++ 类型/构造约定/强类型访问器生成。动态样例实际注册并加载 `StatusBadge`、验证专有 `Severity` 属性及继承注册表的原位 Reload；静态样例通过 `CuiGenerateCode` 生成并编译同一外部控件。
-- 本轮 Designer 控件目录在统一 `DesignerControlDescriptor` 之上新增 `cui.designer.controls/1` UTF-8 清单、
-  ToolBox 动态分类/注册、`--controls` 启动入口和 `--validate-controls` 无窗口门禁。清单解析覆盖 DTD/4 MiB
-  限制、未知内容、规范 C++ 类型、安全 include、重复名称/XAML identity/冲突前缀及事务性不修改；同进程
-  `PreviewFactory` 通过 Canvas 注册表跨 Open/Undo/Redo 保持真实实例，错误 `Type()` 被拒绝，无工厂时才显式
-  使用基类代理。`Debug/Release × x64/x86` 四套解决方案均构建成功（两个 Release 完整 Rebuild），四套
-  `CUICoreTests` 均为 151/151；四套 Designer 自测、动态/静态样例、CodeGen 版本和示例清单校验六项均返回
-  0。Designer/CoreTests 四配置同时加入 `/FS`，与已有 `/MP` 配合消除并行 PDB 写入竞争。
-- 自定义预览插件边界已冻结为 `DesignerPreviewPluginAbi.h` 的 V1 纯 C、值类型协议：不跨模块传递
-  `Control*`、STL、异常、D2D/COM 或分配器；宿主持有基类代理，插件持有 opaque session 并返回有数量/文本
-	上限的绘制原语。RAII loader/session、宿主绘制 decorator、样例 DLL、
-	`--preview-plugin` 和 `--validate-preview-plugin` 已接入；仅显式受信任路径可加载，设计文件/控件清单仍不能触发 DLL。
-- `cui.designer.controls/1` 现支持受限 `property` schema，覆盖 kind/default/editor/choice/数值范围、
-  Binding 可读写/通知能力、基类重名和最大数量校验。属性栏、Reset、Undo/Redo、强类型持久化、
-  插件 `SetValue` 和结构化 Binding 编辑器已共用同一描述。无设计期 DataContext 时，代理缺少同名运行时
-  元数据的自定义属性 Binding 也会先按清单完成模式、源路径、Schema 与 Converter 结构校验；切换 Schema
-  不再误报目标属性不存在。`Debug/Release × x64/x86` 四套 `CUICoreTests` 均为 153/153，四套 Designer
-  自测、预览插件 ABI、清单+插件桥、动态/静态样例及 CodeGen 版本门禁全部返回 0。
-- 自定义控件事件现由同一清单追加受限 `event` schema，并以固定签名预设贯穿 PropertyGrid 默认事件激活、
-  Undo/Redo、XAML/v5 XML 契约持久化、文档事件索引、动态 `RegisterCustomControl` 精确成员校验和静态
-  `std::bind_front` 生成。解析器拒绝未知契约内容与任意 C++ 签名；Designer 遇到已使用事件与当前清单的
-  name/field/signature 不兼容时事务性保留原画布。`Debug/Release × x64/x86` 四套 153/153、Designer
-  无窗口自测、清单/插件、动态热重载、静态生成样例及 CodeGen 版本门禁均已通过；Release x64 的已知陈旧
-  LTCG `LNK1103` 由完整 Rebuild 恢复后通过。
 - ComboBox Items、TreeView 节点、递归 Menu Items、GridView 列、GridPanel 行列定义和 StatusBar 分段编辑已从完整文档快照
   收口为 `ControlStructureCommand` 单控件强类型差量。Designer 自测验证小型列/ComboBox 命令 `<32 KiB`、
   Undo/Redo 保持控件实例、expected 起点冲突不消费历史且修复后可重试，以及六类状态精确恢复；ComboBox
@@ -738,7 +753,7 @@ panel->DeleteControl(obsoleteLabel);
   四套配置通过构建、155/155、Designer 自测、动态/混合样例与 `CuiCodeGen 2` 门禁；两个 Release 使用完整
   Rebuild。
 - 生成头进一步新增 `ClassEventSink`：事件目录公开真实声明类型，生成器据此输出精确成员指针和
-  `std::bind_front`，同时覆盖 Form、通用/专用控件及固定签名的自定义控件事件；静态生成窗体复用同一纯虚
+  `std::bind_front`，同时覆盖 Form、通用/专用控件事件；静态生成窗体复用同一纯虚
   接口，动态 XAML 控制器可直接实现该接口并调用 `RegisterDynamicEventHandlers`。运行时 `RegisterBatch`
   保持共享解析状态并在重复项、显式失败或异常时原子恢复整批路由；混合样例验证注册失败回滚、首次加载和
   InPlace Reload 后的控件/Form/自定义事件连续性。生成契约提升为 3。最终源码在 `Debug/Release × x64/x86`
@@ -905,7 +920,7 @@ panel->DeleteControl(obsoleteLabel);
   自测、动态宿主、静态生成样例与 `CuiCodeGen 7` 共 20 项运行门禁全部返回 0。
 - 实时 XAML 编辑器新增元数据驱动的元素、属性、枚举/布尔值和事件补全，覆盖自动筛选、`Ctrl+Space`、
   方向键与 `Tab`/`Enter` 提交、`Name=""` 属性模板、成对标签高亮及智能换行缩进。候选复用内置属性/事件
-  目录和已安装自定义控件 descriptor；纯模型回归覆盖注释、引号内 `>`、未闭合上下文、开放标签栈、去重
+  目录和当前文档的 `ComponentDefinition`；纯模型回归覆盖注释、引号内 `>`、未闭合上下文、开放标签栈、去重
   过滤和成对标签中间换行。Windows 真实窗口验证元素 `Button`、属性 `Checked`、布尔值 `true` 的逐级补全，
   Tab 无残留字符、缩进行列、2 控件实时预览和 Escape 完整回滚。最终四配置与 20 项运行门禁见本轮记录。
 - 设计器剪贴板新增显式片段根目标：普通容器以现有 stable ID 定位，TabPage 合成引用和 Split First/Second
@@ -1114,3 +1129,481 @@ panel->DeleteControl(obsoleteLabel);
   带额外 Binding 配置的 Condition 均事务性拒绝。`Debug|x64` 全解决方案零警告构建通过，核心测试保持
   175/175；`Designer --self-test`、`CUITest --validate-xaml` 与 `--smoke-xaml` 均返回 0，
   `git diff --check` 通过。
+- 强类型数据集合第二批完成：在 `IBindingList`/`DataType`/`DataTemplate`/`ItemsControl` 基础上加入正式
+  `DataList`/`DataRecord` 文件资源。静态 `ItemsSource` 与应用动态集合共享同一强类型可观察契约，并进入
+  合并字典、规范 XAML、v14 XML、设计器预览/恢复、剪贴板依赖冲突隔离和事务热重载；属性栏提供按
+  `ItemType` 过滤的 `ItemsSourceResource` / `ItemTemplate` 下拉选择。窗体属性页新增结构化数据资源编辑器，
+  支持本地 DataType/字段/DataList/DataRecord/DataTemplate 的创建、重命名、删除、依赖保护与原子引用重写；
+  合并字典资源保持来源只读。`Debug|x64` 的 `CUICoreTests` 为 184/184，`CuiRuntimeSample` 同时验证动态集合和声明数据资源；
+  隔离输出的 `Designer.exe --self-test` 返回 0，并验证含动态类型系统的 Demo 明确退出完整 C++ UI 生成路径；
+  `CUITest --validate-xaml` 返回 0，`git diff --check` 通过。
+- 选择数据语义第一批完成：`ComboBox`、`ListView`、`ListBox` 共享强类型 `SelectedValuePath` / `SelectedValue`，
+  支持标量或记录身份、TwoWay Binding、字段观察、静态 DataList、动态 IBindingList 和热重载；显示/次要/选择
+  路径按 DataType 事务校验并随字段重命名原子重写。ComboBox 空选择收口为 `SelectedIndex=-1`。核心测试增至
+  185/185；`CuiRuntimeSample`、隔离输出的 `Designer --self-test`、`CUITest --validate-xaml` 与 `--smoke-xaml`
+  均返回 0。
+- 模板化选择器第一批完成：删除 `ListBox : ListView` 占位实现及 `ListBoxItem` / `ListBox.Items` /
+  `ListBox.Columns` / `OnItemClick` 兼容路径，建立 `ItemsControl → Selector → ListBox`。ListBox 支持强类型
+  `SelectedItem`、`SelectedValue`、记录身份保持、`DataTemplate` 生成项容器和 `OnSelectionChanged`；Demo 数据页
+  使用 `DataType + DataList + DataTemplate` 直接展示该闭环。
+- 模板化选择器第二批完成：生成容器正式命名为非文档节点 `SelectorItem`，公开只读 `IsSelected` 并接入
+  Hovered/Selected 样式状态；`ListBox.ItemContainerStyle` 支持面向 SelectorItem 的命名 Style、Setter/Trigger、
+  属性栏选择、规范 XAML、运行时材质化及剪贴板资源隔离。`ItemsControl` 改为 ScrollView + 内部纵向 ItemsHost，
+  滚轮、方向键、Home/End、PageUp/PageDown 和选中项 BringIntoView。核心回归增至 186/186。
+- 集合面板与首批虚拟化完成：新增资源化 `ItemsPanelTemplate`，可选择 Stack/Wrap/VirtualizingStack host；
+  `VirtualizingStackPanel` 使用固定 `ItemHeight` 建立精确 extent，只实例化可见区与缓存区，End/Home 可直接定位
+  尚未实例化的记录，回收池保持有界。该资源已覆盖 XAML、v14 XML、合并字典来源、属性栏候选、材质化、剪贴板
+  冲突重命名、热重载与恢复快照；旧控件级 `ItemSpacing` 接口已删除。
+- 集合生成器增量化完成：新增独立 `ItemContainerGenerator`，精确消费 Add/Remove/Move/Swap/Replace，保持未受影响
+  容器、Binding、选择身份和非虚拟 host 顺序；`SelectorItem` 索引随记录重映射。虚拟列表保留首个可见记录的
+  滚动锚点，Reset 或无效第三方通知才全量重建；显示字段变化只刷新对应默认容器。核心回归增至 188/188。
+- 集合视图第一批完成：新增 `CollectionViewSource`，支持 DataList/视图链/动态 DataContext BindingList Source、
+  强类型 AND 筛选、稳定多键排序、CurrentItem 与精确 Add/Remove/Move 投影。资源已贯通规范 XAML、v14 XML、
+  合并字典、设计器资源候选、剪贴板冲突隔离、字段/列表重命名和 RuntimeDocument 重绑定；Demo 通过筛选排序视图
+  驱动 ListBox。核心回归增至 190/190。
+- 集合分组第二批完成：`CollectionViewSource` 支持实时多级 GroupDescriptions 与命名
+  Count/Sum/Average/Min/Max 聚合；`CollectionViewGroup` 公开 `Aggregates.*`。`ItemsControl`/`ListBox` 通过
+  `GroupStyle + HeaderTemplate` 生成分组头并保持 SelectorItem、选择与增量容器身份。固定项高虚拟面板使用
+  `ItemHeight + HeaderHeight` 段偏移索引，滚动 extent、可见区、锚点和 BringIntoView 均覆盖多级组头；资源贯通
+  规范 XAML、v14 XML、属性候选、字段重命名、剪贴板与热重载。核心回归为 193/193。
+- 普通控件属性现可通过统一属性元数据使用 `{StaticResource key}`，引用会在解析时按资源类型校验、在运行时
+  重新解析并在规范 XAML 中保持表达式，不再把 `ForeColor="{StaticResource TextMuted}"` 当作 Color 字面值。
+  设计器内存模型会保留属性到资源键的作者表达式；资源改值立即刷新预览，连续重命名原子重写控件、组件默认值、
+  组件模板和 DataTemplate 引用，删除仍被引用的资源会完整回滚。剪贴板会递归收集这些直接属性依赖，并在目标已有
+  同名异值资源时隔离导入和重写引用。分组头模板回归同时验证最终 RGBA 与冲突重映射。
+  `CUITest.vcxproj` 的直接构建和解决方案构建统一输出到根目录 `x64\Debug`；项目内生成目录已删除并忽略，避免
+  误运行陈旧 EXE/XAML。smoke 会真实材质化数据模板视觉树但跳过平台服务。`Debug|x64` 全解决方案构建成功，
+  `CUICoreTests` 193/193，Designer 自检、validate/smoke、动态与静态样例以及 CuiCodeGen version 门禁均返回 0。
+- Binding 来源第一批完成：新增局部 namescope `ElementName`，贯通页面、DataTemplate、组件模板、设计器预览/
+  编辑、规范 XAML、v14 XML、动态运行时、无 DataContext 加载、原位热重载、静态辅助代码生成、重命名与剪贴板。
+  `Control` 的元数据变更订阅统一桥接 `IBindingSource::PropertyChanged`，旧交互事件不再与 WPF 式 Binding 来源脱节。
+  核心回归增至 194/194，Designer 自检返回 0。
+- Binding 来源第二批完成：`Control.DataContext` 支持本地/Binding 优先与父级继承，稳定 `BindingSourceProxy` 在
+  根上下文和中间对象替换后重连既有 Binding；新增 `RelativeSource Self` 与组件模板 `TemplatedParent`，并贯通
+  规范 XAML/v14 XML、作用域 Schema、设计器预览、DataTemplate 记录上下文和原位热重载。公开页面/DataTemplate
+  中的 TemplatedParent 及 ElementName/RelativeSource 混用会事务性拒绝；`TemplatedParent` 的静态辅助代码生成
+  明确转交动态 XAML。核心回归增至 196/196，Designer 自检返回 0。`CUITest` Debug x64 重建后
+  `ForeColor="{StaticResource TextMuted}"`（含 DataTemplate）通过 validate/smoke，两个门禁均返回 0。设计器回存会
+  合并属性值跟踪与资源键跟踪，资源表达式和重命名不再因 ForeColor 等旧顶层字段丢失；Name 差量按 StableId 定位，
+  Undo/Redo 保持实例与选择。Designer 为合法的嵌套 DataTemplate 物化预留 8 MiB 栈，Debug 自检不再耗尽默认栈。
+- Binding 来源第三批完成：新增 WPF 形式的 `RelativeSource FindAncestor` 与 `AncestorType`/`AncestorLevel`，
+  内置控件按真实基类关系匹配，XAML 声明组件按命名空间与类型名精确匹配。Binding 持有稳定祖先来源代理，
+  `Control.OnParentChanged` 驱动控件分离/重挂后重新查找并转发属性与校验通知；DataTemplate、组件模板、公开运行时树
+  和设计器预览共用该实现。解析诊断、规范 XAML、v14 绑定对象、属性栏 Binding 编辑器与动态运行时均保留完整参数；
+  静态 C++ 辅助生成明确要求交给动态 XAML。核心回归增至 197/197，并覆盖基类匹配、二级祖先、属性更新、重挂切源
+  以及声明组件祖先。`Debug|x64` 全解决方案构建、Designer 自检、CUITest validate/smoke、动态/静态样例与
+  CuiCodeGen version 门禁均返回 0。
+- Binding 缺省值第一批完成：`FallbackValue` 覆盖源不可用、路径未解析、读取/Converter/目标转换失败，
+  `TargetNullValue` 专门处理源返回 Empty；两者先转换为目标属性的强类型值，再进入同一属性元数据与 Coerce 通道。
+  来源属性出现、移除、恢复或在 Empty/正常值之间切换时无需重建 Binding。XAML 标记参数支持引号及逗号，规范
+  XAML、v14 XML、页面/DataTemplate/组件模板、运行时、设计器预览与 Binding 编辑器完整保留“未设置/空字符串”区别。
+  静态辅助生成同步输出强类型缺省值，代码生成契约提升至 v9。`Debug|x64` 全解决方案构建成功，核心回归增至
+  198/198；Designer 自检、CUITest validate/smoke、动态/静态样例与 `CuiCodeGen 9` 门禁均返回 0，
+  `git diff --check` 通过。
+- Binding PropertyPath 索引器第一批完成：公共解析模型支持成员、根/成员索引器、单双引号键和重复引号转义；
+  `People[0].Name` 在 `IBindingList` 结构变化、索引记录替换、清空/恢复及叶属性变化时逐层重订阅，记录叶支持
+  TwoWay 回写，列表索引本身保持只读。`Settings[key]`/`Settings['accent.color']` 通过 `IBindingSource` 元数据读写并
+  支持 TwoWay。路径语法已贯通运行时读写/校验、集合路径观察、设计器路径校验与活动校验、XAML/v14 往返、
+  Schema 容器校验、剪贴板依赖和静态辅助生成。`Debug|x64` 全解决方案构建成功，核心回归增至 199/199；
+  Designer 自检、CUITest validate/smoke、动态/静态样例与 `CuiCodeGen 9` 门禁均返回 0，`git diff --check` 通过。
+- Binding 转换/显示第一批完成：`BindingValueConverterContext` 向兼容的新 Converter 重载传递强类型
+  `ConverterParameter` 和目标种类，Convert/ConvertBack 共用参数；旧二参数 Converter 保持可用。String 目标新增
+  display-only `StringFormat`，在 Converter 后、属性元数据转换前执行，支持单值占位、重复占位、对齐、花括号转义、
+  常用不变区域数字格式与自定义 `0/#` 模式；语法错误在 XAML/设计器阶段拒绝，值格式化失败进入 `FallbackValue`。
+  页面、DataTemplate、组件模板、设计器预览/Binding 编辑器、规范 XAML、v14 XML、运行时/热重载/剪贴板和静态辅助
+  生成均保留新参数，代码生成契约提升至 v10。新增端到端用例同时覆盖 XAML 转义往返、TwoWay ConvertBack、动态
+  更新、格式失败回退和非 String 目标拒绝，并修复 `N/C` 千分位插入的无符号下溢。`Debug|x64` 全解决方案构建成功，
+  核心回归增至 200/200；Designer 自检、CUITest validate/smoke、动态/静态样例与 `CuiCodeGen 10` 门禁均返回 0，
+  `git diff --check` 通过。
+- Binding 多源表达第一批完成：新增 WPF 属性元素 `MultiBinding`、任意索引不变区域复合格式、
+  `IMultiBindingValueConverter` 注册表及 ConvertBack。每个输入通过内部收集器继续使用真实普通 Binding，因而复用
+  PropertyPath/索引器、ElementName/RelativeSource、来源寿命、缺省值、Converter 和校验聚合；子项默认继承顶层
+  Mode/UpdateSourceTrigger。递归绑定定义已贯通规范 XAML、v14 XML、设计器捕获/预览、动态页面、DataTemplate、
+  组件模板、热重载和剪贴板；结构化对话框只读保留，静态 C++ 辅助生成明确拒绝。新增端到端用例覆盖多值格式、
+  XAML/XML 往返、动态更新及 TwoWay 分解回写，核心回归增至 201/201。
+- Binding 显式更新表达式闭环完成：`MultiBinding::UpdateSource/UpdateTarget` 与
+  `BindingCollection::UpdateSource/UpdateTarget(targetProperty)` 可对称操作单值/多值表达式。门禁覆盖 Explicit
+  MultiBinding 延迟写回、ConvertBack 失败不修改源、修正后原表达式重试、内部 Explicit 子 Binding 真正提交、
+  OneTime MultiBinding 手动重新拉取以及未知目标诊断。`Debug|x64` 全解决方案构建为 0 警告/0 错误，核心回归
+  保持 204/204；Designer 自检、CUITest validate/smoke、动态/静态样例与 `CuiCodeGen 10` 门禁均返回 0，
+  `git diff --check` 通过。
+- 声明属性行为元数据第一批完成：属性值优先级新增 `Inherited` 层；动态属性以组件 QName/属性名作为稳定继承
+  身份，支持跨 Presenter 的逻辑树传播、本地覆盖、清除恢复与分离/重挂。省略 Binding `Mode` 时保留
+  `BindingMode::Default`，并按目标元数据的 `BindsTwoWayByDefault` 统一解析为 OneWay 或 TwoWay；设计器便携元数据、
+  Binding 编辑器与运行时使用同一决策。`ComponentProperty` 新增 `Inherits`、`BindsTwoWayByDefault`、
+  `AffectsParentMeasure`、`AffectsParentArrange`，并贯通规范 XAML、v14 XML、物化、属性栏来源和非法布尔事务回滚。
+  `Debug|x64` 全解决方案构建为 0 警告/0 错误，核心回归增至 204/204；Designer 自检、CUITest
+  validate/smoke、动态/静态样例与 `CuiCodeGen 10` 门禁均返回 0，`git diff --check` 通过。
+- 声明属性行为元数据第二批完成：Binding/MultiBinding 省略更新策略时保留
+  `DataSourceUpdateMode::Default`，安装时按目标 `BindingPropertyMetadata::DefaultUpdateMode()` 解析；动态组件通过
+  `DefaultUpdateSourceTrigger` 发布具体默认值，内置 `TextBox.Text` 采用 `TwoWay + LostFocus`。规范 XAML 使用
+  WPF `UpdateSourceTrigger` 名称，旧 `UpdateMode` 继续作为只读兼容输入；v14 旧快照缺字段时保持原
+  `OnPropertyChanged` 行为。`Debug|x64` 全解决方案构建为 0 警告/0 错误，核心回归保持 204/204；Designer 自检、
+  CUITest validate/smoke、动态/静态样例与 `CuiCodeGen 10` 门禁均返回 0，`git diff --check` 通过。
+- 声明只读属性第一批完成：`ComponentProperty ReadOnly` 进入通用属性元数据，公开 XAML/Style/Binding/普通属性 API
+  写入统一拒绝，组件 Behavior 通过 key-equivalent API 更新 Local 层，清除后恢复 Inherited/Default；属性仍可读、
+  可观察并作为 Binding/TemplateBinding 源。规范 XAML、v14 兼容、属性栏只读行、Binding/Style 目标过滤、标记式
+  Binding 与属性元素式 MultiBinding 诊断及事务回滚均有覆盖。`Debug|x64` 全解决方案构建成功，核心回归增至
+  206/206；Designer 自检、CUITest validate/smoke、动态/静态样例与 `CuiCodeGen 10` 门禁均返回 0，
+  `git diff --check` 通过。
+- 声明组件 Behavior 第一批完成：新增按精确组件 QName 注册的 `DeclarativeComponentBehaviorRegistry`，工厂仅附加
+  `IDeclarativeComponentBehavior`，不创建控件。宿主提供模板局部部件/内容 Presenter 查询、只读状态写入、消息
+  预处理、最终 overlay、DPI 与设备资源通知，并保证 Detach 先于模板子树销毁。热重载门禁覆盖原位复用、拓扑重组
+  无候选 Attach 副作用、显式注册表完整替换，以及 Attach 失败保留旧运行树。`Debug|x64` 全解决方案构建成功，核心
+  回归增至 207/207；Designer 自检、CUITest validate/smoke、动态/静态样例与 `CuiCodeGen 10` 门禁均返回 0，
+  `git diff --check` 通过。
+- 声明组件路由事件第一批完成：`ComponentEvent` 支持 `Direct`、`Bubble` 与 `Tunnel`，事件参数公开稳定的组件
+  QName、`OriginalSource`、`Source`、`CurrentTarget` 和可变 `Handled`；运行时处理器可显式选择
+  `HandledEventsToo`。页面可用 WPF 风格的 `local:Type.Event="Handler"` 在任意祖先节点监听声明组件事件，规范
+  XAML、v14 XML、设计器事件索引/重命名、剪贴板依赖与前缀重映射、动态运行时和原位热重载共用稳定 QName 身份。
+  事务门禁覆盖冒泡/隧道路由顺序、Handled 过滤、显式继续监听、处理器替换回滚及未知附加事件拒绝。
+  `Debug|x64` 全解决方案构建成功，核心回归增至 208/208；Designer 自检、CUITest validate/smoke、动态/静态样例
+  与 `CuiCodeGen 10` 门禁均返回 0，`git diff --check` 通过。
+- 声明组件视觉状态第一批完成：模板根支持 `VisualStateManager.VisualStateGroups`、每组唯一回退状态、AND
+  `StateTrigger`、组件声明事件 `EventTrigger` 与模板部件强类型 Setter；活动值进入独立的 `VisualState`
+  来源，切换失败事务回滚，退出时恢复 Local/Binding/Style/Inherited/Default。规范 XAML、v14 XML、设计器预览、
+  剪贴板资源依赖、显式 GoTo/Changed 通知、属性原位热重载和资源变更完整候选替换均有覆盖；未使用组件的状态资源
+  缺失/类型错误也在样式编辑提交前拒绝。`Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归增至 209/209；
+  Designer 自检、CUITest validate/smoke、动态/静态样例与 `CuiCodeGen 10` 门禁均返回 0，`git diff --check` 通过。
+- 声明组件 Storyboard/Timeline 第一批完成：`DoubleAnimation`/`ColorAnimation` 使用 WPF 式 TargetName/TargetProperty，
+  支持必填 To/Duration、可选 From/BeginTime、当前有效值捕获、Linear/Quadratic/Cubic/Sine 缓动、HoldEnd 和系统
+  减弱动态效果；动画与 Setter 共用 `VisualState` 值源，退出恢复下层值，跨组/同状态冲突与未支持时间线语法
+  明确拒绝。规范 XAML、v14、设计器预览、数值/颜色资源端点、剪贴板依赖与重映射、资源变更完整候选热重载和
+  失败回滚均有覆盖。`Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归保持 209/209；Designer 自检、
+  CUITest validate/smoke、动态/静态样例、`CuiCodeGen 10` version/generate 门禁均返回 0，`git diff --check` 通过。
+- Storyboard PropertyPath/RenderTransform 第一批完成：新增独立的 WPF 式成员/集合索引语法层，以及按模板实际
+  Transform 操作解析的对象适配器；`DoubleAnimation` 可定位 Translate/Scale/Rotate/Skew 数值成员。同状态多条
+  末端动画逐帧合成一个完整根值，相同末端、整根/子路径混写、跨组拆分根所有权、错误索引/类型均事务拒绝；退出
+  状态恢复完整基础 Transform。规范 XAML 会把 `UIElement` 所有者形式归一为 `Control`，v14、设计器未使用组件资源
+  校验、剪贴板依赖和资源热重载共用同一契约。`Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归增至
+  210/210；Designer 自检、CUITest validate/smoke、动态/静态样例以及 `CuiCodeGen 10` version/generate 门禁均
+  返回 0，`git diff --check` 通过。
+- Storyboard 关键帧第一批完成：`DoubleAnimationUsingKeyFrames` / `ColorAnimationUsingKeyFrames` 支持
+  Discrete/Linear/Easing/Spline 帧、显式有限 KeyTime、资源端点、Quadratic/Cubic/Sine 缓动和 WPF 式 KeySpline；
+  省略 Duration 取最后 KeyTime，同时间保持声明顺序，首段捕获状态进入值。关键帧可复用 RenderTransform 子路径并
+  参与逐帧根值合成。规范 XAML、v14、设计器未使用组件校验、剪贴板资源闭包/冲突重映射、资源完整候选热重载和
+  失败回滚均有覆盖；Uniform/Paced KeyTime 及其他未支持时间线语义明确拒绝。`Debug|x64` 全解决方案在隔离输出目录
+  构建成功，核心回归增至 211/211；Designer 自检、CUITest validate/smoke、动态/静态样例以及 `CuiCodeGen 10`
+  version/generate 门禁均返回 0，`git diff --check` 通过。
+- VisualTransition 第一批完成：`VisualStateGroup.Transitions` 支持 From+To、To、From、默认四级确定性匹配，
+  `GeneratedDuration`/GeneratedEasing 生成 Double/Color 过渡，显式 Storyboard 按目标覆盖生成动画；目标状态延迟提交、
+  当前状态立即报告、中断从当前有效帧继续，`useTransitions=false` 与系统关闭动画直达目标。规范 XAML、v14、设计器
+  未使用组件校验、Transition 关键帧资源闭包/冲突重映射、资源完整候选热重载及失败不污染旧文档均有覆盖；核心回归
+  增至 212/212。
+- Timeline 活动期第一批完成：普通与关键帧动画统一支持正 Count（含分数）、正 TimeSpan 和 `Forever` 三种
+  `RepeatBehavior`，`AutoReverse` 将一次正向与反向播放组成一个 repetition；`FillBehavior` 支持默认 `HoldEnd`
+  和释放动画值源的 `Stop`。状态与显式 Transition 共用完整活动期，BeginTime 只应用一次；Transform 子路径停止时
+  只恢复自己的成员，同根仍活动的兄弟动画不受影响。规范 XAML、v14、设计器未使用组件验证、剪贴板/热重载和非法值
+  事务回滚均有覆盖。`Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归增至 213/213；Designer 自检、
+  CUITest validate/smoke、动态/静态样例以及 `CuiCodeGen 10` version/generate 门禁均返回 0，`git diff --check` 通过。
+- Timeline 速度第一批完成：`SpeedRatio` 使用 WPF 父/本地时钟边界，保持 BeginTime 不缩放、Count 型活动期按速度
+  反比变化、Duration 型 RepeatBehavior 保持父时钟固定总时长；`AccelerationRatio`/`DecelerationRatio` 使用归一化
+  峰值速率，在 AutoReverse 方向映射之后、动画 Easing/关键帧采样之前改变 simple progress。普通动画、关键帧、显式
+  Transition、规范 XAML、v14、设计器未使用组件验证、剪贴板/热重载及非法值事务回滚共用模型。`Debug|x64` 全解决
+  方案在隔离输出目录构建成功，核心回归保持 213/213；Designer 自检、CUITest validate/smoke、动态/静态样例以及
+  `CuiCodeGen 10` version/generate 门禁均返回 0，`git diff --check` 通过。
+- 动画端点组合第一批完成：普通 Double/Color 动画支持 WPF 式 Automatic/From/To/By/FromTo/FromBy，状态动画分别以
+  当前有效值和下层基础值作为缺省来源/目标，显式 Transition 以过渡开始当前值作为两者；To 与 By 共存时 To 优先但
+  作者 By 保留，数值、颜色通道和 RenderTransform 子路径支持相对增量。By 只做类型转换，最终帧仍进入目标属性
+  Coerce。规范 XAML、v14、设计器未使用组件资源校验、剪贴板闭包/冲突重映射、生成/显式 Transition、资源热重载与
+  XAML/XML/运行时非法输入回滚均有覆盖。`Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归增至 214/214；
+  Designer 自检、CUITest validate/smoke、动态/静态样例以及 `CuiCodeGen 10` version/generate（5/5 文件）门禁均返回
+  0，`git diff --check` 通过。
+- Additive/Cumulative 第一批完成：普通与 Double/Color 关键帧动画支持 `IsAdditive` / `IsCumulative`，严格使用
+  WPF Automatic/From/To/By/FromTo/FromBy foundation 矩阵，并按普通动画 `To-From`、关键帧最后值跨 repetition
+  累计；Count/Duration/Forever、分数重复、AutoReverse、颜色通道与 RenderTransform 子路径共用输出合成。
+  Generated Transition 转成绝对端点并清除标志，显式 Transition 保留作者语义；同时修复 Duration RepeatBehavior
+  配合 SpeedRatio 时把内部精确周期边界误判为活动期终点的问题。规范 XAML、v14、设计器未使用组件验证、事务热重载
+  及无效布尔值回滚均有覆盖。`Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归增至 215/215；Designer 自检、
+  CUITest validate/smoke、动态/静态样例以及 `CuiCodeGen 10` version/generate（5/5 文件）门禁均返回 0，
+  `git diff --check` 通过。
+- Object 关键帧第一批完成：`ObjectAnimationUsingKeyFrames` 只接受 `DiscreteObjectKeyFrame`，
+  并通过目标属性元数据统一支持 Visibility/bool/枚举/string/Thickness、StaticResource 与内联
+  Brush/Geometry/Transform。Object 共享完整 Timeline 活动期，但明确拒绝 From/To/By、Easing、
+  IsAdditive/IsCumulative；显式 Transition 执行离散切换，生成 Transition 期间回到基础值。规范 XAML、
+  v14、设计器未使用组件校验、资源剪贴板冲突重命名、热重载与非法输入回滚均已覆盖。
+  同时修复 Storyboard 解析期间属性描述符指向临时容器的悬空生命周期问题。`Debug|x64` 核心回归增至
+  216/216；其余门禁见本轮完整验证结果。
+- Thickness 动画第一批完成：`ThicknessAnimation` 支持 WPF Automatic/From/To/By、普通 Easing、
+  `IsAdditive`/`IsCumulative` 和四边分量组合；`ThicknessAnimationUsingKeyFrames` 接受
+  Discrete/Linear/Easing/Spline 四类帧，包括 WPF 的 `EasingThicknessKeyFrame`。Margin/Padding 与声明组件
+  Thickness 属性共享元数据校验、StaticResource、生成/显式 VisualTransition、规范 XAML、v14、资源剪贴板隔离、
+  热重载及失败不污染旧树。此前错误拒绝 EasingThicknessKeyFrame 的描述和实现已纠正。
+- 浮点 Size 与动画第一批完成：声明式 Size、Control.MinSize/MaxSize 元数据与 ScrollView.ContentSize 元数据改用
+  `cui::core::Size`，小数 DIP 不再经 Win32 `SIZE` 取整，旧 C++ SIZE 属性只保留兼容投影。`SizeAnimation` 与
+  `SizeAnimationUsingKeyFrames` 支持 Automatic/From/To/By、Quadratic/Cubic/Sine Easing、IsAdditive/IsCumulative、
+  Discrete/Linear/Easing/Spline（含 `EasingSizeKeyFrame`）、StaticResource、生成/显式 VisualTransition、规范 XAML、
+  v14、资源热重载及事务失败回滚。`Debug|x64` 核心回归增至 218/218；其余门禁见本轮完整验证结果。
+- Point 与动画第一批完成：`RenderTransformOrigin` 已从设计器 Extra 特判收口为可发现、可绑定、可样式化的
+  `cui::core::Point` 元数据，声明组件 Point 属性及 TemplateBinding 可直接复用该契约。`PointAnimation` 与
+  `PointAnimationUsingKeyFrames` 支持 Automatic/From/To/By、Quadratic/Cubic/Sine Easing、
+  IsAdditive/IsCumulative、Discrete/Linear/Easing/Spline（含 `EasingPointKeyFrame`）、StaticResource、
+  生成/显式 VisualTransition、规范 XAML、v14、资源热重载和事务失败回滚；旧 Extra 快照仍可读取并在规范 XAML
+  中升级为公开属性。实时状态切换的 StartTick 也收口到“初始帧事务提交成功后”统一提交，避免准备耗时提前消耗
+  Duration，同时保留显式 Transition 完成时的确定性采样 tick。`Debug|x64` 全解决方案在隔离输出目录构建成功，
+  核心回归连续两轮 219/219；Designer 自检、CUITest validate/smoke、动态/静态样例以及 `CuiCodeGen 10`
+  version/generate（5/5 文件）门禁均返回 0，`git diff --check` 通过。
+- Rect 与 Geometry 子属性动画第一批完成：声明组件 Rect 属性与 `<Rect x:Key>` 资源进入统一值目录；
+  `RectAnimation` / `RectAnimationUsingKeyFrames` 支持 Automatic/From/To/By、Quadratic/Cubic/Sine Easing、
+  IsAdditive/IsCumulative、Discrete/Linear/Easing/Spline（含 `EasingRectKeyFrame`）、StaticResource 和生成/显式
+  VisualTransition。具名模板部件可通过 `(Control.Clip).(RectangleGeometry.Rect)` 动画矩形裁剪范围，
+  `UIElement.Clip` 作者写法会规范化，逐帧更新保留 RadiusX/RadiusY 与 Geometry.Transform；无实际 Clip 或非矩形目标
+  严格拒绝。规范 XAML、v14、设计器验证、热重载与失败原子性均已覆盖，并修复 v14 状态动画 Rect 分派遗漏及空 Clip
+  被默认 Geometry 误判的问题。`Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归 220/220；Designer 自检、
+  CUITest validate/smoke、动态/静态样例及 `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，
+  `git diff --check` 通过，运行中的产品 Designer 实例未受影响。
+- Vector 与对象路径适配边界第一批完成：新增 `cui::core::Vector`，Point ± Vector 与 Point − Point 的结果类型
+  按 WPF 语义收口；声明组件 Vector 属性、`<Vector x:Key>`、样式资源与 C++ 辅助生成进入统一值目录。
+  `VectorAnimation` / `VectorAnimationUsingKeyFrames` 支持 Automatic/From/To/By、Quadratic/Cubic/Sine Easing、
+  IsAdditive/IsCumulative、Discrete/Linear/Easing/Spline（含 `EasingVectorKeyFrame`）、StaticResource、生成/显式
+  VisualTransition、规范 XAML、v14、资源热重载和事务失败回滚。运行时 Transform/Geometry 复合路径已合并为单一
+  `ObjectPathAccessor` 变体，Designer 的分类、规范化、根属性与解析调用也集中到一个适配入口，为 Brush/GradientStop
+  子属性动画预留扩展边界。`Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归 221/221；Designer 自检、
+  CUITest validate/smoke、动态/静态样例及 `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，`git diff --check`
+  通过，运行中的产品 Designer PID 57164 保持原路径且未受影响。
+- GradientStop Brush 子属性动画第一批完成：`ColorAnimation` 与 `DoubleAnimation` 可分别定位 Foreground 的
+  `(GradientBrush.GradientStops)[n].(GradientStop.Color|Offset)`，支持线性/径向 Brush 作者别名规范化、普通/关键帧
+  时间线、StaticResource、显式 VisualTransition、FillBehavior、规范 XAML、v14 和资源热重载。同一 Brush 的 Color/Offset
+  每帧基于一份根值合成，坐标、Opacity 和未命中 Stop 保持不变；无 Brush、Solid/Image Brush、越界索引、类型不匹配、
+  非有限值和范围外绝对 Offset 均事务拒绝。`Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归 222/222；
+  Designer 自检、CUITest validate/smoke、动态/静态样例及 `CuiCodeGen 10` version/generate（5/5 文件）均返回 0。
+- Brush Transform/RelativeTransform 第一批完成：Solid/LinearGradient/RadialGradient/Image Brush 均可通过属性元素
+  声明两套 Transform；D2D 按“归一化 RelativeTransform → 目标边界映射 → DIP Transform”顺序绘制。解析、规范 XAML、
+  v14、Materializer、静态代码生成和热重载使用同一模型；`DoubleAnimation` 普通/关键帧与显式 Transition 可通过统一
+  Foreground 对象路径定位 Transform 操作成员，并与 GradientStop Color/Offset 在一份 Brush 根值上逐帧合成。补齐
+  Foreground 属性元数据对两套 Transform 的相等比较，避免纯变换更新被短路；所有者、操作索引/类型、缺失 Transform
+  与非法快照均事务拒绝。`Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归 223/223；Designer 自检、
+  CUITest validate/smoke、动态/静态样例及 `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，`git diff --check`
+  通过，运行中的产品 Designer PID 57164 保持原路径且未受影响。
+- Geometry Transform 对象路径动画第一批完成：Rectangle/Ellipse/Path/GeometryGroup 的 `Geometry.Transform` 可通过
+  `(Control.Clip).(Geometry.Transform).(TransformGroup.Children)[n].(TransformType.Property)` 定位 Translate/Scale/
+  Rotate/Skew 的浮点成员；`UIElement.Clip`、具体 Geometry 所有者和具体 Transform 所有者等作者别名统一规范化。
+  普通/关键帧动画、显式 Transition、StaticResource、规范 XAML、v14 与热重载共用同一适配器，并可与同一 Clip 根上的
+  RectangleGeometry.Rect 逐帧合成；缺失 Clip/Transform、Geometry 类型不符、操作类型或索引不符及非有限值均事务拒绝。
+  DemoWindow 精简序列化门禁同步接受 Point 元数据的规范 `RenderTransformOrigin="0.5, 0.5"` 格式，并补充缺失标记诊断。
+  `Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归 223/223；Designer 自检、CUITest validate/smoke、动态/静态
+  样例及 `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，`git diff --check` 通过；运行中的产品 Designer PID 57164
+  保持原路径且未受影响。
+- Brush 公开成员对象路径动画第一批完成：Foreground 的 SolidColorBrush.Color、Brush.Opacity、
+  LinearGradientBrush.StartPoint/EndPoint、RadialGradientBrush.Center/GradientOrigin/RadiusX/RadiusY 均可由
+  Color/Point/Double 普通动画与关键帧定位；具体 Brush 所有者必须和模板实物一致，继承的 Opacity 统一规范化为
+  Brush.Opacity。多条时间线与 GradientStop、Brush.Transform 共用一份 Foreground 根值逐帧合成，并覆盖生成/显式
+  VisualTransition、StaticResource、规范 XAML、v14、热重载、非法范围/类型/缺失 Brush 的事务拒绝。此前启动时把
+  `{StaticResource TextMuted}` 当作 Color 字面量的问题也由产品 CUITest validate/smoke 门禁确认消失。`Debug|x64`
+  全解决方案在隔离输出目录构建成功，核心回归增至 224/224；Designer 自检、动态/静态样例、CUITest validate/smoke
+  及 `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，`git diff --check` 通过；运行中的产品 Designer PID 57164
+  保持原路径且未受影响。
+- Rectangle/Ellipse 公开 Geometry 成员对象路径动画第一批完成：`DoubleAnimation` 可定位
+  `RectangleGeometry.RadiusX/RadiusY` 与 `EllipseGeometry.RadiusX/RadiusY`，`PointAnimation` 可定位
+  `EllipseGeometry.Center`；普通/关键帧、StaticResource、生成/显式 VisualTransition、规范 XAML、v14 和热重载均复用
+  统一 Clip 适配器。Rect、Center、半径与 Geometry.Transform 在一份根值上逐帧合成，未命中的形状和变换保持不变；
+  UIElement 根别名规范化、具体 Geometry/动画类型匹配、半径非负绝对端点、缺失 Clip 与非法快照均事务拒绝。运行时直接
+  定义动画时也统一拒绝范围外 Brush.Opacity、Brush/Geometry 半径，而有符号 By 仍被保留。`Debug|x64` 全解决方案在
+  隔离输出目录构建成功，核心回归增至 225/225；Designer 自检、动态/静态样例、CUITest validate/smoke 以及
+  `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，`git diff --check` 通过；运行中的产品 Designer PID 57164
+  保持原路径且未受影响。
+- PathGeometry 深层索引对象路径动画完成：PathFigure 的 StartPoint/IsClosed/IsFilled，Line/Bezier/
+  QuadraticBezier/Arc 的点成员，以及 Arc 的 Size/RotationAngle/IsLargeArc/SweepDirection 可由 Point/Size/Double
+  普通或关键帧及离散 Object 关键帧定位。Figure/Segment 索引、具体 Segment 所有者、动画类型、非负 Arc Size、
+  SweepDirection 枚举、缺失 Clip 和非法快照均在统一设计器/运行时适配器事务拒绝；StaticResource、生成/显式
+  VisualTransition、规范 XAML、v14 与热重载均覆盖。所有末端与 FillRule、Geometry.Transform 和未命中路径数据在同一
+  Clip 根值逐帧合成。`Debug|x64` 全解决方案构建成功，核心回归增至 226/226；Designer 自检、动态/静态样例、
+  CUITest validate/smoke 及 `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，`git diff --check` 通过；运行中的
+  产品 Designer PID 57164 保持原路径且未受影响。
+- GeometryGroup.Children 递归对象路径完成：任意层 `(GeometryGroup.Children)[n]` 可继续定位子 Rectangle/Ellipse
+  公开成员、PathFigure/PathSegment 深层成员和子 Geometry.Transform；运行时访问器保存完整子索引链，设计器 JSON 与
+  运行时 Geometry 统一验证实际 Group、索引和最终具体所有者。PathGeometry/GeometryGroup.FillRule 同时支持离散
+  Object 关键帧并严格限制为 EvenOdd/Nonzero。两层嵌套的普通/关键帧、StaticResource、生成/显式 VisualTransition、
+  规范 XAML、v14、热重载、同根合成和失败原子性均已覆盖，父级变换、兄弟 Geometry 与未命中子数据保持不变。
+  `Debug|x64` 全解决方案构建成功，核心回归增至 227/227；Designer 自检、动态/静态样例、CUITest validate/smoke 及
+  `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，`git diff --check` 通过；运行中的产品 Designer PID 57164
+  保持原路径且未受影响。
+- Matrix 强类型与动画闭环完成：公开 `Matrix` 值、资源、组件属性、设计器编辑/代码生成、规范 XAML 与 v14 快照
+  共用六个有限浮点分量；`MatrixAnimation` / `MatrixAnimationUsingKeyFrames` 支持 Linear/Discrete/Spline/Easing
+  关键帧、From/To/By、Additive/Cumulative、生成/显式 VisualTransition，并可定位 RenderTransform、任意层
+  Geometry.Transform、Brush.Transform 与 Brush.RelativeTransform 的 MatrixTransform.Matrix 末端。矩阵与同根兄弟
+  Transform 动画逐帧合成，热重载、基础值恢复、非法动画类型/分量数/非有限值和快照事务回滚均已覆盖，同时移除了
+  RenderTransform 旧分支造成的运行时路径分歧。`Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归增至
+  228/228；Designer 自检、动态/静态样例、产品 CUITest validate/smoke 以及 `CuiCodeGen 10` version/generate
+  （5/5 文件）均返回 0，`git diff --check` 通过；运行中的产品 Designer PID 57164 保持原路径且未受影响。
+- 组件事件 Storyboard 第一批完成：模板根 `EventTrigger.RoutedEvent` 可按顺序执行
+  `BeginStoryboard`/`PauseStoryboard`/`ResumeStoryboard`/`StopStoryboard`，命名时钟复用全部现有动画类型与
+  对象路径。规范 XAML、v14、资源/剪贴板、设计器预览和热重载已闭环；独立
+  `Animation > VisualState` 值层保证 Stop 显露动画期间已更新的状态值。`Debug|x64` 全解决方案在隔离输出
+  目录构建成功，核心回归增至 229/229；Designer 自检、动态/静态样例、CUITest validate/smoke 以及
+  `CuiCodeGen 10` version/generate（5/5 文件）均返回 0。
+- Style DataTrigger 上下文收口完成：单/多数据条件改为针对每个目标控件的有效（本地或继承）DataContext
+  独立求值和订阅；点分路径在叶值及中间对象替换后重连。共享 Style 的 DataTemplate 项不再通过样式表级
+  可变 DataContext 互相覆盖，旧 `ControlStyleSheet::SetDataContext` 仅作为无目标上下文时的兼容回退。
+  `Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归增至 230/230；Designer 自检、动态/静态样例、
+  CUITest validate/smoke 以及 `CuiCodeGen 10` version/generate（5/5 文件）均返回 0。
+- Style DataTrigger 动作第一批完成：`DataTrigger` / `MultiDataTrigger` 的 `EnterActions`、`ExitActions`
+  支持 Begin/Pause/Resume/StopStoryboard，并复用现有全部 Timeline 与对象路径。定义随 Style 共享，但静态
+  选择器匹配后由每个目标独立拥有活动边沿、命名时钟和 Animation 值；无边沿刷新不重启，规则/样式表移除
+  会停止并显露较低值源。规范 XAML、XML v14、热重载、组件交互共存、撤销内存估算和剪贴板动画资源隔离
+  已闭环；Style 明确禁止 TargetName，辅助静态 C++ 生成器明确拒绝而不静默丢动作。同时修复了动作规则在
+  静态选择器不匹配控件上仍被编译、进而导致整树样式安装失败的问题。`Debug|x64` 全解决方案在隔离输出
+  目录构建成功，核心回归增至 232/232；Designer 自检、动态/静态样例、产品 CUITest validate/smoke 以及
+  `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，`git diff --check` 通过；运行中的产品 Designer
+  PID 57164 保持原路径且未受影响。
+- Style 属性 Trigger 元数据化完成：除六个兼容状态别名外，`Trigger.Property` 与混合 `MultiTrigger`
+  可直接比较目标控件任意可读、可观察且受支持的属性元数据，并在普通 C++ setter、用户交互或属性系统写入后
+  自动刷新。`Trigger` / `MultiTrigger` 同步支持 Enter/Exit Storyboard 动作；动作作用域只由类型/Id/Class
+  静态限定，状态、属性与数据条件统一产生初始及双向边沿，修复组合动态选择器退出时漏执行 Exit 的问题。
+  规范 XAML、XML v14、热重载、剪贴板隔离/特异性、撤销内存估算和静态辅助生成边界均已覆盖。
+  `Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归增至 234/234；Designer 自检、动态/静态样例、
+  产品 CUITest validate/smoke 与 `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，`git diff --check`
+  通过；隔离构建未覆盖产品 Designer 路径，运行中的 PID 57164 保持不变。
+- DynamicResource 属性表达式第一批完成：`Control::SetDynamicResource` 将资源引用保存为 Local 值表达式，
+  按文档样式表、主题/Application 样式表查找，并在资源修改、样式表替换和控件树继承时重新求值；缺失键保留
+  表达式并显露较低值源，普通 Local 写入/ClearValue 会移除表达式。可写控件属性及 Style/Trigger Setter 的
+  `{DynamicResource}` 已贯通规范 XAML、XML v14、设计器捕获/恢复与资源重命名、剪贴板可选资源闭包、原位热重载
+  和辅助 C++ 生成；结构引用继续保持 StaticResource 边界。`Debug|x64` 全解决方案在隔离输出目录构建成功，核心
+  回归 236/236；Designer 自检、CUITest validate/smoke、动态/静态样例及 `CuiCodeGen 10` version/generate
+  （5/5 文件）均返回 0，`git diff --check` 通过；隔离产物已清理，产品 Designer PID 57164 保持原路径运行。
+- 控件级值资源词法作用域第一批完成：`<Owner.Resources>` 可持有既有强类型值资源及文件型
+  MergedDictionaries，Static/DynamicResource 均按“当前控件 → 逻辑父链 → 文档 → Application/主题”查找，
+  字典内容变化、替换和换父级会刷新受影响子树。局部字典已进入规范 XAML、XML v15、组件/DataTemplate
+  模板节点、Designer 捕获、事务重组和辅助静态生成；剪贴板保留片段内部的局部键与遮蔽，单独复制依赖外部
+  父级资源的控件时会把实际值提升为可移植片段依赖。结构型局部 Style/DataTemplate/ComponentDefinition
+  仍明确拒绝。`Debug|x64` 隔离构建通过，核心回归 239/239；Designer 自检、CUITest validate/smoke、
+  动态/静态样例及 `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，`git diff --check` 通过；
+  产品 Designer PID 57164 保持原路径运行。
+- 控件级 `Style` 词法作用域第一批完成：局部隐式/命名样式、`BasedOn`、Setter/Trigger、静态及动态资源
+  按“文档 → 祖先 → 当前”组合并参与特异性级联；文档基样式变化会重建已展开的局部表，模板视觉树中的局部
+  Style 同样进入 XAML 与 XML v16 快照。Designer 样式资源重命名、事务更新、剪贴板可移植化和辅助代码生成
+  已闭环，`DemoWindow.cui.xaml` 的 `TextMuted` StaticResource 启动失败同步消除。`Debug|x64` 全解决方案在
+  隔离输出目录构建成功，核心回归 240/240；Designer 自检、CUITest validate/smoke、动态/静态样例及
+  `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，`git diff --check` 通过；产品 Designer PID 57164
+  保持原路径运行。
+- 控件级对象资源词法作用域第一批完成：任意 `<Owner.Resources>` 可声明 `DataTemplate` 与
+  `ComponentDefinition`，按“当前控件 → 逻辑祖先 → 文档”解析和遮蔽；嵌套 DataTemplate/组件模板中的局部
+  对象资源沿同一规则工作。规范 XAML、XML v17、Designer 包装模型、ItemTemplate 作用域候选、事务重组、
+  热重载与声明作用域值资源缓存均已闭环；辅助静态 C++ 生成遇到局部对象定义时明确拒绝。剪贴板新增词法依赖
+  闭包：复制离开资源宿主的子树会提升实际命中的定义和值资源，同名局部覆盖以及无全局兜底的局部模板/组件均可
+  独立粘贴并运行。`Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归 241/241；Designer 自检、
+  CUITest validate/smoke、动态/静态样例及 `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，
+  `git diff --check` 通过。最终核对时产品 Designer PID 57164 已不在运行；本轮未结束任何产品进程，也未写入
+  产品输出路径。
+- 控件级对象资源词法作用域第二批完成：`ItemsPanelTemplate` 与 `GroupStyle` 进入任意
+  `<Owner.Resources>`，ItemsControl/ListBox、属性栏候选、模板视觉树和运行时物化共用“当前控件 → 逻辑祖先 →
+  文档”的遮蔽规则；`GroupStyle.HeaderTemplate` 按样式声明位置解析，使用处同名 DataTemplate 不会污染组头。
+  规范 XAML、XML v18、热重载与剪贴板闭包保存局部面板、组样式、组头模板和值资源；复制脱离祖先宿主后仍可
+  独立粘贴运行。新增端到端用例覆盖全局/局部同名遮蔽、local-only 定义、声明/使用作用域冲突、XAML/XML 往返、
+  属性栏候选与剪贴板移植。`Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归增至 242/242；Designer
+  自检、CUITest validate/smoke、动态/静态样例及 `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，
+  `git diff --check` 通过。对象资源模型扩展使子树命令内存从 64 KiB 门槛上升到 66,554 字节，自检仍验证其低于
+  96 KiB，保持增量子树负载而非退化为整文档快照。
+- 隐式 `DataTemplate` 类型键第一批完成：无 `x:Key` 模板以 DataType 作为独立资源身份，ItemsControl/ListBox
+  可从 DataList、CollectionViewSource 或 ItemsSource Binding Schema 推断项类型并按词法作用域自动选择，显式
+  ItemTemplate 优先；GroupStyle 未声明 HeaderTemplate 时在样式声明作用域自动选择 CollectionViewGroup 模板。
+  属性栏空值显示为“自动”且不把类型键伪装成 StaticResource 字符串，规范 XAML、XML v19、嵌套模板依赖扫描、
+  热重载及剪贴板闭包保存全局/局部遮蔽；目标同类型隐式模板契约冲突会事务拒绝。`Debug|x64` 全解决方案在隔离
+  输出目录构建成功，核心回归增至 243/243；Designer 自检、CUITest validate/smoke、动态/静态样例及
+  `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，`git diff --check` 通过。
+- 强类型单对象呈现第一批完成：BindingSource Schema 可关联命名 DataType；新增 ContentPresenter，支持显式
+  ContentTemplate 与按词法作用域选择的隐式模板，内容替换、字段观察、无模板文本后备及模板类型不匹配回滚。
+  XAML/XML v20、属性栏类型过滤、局部模板遮蔽、剪贴板依赖提升、Designer 预览和事务热重载已闭环；直接视觉
+  子节点会在解析阶段明确拒绝。新增核心回归覆盖运行时原子替换和完整文档链路。`Debug|x64` 全解决方案在隔离
+  输出目录构建成功，核心回归增至 245/245；Designer 自检、CUITest validate/smoke、动态/静态样例及
+  `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，`git diff --check` 通过。
+- WPF 风格默认内容宿主第一批完成：新增 ContentControl，并将 ContentPresenter.Content 泛化为 BindingValue。
+  ContentControl 可拥有一个直接视觉子节点，或拥有标量/Binding Content 与内部 Presenter，两种模式互斥；
+  显式/隐式 DataTemplate、DisplayMemberPath、局部资源遮蔽、属性栏类型过滤、规范 XAML、XML v21、Designer
+  捕获/自检、剪贴板依赖提升和事务热重载复用同一条链。拓扑重组把完整词法资源作用域纳入子树复用判定，
+  防止祖先局部模板变化后沿用旧模板实例。`Debug|x64` 全解决方案在隔离输出目录构建成功，核心回归增至
+  247/247；Designer 自检、CUITest validate/smoke、动态/静态样例及 `CuiCodeGen 10` version/generate
+  （5/5 文件）均返回 0，`git diff --check` 通过。
+- 内置 Button 接入默认内容契约：Button 现派生 ContentControl，可使用字面量/Binding/DataTemplate Content 或一个
+  authored 视觉根，旧 Text 路径保持兼容；按钮仍拥有唯一点击状态机，内容只负责呈现。解析、规范 XAML、设计器
+  预览/投放、模板资源依赖、剪贴板、热重载与辅助代码生成均覆盖 Button。`Debug|x64` 全解决方案构建成功，核心
+  回归 247/247；Designer 自检、CUITest validate/smoke、动态/静态样例及 CuiCodeGen 10 generate（5/5 文件）
+  均返回 0，`git diff --check` 通过。
+- HeaderedContentControl 双槽位第一批完成：Header 与 Content 各自支持字面量、Binding、显式/隐式
+  DataTemplate 或一个 authored 视觉根，内部 Presenter 不占用 authored Content 配额且不能被公开 Children 破坏。
+  GroupBox/Expander 已从多子项 Panel + Text 标题迁移为 Header + 单 Content；旧 Text 保留后备。规范 XAML 的属性/
+  属性元素、设计器属性栏和捕获、资源重命名与词法发现、剪贴板闭包、热重载、辅助代码生成及 Demo 单内容根均已接通。
+  `Debug|x64` 全解决方案构建成功，核心回归增至 248/248；Designer 自检、CUITest validate/smoke、动态/静态样例及
+  `CuiCodeGen 10` version/generate 均返回 0，`git diff --check` 通过。
+- `ControlTemplate` 第一批完成：ContentControl/Button/GroupBox/Expander 支持显式资源和按 TargetType 精确选择的
+  词法隐式模板，模板根不占 authored Content；TemplateBinding、VisualState/StateTrigger、Setter、Storyboard、
+  EventTrigger 和命名部件均复用声明交互管线。资源进入全局/合并/局部字典、规范 XAML、XML v22、Designer 预览、
+  结构热重载和剪贴板局部提升，TargetType 不兼容与递归链在提交前拒绝。Demo Expander 同步使用 Panel 作为单一
+  Content 根，使内部 Label 的 Canvas 移动语义保持稳定。`Debug|x64` 全解决方案零警告构建成功，核心回归增至
+  249/249；Designer 自检、CUITest validate/smoke、动态/静态样例及 `CuiCodeGen 10` version/generate（5/5 文件）
+  均返回 0，`git diff --check` 通过。
+- `ControlTemplate` 第二批完成：声明组件可用 QName 作为 `TargetType`，并按“控件直接 Template → Style.Template →
+  词法隐式模板 → 组件默认模板”确定结构；TargetType 保持精确匹配，Trigger 中的结构替换继续明确拒绝。Designer
+  属性栏提供按类型过滤的 Template 选择，完整文档事务同步画布、选择、Undo/Redo 与规范 XAML；模板和值资源变更会
+  重建预览，剪贴板把引用模板的 Style 与模板提升到同一词法作用域。设计快照升级为 XML v23，并覆盖 v22 兼容读取。
+  `Debug|x64` 全解决方案构建成功，核心回归增至 250/250；Designer 自检、CUITest validate/smoke、动态/静态样例及
+  `CuiCodeGen 10` version/generate（5/5 文件）均返回 0，`git diff --check` 通过。
+- `ControlTemplate` 内容插槽第一批完成：模板内 `ContentPresenter.ContentSource="Content|Header"` 自动派生
+  Content/ContentTemplate/DisplayMemberPath 或对应 Header 别名，视觉内容由生成 Presenter 取得物理所有权，同时
+  Designer 包装节点继续以模板宿主为逻辑父级；数据内容和宿主属性更新复用属性元数据通知。规范 XAML、XML v24
+  （含 v23 兼容读取）、剪贴板、结构热重载、Designer XAML 即时预览、选择保持与 Undo/Redo 已闭环；重复来源、
+  错误 Header 目标、模板外使用、显式别名冲突及视觉内容缺失插槽均事务拒绝。`Debug|x64` 全解决方案构建成功，
+  核心回归增至 251/251；Designer 自检、CUITest validate/smoke、动态/静态样例及 `CuiCodeGen 10`
+  version/generate（5/5 文件）均返回 0，`git diff --check` 通过。
+- `ItemsControl` 模板宿主第一批完成：`ItemsControl` / `ListBox` 的 ControlTemplate 可用唯一 `ItemsPresenter` 接管由
+  `ItemsPanelTemplate` 创建的 ItemsHost；Presenter 最近的模板内 ScrollView 统一负责滚动、BringIntoView 和虚拟化，
+  省略 Presenter 时仍保留数据、容器生成和选择状态，但 ItemsHost 不进入视觉树。模板基础设施不进入 authored 文档，
+  选择、键盘导航、容器生成与 ItemsPanel 运行时替换继续由 C++ 行为层负责。规范 XAML、XML v25（含 v24 兼容读取）、
+  剪贴板、RuntimeDocument 结构热重载、Designer XAML 即时预览、选择保持与 Undo/Redo 已闭环；模板外使用、错误
+  TargetType、重复 Presenter 和 authored 子项均在提交前事务拒绝。`Debug|x64` 全解决方案零警告构建成功，核心回归
+  增至 252/252；Designer 自检、CUITest validate/smoke、动态/静态样例及 `CuiCodeGen 10` version/generate
+  （5/5 文件）均返回 0，`git diff --check` 通过。
+- `ListBoxItem` 容器模板第一批完成：生成容器改为 ContentControl，DataTemplate 经 Content 槽呈现；
+  `ItemContainerStyle.Template` 与词法隐式 `ControlTemplate TargetType="ListBoxItem"` 通过可重复运行时工厂为每个
+  实现/回收项创建独立视觉树。只读 `IsSelected`、`IsMouseOver`、`IsKeyboardFocusWithin` 可驱动 Trigger/VisualState，
+  条件读取与 Setter 写入元数据校验分离；剪贴板会同时提升实际命中的容器样式、显式/隐式模板及其子树依赖。
+  规范 XAML/XML 使用 `ListBoxItem`，旧 `SelectorItem` 仅保留读取/C++ 兼容名，直接 authored 容器继续拒绝；快照升级为
+  XML v26 并覆盖 v25/v24 读取。`Debug|x64` 全解决方案以 `/m:1` 零警告构建成功，核心回归增至 253/253；Designer
+  自检、CUITest validate/smoke、动态/静态样例均返回 0。`CuiCodeGen 10` version/generate 生成 5/5 文件，二次生成
+  保留用户 `.h/.cpp` 的 v26 种子及哈希；隔离生成目录已清理，`git diff --check` 通过。
+- 通用项容器与 `ComboBoxItem` 第一批完成：新增内部 `ItemContainerControl`，让 `ListBoxItem` / `ComboBoxItem` 共用
+  DataTemplate 内容、DisplayMemberPath 和只读 `IsSelected` / `IsMouseOver` / `IsKeyboardFocusWithin` 状态契约。
+  ComboBox 接入 `ItemTemplate`、`ItemContainerStyle`、显式/隐式 `ControlTemplate TargetType="ComboBoxItem"`；XAML 默认
+  生成真实容器，旧 C++ 纯文本路径按需启用，12,000 项既有性能回归保持轻量。规范 XAML、XML v27（含 v26 降级读取）、
+  Designer 即时预览/选择保持/Undo/Redo、剪贴板模板闭包和 RuntimeDocument 结构热重载均已闭环。`Debug|x64` 全解决方案
+  构建成功，核心回归增至 254/254；Designer 自检、CUITest validate/smoke、动态/静态样例均返回 0。`CuiCodeGen 10`
+  连续生成 5/5 文件且全部 SHA-256 保持一致，隔离生成目录已清理，`git diff --check` 通过。
+- 静态 `TreeViewItem` 分层容器第一批完成：`TreeView.Items` 的 `TreeNode` 兼容数据身份现在可生成真实
+  `HeaderedContentControl` 容器，Header 进入正式内容插槽；`IsExpanded` 可写并同步节点，`HasItems`、`Level`、
+  `IsSelected`、`IsMouseOver`、`IsKeyboardFocusWithin` 以只读元数据驱动 Trigger/VisualState。
+  `ItemContainerStyle`、显式/词法隐式 `ControlTemplate TargetType="TreeViewItem"`、剪贴板模板闭包、Designer
+  XAML 即时预览/选择保持/Undo/Redo 和 RuntimeDocument 结构热重载已闭环；非法普通 authored TreeViewItem、错误
+  TargetType 和不兼容 Style.Template 在提交前拒绝。设计快照升级为 XML v28 并保留旧版本读取。
+  `Debug|x64` 全解决方案构建成功，核心回归增至 255/255；Designer 自检、CUITest validate/smoke、动态/静态样例
+  均返回 0。`CuiCodeGen 10` version 及连续 generate 生成 5/5 文件，全部 SHA-256 保持一致，隔离生成目录已清理，
+  `git diff --check` 通过。
+- 数据驱动 `TreeView` 与 `HierarchicalDataTemplate` 第一批完成：`TreeView.ItemsSource` 接入强类型 BindingList
+  资源/Binding，显式或词法隐式 DataTemplate 负责每层 Header；`HierarchicalDataTemplate.ItemsSource` 观察当前
+  数据项的子列表路径，并按子列表 ItemType 递归选择模板。根/子集合增删和子列表属性替换会同步重建层次，展开与
+  选择按数据身份恢复；数据环、类型错误和模板生成失败保持上一棵已提交树。属性通知内重建采用旧观察先断开、旧标题
+  绑定延迟释放，避免事件快照访问已销毁目标。规范 XAML、XML v29（保留 v28 读取）、Designer 属性栏/即时预览/
+  选择保持/Undo/Redo、剪贴板递归隐式模板闭包及 RuntimeDocument 热重载已闭环；静态 Items 与 ItemsSource 冲突、
+  非 BindingList 子路径和写入模式在提交前拒绝。`Debug|x64` 全解决方案构建成功，核心回归增至 256/256；Designer
+  自检、CUITest validate/smoke、动态/静态样例均返回 0。`CuiCodeGen 10` version 与连续 generate 的 5/5 文件
+  SHA-256 保持一致，`git diff --check` 通过。
+- 数据 `TreeView` 增量与虚拟化第二批完成：根及已物化子列表按 Add/Remove/Replace/Move/Swap 精确更新，Reset
+  按 BindingSource 身份协调复用；折叠分支仅观察子源与 HasItems，首次展开或 UIA 枚举时才事务创建下一层。
+  `TreeViewItem` 仅实现视口及前后各一行，滚动在集合头部插入/移动时按首行节点身份锚定；完整源缩小时会先约束
+  ScrollIndex 再生成容器。新增回归覆盖折叠分支零节点创建、节点/容器/选择身份保持、100 项视口容器上界、滚动
+  锚定及源缩小，核心回归增至 257/257。本批不改变 XAML 字段，XML 保持 v29。`Debug|x64` 全解决方案构建成功，
+  Designer 自检、CUITest validate/smoke、动态/静态样例均返回 0；`CuiCodeGen 10` 连续 generate 的 5/5 文件
+  SHA-256 保持一致，`git diff --check` 通过。
+- `TreeView` 可见投影与容器回收第三批完成：稳定状态由缓存的扁平可见行统一驱动容器窗口、按行命中和视口绘制，
+  状态刷新只遍历活动容器；动画期间保留原递归裁剪并在结束后恢复快路径。子集合变化只替换父节点可见后代片段，
+  完整 UIA 结构索引改为查询时延迟建立。离开窗口的 TreeViewItem 清空 Header/DataContext 和交互状态后进入有界池，
+  再实现时复用 ControlTemplate chrome。回归保存首屏四个容器地址，滚到末尾再返回后确认 4/4 来自原集合，且每项
+  DataContext、稳定 HitTest、滚动锚点均正确。XML 继续保持 v29。`Debug|x64` 全解决方案构建成功，核心回归
+  257/257；Designer 自检、CUITest validate/smoke、动态/静态样例均返回 0；`CuiCodeGen 10` 连续 generate 的
+  5/5 文件 SHA-256 保持一致，`git diff --check` 通过。
+- `TreeView` WPF 选择与导航第四批完成：新增只读 `SelectedItem` / `SelectedValue`、可写
+  `SelectedValuePath` 与默认 `SelectedItemChanged`，旧 `SelectionChanged` 保持同步；鼠标、`SelectNode`、UIA 和
+  方向/首尾/分页键统一选择提交及层次 BringIntoView，左右键按展开/折叠与父子关系导航。数据字段变化实时更新
+  SelectedValue，数据树按同一记录重建时不伪造选择变化。XAML 解析器接受直接嵌套 TreeViewItem，Designer 回捕不再把
+  ItemsSource 的生成节点写成静态 Items；XML 继续保持 v29。`Debug|x64` 全解决方案构建成功，核心回归增至
+  258/258；Designer 完整自检、CUITest validate/smoke、动态/静态样例均返回 0，`CuiCodeGen 10` version 与连续
+  generate 的 5/5 文件 SHA-256 保持一致，`git diff --check` 通过。

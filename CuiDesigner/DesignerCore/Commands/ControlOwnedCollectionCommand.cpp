@@ -64,6 +64,8 @@ struct ControlOwnedCollectionCommand::Impl
 		DesignerDataBinding ConfiguredBinding;
 		bool HasTracked = false;
 		DesignerStyleValue Tracked;
+		std::wstring TrackedResourceKey;
+		std::wstring TrackedDynamicResourceKey;
 
 		bool operator==(const SelectedIndexState&) const = default;
 	};
@@ -183,6 +185,14 @@ struct ControlOwnedCollectionCommand::Impl
 			candidate.HasTracked = true;
 			candidate.Tracked = tracked->second;
 		}
+		if (const auto resource = target.MetadataPropertyResourceKeys.find(
+			L"SelectedIndex");
+			resource != target.MetadataPropertyResourceKeys.end())
+			candidate.TrackedResourceKey = resource->second;
+		if (const auto resource =
+			target.MetadataPropertyDynamicResourceKeys.find(L"SelectedIndex");
+			resource != target.MetadataPropertyDynamicResourceKeys.end())
+			candidate.TrackedDynamicResourceKey = resource->second;
 		output = std::move(candidate);
 		return true;
 	}
@@ -220,7 +230,13 @@ struct ControlOwnedCollectionCommand::Impl
 			return Fail(L"TabControl.SelectedIndex 出现了意外的 Binding 值来源。", outError);
 		}
 
-		if (desired.HasLocal)
+		if (!desired.TrackedDynamicResourceKey.empty())
+		{
+			if (!tab->SetDynamicResource(
+				L"SelectedIndex", desired.TrackedDynamicResourceKey))
+				return Fail(L"无法恢复 TabControl.SelectedIndex DynamicResource。", outError);
+		}
+		else if (desired.HasLocal)
 		{
 			if (!tab->TrySetPropertyValue(
 				L"SelectedIndex", desired.Local,
@@ -239,6 +255,16 @@ struct ControlOwnedCollectionCommand::Impl
 			target.MetadataProperties[L"SelectedIndex"] = desired.Tracked;
 		else
 			target.MetadataProperties.erase(L"SelectedIndex");
+		if (!desired.TrackedResourceKey.empty())
+			target.MetadataPropertyResourceKeys[L"SelectedIndex"] =
+				desired.TrackedResourceKey;
+		else
+			target.MetadataPropertyResourceKeys.erase(L"SelectedIndex");
+		if (!desired.TrackedDynamicResourceKey.empty())
+			target.MetadataPropertyDynamicResourceKeys[L"SelectedIndex"] =
+				desired.TrackedDynamicResourceKey;
+		else
+			target.MetadataPropertyDynamicResourceKeys.erase(L"SelectedIndex");
 
 		SelectedIndexState actual;
 		if (!CaptureSelectedIndex(target, actual, outError)) return false;
@@ -570,7 +596,11 @@ namespace
 				+ impl.After.WrapperFlatIndices.capacity()) * sizeof(size_t)
 			+ StringMemory(impl.TargetName) + StringMemory(impl.Label)
 			+ StringMemory(impl.BeforePrimarySelectionName)
-			+ StringMemory(impl.AfterPrimarySelectionName);
+			+ StringMemory(impl.AfterPrimarySelectionName)
+			+ StringMemory(impl.Before.SelectedIndex.TrackedResourceKey)
+			+ StringMemory(impl.After.SelectedIndex.TrackedResourceKey)
+			+ StringMemory(impl.Before.SelectedIndex.TrackedDynamicResourceKey)
+			+ StringMemory(impl.After.SelectedIndex.TrackedDynamicResourceKey);
 		for (const auto& entry : impl.Before.Entries)
 			impl.EstimatedMemoryUsage += StringMemory(entry.Text);
 		for (const auto& entry : impl.After.Entries)
@@ -674,6 +704,8 @@ ControlOwnedCollectionCommand::CreateTabPages(
 			impl->After.SelectedIndex.HasTracked = true;
 			impl->After.SelectedIndex.Tracked = {
 				DesignerStyleValueKind::Int, std::to_wstring(selectedIndex) };
+			impl->After.SelectedIndex.TrackedResourceKey.clear();
+			impl->After.SelectedIndex.TrackedDynamicResourceKey.clear();
 		}
 	}
 	BuildAfterWrapperOrder(*impl);

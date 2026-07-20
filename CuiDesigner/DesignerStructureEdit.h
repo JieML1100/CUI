@@ -74,6 +74,8 @@ struct DesignerComboBoxSnapshot
 	DesignerDataBinding ConfiguredBinding;
 	bool HasTrackedSelectedIndex = false;
 	DesignerStyleValue TrackedSelectedIndex;
+	std::wstring TrackedSelectedIndexResourceKey;
+	std::wstring TrackedSelectedIndexDynamicResourceKey;
 
 	bool operator==(const DesignerComboBoxSnapshot&) const = default;
 	size_t GetEstimatedMemoryUsage() const noexcept;

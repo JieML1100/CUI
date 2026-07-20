@@ -18,7 +18,7 @@ namespace
 DataContextSchemaEditorDialog::DataContextSchemaEditorDialog(
 	const DesignerDataContextSchema& schema,
 	const IBindingSource* runtimeSource)
-	: Form(L"编辑 DataContext Schema", POINT{ 350, 180 }, SIZE{ 760, 650 }),
+	: Form(L"编辑 DataContext Schema", POINT{ 350, 150 }, SIZE{ 760, 715 }),
 	  ResultSchema(schema),
 	  _runtimeSource(runtimeSource)
 {
@@ -53,28 +53,43 @@ DataContextSchemaEditorDialog::DataContextSchemaEditorDialog(
 	_canWrite = this->AddControl(new CheckBox(L"可写", 500, 151));
 	_canObserve = this->AddControl(new CheckBox(L"变更通知", 600, 151));
 
-	auto save = this->AddControl(new Button(L"保存属性", 20, 204, 125, 34));
-	auto remove = this->AddControl(new Button(L"删除属性", 158, 204, 125, 34));
+	auto objectKindLabel = this->AddControl(new Label(L"对象契约", 20, 200));
+	objectKindLabel->Size = { 110, 24 };
+	_objectKind = this->AddControl(new ComboBox(L"", 140, 194, 220, 30));
+	_objectKind->Items = { L"Opaque", L"BindingSource", L"BindingList" };
+	_objectKind->ExpandCount = 3;
+	auto itemTypeLabel = this->AddControl(new Label(L"关联类型", 390, 200));
+	itemTypeLabel->Size = { 90, 24 };
+	_itemType = this->AddControl(new TextBox(L"", 480, 194, 240, 30));
+
+	auto save = this->AddControl(new Button(L"保存属性", 20, 250, 125, 34));
+	auto remove = this->AddControl(new Button(L"删除属性", 158, 250, 125, 34));
 	auto importRuntime = this->AddControl(new Button(
 		_runtimeSource ? L"从运行时源导入" : L"未连接运行时源",
-		296, 204, 150, 34));
+		296, 250, 150, 34));
 	importRuntime->Enable = _runtimeSource != nullptr;
-	_validation = this->AddControl(new Label(L"", 460, 210));
+	_validation = this->AddControl(new Label(L"", 460, 256));
 	_validation->Size = { 260, 40 };
 
-	auto summaryLabel = this->AddControl(new Label(L"Schema 属性树（R=可读，W=可写，O=通知）", 20, 268));
+	auto summaryLabel = this->AddControl(new Label(L"Schema 属性树（R=可读，W=可写，O=通知）", 20, 314));
 	summaryLabel->Size = { 700, 24 };
-	_summary = this->AddControl(new RichTextBox(L"", 20, 296, 700, 230));
+	_summary = this->AddControl(new RichTextBox(L"", 20, 342, 700, 230));
 	_summary->ReadOnly = true;
 	_summary->AllowMultiLine = true;
 	_summary->BackColor = Colors::White;
 	_summary->FocusedColor = Colors::White;
 
-	auto ok = this->AddControl(new Button(L"确定", 20, 548, 120, 36));
-	auto cancel = this->AddControl(new Button(L"取消", 152, 548, 120, 36));
+	auto ok = this->AddControl(new Button(L"确定", 20, 594, 120, 36));
+	auto cancel = this->AddControl(new Button(L"取消", 152, 594, 120, 36));
 
 	_existingPath->OnSelectionChanged += [this](Control*) {
 		if (!_loading) LoadSelectedProperty();
+	};
+	_kind->OnSelectionChanged += [this](Control*) {
+		if (!_loading) RefreshObjectEditors();
+	};
+	_objectKind->OnSelectionChanged += [this](Control*) {
+		if (!_loading) RefreshObjectEditors();
 	};
 	save->OnMouseClick += [this](Control*, MouseEventArgs) { (void)SaveProperty(); };
 	remove->OnMouseClick += [this](Control*, MouseEventArgs) { RemoveProperty(); };
@@ -136,11 +151,29 @@ void DataContextSchemaEditorDialog::LoadSelectedProperty()
 	SelectComboValue(_kind, property
 		? DesignerDataContextSchemaUtils::ValueKindName(property->ValueKind)
 		: L"Unknown");
+	SelectComboValue(_objectKind, property
+		? DesignerDataContextSchemaUtils::ObjectKindName(property->ObjectKind)
+		: L"Opaque");
+	_itemType->Text = property
+		? (property->ObjectKind == DesignerDataObjectKind::BindingSource
+			? property->DataType : property->ItemType) : L"";
 	_canRead->Checked = property ? property->CanRead : true;
 	_canWrite->Checked = property ? property->CanWrite : true;
 	_canObserve->Checked = property ? property->CanObserve : true;
 	_loading = false;
+	RefreshObjectEditors();
 	ShowValidation(property ? L"已加载属性。" : L"填写后点击“保存属性”。", false);
+}
+
+void DataContextSchemaEditorDialog::RefreshObjectEditors()
+{
+	const bool isObject = _kind && _kind->Text == L"Object";
+	_objectKind->Enable = isObject;
+	const bool isTypedObject = isObject
+		&& (_objectKind->Text == L"BindingList"
+			|| _objectKind->Text == L"BindingSource");
+	_itemType->Enable = isTypedObject;
+	if (!isTypedObject && !_loading) _itemType->Text = L"";
 }
 
 void DataContextSchemaEditorDialog::RefreshSummary()
@@ -189,6 +222,19 @@ bool DataContextSchemaEditorDialog::SaveProperty()
 	property.CanRead = _canRead->Checked;
 	property.CanWrite = _canWrite->Checked;
 	property.CanObserve = _canObserve->Checked;
+	if (property.ValueKind == BindingValueKind::Object)
+	{
+		if (!DesignerDataContextSchemaUtils::TryParseObjectKind(
+			_objectKind->Text, property.ObjectKind))
+		{
+			ShowValidation(L"请选择有效的对象契约。", true);
+			return false;
+		}
+		if (property.ObjectKind == DesignerDataObjectKind::BindingList)
+			property.ItemType = _itemType->Text;
+		else if (property.ObjectKind == DesignerDataObjectKind::BindingSource)
+			property.DataType = _itemType->Text;
+	}
 
 	auto candidate = ResultSchema;
 	const auto selected = _existingPath->Text;

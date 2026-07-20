@@ -55,7 +55,7 @@ namespace
 
 void Button::EnsureBindingPropertiesRegistered()
 {
-	Control::EnsureBindingPropertiesRegistered();
+	ContentControl::EnsureBindingPropertiesRegistered();
 	static const bool registered = []
 	{
 		BindingPropertyRegistry::Register<Button, D2D1_COLOR_F>(L"UnderMouseColor",
@@ -124,10 +124,9 @@ GET_CPP(Button, float, Round) { return _round; }
 SET_CPP(Button, float, Round) { SetPropertyField(L"Round", _round, value); }
 
 Button::Button(std::wstring text, int x, int y, int width, int height)
+	: ContentControl(x, y, width, height)
 {
 	this->Text = text;
-	this->Location = POINT{ x,y };
-	this->Size = SIZE{ width,height };
 	this->BackColor = cui::theme::palette::Surface;
 	this->BorderColor = cui::theme::palette::BorderStrong;
 	this->ForeColor = cui::theme::palette::TextPrimary;
@@ -147,9 +146,30 @@ bool Button::Invoke()
 	return true;
 }
 
+bool Button::ProcessMessage(
+	UINT message, WPARAM wParam, LPARAM lParam, int localX, int localY)
+{
+	// Button content is presentation for the button's single interaction
+	// surface. Keep the button's matching-press/click state machine instead of
+	// Panel's child-first message fan-out.
+	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
+}
+
 void Button::Update()
 {
 	if (!this->IsVisual) return;
+	if (auto* presenter = GetGeneratedPresenter())
+	{
+		presenter->HAlign = HorizontalAlignment::Center;
+		presenter->VAlign = VerticalAlignment::Center;
+		presenter->BackColor = D2D1_COLOR_F{ 0, 0, 0, 0 };
+		if (!GetContentTemplate())
+		{
+			if (auto* generated = presenter->GetGeneratedContent())
+				generated->ForeColor = this->ForeColor;
+		}
+	}
+	PerformPendingLayout();
 	bool isUnderMouse = this->ParentForm->UnderMouse == this;
 	const bool isPressed = HasControlStyleState(
 		this->GetStyleState(), ControlStyleState::Pressed);
@@ -158,6 +178,16 @@ void Button::Update()
 	const float actualWidth = size.width;
 	const float actualHeight = size.height;
 	this->BeginRender();
+	if (GetControlTemplateRoot())
+	{
+		if (!this->ParentForm->IsDCompSceneRenderActive())
+		{
+			for (auto* child : this->GetChildrenInZOrder())
+				if (child && child->Visible) child->Update();
+		}
+		this->EndRender();
+		return;
+	}
 	{
 		const float border = (std::max)(0.0f, this->BorderThickness);
 		const bool hasSurface = this->BackColor.a > 0.0f || this->Checked;
@@ -184,14 +214,30 @@ void Button::Update()
 			d2d->FillRoundRect(surfaceX, surfaceY, surfaceW, surfaceH, isPressed ? this->CheckedColor : this->UnderMouseColor, roundVal);
 		if (this->Image)
 			this->RenderImage(roundVal);
-		const auto displayText = this->GetDisplayText();
-		auto textSize = this->Font->GetTextSize(displayText);
-		const float horizontalPad = 6.0f;
-		const float textWidth = (std::max)(1.0f, actualWidth - horizontalPad * 2.0f);
-		float drawLeft = actualWidth > textSize.width ? (actualWidth - textSize.width) / 2.0f : horizontalPad;
-		if (drawLeft < horizontalPad) drawLeft = horizontalPad;
-		float drawTop = actualHeight > textSize.height ? (actualHeight - textSize.height) / 2.0f + pressOffset * 0.5f : 0.0f;
-		d2d->DrawString(displayText, drawLeft, drawTop, textWidth, textSize.height + 2.0f, this->ForeColor, this->Font);
+		const bool hasContentVisual = GetVisualContent()
+			|| GetGeneratedPresenter();
+		if (hasContentVisual)
+		{
+			if (!this->ParentForm || !this->ParentForm->IsDCompSceneRenderActive())
+			{
+				for (auto* child : this->GetChildrenInZOrder())
+				{
+					if (!child || !child->Visible) continue;
+					child->Update();
+				}
+			}
+		}
+		else
+		{
+			const auto displayText = this->GetDisplayText();
+			auto textSize = this->Font->GetTextSize(displayText);
+			const float horizontalPad = 6.0f;
+			const float textWidth = (std::max)(1.0f, actualWidth - horizontalPad * 2.0f);
+			float drawLeft = actualWidth > textSize.width ? (actualWidth - textSize.width) / 2.0f : horizontalPad;
+			if (drawLeft < horizontalPad) drawLeft = horizontalPad;
+			float drawTop = actualHeight > textSize.height ? (actualHeight - textSize.height) / 2.0f + pressOffset * 0.5f : 0.0f;
+			d2d->DrawString(displayText, drawLeft, drawTop, textWidth, textSize.height + 2.0f, this->ForeColor, this->Font);
+		}
 		if (border > 0.0f && this->BorderColor.a > 0.0f)
 		{
 			d2d->DrawRoundRect(surfaceX, surfaceY,

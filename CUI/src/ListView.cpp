@@ -175,8 +175,6 @@ void ListView::EnsureBindingPropertiesRegistered()
 		viewModeOptions.Coerce = [](
 			ListView& target, const int& proposed) -> std::optional<int>
 		{
-			if (target.IsListBox())
-				return static_cast<int>(ListViewViewMode::List);
 			switch (static_cast<ListViewViewMode>(proposed))
 			{
 			case ListViewViewMode::List:
@@ -312,7 +310,7 @@ void ListView::EnsureBindingPropertiesRegistered()
 		showColumnHeadersOptions.Coerce = [](
 			ListView& target, const bool& proposed) -> std::optional<bool>
 		{
-			return target.IsListBox() ? false : proposed;
+			return proposed;
 		};
 		showColumnHeadersOptions.Changed = [](
 			ListView& target, const bool&, const bool&)
@@ -410,6 +408,69 @@ void ListView::EnsureBindingPropertiesRegistered()
 		CUI_REGISTER_LIST_COLOR(ScrollForeColor, L"ScrollForeColor", cui::theme::palette::ScrollThumb, 140);
 
 #undef CUI_REGISTER_LIST_COLOR
+
+		ControlPropertyOptions<ListView, BindingListReference> itemsSourceOptions;
+		itemsSourceOptions.Flags = ControlPropertyFlags::AffectsMeasure
+			| ControlPropertyFlags::AffectsRender;
+		itemsSourceOptions.Design.DisplayName = L"Items source";
+		itemsSourceOptions.Design.Category = L"Data";
+		itemsSourceOptions.Design.CategoryOrder = 80;
+		itemsSourceOptions.Design.Order = 10;
+		itemsSourceOptions.Design.Editor = ControlPropertyEditorKind::Auto;
+		itemsSourceOptions.Design.Browsable = false;
+		itemsSourceOptions.Design.Persistence = ControlPropertyPersistence::Transient;
+		BindingPropertyRegistry::Register<ListView, BindingListReference>(L"ItemsSource",
+			[](ListView& target) { return target.GetItemsSource(); },
+			[](ListView& target, const BindingListReference& value)
+			{ target.SetItemsSource(value); }, {}, std::move(itemsSourceOptions));
+
+		auto displayPathOptions = ListViewPropertyOptions(
+			std::wstring{}, L"Data", 80, 20,
+			ControlPropertyEditorKind::Text,
+			ControlPropertyFlags::AffectsMeasure
+				| ControlPropertyFlags::AffectsRender);
+		BindingPropertyRegistry::Register<ListView, std::wstring>(L"DisplayMemberPath",
+			[](ListView& target) { return target.GetDisplayMemberPath(); },
+			[](ListView& target, const std::wstring& value)
+			{ target.SetDisplayMemberPath(value); }, {}, displayPathOptions);
+
+		auto secondaryPathOptions = std::move(displayPathOptions);
+		secondaryPathOptions.Design.Order = 30;
+		BindingPropertyRegistry::Register<ListView, std::wstring>(L"SecondaryMemberPath",
+			[](ListView& target) { return target.GetSecondaryMemberPath(); },
+			[](ListView& target, const std::wstring& value)
+			{ target.SetSecondaryMemberPath(value); }, {}, std::move(secondaryPathOptions));
+
+		auto selectedValuePathOptions = ListViewPropertyOptions(
+			std::wstring{}, L"Data", 80, 40,
+			ControlPropertyEditorKind::Text,
+			ControlPropertyFlags::AffectsRender);
+		BindingPropertyRegistry::Register<ListView, std::wstring>(L"SelectedValuePath",
+			[](ListView& target) { return target.GetSelectedValuePath(); },
+			[](ListView& target, const std::wstring& value)
+			{ target.SetSelectedValuePath(value); }, {},
+			std::move(selectedValuePathOptions));
+
+		ControlPropertyOptions<ListView, BindingValue> selectedValueOptions;
+		selectedValueOptions.Flags = ControlPropertyFlags::TracksLocalValue;
+		selectedValueOptions.Design.DisplayName = L"Selected value";
+		selectedValueOptions.Design.Category = L"Data";
+		selectedValueOptions.Design.CategoryOrder = 80;
+		selectedValueOptions.Design.Order = 50;
+		selectedValueOptions.Design.Browsable = false;
+		selectedValueOptions.Design.Persistence =
+			ControlPropertyPersistence::Transient;
+		BindingPropertyRegistry::Register<ListView, BindingValue>(L"SelectedValue",
+			[](ListView& target) { return target.GetSelectedValue(); },
+			[](ListView& target, const BindingValue& value)
+			{ target.SetSelectedValue(value); },
+			[](ListView& target,
+				BindingPropertyMetadata::ChangeHandler handler,
+				DataSourceUpdateMode)
+			{
+				return target._selectedValueChanged.Subscribe(
+					[handler = std::move(handler)](ListView*) { handler(); });
+			}, std::move(selectedValueOptions));
 		return true;
 	}();
 	(void)registered;
@@ -574,7 +635,165 @@ void ListView::ClearItems()
 
 void ListView::SetItems(std::vector<ListViewItem> items)
 {
+	if (!_refreshingItemsSource && _itemsSource)
+		SetItemsSource({});
 	this->Items = std::move(items);
+}
+
+void ListView::SetItemsSource(BindingListReference value)
+{
+	if (_itemsSource == value) return;
+	_itemsSourceChanged.Disconnect();
+	_itemSourceObservations.clear();
+	_itemsSource = std::move(value);
+	if (_itemsSource)
+	{
+		_itemsSourceChanged = _itemsSource.Get()->SubscribeChanged(
+			[this](const CollectionChangedEventArgs&)
+			{
+				RefreshItemsSource();
+			});
+	}
+	RefreshItemsSource();
+}
+
+void ListView::SetDisplayMemberPath(std::wstring value)
+{
+	if (_displayMemberPath == value) return;
+	_displayMemberPath = std::move(value);
+	if (_itemsSource) RefreshItemsSource();
+}
+
+void ListView::SetSelectedValuePath(std::wstring value)
+{
+	if (_selectedValuePath == value) return;
+	_selectedValuePath = std::move(value);
+	if (_itemsSource) RefreshItemsSource();
+	else
+	{
+		const auto source = GetPropertyValueSource(L"SelectedValue");
+		BindingValue configured;
+		if (source != ControlPropertyValueSource::Default
+			&& TryGetPropertyValue(L"SelectedValue", source, configured))
+			SetSelectedValue(configured);
+		else
+			NotifySelectedValueChanged();
+	}
+}
+
+BindingValue ListView::GetSelectedValue() const
+{
+	if (_selectedIndex < 0) return {};
+	if (_itemsSource)
+	{
+		BindingValue value;
+		return TryGetBindingListItemValue(_itemsSource,
+			static_cast<size_t>(_selectedIndex), _selectedValuePath, value)
+			? value : BindingValue{};
+	}
+	if (_selectedValuePath.empty()
+		&& static_cast<size_t>(_selectedIndex) < Items.size())
+		return BindingValue(Items[static_cast<size_t>(_selectedIndex)].Text);
+	return {};
+}
+
+void ListView::SetSelectedValue(const BindingValue& value)
+{
+	int index = -1;
+	if (!value.Empty())
+	{
+		if (_itemsSource)
+			index = FindBindingListItemByValue(
+				_itemsSource, _selectedValuePath, value);
+		else if (_selectedValuePath.empty())
+		{
+			for (size_t candidate = 0; candidate < Items.size(); ++candidate)
+				if (BindingItemValuesEqual(
+					BindingValue(Items[candidate].Text), value))
+				{
+					index = static_cast<int>(candidate);
+					break;
+				}
+		}
+	}
+	SetCurrentSelectedIndex(index);
+}
+
+void ListView::SetSecondaryMemberPath(std::wstring value)
+{
+	if (_secondaryMemberPath == value) return;
+	_secondaryMemberPath = std::move(value);
+	if (_itemsSource) RefreshItemsSource();
+}
+
+void ListView::RefreshItemsSource()
+{
+	_itemSourceObservations.clear();
+	std::vector<ListViewItem> projected;
+	if (_itemsSource)
+	{
+		projected.reserve(_itemsSource.Get()->Count());
+		_itemSourceObservations.reserve(_itemsSource.Get()->Count());
+		for (size_t index = 0; index < _itemsSource.Get()->Count(); ++index)
+		{
+			BindingSourceReference item;
+			if (!_itemsSource.Get()->TryGetItem(index, item) || !item)
+			{
+				projected.emplace_back();
+				_itemSourceObservations.emplace_back();
+				continue;
+			}
+
+			ListViewItem projectedItem(
+				GetBindingRecordText(item, _displayMemberPath,
+					{ L"Text", L"Content", L"Name" }),
+				GetBindingRecordText(item, _secondaryMemberPath,
+					{ L"SubText", L"Description" }));
+			projected.push_back(std::move(projectedItem));
+			_itemSourceObservations.push_back(ObserveBindingPaths(
+				item, { _displayMemberPath, _secondaryMemberPath,
+					_selectedValuePath },
+				[this, index] { RefreshItemSource(index); }));
+		}
+	}
+
+	_refreshingItemsSource = true;
+	Items = std::move(projected);
+	_refreshingItemsSource = false;
+	const auto selectedValueSource = GetPropertyValueSource(L"SelectedValue");
+	BindingValue configuredSelectedValue;
+	if (selectedValueSource != ControlPropertyValueSource::Default
+		&& TryGetPropertyValue(L"SelectedValue", selectedValueSource,
+			configuredSelectedValue))
+		SetSelectedValue(configuredSelectedValue);
+	else
+		NotifySelectedValueChanged();
+}
+
+void ListView::RefreshItemSource(size_t index)
+{
+	if (!_itemsSource || index >= _itemsSource.Get()->Count()
+		|| index >= Items.size() || index >= _itemSourceObservations.size())
+	{
+		RefreshItemsSource();
+		return;
+	}
+	BindingSourceReference item;
+	if (!_itemsSource.Get()->TryGetItem(index, item)) item = {};
+	_itemSourceObservations[index] = ObserveBindingPaths(
+		item, { _displayMemberPath, _secondaryMemberPath,
+			_selectedValuePath },
+		[this, index] { RefreshItemSource(index); });
+	ListViewItem projected = Items[index];
+	projected.Text = GetBindingRecordText(item, _displayMemberPath,
+		{ L"Text", L"Content", L"Name" });
+	projected.SubText = GetBindingRecordText(item, _secondaryMemberPath,
+		{ L"SubText", L"Description" });
+	_refreshingItemsSource = true;
+	Items.Replace(index, std::move(projected));
+	_refreshingItemsSource = false;
+	if (static_cast<int>(index) == SelectedIndex)
+		NotifySelectedValueChanged();
 }
 
 void ListView::ClearColumns()
@@ -759,8 +978,7 @@ int ListView::HitTestItem(int localX, int localY) const
 	auto layout = CalcLayout();
 	if (!PtInRectF(layout.ContentRect, (float)localX, (float)localY)) return -1;
 
-	if (static_cast<ListViewViewMode>(_viewMode) == ListViewViewMode::Icon
-		&& !IsListBox())
+	if (static_cast<ListViewViewMode>(_viewMode) == ListViewViewMode::Icon)
 	{
 		const float itemWidth = GetItemPrimaryExtent();
 		const float itemHeight = GetItemSecondaryExtent();
@@ -1076,8 +1294,7 @@ void ListView::GetAccessibilityVirtualChildren(
 	uint32_t parentId, std::vector<uint32_t>& result)
 {
 	result.clear();
-	const bool details = !IsListBox()
-		&& ViewMode == ListViewViewMode::Details;
+	const bool details = ViewMode == ListViewViewMode::Details;
 	if (!details)
 	{
 		if (parentId != 0) return;
@@ -1118,7 +1335,7 @@ void ListView::GetAccessibilityVirtualChildren(
 
 size_t ListView::GetAccessibilityVirtualChildCount(uint32_t parentId)
 {
-	const bool details = !IsListBox() && ViewMode == ListViewViewMode::Details;
+	const bool details = ViewMode == ListViewViewMode::Details;
 	if (!details) return parentId == 0 ? Items.size() : 0;
 	EnsureAccessibilityDetailsIds();
 	const size_t columnCount = (std::max)(size_t{ 1 }, Columns.size());
@@ -1130,7 +1347,7 @@ bool ListView::TryGetAccessibilityVirtualChildAt(
 	uint32_t parentId, size_t index, uint32_t& result)
 {
 	result = 0;
-	const bool details = !IsListBox() && ViewMode == ListViewViewMode::Details;
+	const bool details = ViewMode == ListViewViewMode::Details;
 	if (!details)
 	{
 		if (parentId != 0 || index >= Items.size()) return false;
@@ -1167,7 +1384,7 @@ bool ListView::TryGetAccessibilityVirtualSibling(
 	uint32_t parentId, uint32_t id, bool next, uint32_t& result)
 {
 	result = 0;
-	const bool details = !IsListBox() && ViewMode == ListViewViewMode::Details;
+	const bool details = ViewMode == ListViewViewMode::Details;
 	if (!details)
 	{
 		if (parentId != 0) return false;
@@ -1212,7 +1429,7 @@ bool ListView::TryHitTestAccessibilityVirtualNode(
 {
 	result = 0;
 	const auto layout = CalcLayout();
-	const bool details = !IsListBox() && ViewMode == ListViewViewMode::Details;
+	const bool details = ViewMode == ListViewViewMode::Details;
 	if (details && ShowColumnHeaders && PtInRectF(layout.HeaderRect, localX, localY))
 	{
 		EnsureAccessibilityDetailsIds();
@@ -1269,8 +1486,7 @@ bool ListView::TryHitTestAccessibilityVirtualNode(
 bool ListView::TryGetAccessibilityVirtualNode(
 	uint32_t id, AccessibilityVirtualNode& result)
 {
-	const bool details = !IsListBox()
-		&& ViewMode == ListViewViewMode::Details;
+	const bool details = ViewMode == ListViewViewMode::Details;
 	if (details)
 	{
 		EnsureAccessibilityDetailsIds();
@@ -1434,16 +1650,14 @@ ListView::GetAccessibilityVirtualContainerInfo() const noexcept
 	AccessibilityVirtualContainerInfo result;
 	result.Patterns = AccessibilityVirtualPattern::Selection
 		| AccessibilityVirtualPattern::Scroll;
-	if (!IsListBox()
-		&& static_cast<ListViewViewMode>(_viewMode) == ListViewViewMode::Details)
+	if (static_cast<ListViewViewMode>(_viewMode) == ListViewViewMode::Details)
 		result.Patterns |= AccessibilityVirtualPattern::Grid
 			| AccessibilityVirtualPattern::Table;
 	result.CanSelectMultiple = static_cast<ListViewSelectionMode>(_selectionMode)
 		== ListViewSelectionMode::Multiple;
 	result.IsSelectionRequired = false;
 	result.RowCount = static_cast<int>(Items.size());
-	result.ColumnCount = !IsListBox()
-		&& static_cast<ListViewViewMode>(_viewMode) == ListViewViewMode::Details
+	result.ColumnCount = static_cast<ListViewViewMode>(_viewMode) == ListViewViewMode::Details
 		? static_cast<int>((std::max)(size_t{ 1 }, Columns.size())) : 1;
 	return result;
 }
@@ -1463,7 +1677,7 @@ bool ListView::GetAccessibilityVirtualItemAt(
 	int row, int column, uint32_t& id)
 {
 	id = 0;
-	if (IsListBox() || ViewMode != ListViewViewMode::Details
+	if (ViewMode != ListViewViewMode::Details
 		|| row < 0 || column < 0
 		|| row >= static_cast<int>(Items.size())
 		|| column >= static_cast<int>((std::max)(size_t{ 1 }, Columns.size())))
@@ -1481,7 +1695,7 @@ void ListView::GetAccessibilityVirtualColumnHeaders(
 	std::vector<uint32_t>& result)
 {
 	result.clear();
-	if (IsListBox() || ViewMode != ListViewViewMode::Details) return;
+	if (ViewMode != ListViewViewMode::Details) return;
 	EnsureAccessibilityDetailsIds();
 	if (Columns.empty()) result.push_back(_accessibilityImplicitColumnId);
 	else
@@ -1532,7 +1746,7 @@ bool ListView::ToggleAccessibilityVirtualNode(uint32_t id)
 bool ListView::ScrollAccessibilityVirtualNodeIntoView(uint32_t id)
 {
 	int index = FindAccessibilityItem(id);
-	if (index < 0 && !IsListBox() && ViewMode == ListViewViewMode::Details)
+	if (index < 0 && ViewMode == ListViewViewMode::Details)
 	{
 		EnsureAccessibilityDetailsIds();
 		const auto cell = _accessibilityCellKeyById.find(id);
@@ -1656,7 +1870,7 @@ ListView::Layout ListView::CalcLayout() const
 	const float width = (float)this->_size.cx;
 	const float height = (float)this->_size.cy;
 	const bool details = static_cast<ListViewViewMode>(_viewMode)
-		== ListViewViewMode::Details && !IsListBox();
+		== ListViewViewMode::Details;
 	const float headerH = (details && _showColumnHeaders)
 		? (std::max)(0.0f, _headerHeight) : 0.0f;
 	layout.HeaderRect = D2D1::RectF(0.0f, 0.0f, width, std::min(height, headerH));
@@ -1664,8 +1878,7 @@ ListView::Layout ListView::CalcLayout() const
 	layout.ScrollBarSize = (std::max)(6.0f, _scrollBarSize);
 
 	const float availableWidth = (std::max)(0.0f, width - _border * 2.0f);
-	if (static_cast<ListViewViewMode>(_viewMode) == ListViewViewMode::Icon
-		&& !IsListBox())
+	if (static_cast<ListViewViewMode>(_viewMode) == ListViewViewMode::Icon)
 	{
 		layout.ColumnsPerRow = (std::max)(1, (int)std::floor(
 			(std::max)(1.0f, availableWidth)
@@ -1712,15 +1925,13 @@ float ListView::GetEffectiveRowHeight() const
 
 float ListView::GetItemPrimaryExtent() const
 {
-	if (static_cast<ListViewViewMode>(_viewMode) == ListViewViewMode::Icon
-		&& !IsListBox())
+	if (static_cast<ListViewViewMode>(_viewMode) == ListViewViewMode::Icon)
 		return (std::max)(48.0f, _iconItemWidth);
 	return (float)this->_size.cx;
 }
 
 float ListView::GetItemSecondaryExtent() const
 {
-	if (IsListBox()) return GetEffectiveRowHeight();
 	switch (static_cast<ListViewViewMode>(_viewMode))
 	{
 	case ListViewViewMode::Tile:
@@ -1749,7 +1960,7 @@ void ListView::GetVisibleItemRange(
 		|| !std::isfinite(itemExtent) || itemExtent <= 0.0) return;
 
 	const bool icon = static_cast<ListViewViewMode>(_viewMode)
-		== ListViewViewMode::Icon && !IsListBox();
+		== ListViewViewMode::Icon;
 	const int columns = icon ? (std::max)(1, layout.ColumnsPerRow) : 1;
 	const int64_t totalRows = icon
 		? (static_cast<int64_t>(itemCount) + columns - 1) / columns
@@ -1776,8 +1987,7 @@ void ListView::GetVisibleItemRange(
 D2D1_RECT_F ListView::GetItemRect(int index, const Layout& layout) const
 {
 	if (index < 0 || index >= (int)this->Items.size()) return D2D1::RectF();
-	if (static_cast<ListViewViewMode>(_viewMode) == ListViewViewMode::Icon
-		&& !IsListBox())
+	if (static_cast<ListViewViewMode>(_viewMode) == ListViewViewMode::Icon)
 	{
 		const int col = index % layout.ColumnsPerRow;
 		const int row = index / layout.ColumnsPerRow;
@@ -1846,7 +2056,7 @@ void ListView::DrawItems(D2DGraphics* d2d, const Layout& layout)
 		auto rect = GetItemRect(i, layout);
 		if (rect.bottom < layout.ContentRect.top || rect.top > layout.ContentRect.bottom)
 			continue;
-		switch (IsListBox() ? ListViewViewMode::List : this->ViewMode)
+		switch (this->ViewMode)
 		{
 		case ListViewViewMode::Details:
 			DrawDetailsItem(d2d, i, rect);
@@ -2245,6 +2455,7 @@ void ListView::ApplySelectedIndexChange(int oldValue, int newValue)
 	if (newValue >= 0 && newValue < static_cast<int>(this->Items.size()))
 		EnsureVisible(newValue);
 	SelectionChanged(this);
+	NotifySelectedValueChanged();
 }
 
 void ListView::NormalizeSelectionForMode()
@@ -2307,10 +2518,25 @@ void ListView::CommitPreparedSelection(
 			&& focusedIndex < static_cast<int>(this->Items.size()))
 			EnsureVisible(focusedIndex);
 		SelectionChanged(this);
+		NotifySelectedValueChanged();
 		InvalidateVisual();
 	}
 	_selectedIndexProjectionSource =
 		GetPropertyValueSource(L"SelectedIndex");
+}
+
+void ListView::NotifySelectedValueChanged()
+{
+	const auto source = GetPropertyValueSource(L"SelectedValue");
+	if (source != ControlPropertyValueSource::Default)
+	{
+		BindingValue stored;
+		const auto current = GetSelectedValue();
+		if (!TryGetPropertyValue(L"SelectedValue", source, stored)
+			|| !BindingItemValuesEqual(stored, current))
+			(void)TrySetCurrentPropertyValue(L"SelectedValue", current);
+	}
+	_selectedValueChanged(this);
 }
 
 void ListView::SetCurrentSelectedIndex(int value)
@@ -2368,6 +2594,12 @@ void ListView::OnComputedLayoutSizeChanged()
 void ListView::OnItemsCollectionChanged(
 	const CollectionChangedEventArgs& change)
 {
+	if (!_refreshingItemsSource && _itemsSource)
+	{
+		_itemsSourceChanged.Disconnect();
+		_itemSourceObservations.clear();
+		_itemsSource = {};
+	}
 	auto remapIndex = [&](int current)
 	{
 		if (current < 0) return -1;
@@ -2706,11 +2938,11 @@ bool ListView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int lo
 		case VK_UP: MoveSelectionBy(-1); break;
 		case VK_DOWN: MoveSelectionBy(1); break;
 		case VK_LEFT:
-			if (this->ViewMode == ListViewViewMode::Icon && !IsListBox())
+			if (this->ViewMode == ListViewViewMode::Icon)
 				MoveSelectionBy(-1);
 			break;
 		case VK_RIGHT:
-			if (this->ViewMode == ListViewViewMode::Icon && !IsListBox())
+			if (this->ViewMode == ListViewViewMode::Icon)
 				MoveSelectionBy(1);
 			break;
 		case VK_HOME:
@@ -2743,68 +2975,4 @@ bool ListView::ProcessMessage(UINT message, WPARAM wParam, LPARAM lParam, int lo
 	}
 
 	return Control::ProcessMessage(message, wParam, lParam, localX, localY);
-}
-
-UIClass ListBox::Type()
-{
-	return UIClass::UI_ListBox;
-}
-
-ListBox::ListBox(int x, int y, int width, int height)
-	: ListView(x, y, width, height)
-{
-	InitializeListBoxDefaults();
-}
-
-void ListView::InitializeListBoxDefaults() noexcept
-{
-	_viewMode = static_cast<int>(ListViewViewMode::List);
-	_showColumnHeaders = false;
-}
-
-void ListBox::EnsureBindingPropertiesRegistered()
-{
-	ListView::EnsureBindingPropertiesRegistered();
-	static const bool registered = []
-	{
-		ControlPropertyOptions<ListBox, bool> options;
-		options.DefaultValue = false;
-		options.Flags = ControlPropertyFlags::AffectsRender
-			| ControlPropertyFlags::TracksLocalValue;
-		options.Coerce = [](
-			ListBox&, const bool&) -> std::optional<bool>
-		{
-			return false;
-		};
-		options.Changed = [](
-			ListBox& target, const bool&, const bool&)
-		{
-			target.InvalidateVisual();
-		};
-		options.Design.Category = L"Layout";
-		options.Design.CategoryOrder = 100;
-		options.Design.Order = 20;
-		options.Design.Editor = ControlPropertyEditorKind::Boolean;
-		options.Design.Browsable = false;
-		options.Design.Persistence = ControlPropertyPersistence::Metadata;
-		BindingPropertyRegistry::Register<ListBox, bool>(L"ShowColumnHeaders",
-			[](ListBox& target) { return target.ShowColumnHeaders; },
-			[](ListBox& target, const bool& value)
-			{ target.ShowColumnHeaders = value; },
-			[](ListBox& target,
-				BindingPropertyMetadata::ChangeHandler handler,
-				DataSourceUpdateMode)
-			{
-				return target.OnPropertyValueChanged.Subscribe(
-					[handler = std::move(handler)](
-						Control*, const ControlPropertyChangedEventArgs& args)
-					{
-						if (_wcsicmp(args.PropertyName.c_str(), L"ShowColumnHeaders") == 0)
-							handler();
-					});
-			},
-			std::move(options));
-		return true;
-	}();
-	(void)registered;
 }

@@ -3,6 +3,7 @@
 #include "DesignerPropertyCatalog.h"
 #include "DesignerStyleSheetUtils.h"
 #include <algorithm>
+#include <iterator>
 
 namespace
 {
@@ -18,7 +19,9 @@ namespace
 	std::wstring RuleCaption(const DesignerStyleRule& rule, size_t index)
 	{
 		std::wstring selector;
-		if (rule.HasType) selector = DesignerStyleSheetUtils::UIClassName(rule.Type);
+		if (rule.HasType) selector = rule.ComponentType.Empty()
+			? DesignerStyleSheetUtils::UIClassName(rule.Type)
+			: rule.ComponentType.XamlPrefix + L":" + rule.ComponentType.XamlName;
 		if (!rule.Id.empty())
 		{
 			if (!selector.empty()) selector += L" ";
@@ -280,8 +283,17 @@ void StyleSheetEditorDialog::LoadSelectedRule()
 	const auto* rule = index >= 0 && index < static_cast<int>(ResultStyleSheet.Rules.size())
 		? &ResultStyleSheet.Rules[static_cast<size_t>(index)] : nullptr;
 	const auto typeName = rule && rule->HasType
-		? DesignerStyleSheetUtils::UIClassName(rule->Type) : L"Any";
+		? (rule->ComponentType.Empty()
+			? DesignerStyleSheetUtils::UIClassName(rule->Type)
+			: rule->ComponentType.XamlPrefix + L":"
+				+ rule->ComponentType.XamlName)
+		: L"Any";
 	auto typeIt = std::find(_ruleType->Items.begin(), _ruleType->Items.end(), typeName);
+	if (typeIt == _ruleType->Items.end() && rule && !rule->ComponentType.Empty())
+	{
+		_ruleType->Items.push_back(typeName);
+		typeIt = std::prev(_ruleType->Items.end());
+	}
 	SelectComboIndex(_ruleType, typeIt == _ruleType->Items.end()
 		? 0 : static_cast<int>(typeIt - _ruleType->Items.begin()));
 	_ruleId->Text = rule ? rule->Id : L"";
@@ -463,8 +475,21 @@ void StyleSheetEditorDialog::RefreshSummary()
 		text += L"\r\n  " + RuleCaption(rule, index)
 			+ L"  (" + std::to_wstring(rule.Setters.size()) + L" setters, "
 			+ std::to_wstring(rule.Triggers.size()
-				+ (rule.DataConditions.empty() ? 0u : 1u))
+				+ (rule.DataConditions.empty() ? 0u : 1u)
+				+ (rule.PropertyConditions.empty() ? 0u : 1u))
 			+ L" triggers)";
+		if (!rule.PropertyConditions.empty())
+		{
+			text += rule.PropertyConditions.size() > 1
+				? L"\r\n    MultiTrigger " : L"\r\n    Trigger ";
+			for (size_t conditionIndex = 0;
+				conditionIndex < rule.PropertyConditions.size(); ++conditionIndex)
+			{
+				if (conditionIndex != 0) text += L" AND ";
+				const auto& condition = rule.PropertyConditions[conditionIndex];
+				text += condition.Property + L" = " + condition.Value.Text;
+			}
+		}
 		if (!rule.DataConditions.empty())
 		{
 			text += rule.DataConditions.size() > 1
@@ -498,15 +523,24 @@ void StyleSheetEditorDialog::RefreshSummary()
 			}
 			else
 			{
-				text += trigger.Conditions.size() > 1
+				text += trigger.Conditions.size()
+					+ trigger.PropertyConditions.size() > 1
 					? L"\r\n    MultiTrigger " : L"\r\n    Trigger ";
+				bool wroteCondition = false;
 				for (size_t conditionIndex = 0;
 					conditionIndex < trigger.Conditions.size(); ++conditionIndex)
 				{
-					if (conditionIndex != 0) text += L" AND ";
+					if (wroteCondition) text += L" AND ";
 					const auto& condition = trigger.Conditions[conditionIndex];
 					text += condition.Property + L" = "
 						+ (condition.Value ? L"true" : L"false");
+					wroteCondition = true;
+				}
+				for (const auto& condition : trigger.PropertyConditions)
+				{
+					if (wroteCondition) text += L" AND ";
+					text += condition.Property + L" = " + condition.Value.Text;
+					wroteCondition = true;
 				}
 			}
 			for (const auto& setter : trigger.Setters)
@@ -580,6 +614,7 @@ bool StyleSheetEditorDialog::SaveResource()
 		*selectedIt = resource;
 		if (!EqualsName(oldKey, resource.Key))
 		{
+		ResourceRenames.emplace_back(oldKey, resource.Key);
 		for (auto& rule : ResultStyleSheet.Rules)
 		{
 			for (auto& setter : rule.Setters)
@@ -661,7 +696,18 @@ bool StyleSheetEditorDialog::SaveRule()
 	if (!EqualsName(typeName, L"Any"))
 	{
 		rule.HasType = true;
-		if (!DesignerStyleSheetUtils::TryParseUIClass(typeName, rule.Type))
+		const DesignerStyleRule* previous = selected >= 0
+			&& selected < static_cast<int>(ResultStyleSheet.Rules.size())
+			? &ResultStyleSheet.Rules[static_cast<size_t>(selected)] : nullptr;
+		const auto previousComponentName = previous && !previous->ComponentType.Empty()
+			? previous->ComponentType.XamlPrefix + L":"
+				+ previous->ComponentType.XamlName : L"";
+		if (previous && EqualsName(typeName, previousComponentName))
+		{
+			rule.Type = previous->Type;
+			rule.ComponentType = previous->ComponentType;
+		}
+		else if (!DesignerStyleSheetUtils::TryParseUIClass(typeName, rule.Type))
 		{
 			ShowValidation(L"请选择有效的控件类型。", true);
 			return false;

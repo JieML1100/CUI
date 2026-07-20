@@ -8,6 +8,7 @@
 #include "GridPanelDefinitionsEditorDialog.h"
 #include "BindingEditorDialog.h"
 #include "DataContextSchemaEditorDialog.h"
+#include "DataResourcesEditorDialog.h"
 #include "DesignerPropertyCatalog.h"
 #include "DesignerPropertyRowCatalog.h"
 #include "DesignerStyleSheetUtils.h"
@@ -58,13 +59,16 @@ namespace
 	static std::wstring DesignerValueSourceCaption(
 		ControlPropertyValueSource source)
 	{
-		switch (source)
-		{
-		case ControlPropertyValueSource::Theme: return L"主题";
+	switch (source)
+	{
+	case ControlPropertyValueSource::Inherited: return L"继承";
+	case ControlPropertyValueSource::Theme: return L"主题";
 		case ControlPropertyValueSource::Style: return L"样式";
-		case ControlPropertyValueSource::Binding: return L"绑定";
-		case ControlPropertyValueSource::Local: return L"本地";
-		case ControlPropertyValueSource::Default:
+	case ControlPropertyValueSource::Binding: return L"绑定";
+	case ControlPropertyValueSource::Local: return L"本地";
+	case ControlPropertyValueSource::VisualState: return L"视觉状态";
+	case ControlPropertyValueSource::Animation: return L"动画";
+	case ControlPropertyValueSource::Default:
 		default:
 			return L"默认";
 		}
@@ -170,7 +174,7 @@ namespace
 			return DesignerEventCatalog::FindFormEvent(name).has_value();
 		const auto control = binding.GetBoundControl();
 		return control && DesignerEventCatalog::FindControlEvent(
-			control->Type, name, control->CustomEvents).has_value();
+			control->Type, name, control->ComponentEvents).has_value();
 	}
 
 	static std::vector<std::wstring> GetCompatibleHandlerNames(
@@ -789,7 +793,7 @@ void PropertyGrid::PopulateNativeMultiSelectionEventRows(
 {
 	if (!_nativeGrid || controls.empty() || !primaryControl) return;
 	auto common = DesignerEventCatalog::GetControlEvents(
-		primaryControl->Type, primaryControl->CustomEvents);
+		primaryControl->Type, primaryControl->ComponentEvents);
 	for (const auto& control : controls)
 	{
 		if (!control || control == primaryControl) continue;
@@ -797,7 +801,7 @@ void PropertyGrid::PopulateNativeMultiSelectionEventRows(
 			common.begin(), common.end(), [&](DesignerEventDescriptor& candidate)
 			{
 				const auto matching = DesignerEventCatalog::FindControlEvent(
-					control->Type, candidate.Name, control->CustomEvents);
+					control->Type, candidate.Name, control->ComponentEvents);
 				if (!matching || !candidate.SameSignature(*matching)) return true;
 				candidate.IsDefault = candidate.IsDefault && matching->IsDefault;
 				return false;
@@ -818,7 +822,7 @@ void PropertyGrid::PopulateNativeMultiSelectionEventRows(
 		{
 			if (!control) { mixed = true; break; }
 			const auto matching = DesignerEventCatalog::FindControlEvent(
-				control->Type, event.Name, control->CustomEvents);
+				control->Type, event.Name, control->ComponentEvents);
 			if (!matching || !event.SameSignature(*matching))
 			{
 				mixed = true;
@@ -909,8 +913,14 @@ void PropertyGrid::AddNativeEventHandlerManagerRow(
 		control && !control->EventHandlers.empty())
 	{
 		const auto& first = *control->EventHandlers.begin();
+		auto publicEventName = first.first;
+		DesignerComponentType attachedOwner;
+		std::wstring attachedEvent;
+		if (DesignerEventCatalog::TryParseAttachedComponentEventKey(
+			publicEventName, attachedOwner, attachedEvent))
+			publicEventName = std::move(attachedEvent);
 		preferred = DesignerEventCatalog::ResolveHandlerName(
-			first.second, control->Name, first.first);
+			first.second, control->Name, publicEventName);
 	}
 
 	AddNativeActionRow(
@@ -1138,7 +1148,7 @@ std::wstring PropertyGrid::ResolveEventActivationName() const
 		defaultEvent = DesignerEventCatalog::GetDefaultFormEvent();
 	else if (const auto control = _binding.GetBoundControl())
 		defaultEvent = DesignerEventCatalog::GetDefaultControlEvent(
-			control->Type, control->CustomEvents);
+			control->Type, control->ComponentEvents);
 	if (defaultEvent && isVisibleEvent(defaultEvent->Name))
 		return defaultEvent->Name;
 
@@ -1255,6 +1265,11 @@ void PropertyGrid::SubscribePropertyDiagnosticChanges()
 			}));
 		if (const auto theme = runtime->GetThemeStyleSheet())
 			_diagnosticConnections.push_back(theme->SubscribeChanged([this]()
+			{
+				_reloadRequested = true;
+			}));
+		if (const auto resources = runtime->GetResourceDictionary())
+			_diagnosticConnections.push_back(resources->SubscribeChanged([this]()
 			{
 				_reloadRequested = true;
 			}));
@@ -1536,7 +1551,7 @@ DesignerPropertyEditResult PropertyGrid::UpdatePropertyFromTextBox(
 		currentEvent = DesignerEventCatalog::FindFormEvent(propertyName);
 	else if ((eventControl = _binding.GetBoundControl()))
 		currentEvent = DesignerEventCatalog::FindControlEvent(
-			eventControl->Type, propertyName, eventControl->CustomEvents);
+			eventControl->Type, propertyName, eventControl->ComponentEvents);
 	if (currentEvent)
 	{
 		auto* canvas = _binding.GetCanvas();
@@ -1914,7 +1929,7 @@ DesignerPropertyEditResult PropertyGrid::ActivateEventHandler(
 	else if (const auto control = _binding.GetBoundControl())
 	{
 		descriptor = DesignerEventCatalog::FindControlEvent(
-			control->Type, eventName, control->CustomEvents);
+			control->Type, eventName, control->ComponentEvents);
 		subjectName = control->Name;
 		if (const auto found = control->EventHandlers.find(eventName);
 			found != control->EventHandlers.end()) storedHandler = found->second;
@@ -1951,7 +1966,7 @@ DesignerPropertyEditResult PropertyGrid::ActivateDefaultEventHandler(
 		descriptor = DesignerEventCatalog::GetDefaultFormEvent();
 	else if (const auto control = _binding.GetBoundControl())
 		descriptor = DesignerEventCatalog::GetDefaultControlEvent(
-			control->Type, control->CustomEvents);
+			control->Type, control->ComponentEvents);
 	if (!descriptor)
 		return DesignerPropertyEditResult::Failure(
 			L"当前目标没有声明默认事件。");
@@ -2029,6 +2044,52 @@ void PropertyGrid::LoadControls(
 				}
 
 				if (MatchesCurrentFilter(
+					L"Data Resources DataType DataList DataRecord CollectionViewSource DataTemplate ItemsPanelTemplate GroupStyle 数据资源 数据类型 列表 视图 记录 模板 集合面板 分组样式"))
+				{
+					AddNativeActionRow(
+						L"窗体 · 数据", L"数据资源",
+						L"编辑 (" + std::to_wstring(canvas->GetDataTypes().size())
+							+ L" 类型, " + std::to_wstring(canvas->GetDataLists().size())
+							+ L" 列表, " + std::to_wstring(canvas->GetDataTemplates().size())
+							+ L" 数据模板, " + std::to_wstring(canvas->GetCollectionViews().size())
+							+ L" 集合视图, " + std::to_wstring(
+								canvas->GetItemsPanelTemplates().size())
+							+ L" 集合面板模板, "
+							+ std::to_wstring(canvas->GetGroupStyles().size())
+							+ L" 分组样式)…",
+						L"创建和编辑本地 DataType、DataList、DataRecord 与 DataTemplate 标识；CollectionViewSource、GroupStyle 和模板视觉树由 XAML 维护。",
+						[this, canvas]() {
+						if (!this->ParentForm) return;
+						DesignerModel::DesignDocument current;
+						std::wstring error;
+						if (!canvas->BuildDesignDocument(current, &error))
+						{
+							::MessageBoxW(this->ParentForm->Handle, error.c_str(),
+								L"无法建立数据资源文档", MB_OK | MB_ICONWARNING);
+							return;
+						}
+						DataResourcesEditorDialog dialog(current);
+						dialog.ShowDialog(this->ParentForm->Handle);
+						if (!dialog.Applied || dialog.ResultDocument == current) return;
+						auto result = std::move(dialog.ResultDocument);
+						auto transaction = ExecutePropertyCommand(
+							L"DataResources",
+							[canvas, result = std::move(result)](
+								std::wstring& applyError) mutable {
+								return canvas->ApplyDesignDocument(result, &applyError);
+							});
+						if (!transaction)
+						{
+							::MessageBoxW(this->ParentForm->Handle,
+								transaction.Error.c_str(), L"数据资源无效",
+								MB_OK | MB_ICONWARNING);
+							return;
+						}
+						_reloadRequested = true;
+					});
+				}
+
+				if (MatchesCurrentFilter(
 				L"StyleSheet Style 样式表 文档样式"))
 				{
 					const auto& styleSheet = canvas->GetDocumentStyleSheet();
@@ -2048,12 +2109,14 @@ void PropertyGrid::LoadControls(
 						|| dialog.ResultStyleSheet == canvas->GetDocumentStyleSheet()) return;
 
 					auto result = std::move(dialog.ResultStyleSheet);
+					auto resourceRenames = std::move(dialog.ResourceRenames);
 					auto transaction = ExecutePropertyCommand(
 						L"StyleSheet",
-						[canvas, result = std::move(result)](
+						[canvas, result = std::move(result),
+							resourceRenames = std::move(resourceRenames)](
 							std::wstring& error) mutable {
 							return canvas->SetDocumentStyleSheet(
-								std::move(result), &error);
+								std::move(result), &error, resourceRenames);
 						});
 					if (!transaction)
 					{
@@ -2111,13 +2174,9 @@ void PropertyGrid::LoadControls(
 		return;
 	}
 
-	const bool hasCustomBindableProperty = std::any_of(
-		control->CustomProperties.begin(), control->CustomProperties.end(),
-		[](const auto& property) { return property.Bindable; });
-	// 数据绑定使用结构化编辑器；运行时元数据和受验证的自定义 schema 共用同一能力模型。
+	// 数据绑定使用运行时属性元数据驱动的结构化编辑器。
 	if (!events
-		&& (!BindingPropertyRegistry::GetProperties(*targetControl).empty()
-			|| hasCustomBindableProperty)
+		&& !BindingPropertyRegistry::GetProperties(*targetControl).empty()
 		&& MatchesCurrentFilter(L"Binding DataBinding 数据绑定 绑定"))
 	{
 		AddNativeActionRow(
@@ -2129,12 +2188,21 @@ void PropertyGrid::LoadControls(
 			if (!currentControl || !currentControl->ControlInstance || !this->ParentForm) return;
 
 			const auto* canvas = _binding.GetCanvas();
+			std::vector<DesignerBindingElementSource> elementSources;
+			if (canvas)
+				for (const auto& candidate : canvas->GetAllControls())
+					if (candidate && candidate->ControlInstance
+						&& !candidate->Name.empty())
+						elementSources.push_back({
+							candidate->Name, candidate->ControlInstance });
 			BindingEditorDialog dialog(
 				currentControl->ControlInstance,
 				currentControl->DataBindings,
-				canvas ? canvas->GetDataContextSchema() : DesignerDataContextSchema{},
-				canvas ? canvas->GetDesignDataContext().get() : nullptr,
-				currentControl->CustomProperties);
+				canvas ? canvas->GetEffectiveDataContextSchema(*currentControl)
+					: DesignerDataContextSchema{},
+				canvas ? canvas->GetEffectiveDesignDataContextSource(*currentControl)
+					: nullptr,
+				std::move(elementSources));
 			dialog.ShowDialog(this->ParentForm->Handle);
 			if (!dialog.Applied || dialog.ResultBindings == currentControl->DataBindings) return;
 
@@ -2159,7 +2227,7 @@ void PropertyGrid::LoadControls(
 	{
 		PopulateNativeEventRows(
 			DesignerEventCatalog::GetControlEvents(
-				control->Type, control->CustomEvents),
+				control->Type, control->ComponentEvents),
 			control->Name, control->EventHandlers,
 			L"属性 · 事件");
 	}

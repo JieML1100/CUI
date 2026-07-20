@@ -1,6 +1,10 @@
 #include "DesignerBindingUtils.h"
 #include "DesignerDataContextSchemaUtils.h"
+#include "DesignerPropertyCatalog.h"
+#include "DesignerStyleSheetUtils.h"
+#include <Convert.h>
 #include <cwctype>
+#include <utility>
 
 namespace DesignerBindingUtils
 {
@@ -28,6 +32,192 @@ namespace
 		return mode == BindingMode::TwoWay
 			|| mode == BindingMode::OneWayToSource;
 	}
+
+	std::wstring LocalTypeName(const std::wstring& token)
+	{
+		const auto separator = token.find(L':');
+		return separator == std::wstring::npos
+			? token : token.substr(separator + 1);
+	}
+
+	UIClass BaseType(UIClass type) noexcept
+	{
+		switch (type)
+		{
+		case UIClass::UI_LinkLabel:
+			return UIClass::UI_Label;
+		case UIClass::UI_GroupBox:
+		case UIClass::UI_Expander:
+			return UIClass::UI_ContentControl;
+		case UIClass::UI_StackPanel:
+		case UIClass::UI_GridPanel:
+		case UIClass::UI_DockPanel:
+		case UIClass::UI_WrapPanel:
+		case UIClass::UI_RelativePanel:
+		case UIClass::UI_SplitContainer:
+		case UIClass::UI_TabPage:
+		case UIClass::UI_StatusBar:
+		case UIClass::UI_ToolBar:
+		case UIClass::UI_PagedGridView:
+			return UIClass::UI_Panel;
+		case UIClass::UI_ItemsControl:
+			return UIClass::UI_ScrollView;
+		case UIClass::UI_ListBox:
+			return UIClass::UI_ItemsControl;
+		case UIClass::UI_SelectorItem:
+		case UIClass::UI_ComboBoxItem:
+		case UIClass::UI_TreeViewItem:
+			return UIClass::UI_ContentControl;
+		case UIClass::UI_ContentPresenter:
+		case UIClass::UI_ItemsPresenter:
+		case UIClass::UI_ContentControl:
+			return UIClass::UI_GridPanel;
+		case UIClass::UI_Button:
+			return UIClass::UI_ContentControl;
+		case UIClass::UI_SideBar:
+			return UIClass::UI_NavigationView;
+		case UIClass::UI_ScrollView:
+			return UIClass::UI_Panel;
+		case UIClass::UI_Base:
+			return UIClass::UI_Base;
+		default:
+			return UIClass::UI_Base;
+		}
+	}
+
+	bool IsBuiltInTypeMatch(Control& candidate, const std::wstring& typeName)
+	{
+		UIClass requested = UIClass::UI_Base;
+		if (!DesignerStyleSheetUtils::TryParseUIClass(
+			LocalTypeName(typeName), requested)) return false;
+		auto actual = candidate.Type();
+		for (;;)
+		{
+			if (actual == requested) return true;
+			if (actual == UIClass::UI_Base) return false;
+			actual = BaseType(actual);
+		}
+	}
+
+	bool IsAncestorTypeMatch(
+		Control& candidate,
+		const DesignerDataBinding& binding)
+	{
+		if (binding.AncestorTypeNamespace.empty())
+			return IsBuiltInTypeMatch(candidate, binding.AncestorType);
+		return candidate.GetDeclarativeTypeNamespace()
+			== binding.AncestorTypeNamespace
+			&& EqualsIgnoreCase(candidate.GetDeclarativeTypeName(),
+				LocalTypeName(binding.AncestorType));
+	}
+
+	class AncestorBindingSource final : public IBindingSource
+	{
+	public:
+		AncestorBindingSource(Control& target, DesignerDataBinding binding)
+			: _target(&target), _binding(std::move(binding))
+		{
+			Attach();
+		}
+
+		bool TryGetValue(const std::wstring& propertyName,
+			BindingValue& out) const override
+		{
+			return _source && _source->TryGetValue(propertyName, out);
+		}
+
+		bool TrySetValue(const std::wstring& propertyName,
+			const BindingValue& value) override
+		{
+			return _source && _source->TrySetValue(propertyName, value);
+		}
+
+		bool TryGetPropertyMetadata(const std::wstring& propertyName,
+			BindingSourcePropertyMetadata& out) const override
+		{
+			return _source && _source->TryGetPropertyMetadata(propertyName, out);
+		}
+
+		std::vector<BindingSourcePropertyMetadata> GetProperties() const override
+		{
+			return _source ? _source->GetProperties()
+				: std::vector<BindingSourcePropertyMetadata>{};
+		}
+
+		std::vector<BindingValidationIssue> GetValidationIssues(
+			const std::wstring& propertyName) const override
+		{
+			return _source ? _source->GetValidationIssues(propertyName)
+				: std::vector<BindingValidationIssue>{};
+		}
+
+		BindingValidationChangedEvent* ValidationChanged() noexcept override
+		{
+			return &_validationChanged;
+		}
+
+		PropertyChangedEvent& PropertyChanged() override
+		{
+			return _propertyChanged;
+		}
+
+	private:
+		Control* _target = nullptr;
+		DesignerDataBinding _binding;
+		Control* _source = nullptr;
+		std::vector<EventConnection> _parentConnections;
+		EventConnection _sourcePropertyConnection;
+		EventConnection _sourceValidationConnection;
+		PropertyChangedEvent _propertyChanged;
+		BindingValidationChangedEvent _validationChanged;
+		bool _attaching = false;
+
+		void Attach()
+		{
+			if (_attaching) return;
+			_attaching = true;
+			_parentConnections.clear();
+			_sourcePropertyConnection.Disconnect();
+			_sourceValidationConnection.Disconnect();
+
+			if (_target)
+			{
+				for (auto* item = _target; item; item = item->Parent)
+				{
+					_parentConnections.push_back(
+						item->OnParentChanged.Subscribe(
+							[this](Control*, Control*, Control*) { Attach(); }));
+				}
+			}
+			auto* next = _target
+				? DesignerBindingUtils::FindAncestorSource(*_target, _binding)
+				: nullptr;
+			const bool changed = next != _source;
+			_source = next;
+			if (_source)
+			{
+				_sourcePropertyConnection = _source->PropertyChanged().Subscribe(
+					[this](const PropertyChangedEventArgs& e)
+					{
+						_propertyChanged.Notify(e.PropertyName);
+					});
+				if (auto* validation = _source->ValidationChanged())
+				{
+					_sourceValidationConnection = validation->Subscribe(
+						[this](const BindingValidationChangedEventArgs& e)
+						{
+							_validationChanged.Notify(e.PropertyName);
+						});
+				}
+			}
+			_attaching = false;
+			if (changed)
+			{
+				_propertyChanged.Notify(L"");
+				_validationChanged.Notify(L"");
+			}
+		}
+	};
 }
 
 std::wstring Trim(const std::wstring& value)
@@ -41,22 +231,476 @@ std::wstring Trim(const std::wstring& value)
 
 bool IsValidSourcePath(const std::wstring& path)
 {
-	size_t start = 0;
-	while (start <= path.size())
+	std::vector<BindingPathStep> steps;
+	return TryParseBindingPropertyPath(path, steps);
+}
+
+DesignerDataContextSchema BuildSourceSchema(const IBindingSource& source)
+{
+	DesignerDataContextSchema schema;
+	std::wstring ignored;
+	if (!DesignerDataContextSchemaUtils::BuildFromBindingSource(
+		source, schema, &ignored)) schema.clear();
+	DesignerDataContextSchemaUtils::Canonicalize(schema);
+	return schema;
+}
+
+void WriteOptionalLiteral(
+	DesignerModel::DesignValue& object,
+	const char* valueKey,
+	const char* kindKey,
+	const std::optional<DesignerStyleValue>& value)
+{
+	if (!value) return;
+	object[valueKey] = Convert::UnicodeToUtf8(value->Text);
+	object[kindKey] = Convert::UnicodeToUtf8(
+		DesignerStyleSheetUtils::ValueKindName(value->Kind));
+}
+
+bool TryReadOptionalLiteral(
+	const DesignerModel::DesignValue& object,
+	const char* valueKey,
+	const char* kindKey,
+	std::optional<DesignerStyleValue>& value,
+	std::wstring* outError)
+{
+	value.reset();
+	if (!object.is_object() || !object.contains(valueKey))
 	{
-		const size_t separator = path.find(L'.', start);
-		const size_t end = separator == std::wstring::npos ? path.size() : separator;
-		if (Trim(path.substr(start, end - start)).empty()) return false;
-		if (separator == std::wstring::npos) return true;
-		start = separator + 1;
+		if (outError) outError->clear();
+		return true;
 	}
-	return false;
+	if (!object[valueKey].is_string())
+	{
+		if (outError) *outError = L"Binding 缺省值必须是字符串字面量。";
+		return false;
+	}
+	DesignerStyleValueKind kind = DesignerStyleValueKind::String;
+	if (object.contains(kindKey))
+	{
+		if (!object[kindKey].is_string()
+			|| !DesignerStyleSheetUtils::TryParseValueKind(
+				Convert::Utf8ToUnicode(object[kindKey].get<std::string>()), kind))
+		{
+			if (outError) *outError = L"Binding 缺省值类型无效。";
+			return false;
+		}
+	}
+	value = DesignerStyleValue{
+		kind, Convert::Utf8ToUnicode(object[valueKey].get<std::string>()) };
+	if (outError) outError->clear();
+	return true;
+}
+
+bool TryConvertOptionalLiteral(
+	const std::optional<DesignerStyleValue>& value,
+	std::optional<BindingValue>& output,
+	std::wstring* outError)
+{
+	output.reset();
+	if (!value)
+	{
+		if (outError) outError->clear();
+		return true;
+	}
+	BindingValue converted;
+	if (!DesignerStyleSheetUtils::TryConvertValue(
+		*value, converted, outError)) return false;
+	output = std::move(converted);
+	if (outError) outError->clear();
+	return true;
+}
+
+DesignerModel::DesignValue WriteBindingDefinition(
+	const DesignerDataBinding& binding)
+{
+	DesignerModel::DesignValue result{
+		{ "mode", static_cast<int>(binding.Mode) },
+		{ "updateMode", static_cast<int>(binding.UpdateMode) }
+	};
+	if (binding.IsMultiBinding())
+	{
+		result["kind"] = "MultiBinding";
+		auto children = DesignerModel::DesignValue::array();
+		for (const auto& child : binding.ChildBindings)
+			children.push_back(WriteBindingDefinition(child));
+		result["bindings"] = std::move(children);
+	}
+	else
+	{
+		result["source"] = Convert::UnicodeToUtf8(binding.SourceProperty);
+		if (!binding.ElementName.empty())
+			result["elementName"] = Convert::UnicodeToUtf8(binding.ElementName);
+		if (binding.RelativeSource != DesignerBindingRelativeSource::None)
+		{
+			result["relativeSource"] = binding.RelativeSource
+				== DesignerBindingRelativeSource::Self ? "Self"
+				: binding.RelativeSource
+					== DesignerBindingRelativeSource::TemplatedParent
+					? "TemplatedParent" : "FindAncestor";
+			if (binding.RelativeSource
+				== DesignerBindingRelativeSource::FindAncestor)
+			{
+				result["ancestorType"] = Convert::UnicodeToUtf8(
+					binding.AncestorType);
+				if (!binding.AncestorTypeNamespace.empty())
+					result["ancestorTypeNamespace"] = Convert::UnicodeToUtf8(
+						binding.AncestorTypeNamespace);
+				if (binding.AncestorLevel != 1)
+					result["ancestorLevel"] = binding.AncestorLevel;
+			}
+		}
+	}
+	if (!binding.Converter.empty())
+		result["converter"] = Convert::UnicodeToUtf8(binding.Converter);
+	WriteOptionalLiteral(
+		result, "fallbackValue", "fallbackValueKind", binding.FallbackValue);
+	WriteOptionalLiteral(
+		result, "targetNullValue", "targetNullValueKind", binding.TargetNullValue);
+	WriteOptionalLiteral(result, "converterParameter", "converterParameterKind",
+		binding.ConverterParameter);
+	if (binding.StringFormat)
+		result["stringFormat"] = Convert::UnicodeToUtf8(*binding.StringFormat);
+	return result;
+}
+
+namespace
+{
+	bool TryReadBindingDefinitionCore(
+		const DesignerModel::DesignValue& value,
+		DesignerDataBinding& binding,
+		std::wstring* outError,
+		size_t depth)
+	{
+		auto fail = [&](const std::wstring& message)
+		{
+			if (outError) *outError = message;
+			return false;
+		};
+		if (!value.is_object() || depth > 32)
+			return fail(L"Binding 定义无效或嵌套过深。");
+		binding = {};
+		const int mode = value.value(
+			"mode", static_cast<int>(BindingMode::OneWay));
+		const int updateMode = value.value("updateMode",
+			static_cast<int>(DataSourceUpdateMode::OnPropertyChanged));
+		if (mode < static_cast<int>(BindingMode::OneWay)
+			|| mode > static_cast<int>(BindingMode::Default)
+			|| updateMode < static_cast<int>(
+				DataSourceUpdateMode::OnPropertyChanged)
+			|| updateMode > static_cast<int>(DataSourceUpdateMode::Default))
+			return fail(L"Binding Mode 或 UpdateMode 无效。");
+		binding.Mode = static_cast<BindingMode>(mode);
+		binding.UpdateMode = static_cast<DataSourceUpdateMode>(updateMode);
+		if (value.contains("converter"))
+		{
+			if (!value["converter"].is_string())
+				return fail(L"Binding Converter 必须是字符串。");
+			binding.Converter = Convert::Utf8ToUnicode(
+				value["converter"].get<std::string>());
+		}
+		std::wstring literalError;
+		if (!TryReadOptionalLiteral(value, "fallbackValue", "fallbackValueKind",
+			binding.FallbackValue, &literalError)
+			|| !TryReadOptionalLiteral(value, "targetNullValue",
+				"targetNullValueKind", binding.TargetNullValue, &literalError)
+			|| !TryReadOptionalLiteral(value, "converterParameter",
+				"converterParameterKind", binding.ConverterParameter,
+				&literalError))
+			return fail(literalError);
+		if (value.contains("stringFormat"))
+		{
+			if (!value["stringFormat"].is_string())
+				return fail(L"Binding StringFormat 必须是字符串。");
+			binding.StringFormat = Convert::Utf8ToUnicode(
+				value["stringFormat"].get<std::string>());
+		}
+
+		const bool multi = value.value("kind", std::string{}) == "MultiBinding"
+			|| value.contains("bindings");
+		if (multi)
+		{
+			if (!value.contains("bindings") || !value["bindings"].is_array()
+				|| value["bindings"].size() < 2)
+				return fail(L"MultiBinding 至少需要两个 Binding 子项。");
+			for (const auto& childValue : value["bindings"].ArrayItems())
+			{
+				DesignerDataBinding child;
+				if (!TryReadBindingDefinitionCore(
+					childValue, child, outError, depth + 1)) return false;
+				if (child.IsMultiBinding())
+					return fail(L"MultiBinding 不支持嵌套 MultiBinding。");
+				binding.ChildBindings.push_back(std::move(child));
+			}
+			if (!binding.Converter.empty())
+			{
+				if (binding.StringFormat
+					&& !IsValidBindingStringFormat(*binding.StringFormat))
+					return fail(L"MultiBinding StringFormat 语法无效。");
+			}
+			else if (!binding.StringFormat
+				|| !IsValidMultiBindingStringFormat(
+					*binding.StringFormat, binding.ChildBindings.size()))
+				return fail(L"MultiBinding 需要 Converter 或有效的 StringFormat。");
+		}
+		else
+		{
+			if (!value.contains("source") || !value["source"].is_string())
+				return fail(L"Binding Source 路径无效。");
+			binding.SourceProperty = Convert::Utf8ToUnicode(
+				value["source"].get<std::string>());
+			if (value.contains("elementName"))
+			{
+				if (!value["elementName"].is_string())
+					return fail(L"Binding ElementName 无效。");
+				binding.ElementName = Convert::Utf8ToUnicode(
+					value["elementName"].get<std::string>());
+			}
+			const auto relative = Convert::Utf8ToUnicode(
+				value.value("relativeSource", std::string{}));
+			if (relative == L"Self")
+				binding.RelativeSource = DesignerBindingRelativeSource::Self;
+			else if (relative == L"TemplatedParent")
+				binding.RelativeSource = DesignerBindingRelativeSource::TemplatedParent;
+			else if (relative == L"FindAncestor")
+				binding.RelativeSource = DesignerBindingRelativeSource::FindAncestor;
+			else if (!relative.empty())
+				return fail(L"Binding RelativeSource 无效。");
+			binding.AncestorType = Convert::Utf8ToUnicode(
+				value.value("ancestorType", std::string{}));
+			binding.AncestorTypeNamespace = Convert::Utf8ToUnicode(
+				value.value("ancestorTypeNamespace", std::string{}));
+			binding.AncestorLevel = value.value("ancestorLevel", 1);
+			if (binding.StringFormat
+				&& !IsValidBindingStringFormat(*binding.StringFormat))
+				return fail(L"Binding StringFormat 语法无效。");
+		}
+		if (outError) outError->clear();
+		return true;
+	}
+}
+
+bool TryReadBindingDefinition(
+	const DesignerModel::DesignValue& value,
+	DesignerDataBinding& binding,
+	std::wstring* outError)
+{
+	return TryReadBindingDefinitionCore(value, binding, outError, 0);
+}
+
+bool VisitLeafBindingDefinitions(
+	const DesignerModel::DesignValue& value,
+	const std::function<bool(const DesignerModel::DesignValue&)>& visitor,
+	std::wstring* outError)
+{
+	std::function<bool(const DesignerModel::DesignValue&, size_t)> visit;
+	visit = [&](const DesignerModel::DesignValue& item, size_t depth)
+	{
+		if (!item.is_object() || depth > 32)
+		{
+			if (outError) *outError = L"Binding 定义无效或嵌套过深。";
+			return false;
+		}
+		if (!item.contains("bindings")) return visitor(item);
+		if (!item["bindings"].is_array())
+		{
+			if (outError) *outError = L"MultiBinding 子项必须是数组。";
+			return false;
+		}
+		for (const auto& child : item["bindings"].ArrayItems())
+			if (!visit(child, depth + 1)) return false;
+		return true;
+	};
+	const bool result = visit(value, 0);
+	if (result && outError) outError->clear();
+	return result;
+}
+
+bool VisitLeafBindingDefinitions(
+	DesignerModel::DesignValue& value,
+	const std::function<bool(DesignerModel::DesignValue&)>& visitor,
+	std::wstring* outError)
+{
+	std::function<bool(DesignerModel::DesignValue&, size_t)> visit;
+	visit = [&](DesignerModel::DesignValue& item, size_t depth)
+	{
+		if (!item.is_object() || depth > 32)
+		{
+			if (outError) *outError = L"Binding 定义无效或嵌套过深。";
+			return false;
+		}
+		if (!item.contains("bindings")) return visitor(item);
+		if (!item["bindings"].is_array())
+		{
+			if (outError) *outError = L"MultiBinding 子项必须是数组。";
+			return false;
+		}
+		for (auto& child : item["bindings"].ArrayItems())
+			if (!visit(child, depth + 1)) return false;
+		return true;
+	};
+	const bool result = visit(value, 0);
+	if (result && outError) outError->clear();
+	return result;
+}
+
+bool InstallBinding(
+	Control& target,
+	const std::wstring& targetProperty,
+	const DesignerDataBinding& binding,
+	const BindingSourceResolver& resolveSource,
+	std::wstring* outError)
+{
+	auto fail = [&](const std::wstring& message)
+	{
+		if (outError) *outError = message;
+		return false;
+	};
+	auto convertOptions = [&](const DesignerDataBinding& item,
+		std::optional<BindingValue>& fallbackValue,
+		std::optional<BindingValue>& targetNullValue,
+		std::optional<BindingValue>& converterParameter)
+	{
+		std::wstring literalError;
+		if (!TryConvertOptionalLiteral(
+			item.FallbackValue, fallbackValue, &literalError)
+			|| !TryConvertOptionalLiteral(
+				item.TargetNullValue, targetNullValue, &literalError)
+			|| !TryConvertOptionalLiteral(
+				item.ConverterParameter, converterParameter, &literalError))
+			return fail(literalError);
+		return true;
+	};
+
+	std::optional<BindingValue> fallbackValue;
+	std::optional<BindingValue> targetNullValue;
+	std::optional<BindingValue> converterParameter;
+	if (!convertOptions(binding, fallbackValue,
+		targetNullValue, converterParameter)) return false;
+
+	if (binding.IsMultiBinding())
+	{
+		std::shared_ptr<const IMultiBindingValueConverter> converter;
+		const auto converterName = Trim(binding.Converter);
+		if (!converterName.empty())
+		{
+			converter = MultiBindingValueConverterRegistry::Create(converterName);
+			if (!converter)
+				return fail(L"无法创建 MultiBinding Converter：" + converterName);
+		}
+		std::vector<MultiBindingSource> sources;
+		sources.reserve(binding.ChildBindings.size());
+		for (size_t index = 0; index < binding.ChildBindings.size(); ++index)
+		{
+			const auto& child = binding.ChildBindings[index];
+			ResolvedBindingSource resolved;
+			std::wstring resolveError;
+			if (!resolveSource(child, resolved, &resolveError)
+				|| (!resolved.Source && !resolved.OwnedSource))
+				return fail(L"第 " + std::to_wstring(index + 1)
+					+ L" 个 MultiBinding 源无法解析"
+					+ (resolveError.empty() ? L"。" : L"：" + resolveError));
+			std::shared_ptr<const IBindingValueConverter> childConverter;
+			const auto childConverterName = Trim(child.Converter);
+			if (!childConverterName.empty())
+			{
+				childConverter = BindingValueConverterRegistry::Create(
+					childConverterName);
+				if (!childConverter)
+					return fail(L"无法创建第 " + std::to_wstring(index + 1)
+						+ L" 个 Binding Converter：" + childConverterName);
+			}
+			std::optional<BindingValue> childFallback;
+			std::optional<BindingValue> childTargetNull;
+			std::optional<BindingValue> childParameter;
+			if (!convertOptions(child, childFallback,
+				childTargetNull, childParameter)) return false;
+			MultiBindingSource source = resolved.OwnedSource
+				? MultiBindingSource(std::move(resolved.OwnedSource),
+					child.SourceProperty, std::move(childConverter),
+					std::move(childFallback), std::move(childTargetNull),
+					std::move(childParameter), child.StringFormat)
+				: MultiBindingSource(resolved.Source, child.SourceProperty,
+					std::move(childConverter), std::move(childFallback),
+					std::move(childTargetNull), std::move(childParameter),
+					child.StringFormat);
+			source.Mode = child.Mode;
+			source.UpdateMode = child.UpdateMode;
+			sources.push_back(std::move(source));
+		}
+		if (!target.DataBindings.AddMulti(targetProperty, std::move(sources),
+			binding.Mode, binding.UpdateMode, std::move(converter),
+			std::move(fallbackValue), std::move(targetNullValue),
+			std::move(converterParameter), binding.StringFormat))
+			return fail(L"MultiBinding 创建失败："
+				+ std::wstring(target.DataBindings.LastErrorMessage()));
+	}
+	else
+	{
+		ResolvedBindingSource resolved;
+		std::wstring resolveError;
+		if (!resolveSource(binding, resolved, &resolveError)
+			|| (!resolved.Source && !resolved.OwnedSource))
+			return fail(resolveError.empty()
+				? L"Binding 源无法解析。" : resolveError);
+		std::shared_ptr<const IBindingValueConverter> converter;
+		const auto converterName = Trim(binding.Converter);
+		if (!converterName.empty())
+		{
+			converter = BindingValueConverterRegistry::Create(converterName);
+			if (!converter)
+				return fail(L"无法创建 Converter：" + converterName);
+		}
+		auto* installed = resolved.OwnedSource
+			? target.DataBindings.Add(targetProperty,
+				std::move(resolved.OwnedSource), binding.SourceProperty,
+				binding.Mode, binding.UpdateMode, std::move(converter),
+				std::move(fallbackValue), std::move(targetNullValue),
+				std::move(converterParameter), binding.StringFormat)
+			: target.DataBindings.Add(targetProperty, resolved.Source,
+				binding.SourceProperty, binding.Mode, binding.UpdateMode,
+				std::move(converter), std::move(fallbackValue),
+				std::move(targetNullValue), std::move(converterParameter),
+				binding.StringFormat);
+		if (!installed)
+			return fail(L"Binding 创建失败："
+				+ std::wstring(target.DataBindings.LastErrorMessage()));
+	}
+	if (outError) outError->clear();
+	return true;
+}
+
+Control* FindAncestorSource(
+	Control& target,
+	const DesignerDataBinding& binding) noexcept
+{
+	if (binding.RelativeSource != DesignerBindingRelativeSource::FindAncestor
+		|| binding.AncestorLevel < 1 || Trim(binding.AncestorType).empty())
+		return nullptr;
+	int remaining = binding.AncestorLevel;
+	for (auto* candidate = target.Parent; candidate; candidate = candidate->Parent)
+	{
+		if (!IsAncestorTypeMatch(*candidate, binding)) continue;
+		if (--remaining == 0) return candidate;
+	}
+	return nullptr;
+}
+
+BindingSourceReference CreateAncestorSource(
+	Control& target,
+	const DesignerDataBinding& binding)
+{
+	if (binding.RelativeSource != DesignerBindingRelativeSource::FindAncestor)
+		return {};
+	return BindingSourceReference(
+		std::make_shared<AncestorBindingSource>(target, binding));
 }
 
 const wchar_t* BindingModeName(BindingMode mode) noexcept
 {
 	switch (mode)
 	{
+	case BindingMode::Default: return L"Default";
 	case BindingMode::OneWay: return L"OneWay";
 	case BindingMode::TwoWay: return L"TwoWay";
 	case BindingMode::OneWayToSource: return L"OneWayToSource";
@@ -68,6 +712,7 @@ const wchar_t* BindingModeName(BindingMode mode) noexcept
 bool TryParseBindingMode(const std::wstring& value, BindingMode& mode)
 {
 	const auto text = Trim(value);
+	if (EqualsIgnoreCase(text, L"Default")) { mode = BindingMode::Default; return true; }
 	if (EqualsIgnoreCase(text, L"OneWay")) { mode = BindingMode::OneWay; return true; }
 	if (EqualsIgnoreCase(text, L"TwoWay")) { mode = BindingMode::TwoWay; return true; }
 	if (EqualsIgnoreCase(text, L"OneWayToSource")) { mode = BindingMode::OneWayToSource; return true; }
@@ -75,10 +720,33 @@ bool TryParseBindingMode(const std::wstring& value, BindingMode& mode)
 	return false;
 }
 
+BindingMode ResolveBindingMode(
+	const TargetMetadata& target,
+	BindingMode requested) noexcept
+{
+	if (requested != BindingMode::Default) return requested;
+	return HasControlPropertyFlag(
+		target.Flags, ControlPropertyFlags::BindsTwoWayByDefault)
+		? BindingMode::TwoWay
+		: BindingMode::OneWay;
+}
+
+DataSourceUpdateMode ResolveUpdateMode(
+	const TargetMetadata& target,
+	DataSourceUpdateMode requested) noexcept
+{
+	return requested == DataSourceUpdateMode::Default
+		? (target.DefaultUpdateMode == DataSourceUpdateMode::Default
+			? DataSourceUpdateMode::OnPropertyChanged
+			: target.DefaultUpdateMode)
+		: requested;
+}
+
 const wchar_t* UpdateModeName(DataSourceUpdateMode mode) noexcept
 {
 	switch (mode)
 	{
+	case DataSourceUpdateMode::Default: return L"Default";
 	case DataSourceUpdateMode::OnPropertyChanged: return L"OnPropertyChanged";
 	case DataSourceUpdateMode::OnValidation: return L"OnValidation";
 	case DataSourceUpdateMode::Never: return L"Never";
@@ -86,20 +754,41 @@ const wchar_t* UpdateModeName(DataSourceUpdateMode mode) noexcept
 	return L"OnPropertyChanged";
 }
 
+const wchar_t* UpdateSourceTriggerName(DataSourceUpdateMode mode) noexcept
+{
+	switch (mode)
+	{
+	case DataSourceUpdateMode::Default: return L"Default";
+	case DataSourceUpdateMode::OnPropertyChanged: return L"PropertyChanged";
+	case DataSourceUpdateMode::OnValidation: return L"LostFocus";
+	case DataSourceUpdateMode::Never: return L"Explicit";
+	}
+	return L"Default";
+}
+
 bool TryParseUpdateMode(const std::wstring& value, DataSourceUpdateMode& mode)
 {
 	const auto text = Trim(value);
-	if (EqualsIgnoreCase(text, L"OnPropertyChanged"))
+	if (EqualsIgnoreCase(text, L"Default"))
+	{
+		mode = DataSourceUpdateMode::Default;
+		return true;
+	}
+	if (EqualsIgnoreCase(text, L"OnPropertyChanged")
+		|| EqualsIgnoreCase(text, L"PropertyChanged"))
 	{
 		mode = DataSourceUpdateMode::OnPropertyChanged;
 		return true;
 	}
-	if (EqualsIgnoreCase(text, L"OnValidation"))
+	if (EqualsIgnoreCase(text, L"OnValidation")
+		|| EqualsIgnoreCase(text, L"LostFocus")
+		|| EqualsIgnoreCase(text, L"Validation"))
 	{
 		mode = DataSourceUpdateMode::OnValidation;
 		return true;
 	}
-	if (EqualsIgnoreCase(text, L"Never"))
+	if (EqualsIgnoreCase(text, L"Never")
+		|| EqualsIgnoreCase(text, L"Explicit"))
 	{
 		mode = DataSourceUpdateMode::Never;
 		return true;
@@ -127,6 +816,8 @@ bool IsModeStructurallyCompatible(
 	const BindingPropertyMetadata& metadata,
 	BindingMode mode) noexcept
 {
+	if (metadata.IsReadOnly()) return false;
+	mode = ::ResolveBindingMode(metadata, mode);
 	return (!IsSourceToTarget(mode) || metadata.CanWrite())
 		&& (!IsTargetToSource(mode) || metadata.CanRead());
 }
@@ -135,9 +826,12 @@ bool IsCompatible(
 	const BindingPropertyMetadata& metadata,
 	const DesignerDataBinding& binding) noexcept
 {
-	return IsModeStructurallyCompatible(metadata, binding.Mode)
-		&& (!IsTargetToSource(binding.Mode)
-			|| binding.UpdateMode == DataSourceUpdateMode::Never
+	const auto mode = ::ResolveBindingMode(metadata, binding.Mode);
+	const auto updateMode = ::ResolveDataSourceUpdateMode(
+		metadata, binding.UpdateMode);
+	return IsModeStructurallyCompatible(metadata, mode)
+		&& (!IsTargetToSource(mode)
+			|| updateMode == DataSourceUpdateMode::Never
 			|| metadata.CanObserve());
 }
 
@@ -145,8 +839,21 @@ bool IsModeStructurallyCompatible(
 	const TargetMetadata& metadata,
 	BindingMode mode) noexcept
 {
+	if (metadata.IsReadOnly) return false;
+	mode = ResolveBindingMode(metadata, mode);
 	return (!IsSourceToTarget(mode) || metadata.CanWrite)
 		&& (!IsTargetToSource(mode) || metadata.CanRead);
+}
+
+TargetMetadata ProjectTargetMetadata(
+	const BindingPropertyMetadata& metadata)
+{
+	return {
+		metadata.Name(), metadata.ValueKind(),
+		metadata.CanRead(), metadata.CanWrite(), metadata.CanObserve(),
+		DesignerDataContextSchemaUtils::ObjectKindForValueType(
+			metadata.ValueType()), metadata.Flags(),
+		metadata.DefaultUpdateMode(), metadata.IsReadOnly() };
 }
 
 bool ValidateTarget(
@@ -160,22 +867,185 @@ bool ValidateTarget(
 		if (outError) *outError = L"请选择目标属性。";
 		return false;
 	}
+	if (target.IsReadOnly)
+	{
+		if (outError) *outError = L"只读属性不能作为 Binding 或 MultiBinding 目标。";
+		return false;
+	}
+	const auto effectiveMode = ResolveBindingMode(target, binding.Mode);
+	const auto effectiveUpdateMode = ResolveUpdateMode(
+		target, binding.UpdateMode);
+	if (binding.IsMultiBinding())
+	{
+		if (!binding.SourceProperty.empty() || !binding.ElementName.empty()
+			|| binding.RelativeSource != DesignerBindingRelativeSource::None
+			|| !binding.AncestorType.empty()
+			|| !binding.AncestorTypeNamespace.empty()
+			|| binding.AncestorLevel != 1)
+		{
+			if (outError) *outError = L"MultiBinding 的源只能由 Binding 子项声明。";
+			return false;
+		}
+		if (binding.ChildBindings.size() < 2)
+		{
+			if (outError) *outError = L"MultiBinding 至少需要两个 Binding 子项。";
+			return false;
+		}
+		if (!IsModeStructurallyCompatible(target, effectiveMode))
+		{
+			if (outError) *outError = L"目标属性的读写能力不支持 "
+				+ std::wstring(BindingModeName(effectiveMode)) + L"。";
+			return false;
+		}
+		const bool targetToSource = IsTargetToSource(effectiveMode);
+		if (targetToSource
+			&& effectiveUpdateMode != DataSourceUpdateMode::Never
+			&& !target.CanObserve)
+		{
+			if (outError) *outError = L"该目标属性没有变更通知；请使用 Never 更新策略或改用单向模式。";
+			return false;
+		}
+		const auto converterName = Trim(binding.Converter);
+		if (!binding.Converter.empty() && converterName.empty())
+		{
+			if (outError) *outError = L"Converter 名称不能为空白。";
+			return false;
+		}
+		if (binding.StringFormat
+			&& target.ValueKind != BindingValueKind::String)
+		{
+			if (outError) *outError = L"MultiBinding StringFormat 只能用于 String 目标属性。";
+			return false;
+		}
+		if (converterName.empty())
+		{
+			if (!binding.StringFormat
+				|| !IsValidMultiBindingStringFormat(
+					*binding.StringFormat, binding.ChildBindings.size()))
+			{
+				if (outError) *outError = L"MultiBinding 需要 Converter 或有效的 StringFormat。";
+				return false;
+			}
+		}
+		else
+		{
+			if (binding.StringFormat
+				&& !IsValidBindingStringFormat(*binding.StringFormat))
+			{
+				if (outError) *outError = L"MultiBinding Converter 后的 StringFormat 语法无效。";
+				return false;
+			}
+			if (const auto converter =
+				MultiBindingValueConverterRegistry::Find(converterName))
+			{
+				if (converter->MinimumInputCount > binding.ChildBindings.size())
+				{
+					if (outError) *outError = L"MultiBinding Converter "
+						+ converter->Name + L" 需要更多源值。";
+					return false;
+				}
+				if (converter->TargetKind != BindingValueKind::Empty
+					&& converter->TargetKind != target.ValueKind)
+				{
+					if (outError) *outError = L"MultiBinding Converter "
+						+ converter->Name + L" 的目标值类型与属性不兼容。";
+					return false;
+				}
+				if (targetToSource && !converter->CanConvertBack)
+				{
+					if (outError) *outError = L"MultiBinding Converter "
+						+ converter->Name + L" 不支持 ConvertBack。";
+					return false;
+				}
+			}
+		}
+		if (targetToSource && converterName.empty())
+		{
+			if (outError) *outError = L"可回写的 MultiBinding 必须声明 Converter。";
+			return false;
+		}
+		for (size_t index = 0; index < binding.ChildBindings.size(); ++index)
+		{
+			auto child = binding.ChildBindings[index];
+			if (child.IsMultiBinding())
+			{
+				if (outError) *outError = L"MultiBinding 不支持嵌套 MultiBinding。";
+				return false;
+			}
+			TargetMetadata slot{
+				L"MultiBinding slot", child.StringFormat
+					? BindingValueKind::String : BindingValueKind::Empty,
+				true, true, true, DesignerDataObjectKind::Opaque };
+			if (child.Mode == BindingMode::Default)
+				child.Mode = effectiveMode;
+			if (child.UpdateMode == DataSourceUpdateMode::Default)
+				child.UpdateMode = effectiveUpdateMode;
+			std::wstring childError;
+			if (!ValidateTarget(slot, child, &childError, sourceSchema))
+			{
+				if (outError) *outError = L"MultiBinding 第 "
+					+ std::to_wstring(index + 1) + L" 个源无效：" + childError;
+				return false;
+			}
+		}
+		if (outError) outError->clear();
+		return true;
+	}
+	if (!binding.ElementName.empty()
+		&& binding.RelativeSource != DesignerBindingRelativeSource::None)
+	{
+		if (outError) *outError = L"ElementName 与 RelativeSource 不能同时使用。";
+		return false;
+	}
+	if (binding.RelativeSource == DesignerBindingRelativeSource::FindAncestor)
+	{
+		if (Trim(binding.AncestorType).empty() || binding.AncestorLevel < 1)
+		{
+			if (outError) *outError = L"FindAncestor 需要有效的 AncestorType 和 AncestorLevel。";
+			return false;
+		}
+		if (binding.AncestorTypeNamespace.empty())
+		{
+			UIClass type = UIClass::UI_Base;
+			if (!DesignerStyleSheetUtils::TryParseUIClass(
+				LocalTypeName(binding.AncestorType), type))
+			{
+				if (outError) *outError = L"FindAncestor 的 AncestorType 未解析为内置控件或 XAML 组件。";
+				return false;
+			}
+		}
+	}
+	else if (!binding.AncestorType.empty()
+		|| !binding.AncestorTypeNamespace.empty() || binding.AncestorLevel != 1)
+	{
+		if (outError) *outError = L"AncestorType/AncestorLevel 只能用于 FindAncestor。";
+		return false;
+	}
 	if (!IsValidSourcePath(binding.SourceProperty))
 	{
 		if (outError) *outError = L"源路径无效：路径及每个点分段都不能为空。";
 		return false;
 	}
-
-	if (!IsModeStructurallyCompatible(target, binding.Mode))
+	if (binding.StringFormat
+		&& (target.ValueKind != BindingValueKind::String
+			|| !IsValidBindingStringFormat(*binding.StringFormat)))
 	{
-		if (outError) *outError = L"目标属性的读写能力不支持 "
-			+ std::wstring(BindingModeName(binding.Mode)) + L"。";
+		if (outError) *outError = target.ValueKind != BindingValueKind::String
+			? L"StringFormat 只能用于 String 目标属性。"
+			: L"StringFormat 复合格式语法无效。";
 		return false;
 	}
-	const bool targetToSource = binding.Mode == BindingMode::TwoWay
-		|| binding.Mode == BindingMode::OneWayToSource;
+
+	if (!IsModeStructurallyCompatible(target, effectiveMode))
+	{
+		if (outError) *outError = L"目标属性的读写能力不支持 "
+			+ std::wstring(BindingModeName(effectiveMode)) + L"。";
+		return false;
+	}
+	const bool targetToSource = effectiveMode == BindingMode::TwoWay
+		|| effectiveMode == BindingMode::OneWayToSource;
 	if (targetToSource
-		&& binding.UpdateMode != DataSourceUpdateMode::Never
+		&& effectiveUpdateMode != DataSourceUpdateMode::Never
 		&& !target.CanObserve)
 	{
 		if (outError) *outError = L"该目标属性没有变更通知；请使用 Never 更新策略或改用单向模式。";
@@ -185,18 +1055,39 @@ bool ValidateTarget(
 	const DesignerDataContextProperty* sourceProperty = nullptr;
 	if (sourceSchema && !sourceSchema->empty())
 	{
-		sourceProperty = DesignerDataContextSchemaUtils::Find(
-			*sourceSchema, binding.SourceProperty);
-		if (!sourceProperty)
+		std::vector<BindingPathStep> pathSteps;
+		(void)TryParseBindingPropertyPath(binding.SourceProperty, pathSteps);
+		std::wstring schemaPath;
+		const BindingPathStep* firstIndexer = nullptr;
+		for (const auto& step : pathSteps)
+		{
+			if (step.Kind == BindingPathStepKind::Indexer)
+			{
+				firstIndexer = &step;
+				break;
+			}
+			if (!schemaPath.empty()) schemaPath += L'.';
+			schemaPath += step.Value;
+		}
+		const bool indexedPath = firstIndexer != nullptr;
+		sourceProperty = schemaPath.empty() ? nullptr
+			: DesignerDataContextSchemaUtils::Find(*sourceSchema, schemaPath);
+		if (!indexedPath && !sourceProperty)
 		{
 			if (outError) *outError = L"源路径未在 DataContext Schema 中声明："
 				+ Trim(binding.SourceProperty);
 			return false;
 		}
+		if (indexedPath && !schemaPath.empty() && !sourceProperty)
+		{
+			if (outError) *outError = L"索引器容器未在 DataContext Schema 中声明："
+				+ schemaPath;
+			return false;
+		}
 
-		const bool sourceToTarget = IsSourceToTarget(binding.Mode);
-		const auto normalizedSourcePath =
-			DesignerDataContextSchemaUtils::NormalizePath(binding.SourceProperty);
+		const bool sourceToTarget = IsSourceToTarget(effectiveMode);
+		const auto normalizedSourcePath = indexedPath ? schemaPath
+			: DesignerDataContextSchemaUtils::NormalizePath(binding.SourceProperty);
 		size_t separator = normalizedSourcePath.find(L'.');
 		while (separator != std::wstring::npos)
 		{
@@ -211,7 +1102,7 @@ bool ValidateTarget(
 					return false;
 				}
 				if (sourceToTarget
-					&& binding.Mode != BindingMode::OneTime
+					&& effectiveMode != BindingMode::OneTime
 					&& !intermediate->CanObserve)
 				{
 					if (outError) *outError = L"DataContext 中间属性没有变更通知："
@@ -221,24 +1112,64 @@ bool ValidateTarget(
 			}
 			separator = normalizedSourcePath.find(L'.', separator + 1);
 		}
-		if (sourceToTarget && !sourceProperty->CanRead)
+		if (sourceProperty && sourceToTarget && !sourceProperty->CanRead)
 		{
 			if (outError) *outError = L"DataContext 源属性不可读：" + sourceProperty->Path;
 			return false;
 		}
-		if (sourceToTarget
-			&& binding.Mode != BindingMode::OneTime
+		if (sourceProperty && sourceToTarget
+			&& effectiveMode != BindingMode::OneTime
 			&& !sourceProperty->CanObserve)
 		{
 			if (outError) *outError = L"DataContext 源属性没有变更通知；请使用 OneTime 或修改 Schema："
 				+ sourceProperty->Path;
 			return false;
 		}
-		if (targetToSource
-			&& binding.UpdateMode != DataSourceUpdateMode::Never
+		if (sourceProperty && !indexedPath && targetToSource
+			&& effectiveUpdateMode != DataSourceUpdateMode::Never
 			&& !sourceProperty->CanWrite)
 		{
 			if (outError) *outError = L"DataContext 源属性不可写：" + sourceProperty->Path;
+			return false;
+		}
+		if (indexedPath && sourceProperty)
+		{
+			const bool numericIndex = std::all_of(
+				firstIndexer->Value.begin(), firstIndexer->Value.end(),
+				[](wchar_t ch) { return std::iswdigit(ch) != 0; });
+			if (sourceProperty->ObjectKind == DesignerDataObjectKind::BindingList
+				&& !numericIndex)
+			{
+				if (outError) *outError = L"BindingList 索引器需要非负数字下标："
+					+ sourceProperty->Path;
+				return false;
+			}
+			if (sourceProperty->ObjectKind != DesignerDataObjectKind::BindingList
+				&& sourceProperty->ObjectKind != DesignerDataObjectKind::BindingSource)
+			{
+				if (outError) *outError = L"索引器需要 BindingList 或 BindingSource 容器："
+					+ sourceProperty->Path;
+				return false;
+			}
+			if (targetToSource
+				&& effectiveUpdateMode != DataSourceUpdateMode::Never
+				&& sourceProperty->ObjectKind == DesignerDataObjectKind::BindingList
+				&& pathSteps.back().Kind == BindingPathStepKind::Indexer)
+			{
+				if (outError) *outError = L"BindingList 数字索引器是只读的，不能作为 TwoWay/OneWayToSource 叶节点。";
+				return false;
+			}
+			// The item/key result has its own runtime metadata; the container's
+			// value kind must not be mistaken for the indexed leaf kind.
+			sourceProperty = nullptr;
+		}
+		if (sourceProperty && target.ValueKind == BindingValueKind::Object
+			&& target.ObjectKind != DesignerDataObjectKind::Opaque
+			&& sourceProperty->ObjectKind != target.ObjectKind)
+		{
+			if (outError) *outError = L"DataContext 源属性的对象契约与目标属性不兼容：目标需要 "
+				+ std::wstring(DesignerDataContextSchemaUtils::ObjectKindName(
+					target.ObjectKind)) + L"。";
 			return false;
 		}
 	}
@@ -263,7 +1194,8 @@ bool ValidateTarget(
 					+ L" 的源值类型与 DataContext Schema 不兼容。";
 				return false;
 			}
-			if (converter->TargetKind != BindingValueKind::Empty
+			if (target.ValueKind != BindingValueKind::Empty
+				&& converter->TargetKind != BindingValueKind::Empty
 				&& converter->TargetKind != target.ValueKind)
 			{
 				if (outError) *outError = L"Converter " + converter->Name
@@ -300,11 +1232,34 @@ bool Validate(
 			: L"目标属性不存在：" + targetProperty;
 		return false;
 	}
-	const TargetMetadata portable{
-		metadata->Name(), metadata->ValueKind(),
-		metadata->CanRead(), metadata->CanWrite(), metadata->CanObserve() };
+	const auto portable = ProjectTargetMetadata(*metadata);
 	if (!ValidateTarget(portable, binding, outError, sourceSchema))
 		return false;
+	for (const auto& [name, value] : {
+		std::pair{ L"FallbackValue", &binding.FallbackValue },
+		std::pair{ L"TargetNullValue", &binding.TargetNullValue } })
+	{
+		if (!*value) continue;
+		std::wstring literalError;
+		if (!DesignerPropertyCatalog::ValidateStyleValue(
+			target, targetProperty, **value, &literalError))
+		{
+			if (outError) *outError = std::wstring(name) + L" 无效："
+				+ literalError;
+			return false;
+		}
+	}
+	if (binding.ConverterParameter)
+	{
+		std::optional<BindingValue> converted;
+		std::wstring literalError;
+		if (!TryConvertOptionalLiteral(
+			binding.ConverterParameter, converted, &literalError))
+		{
+			if (outError) *outError = L"ConverterParameter 无效：" + literalError;
+			return false;
+		}
+	}
 	if (outMetadata) *outMetadata = metadata;
 	return true;
 }
@@ -313,11 +1268,56 @@ std::wstring Describe(
 	const std::wstring& targetProperty,
 	const DesignerDataBinding& binding)
 {
-	std::wstring description = targetProperty + L" <- " + binding.SourceProperty + L"  ["
+	std::wstring description = targetProperty + L" <- ";
+	if (binding.IsMultiBinding())
+	{
+		description += L"MultiBinding(" + std::to_wstring(
+			binding.ChildBindings.size()) + L")  ["
+			+ BindingModeName(binding.Mode) + L", "
+			+ UpdateModeName(binding.UpdateMode);
+		if (!binding.Converter.empty())
+			description += L", Converter=" + binding.Converter;
+		if (binding.ConverterParameter)
+			description += L", ConverterParameter='"
+				+ binding.ConverterParameter->Text + L"'";
+		if (binding.StringFormat)
+			description += L", StringFormat='" + *binding.StringFormat + L"'";
+		if (binding.FallbackValue)
+			description += L", FallbackValue='" + binding.FallbackValue->Text + L"'";
+		if (binding.TargetNullValue)
+			description += L", TargetNullValue='" + binding.TargetNullValue->Text + L"'";
+		return description + L"]";
+	}
+	if (!binding.ElementName.empty())
+		description += L"ElementName=" + binding.ElementName + L".";
+	else if (binding.RelativeSource == DesignerBindingRelativeSource::Self)
+		description += L"RelativeSource=Self.";
+	else if (binding.RelativeSource
+		== DesignerBindingRelativeSource::TemplatedParent)
+		description += L"RelativeSource=TemplatedParent.";
+	else if (binding.RelativeSource
+		== DesignerBindingRelativeSource::FindAncestor)
+	{
+		description += L"RelativeSource=FindAncestor("
+			+ binding.AncestorType;
+		if (binding.AncestorLevel != 1)
+			description += L", Level=" + std::to_wstring(binding.AncestorLevel);
+		description += L").";
+	}
+	description += binding.SourceProperty + L"  ["
 		+ BindingModeName(binding.Mode) + L", "
 		+ UpdateModeName(binding.UpdateMode);
 	if (!binding.Converter.empty())
 		description += L", Converter=" + binding.Converter;
+	if (binding.ConverterParameter)
+		description += L", ConverterParameter='"
+			+ binding.ConverterParameter->Text + L"'";
+	if (binding.StringFormat)
+		description += L", StringFormat='" + *binding.StringFormat + L"'";
+	if (binding.FallbackValue)
+		description += L", FallbackValue='" + binding.FallbackValue->Text + L"'";
+	if (binding.TargetNullValue)
+		description += L", TargetNullValue='" + binding.TargetNullValue->Text + L"'";
 	description += L"]";
 	return description;
 }

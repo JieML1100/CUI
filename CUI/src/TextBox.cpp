@@ -109,6 +109,21 @@ namespace
 			&& left.b == right.b && left.a == right.a;
 	}
 
+	ControlPropertyOptions<TextBox, std::wstring> TextBoxTextOptions()
+	{
+		ControlPropertyOptions<TextBox, std::wstring> options;
+		options.DefaultValue = std::wstring{};
+		options.Flags = ControlPropertyFlags::AffectsMeasure
+			| ControlPropertyFlags::AffectsRender
+			| ControlPropertyFlags::BindsTwoWayByDefault;
+		options.Design.Category = L"Common";
+		options.Design.CategoryOrder = 0;
+		options.Design.Order = 10;
+		options.Design.Persistence = ControlPropertyPersistence::Legacy;
+		options.DefaultUpdateMode = DataSourceUpdateMode::OnValidation;
+		return options;
+	}
+
 	ControlPropertyOptions<TextBox, D2D1_COLOR_F> TextBoxColorOptions(
 		D2D1_COLOR_F defaultValue,
 		int order)
@@ -154,6 +169,20 @@ void TextBox::EnsureBindingPropertiesRegistered()
 	Control::EnsureBindingPropertiesRegistered();
 	static const bool registered = []
 	{
+		using Handler = BindingPropertyMetadata::ChangeHandler;
+		BindingPropertyRegistry::Register<TextBox, std::wstring>(L"Text",
+			[](TextBox& target) { return target.Text; },
+			[](TextBox& target, const std::wstring& value) { target.Text = value; },
+			[](TextBox& target, Handler handler, DataSourceUpdateMode mode)
+			{
+				if (mode == DataSourceUpdateMode::OnValidation)
+					return target.OnLostFocus.Subscribe(
+						[handler = std::move(handler)](Control*) { handler(); });
+				return target.OnTextChanged.Subscribe(
+					[handler = std::move(handler)](
+						Control*, std::wstring, std::wstring) { handler(); });
+			},
+			TextBoxTextOptions());
 		BindingPropertyRegistry::Register<TextBox, D2D1_COLOR_F>(L"UnderMouseColor",
 			[](TextBox& target) { return target.UnderMouseColor; },
 			[](TextBox& target, const D2D1_COLOR_F& value) { target.UnderMouseColor = value; },

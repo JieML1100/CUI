@@ -142,6 +142,14 @@ private:
 	DesignerDataContextSchema _dataContextSchema;
 	DesignerModel::DesignCodeBehindModel _codeBehind;
 	DesignerStyleSheet _documentStyleSheet;
+	std::vector<DesignerModel::DesignComponentDefinition> _componentDefinitions;
+	std::vector<DesignerModel::DesignControlTemplate> _controlTemplates;
+	std::vector<DesignerModel::DesignDataTypeDefinition> _dataTypes;
+	std::vector<DesignerModel::DesignDataTemplate> _dataTemplates;
+	std::vector<DesignerModel::DesignItemsPanelTemplate> _itemsPanelTemplates;
+	std::vector<DesignerModel::DesignGroupStyle> _groupStyles;
+	std::vector<DesignerModel::DesignDataList> _dataLists;
+	std::vector<DesignerModel::DesignCollectionViewSource> _collectionViews;
 	std::wstring _documentResourceBasePath;
 	std::shared_ptr<ResourceLoadContext> _documentResources;
 	std::shared_ptr<ControlStyleSheet> _previewStyleSheet;
@@ -234,8 +242,6 @@ private:
 	std::wstring _controlDropTargetDescription;
 	std::optional<DesignerControlDescriptor> _controlDropPreviewDescriptor;
 	// 进程内预览工厂不进入文档，但必须跨 Open/Undo/Redo 材质化保持。
-	std::unordered_map<std::wstring, DesignerControlDescriptor>
-		_customControlDescriptors;
 	std::unordered_map<int, int> _controlTypeCounters;
 	// 单调递增且随文档持久化；删除控件不会回收 ID。
 	int _nextStableControlId = 1;
@@ -394,6 +400,10 @@ public:
 	void SetDesignedFormVisible(bool v) { _designedFormVisible = v; }
 	const std::map<std::wstring, std::wstring>& GetDesignedFormEventHandlers() const { return _designedFormEventHandlers; }
 	const DesignerDataContextSchema& GetDataContextSchema() const { return _dataContextSchema; }
+	DesignerDataContextSchema GetEffectiveDataContextSchema(
+		const DesignerControl& control) const;
+	IBindingSource* GetEffectiveDesignDataContextSource(
+		DesignerControl& control) const;
 	bool SetDataContextSchema(DesignerDataContextSchema schema, std::wstring* outError = nullptr);
 	const DesignerModel::DesignCodeBehindModel& GetCodeBehind() const noexcept
 	{
@@ -403,11 +413,31 @@ public:
 		DesignerModel::DesignCodeBehindModel codeBehind,
 		std::wstring* outError = nullptr);
 	const DesignerStyleSheet& GetDocumentStyleSheet() const { return _documentStyleSheet; }
+	const std::vector<DesignerModel::DesignComponentDefinition>&
+		GetComponentDefinitions() const noexcept { return _componentDefinitions; }
+	const std::vector<DesignerModel::DesignControlTemplate>&
+		GetControlTemplates() const noexcept { return _controlTemplates; }
+	const std::vector<DesignerModel::DesignDataTypeDefinition>&
+		GetDataTypes() const noexcept { return _dataTypes; }
+	const std::vector<DesignerModel::DesignDataTemplate>&
+		GetDataTemplates() const noexcept { return _dataTemplates; }
+	const std::vector<DesignerModel::DesignItemsPanelTemplate>&
+		GetItemsPanelTemplates() const noexcept { return _itemsPanelTemplates; }
+	const std::vector<DesignerModel::DesignGroupStyle>&
+		GetGroupStyles() const noexcept { return _groupStyles; }
+	const std::vector<DesignerModel::DesignDataList>&
+		GetDataLists() const noexcept { return _dataLists; }
+	const std::vector<DesignerModel::DesignCollectionViewSource>&
+		GetCollectionViews() const noexcept { return _collectionViews; }
 	const std::wstring& GetDocumentResourceBasePath() const noexcept
 	{
 		return _documentResourceBasePath;
 	}
-	bool SetDocumentStyleSheet(DesignerStyleSheet styleSheet, std::wstring* outError = nullptr);
+	bool SetDocumentStyleSheet(
+		DesignerStyleSheet styleSheet,
+		std::wstring* outError = nullptr,
+		const std::vector<std::pair<std::wstring, std::wstring>>& resourceRenames = {},
+		bool allowVisualStateRebuild = true);
 	void SetDesignDataContext(std::shared_ptr<IBindingSource> source);
 	bool RefreshDesignBindings(
 		DesignerControl& control,
@@ -718,6 +748,11 @@ private:
 		ClipboardPastePlacement placement,
 		std::optional<POINT> canvasPosition);
 	void ClearCanvasCore();
+	Control* FindControlInstanceByName(const std::wstring& name) const noexcept;
+	std::optional<DesignerDataContextSchema> ResolveBindingSourceSchema(
+		const DesignerControl& control,
+		bool inherited,
+		const DesignerDataContextSchema& rootSchema) const;
 	DesignerDocumentTransactionResult ReplaceDesignDocument(
 		const DesignerModel::DesignDocument& document,
 		const std::wstring& operation,

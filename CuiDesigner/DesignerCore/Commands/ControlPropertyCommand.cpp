@@ -101,7 +101,7 @@ DesignerDocumentTransactionResult ControlPropertyCommand::Apply(
 			[&target](const std::shared_ptr<DesignerControl>& candidate)
 			{
 				return candidate && candidate->ControlInstance
-					&& candidate->Name == target.TargetName
+					&& candidate->StableId == target.StableId
 					&& candidate->Type == target.TargetType;
 			});
 		if (match == _canvas->GetAllControls().end()

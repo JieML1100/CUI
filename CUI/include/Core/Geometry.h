@@ -42,6 +42,82 @@ namespace detail {
 
 } // namespace detail
 
+struct Vector final {
+    Dip x = 0.0f;
+    Dip y = 0.0f;
+
+    constexpr Vector() noexcept = default;
+    constexpr Vector(Dip xValue, Dip yValue) noexcept
+        : x(xValue), y(yValue)
+    {
+    }
+
+    friend constexpr bool operator==(const Vector&, const Vector&) noexcept = default;
+
+    constexpr Vector& operator+=(Vector value) noexcept
+    {
+        x += value.x;
+        y += value.y;
+        return *this;
+    }
+
+    constexpr Vector& operator-=(Vector value) noexcept
+    {
+        x -= value.x;
+        y -= value.y;
+        return *this;
+    }
+
+    constexpr Vector& operator*=(Dip scale) noexcept
+    {
+        x *= scale;
+        y *= scale;
+        return *this;
+    }
+
+    constexpr Vector& operator/=(Dip scale) noexcept
+    {
+        x /= scale;
+        y /= scale;
+        return *this;
+    }
+};
+
+[[nodiscard]] constexpr Vector operator+(Vector left, Vector right) noexcept
+{
+    left += right;
+    return left;
+}
+
+[[nodiscard]] constexpr Vector operator-(Vector left, Vector right) noexcept
+{
+    left -= right;
+    return left;
+}
+
+[[nodiscard]] constexpr Vector operator-(Vector value) noexcept
+{
+    return { -value.x, -value.y };
+}
+
+[[nodiscard]] constexpr Vector operator*(Vector value, Dip scale) noexcept
+{
+    value *= scale;
+    return value;
+}
+
+[[nodiscard]] constexpr Vector operator*(Dip scale, Vector value) noexcept
+{
+    value *= scale;
+    return value;
+}
+
+[[nodiscard]] constexpr Vector operator/(Vector value, Dip scale) noexcept
+{
+    value /= scale;
+    return value;
+}
+
 struct Point final {
     Dip x = 0.0f;
     Dip y = 0.0f;
@@ -54,14 +130,14 @@ struct Point final {
 
     friend constexpr bool operator==(const Point&, const Point&) noexcept = default;
 
-    constexpr Point& operator+=(Point offset) noexcept
+    constexpr Point& operator+=(Vector offset) noexcept
     {
         x += offset.x;
         y += offset.y;
         return *this;
     }
 
-    constexpr Point& operator-=(Point offset) noexcept
+    constexpr Point& operator-=(Vector offset) noexcept
     {
         x -= offset.x;
         y -= offset.y;
@@ -69,16 +145,27 @@ struct Point final {
     }
 };
 
-[[nodiscard]] constexpr Point operator+(Point point, Point offset) noexcept
+[[nodiscard]] constexpr Point operator+(Point point, Vector offset) noexcept
 {
     point += offset;
     return point;
 }
 
-[[nodiscard]] constexpr Point operator-(Point point, Point offset) noexcept
+[[nodiscard]] constexpr Point operator+(Vector offset, Point point) noexcept
+{
+    point += offset;
+    return point;
+}
+
+[[nodiscard]] constexpr Point operator-(Point point, Vector offset) noexcept
 {
     point -= offset;
     return point;
+}
+
+[[nodiscard]] constexpr Vector operator-(Point left, Point right) noexcept
+{
+    return { left.x - right.x, left.y - right.y };
 }
 
 struct Size final {
@@ -243,7 +330,7 @@ struct Rect final {
             detail::Max(Bottom(), other.Bottom()));
     }
 
-    [[nodiscard]] constexpr Rect Offset(Point offset) const noexcept
+    [[nodiscard]] constexpr Rect Offset(Vector offset) const noexcept
     {
         return { x + offset.x, y + offset.y, width, height };
     }

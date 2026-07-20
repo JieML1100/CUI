@@ -18,18 +18,12 @@
     <ClCompile Include="main.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="CustomControls.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
     <ClCompile Include="DemoWindow.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DemoWindow.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="CustomControls.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="imgs.h">

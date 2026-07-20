@@ -9,6 +9,7 @@
 #include "../CUI/include/GridView.h"
 #include "../CUI/include/KpiCard.h"
 #include "../CUI/include/ListView.h"
+#include "../CUI/include/ListBox.h"
 #include "../CUI/include/MediaPlayer.h"
 #include "../CUI/include/Menu.h"
 #include "../CUI/include/NumericUpDown.h"
@@ -54,6 +55,7 @@ namespace
 	CUI_CPP_EVENT_TYPE(DateTimePicker, "DateTimePicker");
 	CUI_CPP_EVENT_TYPE(GridView, "GridView");
 	CUI_CPP_EVENT_TYPE(ListView, "ListView");
+	CUI_CPP_EVENT_TYPE(Selector, "Selector");
 	CUI_CPP_EVENT_TYPE(Menu, "Menu");
 	CUI_CPP_EVENT_TYPE(PropertyGridView, "PropertyGridView");
 	CUI_CPP_EVENT_TYPE(ChartView, "ChartView");
@@ -215,12 +217,14 @@ namespace
 		case UIClass::UI_DateTimePicker:
 			return L"OnSelectionChanged";
 		case UIClass::UI_ListView:
-		case UIClass::UI_ListBox:
 			return L"OnItemDoubleClick";
+		case UIClass::UI_ListBox:
+			return L"OnSelectionChanged";
 		case UIClass::UI_GridView:
-		case UIClass::UI_TreeView:
 		case UIClass::UI_PropertyGrid:
 			return L"SelectionChanged";
+		case UIClass::UI_TreeView:
+			return L"SelectedItemChanged";
 		case UIClass::UI_ChartView:
 			return L"OnPointClick";
 		case UIClass::UI_ReportView:
@@ -422,11 +426,12 @@ std::vector<DesignerEventDescriptor> DesignerEventCatalog::GetControlEvents(UICl
 	case UIClass::UI_TreeView:
 		Append(out, {
 			CUI_EVENT(TreeView, ScrollChanged, ScrollChanged, "sender"),
+			CUI_EVENT(TreeView, SelectedItemChanged,
+				SelectedItemChanged, "sender"),
 			CUI_EVENT(TreeView, SelectionChanged, SelectionChanged, "sender"),
 		});
 		break;
 	case UIClass::UI_ListView:
-	case UIClass::UI_ListBox:
 		Append(out, {
 			CUI_EVENT(ListView, ScrollChanged, ScrollChanged, "sender"),
 			CUI_EVENT(ListView, SelectionChanged, SelectionChanged, "sender"),
@@ -435,6 +440,12 @@ std::vector<DesignerEventDescriptor> DesignerEventCatalog::GetControlEvents(UICl
 				OnItemDoubleClick, "sender", "index"),
 			CUI_EVENT(ListView, OnItemCheckChanged,
 				OnItemCheckChanged, "sender", "index", "checked"),
+		});
+		break;
+	case UIClass::UI_ListBox:
+		Append(out, {
+			CUI_EVENT(Selector, OnSelectionChanged,
+				OnSelectionChanged, "sender"),
 		});
 		break;
 	case UIClass::UI_PropertyGrid:
@@ -561,86 +572,29 @@ std::vector<DesignerEventDescriptor> DesignerEventCatalog::GetControlEvents(UICl
 	return out;
 }
 
-std::optional<DesignerEventDescriptor> DesignerEventCatalog::FromCustomEvent(
-	const DesignerCustomEventDescriptor& event) noexcept
+std::optional<DesignerEventDescriptor> DesignerEventCatalog::FromComponentEvent(
+	const DesignerComponentEventDescriptor& event) noexcept
 {
 	try
 	{
 		std::wstring validationError;
 		if (!ValidateHandlerName(event.Name, &validationError)
-			|| event.Name.empty() || event.EventField.empty()
-			|| !std::all_of(event.EventField.begin(), event.EventField.end(),
-				[](unsigned char ch)
-				{
-					return (ch >= 'a' && ch <= 'z')
-						|| (ch >= 'A' && ch <= 'Z')
-						|| (ch >= '0' && ch <= '9') || ch == '_';
-				})
-			|| (event.EventField.front() >= '0'
-				&& event.EventField.front() <= '9'))
+			|| event.Name.empty()
+			|| *GetComponentRoutingStrategyName(event.RoutingStrategy) == '\0')
 			return std::nullopt;
 		DesignerEventDescriptor result;
 		result.Name = event.Name;
 		result.DisplayName = event.DisplayName.empty()
 			? event.Name : event.DisplayName;
-		result.EventField = event.EventField;
+		result.EventField = "OnDeclarativeEvent";
+		result.EventOwnerTypeName = "Control";
+		result.ParameterList =
+			"Control* sender, DeclarativeEventArgs& e";
+		result.Signature = std::type_index(
+			typeid(void(Control*, DeclarativeEventArgs&)));
 		result.Category = event.Category;
 		result.Order = event.Order;
 		result.IsDefault = event.IsDefault;
-		switch (event.Signature)
-		{
-		case DesignerCustomEventSignature::None:
-			result.ParameterList = "";
-			result.Signature = std::type_index(typeid(void()));
-			break;
-		case DesignerCustomEventSignature::Sender:
-			result.ParameterList = "Control* sender";
-			result.Signature = std::type_index(typeid(void(Control*)));
-			break;
-		case DesignerCustomEventSignature::SenderBool:
-			result.ParameterList = "Control* sender, bool value";
-			result.Signature = std::type_index(typeid(void(Control*, bool)));
-			break;
-		case DesignerCustomEventSignature::SenderInt:
-			result.ParameterList = "Control* sender, int value";
-			result.Signature = std::type_index(typeid(void(Control*, int)));
-			break;
-		case DesignerCustomEventSignature::SenderFloat:
-			result.ParameterList = "Control* sender, float value";
-			result.Signature = std::type_index(typeid(void(Control*, float)));
-			break;
-		case DesignerCustomEventSignature::SenderDouble:
-			result.ParameterList = "Control* sender, double value";
-			result.Signature = std::type_index(typeid(void(Control*, double)));
-			break;
-		case DesignerCustomEventSignature::SenderString:
-			result.ParameterList = "Control* sender, const std::wstring& value";
-			result.Signature = std::type_index(
-				typeid(void(Control*, const std::wstring&)));
-			break;
-		case DesignerCustomEventSignature::SenderIntInt:
-			result.ParameterList = "Control* sender, int first, int second";
-			result.Signature = std::type_index(
-				typeid(void(Control*, int, int)));
-			break;
-		case DesignerCustomEventSignature::SenderIntBool:
-			result.ParameterList = "Control* sender, int index, bool value";
-			result.Signature = std::type_index(
-				typeid(void(Control*, int, bool)));
-			break;
-		case DesignerCustomEventSignature::SenderDoubleDouble:
-			result.ParameterList = "Control* sender, double first, double second";
-			result.Signature = std::type_index(
-				typeid(void(Control*, double, double)));
-			break;
-		case DesignerCustomEventSignature::SenderStringString:
-			result.ParameterList = "Control* sender, const std::wstring& oldValue, const std::wstring& newValue";
-			result.Signature = std::type_index(typeid(void(
-				Control*, const std::wstring&, const std::wstring&)));
-			break;
-		default:
-			return std::nullopt;
-		}
 		return result;
 	}
 	catch (...)
@@ -651,14 +605,14 @@ std::optional<DesignerEventDescriptor> DesignerEventCatalog::FromCustomEvent(
 
 std::vector<DesignerEventDescriptor> DesignerEventCatalog::GetControlEvents(
 	UIClass type,
-	const std::vector<DesignerCustomEventDescriptor>& customEvents)
+	const std::vector<DesignerComponentEventDescriptor>& componentEvents)
 {
 	auto result = GetControlEvents(type);
-	if (std::any_of(customEvents.begin(), customEvents.end(),
+	if (std::any_of(componentEvents.begin(), componentEvents.end(),
 		[](const auto& event) { return event.IsDefault; }))
 		for (auto& event : result) event.IsDefault = false;
-	for (const auto& custom : customEvents)
-		if (auto event = FromCustomEvent(custom))
+	for (const auto& component : componentEvents)
+		if (auto event = FromComponentEvent(component))
 			result.push_back(std::move(*event));
 	SortPresentationMetadata(result);
 	return result;
@@ -720,9 +674,9 @@ std::optional<DesignerEventDescriptor> DesignerEventCatalog::FindControlEvent(
 std::optional<DesignerEventDescriptor> DesignerEventCatalog::FindControlEvent(
 	UIClass type,
 	const std::wstring& eventName,
-	const std::vector<DesignerCustomEventDescriptor>& customEvents)
+	const std::vector<DesignerComponentEventDescriptor>& componentEvents)
 {
-	auto events = GetControlEvents(type, customEvents);
+	auto events = GetControlEvents(type, componentEvents);
 	const auto found = std::find_if(events.begin(), events.end(),
 		[&](const D& event) { return event.Name == eventName; });
 	return found == events.end() ? std::nullopt
@@ -753,9 +707,9 @@ DesignerEventCatalog::GetDefaultControlEvent(UIClass type)
 std::optional<DesignerEventDescriptor>
 DesignerEventCatalog::GetDefaultControlEvent(
 	UIClass type,
-	const std::vector<DesignerCustomEventDescriptor>& customEvents)
+	const std::vector<DesignerComponentEventDescriptor>& componentEvents)
 {
-	auto events = GetControlEvents(type, customEvents);
+	auto events = GetControlEvents(type, componentEvents);
 	const auto found = std::find_if(events.begin(), events.end(),
 		[](const D& event) { return event.IsDefault; });
 	return found == events.end() ? std::nullopt
@@ -836,96 +790,149 @@ bool DesignerEventCatalog::TryParseCategory(
 	return true;
 }
 
-const char* DesignerEventCatalog::GetCustomSignatureName(
-	DesignerCustomEventSignature signature) noexcept
+const char* DesignerEventCatalog::GetComponentPayloadName(
+	DesignerComponentEventPayload payload) noexcept
 {
-	switch (signature)
+	switch (payload)
 	{
-	case DesignerCustomEventSignature::None: return "None";
-	case DesignerCustomEventSignature::Sender: return "Sender";
-	case DesignerCustomEventSignature::SenderBool: return "SenderBool";
-	case DesignerCustomEventSignature::SenderInt: return "SenderInt";
-	case DesignerCustomEventSignature::SenderFloat: return "SenderFloat";
-	case DesignerCustomEventSignature::SenderDouble: return "SenderDouble";
-	case DesignerCustomEventSignature::SenderString: return "SenderString";
-	case DesignerCustomEventSignature::SenderIntInt: return "SenderIntInt";
-	case DesignerCustomEventSignature::SenderIntBool: return "SenderIntBool";
-	case DesignerCustomEventSignature::SenderDoubleDouble: return "SenderDoubleDouble";
-	case DesignerCustomEventSignature::SenderStringString: return "SenderStringString";
+	case DesignerComponentEventPayload::None: return "None";
+	case DesignerComponentEventPayload::Bool: return "Bool";
+	case DesignerComponentEventPayload::Int: return "Int";
+	case DesignerComponentEventPayload::Int64: return "Int64";
+	case DesignerComponentEventPayload::Float: return "Float";
+	case DesignerComponentEventPayload::Double: return "Double";
+	case DesignerComponentEventPayload::String: return "String";
 	default: return "";
 	}
 }
 
-bool DesignerEventCatalog::TryParseCustomSignature(
+bool DesignerEventCatalog::TryParseComponentPayload(
 	const std::wstring& value,
-	DesignerCustomEventSignature& signature) noexcept
+	DesignerComponentEventPayload& payload) noexcept
 {
 	const auto normalized = LowerAscii(Trim(value));
-	if (normalized == L"none") signature = DesignerCustomEventSignature::None;
-	else if (normalized == L"sender") signature = DesignerCustomEventSignature::Sender;
-	else if (normalized == L"senderbool") signature = DesignerCustomEventSignature::SenderBool;
-	else if (normalized == L"senderint") signature = DesignerCustomEventSignature::SenderInt;
-	else if (normalized == L"senderfloat") signature = DesignerCustomEventSignature::SenderFloat;
-	else if (normalized == L"senderdouble") signature = DesignerCustomEventSignature::SenderDouble;
-	else if (normalized == L"senderstring") signature = DesignerCustomEventSignature::SenderString;
-	else if (normalized == L"senderintint") signature = DesignerCustomEventSignature::SenderIntInt;
-	else if (normalized == L"senderintbool") signature = DesignerCustomEventSignature::SenderIntBool;
-	else if (normalized == L"senderdoubledouble") signature = DesignerCustomEventSignature::SenderDoubleDouble;
-	else if (normalized == L"senderstringstring") signature = DesignerCustomEventSignature::SenderStringString;
+	if (normalized.empty() || normalized == L"none")
+		payload = DesignerComponentEventPayload::None;
+	else if (normalized == L"bool")
+		payload = DesignerComponentEventPayload::Bool;
+	else if (normalized == L"int")
+		payload = DesignerComponentEventPayload::Int;
+	else if (normalized == L"int64")
+		payload = DesignerComponentEventPayload::Int64;
+	else if (normalized == L"float")
+		payload = DesignerComponentEventPayload::Float;
+	else if (normalized == L"double")
+		payload = DesignerComponentEventPayload::Double;
+	else if (normalized == L"string")
+		payload = DesignerComponentEventPayload::String;
 	else return false;
 	return true;
 }
 
-bool DesignerEventCatalog::ValidateCustomEvents(
+const char* DesignerEventCatalog::GetComponentRoutingStrategyName(
+	DeclarativeEventRoutingStrategy strategy) noexcept
+{
+	switch (strategy)
+	{
+	case DeclarativeEventRoutingStrategy::Direct: return "Direct";
+	case DeclarativeEventRoutingStrategy::Bubble: return "Bubble";
+	case DeclarativeEventRoutingStrategy::Tunnel: return "Tunnel";
+	default: return "";
+	}
+}
+
+bool DesignerEventCatalog::TryParseComponentRoutingStrategy(
+	const std::wstring& value,
+	DeclarativeEventRoutingStrategy& strategy) noexcept
+{
+	const auto normalized = LowerAscii(Trim(value));
+	if (normalized.empty() || normalized == L"direct")
+		strategy = DeclarativeEventRoutingStrategy::Direct;
+	else if (normalized == L"bubble")
+		strategy = DeclarativeEventRoutingStrategy::Bubble;
+	else if (normalized == L"tunnel" || normalized == L"preview")
+		strategy = DeclarativeEventRoutingStrategy::Tunnel;
+	else return false;
+	return true;
+}
+
+std::wstring DesignerEventCatalog::MakeAttachedComponentEventKey(
+	const DesignerComponentType& ownerType,
+	const std::wstring& eventName)
+{
+	return L"@{" + ownerType.XamlNamespace + L"}"
+		+ ownerType.XamlName + L"." + eventName;
+}
+
+bool DesignerEventCatalog::TryParseAttachedComponentEventKey(
+	const std::wstring& key,
+	DesignerComponentType& ownerType,
+	std::wstring& eventName) noexcept
+{
+	try
+	{
+		ownerType = {};
+		eventName.clear();
+		if (!key.starts_with(L"@{")) return false;
+		const auto close = key.find(L'}', 2);
+		if (close == std::wstring::npos || close == 2) return false;
+		const auto separator = key.find(L'.', close + 1);
+		if (separator == std::wstring::npos
+			|| separator == close + 1 || separator + 1 >= key.size())
+			return false;
+		ownerType.XamlNamespace = key.substr(2, close - 2);
+		ownerType.XamlName = key.substr(
+			close + 1, separator - close - 1);
+		eventName = key.substr(separator + 1);
+		return true;
+	}
+	catch (...)
+	{
+		ownerType = {};
+		eventName.clear();
+		return false;
+	}
+}
+
+bool DesignerEventCatalog::ValidateComponentEvents(
 	UIClass baseType,
-	const std::vector<DesignerCustomEventDescriptor>& events,
+	const std::vector<DesignerComponentEventDescriptor>& events,
 	std::wstring* outError)
 {
 	if (events.size() > 256)
 	{
-		if (outError) *outError = L"自定义事件超过 256 项限制。";
+		if (outError) *outError = L"组件事件超过 256 项限制。";
 		return false;
 	}
 	std::set<std::wstring> names;
-	std::set<std::string> fields;
 	bool hasDefault = false;
 	const auto baseEvents = GetControlEvents(baseType);
 	for (const auto& event : events)
 	{
 		std::wstring validationError;
-		if (!FromCustomEvent(event)
+		if (!FromComponentEvent(event)
 			|| !ValidateHandlerName(event.Name, &validationError))
 		{
-			if (outError) *outError = L"自定义事件无效：" + event.Name
+			if (outError) *outError = L"组件事件无效：" + event.Name
 				+ (validationError.empty() ? L"。" : L"：" + validationError);
 			return false;
 		}
 		const auto name = LowerAscii(event.Name);
-		auto field = event.EventField;
-		std::transform(field.begin(), field.end(), field.begin(),
-			[](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-		if (!names.insert(name).second || !fields.insert(field).second)
+		if (!names.insert(name).second)
 		{
-			if (outError) *outError = L"自定义事件名称或 field 重复：" + event.Name;
+			if (outError) *outError = L"组件事件名称重复：" + event.Name;
 			return false;
 		}
 		if (event.IsDefault && hasDefault)
 		{
-			if (outError) *outError = L"只能声明一个默认自定义事件。";
+			if (outError) *outError = L"只能声明一个默认组件事件。";
 			return false;
 		}
 		hasDefault = hasDefault || event.IsDefault;
-		const auto collision = std::find_if(baseEvents.begin(), baseEvents.end(),
-			[&](const auto& base)
-			{
-				auto baseField = base.EventField;
-				std::transform(baseField.begin(), baseField.end(), baseField.begin(),
-					[](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-				return LowerAscii(base.Name) == name || baseField == field;
-			});
-		if (collision != baseEvents.end())
+		if (std::any_of(baseEvents.begin(), baseEvents.end(),
+			[&](const auto& base) { return LowerAscii(base.Name) == name; }))
 		{
-			if (outError) *outError = L"自定义事件与基类事件重名：" + event.Name;
+			if (outError) *outError = L"组件事件与 BaseType 事件重名：" + event.Name;
 			return false;
 		}
 	}

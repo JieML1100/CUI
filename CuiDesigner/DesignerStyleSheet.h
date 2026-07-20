@@ -21,6 +21,7 @@ struct DesignerStyleSetter
 	bool UsesResource = false;
 	std::wstring ResourceKey;
 	DesignerStyleValue Literal;
+	bool UsesDynamicResource = false;
 
 	bool operator==(const DesignerStyleSetter&) const = default;
 };
@@ -42,13 +43,25 @@ struct DesignerStyleDataCondition
 	bool operator==(const DesignerStyleDataCondition&) const = default;
 };
 
+struct DesignerStylePropertyCondition
+{
+	std::wstring Property;
+	DesignerStyleValue Value;
+
+	bool operator==(const DesignerStylePropertyCondition&) const = default;
+};
+
 struct DesignerStyleTrigger
 {
 	/** One condition is serialized as Trigger; multiple conditions as MultiTrigger. */
 	std::vector<DesignerStyleCondition> Conditions;
+	/** Arbitrary observable metadata-property predicates. */
+	std::vector<DesignerStylePropertyCondition> PropertyConditions;
 	/** One condition is DataTrigger; multiple conditions are MultiDataTrigger. */
 	std::vector<DesignerStyleDataCondition> DataConditions;
 	std::vector<DesignerStyleSetter> Setters;
+	std::vector<DesignerEventTriggerAction> EnterActions;
+	std::vector<DesignerEventTriggerAction> ExitActions;
 
 	bool operator==(const DesignerStyleTrigger&) const = default;
 };
@@ -57,15 +70,22 @@ struct DesignerStyleRule
 {
 	bool HasType = false;
 	UIClass Type = UIClass::UI_Base;
+	/** Exact XAML ComponentDefinition target; Type remains its built-in BaseType. */
+	DesignerComponentType ComponentType;
 	std::wstring Id;
 	/** Named style key, or an {x:Type ...} key, inherited before local setters. */
 	std::wstring BasedOn;
 	std::vector<std::wstring> Classes;
 	ControlStyleState RequiredStates = ControlStyleState::None;
 	ControlStyleState ExcludedStates = ControlStyleState::None;
+	/** Populated only on lowered runtime rules. */
+	std::vector<DesignerStylePropertyCondition> PropertyConditions;
 	std::vector<DesignerStyleSetter> Setters;
 	/** Effective DataTrigger predicates after runtime/clipboard expansion. */
 	std::vector<DesignerStyleDataCondition> DataConditions;
+	/** Populated only on lowered runtime rules. */
+	std::vector<DesignerEventTriggerAction> EnterActions;
+	std::vector<DesignerEventTriggerAction> ExitActions;
 	std::vector<DesignerStyleTrigger> Triggers;
 	/** Non-empty when materialized from an external merged dictionary. */
 	std::wstring SourceDictionary;
